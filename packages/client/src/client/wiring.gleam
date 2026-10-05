@@ -1705,7 +1705,13 @@ pub fn clear(
   case list.contains(query.configuration.active_tool_names, name) {
     False ->
       effects.ClearanceRefused(
-        reason: "the tool `" <> name <> "` is not active for this strand",
+        reason: "the tool `"
+        <> name
+        <> "` is not active for this strand. The system prompt lists the "
+        <> "session's tools, and a strand may hold fewer; this one can call "
+        <> "only: "
+        <> string.join(query.configuration.active_tool_names, ", ")
+        <> ".",
       )
     True ->
       case tool.declared(declared, name) {

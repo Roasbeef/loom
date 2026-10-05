@@ -1142,7 +1142,7 @@ catalogue without opening runtimes. Explicit admission invokes
   selects one by catalogue name before consulting this default route.
 - `client/agency.{Config, Message, seam, start, reaping_hooks,
   child_name, is_subagent, frame_message, frame_brief, result_contract,
-  result_schema_prefix}` — the Agency:
+  child_notice, ChildFacts, result_schema_prefix}` — the Agency:
   `tools/agent`'s messaging seam implemented over a live runtime. `seam`
   closes over a process *name* so it can be built before `api.open`;
   `start` puts the returned runtime behind that name. Everything with

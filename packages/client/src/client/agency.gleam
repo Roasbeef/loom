@@ -803,7 +803,16 @@ fn reconcile(
     // was accepted and has already finished. The last arm recovers by
     // adopting a brief.
     Some(state) ->
-      recover_brief(config, runtime, caller, request, name, state, custody)
+      recover_brief(
+        config,
+        runtime,
+        caller,
+        request,
+        name,
+        tools,
+        state,
+        custody,
+      )
   })
   let #(now, _clock) = clock.read(config.clock)
   let cell =
@@ -914,6 +923,7 @@ fn recover_brief(
   caller: Caller,
   request: agent.SpawnRequest,
   name: String,
+  tools: List(String),
   state: machine_strand.StrandState,
   custody: Option(api.AsyncCustody),
 ) -> Result(OpId, Refusal) {
@@ -932,11 +942,27 @@ fn recover_brief(
         Some(_) ->
           Error(agent.PlaneFailed("invalid original async child record"))
         None ->
-          accept_async_brief(config, runtime, caller, request, name, owner)
+          accept_async_brief(
+            config,
+            runtime,
+            caller,
+            request,
+            name,
+            tools,
+            owner,
+          )
       }
     }
     None ->
-      recover_ordinary_brief(config, runtime, caller, request, name, state)
+      recover_ordinary_brief(
+        config,
+        runtime,
+        caller,
+        request,
+        name,
+        tools,
+        state,
+      )
   }
 }
 
@@ -946,6 +972,7 @@ fn recover_ordinary_brief(
   caller: Caller,
   request: agent.SpawnRequest,
   name: String,
+  tools: List(String),
   state: machine_strand.StrandState,
 ) -> Result(OpId, Refusal) {
   case state.current_operation {
@@ -955,7 +982,12 @@ fn recover_ordinary_brief(
         Some(last) -> Ok(api.result_operation(last))
         None ->
           api.adopt_strand(runtime, named: name, brief: [
-            brief_message(config, caller, request),
+            brief_message(
+              config,
+              caller,
+              request,
+              ChildFacts(strand: name, tools:),
+            ),
           ])
           |> result.map_error(fn(error) {
             agent.PlaneFailed(reason: describe_create(error))
@@ -1002,7 +1034,7 @@ fn create(
           agent.PlaneFailed(describe_create(error))
         }),
       )
-      accept_async_brief(config, runtime, caller, request, name, owner)
+      accept_async_brief(config, runtime, caller, request, name, tools, owner)
     }
     None ->
       api.create_strand(
@@ -1010,7 +1042,14 @@ fn create(
         named: name,
         configuration:,
         at: fork_point,
-        brief: [brief_message(config, caller, request)],
+        brief: [
+          brief_message(
+            config,
+            caller,
+            request,
+            ChildFacts(strand: name, tools:),
+          ),
+        ],
       )
       |> result.map_error(fn(error) {
         agent.PlaneFailed(describe_create(error))
@@ -1024,6 +1063,7 @@ fn accept_async_brief(
   caller: Caller,
   request: agent.SpawnRequest,
   name: String,
+  tools: List(String),
   owner: api.AsyncCustody,
 ) -> Result(OpId, Refusal) {
   let attachment = case request.detach {
@@ -1034,7 +1074,7 @@ fn accept_async_brief(
     api.send_to_async_child(
       runtime,
       name,
-      brief_message(config, caller, request),
+      brief_message(config, caller, request, ChildFacts(strand: name, tools:)),
       api.AsyncCustody(..owner, attachment:),
       option.or(request.within_ms, config.default_within_ms),
     )
@@ -1103,6 +1143,12 @@ fn child_configuration(
 // cannot see is one it never tries. A child at the cap loses the spawn
 // tool whatever it asked for.
 //
+// An explicit list replaces the default, and a list that omitted
+// `agent_send` and `agent_note` left a child unable to report to its
+// parent. So the communication floor (`agent.child_floor_tools`) is added
+// to any explicit list, limited to what the parent holds: the floor is a
+// subset of the parent's own set like everything else here.
+//
 // The result is sorted and deduplicated because a strand's active tool
 // list renders to the wire in that order, ahead of the system prompt, as
 // the byte prefix of the provider's cached region.
@@ -1115,13 +1161,19 @@ fn child_tools(
   use chosen <- result.try(case requested {
     None ->
       Ok(list.filter(parent_tools, fn(name) { name != agent.spawn_tool_name }))
-    Some(names) ->
-      list.try_map(names, fn(name) {
-        case list.contains(parent_tools, name) {
-          True -> Ok(name)
-          False -> Error(agent.UnknownTool(name:))
-        }
-      })
+    Some(names) -> {
+      use held <- result.map(
+        list.try_map(names, fn(name) {
+          case list.contains(parent_tools, name) {
+            True -> Ok(name)
+            False -> Error(agent.UnknownTool(name:))
+          }
+        }),
+      )
+      let floor =
+        list.filter(agent.child_floor_tools, list.contains(parent_tools, _))
+      list.append(held, floor)
+    }
   })
   let chosen = case depth >= config.depth_cap {
     True -> list.filter(chosen, fn(name) { name != agent.spawn_tool_name })
@@ -1203,13 +1255,14 @@ fn brief_message(
   config: Config,
   caller: Caller,
   request: agent.SpawnRequest,
+  child: ChildFacts,
 ) -> AgentMessage {
   let #(now, _clock) = clock.read(config.clock)
   message.UserMessage(
     content: [
       message.UserText(
         text: frame_brief(from: caller.strand, body: request.brief)
-          <> result_contract(request.result_schema),
+          <> child_notice(child, request.result_schema),
         text_signature: None,
       ),
     ],
@@ -1219,6 +1272,95 @@ fn brief_message(
     // it to grant or skip anything (protocol-change 059).
     origin: Some(message.StrandOrigin(strand: caller.strand)),
   )
+}
+
+/// What the harness tells a child about itself in the trailer of its first
+/// message: the name it runs under and the tools active in its strand.
+///
+/// Both come from the spawn's persisted inputs (the minted name and the
+/// tool list the lineage cell records), never from anything read later,
+/// so a replayed or recovered spawn rebuilds the same words.
+pub type ChildFacts {
+  ChildFacts(
+    /// The child's own strand name, which also names its parent.
+    strand: String,
+    /// The tools active in the child's strand.
+    tools: List(String),
+  )
+}
+
+/// The harness's trailer to a spawned child's brief: who it is, which
+/// tools it can call, how its result reaches its parent, and, when the
+/// parent asked for one, the result contract.
+///
+/// The system prompt cannot say this. It is built once for the session
+/// from the full tool registry and is shared by every strand, so a child
+/// with a narrowed tool set still reads a tools index that lists tools it
+/// cannot call. The incident behind this trailer: such a child kept trying
+/// to `agent_send` its report, then issued no-op calls, and only learned
+/// from its operator that its final message is what the parent receives.
+///
+/// The trailer sits after the brief's closing marker for the reason
+/// `result_contract` gives, and it reuses that trailer's markers so the
+/// hosts that strip a framed brief (`session_view/strand_framing`) remove
+/// it with no change. The tool list is sorted and deduplicated so the same
+/// spawn always yields the same bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.child_notice(
+/// //   agency.ChildFacts(strand: "sub:main/x-0123456789abcdef",
+/// //     tools: ["bash", "agent_note"]),
+/// //   option.None,
+/// // )
+/// ```
+///
+pub fn child_notice(child: ChildFacts, schema: Option(ResultSchema)) -> String {
+  let parent = parent_of_name(child.strand)
+  let tools =
+    child.tools |> list.sort(string.compare) |> list.unique |> string.join(", ")
+  "\n"
+  <> strand_framing.contract_open
+  <> "\nYou are strand `"
+  <> child.strand
+  <> "`, a subagent of `"
+  <> parent
+  <> "`. The tools index in the system prompt lists the session's tools; in "
+  <> "this strand you can call only: "
+  <> tools
+  <> ".\nYour final message is your result. Your parent receives it through "
+  <> "agent_wait; you do not need to send it."
+  <> schema_clause(schema)
+  <> "\n"
+  <> strand_framing.contract_close
+}
+
+// A minted name is `sub:{parent}/{slug}-{digest}`, and a parent may itself
+// be a minted name, so the parent is everything before the last slash.
+fn parent_of_name(strand: String) -> String {
+  let stripped = string.drop_start(strand, string.length(subagent_prefix))
+  case list.reverse(string.split(stripped, "/")) {
+    [_, ..parents] -> string.join(list.reverse(parents), "/")
+    [] -> stripped
+  }
+}
+
+// The schema half of the contract, empty when the parent asked for none.
+fn schema_clause(schema: Option(ResultSchema)) -> String {
+  case schema {
+    None -> ""
+    Some(schema) ->
+      "\nBefore you finish, record your result with agent_note under the "
+      <> "key `"
+      <> agent.result_note_key
+      <> "`, matching this schema exactly:\n"
+      <> json.to_string(agent.render_result_schema(schema))
+      <> "\nA note that does not match is refused and tells you why, so "
+      <> "write it while you still have the work in hand. Write your "
+      <> "prose answer as well: the schema is what your parent branches "
+      <> "on, the prose is what a human reads."
+  }
 }
 
 /// The child's half of the result contract, in the harness's own voice.
@@ -1244,18 +1386,11 @@ fn brief_message(
 pub fn result_contract(schema: Option(ResultSchema)) -> String {
   case schema {
     None -> ""
-    Some(schema) ->
+    Some(_) ->
       "\n"
       <> strand_framing.contract_open
-      <> "\nBefore you finish, record your result with agent_note under the "
-      <> "key `"
-      <> agent.result_note_key
-      <> "`, matching this schema exactly:\n"
-      <> json.to_string(agent.render_result_schema(schema))
-      <> "\nA note that does not match is refused and tells you why, so "
-      <> "write it while you still have the work in hand. Write your "
-      <> "prose answer as well: the schema is what your parent branches "
-      <> "on, the prose is what a human reads.\n"
+      <> schema_clause(schema)
+      <> "\n"
       <> strand_framing.contract_close
   }
 }
