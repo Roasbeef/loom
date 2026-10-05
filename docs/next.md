@@ -33,8 +33,13 @@ actual Gleam caller on OTP 29. Additional count/byte capacity and stale-observat
 controls passed. A production wrapper, receipt-retention lifecycle and the
 remaining D3 operational checks are still required before adoption.
 
-The combined-main executor gate passed 274 tests with no skips, including the
-[Compile observation adapter](review/distributed-compile-observation.md). The
+The current full executor gate passes 299 tests with no skips, including all 23
+native controls after their TLS BEAM migration. Independent Astra review verified
+the migration preserves the original native assertions. Scoped host retirement
+and the remaining old-socket consumers are next; the endpoint must fence a
+closing scope before its services stop while preserving sibling capacity. The
+[Compile observation adapter](review/distributed-compile-observation.md) remains
+covered by the package gate. The
 native original-deadline follow-up passed its 20 focused controls, and the exact
 final P live-association source passed all 90 bounded cases/probes at 100 schedules. See the [deadline review](review/distributed-native-command-admission.md)
 and [model review](review/distributed-live-association-model.md) for limits.
