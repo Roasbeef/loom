@@ -10,6 +10,10 @@ maps the design, architecture and remaining acceptance criteria.
 Native execution, owner custody, semantic workspace operations and physical
 compilation components are implemented and individually reviewed. Whole Compile
 ownership, command forwarding and the owner consumer are being assembled.
+The [owner discharge fix](review/distributed-owner-discharge.md) now retains
+unresolved run obligations across worker loss and owner restart. The combined
+storage and seeded client gates pass 193 and 2,832 tests, respectively. The
+client run has 15 optional skips and no hidden subject-ownership panic.
 Launch/satellite, remote LSP, registered daemon configuration and the separate-host
 ordinary-tool/code-mode acceptance run remain pending. Main `7a9adf1e` is merged into this branch. The seeded code-mode, client, tools,
 storage and executor package gates passed; the full repository and separate-host

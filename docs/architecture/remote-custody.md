@@ -91,9 +91,23 @@ unmanaged local fallback.
 
 The custodian runs admitted tool bodies in bounded weft tasks. A live callback
 can disappear while its task completes; the custodian commits the result
-before answering the caller's ticket. Restarting the custodian never starts a
-retained body again. Its atomic `Fresh` admission result is the only path to
-a new body; an idempotent `Retained` result is evidence, not dispatch authority.
+before answering the caller's ticket. Every fresh reservation also commits
+`run_custody = 'unreleased'` before spawning. Only the same live incarnation's
+exact final-outcome commit followed by weft `AllDelivered` can discharge it.
+A worker crash, lost run, missing outcome, failed outcome or discharge COMMIT,
+or consumer `fatal_fence` leaves custody unreleased. The fatal disposition is
+sticky even if that worker later returns an ordinary exact ToolOutcome.
+
+The runner receives a private handle pinned to the admitting actor's original
+Subject/PID, and its weft run watches that owner's death. External admission and
+historical readback continue through the reclaimable registry handle. The pinned
+handle prevents an old worker from resolving a replacement owner during the
+cancellation race. A replacement owner probes the indexed unreleased marker
+before opening fresh admission; any outstanding run makes it recovery-only.
+Exact outcome and late child receipt readback remain available there.
+
+Restarting the custodian never starts a retained body again. Its atomic `Fresh`
+admission result is the only path to a new body; an idempotent `Retained` result is evidence, not dispatch authority.
 
 Cancellation also has a durable meaning. An origin can be cancelled before
 its child UUID has been allocated. That row retains a cancellation fence with
@@ -117,10 +131,14 @@ forgetting an old request and making it executable again.
 
 The custodian admits at most four active tasks. That cap and bounded asks do
 not bound an OTP mailbox. Daemon assembly must also bound concurrent callers.
-The format is version 3. A transactional migration validates version-2
-metadata, configured limits and existing reservations before adding the offer
-table. Valid cancelled or collected child fences can have no UUID. Incompatible
-version-1 evidence is refused and must be preserved rather than replaced.
+The owner journal format is version 4. The remote deployment is unshipped;
+prior formats are intentionally refused because they contain no run discharge
+proof. They must be preserved rather than migrated to `Released`. Run custody
+is independent of retained/frozen collection state. Collection requires
+`Released` as well as exact reserved-session result readback, so collection
+cannot erase the final bytes between answering a ticket and live drain.
+Frozen rows retain the released marker. These observations prove owner-run
+discharge, not native retirement or resource cleanup.
 
 ## Physical service and command custody
 
