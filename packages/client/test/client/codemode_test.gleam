@@ -25,10 +25,12 @@ import broker/exec
 import broker/framing
 import broker/policy
 import client/agency
+import client/async_codemode
 import client/codemode
 import client/peer_mail
 import client/peers
 import client/serve
+import client/workflows
 import codemode/artifact
 import codemode/build
 import codemode/codemode as pipeline
@@ -42,6 +44,7 @@ import codemode/search as search_router
 import codemode/tool_gate
 import codemode/vet
 import codemode/vet/policy as vet_policy
+import codemode/workspace
 import core/clock.{type Clock}
 import core/corruption
 import core/ids.{type OpId}
@@ -52,6 +55,7 @@ import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import machine/strand as machine_strand
 import provider/secret
@@ -1149,6 +1153,117 @@ fn is_vet_rejected(result: codemode_tool.ExecResult) -> Bool {
 
 // --- the lineage rule, over a live runtime ---------------------------------
 
+pub fn every_client_router_capability_is_decided_test() {
+  // `codemode/tool_gate_test` walks this package's routers; this walks the
+  // client's, so a capability added to any router has to be classified as
+  // gated or open before the suite passes.
+  let serviced =
+    list.flatten([
+      codemode.serviced_caps,
+      peers.serviced_caps,
+      workflows.serviced_caps,
+      async_codemode.serviced_caps,
+    ])
+  assert list.filter(serviced, fn(cap) { !tool_gate.decided(cap) }) == []
+}
+
+pub fn a_strand_without_fs_write_is_refused_and_one_with_it_is_served_test() {
+  // The live pair for the whole gate: two children of the real Agency, one
+  // narrowed to exclude `fs_write` and one narrowed to hold it, each
+  // calling `fs.write` through the host's two steps in the host's order.
+  // The refused child leaves no file; the other writes one.
+  let live = start_runtime()
+  let dir = short_scratch_root() <> "/gate-write"
+  let _gone = simplifile.delete(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir)
+    as "the workspace must be creatable"
+  let silent = child_with_tools(live, "read-only", ["code_mode"])
+  let writer = child_with_tools(live, "writer", ["code_mode", "fs_write"])
+  let write = fn(strand: String, name: String) {
+    gated_write(live, strand, dir, name)
+  }
+  let assert framing.CapErr(code:, message:) = write(silent, "denied.txt")
+    as "a strand without fs_write must be refused"
+  assert code == "tool_not_held"
+  assert message == "fs.write needs fs_write, which this strand does not hold"
+  assert simplifile.read(dir <> "/denied.txt") |> result.is_error
+    as "nothing was written for the refused strand"
+  let assert framing.CapOk(..) = write(writer, "allowed.txt")
+    as "a strand with fs_write must be served"
+  assert simplifile.read(dir <> "/allowed.txt") == Ok("hello")
+  let _cleaned = simplifile.delete(dir)
+  Nil
+}
+
+// Spawns a child of `main` narrowed to `tools` and answers its strand.
+fn child_with_tools(
+  live: Live,
+  purpose: String,
+  tools: List(String),
+) -> String {
+  let args =
+    msgpack.MapValue([
+      pair("purpose", msgpack.StringValue(purpose)),
+      pair("brief", msgpack.StringValue("look")),
+      pair("within_ms", msgpack.NilValue),
+      pair("detach", msgpack.BoolValue(False)),
+      pair("context", msgpack.StringValue("fresh")),
+      pair("tools", msgpack.ArrayValue(list.map(tools, msgpack.StringValue))),
+      pair("result_schema", msgpack.NilValue),
+    ])
+  let assert framing.CapOk(value:) =
+    orchestrated(live, "main", "strand.spawn", args)
+    as "the narrowed spawn must be admitted"
+  child_of(value)
+}
+
+// One `fs.write` as `strand`, the way the host runs a call: the tool check
+// first, then the plan the workspace router builds, served.
+fn gated_write(
+  live: Live,
+  strand: String,
+  dir: String,
+  name: String,
+) -> framing.CapOutcome {
+  let broker_actor = idle_broker()
+  let seam =
+    codemode.workspace_seam_for(
+      config_for(broker_actor),
+      workspace: dir,
+      strand:,
+      operation: an_op(5),
+      protected: [],
+    )
+  broker.stop(broker_actor)
+  let request =
+    satellite.CapRequest(
+      cap: "fs.write",
+      args: msgpack.MapValue([
+        pair("path", msgpack.StringValue(name)),
+        pair("contents", msgpack.StringValue("hello")),
+      ]),
+      identity: identity.run_phase(identity.for_execution(
+        op_id: an_op(5),
+        step_id: "turn-9:tools",
+        budget: budget.Budget(max_outstanding: 4, deadline_ms: 9_000_000),
+      )),
+      base_policy: policy.workspace_default(dir),
+      demand: exec.BestEffort,
+      env: [],
+      cwd: dir,
+      ordinal: 0,
+    )
+  case tool_gate.precheck(live.seam.holds, strand, 0)(request) {
+    Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
+    Ok(Nil) -> {
+      let assert Ok(satellite.ServedHere(serve:)) =
+        workspace.routing(seam, over: satellite.default_router)(request)
+        as "fs.write is served in the harness"
+      serve()
+    }
+  }
+}
+
 pub fn every_seam_selection_carries_the_strand_tool_check_test() {
   // The tool list gates workspace-only programs too, so the check comes
   // from the Agency whichever seams are served, and a host with no
@@ -1439,11 +1554,13 @@ fn start_runtime_over(shape: fn(session.Session) -> session.Session) -> Live {
     machine_strand.StrandConfiguration(
       model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
       thinking_level: machine_strand.ThinkingOff,
-      // The root strand holds every `agent_*` tool, as the shipped main
-      // does, so the orchestration router's tool check passes for it.
+      // The root strand holds every tool a program's capabilities are
+      // gated on, as the shipped main does (`codemode/tool_gate`).
       active_tool_names: [
         "agent_note", "agent_notes", "agent_roster", "agent_send", "agent_spawn",
-        "agent_wait", "code_mode",
+        "agent_wait", "bash", "code_mode", "fs_edit", "fs_write", "job_kill",
+        "job_poll", "job_send", "peer_send", "schedule_cancel",
+        "schedule_create", "schedule_list",
       ],
     )
   let base = api.default_options(configuration)

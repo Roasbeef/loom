@@ -3100,6 +3100,8 @@ fn dispatch_invocation_call(
   already: Int,
   plan: CapPlan,
 ) -> Hosting {
+  // The long-lived host serves no strand and asks no tool question:
+  // `HostConfig` has no precheck, so this admits every call.
   let service =
     spawn_worker(
       host_settling(hosting, id),

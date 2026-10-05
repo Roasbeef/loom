@@ -32,23 +32,34 @@
 ////
 //// ## What is deliberately open
 ////
-//// Reads and facilities with no tool behind them stay open: `fs.read`,
-//// `fs.list`, `search.*`, `lsp.*`, `kv.*`, `notes.get`, `notes.list`,
-//// `notes.read`, `report.emit`, `peer.*`, `workflow.*` and `mcp.<server>`.
+//// A capability that reads state a strand could already see, or that has no
+//// tool behind it, stays open: `fs.read`, `fs.list`, `search.*`, the
+//// `lsp.*` queries (but not `lsp.rename`, which writes files), `kv.*`,
+//// `report.emit`, the `peer.*` reads, the `execution.*` capabilities and
+//// `mcp.<server>` (`open_caps` is the list, and `decided` is the question
+//// a test asks of every router's published capabilities).
+////
+//// The `execution.*` capabilities are the running execution's own mailbox
+//// and progress channel to the run that owns it. They reach no other
+//// strand and no resource a tool guards.
+////
 //// MCP is open for now because an MCP server is already an operator's
 //// per-server decision, made in configuration and bounded by its own
 //// allowlist, and no strand tool corresponds to it; gating it would need a
 //// per-server tool name the registry does not have.
 ////
 //// Extensions are not strands. An extension satellite is reached through
-//// its own registered tool, which the strand's list already gates, and it
-//// is built on a separate host that never installs this precheck.
+//// its own registered tool, which the strand's list already gates, and the
+//// long-lived host it runs on takes no precheck at all: it serves no
+//// strand and asks no tool question.
 
 import codemode/identity
 import codemode/orchestration
 import codemode/satellite.{type CapDenial, type CapRequest, CapDenial}
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import tools/agent.{type Caller, type Refusal}
 
 /// The tool that authorizes each capability, or `None` for one no tool
@@ -66,7 +77,12 @@ import tools/agent.{type Caller, type Refusal}
 /// - `fs.write` and `fs.edit` are `fs_write` and `fs_edit`.
 /// - `schedule.*` is the matching `schedule_*` tool.
 /// - `notes.put` writes the same blackboard cell `agent_note` writes,
-///   through the same Agency closure, so it needs `agent_note`.
+///   through the same Agency closure, so it needs `agent_note`. The three
+///   `notes` reads see the same cells `agent_notes` reads, so they need it.
+/// - `lsp.rename` lands edits to files, which is what `fs_edit` does.
+/// - `workflow.step` mints a child strand, which is what `agent_spawn`
+///   does.
+/// - `peer.send` is `peer_send`.
 ///
 /// The match is on string literals because Gleam patterns cannot name a
 /// constant; `tool_gate_test` walks the owning modules' `serviced_caps` to
@@ -99,7 +115,49 @@ pub fn required_tool(cap: String) -> Option(String) {
     "schedule.list" -> Some("schedule_list")
     "schedule.cancel" -> Some("schedule_cancel")
     "notes.put" -> Some("agent_note")
+    "notes.get" -> Some("agent_notes")
+    "notes.list" -> Some("agent_notes")
+    "notes.read" -> Some("agent_notes")
+    "lsp.rename" -> Some("fs_edit")
+    "workflow.step" -> Some("agent_spawn")
+    "peer.send" -> Some("peer_send")
     _ -> None
+  }
+}
+
+/// The capabilities deliberately left open: reads of state a strand could
+/// already see, and facilities no tool stands behind. See the module doc.
+///
+/// `mcp.<server>` is open too but is not listed, because its names are
+/// configured at boot rather than known here; `decided` treats the prefix
+/// as open.
+pub const open_caps = [
+  "fs.read", "fs.list", "kv.get", "kv.set", "kv.delete", "report.emit",
+  "search.glob", "search.grep", "search.stat", "search.read_lines",
+  "lsp.definition", "lsp.references", "lsp.hover", "lsp.outline", "lsp.calls",
+  "lsp.diagnostics", "lsp.snapshot", "peer.roster", "peer.inbox",
+  "peer.inbox_get", "peer.history", "peer.received", "peer.received_get",
+  "peer.sent_receipt", "execution.receive", "execution.ready",
+  "execution.receive_enveloped", "execution.progress", "execution.delivery",
+]
+
+/// Whether someone decided what this capability needs: it has a row in
+/// `required_tool`, is listed in `open_caps`, or is an `mcp.` capability.
+/// A capability that is none of these was added to a router without
+/// anyone asking whether a tool should guard it, which is what the
+/// classification tests fail on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tool_gate.decided("fs.write") == True
+/// // tool_gate.decided("fs.delete") == False
+/// ```
+///
+pub fn decided(cap: String) -> Bool {
+  case required_tool(cap) {
+    Some(_) -> True
+    None -> list.contains(open_caps, cap) || string.starts_with(cap, "mcp.")
   }
 }
 

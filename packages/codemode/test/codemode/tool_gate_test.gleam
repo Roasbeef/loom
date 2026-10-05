@@ -13,10 +13,14 @@ import broker/budget
 import broker/exec
 import broker/policy
 import codemode/identity
+import codemode/lsp
 import codemode/notes
+import codemode/observation
 import codemode/orchestration
 import codemode/satellite
+import codemode/search
 import codemode/tool_gate
+import codemode/workspace
 import core/clock
 import core/ids
 import core/msgpack
@@ -69,17 +73,25 @@ fn gated() -> List(#(String, String)) {
     #("schedule.list", "schedule_list"),
     #("schedule.cancel", "schedule_cancel"),
     #("notes.put", "agent_note"),
+    #("notes.get", "agent_notes"),
+    #("notes.list", "agent_notes"),
+    #("notes.read", "agent_notes"),
+    #("lsp.rename", "fs_edit"),
+    #("workflow.step", "agent_spawn"),
+    #("peer.send", "peer_send"),
   ]
 }
 
-// The capabilities left open on purpose.
+// The capabilities left open on purpose, written out a second time.
 fn open() -> List(String) {
   [
     "fs.read", "fs.list", "kv.get", "kv.set", "kv.delete", "report.emit",
-    "notes.get", "notes.list", "notes.read", "search.glob", "search.grep",
-    "search.stat", "search.read_lines", "lsp.definition", "lsp.references",
-    "lsp.hover", "lsp.outline", "lsp.calls", "lsp.diagnostics", "lsp.rename",
-    "lsp.snapshot",
+    "search.glob", "search.grep", "search.stat", "search.read_lines",
+    "lsp.definition", "lsp.references", "lsp.hover", "lsp.outline", "lsp.calls",
+    "lsp.diagnostics", "lsp.snapshot", "peer.roster", "peer.inbox",
+    "peer.inbox_get", "peer.history", "peer.received", "peer.received_get",
+    "peer.sent_receipt", "execution.receive", "execution.ready",
+    "execution.receive_enveloped", "execution.progress", "execution.delivery",
   ]
 }
 
@@ -104,24 +116,34 @@ pub fn the_table_is_the_one_written_out_here_test() {
   })
 }
 
+pub fn the_open_list_is_the_one_written_out_here_test() {
+  assert list.sort(tool_gate.open_caps, string.compare)
+    == list.sort(open(), string.compare)
+}
+
 pub fn every_serviced_capability_is_decided_test() {
-  // A capability added to a router with no row here is a decision nobody
-  // made, so this walks every list the routers publish and demands each be
-  // either gated or deliberately open.
+  // A capability added to a router with no row in the table and no place
+  // in the open list is a decision nobody made, so this walks the real
+  // published constants of every router in this package and fails on one
+  // that is neither. `client/codemode_test` walks the client's routers
+  // (`peers`, `workflows`, the async input router, `proc.run`).
   let serviced =
     list.flatten([
       orchestration.serviced_caps,
       notes.serviced_caps,
-      ["proc.run", "fs.read", "fs.list", "fs.write", "fs.edit", "kv.get"],
-      ["kv.set", "kv.delete", "schedule.create", "schedule.list"],
-      ["schedule.cancel", "job.start", "job.poll", "job.list", "job.kill"],
-      ["job.send", "report.emit"],
+      workspace.serviced_caps,
+      search.serviced_caps,
+      lsp.serviced_caps,
+      [observation.snapshot_cap],
     ])
-  list.each(serviced, fn(cap) {
-    let decided =
-      list.key_find(gated(), cap) != Error(Nil) || list.contains(open(), cap)
-    assert decided
-  })
+  let undecided = list.filter(serviced, fn(cap) { !tool_gate.decided(cap) })
+  assert undecided == []
+}
+
+pub fn an_unclassified_capability_is_not_decided_test() {
+  // The walk above can only fail if `decided` can say no.
+  assert !tool_gate.decided("fs.delete")
+  assert tool_gate.decided("mcp.docs")
 }
 
 pub fn a_gated_capability_is_refused_without_its_tool_test() {
@@ -152,8 +174,8 @@ pub fn an_open_capability_is_admitted_with_no_tools_test() {
 }
 
 pub fn an_unknown_capability_is_not_this_gates_to_refuse_test() {
-  // `mcp.<server>`, `peer.*` and the rest have no row, so the gate passes
-  // them and each router decides for itself.
+  // `mcp.<server>` has no row and is open, so the gate passes it and the
+  // MCP router decides for itself.
   let check = tool_gate.precheck(holding([]), "main", 0)
   assert check(request("mcp.docs")) == Ok(Nil)
 }

@@ -107,7 +107,7 @@ fn counting_clock(from: Int, by: Int) -> Clock {
 }
 
 fn tools_of_main() -> List(String) {
-  ["agent_note", "agent_spawn", "agent_wait", "bash", "fs_read"]
+  ["agent_note", "agent_spawn", "agent_wait", "bash", "fs_read", "peer_send"]
 }
 
 fn configuration() -> machine_strand.StrandConfiguration {
