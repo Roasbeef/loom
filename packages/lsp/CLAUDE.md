@@ -11,9 +11,10 @@ for types, and Loom's agent works on Go, Rust and anything else a
 workspace holds.
 
 The package is the **protocol and the vocabulary**, not the wiring.
-Starting a server in the jail, its policy, reading `[lsp.<name>]` from
-`loom.toml`, and the `Door` closures are harness wiring and live in
-`packages/client`; shared landing and write diagnostics are `packages/tools`; the `lsp.*`
+`packages/codemode/src/codemode/lsp_host` owns project roots, document reads,
+server leases, jailed transport and the `Door` closures. `packages/client`
+loads `[lsp.<name>]` from `loom.toml` and checks approved profiles; shared
+landing and write diagnostics are `packages/tools`, and the `lsp.*`
 capabilities are `packages/codemode`. Nothing here performs I/O except
 the client actor, and nothing here imports `broker` (ADR-015 §2).
 
@@ -122,10 +123,11 @@ the shared decoding helpers close the file.
   `protocol` and `text` import none of them and are pure functions of
   their arguments. The package as a whole is impure and not in the
   portable subset lint R6 gates.
-- **Depended on by**: `client` (the manager that fills `query.Door`, and
-  builds the production `ChannelTransport` over the broker's exec),
-  `tools` (shared rename landing and observed-write diagnostics, over `Door`), `codemode` (`lsp.*` served
-  here, over `Door`) — as those slices land.
+- **Depended on by**: `codemode` (the physical `lsp_host` manager fills
+  `query.Door` and `observation.Door`, and builds the production
+  `ChannelTransport` over the broker's jailed exec; `lsp.*` capabilities
+  call those doors), `client` (profile loading and checks), and `tools`
+  (shared rename landing and observed-write diagnostics, over `Door`).
 - **FFI**: none, and ADR-015 needs none. The production transport is a
   `lsp/transport.ChannelTransport` over the broker's jailed exec.
 
