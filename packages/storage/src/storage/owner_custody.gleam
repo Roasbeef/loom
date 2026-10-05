@@ -30,7 +30,7 @@
 //// `check_offer_header` guards value loading and `check_offer_ref` checks linkage.
 //// `cancel_service` fences them in one transaction. `collection_ready` defers
 //// deletion even with no offer, until physical recovery custody is transferred.
-//// `migrate_commands` validates format-2 headers and limits before additive DDL.
+//// `discharge` releases run custody only after exact live outcome and drain.
 //// `initialize` uses `pragma` only for format metadata, never data queries.
 
 import core/command
@@ -50,7 +50,6 @@ import gleam/result
 import gleam/string
 import parrot/dev
 import sqlight
-import storage/owner_command_offers_schema
 import storage/owner_custody_schema
 import storage/sql
 import storage/sqlite_policy
@@ -183,6 +182,15 @@ pub type Admission {
 
   /// The existing immutable reservation matched; execution is forbidden.
   Retained
+}
+
+/// Run ownership is independent of retained or collected recovery evidence.
+pub type RunCustody {
+  /// Outstanding work prevents discharge and survives owner restart.
+  Unreleased
+
+  /// The live owner observed exact outcome commit and complete run delivery.
+  Released
 }
 
 type ReceiptPolicy {
@@ -499,6 +507,45 @@ pub fn finish(
           sql.finish_owner_tool(Some(outcome.bytes), remote_tool.address(key)),
         )
     }
+  })
+}
+
+/// Reads a bounded existence probe for unresolved work on owner startup.
+/// Historical outcome bytes supply no release authority.
+///
+/// ## Examples
+///
+/// `unreleased(store)` returns `Released` only when every admitted run discharged.
+pub fn unreleased(store: Store) -> Result(RunCustody, Error) {
+  use row <- result.try(one(query(store, sql.owner_unreleased_run())))
+  case row.unreleased {
+    0 -> Ok(Released)
+    1 -> Ok(Unreleased)
+    _ -> Error(Invalid("invalid owner run existence result"))
+  }
+}
+
+/// Releases only the exact committed outcome after the caller observes live drain.
+/// The custodian owns that observation; recovery paths must never call this API.
+///
+/// ## Examples
+///
+/// `discharge(store, key, outcome)` retains custody when bytes differ or are missing.
+pub fn discharge(
+  store: Store,
+  key: ToolKey,
+  outcome: Payload,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.session(key)))
+  use Nil <- result.try(check_payload(store, outcome))
+  transaction(store, fn() {
+    use #(_state, row) <- result.try(retained_tool(store, key))
+    use retained <- result.try(option.to_result(row.outcome, Missing))
+    use Nil <- result.try(equal(retained, outcome.bytes))
+    statement(
+      store,
+      sql.discharge_owner_run(remote_tool.address(key), Some(outcome.bytes)),
+    )
   })
 }
 
@@ -1613,7 +1660,20 @@ fn offer_payload(
   }
 }
 
+fn decode_run_custody(value: String) -> Result(RunCustody, Error) {
+  case value {
+    "unreleased" -> Ok(Unreleased)
+    "released" -> Ok(Released)
+    _ -> Error(Invalid("invalid owner run custody"))
+  }
+}
+
 fn collection_ready(store: Store, key: ToolKey) -> Result(Nil, Error) {
+  use header <- result.try(
+    one(query(store, sql.owner_tool_header(remote_tool.address(key)))),
+  )
+  use run <- result.try(decode_run_custody(header.run_custody))
+  use <- bool.guard(when: run != Released, return: Error(CollectionPending))
   use compile <- result.try(
     remote_tool.tool_child(key, remote_tool.Compile)
     |> result.map_error(Invalid),
@@ -1638,58 +1698,6 @@ fn collection_ready(store: Store, key: ToolKey) -> Result(Nil, Error) {
   }
 }
 
-fn migrate_commands(store: Store) -> Result(Nil, Error) {
-  transaction(store, fn() {
-    use version <- result.try(pragma(store, "PRAGMA user_version"))
-    use metadata <- result.try(one(query(store, sql.owner_custody_metadata())))
-    use Nil <- result.try(
-      case
-        metadata
-        == sql.OwnerCustodyMetadata(
-          ids.session_id_to_string(store.session),
-          store.limits.tools,
-          store.limits.children,
-          store.limits.bytes,
-          store.limits.payload,
-        )
-      {
-        True -> Ok(Nil)
-        False -> Error(Conflict)
-      },
-    )
-    case version {
-      3 -> Ok(Nil)
-      2 -> {
-        use budget <- result.try(
-          one(query(store, sql.owner_legacy_custody_budget())),
-        )
-        use <- bool.guard(
-          when: budget.tools < 0
-            || budget.tools > store.limits.tools
-            || budget.children < 0
-            || budget.children > store.limits.children
-            || budget.bytes < 0
-            || budget.bytes > store.limits.bytes,
-          return: Error(Invalid("invalid legacy custody accounting")),
-        )
-        use headers <- result.try(
-          one(query(
-            store,
-            sql.owner_legacy_invalid_headers(store.limits.payload),
-          )),
-        )
-        use <- bool.guard(
-          when: headers.invalid != 0,
-          return: Error(Invalid("invalid legacy custody headers")),
-        )
-        use Nil <- result.try(execute(store, owner_command_offers_schema.schema))
-        execute(store, "PRAGMA user_version=3")
-      }
-      _ -> Error(Invalid("unsupported owner custody database"))
-    }
-  })
-}
-
 fn initialize(store: Store) -> Result(Nil, Error) {
   let defaults = sqlite_policy.defaults()
   let options =
@@ -1705,8 +1713,7 @@ fn initialize(store: Store) -> Result(Nil, Error) {
   use application <- result.try(pragma(store, "PRAGMA application_id"))
   use version <- result.try(pragma(store, "PRAGMA user_version"))
   use Nil <- result.try(case application, version {
-    1_281_253_199, 3 -> Ok(Nil)
-    1_281_253_199, 2 -> migrate_commands(store)
+    1_281_253_199, 4 -> Ok(Nil)
     0, 0 -> {
       use tables <- result.try(pragma(store, "PRAGMA schema_version"))
       use <- bool.guard(
@@ -1727,7 +1734,7 @@ fn initialize(store: Store) -> Result(Nil, Error) {
         ))
         execute(
           store,
-          "PRAGMA application_id=1281253199; PRAGMA user_version=3",
+          "PRAGMA application_id=1281253199; PRAGMA user_version=4",
         )
       })
     }
@@ -1804,6 +1811,7 @@ fn tool_row(
         store.limits.payload,
       ))
       use Nil <- result.try(check_state(header.state))
+      use _ <- result.try(decode_run_custody(header.run_custody))
 
       // A terminal write consumes the allowance reserved at admission. Check
       // that unused allowance too, before a receipt can acknowledge new bytes.

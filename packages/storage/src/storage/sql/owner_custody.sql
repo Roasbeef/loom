@@ -18,6 +18,7 @@ SELECT CAST((SELECT COUNT(*) FROM owner_custody_tools) AS INTEGER) AS tools,
 SELECT CAST(CASE WHEN typeof(identity) = 'blob' THEN length(identity) ELSE -1 END AS INTEGER) AS identity_bytes, CAST(CASE WHEN typeof(arguments) = 'blob' THEN length(arguments) ELSE -1 END AS INTEGER) AS argument_bytes,
   CAST(CASE WHEN typeof(request) = 'blob' THEN length(request) ELSE -1 END AS INTEGER) AS request_bytes, CAST(CASE WHEN outcome IS NULL THEN 0 WHEN typeof(outcome) = 'blob' THEN length(outcome) ELSE -1 END AS INTEGER) AS outcome_bytes,
   CASE WHEN state IN ('retained', 'frozen') THEN state ELSE '' END AS state,
+  CASE WHEN run_custody IN ('unreleased', 'released') THEN run_custody ELSE '' END AS run_custody,
   reserved_bytes FROM owner_custody_tools WHERE address = @address LIMIT 2;
 
 -- name: OwnerToolValue :many
@@ -27,8 +28,8 @@ WHERE address = @address AND typeof(identity) = 'blob' AND length(identity) <= 8
   AND (outcome IS NULL OR (typeof(outcome) = 'blob' AND length(outcome) <= CAST(@payload_limit AS INTEGER))) LIMIT 2;
 
 -- name: InsertOwnerTool :exec
-INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, state, reserved_bytes)
-VALUES (@address, @identity, @result_entry, @arguments, @request, 'retained', @reserved_bytes);
+INSERT INTO owner_custody_tools(address, identity, result_entry, arguments, request, state, run_custody, reserved_bytes)
+VALUES (@address, @identity, @result_entry, @arguments, @request, 'retained', 'unreleased', @reserved_bytes);
 
 -- name: FinishOwnerTool :exec
 UPDATE owner_custody_tools SET outcome = @outcome WHERE address = @address AND state = 'retained' AND outcome IS NULL;
@@ -144,3 +145,10 @@ WHERE service_origin = @service_origin;
 -- name: CancelOwnerAllocatedChild :exec
 UPDATE owner_custody_children SET state = CASE WHEN state = 'frozen' THEN 'frozen' ELSE 'cancelled' END
 WHERE origin = @origin;
+
+-- name: OwnerUnreleasedRun :one
+SELECT CAST(EXISTS(SELECT 1 FROM owner_custody_tools WHERE run_custody != 'released' LIMIT 1) AS INTEGER) AS unreleased;
+
+-- name: DischargeOwnerRun :exec
+UPDATE owner_custody_tools SET run_custody = 'released'
+WHERE address = @address AND state = 'retained' AND outcome = @outcome AND run_custody = 'unreleased';

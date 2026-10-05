@@ -299,7 +299,7 @@ fn corrupt(path: String, sql: String) {
   assert sqlight.close(db) == Ok(Nil)
 }
 
-pub fn additive_v2_upgrade_preserves_original_child_and_refuses_bad_limits_before_ddl_test() {
+pub fn previous_format_refuses_without_mutating_original_child_or_schema_test() {
   let parent = key(0)
   let #(path, store) = open("v2-migrate", parent)
   let assert Ok(native) =
@@ -317,22 +317,25 @@ pub fn additive_v2_upgrade_preserves_original_child_and_refuses_bad_limits_befor
     path,
     "DROP TABLE owner_custody_command_offers; PRAGMA user_version=2",
   )
-  let assert Ok(store) =
-    custody.open(path, remote_tool.session(parent), limits())
-    as "The additive migration preserves live custody."
-  assert custody.child(store, native)
-    == Ok(#(id(2), payload("original v2 native"), None))
-  assert custody.close(store) == Ok(Nil)
-  let assert Ok(db) = sqlight.open(path) as "Migrated schema is inspectable."
-  assert scalar(db, "PRAGMA user_version") == 3
-  assert scalar(db, "SELECT COUNT(*) FROM owner_custody_command_offers") == 0
-  assert sqlight.close(db) == Ok(Nil)
-  corrupt(
-    path,
-    "DROP TABLE owner_custody_command_offers; PRAGMA user_version=2; UPDATE owner_custody_meta SET tool_limit=9",
-  )
   assert custody.open(path, remote_tool.session(parent), limits())
-    == Error(custody.Conflict)
+    == Error(custody.Invalid("unsupported owner custody database"))
+  let assert Ok(db) = sqlight.open(path)
+    as "The refused previous format remains inspectable."
+  assert scalar(db, "PRAGMA user_version") == 2
+  assert scalar(
+      db,
+      "SELECT COUNT(*) FROM owner_custody_children WHERE request=X'6f726967696e616c207632206e6174697665'",
+    )
+    == 1
+  assert scalar(
+      db,
+      "SELECT COUNT(*) FROM sqlite_master WHERE name='owner_custody_command_offers'",
+    )
+    == 0
+  assert sqlight.close(db) == Ok(Nil)
+  corrupt(path, "UPDATE owner_custody_meta SET tool_limit=9")
+  assert custody.open(path, remote_tool.session(parent), limits())
+    == Error(custody.Invalid("unsupported owner custody database"))
   let assert Ok(db) = sqlight.open(path) as "Refused v2 is still inspectable."
   assert scalar(db, "PRAGMA user_version") == 2
   assert scalar(
@@ -343,7 +346,7 @@ pub fn additive_v2_upgrade_preserves_original_child_and_refuses_bad_limits_befor
   assert sqlight.close(db) == Ok(Nil)
 }
 
-pub fn v2_collected_preallocation_cancellation_fence_migrates_without_losing_replay_guard_test() {
+pub fn previous_format_retains_collected_cancellation_fences_and_live_evidence_test() {
   let parent = key(0)
   let #(path, store) = open("v2-collected-cancel", parent)
   let assert Ok(origin) =
@@ -352,10 +355,16 @@ pub fn v2_collected_preallocation_cancellation_fence_migrates_without_losing_rep
   assert custody.cancel_child(store, origin) == Ok(Nil)
   let #(proof, source, _) =
     committed_unknown(store, parent, "v2-collected-cancel")
+  assert custody.discharge(
+      store,
+      parent,
+      final_unknown() |> codec.encode_message |> json.to_string |> payload,
+    )
+    == Ok(Nil)
   assert custody.collect(store, proof) == Ok(Nil)
   assert custody.child(store, origin) == Error(custody.Frozen)
 
-  // An unrelated live child must remain available after the journal upgrades.
+  // Refusal must preserve unrelated live evidence for operator recovery.
   let live = key(1)
   let assert Ok(live_origin) =
     remote_tool.tool_child(live, remote_tool.SatelliteCommand)
@@ -380,24 +389,30 @@ pub fn v2_collected_preallocation_cancellation_fence_migrates_without_losing_rep
     )
     == 1
   assert sqlight.close(db) == Ok(Nil)
-  let assert Ok(store) =
-    custody.open(path, remote_tool.session(parent), limits())
-    as "A valid prior collected ID-less cancellation fence must migrate."
-  assert custody.lookup(store, parent) == Ok(custody.Collected)
-  assert custody.child(store, origin) == Error(custody.Frozen)
-  assert custody.admit_child(store, origin, id(3), payload("replacement"))
-    == Error(custody.Frozen)
-  assert custody.child(store, live_origin)
-    == Ok(#(id(2), payload("live request"), None))
-  assert custody.close(store) == Ok(Nil)
+  assert custody.open(path, remote_tool.session(parent), limits())
+    == Error(custody.Invalid("unsupported owner custody database"))
   let assert Ok(db) = sqlight.open(path)
-    as "The migrated permanent fence remains inspectable."
-  assert scalar(db, "PRAGMA user_version") == 3
-  assert scalar(db, "SELECT COUNT(*) FROM owner_custody_command_offers") == 0
+    as "Refusal preserves both permanent fences and live evidence."
+  assert scalar(db, "PRAGMA user_version") == 2
+  assert scalar(
+      db,
+      "SELECT COUNT(*) FROM owner_custody_tools WHERE state='frozen' AND run_custody='released'",
+    )
+    == 1
+  assert scalar(
+      db,
+      "SELECT COUNT(*) FROM owner_custody_children WHERE request=X'6c6976652072657175657374'",
+    )
+    == 1
+  assert scalar(
+      db,
+      "SELECT COUNT(*) FROM sqlite_master WHERE name='owner_custody_command_offers'",
+    )
+    == 0
   assert sqlight.close(db) == Ok(Nil)
 }
 
-pub fn v2_idless_fences_refuse_malformed_state_body_terminal_or_reservation_test() {
+pub fn previous_format_refuses_malformed_idless_fences_without_schema_mutation_test() {
   list.index_map(
     ["state='retained'", "request=X'01'", "terminal=X'01'", "reserved_bytes=1"],
     fn(change, index) {
@@ -409,6 +424,12 @@ pub fn v2_idless_fences_refuse_malformed_state_body_terminal_or_reservation_test
         as "The original cancellation precedes any native UUID."
       assert custody.cancel_child(store, origin) == Ok(Nil)
       let #(proof, source, _) = committed_unknown(store, parent, name)
+      assert custody.discharge(
+          store,
+          parent,
+          final_unknown() |> codec.encode_message |> json.to_string |> payload,
+        )
+        == Ok(Nil)
       assert custody.collect(store, proof) == Ok(Nil)
       assert custody.close(store) == Ok(Nil)
       assert storage.close(source) == Ok(Nil)
@@ -418,9 +439,9 @@ pub fn v2_idless_fences_refuse_malformed_state_body_terminal_or_reservation_test
           <> change,
       )
       assert custody.open(path, remote_tool.session(parent), limits())
-        == Error(custody.Invalid("invalid legacy custody headers"))
+        == Error(custody.Invalid("unsupported owner custody database"))
       let assert Ok(db) = sqlight.open(path)
-        as "Malformed format-2 fences refuse before additive DDL."
+        as "Malformed previous-format fences refuse before any schema mutation."
       assert scalar(db, "PRAGMA user_version") == 2
       assert scalar(
           db,
@@ -432,7 +453,7 @@ pub fn v2_idless_fences_refuse_malformed_state_body_terminal_or_reservation_test
   )
 }
 
-pub fn v2_corrupt_header_refuses_before_additive_schema_mutation_test() {
+pub fn previous_format_refuses_corrupt_header_without_schema_mutation_test() {
   let parent = key(0)
   let #(path, store) = open("v2-corrupt", parent)
   assert custody.close(store) == Ok(Nil)
@@ -441,9 +462,9 @@ pub fn v2_corrupt_header_refuses_before_additive_schema_mutation_test() {
     "DROP TABLE owner_custody_command_offers; PRAGMA user_version=2; UPDATE owner_custody_tools SET reserved_bytes=1",
   )
   assert custody.open(path, remote_tool.session(parent), limits())
-    == Error(custody.Invalid("invalid legacy custody headers"))
+    == Error(custody.Invalid("unsupported owner custody database"))
   let assert Ok(db) = sqlight.open(path)
-    as "The refused migration is inspectable."
+    as "The refused previous format is inspectable."
   assert scalar(db, "PRAGMA user_version") == 2
   assert scalar(
       db,

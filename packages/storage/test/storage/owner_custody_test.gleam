@@ -443,8 +443,11 @@ pub fn only_exact_committed_reserved_result_entry_can_collect_test() {
   let assert Ok(proof) =
     custody.verify_commit(store, key, session_store, validate)
     as "collection proof requires readback and exact outcome validation"
+  assert custody.collect(store, proof) == Error(custody.CollectionPending)
+  assert custody.discharge(store, key, outcome) == Ok(Nil)
   assert custody.collect(store, proof) == Ok(Nil)
   assert custody.collect(store, proof) == Ok(Nil)
+  assert custody.unreleased(store) == Ok(custody.Released)
   assert custody.lookup(store, key) == Ok(custody.Collected)
   assert custody.admit(store, key, payload("args"), payload("request"))
     == Error(custody.Frozen)
@@ -654,6 +657,76 @@ pub fn generated_owner_queries_match_named_sql_source_test() {
     ),
     named(sql.cancel_owner_command_offers("").0, ["service_origin"]),
     named(sql.cancel_owner_allocated_child("").0, ["origin"]),
+    sql.owner_unreleased_run().0,
+    named(sql.discharge_owner_run("", None).0, ["address", "outcome"]),
   ]
   assert normalized(source) == normalized(string.join(generated, "\n"))
+}
+
+// Fresh custody survives each crash boundary even when final bytes already exist.
+pub fn run_custody_requires_exact_final_and_retains_unreleased_on_reopen_test() {
+  let key = identity(0, "a", 55)
+  let #(path, store) = open("unreleased-reopen", key)
+  assert custody.unreleased(store) == Ok(custody.Released)
+  assert custody.admit_fresh(store, key, payload("args"), payload("request"))
+    == Ok(custody.Fresh)
+  assert custody.unreleased(store) == Ok(custody.Unreleased)
+  assert custody.discharge(store, key, payload("final"))
+    == Error(custody.Missing)
+  assert custody.close(store) == Ok(Nil)
+  let assert Ok(store) =
+    custody.open(path, remote_tool.session(key), ceilings())
+    as "Fresh COMMIT before spawn keeps run custody on reopen."
+  assert custody.unreleased(store) == Ok(custody.Unreleased)
+  assert custody.finish(store, key, payload("final")) == Ok(Nil)
+  assert custody.close(store) == Ok(Nil)
+  let assert Ok(store) =
+    custody.open(path, remote_tool.session(key), ceilings())
+    as "Outcome COMMIT before drain keeps run custody on reopen."
+  assert custody.unreleased(store) == Ok(custody.Unreleased)
+  assert custody.discharge(store, key, payload("changed"))
+    == Error(custody.Conflict)
+  assert custody.unreleased(store) == Ok(custody.Unreleased)
+  assert custody.discharge(store, key, payload("final")) == Ok(Nil)
+  assert custody.unreleased(store) == Ok(custody.Released)
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn failed_discharge_transaction_retains_unreleased_test() {
+  let key = identity(0, "a", 56)
+  let #(path, store) = open("failed-discharge", key)
+  assert custody.admit(store, key, payload("args"), payload("request"))
+    == Ok(Nil)
+  assert custody.finish(store, key, payload("final")) == Ok(Nil)
+  let assert Ok(db) = sqlight.open(path)
+    as "The fixture injects a deferred COMMIT failure."
+  assert sqlight.exec(
+      "CREATE TABLE discharge_parent (id INTEGER PRIMARY KEY); CREATE TABLE discharge_guard (ref INTEGER REFERENCES discharge_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER reject_discharge AFTER UPDATE OF run_custody ON owner_custody_tools BEGIN INSERT INTO discharge_guard(ref) VALUES (1); END",
+      db,
+    )
+    == Ok(Nil)
+  let assert Error(custody.Conflict) =
+    custody.discharge(store, key, payload("final"))
+    as "A failed transaction cannot release a run."
+  assert custody.unreleased(store) == Ok(custody.Unreleased)
+  assert custody.close(store) == Ok(Nil)
+  assert sqlight.close(db) == Ok(Nil)
+}
+
+pub fn previous_owner_formats_refuse_missing_discharge_proof_test() {
+  let key = identity(0, "a", 57)
+  let #(path, store) = open("previous-format", key)
+  assert custody.admit(store, key, payload("args"), payload("request"))
+    == Ok(Nil)
+  assert custody.finish(store, key, payload("historical final")) == Ok(Nil)
+  assert custody.close(store) == Ok(Nil)
+  let assert Ok(db) = sqlight.open(path) as "The fixture owns this journal."
+  assert sqlight.exec(
+      "DROP INDEX owner_tool_run_custody; ALTER TABLE owner_custody_tools DROP COLUMN run_custody; PRAGMA user_version=3",
+      db,
+    )
+    == Ok(Nil)
+  assert sqlight.close(db) == Ok(Nil)
+  assert custody.open(path, remote_tool.session(key), ceilings())
+    == Error(custody.Invalid("unsupported owner custody database"))
 }

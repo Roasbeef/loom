@@ -138,7 +138,7 @@ fn fixture(name: String, quota: Int) {
   assert custody.close(store) == Ok(Nil)
   let assert Ok(names) = registry.start() as "Fixture owns its registry."
   let assert Ok(config) =
-    custodian.config(path, session(1), limits, 1, 5000, fn(_, _) {
+    custodian.config(path, session(1), limits, 1, 5000, fn(_, _, _) {
       panic as "Workspace reservation and recovery cannot execute a tool body."
     })
     as "Finite custodian configuration is valid."

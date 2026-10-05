@@ -444,7 +444,7 @@ fn fixture_with(after_write: fn(process.Pid) -> Nil) -> Fixture {
   assert custody.close(store) == Ok(Nil)
   let assert Ok(names) = registry.start() as "Fixture owns a registry."
   let assert Ok(owner_config) =
-    custodian.config(owner_path, session(), limits, 1, 5000, fn(_, _) {
+    custodian.config(owner_path, session(), limits, 1, 5000, fn(_, _, _) {
       panic as "Child recovery must never execute the parent tool."
     })
     as "Owner lifetime is finite."
