@@ -59,7 +59,20 @@ renders again just for it:
   history entry for Back to reopen without a nonce. It renders nothing, takes no
   focus and listens for no event (protocol-change/051, the addendum on
   switching sessions).
-- `<loom-copy subject="command|token|link|device" text="...">` (`device` is the
+- `<loom-popover wanted="open">` wraps the home's name button (the light child,
+  drawn through one slot) and toggles the account panel in the browser: it keeps
+  one fact, open or closed (`popover_rule.State`), publishes it as the custom
+  state `open` on itself (the stylesheet shows the panel under
+  `loom-shell:has(loom-popover:state(open))`) and as the button's
+  `aria-expanded`. Document listeners for `click` and `keydown` read only the
+  fixed `data-popover` marks (`toggle`, `panel`) of the nodes a click passed
+  through (`popover_rule.after_click`): the toggle flips, the panel keeps, any
+  other press and Escape close. The server's only input is `wanted="open"`, which
+  opens it while a device link is on show; any other word is no message. It
+  sends the server nothing and adds no socket admission.
+- `<loom-copy subject="command|token|link|device|bookmark" text="...">`
+  (`bookmark` is a remembered login's home address, `http://`, a loopback host,
+  `/ui/l/`, 32 lowercase hex digits and `/home`, and nothing else) (`device` is the
   home's device-link address, protocol-change/065, PR 8: `http://`, a loopback
   host, `/ui/home?ticket=` and 64 lowercase hex digits, and nothing else) draws one of an
   invitation's two texts, or the ended page's `loom ui` command for a fresh

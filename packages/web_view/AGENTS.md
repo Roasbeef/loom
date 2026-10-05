@@ -151,11 +151,23 @@ page keys and nonces, and the relay into the session's gateway.
   of each `Reason`. `Start` gains `signins`, `login` (the fingerprint of the login
   this page belongs to), `bookmark`, `sign_out`, `sign_out_all` and `device`
   (`Some` only for a fresh home). `view/signins` draws the region as the centre's
-  third child, beneath `home.signins_path` (`0\t2\t2`): a row for each login ("This
-  browser" for the page's own) with "Sign out", "Sign out everywhere", the
-  bookmark as text for a remembered login, and on a fresh home "Sign in another
-  device", whose link is shown once in `<loom-copy subject="device">` and hidden
-  by "Done". The list is read with each sessions read (and again after a
+  third child, beneath `home.signins_path` (`0\t2\t2`), which is the account
+  panel: it carries `data-popover="panel"`, the stylesheet floats it under the bar
+  and hides it, and the bar's name (`home_bar.account`: a button marked
+  `data-popover="toggle"` inside `<loom-popover wanted=...>`, whose `wanted` is
+  `open` while a device link is on show) opens it with no server state. The panel
+  holds a row for each login ("This browser" for the page's own) with "Sign out",
+  "Sign out everywhere", the bookmark in `<loom-copy subject="bookmark">` for a
+  remembered login, and on a fresh home "Sign in another device", whose link is
+  shown once in `<loom-copy subject="device">` and hidden by "Done". The bar
+  says nothing beside the name for an operator-ceiling page and `read-only link`
+  for an observer-ceiling one (`home.ceiling_words`); `home_bar.view` (the admin
+  page's) still takes plain words. `sessions.Entry.role` is the principal's
+  membership role in that session (`Operates | Observes`, none for the owner),
+  filled by `ui_socket.with_roles` from `manager.authorized_roles`, and a row's
+  quiet line ends with it. `sidebar.home` takes the activity answers, so a
+  running row's sidebar word is the list's (`needs you` in the signal hue).
+  `ends_in` rounds up, so a fresh sign-in reads `ends in 30d`. The list is read with each sessions read (and again after a
   sign-out); a press names the fingerprint the server drew. `page` also holds
   the resume page (`login_page`, `login_refused`), the exchange page that carries
   the login's key and nonce (`enter_remembered`), `login_prefix`,

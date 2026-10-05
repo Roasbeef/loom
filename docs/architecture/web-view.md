@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2982`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2989`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -999,8 +999,13 @@ of the context that minted it, and the page keeps it (`ui_sessions.login_of`);
 every ticket a page mints carries the page's `Origin` and login too, so a chain
 from the bookmark stays `Resumed` and keeps its login, and a device link inherits
 the issuing login's expiry. The home reads the principal's own logins with its
-sessions (`Start.signins`, `ui_socket.signins_read`) and draws them below the
-table (`view/signins`, beneath `home.signins_path`): "This browser" marks the
+sessions (`Start.signins`, `ui_socket.signins_read`) and draws them in the
+account panel (`view/signins`, beneath `home.signins_path`, which has not moved:
+the region is still the centre's third child, and the stylesheet floats it under
+the bar). The person's name in the bar is the button that opens it, inside a
+`<loom-popover>` that toggles it in the browser with no server state
+(`view/home_bar.account`); the panel opens by itself while a device link is on
+show. The centre of a home is the session list and nothing else. "This browser" marks the
 page's own, "Sign out" and "Sign out everywhere" end the principal's logins
 (`manager.revoke_login`, `revoke_logins`; the registry drops its frame memo, so
 every page the login minted ends at its next request), and a fresh home alone has
@@ -1277,7 +1282,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |
 | `packages/client/src/client/daemon/ui_http.gleam` | Pure request checks and response headers: route, host, `Sec-Fetch-Site`, origin, cookies. |
-| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). |
+| `packages/web_view/src/web_view/home.gleam`, `view/home_bar.gleam`, `view/home_table.gleam` | The home page's component, top bar and per-workspace lists, whose running rows open a session and, on an operator-ceiling page, whose saved rows resume one (protocol-change/065). The bar draws the name as the account panel's button and a `read-only link` pill for an observer-ceiling page, and a member's rows say their role (`sessions.Entry.role`, filled from `manager.authorized_roles`). |
 | `packages/web_view/src/web_view/view/resume.gleam` | The one rule for a saved row on the sidebar and the home's table: text, a resume button, or "opening" while a resume is out. |
 | `packages/client/src/client/daemon/ui_sessions.gleam` | The ticket and UI-session actor: mint, single-use redeem, lookup, key and nonce comparison, sweep, and the page-minted invitations' allowance (three an hour per credential). |
 | `packages/client/src/client/daemon/ui_socket.gleam` | The page's WebSocket: permit custody, the component chosen by role (observer, member operator, owner), frame filtering by role, the session and home tickets (`Standing`, `ticket_for`, `home_ticket_for`) and the invitation the daemon makes for a page, the home's socket and its row clicks, shutdown. |
