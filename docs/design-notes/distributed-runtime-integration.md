@@ -34,6 +34,7 @@ durable ownership record.
 | Native execution | Authenticate routes, bound ingress and output, retain native evidence, and join the existing helper lifecycle. | [Native service review](../review/distributed-native-service.md), `executor/remote/service`, `executor/remote/host`. |
 | Workspace operations | Run semantic filesystem operations beside the authoritative checkout and recover retained outcomes. | [Workspace host review](../review/distributed-workspace-host.md), [workspace exchange review](../review/distributed-workspace-exchange.md). |
 | Physical compilation | Prepare executor-owned sources, preserve original authority through compiler admission, and retain the finalized artifact result. | [Remote compilation architecture](../architecture/remote-compilation.md), [protocol 067](../../protocol-change/067-remote-workspace-services.md). |
+| Language servers | Keep physical queries, preparation, rename and diagnostics beside the executor checkout; retain owner approval. | [Remote LSP integration status](../architecture/lsp.md#remote-executor-integration-status). |
 | Ownership and recovery models | Check bounded ordering claims and compare selected pure properties with implementation behavior. | [PlusCal/TLA+](../../protocol/models/distributed-authority/README.md), [P](../../protocol/models/remote-execution/README.md), [Lean](../../protocol/models/admission-proof/README.md). |
 
 Package `CLAUDE.md` and its identical `AGENTS.md` mirror describe concrete types,
