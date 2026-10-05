@@ -215,14 +215,14 @@ pub fn a_link_is_its_label_and_its_destination_as_hidden_text_test() {
 pub fn a_hostile_link_gains_no_attribute_test() {
   let html =
     page([
-      "[\"><img src=x onerror=alert(1)>](https://x.test/\" onmouseover=\"alert(1) onclick=\"b)",
+      "[\"><img src=x onerror=alert(1)>](https://x.test/\"onmouseover=\"alert(1)\"onclick=\"b)",
     ])
+  assert string.contains(
+    html,
+    "<loom-link><span class=\"ll-text\">&quot;&gt;&lt;img src=x onerror=alert(1)&gt;</span><span class=\"ll-url\" hidden>https://x.test/&quot;onmouseover=&quot;alert(1)&quot;onclick=&quot;b</span></loom-link>",
+  )
   assert !string.contains(html, "href")
   assert !string.contains(html, "<img")
-  assert !string.contains(html, " onmouseover=\"")
-  assert !string.contains(html, " onclick=\"")
-  assert string.contains(html, "<loom-link><span class=\"ll-text\">")
-  assert string.contains(html, "&lt;img src=x onerror=alert(1)&gt;")
 }
 
 // Every quote, angle bracket and attribute-shaped run the source holds ends
