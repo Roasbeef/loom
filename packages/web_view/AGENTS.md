@@ -145,6 +145,37 @@ page keys and nonces, and the relay into the session's gateway.
   `home_advice`, `ended.home`, `page.home_shell`, `home_path`,
   `home_exchange_path`, `home_refusal` word and address it. `home_test` reads
   all of it.
+- **The owner's admin page** (protocol-change/065, the fifth addendum).
+  `web_view/admin` is a server component in the home's frame
+  (`shell.view(shell.Home, ..., shell.Unlisted, ...)`, `home_bar.view(title:
+  "Admin", ...)`) with `Start(name, refresh_ms, read, act, now)`. `read(chosen,
+  deliver)` and `act(action, deliver)` each start the daemon's task and return at
+  once; their answers arrive as `Answered(serial, reading)` and `Acted(answer)`,
+  effect-owned messages no handler carries. A read is a `grants.Reading`
+  (`Read(Snapshot) | Unread | Closed(ending)`), numbered so an answer that was
+  overtaken is dropped, and also the page's check that it may still be served
+  (`Closed` ends it, `Unread` keeps the snapshot). The model holds one ask at a
+  time (`waiting`), the armed revocation (`armed`, at most one), the chosen
+  session, the last notice and the claim an ask made (`claim`) until `Dismissed`.
+  `Choosing(id)` reads that session's members; `Asking(action)` asks;
+  `Arming(action)`/`Disarming` are a revocation's two presses. `web_view/grants`
+  is the vocabulary: `Principal`, `Credential`, `Holder`, `Snapshot`, `Reading`,
+  the five `Action`s (`Invite`, `SetRole`, `RevokeMembership`, `RevokeCredentials`,
+  `Rotate`), `Claim`, `Answer` (`Claimed | Changed | Declined`) and `Reason` with
+  `reason_words` and `changed_words`. The views are `view/admin_people` (the
+  people and the pending invitations), `view/admin_sessions` (the session
+  chooser, a chosen session's members and the invitation form, whose `fields` is
+  the one rule for what it may hold), `view/admin_claim` (the claim, once, in
+  `share.field`'s copy boxes) and `view/admin_buttons` (`Busy`, `Presses`, the
+  two-step `guarded` button). The body (`admin.body_path`, `"0\t2\t1"`) is the
+  one region the socket admits an event beneath. The home's `Start.admin`
+  (`Some` only for the owner's fresh operating home) draws `home_bar.admin`, the
+  bar's last child (`home.admin_path`, `"0\t0\t5"`); `home.AdminRequested` asks
+  the daemon's task, `AdminLinked` departs through the hidden `<loom-switch>`.
+  `ending.admin_headline`/`admin_advised`/`admin_advice`, `ended.admin`,
+  `page.admin_shell`/`admin_refusal`/`admin_path`/`admin_exchange_path` and
+  `sessions.NoAdmin` word and address it. `admin_test`, `home_test`, `page_test`,
+  `ending_test` and `grants_test` read all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved | Blocked`; `Blocked` is a saved row no page may resume),
   `Group` and `grouped(entries, current)` (the current

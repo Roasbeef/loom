@@ -123,6 +123,13 @@ with these forks: they define the same modules.
   The credential-state lookups scan `access_credentials` and `access_claims` by
   principal, since neither has a principal index; a page is at most 100
   principals and the tables hold one row per enrollment.
+  `session_members_page` (protocol-change/065, the fifth addendum; `SessionMember`,
+  `SessionMemberPage`) is the other direction of `memberships_page`: one session's
+  members in principal order with the name and role each holds there, `Missing`
+  for a session the catalogue does not hold. Its query scans `access_memberships`
+  by session, which the primary key (principal, session) does not index; the
+  owner-only call and the table's size make that accepted rather than an index
+  and a catalogue version.
 - `storage/catalogue.{Catalogue, Registration, State, Page}` holds daemon
   metadata in a separate SQLite file. `Reserved` and `Saved` describe file
   initialization, not runtime liveness. `reserve` is idempotent by creation
