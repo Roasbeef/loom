@@ -604,3 +604,46 @@ case. Peak observed RSS was 318,799,872 bytes. Fresh independent Astra review
 found no actionable findings within the stated abstraction. The review page
 and `owner-discharge-model-final-verification.json` record exact source hashes,
 model versus measurement exits and replayable evidence.
+
+## TLS BEAM endpoint credits
+
+`BeamCredits` models the endpoint's local handoff and admission boundary. Four
+Data credits and two Control credits are shared by every registered scope.
+A credit contains one current transport reference and at most one admitted
+service ask. A delayed local handoff retains its original reference even if the
+transport has joined and the same credit now serves another scope.
+
+| Model transition | Implementation boundary | Claim |
+| --- | --- | --- |
+| `CreditReserve` | `beam_endpoint.reserve` | All scopes share the same finite credit lists; quiescing refuses new admission. |
+| `CreditHandoff` | `handle_credit` and `admit` | Only the current reservation reference can admit an ask. A stale handoff leaves the current assignment unchanged. |
+| `CreditConsumerGone` | `weft.cancel_when_exits` | Caller death supplies neither an actual service answer nor a joined-run witness. |
+| `CreditAnswer` | `native_replied`, `workspace_replied`, `compile_replied` | Only the actual service answer removes an admitted ask. |
+| `CreditDrain` | `network_finished` | `AllDelivered` ends local transport ownership; it does not imply delivery of a message from another sender. |
+| `maybeRelease` | `available` | Reuse requires no pending service ask, a joined transport run and no retired disposition. |
+| `CreditRunLost` | `handle_credit` on run/service loss | Loss retires capacity; later observations cannot reopen it. |
+
+Four directed safety cases exercise stale handoffs both while idle and after
+reuse, caller loss with an unresolved ask, capacity shared across two scopes,
+and sticky retirement. The stale-handoff case explores both answer-before-drain
+and drain-before-answer orders. Each scenario checks the actual response and
+capacity after every step. Four separate reachability probes require their
+precise final witness, and six compiled mutations remove individual protections.
+
+This is a bounded scheduling model, not a proof of OTP signal delivery, TLS,
+canonical byte decoders, SQLite commits or native retirement. Service answers
+and `AllDelivered` are truthful external observations. Run references are fresh
+within one endpoint lifetime; restart does not inherit its credits. The lost-run
+case conservatively allows later answer/drain observations even though the
+production credit actor has stopped. No message-ordering theorem across different
+senders is assumed. Concrete delayed-handoff tests and the other custody models
+remain necessary to connect this abstraction to the implementation.
+
+The focused credit-model gate exited zero with four normal cases at 1,000
+schedules each and four exact reachability witnesses. All six compiled mutants
+failed their intended assertion after an unmodified control passed. Evidence is
+`PCheckerOutput/gate-20261005T030313867247/results.json` and
+`PCheckerOutput/mutations-20261005T030356990572/results.json`. These checks
+cover the credit extension only; the previously recorded full model gate belongs
+to its earlier source snapshot. Independent Sol review reproduced all of these focused checks and found no
+confirmed model-to-code defect within the stated limits.
