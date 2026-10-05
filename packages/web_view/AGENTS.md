@@ -47,7 +47,13 @@ page keys and nonces, and the relay into the session's gateway.
   observer's page is always declined), and `invite`, an `Option` of a request
   to invite a person to the page's session in an `invites.Role` that answers
   an `invites.Answer`. `invite` is `Some` only on an owner's operator page
-  (`ui_socket.Owning`). `home` is an `Option` of a request for a ticket to the
+  (`ui_socket.Owning`), and so is `shareable`, an `Option` of a request that
+  stops, isolates and resumes the page's private session as one task
+  (protocol-change/065, the addendum on making a session shareable): it returns
+  at once and its `grants.Answer` arrives as `MadeShareable`. The control's state
+  is `shareables.Move` in `View.moving`, set only by `component.arm_shareable`,
+  `disarm_shareable` and `make_shareable`, which sends the task only from
+  `Confirming`. `home` is an `Option` of a request for a ticket to the
   principal's home (a `sessions.Answer` again, declined as `NoHome`); it is
   `Some` only on a page whose grant has `Workspace` reach, an observer's
   included, and the page draws the "Home" button only then. All run in the
@@ -243,8 +249,9 @@ page keys and nonces, and the relay into the session's gateway.
   `Choosing(id)` reads that session's members; `Asking(action)` asks;
   `Arming(action)`/`Disarming` are a revocation's two presses. `web_view/grants`
   is the vocabulary: `Principal`, `Credential`, `Holder`, `Snapshot`, `Reading`,
-  the five `Action`s (`Invite`, `SetRole`, `RevokeMembership`, `RevokeCredentials`,
-  `Rotate`), `Claim` (with `page`, the browser claim address), `Answer`
+  the `Action`s (`Invite`, `SetRole`, `RevokeMembership`, `RevokeCredentials`,
+  `Rotate`, `RevokeSignin`, `Rename`, and `MakeShareable`, which `admin.update`
+  sends only from the question its own button armed (`admin.confirmed`)), `Claim` (with `page`, the browser claim address), `Answer`
   (`Claimed | Changed | Declined`) and `Reason` with `reason_words` and
   `changed_words`; `TooMany(used, free_at_ms)` words the count and the UTC time
   the allowance frees, and `Selection.scope` (`creations.Sharing`) is the `scope`

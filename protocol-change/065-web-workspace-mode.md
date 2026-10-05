@@ -2058,3 +2058,168 @@ in its row and in the heading, a refusal beside its row, `Opening...` and the
 ignored second press, `running` and the activity words, the resumed sentence),
 `signins_test` (the use clause, the device-link words), `sidebar_test`, and
 `admin_test` (the shared sign-in words).
+
+## Addendum: making a session shareable (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it (round 3's F55, round 4's F88,
+round 5's F100 and its section 5, the top missing feature). It adds no route, no
+admitted event and no control command: the task is an ask the daemon runs in its
+own process on behalf of a page, as 065's other asks are. It adds one `Action`,
+`MakeShareable(session)`, to the admin page's component and one control to the
+session page, and it says here which of the three registry operations it runs and
+what each refusal leaves behind.
+
+**The problem.** A session created `workspace_private` shares its workspace's notes
+and history, so the registry refuses to give another person a seat in it
+(`IsolationRequired`). The only way out was a terminal: stop the session, `loomd
+access isolate SESSION --share-existing-transcript`, resume it. Both pages said
+the session could not be shared and offered no button.
+
+**What was built.** `client/daemon/shareable.make(registry, digest, epoch,
+state_root, id)` runs the same three registry operations in the same order, and
+nothing else:
+
+1. The credential must authenticate as the daemon's owner. This check is made
+   first because `manager.stop_session` takes no caller and a stop is the first
+   change.
+2. If the session is private, it is brought to rest: a resident session is
+   stopped with `manager.stop_session` and waited for (`stop_wait_ms`, 15 s), a
+   saved or already stopping one is only waited for. A session that is opening,
+   reserved or blocked is refused before anything is done to it.
+3. `manager.isolate`, the daemon's own isolation, the operation `sessions.isolate`
+   runs. It authenticates the credential and the epoch a second time in the
+   registry's turn, so it is the last word on who may.
+4. A session that was running is resumed with `manager.open` and waited for
+   (`resume_wait_ms`, 30 s). A session that was saved when the task began stays
+   saved: the task puts back what it found.
+
+A session that is already session-only has nothing to do, so the task is
+idempotent. Isolation is one catalogue transaction (`storage/domain.isolate`), so
+a session is private or session-only and never between.
+
+**What each refusal leaves.** No refusal leaves a half-isolated session, and every
+state a refusal leaves is one the owner leaves by pressing again or by resuming
+from the home page, which the refusal's words say.
+
+| refusal | where it stopped | the session is left | words |
+| --- | --- | --- | --- |
+| `NotOwner`, `NotFound`, `Unavailable` | before anything changed | exactly as it was | the page's existing words |
+| `NotStopped` | the stop did not finish in 15 s, or the registry would not stop it | stopping or stopped, private; the stop completes on its own and a second press carries on | `The session did not finish stopping, so nothing changed. It is still private. Try again in a moment.` |
+| `NotMoved` | isolation was refused (for example another page resumed the session in the meantime) | private, and running again when it ran before | `The session could not be made shareable and is still private. Try again.` |
+| `Stranded` | isolation was refused and the session could not be resumed either | stopped and private | `The session could not be made shareable, and it is stopped. Resume it from the home page, then try again.` |
+| `NotResumed` | isolation succeeded and the resume did not | stopped and shareable | `The session is shareable now but did not start again. Resume it from the home page.` |
+
+`grants.Reason` gains `NotStopped`, `NotMoved`, `Stranded` and `NotResumed`, and
+`grants.changed_words(MakeShareable(_))` is `This session is shareable now.`.
+
+**A task no page owns.** Stopping a session ends every page open on it, and a
+weft run linked to a page's runtime ends with the page. A task started the way
+`resume_task` and `manage_task` start theirs would be cancelled between the stop
+and the isolation, leaving the session stopped and private. `ui_socket.detached`
+therefore starts the run from a process linked to nothing (`process.spawn_unlinked`
+over a one-task `weft.start`, the shape `client/agency`'s reaper has), and the
+answer goes to the page's runtime if it is still there. Every step is bounded by
+its own call timeouts, so the task ends within about a minute and needs no
+deadline of its own.
+
+**Authority.** Re-derived in the daemon, never read from a page.
+
+- The admin page asks through `admin_for`, behind `administering` (the page is
+  open, minted to operate, and its credential authenticates as the principal it
+  was admitted for, who is the owner). The page is already the owner's.
+- The session page's capability is `shareable_capability(role, ask)`, `Some` for
+  `Owning` and `None` for `Operating` and `Observing`, as the invitation control's
+  is. `shareable_for` checks again that the page is open and that
+  `role_of(attachment)` is `Owning`: a member operator, an owner's read-only page
+  and a page that has ended are `NotOwner` whatever frame reached the daemon. The
+  event path is the invitation control's (`component.invite_path`), which the
+  owner's socket alone admits (`owner_accepts`).
+- `shareable.make` authenticates the owner a third time before the stop.
+
+A stolen operator-ceiling owner page can now stop one of the owner's sessions and
+restart it under a new history, which it could already do through `Stop`
+(session actions on the home) and an open. It cannot do it for a session it was
+not minted for on a session page, and a read-only page cannot do it at all.
+
+**Where the daemon's state root comes from.** The isolated session's fresh stores
+are minted under the daemon's own state directory. `server.AdminAttachment` and
+`server.Attachment` carry it (`state_root`), from `root.Ready`, and no page ever
+supplies it. `ui_socket.admin_for` and `admin_task` take it as an argument.
+
+**The pages.**
+
+- *Admin page.* A private session's members block draws the sentence it already
+  drew and, beneath it, `Make shareable`, for a session that is running or saved
+  (a session the daemon will not open from a page is offered nothing, since the
+  task would refuse it). The button is a two-press control: the first press
+  (`Arming`) replaces it, in place, with `Make this session shareable? It will
+  stop, move to its own history, and resume. People you invite will be able to read
+  what it already holds.` (for a saved session: `It will move to its own history
+  and stay saved.`), a `Make shareable` confirm and `Cancel`. The state is
+  `Model.armed`, the server's alone. `Asking(MakeShareable(_))` is sent only when
+  the same action is armed (`admin.confirmed`), so a frame that names the change
+  without the question asks nothing. While the task runs the button is the
+  sentence `Making this session shareable: stopping it, moving it to its own
+  history and resuming it. This can take a minute.` and every button is disabled
+  (`Model.waiting`). On success the next read finds a session-only session and the
+  invitation form appears, with `This session is shareable now.` beside it. A
+  refusal is drawn beside the control in its fixed words. All of it is beneath
+  `admin.body_path`, which does not move.
+- *Session page.* The Session tab's private sentence (`share.private_words`)
+  gains the same button, in the same region, so `component.invite_path` is
+  unchanged and holds one handler (the button), two while the question is open.
+  The state is `shareables.Move` (`Withheld`, `Idle`, `Confirming`, `Making`,
+  `Refused`) in `View.moving`, set only by `component.arm_shareable`,
+  `disarm_shareable` and `make_shareable`, and `make_shareable` sends the task only
+  from `Confirming` and with the capability. The words after the confirm say that
+  the page ends while the session restarts.
+
+**What the open page does.** The stop ends the session's page as it always has: it
+draws `The session stopped.` and `Open the session again, then reload this page.
+The page's own link still works, so a fresh one is not needed.` and closes with
+1000. That behaviour is kept. The task resumes the session whether or not the page
+is there, so a reload after a few seconds finds the session running, session-only,
+with the invitation buttons where the sentence was. The admin page does not end:
+its UI session and its component do not depend on the session, and its next read
+shows the new scope.
+
+**A running turn.** The owner's ruling is stop, isolate and resume as one task, so
+a session in the middle of a turn is stopped as part of it, and the confirm is the
+guard: the question names that the session will stop. A session whose stop does
+not complete in 15 s is `NotStopped` and keeps stopping.
+
+**What was considered.**
+
+- **A control command.** A fourth command beside `sessions.stop`, `sessions.isolate`
+  and `sessions.open` would add a wire frame to run three steps a client can
+  already run in order. The terminal's three commands are unchanged and are the
+  same operations the task runs.
+- **Refusing a busy session ("Stop the session first").** Rejected: it leaves the
+  owner the terminal procedure the feature exists to remove, and the confirm already
+  names the stop.
+- **Navigating the page that asked to the resumed session.** The page is ended by
+  the stop before the task can mint a ticket for it. Keeping the page open across
+  the stop would need the socket to hold a close that the relay has asked for, a
+  change to `Phase` for a path used once per session. The reload is one step and the
+  words say it.
+- **Resuming a saved session.** Rejected: a button that said nothing about running
+  the session would start it.
+- **A new `isolate` flag to copy the transcript.** `loomd access isolate` shares
+  the existing transcript with the people invited later, which the confirm now
+  says. Copying and redacting history is a separate feature.
+
+**Cost.** One unlinked process per task for up to about a minute, and a stop and an
+open of the session on the registry's turns. The credential's grant allowance is
+untouched.
+
+**Tests.** `daemon_shareable_test` (the real registry: a running session stopped,
+isolated and resumed; a saved one isolated and left saved; a member, an unknown
+session and an already shareable one; a stale epoch restoring a running session;
+`NotResumed` and `Stranded` and the state each leaves), `ui_route_test` (the
+capability by role, the forced asks of a member operator, an owner's read-only page
+and an ended page, the whole task through a real session and an invitation refused
+before and made after, and `MakeShareable` in the admin page's table of
+refused standings), `ui_socket_test` (the capability), `make_shareable_test` (the
+session page's states, the confirm guard, the refusal, an unasked answer),
+`admin_test` (the question, the guard, the saved variant, the running words, the
+refusal) and `grants_test`.
