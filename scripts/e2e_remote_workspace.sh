@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Join actual owner custody, mTLS chunks and filesystem effects in one emulator.
+# Join actual owner custody and filesystem effects across independent TLS BEAM VMs.
 # This is a component gate; shipped two-host daemon acceptance remains separate.
 set -euo pipefail
 export LOOM_REMOTE_WORKSPACE_MUTATION=""
@@ -17,16 +17,11 @@ for prerequisite in gleam erl erlc python3; do
     exit 2
   }
 done
-fixture_ebin="$(mktemp -d "${TMPDIR:-/tmp}/loom-workspace-tls-ebin.XXXXXX")"
-trap 'rm -rf "$fixture_ebin"' EXIT
-cd "$root"
-python3 scripts/with_timeout.py 30 -- erlc -o "$fixture_ebin" \
-  packages/executor/test/executor_remote_tls_test_ffi.erl
 cd "$root/packages/client"
 python3 "$root/scripts/with_timeout.py" "${LOOM_BUILD_TIMEOUT_SECONDS:-1200}" -- \
   gleam build --warnings-as-errors
 python3 "$root/scripts/with_timeout.py" "${LOOM_TEST_TIMEOUT_SECONDS:-90}" -- \
-  erl +S 4 -pa "$fixture_ebin" build/dev/erlang/*/ebin -noshell -eval '
+  erl +S 4 -pa build/dev/erlang/*/ebin -noshell -eval '
     try
       {ok, _} = application:ensure_all_started(client),
       nil = client@remote@workspace_integration:main(),

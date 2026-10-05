@@ -1,14 +1,18 @@
 //// Real owner receipt, authenticated chunks and executor-local filesystem proof.
 ////
-//// The runner deliberately drops a submit connection after sending its bytes.
+//// The runner loses an actual queued Submit caller through its finite deadline.
 //// A post-write observer holds the effect before result persistence so retries
 //// must report Unknown without writing again. The owner then retains the exact
 //// completion before ACK and reopens its SQLite custody to recover it.
 ////
-//// This fixture runs in one emulator with distinct owner and workspace paths.
+//// Two independent TLS BEAM OS roles own distinct owner and workspace paths.
 //// It is not the shipped two-host product gate, and it makes no provider call.
+//// `finish` closes the local owner after its assertions, then awaits the fixed
+//// executor's independent semantic seal and native retirement. The fixture
+//// parent independently checks both actual OS exits before reporting success.
 
 import broker/exec
+import broker/executor as native
 import broker/policy
 import client/remote/custodian
 import client/remote/workspace_binding as binding
@@ -16,53 +20,38 @@ import core/clock
 import core/ids
 import core/remote_tool
 import core/workspace as cw
-import executor/remote/connection
+import distribution_fixture
+import executor/remote/admission
+import executor/remote/beam_endpoint as connection
+import executor/remote/distribution
 import executor/remote/identity
-import executor/remote/listener
-import executor/remote/tls
+import executor/remote/internal/beam_protocol as transport
+import executor/remote/journal as native_journal
+import executor/remote/service as native_service
 import executor/remote/wire
-import executor/remote/workspace_connection as transport
 import executor/remote/workspace_journal as journal
 import executor/remote/workspace_service as service
-import executor/remote/workspace_transfer as transfer
 import gleam/bit_array
 import gleam/erlang/process
-import gleam/int
 import gleam/io
 import gleam/option.{None, Some}
-import gleam/otp/static_supervisor as supervisor
+import gleam/otp/system
 import gleam/string
-import gleam/time/timestamp
 import host/bootstrap
+import internal/ffi_workspace_mailbox as mailbox
 import simplifile
 import storage/owner_custody as custody
+import support/workspace_e2e_beam_fixture as nodes
+import telemetry/log
 import tools/directory_access
 import tools/fs
 import tools/tool
 import tools/workspace
 import tools/workspace_codec as codec
 import tools/workspace_local as local
+import weft
 import weft/poll
 import weft/registry
-
-type Credentials {
-  Credentials(ca: BitArray, certificate: BitArray, key: BitArray, pin: BitArray)
-}
-
-type Certificates {
-  Fixture(
-    server: Credentials,
-    client: Credentials,
-    wrong_server: Credentials,
-    wrong_client: Credentials,
-    foreign: Credentials,
-    expired: Credentials,
-  )
-}
-
-// Credential generation is test-only and reuses the existing OTP PKIX fixture.
-@external(erlang, "executor_remote_tls_test_ffi", "fixture")
-fn certificates() -> Certificates
 
 type Fixture {
   FixtureState(
@@ -70,18 +59,8 @@ type Fixture {
     owner: custodian.Handle,
     owner_config: custodian.Config,
     owner_pid: process.Pid,
-    book: journal.Journal,
-    service: service.Service,
     connection: connection.Config,
-    client: transport.Client,
-    listener: tls.Listener,
-    acceptors: process.Pid,
-    observed: process.Subject(process.Subject(Nil)),
   )
-}
-
-type Shutdown {
-  Shutdown
 }
 
 /// Runs a joined semantic effect and durable owner receipt under real TLS.
@@ -90,33 +69,36 @@ type Shutdown {
 ///
 /// `bash scripts/e2e_remote_workspace.sh` runs this isolated component fixture.
 pub fn main() {
-  let f = fixture()
+  use peer <- nodes.run
+  let f = fixture(peer)
   let request =
     workspace.Write(path("proof.txt"), string.repeat("seed\n", 100_000))
   let b = binding.new(scope(), f.owner, fn() { entry(11) })
   let assert Ok(reservation) = reserve(b, child(0), request)
     as "Owner custody must reserve exact bytes before possible submission."
   let bytes = binding.content(reservation)
-  let assert True = bit_array.byte_size(bytes) > tls.max_frame_bytes
-    as "The joined request must actually exercise multiple TLS frames."
-  drop_submit_reply(f.connection, bytes)
-  let assert Ok(release) = process.receive(f.observed, 5000)
-    as "The real write happened despite the caller losing its submit connection."
+  let assert True = bit_array.byte_size(bytes) > 262_144
+    as "The joined request must actually exceed the original 256-KiB threshold and span BEAM chunks."
+
+  // The actual Submit is queued before its caller expires. Resuming the service
+  // still takes the original claim; recovery cannot grant another execution.
+  drop_submit_reply(f, bytes)
+  nodes.await(f.root, "written")
   let assert Ok(text) = simplifile.read(f.root <> "/executor/proof.txt")
     as "Only the executor directory contains the physical mutation."
   assert text == string.repeat("seed\n", 100_000)
   assert simplifile.is_file(f.root <> "/owner/proof.txt") == Ok(False)
-  assert transport.exchange(f.client, transport.Query, bytes)
+  assert connection.workspace_exchange(f.connection, transport.Query, bytes)
     == Ok(journal.Unknown)
 
   // A second write would overwrite this independent editor change. A byte-for-
   // byte retry must keep the original claim and leave the newer file alone.
   assert simplifile.write(f.root <> "/executor/proof.txt", "external change\n")
     == Ok(Nil)
-  assert transport.exchange(f.client, transport.Submit, bytes)
+  assert connection.workspace_exchange(f.connection, transport.Submit, bytes)
     == Ok(journal.Unknown)
-  process.send(release, Nil)
-  let result = completed(f.client, bytes)
+  nodes.mark(f.root, "release-write")
+  let result = completed(f.connection, bytes)
   let assert Ok(Ok(local.Completed(workspace.WriteCompleted(Ok(_)), None))) =
     codec.decode_completion(request, result)
     as "The exact original successful write result must survive the lost reply."
@@ -124,9 +106,13 @@ pub fn main() {
     == Ok("external change\n")
 
   let digest = persist_before_ack(f.owner, reservation, result)
-  assert transport.exchange(f.client, transport.Acknowledge(digest), bytes)
+  assert connection.workspace_exchange(
+      f.connection,
+      transport.Acknowledge(digest),
+      bytes,
+    )
     == Ok(journal.Acknowledged(identity.digest_bytes(digest)))
-  assert transport.exchange(f.client, transport.Submit, bytes)
+  assert connection.workspace_exchange(f.connection, transport.Submit, bytes)
     == Ok(journal.Acknowledged(identity.digest_bytes(digest)))
   assert simplifile.read(f.root <> "/executor/proof.txt")
     == Ok("external change\n")
@@ -154,11 +140,12 @@ pub fn main() {
   let assert Ok(read) = reserve(read_binding, child(1), read_request)
     as "Read also keeps its own original child identity."
   let read_bytes = binding.content(read)
-  let assert Ok(_) = transport.exchange(f.client, transport.Submit, read_bytes)
+  let assert Ok(_) =
+    connection.workspace_exchange(f.connection, transport.Submit, read_bytes)
     as "Authenticated read submission must be accepted."
-  let read_result = completed(f.client, read_bytes)
-  let assert True = bit_array.byte_size(read_result) > tls.max_frame_bytes
-    as "The joined completion must actually exercise multiple TLS frames."
+  let read_result = completed(f.connection, read_bytes)
+  let assert True = bit_array.byte_size(read_result) > 262_144
+    as "The joined completion must actually exceed the original 256-KiB threshold and span BEAM chunks."
   assert codec.decode_completion(read_request, read_result)
     == Ok(
       Ok(local.Completed(
@@ -167,8 +154,8 @@ pub fn main() {
       )),
     )
   let read_digest = persist_before_ack(f.owner, read, read_result)
-  assert transport.exchange(
-      f.client,
+  assert connection.workspace_exchange(
+      f.connection,
       transport.Acknowledge(read_digest),
       read_bytes,
     )
@@ -210,10 +197,10 @@ fn persist_before_ack(
   digest
 }
 
-fn completed(client: transport.Client, bytes: BitArray) -> BitArray {
+fn completed(client: connection.Config, bytes: BitArray) -> BitArray {
   let answer =
     poll.until(5000, 10, fn() {
-      case transport.exchange(client, transport.Query, bytes) {
+      case connection.workspace_exchange(client, transport.Query, bytes) {
         Ok(journal.Finished(result)) -> poll.Done(result)
         Ok(journal.Accepted) | Ok(journal.Unknown) -> poll.Retry
         other -> poll.Fail(other)
@@ -224,32 +211,32 @@ fn completed(client: transport.Client, bytes: BitArray) -> BitArray {
   bytes
 }
 
-fn drop_submit_reply(config: connection.Config, bytes: BitArray) {
-  let assert Ok(socket) = tls.connect(config.tls, config.hostname, config.port)
-    as "Dropped-reply control still authenticates normally."
-  let hello =
-    wire.Envelope(
-      wire.Owner,
-      config.owner,
-      config.executor,
-      config.generation,
-      config.scope,
-      wire.Hello,
-    )
-  let assert Ok(hello) = wire.encode(hello)
-    as "Fixture uses production identity encoding."
-  assert tls.send(socket, <<"LWS", 1, hello:bits>>) == Ok(Nil)
-  let assert Ok(_) = tls.receive(socket) as "Peer completes the scoped hello."
-  assert tls.send(socket, <<"LWQ", 1, 0>>) == Ok(Nil)
-  assert transfer.send(socket, transfer.Invocation, bytes) == Ok(Nil)
-  tls.close(socket)
+fn drop_submit_reply(f: Fixture, bytes: BitArray) {
+  assert simplifile.write_bits(f.root <> "/original-submit.bytes", bytes)
+    == Ok(Nil)
+  nodes.mark(f.root, "original-submit-ready")
+  let endpoint = connection.Config(..f.connection, within_ms: 3000)
+  let reports = process.new_subject()
+  let _ =
+    weft.new([
+      fn() { connection.workspace_exchange(endpoint, transport.Submit, bytes) },
+    ])
+    |> weft.deadline(6000)
+    |> weft.start_relayed(to: reports)
+  nodes.await(f.root, "submit-queued")
+
+  // The endpoint's own deadline cancels and joins its real exchange caller.
+  // The service is still suspended, so this cannot be its Unknown response.
+  assert process.receive(reports, 5000)
+    == Ok(weft.PulledOutcome(weft.Failed(0, connection.Uncertain)))
+  assert process.receive(reports, 2000) == Ok(weft.AllDelivered)
+  nodes.mark(f.root, "caller-lost")
+  nodes.await(f.root, "ask-retained")
 }
 
 fn wrong_scope(f: Fixture) {
   let changed = identity_scope(2)
-  let assert Ok(client) =
-    transport.client(connection.Config(..f.connection, scope: changed))
-    as "The competing epoch is syntactically valid."
+  let client = connection.Config(..f.connection, scope: changed)
   let assert Ok(bound) =
     cw.scope_from_fields(
       ids.session_id_to_string(session()),
@@ -270,24 +257,16 @@ fn wrong_scope(f: Fixture) {
     )
   let assert Ok(bytes) = codec.encode_invocation(call)
     as "Wrong authority has well-formed content."
-  assert transport.exchange(client, transport.Submit, bytes)
-    == Error(transport.Uncertain)
+  assert connection.workspace_exchange(client, transport.Submit, bytes)
+    == Error(connection.Uncertain)
   assert simplifile.is_file(f.root <> "/executor/forbidden.txt") == Ok(False)
 }
 
-fn fixture() -> Fixture {
-  let #(seconds, nanos) =
-    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
-  let assert Ok(here) = simplifile.current_directory()
-    as "Fixture has a project directory."
-  let root =
-    here
-    <> "/build/remote-workspace-"
-    <> int.to_string(seconds)
-    <> "-"
-    <> int.to_string(nanos)
+fn fixture(peer: distribution.Peer) -> Fixture {
+  let root = nodes.root() <> "/data"
   assert simplifile.create_directory_all(root <> "/owner") == Ok(Nil)
   assert simplifile.create_directory_all(root <> "/executor") == Ok(Nil)
+
   let assert Ok(limits) =
     custody.limits(4, 16, 268_435_456, codec.max_completion_bytes)
     as "Owner reserves complete workspace results within finite aggregate capacity."
@@ -298,6 +277,8 @@ fn fixture() -> Fixture {
     as "Parent material is bounded."
   assert custody.admit(store, key(), parent, parent) == Ok(Nil)
   assert custody.close(store) == Ok(Nil)
+
+  // The parent commit precedes the owner-local custodian's child receipt door.
   let assert Ok(names) = registry.start() as "Fixture owns a registry."
   let assert Ok(owner_config) =
     custodian.config(owner_path, session(), limits, 1, 5000, fn(_, _, _) {
@@ -307,65 +288,159 @@ fn fixture() -> Fixture {
   let owner = custodian.new(names, owner_config)
   let assert Ok(owner_started) = custodian.start(owner, owner_config)
     as "Owner custodian starts."
+  let connection =
+    connection.Config(peer, "owner", "executor", identity_scope(1), 1, 5000)
+  nodes.await(root, "executor-ready")
+  FixtureState(root, owner, owner_config, owner_started.pid, connection)
+}
+
+/// Starts the fixed independent executor with actual semantic and native actors.
+///
+/// ## Examples
+/// Only the workspace component fixture invokes `executor_main()`.
+pub fn executor_main() -> Nil {
+  let runtime_root = nodes.root()
+  let root = runtime_root <> "/data"
+  assert simplifile.create_directory_all(root <> "/executor") == Ok(Nil)
+  let assert Ok(provisioned) =
+    distribution_fixture.read_provisioned(runtime_root <> "/fixture.term")
+    as "The executor reads its original private bootstrap configuration."
+  let assert Ok(membership) = distribution.start(provisioned.executor_config)
+    as "The independent executor boots real authenticated TLS distribution."
+  let assert Ok(owner) = distribution.peer(membership, provisioned.owner_name)
+    as "Only the original authenticated owner can enter this endpoint."
+
+  // Filesystem effect and SQLite custody stay in the executor VM. The fixed
+  // observer holds the real write before its result can be persisted.
   let assert Ok(limits) = journal.limits(4, 268_435_456)
     as "Executor reservation is bounded."
   let assert Ok(book) =
     journal.fresh(root <> "/executor/custody.db", scope(), limits)
     as "Executor SQLite opens."
-  let observed = process.new_subject()
   let local =
     local_host(scope(), context(root <> "/executor"), fn(_) {
-      let continue = process.new_subject()
-      process.send(observed, continue)
-      let assert Ok(Nil) = process.receive(continue, 5000)
-        as "Fixture releases the actual post-write barrier."
+      nodes.mark(root, "written")
+      nodes.await(root, "release-write")
       None
     })
   let assert Ok(config) = service.configure(local, book, 2, 10_000)
     as "Service binds exact host and journal scope."
-  let assert Ok(service) = service.start(config)
+  let assert Ok(semantic) = service.start(config)
     as "Effect custody is independent from connection custody."
-  let assert Ok(Nil) = tls.start() as "SSL starts."
-  let Fixture(server_cert, client_cert, _, _, _, _) = certificates()
-  let assert Ok(socket) =
-    tls.listen(settings(server_cert, client_cert), tls.Loopback, 0)
-    as "Real listener binds."
-  let assert Ok(port) = tls.port(socket) as "Ephemeral endpoint is known."
-  let assert Ok(server) = transport.server("owner", identity_scope(1), service)
-    as "Peer scope matches actual service."
-  let assert Ok(config) = listener.configure_workspace(socket, server, 2, 5000)
-    as "Acceptor capacity is finite."
-  let assert Ok(acceptors) =
-    supervisor.new(supervisor.OneForOne)
-    |> supervisor.add(listener.supervised(config))
-    |> supervisor.start
-    as "Production acceptor subtree starts."
-  let connection =
-    connection.Config(
-      settings(client_cert, server_cert),
-      "localhost",
-      port,
-      5000,
+
+  // Semantic enrollment shares the existing fixed native service boundary.
+  // No native command is allocated by this filesystem-only component fixture.
+  let #(native_executor, native_remote, native_book) = concrete_native(root)
+  let assert Ok(row) =
+    connection.registration(owner, native_remote, Some(semantic))
+    as "Enrollment derives exact scope from concrete executor-local services."
+  let assert Ok(config) = connection.configure_server([row], 10_000)
+    as "The single scope shares four data and two control credits."
+  let assert Ok(endpoint) = connection.start(config)
+    as "The fixed production endpoint publishes after TLS admission."
+
+  // Suspend only this concrete local semantic actor through its OTP interface.
+  // The owner begins a real exchange after the endpoint is ready for admission.
+  system.suspend(service.pid(semantic))
+  nodes.mark(root, "executor-ready")
+  nodes.await(root, "original-submit-ready")
+  let assert Ok(original) =
+    simplifile.read_bits(root <> "/original-submit.bytes")
+    as "The test witness contains the original canonical invocation bytes."
+  let assert Ok(invocation) = codec.decode_invocation(original)
+    as "Original child identity comes from the production total invocation codec."
+  let original_id = workspace.invocation_identity(invocation).4
+
+  // Exact content and original UUID identify the queued operation. Capacity
+  // alone cannot distinguish this Submit from any other occupying request.
+  let assert poll.Answered(queued) =
+    poll.until(2500, 5, fn() {
+      case mailbox.queued(service.pid(semantic), original, original_id) {
+        Ok(queued) -> poll.Done(queued)
+        Error(Nil) -> poll.Retry
+      }
+    })
+    as "Exactly one actual Submit carries the original bytes and child identity."
+  assert connection.inspect(endpoint) == Ok(connection.Capacity(1, 3, 2))
+  nodes.mark(root, "submit-queued")
+  nodes.await(root, "caller-lost")
+
+  // Neither the original ask nor its assigned credit can disappear on loss.
+  // The full original message, including its stable reply subject, stays exact.
+  assert mailbox.queued(service.pid(semantic), original, original_id)
+    == Ok(queued)
+  assert connection.inspect(endpoint) == Ok(connection.Capacity(1, 3, 2))
+  nodes.mark(root, "ask-retained")
+  system.resume(service.pid(semantic))
+  nodes.await(root, "owner-done")
+
+  // Native retirement and semantic closure remain separate from endpoint death.
+  // This fixed fixture never exercises proposal-dependent production assembly.
+  connection.quiesce(endpoint)
+  assert service.close(semantic) == Ok(Nil)
+  assert journal.mode(book) == Ok(journal.SealedScope)
+  assert journal.release(book) == Ok(Nil)
+  let down = process.monitor(connection.pid(endpoint))
+  connection.stop(endpoint)
+  let assert Ok(process.ProcessDown(_, _, process.Normal)) =
+    process.new_selector()
+    |> process.select_specific_monitor(down, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "The exact endpoint actor exits normally; this is transport evidence."
+
+  // ScopeRetirement owns native shutdown once. Its concrete actor must join
+  // before native journal release; endpoint death alone grants neither fact.
+  let native_down = process.monitor(native.pid(native_executor))
+  assert native_service.exchange(
+      native_remote,
+      wire.Envelope(
+        wire.Owner,
+        "owner",
+        "executor",
+        1,
+        identity_scope(1),
+        wire.CloseScope,
+      ),
+    )
+    == Ok(wire.ScopeRetirement)
+  let assert Ok(process.ProcessDown(_, _, process.Normal)) =
+    process.new_selector()
+    |> process.select_specific_monitor(native_down, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "The original native actor actually exits after its one retirement action."
+  assert native_journal.release(native_book) == Ok(Nil)
+  nodes.mark(runtime_root, "executor-success")
+}
+
+fn concrete_native(root: String) {
+  let assert Ok(executor) =
+    native.start(native.ExecutorConfig(
+      fn() { Error(exec.PoolUnavailable) },
+      fn(_) { Nil },
+      fn() { Error(exec.PoolUnavailable) },
+      fn(_) { Ok(Nil) },
+      4,
+      log.discard(),
+    ))
+    as "The actual native actor allocates no process pool in this semantic fixture."
+  let assert Ok(capacity) = admission.capacity(4)
+    as "Native enrollment retains its finite admission limit."
+  let assert Ok(book) =
+    native_journal.fresh(root <> "/native.sqlite", identity_scope(1), capacity)
+    as "Native enrollment has its own actual scoped journal."
+  let assert Ok(remote) =
+    native_service.start(native_service.Config(
       "owner",
       "executor",
-      1,
       identity_scope(1),
-    )
-  let assert Ok(client) = transport.client(connection)
-    as "Owner endpoint validates."
-  FixtureState(
-    root,
-    owner,
-    owner_config,
-    owner_started.pid,
-    book,
-    service,
-    connection,
-    client,
-    socket,
-    acceptors.pid,
-    observed,
-  )
+      1,
+      book,
+      executor,
+      fn(_, _) { Ok(Nil) },
+      poll.monotonic().now,
+    ))
+    as "The existing native service binds this concrete local scope."
+  #(executor, remote, book)
 }
 
 fn context(root: String) -> tool.Ctx {
@@ -473,14 +548,6 @@ fn identity_scope(epoch: Int) {
   identity.scope(session(), w, e, owner_epoch, workspace_epoch)
 }
 
-fn settings(local: Credentials, peer: Credentials) {
-  let Credentials(ca, certificate, key, _) = local
-  let assert Ok(value) =
-    tls.settings(ca, certificate, key, peer.pin, 2000, 2000, 1000)
-    as "Existing PKIX fixtures parse."
-  value
-}
-
 fn stop_owner(f: Fixture) {
   let monitor = process.monitor(f.owner_pid)
   assert custodian.stop(f.owner) == Ok(Nil)
@@ -493,19 +560,9 @@ fn stop_owner(f: Fixture) {
 }
 
 fn finish(f: Fixture) {
-  tls.close_listener(f.listener)
-  let monitor = process.monitor(f.acceptors)
-  process.unlink(f.acceptors)
-  process.send_abnormal_exit(f.acceptors, Shutdown)
-  let assert Ok(_) =
-    process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(down) { down })
-    |> process.selector_receive(6000)
-    as "All bounded network workers stop."
-  assert service.close(f.service) == Ok(Nil)
-  assert journal.mode(f.book) == Ok(journal.SealedScope)
-  assert journal.release(f.book) == Ok(Nil)
   stop_owner(f)
+  nodes.mark(f.root, "owner-done")
+  nodes.await(nodes.root(), "executor-success")
 }
 
 // A registered context cannot construct the executor-local host.
