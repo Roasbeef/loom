@@ -1,107 +1,99 @@
-//// One local lifetime owner for registered remote admission and its listener.
+//// One temporary native scope owner borrows the node's shared TLS BEAM endpoint.
 ////
-//// `configure` freezes administrative scope and verifies both opaque custody
-//// bindings before a socket exists. `start` creates the TLS listener inside the
-//// host actor, then links admission custody and its bounded acceptor supervisor
-//// beneath that owner. A child failure fails the host; no restart recreates a
-//// service over the same journal. The caller observes that failed lifetime as
-//// `Unavailable`, never as a native-retirement witness.
+//// `configure` checks immutable journal and canonical registration bindings.
+//// `start` privately creates the linked native service, derives its concrete
+//// endpoint row with this owner's PID, then registers last. Register and any
+//// cleanup fence are sent by the same owner, so a lost publication reply cannot
+//// leave a later registration behind an earlier missing-row fence.
 ////
-//// `close` first closes listener admission, quiesces the serialized service,
-//// stops connection workers, and invokes existing scoped native drain. Journal
-//// release follows witnessed epoch closure, native retirement and service exit.
-//// An uncertain close retains journal evidence and a fenced owner for explicit
-//// inspection; retry cannot reopen admission. Abnormal shutdown closes listener
-//// admission and attempts drain, but never releases evidence on that path.
+//// `close` fences that exact immutable row, quiesces admission and polls its
+//// original transport custody while reply producers remain live. Native shutdown
+//// consumes the service's retained original close disposition, including a prior
+//// wire CloseScope. Service exit and journal release follow successful witnesses.
+//// Failure still attempts native cleanup, retains evidence and stays fenced.
+//// The borrowed endpoint and every sibling scope remain node-owned.
+//// `retire` releases the original journal only after `settle` establishes every
+//// required fence, transport, native and service-exit witness.
 ////
-//// Native pool and journal construction belong to the trusted caller. Successful
-//// startup transfers exclusive use of those handles to this lifetime; a failed
-//// startup leaves them caller-owned for drain and reconciliation. Once acceptors
-//// exist, even a startup failure can follow admission; no epoch is rolled back.
-//// The handles do not encode re-registration,
-//// fresh epochs, automatic restart or a second owner budget. Brutal host kill
-//// cannot run cleanup; its socket closes with its OTP owner, while the caller
-//// must reconcile original native custody and retained journal evidence.
+//// Successful startup transfers exclusive use of the original supplied native
+//// and journal handles. Startup failure retains their original identity for
+//// caller reconciliation; late failure may follow publication and native work.
+//// Temporary supervision never recreates a claim. Brutal death cannot run the
+//// cleanup hook; the endpoint's owner monitor fences the row, but DOWN proves
+//// neither transport drain nor native retirement. This owner assembles native
+//// service custody only, without Compile or workspace resource cleanup claims.
 
-import broker/executor as local
 import broker/internal/call
+import executor/remote/beam_endpoint as endpoint
+import executor/remote/distribution
 import executor/remote/journal
-import executor/remote/listener
 import executor/remote/registration
 import executor/remote/service
-import executor/remote/tls
 import gleam/erlang/process
-import gleam/otp/static_supervisor as supervisor
+import gleam/option.{None}
 import gleam/otp/supervision
 import gleam/result
 import weft/actor
+import weft/poll
 
-/// Trusted provisioning facts, supplied together before ownership transfer.
+/// Original native custody and borrowed node administration, fixed before start.
 pub type Provisioning {
+  /// Publication transfers no new authority beyond these original handles.
   Provisioning(
-    /// Original scoped custody and native handles; its verifier is replaced
-    /// with the fixed registration verifier below.
+    /// Original scoped journal and native pool; the verifier is replaced below.
     service: service.Config,
-    /// Immutable canonical paths, policy ceiling and enforcement authority.
+    /// Canonical paths, policy ceiling and enforcement fixed by administration.
     registration: registration.Registration,
-    /// Parsed bounded credentials and the exact administratively pinned peer.
-    tls: tls.Settings,
-    /// Explicit interface exposure; the peer cannot choose it.
-    bind: tls.Bind,
-    /// Administrative TCP port, or zero for an ephemeral local fixture.
-    port: Int,
-    /// Fixed connection-worker count, between one and four.
-    workers: Int,
-    /// Finite complete socket-exchange budget, between 100 and 30000 ms.
-    exchange_ms: Int,
+    /// Node-owned shared endpoint; this scope never stops or replaces it.
+    endpoint: endpoint.Server,
+    /// Original owner Peer resolved from successful executor-node membership.
+    owner: distribution.Peer,
+    /// Transport drain budget, between 100 and 30000 ms, before native cleanup.
+    drain_ms: Int,
   )
 }
 
-/// Validated immutable configuration; constructing it starts no process or socket.
+/// Validated immutable facts; construction publishes no row and starts no service.
 pub opaque type Config {
   Config(provisioning: Provisioning)
 }
 
-/// A local lifetime address; endpoint identity never carries native authority.
+/// Exact temporary owner address and finite allowance for sequential cleanup.
 pub opaque type Host {
-  Host(pid: process.Pid, subject: process.Subject(Message))
+  Host(pid: process.Pid, subject: process.Subject(Message), close_ms: Int)
 }
 
-/// Fixed local topology for operator observation and parent supervision.
+/// Actual topology reported only by the original live scope owner.
 pub type View {
+  /// The native service is owned; the shared endpoint is borrowed.
   View(
-    /// Actual assigned port, observed only after listener creation succeeds.
-    port: Int,
-    /// Admission actor owned by this host, not an independent unlinked service.
+    /// Concrete linked native admission service created by this owner.
     service: process.Pid,
-    /// Bounded listener worker subtree owned by this host.
-    acceptors: process.Pid,
+    /// Original node-wide endpoint shared with sibling scopes.
+    endpoint: process.Pid,
   )
 }
 
-/// Refusal and cleanup uncertainty preserve original custody, never reopen it.
+/// Refusals and uncertainty never reopen original native authority.
 pub type Error {
-  /// Labels, epochs, custody bindings or capacity/deadlines do not agree.
+  /// Immutable scope or finite drain configuration does not agree.
   InvalidConfiguration
 
-  /// Construction was not published; late failure may follow peer admission,
-  /// so the caller retains original handles for drain and reconciliation.
+  /// No successful ownership transfer; publication may precede a lost reply.
   StartupFailed
 
-  /// The lifetime owner died or did not answer; native retirement is unknown.
+  /// The owner died or failed to answer; native retirement remains unknown.
   Unavailable
 
-  /// Admission is fenced, but complete durable retirement was not established.
+  /// Required drain, native, durable or journal-release witness is missing.
   CleanupUncertain
 }
 
 type Resources {
   Resources(
     config: Config,
-    listener: tls.Listener,
     service: service.Service,
-    acceptors: process.Pid,
-    port: Int,
+    row: endpoint.Registration,
   )
 }
 
@@ -114,20 +106,17 @@ type State {
 type Message {
   Close(reply: process.Subject(Result(Nil, Error)))
   Observe(reply: process.Subject(Result(View, Error)))
+  EndpointDown
   Finish
 }
 
-type Shutdown {
-  Shutdown
-}
-
-/// Checks all immutable bindings and bounds before the host can listen.
-/// A supplied arbitrary verifier cannot replace canonical registration checks.
+/// Checks exact immutable custody before creating a linked service or row.
+/// Arbitrary supplied callbacks cannot replace canonical registration verification.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // host.configure(provisioning) -> Ok(config)
+/// host.configure(provisioning) // -> Ok(config), before publication.
 /// ```
 pub fn configure(provisioning: Provisioning) -> Result(Config, Error) {
   use Nil <- result.try(
@@ -138,12 +127,8 @@ pub fn configure(provisioning: Provisioning) -> Result(Config, Error) {
   case
     registration.scope(provisioning.registration) == scope
     && journal.scope(provisioning.service.journal) == scope
-    && provisioning.port >= 0
-    && provisioning.port <= 65_535
-    && provisioning.workers >= 1
-    && provisioning.workers <= 4
-    && provisioning.exchange_ms >= 100
-    && provisioning.exchange_ms <= 30_000
+    && provisioning.drain_ms >= 100
+    && provisioning.drain_ms <= 30_000
   {
     True -> {
       let registered = provisioning.registration
@@ -157,15 +142,14 @@ pub fn configure(provisioning: Provisioning) -> Result(Config, Error) {
   }
 }
 
-/// Starts one linked owner and transfers exclusive custody only on success.
-/// Failure closes its listener and linked admission children; the supplied
-/// native/journal handles remain with the caller for cleanup or inspection. A
-/// late startup timeout can follow admission, so failure never grants replay.
+/// Starts one linked temporary owner and registers its concrete service last.
+/// Failed publication attempts exact fencing and native cleanup without releasing
+/// the caller's original journal. A timeout grants no replay or absence proof.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // host.start(config) -> Ok(host)
+/// host.start(config) // -> Ok(host), after row publication acknowledgement.
 /// ```
 pub fn start(config: Config) -> Result(Host, Error) {
   builder(config)
@@ -174,58 +158,57 @@ pub fn start(config: Config) -> Result(Host, Error) {
   |> result.replace_error(StartupFailed)
 }
 
-/// Supplies a temporary child; failure never restarts this custody incarnation.
+/// Supplies temporary supervision over the same original custody incarnation.
+/// Its shutdown allowance covers transport polling and reserved native cleanup.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // supervisor.add(tree, host.supervised(config))
+/// supervisor.add(tree, host.supervised(config)) // -> A temporary child.
 /// ```
 pub fn supervised(config: Config) -> supervision.ChildSpecification(Host) {
   builder(config)
   |> actor.supervised
   |> supervision.restart(supervision.Temporary)
-  |> supervision.timeout(35_000)
+  |> supervision.timeout(close_budget(config))
 }
 
-/// Returns the local lifetime PID for explicit parent observation.
+/// Returns the original scope owner's identity for parent monitoring.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // process.monitor(host.pid(running))
+/// process.monitor(host.pid(running)) // -> The concrete owner monitor.
 /// ```
 pub fn pid(host: Host) -> process.Pid {
   host.pid
 }
 
-/// Observes a live host or its fenced uncertain-close state.
-/// Stored topology is returned only after the actual owner answers.
+/// Returns actual service/endpoint topology, or the sticky uncertain disposition.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // host.observe(running) -> Ok(view), while serving.
+/// host.observe(running) // -> Ok(view), while serving.
 /// ```
 pub fn observe(host: Host) -> Result(View, Error) {
   call.try_call(host.subject, waiting: 1000, sending: Observe)
   |> result.unwrap(Error(Unavailable))
 }
 
-/// Closes new admissions and waits for complete witnessed lifetime cleanup.
-/// `Ok` includes epoch closure, native retirement, owned actor exit and journal
-/// release. Any uncertainty retains the original journal; actor/socket death
-/// alone is never reported as success.
+/// Fences and drains only this scope, then joins service and releases its journal.
+/// Success requires every original witness plus owner exit. A timeout stops this
+/// caller's wait; cleanup continues in the original owner and grants no replay.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // host.close(running) -> Ok(Nil), after actual scoped native retirement.
+/// host.close(running) // -> Ok(Nil), after actual scoped retirement.
 /// ```
 pub fn close(host: Host) -> Result(Nil, Error) {
   let monitor = process.monitor(host.pid)
   let answer =
-    call.try_call(host.subject, waiting: 35_000, sending: Close)
+    call.try_call(host.subject, waiting: host.close_ms, sending: Close)
     |> result.unwrap(Error(Unavailable))
   let outcome = case answer {
     Ok(Nil) -> wait_down(monitor, 2000)
@@ -236,16 +219,22 @@ pub fn close(host: Host) -> Result(Nil, Error) {
 }
 
 fn builder(config: Config) -> actor.Builder(State, Message, Host) {
-  actor.new_with_initialiser(6000, fn(subject) {
+  // Late startup refusal can spend the transport allowance and native cleanup
+  // grace. The initializer must not abandon the original owner before those asks.
+  actor.new_with_initialiser(config.provisioning.drain_ms + 40_000, fn(subject) {
     use resources <- result.try(
       initialise(config)
-      |> result.replace_error(
-        "remote host construction failed before ownership transfer",
-      ),
+      |> result.replace_error("scoped BEAM host ownership transfer failed"),
     )
+    let monitor = process.monitor(endpoint.pid(config.provisioning.endpoint))
+    let selector =
+      process.new_selector()
+      |> process.select(subject)
+      |> process.select_specific_monitor(monitor, fn(_) { EndpointDown })
     Ok(
       actor.initialised(Serving(resources))
-      |> actor.returning(Host(process.self(), subject)),
+      |> actor.selecting(selector)
+      |> actor.returning(Host(process.self(), subject, close_budget(config))),
     )
   })
   |> actor.on_message(handle)
@@ -253,64 +242,60 @@ fn builder(config: Config) -> actor.Builder(State, Message, Host) {
   |> actor.on_shutdown(shutdown)
 }
 
+fn close_budget(config: Config) -> Int {
+  // Sequential maxima are fence 1s, quiesce 2s, poll plus its final 1s ask,
+  // native shutdown 30s, service join 2s and journal release 30s. A 4s margin
+  // preserves cleanup time without extending any original command authority.
+  config.provisioning.drain_ms + 70_000
+}
+
 fn initialise(config: Config) -> Result(Resources, Error) {
   let provisioning = config.provisioning
-  use Nil <- result.try(tls.start() |> result.replace_error(StartupFailed))
-  use socket <- result.try(
-    tls.listen(provisioning.tls, provisioning.bind, provisioning.port)
-    |> result.replace_error(StartupFailed),
-  )
-  let observed_port = tls.port(socket)
-  let started = service.supervised(provisioning.service).start()
-  case started {
-    Error(_) -> {
-      tls.close_listener(socket)
-      Error(StartupFailed)
-    }
-    Ok(started) -> {
-      case observed_port {
-        Ok(port) -> initialise_listener(config, socket, started.data, port)
-        Error(_) -> {
-          tls.close_listener(socket)
-          process.send_exit(started.pid)
-          Error(StartupFailed)
+  case process.is_alive(endpoint.pid(provisioning.endpoint)) {
+    False -> Error(StartupFailed)
+    True -> {
+      use started <- result.try(
+        service.supervised(provisioning.service).start()
+        |> result.replace_error(StartupFailed),
+      )
+      let formed = form_resources(config, started.data)
+      case formed {
+        Ok(resources) -> publish(resources)
+        Error(error) -> {
+          let _ = service.shutdown(started.data)
+          Error(error)
         }
       }
     }
   }
 }
 
-fn initialise_listener(
+fn form_resources(
   config: Config,
-  socket: tls.Listener,
-  remote: service.Service,
-  port: Int,
+  native: service.Service,
 ) -> Result(Resources, Error) {
-  let provisioning = config.provisioning
-  let started = {
-    use accepting <- result.try(
-      listener.configure(
-        socket,
-        remote,
-        provisioning.workers,
-        provisioning.exchange_ms,
-      )
-      |> result.replace_error(StartupFailed),
+  use row <- result.try(
+    endpoint.registration(
+      config.provisioning.owner,
+      native,
+      None,
+      process.self(),
     )
-    supervisor.new(supervisor.OneForOne)
-    |> supervisor.add(listener.supervised(accepting))
-    |> supervisor.start
-    |> result.replace_error(StartupFailed)
-  }
-  case started {
-    Ok(started) -> Ok(Resources(config, socket, remote, started.pid, port))
-    Error(error) -> {
-      // A partial supervisor start may already have accepted a configured peer.
-      // Close and drain conservatively; retain the original journal for its
-      // caller even if construction never published a host handle.
-      tls.close_listener(socket)
-      let _ = service.shutdown(remote)
-      Error(error)
+    |> result.replace_error(StartupFailed),
+  )
+  Ok(Resources(config, native, row))
+}
+
+fn publish(resources: Resources) -> Result(Resources, Error) {
+  // Register and cleanup Fence originate in this same process. Lost ACK cannot
+  // reorder the fence before a delayed publication sent by another producer.
+  case
+    endpoint.register(resources.config.provisioning.endpoint, resources.row)
+  {
+    Ok(Nil) -> Ok(resources)
+    Error(_) -> {
+      let _ = settle(resources)
+      Error(StartupFailed)
     }
   }
 }
@@ -321,9 +306,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(
         reply,
         Ok(View(
-          resources.port,
           service.pid(resources.service),
-          resources.acceptors,
+          endpoint.pid(resources.config.provisioning.endpoint),
         )),
       )
       actor.continue(state)
@@ -344,6 +328,9 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, Error(CleanupUncertain))
       actor.continue(state)
     }
+    Serving(_), EndpointDown | Fenced(_), EndpointDown ->
+      actor.stop_abnormal("shared BEAM endpoint lifetime ended")
+    Retired, EndpointDown -> actor.continue(state)
     Retired, Finish -> actor.stop()
     Serving(_), Finish | Fenced(_), Finish -> actor.continue(state)
     Retired, Close(reply) -> {
@@ -358,33 +345,51 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 }
 
 fn retire(resources: Resources) -> Result(Nil, Error) {
-  // Listener closure owns the first ordering edge. Existing accepted exchanges
-  // cannot grant new native authority after the serialized quiesce replies.
-  tls.close_listener(resources.listener)
-  let quiesced = service.quiesce(resources.service)
-  let workers = stop_acceptors(resources.acceptors)
-  let monitor = process.monitor(service.pid(resources.service))
-  let drained = service.shutdown(resources.service)
-  let ended = case drained {
-    Ok(Nil) -> wait_down(monitor, 2000)
-    Error(_) -> Error(CleanupUncertain)
-  }
-  process.demonitor_process(monitor)
-  use Nil <- result.try(quiesced |> result.replace_error(CleanupUncertain))
-  use Nil <- result.try(workers)
-  use Nil <- result.try(drained |> result.replace_error(CleanupUncertain))
-  use Nil <- result.try(ended)
+  use Nil <- result.try(settle(resources))
   journal.release(resources.config.provisioning.service.journal)
   |> result.replace_error(CleanupUncertain)
 }
 
-fn stop_acceptors(pid: process.Pid) -> Result(Nil, Error) {
-  let monitor = process.monitor(pid)
-  process.unlink(pid)
-  process.send_abnormal_exit(pid, Shutdown)
-  let ended = wait_down(monitor, 2000)
+fn settle(resources: Resources) -> Result(Nil, Error) {
+  // Attempt every cleanup phase before combining results. Failed fencing or
+  // transport expiry must not consume the separately reserved native allowance.
+  let fenced =
+    endpoint.fence(resources.config.provisioning.endpoint, resources.row)
+  let quiesced = service.quiesce(resources.service)
+  let transport = drain_transport(resources)
+  let monitor = process.monitor(service.pid(resources.service))
+  let native = service.shutdown(resources.service)
+  let ended = case native {
+    Ok(Nil) -> wait_down(monitor, 2000)
+    Error(_) -> Error(CleanupUncertain)
+  }
   process.demonitor_process(monitor)
+
+  // DOWN is required only after service-owned original retirement success.
+  // Neither a successful native result nor actor exit replaces a missing fence
+  // or actual-answer/join witness for the shared transport row.
+  use Nil <- result.try(fenced |> result.replace_error(CleanupUncertain))
+  use Nil <- result.try(quiesced |> result.replace_error(CleanupUncertain))
+  use Nil <- result.try(transport)
+  use Nil <- result.try(native |> result.replace_error(CleanupUncertain))
   ended
+}
+
+fn drain_transport(resources: Resources) -> Result(Nil, Error) {
+  let server = resources.config.provisioning.endpoint
+  let row = resources.row
+  case
+    poll.until(resources.config.provisioning.drain_ms, 10, fn() {
+      case endpoint.inspect_drain(server, row) {
+        Ok(endpoint.Drained) -> poll.Done(Nil)
+        Ok(endpoint.Busy) -> poll.Retry
+        Ok(endpoint.DrainUncertain) | Error(_) -> poll.Fail(CleanupUncertain)
+      }
+    })
+  {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Expired | poll.Failed(_) -> Error(CleanupUncertain)
+  }
 }
 
 fn wait_down(monitor: process.Monitor, within: Int) -> Result(Nil, Error) {
@@ -398,16 +403,10 @@ fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
   case state {
     Retired -> Nil
     Serving(resources) | Fenced(resources) -> {
-      // A child failure or parent exit cannot turn best-effort drain into a
-      // durable host acknowledgement. Evidence stays caller-recoverable even
-      // when these local native cleanup attempts succeed.
-      tls.close_listener(resources.listener)
-      let _ = stop_acceptors(resources.acceptors)
-      let _ = service.quiesce(resources.service)
-      let _ = service.shutdown(resources.service)
-      let original = resources.config.provisioning.service
-      let _ = journal.close_epoch(original.journal)
-      let _ = local.close(original.native, draining: 2000, helpers: 5000)
+      // Abnormal shutdown still uses the original service's close disposition.
+      // A dead service has lost that witness; no second native close can recreate
+      // it. Best-effort cleanup never releases the retained journal on this path.
+      let _ = settle(resources)
       Nil
     }
   }

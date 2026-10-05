@@ -89,6 +89,30 @@ Lost asks or drain witnesses retire capacity. Endpoint death does not establish
 native cleanup, so the embedding owner must reconcile the service and helper
 lifetimes before replacement.
 
+## A native scope borrows the node endpoint
+
+The node endpoint outlives each registered native host. `remote/host` starts its
+native service before publication and sends Register and Fence from the same
+process. A lost Register acknowledgement therefore does not justify creating a
+new host or allowing late registration to pass the original fence.
+
+Closing a host first fences that exact row and quiesces fresh native admission.
+It waits for the row's actual service replies and managed transport joins while
+the service can still produce them. It then requests native retirement through
+the original service and waits for that service to exit. Failure at an earlier
+step does not suppress later cleanup attempts; failure at any step prevents
+journal release. The service retains the original physical-close disposition
+across a later persistence error, so retrying does not manufacture evidence by
+closing an already-closed pool. A dead service with a lost disposition remains
+uncertain.
+
+This ordering preserves sibling scopes and the node's shared credits. Endpoint
+drain establishes transport custody only; it does not establish native retirement.
+The current host owns the native scope. Whole Compile and workspace owners still
+need their corresponding physical-resource proofs in the final node assembly.
+The [scoped host review](../review/distributed-scoped-host.md) records the actual
+TLS controls and their limits.
+
 ## Durable work outlives transport
 
 The [custody guide](remote-custody.md) describes owner tool/run admission and
