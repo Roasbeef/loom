@@ -1258,7 +1258,7 @@ fn admit(
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
-      sessions: fn() { listed_for(role, fn() { listed(attachment, projects) }) },
+      sessions: fn(deliver) { listed_task(role, attachment, projects, deliver) },
       activity: fn(ids, deliver) {
         activity_for(role, attachment.activity, ids, deliver)
       },
@@ -1391,6 +1391,41 @@ fn closing(close: ending.Close) -> mist.Next(Phase, Signal) {
   }
 }
 
+// Starts the sidebar's read in a run of its own and returns at once, so the
+// page's runtime is free while the registry answers; `deliver` is called,
+// from that run, with the list, whatever it is. An observer's page is handed
+// its empty list without a task, since no read is made for it (`listed_for`).
+//
+// The read is two registry calls (`manager.authorized_page` and
+// `manager.authorized_roles`), each bounded by its own timeout of a few
+// seconds, and a registry busy with a turn can hold either for that long.
+// Made in the runtime's own process they held every click and patch of the
+// page behind them (protocol-change/051: the runtime never blocks, and daemon
+// work runs as weft tasks). The run is linked to the runtime, so a page that
+// goes away cancels a read still waiting; the task's last act is `deliver`,
+// so a page that stays open is always answered.
+fn listed_task(
+  role: Role,
+  attachment: server.Attachment(instance),
+  projects: ui_project.Projects,
+  deliver: fn(List(sessions.Entry)) -> Nil,
+) -> Nil {
+  case role {
+    Observing -> deliver([])
+    Operating | Owning -> {
+      let _ =
+        weft.new([
+          fn() {
+            deliver(listed(attachment, projects))
+            Ok(Nil)
+          },
+        ])
+        |> weft.start_witnessed
+      Nil
+    }
+  }
+}
+
 // The sessions the page's principal may see, for the sidebar
 // (protocol-change/051, the addendum on the session sidebar): the same
 // authorized read a terminal's session picker makes. It is made with the
@@ -1399,7 +1434,9 @@ fn closing(close: ending.Close) -> mist.Next(Phase, Signal) {
 // they hold a membership in, an owner every active session, and a revoked
 // credential none. It carries the catalogue's own fields, and never a
 // database path or a configuration, which the entry has no place for. A
-// failed read is an empty list, which the sidebar draws as nothing.
+// failed read is an empty list, which the sidebar draws as nothing. It blocks
+// the calling process on the registry and, for a workspace not yet seen, on the
+// project cache, so `listed_task` runs it off the page's runtime.
 fn listed(
   attachment: server.Attachment(instance),
   projects: ui_project.Projects,

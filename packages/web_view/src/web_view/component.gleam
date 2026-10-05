@@ -450,13 +450,18 @@ pub type Transport(socket) {
     /// A monotonic reading in milliseconds, for the lane's deadlines. The
     /// component reads it once at the top of each message.
     now: fn() -> Int,
-    /// The sessions the page's principal may see, for the sidebar: the
-    /// daemon's authorized catalogue read for an operator's page, or an
-    /// empty list when it fails or the page is an observer's.
-    /// It runs in the component's process when the page opens and every
-    /// `sessions_refresh_ms` after, and it must not run long: the page's
-    /// runtime waits for it.
-    sessions: fn() -> List(sessions.Entry),
+    /// Starts the read of the sessions the page's principal may see, for the
+    /// sidebar, and returns at once: the daemon's authorized catalogue read
+    /// for an operator's page, or an empty list when it fails or the page is
+    /// an observer's. It is asked when the page opens and every
+    /// `sessions_refresh_ms` after. The read runs in the daemon's own task,
+    /// which calls the function it is given with the list, and that call is
+    /// dispatched as `SessionsListed`; the page's runtime never waits for
+    /// it, because the catalogue read is a registry call that can wait on a
+    /// busy daemon for seconds, and a runtime that waited would hold every
+    /// click and every patch behind it (protocol-change/051: the runtime
+    /// never blocks).
+    sessions: fn(fn(List(sessions.Entry)) -> Nil) -> Nil,
     /// Asks the daemon what the named running sessions are doing, for the
     /// sidebar's words and dots: the same read the home makes
     /// (`home.Start.activity`, protocol-change/050), for at most
@@ -747,6 +752,12 @@ type View(socket) {
     jobs_asked_at: Option(Int),
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
+    /// How many submits were refused with the draft kept, by the page
+    /// (`refused`) or by the lane's admission check (`submitting`). The
+    /// composer's element reads it as the `refused` attribute, so a pending
+    /// line it drew for a press can be taken down and the draft put back
+    /// (`web_client/pending_rule`); a taken draft replaces the editor instead.
+    refusals: Int,
     /// What the session said when the page ran the operator's last command:
     /// the notice the shared step left, read at once because any later event
     /// may write it over. Empty when the command said nothing. The daemon's
@@ -953,6 +964,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       renamed: 0,
       jobs_asked_at: None,
       refusal: None,
+      refusals: 0,
       outcome: "",
       returns: 0,
       returned: [],
@@ -1261,10 +1273,13 @@ fn observing(
   }
 }
 
-// The read itself, in the component's process, answered as a message.
+// Starts the read and returns. The transport's task hands the list back
+// through `dispatch`, which sends the runtime a message from whichever
+// process the task runs in, so the effect holds the runtime for no longer
+// than the start of a task.
 fn listing(transport: Transport(socket)) -> Effect(Msg(socket)) {
   use dispatch <- effect.from
-  dispatch(SessionsListed(transport.sessions()))
+  transport.sessions(fn(entries) { dispatch(SessionsListed(entries)) })
 }
 
 // The step's tick at `at`. The two readings are the same one because the
@@ -2088,13 +2103,25 @@ fn submitting(
               ..model.shared,
               attachments: list.map(attached, composer.ImageAttachment),
             )
+
+          // The lane's admission check is read before the command runs, as
+          // `sent_from_form` reads it: a draft the check refuses stays in
+          // the editor, and the composer's element is told so by the count.
+          // A draft the lane admits but holds behind a read is not refused.
+          let kept = case outbound.mutation_refusal(model.shared, session) {
+            Some(_) -> 1
+            None -> 0
+          }
           let #(next, effects) =
             commanded(
               Model(..model, shared: attaching),
               msg.Submit(draft: text, command: session, delivery:),
             )
           #(
-            Model(..next, shared: Shared(..next.shared, attachments: [])),
+            Model(
+              shared: Shared(..next.shared, attachments: []),
+              view: View(..next.view, refusals: next.view.refusals + kept),
+            ),
             effects,
           )
         }
@@ -2367,7 +2394,14 @@ fn refused(
   text: String,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   #(
-    Model(..model, view: View(..model.view, refusal: Some(text))),
+    Model(
+      ..model,
+      view: View(
+        ..model.view,
+        refusal: Some(text),
+        refusals: model.view.refusals + 1,
+      ),
+    ),
     effect.none(),
   )
 }
@@ -3319,6 +3353,19 @@ pub fn notice(model: Model(socket)) -> Notice {
 /// ```
 pub fn notice_serial(model: Model(socket)) -> Int {
   model.view.noticed
+}
+
+/// How many submits were refused with the draft kept, by the page or by the
+/// lane's admission check. The operator page writes it as the composer
+/// element's `refused` attribute.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.refusals(model) == 0
+/// ```
+pub fn refusals(model: Model(socket)) -> Int {
+  model.view.refusals
 }
 
 /// The model with its notice counted as changed. The operator page calls it

@@ -40,8 +40,10 @@ page keys and nonces, and the relay into the session's gateway.
   `title`.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
-  `now()`, `sessions()`, the sidebar's read of the principal's sessions
-  (the daemon's authorized catalogue read, `[]` on failure), and
+  `now()`, `sessions(deliver)`, which starts the sidebar's read of the
+  principal's sessions (the daemon's authorized catalogue read, `[]` on
+  failure) in the daemon's own task and returns at once, the list arriving
+  as `SessionsListed` through `deliver`, and
   `open(id)`, a request to open another session that answers a
   `sessions.Answer` (a ticket's exchange path, or a `Declined` reason; an
   observer's page is always declined), and `invite`, an `Option` of a request
@@ -50,8 +52,10 @@ page keys and nonces, and the relay into the session's gateway.
   (`ui_socket.Owning`). `home` is an `Option` of a request for a ticket to the
   principal's home (a `sessions.Answer` again, declined as `NoHome`); it is
   `Some` only on a page whose grant has `Workspace` reach, an observer's
-  included, and the page draws the "Home" button only then. All run in the
-  component's process.
+  included, and the page draws the "Home" button only then. All but
+  `sessions`, `resume` and `rename` run in the component's process; those
+  three start a task and answer as a message, so the runtime never waits on
+  the registry for them.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
@@ -303,16 +307,18 @@ page keys and nonces, and the relay into the session's gateway.
   the session count, and a hairline in the divider colour separates one
   section from the next (team feedback, 2026-09-29); the list's own heading
   is kept for assistive technology and not drawn. A running row's word and dot follow the home's activity
-  read: after each list the component asks `Transport.activity(ids, deliver)` (an
+  read: after each list arrives (`SessionsListed`) the component asks `Transport.activity(ids, deliver)` (an
   async task, never in the page runtime; the daemon's `server.home_activity` with
   the page's own credential, so a member hears only of sessions they hold) and
   `ActivityObserved` sets `View.activity`, so the session page says `working`,
   `idle` or `needs you` (classes `residency live working|idle|needs-you`, drawn
-  as accent pulse, quiet, signal hue) on the list's 30 s cadence, and `running`
-  until a session is named. The read cannot tell an approval from a failed run:
-  `needs you` covers both. The
-  component reads `Transport.sessions` on `Opened` and on a `Ticked` at
-  least `sessions_refresh_ms` (30 s) after the last read, keeps at most
+  as accent pulse, quiet, signal hue), and `running` until a session is named.
+  The read cannot tell an approval from a failed run: `needs you` covers both. The
+  component starts `Transport.sessions` on `Opened` and on a `Ticked` at
+  least `sessions_refresh_ms` (30 s) after the last read (the read runs in
+  the daemon's task and lands as `SessionsListed`; a read that is slow or
+  never answers leaves the page working with an empty sidebar,
+  `sidebar_test`), keeps at most
   `sessions.listed_limit` entries, and `component.session_groups(model)` is
   what the operator's page draws. The observer's page draws no sidebar:
   `ui_socket.listed_for` gives it an empty list without making the read
@@ -928,13 +934,18 @@ page keys and nonces, and the relay into the session's gateway.
   latest" button while they are not, and keeps the reader's place when a
   press of "Load older" brings rows in above them. They run in the browser
   and send the server nothing. The operator's editor is drawn inside
-  `<loom-composer commands returned>`, which lists the slash commands as
+  `<loom-composer commands returned refused>`, which lists the slash commands as
   the draft grows, sends the draft on Command or Control with Enter (by
-  submitting the composer form), and puts a returned prompt in the editor.
-  Its inputs are the `commands` table, the `returned` count and the
+  submitting the composer form), puts a returned prompt in the editor, and
+  shows a pressed draft as a pending line until the server takes it.
+  Its inputs are the `commands` table, the `returned` count, the
   returned prompts as text-node children in a `returned` slot, numbered by
-  `data-n`; the editor stays the uncontrolled textarea, and keeps its place
-  when a return arrives.
+  `data-n`, and the `refused` count (`component.refusals`: the submits the
+  page or the lane's admission check refused with the draft kept), which
+  tells the element a press was refused while the editor stayed; the editor stays the
+  uncontrolled textarea, and keeps its place when a return arrives. A taken
+  draft replaces the editor and the element with it, which is how the
+  pending line leaves.
 - An operator's page also receives Lustre's `EventFired` for its handlers:
   a click on an approval button, on one of the controls or on a peer card's
   Reply, and the submit of the composer form or of one of the two control

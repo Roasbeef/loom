@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3556`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3593`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -653,8 +653,12 @@ to the strand on screen. The socket admits an observer's click beneath
 **The sidebar.** `ui_socket` gives the component `Transport.sessions`, the
 authorized catalogue read the terminal's session picker uses
 (`manager.authorized_page`) made with the page's credential digest, so a
-member sees only their own sessions and a revoked credential none. The
-component reads it when the page opens and at most every 30 seconds on a
+member sees only their own sessions and a revoked credential none. The read
+runs in a weft task of the daemon's (`ui_socket.listed_task`) and answers
+as the component's `SessionsListed`, so the page's runtime, which once made
+the two registry calls itself and could wait seconds on a busy registry
+with every click and patch held behind it, never waits for it. The
+component starts it when the page opens and at most every 30 seconds on a
 tick (an observer's page is given an empty list and draws no sidebar, so a
 stolen observer link does not disclose the principal's other sessions),
 groups it by project (`web_view/sessions`), and `view/sidebar`
