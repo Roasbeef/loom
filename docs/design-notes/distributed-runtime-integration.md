@@ -16,9 +16,11 @@ orchestrator retains the session's SQLite store, approval authority and budget.
 Clients can reconnect to that owner from another device without moving files.
 
 Two transports serve different trust boundaries. Executors use bounded framed
-messages over authenticated TLS. Trusted orchestrator nodes may later use TLS
-BEAM distribution within one administrative domain. A live socket or BEAM
-process is never a durable ownership record.
+messages over authenticated TLS. The planned trusted orchestrator cluster uses
+TLS-protected BEAM distribution within one administrative domain: this is
+distributed Erlang/BEAM, with TLS securing its node connections. Executors do
+not join that cluster. A live socket or BEAM process is never a durable
+ownership record.
 
 ## Read the components in this order
 
@@ -50,9 +52,15 @@ tools and code mode with the owner and executor on separate hosts and no checkou
 on the owner's disk.
 
 Executor pools, trusted orchestrator routing, durable cross-node messaging and
-controlled session movement follow that first working remote path. Khepri remains
-a candidate for small authoritative cluster metadata pending the compatibility
-spike. Automatic failover and workspace snapshot migration remain deferred.
+controlled session movement follow that first working remote path. These are
+required remaining work for issue #697. In the API plan, C1 implements the
+ownership service, C2 adds TLS BEAM membership and routing, C3 adds durable
+cross-node messaging, and M1 adds planned session movement. None is complete
+merely because remote executor requests can cross a TLS connection.
+
+Khepri remains a candidate for small authoritative cluster metadata pending the
+compatibility spike. Automatic failover and workspace snapshot migration remain
+deferred.
 
 ## How changes enter the integration branch
 
