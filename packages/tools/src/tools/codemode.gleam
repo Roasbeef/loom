@@ -2145,54 +2145,57 @@ fn notes_guidance(seams: Seams) -> String {
 // exact executable programs, not pseudocode that makes the model guess APIs.
 fn recipes_text(seams: Seams) -> String {
   let offers = offered(seams)
-  list.fold(offers, "", fn(text, offer) {
-    let needed = case offer.seam {
-      WorkspaceSeam -> [
-        "cap/fs",
-        "cap/task",
-        "cap/notes",
-        "cap/report",
-        "gleam/list",
-        "gleam/result",
-      ]
-      OrchestrationSeam -> [
-        "cap/strand",
-        "cap/notes",
-        "cap/report",
-        "gleam/list",
-        "gleam/result",
-      ]
-    }
-    case
-      list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) }),
-      offer.seam
-    {
-      False, _ -> text <> lsp_sql_recipe(offer)
-      True, WorkspaceSeam ->
-        text
-        <> "\nWorkspace recipe (seam: workspace): read JSON inputs in parallel, save structured analysis, and export JSON.\n```gleam\n"
-        <> codemode_recipes.workspace()
-        <> "```\n"
-        <> lsp_sql_recipe(offer)
-      True, OrchestrationSeam ->
-        text
-        <> "\nOrchestration recipe (seam: orchestration): bounded child reviews with structured results saved to notes. Results preserve assignment order; keep pending handles and retry only NotStarted work after prior children settle.\n```gleam\n"
-        <> codemode_recipes.orchestration()
-        <> "```\n"
-        <> lsp_sql_recipe(offer)
-    }
-  })
+  let seam_recipes =
+    list.fold(offers, "", fn(text, offer) {
+      let needed = case offer.seam {
+        WorkspaceSeam -> [
+          "cap/fs",
+          "cap/task",
+          "cap/notes",
+          "cap/report",
+          "gleam/list",
+          "gleam/result",
+        ]
+        OrchestrationSeam -> [
+          "cap/strand",
+          "cap/notes",
+          "cap/report",
+          "gleam/list",
+          "gleam/result",
+        ]
+      }
+      case
+        list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) }),
+        offer.seam
+      {
+        False, _ -> text
+        True, WorkspaceSeam ->
+          text
+          <> "\nWorkspace recipe (seam: workspace): read JSON inputs in parallel, save structured analysis, and export JSON.\n```gleam\n"
+          <> codemode_recipes.workspace()
+          <> "```\n"
+        True, OrchestrationSeam ->
+          text
+          <> "\nOrchestration recipe (seam: orchestration): bounded child reviews with structured results saved to notes. Results preserve assignment order; keep pending handles and retry only NotStarted work after prior children settle.\n```gleam\n"
+          <> codemode_recipes.orchestration()
+          <> "```\n"
+      }
+    })
+
+  // One copy however many seams admit the modules it imports.
+  seam_recipes <> lsp_sql_recipe(offers)
 }
 
-// The `lsp_sql` skeleton, for an offer that admits every module it imports.
+// The `lsp_sql` skeleton, when any offer admits every module it imports.
 // It lives here rather than in a module doc because the prelude generator
 // keeps only the prose before a doc's first heading, and a recipe is the
 // one place the description already carries a whole compiling program.
-fn lsp_sql_recipe(offer: SeamOffer) -> String {
+fn lsp_sql_recipe(offers: List(SeamOffer)) -> String {
   let needed = ["cap/lsp_sql", "cap/report", "gleam/option", "gleam/string"]
-  case
+  let admits = fn(offer: SeamOffer) {
     list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
-  {
+  }
+  case list.any(offers, admits) {
     False -> ""
     True ->
       "\nLSP SQL recipe: capture once, join with SQL, and return every branch as a report.Outcome.\n```gleam\n"

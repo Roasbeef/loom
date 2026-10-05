@@ -2303,3 +2303,27 @@ pub fn the_lsp_sql_schema_and_recipe_reach_the_model_test() {
     codemode_recipes.lsp_sql_skeleton(),
   )
 }
+
+pub fn the_lsp_sql_recipe_appears_once_however_many_seams_admit_it_test() {
+  let imports = ["cap/lsp_sql", "cap/report", "gleam/option", "gleam/string"]
+  let seams =
+    codemode.Seams(
+      default: codemode.SeamOffer(
+        ..workspace_offer(),
+        allowed_imports: imports,
+        serviced_caps: ["lsp.snapshot"],
+      ),
+      alternates: [
+        codemode.SeamOffer(
+          ..orchestration_offer(),
+          allowed_imports: imports,
+          serviced_caps: ["lsp.snapshot"],
+        ),
+      ],
+    )
+  assert occurrences(
+      codemode.description(echoing_over(seams)),
+      codemode_recipes.lsp_sql_skeleton(),
+    )
+    == 1
+}
