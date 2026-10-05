@@ -914,7 +914,8 @@ only Go module.
   a permission refusal, prints `NOT RUN every probe` and `RESULT: NOT RUN
   (not a pass)` with a nonzero exit instead of eleven failures. The Gleam
   suites key their skip on `LOOM_SCRATCH_DIR` being set
-  (`broker/exec.jailed_session_skip_reason`). None of this widens a
+  (`broker/exec.jailed_session_skip_reason`). The Go seatbelt tests still
+  fail noisily there; they skip only when `sandbox-exec` is missing. None of this widens a
   policy; do not debug it, signoff and CI arbitrate.
 
 ## Deep Docs

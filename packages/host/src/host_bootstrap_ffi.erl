@@ -486,8 +486,9 @@ darwin_process_identity(Pid) ->
 % setuid root, and no sandbox profile may exec a setuid binary. Reading
 % the refusal as absence would tell a client inside any sandbox that a live
 % daemon is dead. This VM's own pid certainly exists, so asking ps about
-% it separates the two: the same answer for a pid that must exist means ps
-% never ran.
+% it separates the two. Only a successful answer for that pid proves ps ran,
+% and so proves the target is absent; a refusal, a timeout or any other
+% outcome means ps could not be consulted, which is never absence.
 darwin_absent_or_unrunnable(Pid) ->
     Own = list_to_integer(os:getpid()),
     case Pid =:= Own of
@@ -498,14 +499,14 @@ darwin_absent_or_unrunnable(Pid) ->
                 ["-p", integer_to_list(Own), "-o", "lstart="],
                 2000
             ) of
-                {ok, 1, <<>>} -> {error, ps_unrunnable()};
-                _ -> {ok, process_absent}
+                {ok, 0, _} -> {ok, process_absent};
+                _ -> {error, ps_unrunnable()}
             end
     end.
 
 ps_unrunnable() ->
-    <<"/bin/ps cannot be executed here "
-      "(setuid binary refused by the sandbox)">>.
+    <<"/bin/ps could not be consulted "
+      "(refused by the sandbox or did not answer)">>.
 
 run_capture_status(Executable, Arguments, TimeoutMs) ->
     try

@@ -33,7 +33,7 @@ fn with_own(body: fn(endpoint.Fence) -> Nil) -> Nil {
   case endpoint.observe(bootstrap.current_process_id()) {
     Ok(fence) -> body(fence)
     Error(reason) ->
-      case string.contains(reason, "/bin/ps cannot be executed here") {
+      case string.contains(reason, "/bin/ps could not be consulted") {
         True -> io.println_error("SKIP endpoint identity: " <> reason)
         False -> {
           panic as { "the test VM has no observable identity: " <> reason }

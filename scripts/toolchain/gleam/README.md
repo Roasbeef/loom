@@ -144,9 +144,11 @@ RUSTUP_HOME=/Users/you/.rustup CARGO_HOME="$TMPDIR/cargo-home" \
 Use the operator's real home, not `$HOME`, which is the tool home there. The
 session cannot write `~/.rustup`, so a command that needs to install a
 toolchain or component fails with a permission error; run it from an unjailed
-shell. Nothing here is a Loom setting: the server does not derive `RUSTUP_HOME`
+shell. The server does not derive `RUSTUP_HOME`
 because it would have to become a server-owned environment name and join the
-base environment allowlist, a policy-surface change for a convenience.
+base environment allowlist, a policy-surface change for a convenience. An operator who wants it standing
+can add `[tools.set]` with `RUSTUP_HOME = "/Users/you/.rustup"` to `loom.toml`;
+the catalogue refuses that table only for the five server-owned names.
 
 The native fixture builds a small Rebar dependency through a transitive Gleam
 wrapper, checks a clean rebuild, proves that an unchanged pin ignores a newer
