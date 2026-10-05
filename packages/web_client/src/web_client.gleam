@@ -25,6 +25,8 @@
 //// - `<loom-attach name="images">` (`web_client/attach`) is the composer's
 ////   image attachments: a file picker, a paste, a chip for each image with
 ////   a Remove button, and the images as one form field.
+//// - `drop_guard` (`web_client/drop_guard`) is no element: one listener on
+////   the document that stops a dropped file from navigating the tab.
 //// - `<loom-shell sidebar="listed">` (`web_client/shell`) is the page's
 ////   frame. It lays the server's regions out in its slots and draws the two
 ////   buttons that hide and show the sidebar and the strand panel.
@@ -68,6 +70,7 @@ import web_client/attach
 import web_client/back
 import web_client/composer
 import web_client/copy
+import web_client/drop_guard
 import web_client/elapsed
 import web_client/expand
 import web_client/fold
@@ -96,6 +99,9 @@ pub fn main() -> Nil {
   let _ = back.register()
   let _ = composer.register()
   let _ = copy.register()
+
+  // A file dropped anywhere else must not navigate the tab away.
+  drop_guard.install()
 
   // The transcript, the strand panel and the page's frame.
   let _ = elapsed.register()

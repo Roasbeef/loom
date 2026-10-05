@@ -1204,6 +1204,12 @@
      their own. */
   .attach-slot,.notice-slot,loom-attach{display:contents;}
   loom-attach ul.attachments{order:-1;flex:1 0 100%;margin:0 0 2px 0;}
+  /* The drop state while image files are dragged over the composer: a layer
+     over the whole form, tinted toward the accent, with a tinted 1px border
+     and a hint. It sits against form.composer, the nearest positioned
+     ancestor of the display:contents attach element, takes no pointer events
+     so the drag never enters it, and has no shadow or edge bar. */
+  .attach-drop{position:absolute;inset:0;z-index:5;box-sizing:border-box;display:flex;align-items:center;justify-content:center;border-radius:12px;pointer-events:none;border:1px solid color-mix(in srgb,var(--color-current) 55%,transparent);background:color-mix(in srgb,var(--color-current) 12%,var(--color-bg-raised));color:var(--color-current);font:13px/1.4 var(--font-sans);}
   .foot-space{flex:1 1 auto;}
   .hint,.who{color:var(--color-fg-quiet);}
   .notice{margin:0;color:var(--color-fg-quiet);font-size:12px;min-width:0;}

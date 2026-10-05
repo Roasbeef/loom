@@ -266,6 +266,18 @@ export function clipboard_files(event) {
   return toList(Array.from(event.clipboardData?.files ?? []));
 }
 
+// The kinds of data a drag event carries (`dataTransfer.types`): "Files" for a
+// drag of files, and media types for anything else. None for an event with no
+// data transfer.
+export function drag_types(event) {
+  return toList(Array.from(event.dataTransfer?.types ?? []));
+}
+
+// The files a `drop` event carries (`dataTransfer.files`), or none.
+export function drag_files(event) {
+  return toList(Array.from(event.dataTransfer?.files ?? []));
+}
+
 export function file_name(file) {
   return file.name;
 }
