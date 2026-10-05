@@ -82,6 +82,8 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     sign_out_all: fn() { signins.Revoked },
     device: None,
     admin: None,
+    who: fn() { None },
+    rename_self: None,
   )
 }
 

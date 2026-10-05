@@ -5,8 +5,9 @@
 browser claimant is never shown a key; creation only in a known workspace;
 operator-ceiling pages open saved sessions), and again on 2026-10-04 for
 the login's security review and two further rulings (the addendum at the
-end); PRs 1 to 7 of the plan are on `main` and PR 5 is amended in the last
-addendum · **Affects**:
+end); PRs 1 to 7 of the plan are on `main`, PR 5 is amended in the last
+addendum, and PR 10 (`principals.rename`) is implemented in the addendum
+that ends this document · **Affects**:
 Part 1.6 client protocol (`ui.link`, `credentials.claim`, `principals.list`,
 four new control commands, new `/ui` routes), the `loom ui`, `loom claim`
 and `loom access` command lines, the catalogue schema (version 5), and four
@@ -1848,3 +1849,84 @@ for each press, the fixed words, a page with no capability, the paths),
 `ui_route_test` (each action against a real registry, every refusal, and the
 task), `admin_test` (the pill and the missing sentence), and `elapsed_test` (the
 countdown's words).
+
+## Addendum: renaming, the tenth pull request (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it. It builds the control command
+this document proposed last and optional, and the two web surfaces the design note
+names for it. It adds one control command, one event the home's socket admits and
+no catalogue version: `storage/access.rename` already existed, with the claim's own
+name rule, and had no caller.
+
+**The command.** `principals.rename` is as the proposal wrote it, with these
+details. `principal_id` is optional and `name` and `epoch` are required. A member
+omits `principal_id` and renames itself, and naming itself is the same; a member
+naming another principal is `forbidden`. The owner may name any principal and
+itself. The registry reauthenticates the caller and the epoch in the dispatch that
+writes (`manager.rename_principal`), drops its authority memo before it answers, and
+refuses during a drain, so it is `ControlMutation`. The name is the unjudged text
+on the wire (up to 1024 bytes, blank included, so the catalogue is the one judge),
+trimmed and then held to the rule a claim's chosen name is held to,
+`storage/access.new_name`, in the same function that renames: not blank, at most
+256 bytes, no control, zero-width or direction-changing character. A name that rule
+refuses is `invalid_name`, the code a refused claim name already uses, and stores
+nothing. An unknown principal is `not_found`, a stale epoch `stale_epoch`, a
+malformed frame `bad_request`. The reply names the principal and the name as
+stored. Origins already admitted keep the name they were admitted under
+(`core/message.gleam`); a page or a session admitted afterwards reads the new one.
+There is no `loom access rename` in this change.
+
+**On the home.** The person's name in the bar opens the account panel (the first
+pull request's popover), and the panel gains a "Your name" region as its first
+child: a lead that shows the current name as a text node, a text field in a
+`<loom-rename>` that copies the lead's text into it in the browser, and one submit
+button. The name is never an attribute, and the form is keyed by how many times the
+name changed so a stored name opens a fresh form on it. `Start.rename_self` is `Some`
+for a page minted to operate, whoever its principal is, and `None` for a read-only
+link, which draws nothing in its place. The daemon decides again at the submit
+(`ui_socket.rename_self_for`): the page is open, its ceiling is Operator, the
+credential authenticates as the principal the page was admitted for, and the
+registry's own turn applies the rule above to that principal and no other, so the
+page names nobody. The work runs as a weft task (`rename_self_task`); the page's
+runtime never waits. A refusal is the fixed words of `web_view/names`. Every list
+the home reads also reads the principal's name (`Start.who`), so a name the owner
+changed from the admin page reaches an open home at its next read.
+
+**On the admin page.** Every person's row, the owner's included, has a Rename
+button that opens a small form in that row, in the words and the shape of the
+home's session rename. Its submit is the seventh change the page may ask for
+(`grants.Rename`), made by `ui_socket.rename_for_admin` after the checks every change
+begins with. It grants nothing and costs none of the credential's allowance.
+`invalid_name` is `grants.InvalidName` and an unknown principal `grants.NotFound`.
+
+**The admission.** The one new event the home's socket takes is a `submit` beneath
+`home.signins_path` (`0\t2\t2\t...`), where the form is. It is admitted for every
+home, since a member's home has no other submit; a home that draws no form has no
+handler there, and the daemon refuses the request from any page that holds no
+capability. The panel's own path, a sibling that shares its digits and every other
+event stay dropped, and a batch with one such message is dropped whole. The table's
+forms are still admitted only for the owner's operating home, and the admin
+socket's admission is unchanged because the admin form is beneath
+`admin.body_path`. 051's addendum on the home's name form records the admission in
+that document's format.
+
+**What was considered.**
+
+- **A click that reads the field.** A button whose click event carried the field's
+  value would need a property on every click the server component forwards, which
+  the closed message type avoids. A form's `formData` is the shape the other forms
+  already use.
+- **A second validator.** The daemon's `catalogue.display_name` is the same rule as
+  the claim's, but a function that renames should not rely on a caller judging first.
+  The registry's rename is the only judge, and the page's `invalid_name` is that
+  function's refusal mapped, not a parallel check.
+- **A schema bump.** Nothing is stored beyond the existing `display_name` column.
+
+**Cost.** One control command, one registry message, one admitted event and one
+`Start` read per home refresh (`manager.authenticate`, a single indexed query).
+
+**Tests.** `daemon_protocol_test` (the decoder and its refusals),
+`ui_route_test` (who may name whom over the control socket, the claim rule's
+refusals, a stale epoch, the home's and the admin page's daemon checks),
+`ui_socket_test` (the admission and the capability), `names_test` and
+`admin_test` (both forms, their paths and the refusals' words).

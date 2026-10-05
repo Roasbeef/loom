@@ -97,6 +97,16 @@
 //// fired at and never a login, and the daemon answers only for the principal's
 //// own.
 ////
+//// The same panel holds a "Your name" control (protocol-change/065, the tenth
+//// pull request), a small form that changes the principal's own display name.
+//// `Start.rename_self` is `Some` for every page minted to operate and asks the
+//// daemon to rename the page's principal, which the daemon decides again from
+//// the grant it holds; a read-only link has none and draws no form. A submit is
+//// `NameSubmitted`, and the daemon's answer is `NameAnswered`: the bar and the
+//// control's lead then draw the name the catalogue stored. Every read also asks
+//// `Start.who` for the principal's name, so a name the owner changed from the
+//// admin page reaches an open home at its next read (`NameRead`).
+////
 //// The owner's page also draws an "Admin" button in its top bar
 //// (protocol-change/065, the fifth pull request). `Start.admin` is `Some` only
 //// for the owner's page minted to operate and opened by a `loom ui` exchange (the
@@ -120,8 +130,8 @@
 ////    for the running sessions it listed.
 //// 4. A press is a message `update` handles, one of `Opening`, `Resuming`,
 ////    `Choosing`, `Creating`, `Renaming`, `StopRequested`, `ArchiveRequested`,
-////    `DeleteConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll` or
-////    `AddingDevice`, each of which asks the daemon through
+////    `DeleteConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll`,
+////    `AddingDevice` or `NameSubmitted`, each of which asks the daemon through
 ////    its own `Start` field and leaves the answer to the effect's message.
 //// 5. `view` draws the groups through `shell_sidebar`, the offers
 ////    (`resume_offer`, `rename_offer`, `manage_offer`, `create_offer`,
@@ -168,6 +178,7 @@ import lustre/server_component
 import web_view/actions
 import web_view/creations.{type Sharing}
 import web_view/ending.{type Ending}
+import web_view/names
 import web_view/renames
 import web_view/sessions.{type Activity, type Entry, type Group, Live}
 import web_view/signins.{type Signin}
@@ -181,6 +192,7 @@ import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/signins as signins_view
 import web_view/view/switch
+import web_view/view/your_name
 
 /// The Lustre event path of the sidebar on the home page: it is the second
 /// child of the page's frame (`view/shell`), as on a session's page
@@ -357,6 +369,23 @@ pub type Start {
     /// message. The daemon checks the page, its ceiling, the credential and the
     /// owner again, whatever this page said.
     admin: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
+    /// Reads the principal's display name as the catalogue holds it now, with the
+    /// page's own credential, which the registry authenticates again. It runs in
+    /// the component's process with the list's read, and must not run long. It is
+    /// `None` when the registry did not answer, and the page keeps the name it
+    /// has.
+    who: fn() -> Option(String),
+    /// Asks the daemon to change the page's principal's display name to the
+    /// typed text (protocol-change/065, the tenth pull request): the daemon
+    /// checks that the page is open and was minted to operate, that its
+    /// credential still authenticates as the principal it was admitted for and
+    /// that the text is a name a display name may be, and then makes the
+    /// registry's rename of that principal and no other. It is `Some` for every
+    /// page minted to operate, and a page with `None` draws no control and
+    /// ignores the message. It must return at once, and the answer goes to the
+    /// function it is given, from the daemon's own task, as `NameAnswered`'s
+    /// message.
+    rename_self: Option(fn(String, fn(names.Answer) -> Nil) -> Nil),
   )
 }
 
@@ -445,6 +474,14 @@ pub opaque type Model {
     link: Link,
     /// What the page last said about a sign-out, in fixed words.
     signin_notice: Option(String),
+    /// The principal's display name as the page last knew it: the name it was
+    /// started with, then whatever a read or an answer to its own rename gave.
+    name: String,
+    /// Where the "Your name" control stands.
+    naming: names.Control,
+    /// How many times the name has changed on the page, which keys the control's
+    /// form so it opens on the new name.
+    named: Int,
   )
 }
 
@@ -580,6 +617,22 @@ pub type Msg {
 
   /// The shown link's "Done" was pressed: hide it.
   DeviceDone
+
+  /// A read of the principal's display name answered. It is the effect's own
+  /// message, and no handler carries it. `None` is a registry that did not
+  /// answer, and leaves the name the page has.
+  NameRead(name: Option(String))
+
+  /// The "Your name" form was submitted with this text. The text is the
+  /// browser's and nothing else is: whose name it is, whether the page may and
+  /// whether the text is a name are all the daemon's to decide.
+  NameSubmitted(name: String)
+
+  /// The daemon answered a request to rename the page's principal. It is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot put a name in the page that the daemon did
+  /// not store.
+  NameAnswered(answer: names.Answer)
 }
 
 /// Which sign-outs the daemon answered, so the page's words say which.
@@ -627,6 +680,9 @@ pub fn new(start: Start) -> Model {
     signins: [],
     link: NoLink,
     signin_notice: None,
+    name: start.name,
+    naming: names.Ready,
+    named: 0,
   )
 }
 
@@ -1058,6 +1114,51 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
     DeviceDone -> #(Model(..model, link: NoLink), effect.none())
 
+    // A name the read found replaces the page's, and the form is keyed anew so it
+    // opens on it. A read the registry did not answer leaves the name.
+    NameRead(name: Some(read)) if read != model.name -> #(
+      Model(..model, name: read, named: model.named + 1),
+      effect.none(),
+    )
+    NameRead(name: Some(_)) | NameRead(name: None) -> #(model, effect.none())
+
+    // A submit asks the daemon from the daemon's own task so the runtime stays
+    // free. A page with no capability, one that is not connected and one whose
+    // request is already out ask nothing; these arms are the second layer, since
+    // the form of such a page has no handler and the daemon refuses the same
+    // request from the grant it holds.
+    NameSubmitted(name:) ->
+      case model.start.rename_self, model.status, model.naming {
+        Some(ask), Connected, names.Ready
+        | Some(ask), Connected, names.Done
+        | Some(ask), Connected, names.Refused(..)
+        -> #(Model(..model, naming: names.Asking), renaming_self(ask, name))
+        Some(_), Connected, names.Asking
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    // The answer: the name the catalogue stored replaces the page's and keys a
+    // new form, and a refusal is the reason's fixed words. An answer that
+    // arrives when no request is out was not asked for and is dropped.
+    NameAnswered(answer:) ->
+      case model.naming, answer {
+        names.Asking, names.Renamed(name:) -> #(
+          Model(..model, name:, naming: names.Done, named: model.named + 1),
+          effect.none(),
+        )
+        names.Asking, names.Declined(reason:) -> #(
+          Model(..model, naming: names.Refused(reason)),
+          effect.none(),
+        )
+        names.Ready, _ | names.Done, _ | names.Refused(..), _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
     // The answer: a ticket becomes the address `<loom-switch>` navigates to,
     // and a refusal is the page's notice in the reason's fixed words. Either
     // way no resume is out any longer.
@@ -1098,6 +1199,17 @@ fn signing_out(
 fn asking_device(ask: fn() -> signins.Answer) -> Effect(Msg) {
   use dispatch <- effect.from
   dispatch(DeviceAnswered(ask()))
+}
+
+// Starts the daemon's task that renames the page's principal and returns at
+// once; the task's answer arrives later as `NameAnswered`, dispatched from the
+// task's own process.
+fn renaming_self(
+  ask: fn(String, fn(names.Answer) -> Nil) -> Nil,
+  name: String,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  ask(name, fn(answer) { dispatch(NameAnswered(answer)) })
 }
 
 // Reads the principal's sign-ins again, after one changed.
@@ -1257,7 +1369,10 @@ fn refreshing(model: Model) -> Effect(Msg) {
   // closed asks nothing more.
   case listing {
     Closed(..) -> Nil
-    Listed(_) | Unread -> dispatch(SigninsRead(model.start.signins()))
+    Listed(_) | Unread -> {
+      dispatch(SigninsRead(model.start.signins()))
+      dispatch(NameRead(model.start.who()))
+    }
   }
 
   case listing, model.timer {
@@ -1334,7 +1449,7 @@ pub fn view(model: Model) -> Element(Msg) {
     home_bar.with(
       title: "Home",
       who: home_bar.account(
-        model.start.name,
+        model.name,
         ceiling_words(model.start.ceiling),
         account_panel(model),
       ),
@@ -1365,6 +1480,7 @@ pub fn view(model: Model) -> Element(Msg) {
         SigningOutAll,
         device_offer(model),
         model.signin_notice,
+        your_name.view(model.name, name_offer(model)),
       ),
       switch.view(model.departure),
       switch.switcher(),
@@ -1452,6 +1568,33 @@ fn form_field() -> decode.Decoder(#(String, String)) {
   use name <- decode.field(0, decode.string)
   use value <- decode.field(1, decode.string)
   decode.success(#(name, value))
+}
+
+// What the account panel offers for renaming the page's principal: the form on a
+// page the daemon handed `Start.rename_self`, and nothing otherwise.
+fn name_offer(model: Model) -> your_name.Offer(Msg) {
+  case model.start.rename_self {
+    None -> your_name.Withheld
+    Some(_) -> your_name.Offered(model.naming, model.named, naming_submit())
+  }
+}
+
+// The form's submit as the message that carries the one text field the form has.
+// Any other field, a repeated one or a missing one refuses the event, as the
+// row's rename form does.
+fn naming_submit() -> attribute.Attribute(Msg) {
+  event.on("submit", named_text()) |> event.prevent_default
+}
+
+fn named_text() -> decode.Decoder(Msg) {
+  use fields <- decode.subfield(
+    ["detail", "formData"],
+    decode.list(form_field()),
+  )
+  case fields {
+    [#("text", name)] -> decode.success(NameSubmitted(name))
+    _ -> decode.failure(NameSubmitted(""), "name form")
+  }
 }
 
 // What the sign-ins region offers for a device link: the control on a page the

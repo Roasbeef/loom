@@ -297,7 +297,7 @@ that adds it says what the narrowed holder may ask.
 
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
-(`authenticate` (`client/daemon/manager.gleam:1247`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1297`), `session_authority`,
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
 gateway's per-frame re-check and the admin dispatch all run unchanged
@@ -641,7 +641,7 @@ login add these cases.
 `sessions.create` is owner-only (`CreateSession`
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
-`create_scoped` (`client/daemon/manager.gleam:1353`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:1403`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:672`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
@@ -770,9 +770,9 @@ membership is.
 053 designed the admin page in full (phase 4) and the owner ruled on
 2026-09-30 that it waits for use of the terminal's `/access` overlay
 (`tui/access_overlay.gleam`). The daemon serves the two owner-only reads it
-needs, `principal_page` (`client/daemon/manager.gleam:1089`) and
-`membership_page` (`client/daemon/manager.gleam:1112`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:719`): invite,
+needs, `principal_page` (`client/daemon/manager.gleam:1139`) and
+`membership_page` (`client/daemon/manager.gleam:1162`), and every mutation
+through one dispatch, `administer` (`client/daemon/manager.gleam:734`): invite,
 set-role, revoke membership, rotate, revoke credentials, isolate. The owner's
 session page already starts one of those from a browser, `invite_for`
 (`ui_socket.gleam:812`), bounded to three an hour for the credential and shown

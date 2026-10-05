@@ -139,6 +139,12 @@ pub type Command {
   /// the login minted ends at its next frame.
   RevokeLogin(principal_id: Option(String), fingerprint: String, epoch: String)
 
+  /// Changes one principal's display name (protocol-change/065, PR 10). A member
+  /// omits the principal and renames itself; the owner may name any member and
+  /// itself. `name` is unjudged here: the catalogue trims it and applies the rule
+  /// a claim's chosen name is held to, and a refused name is `invalid_name`.
+  RenamePrincipal(principal_id: Option(String), name: String, epoch: String)
+
   /// Lists one session's members after one principal ID, each with its display
   /// name and role in that session (protocol-change/065). Owner-only. An empty
   /// cursor starts the listing.
@@ -470,6 +476,12 @@ fn decode_fields(
       })
       CredentialSignins(target, after)
     }
+    "principals.rename" -> {
+      use target <- result.try(optional_principal(fields))
+      use name <- result.try(name_field(fields))
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      RenamePrincipal(target, name, epoch)
+    }
     "credentials.revoke_login" -> {
       use target <- result.try(optional_principal(fields))
       use fingerprint <- result.try(fingerprint_field(fields, "fingerprint"))
@@ -704,6 +716,22 @@ fn text_field(
       }
     }
     _other -> Error("expected nonempty text field")
+  }
+}
+
+// A display name as the wire carries it: any text of at most 1024 bytes, blank
+// included, so that the catalogue's rule is the only one that judges it and a
+// name it refuses is `invalid_name` rather than a malformed request. The bound
+// only keeps a frame from carrying a megabyte to the catalogue.
+fn name_field(fields: List(#(String, JsonValue))) -> Result(String, String) {
+  use value <- result.try(required(fields, "name"))
+  case value {
+    json.String(text) ->
+      case bit_array.byte_size(bit_array.from_string(text)) <= 1024 {
+        True -> Ok(text)
+        False -> Error("text field exceeds its byte limit")
+      }
+    _other -> Error("expected name to be text")
   }
 }
 

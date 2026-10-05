@@ -2053,6 +2053,7 @@ fn control(
             | protocol.PrincipalMemberships(..)
             | protocol.CredentialSignins(..)
             | protocol.RevokeLogin(..)
+            | protocol.RenamePrincipal(..)
             | protocol.SessionMembers(..)
             | protocol.UiLink(..)
             | protocol.ListSessions(..)
@@ -2118,6 +2119,7 @@ fn control_use(command: protocol.Command) {
     | protocol.RotateCredential(..)
     | protocol.RevokeCredentials(..)
     | protocol.RevokeLogin(..)
+    | protocol.RenamePrincipal(..)
     | protocol.CreateSession(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
@@ -2482,6 +2484,27 @@ fn dispatch_class(
         json.Object([
           #("principal_id", json.String(id)),
           #("fingerprint", json.String(fingerprint)),
+        ]),
+      )
+    }
+
+    // A principal's display name (protocol-change/065, PR 10). A member omits the
+    // principal and renames itself, and the owner may name any principal and
+    // itself. The registry reauthenticates the caller and applies that rule in
+    // its own dispatch, so a member naming another principal is `forbidden`. The
+    // name is judged there too, by the rule a claim's chosen name is, and a name
+    // it refuses is `invalid_name`. The reply names the principal and the name as
+    // stored, which is the trimmed text.
+    protocol.RenamePrincipal(target, name, supplied) -> {
+      use renamed <- result.map(
+        manager.rename_principal(state.registry, digest, supplied, target, name)
+        |> result.map_error(rename_error_code),
+      )
+      #(
+        "principals.rename",
+        json.Object([
+          #("principal_id", json.String(renamed.id)),
+          #("name", json.String(renamed.display_name)),
         ]),
       )
     }
@@ -2856,6 +2879,22 @@ fn admin_result(
       ])
   }
   Ok(#(event, json.Object(fields)))
+}
+
+// A refused rename's code. A name the catalogue's display-name rule refuses is
+// `invalid_name`, as a refused claim's is, and every other refusal is the
+// administration's own.
+fn rename_error_code(error) {
+  case error {
+    manager.AdminMetadata(catalogue.Invalid(_)) -> "invalid_name"
+    manager.IsolationRequired
+    | manager.AdminForbidden
+    | manager.AdminStaleEpoch
+    | manager.AdminUnavailable
+    | manager.AdminForeignPath
+    | manager.AdminBusy
+    | manager.AdminMetadata(_) -> admin_error_code(error)
+  }
 }
 
 fn admin_error_code(error) {

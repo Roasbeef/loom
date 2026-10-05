@@ -3907,3 +3907,44 @@ popover opens, so a session created while it is open appears the next time.
 composing keys, the filter and its order, a name that holds markup, the
 highlight's wrap), `home_test` (the element is the centre's last child and the
 handlers' paths are as they were).
+
+## Addendum: the home's name form (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/pr10-principal-rename branch ·
+**Raised by**: 065's tenth pull request (`principals.rename`)
+
+This addendum adds one event to the home socket's accepted list. It adds no route
+and no field on the wire, and it changes no secret, cookie or nonce rule.
+
+### What changed
+
+- **The home's socket admits a `submit` beneath `home.signins_path`.** The account
+  panel the person's name opens is the centre's third child, and it holds the "Your
+  name" form. `ui_socket.home_accepts`, `home_owner_accepts` and `home_admin_accepts`
+  each admit a submit at a path that begins `0\t2\t2\t`, alone or in a batch, and
+  nothing else new: the panel's own path, a sibling that shares its digits, any other
+  event at the form and a batch with one message outside the panel are dropped as they
+  were. The pinned paths (`component.strip_path`, `invite_path`, `older_path`,
+  `sidebar_path`, `home.table_path`, `home.signins_path`, `admin.body_path`) do not
+  move.
+- **The form carries one value.** Its decoder accepts exactly one field named
+  `text`; a repeated, missing or extra field refuses the event. The page names no
+  principal: the daemon renames the principal the page was admitted for.
+
+### What was considered
+
+- **Admit the submit for a page with the capability only.** The socket's admission is
+  chosen when it starts, from the ceiling and the principal; a read-only link draws no
+  form, so there is no handler at the path to receive the event, and the daemon
+  refuses the request from a page with no capability. A fourth admission rule would
+  have named a combination the other two layers already hold.
+
+### Cost
+
+One more region the home socket reads an event from, for every home.
+
+### Verification
+
+`ui_socket_test` pins the admitted and the dropped frames for all three admissions.
+`names_test` pins that the form's handler is one submit beneath the panel and that no
+path outside the panel moved.

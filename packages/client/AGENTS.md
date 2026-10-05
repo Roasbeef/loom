@@ -329,6 +329,15 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   (the 409). A socket closed before its first frame writes
   `daemon.socket_closed_early`. Lines carry a route class, a step and a
   fixed reason, never a credential, key, nonce or ticket.
+- `principals.rename` (protocol-change/065, the tenth addendum): `protocol.RenamePrincipal`
+  decodes an optional principal, an unjudged name of at most 1024 bytes and the
+  epoch; `server.dispatch` answers it through `manager.rename_principal`, one
+  registry turn that authenticates the caller and epoch, lets a member name only itself
+  (the owner any principal), applies `storage/access.rename`'s claim-time name rule and
+  drops the authority memo. A refused name is `invalid_name`. `ui_socket.rename_self_for`
+  and `rename_for_admin` are the home's and the admin page's daemon checks;
+  `home_rename_self_capability` hands the home its capability, and `home_event` admits a
+  `submit` beneath `home.signins_path`.
 - `daemon/ui_socket`: the page's mist socket. It transfers the permit in
   its first handler turn and starts `web_view/component` for an observer's
   attachment or `web_view/operator_page` for an operator's, with a

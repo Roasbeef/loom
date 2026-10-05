@@ -1105,6 +1105,26 @@ rule (`fresh_home`), and the admin page lists each principal's sign-ins with a
 two-step revoke (`grants.Logins`, `grants.RevokeSignin`), made as the owner at the
 click like its other changes.
 
+### Renaming a person
+
+Protocol-change/065's tenth pull request adds `principals.rename`
+(`client-protocol` section 3.26) and two surfaces for it. The home's account panel
+opens with a "Your name" form (`view/your_name`, beneath `home.signins_path`): the
+current name is a text node in the lead, the field sits in a `<loom-rename>` that
+copies it in the browser, and the form is keyed by how many times the name changed.
+`Start.rename_self` is `Some` for a page minted to operate, whoever its principal is,
+and the daemon renames the page's own principal and no other
+(`ui_socket.rename_self_for`, run by `rename_self_task`); a refusal is the fixed
+words of `web_view/names`. `Start.who` reads the principal's name with every list, so
+a name the owner changed reaches an open home. The home's socket admits the form's
+`submit` beneath the panel for every home (`ui_socket.home_event`, 051's addendum on
+the name form). On the admin page every person's row, the owner's too, has a Rename
+button that opens an in-row form (`admin.Editing`, `view/admin_people.rename_form`),
+whose submit is the page's seventh change (`grants.Rename`, `ui_socket.rename_for_admin`):
+it grants nothing and costs no allowance. Both go through `manager.rename_principal`,
+one registry turn that authenticates the caller and the epoch, applies the claim's own
+name rule (`storage/access.rename`) and drops the authority memo.
+
 ### The browser claim
 
 Protocol-change/065's ninth pull request lets an invitee with no `loom` redeem a
