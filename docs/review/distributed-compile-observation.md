@@ -31,7 +31,8 @@ than measuring graphemes, which can occupy more than one byte.
 
 ## Verification
 
-The reviewed source is commit `6ed6a9b0`; package maps follow in `4f8a2fba`.
+The reviewed source is integrated as `3e983421d`; package maps follow in
+`9020c76e0`. These are unchanged cherry-picks of the reviewed component.
 The adapter SHA-256 is
 `838bd11709588a16f890a3e3e190dd2f9ba953248e9c8aced21fcd45ccda2dab`.
 The independent adversarial review reported no actionable finding and checked
@@ -61,3 +62,14 @@ jailed service. No deterministic between-read COMMIT hook or new uncertain-write
 fault injection was added in this slice. Authenticated listener custody, actual
 Broker dispatch, owner durable receipt, registered daemon assembly and
 separate-host tests remain obligations of the assembled system.
+
+## Combined-main verification
+
+At integration head `bc44d8155b9ec8cc5213232647b74a3ecc2f3c34`, after the
+current-main merge and observation commits, the root reran
+`bash scripts/check.sh executor`: 274 tests passed, exit 0, 79.401 seconds,
+with no skips. The helper and offline seed were already built from this combined
+source. The only test-process panic was the intentional workspace effect/crash
+fixture. Adapter and test hashes still matched the reviewed freeze. This checks
+the merged component; the whole Compile actor and registered consumers remain
+outside this head.
