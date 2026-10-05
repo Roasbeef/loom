@@ -131,14 +131,46 @@ forgetting an old request and making it executable again.
 
 The custodian admits at most four active tasks. That cap and bounded asks do
 not bound an OTP mailbox. Daemon assembly must also bound concurrent callers.
-The owner journal format is version 4. The remote deployment is unshipped;
-prior formats are intentionally refused because they contain no run discharge
-proof. They must be preserved rather than migrated to `Released`. Run custody
+The owner journal format is version 5. The remote deployment is unshipped;
+prior formats are refused before accessing new columns or report bodies. They
+must be preserved rather than assigned a profile or migrated to `Released`. Run custody
 is independent of retained/frozen collection state. Collection requires
 `Released` as well as exact reserved-session result readback, so collection
 cannot erase the final bytes between answering a ticket and live drain.
 Frozen rows retain the released marker. These observations prove owner-run
 discharge, not native retirement or resource cleanup.
+
+## Complete reports and bounded transcript results
+
+An ordinary tool reserves its existing final-result allowance. Trusted assembly
+can instead select `CodeModeReportV1`, which reserves 17,301,648 bytes before
+execution: a maximum 17,039,376-byte canonical report, 262,144-byte final and
+128 bytes of bookkeeping. Existing request and identity charges are additional.
+The profile is immutable; a provider tool name cannot enlarge a reservation.
+
+The original runner commits the complete MessagePack outcome and independent
+host metadata through its pinned custodian before rendering a transcript preview.
+The final contains only bounded text and the exact retained reference. A crash
+between these commits preserves report history without inventing a final or
+rerunning the program. A failed commit, worker loss or generic report-profile
+failure leaves custody unresolved. Only an actual trusted vet or compile refusal
+may use the closed report-free refusal schema; its tag alone is not producer
+provenance.
+
+On reopen, scalar headers and aggregate charges are checked before BLOB reads.
+The owner validates one canonical report and its injected host SHA-256 digest at
+a time. It verifies WAL and synchronous FULL, which establishes configuration
+and ordinary reopen behavior, not a power-loss durability proof. Ordinary row
+projections exclude report bytes. Named SQL chunk reads return at most 65,536
+bytes after checking the session, reserved entry, digest, length and profile.
+
+Collection still needs the exact session result and all existing live/physical
+custody prerequisites. It retains the report and its actual byte charge while
+releasing unused allowance. The companion must follow the session through
+archive, restore and compaction; transcript export alone transfers no report
+custody. The [report design](../design-notes/distributed-final-results.md) specifies
+these lifecycle and authenticated router obligations. Production reader routing
+and the complete satellite acceptance run remain integration work.
 
 ## Physical service and command custody
 

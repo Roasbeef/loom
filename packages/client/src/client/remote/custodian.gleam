@@ -14,7 +14,9 @@
 ////
 //// ## Flow
 ////
-//// `execute` → `begin` → `reported` retains exact final tool outcomes.
+//// `execute_with_profile` → `begin` → `reported` retains exact final tool outcomes.
+//// `retain_report` commits a complete report before its final reference.
+//// `read_report_chunk` reads immutable bounded owner-local slices.
 //// `fatal_fence` → `unresolved` permanently fences this incarnation's discharge.
 //// `answer_once` preserves the first disposition; `fence_admission` blocks reuse.
 //// `reserve_service_child` → `admit_offer` → `reserve_command_child` commits
@@ -30,6 +32,7 @@ import core/command
 import core/ids
 import core/msgpack
 import core/remote_tool
+import core/report_value
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process
@@ -57,6 +60,8 @@ pub opaque type Config {
     active: Int,
     /// Hard lifetime of one live owner task, in milliseconds.
     task_ms: Int,
+    /// Trusted host SHA-256 seam, absent for ordinary-only custody.
+    sha256: option.Option(fn(BitArray) -> BitArray),
     /// Remote runner receives its pinned custodian and original runtime identity.
     runner: fn(Handle, remote_tool.ToolKey, effects.ToolRun) ->
       effects.ToolOutcome,
@@ -85,6 +90,7 @@ type Destination {
 pub opaque type Message {
   Execute(
     remote_tool.ToolKey,
+    custody.FinalProfile,
     BitArray,
     BitArray,
     effects.ToolRun,
@@ -199,6 +205,21 @@ pub opaque type Message {
     storage.Storage(Nil),
     process.Subject(Result(Nil, custody.Error)),
   )
+
+  /// Only an original pinned live run can commit a bounded complete report.
+  RetainReport(
+    remote_tool.ToolKey,
+    report_value.CompleteReport,
+    process.Subject(Result(report_value.ReportRef, custody.Error)),
+  )
+
+  /// Authenticated owner assembly supplies the session-bound report reference.
+  ReadReportChunk(
+    report_value.ReportRef,
+    Int,
+    process.Subject(Result(custody.ReportChunk, custody.Error)),
+  )
+
   FenceRun(remote_tool.ToolKey, process.Subject(Result(Nil, custody.Error)))
   Reported(String, weft.Pulled(effects.ToolOutcome, Nil))
   Stop(process.Subject(Result(Nil, custody.Error)))
@@ -208,6 +229,7 @@ type Held {
   Held(
     key: remote_tool.ToolKey,
     original: effects.ToolRun,
+    profile: custody.FinalProfile,
     reports: process.Subject(weft.Pulled(effects.ToolOutcome, Nil)),
     cancel: weft.Cancel,
     disposition: Disposition,
@@ -254,7 +276,16 @@ pub fn config(
     effects.ToolOutcome,
 ) -> Result(Config, custody.Error) {
   case active > 0 && active <= 4 && task_ms > 0 && task_ms <= 86_400_000 {
-    True -> Ok(Config(path:, session:, limits:, active:, task_ms:, runner:))
+    True ->
+      Ok(Config(
+        path:,
+        session:,
+        limits:,
+        active:,
+        task_ms:,
+        sha256: option.None,
+        runner:,
+      ))
     False -> Error(custody.Invalid("invalid owner task capacity or lifetime"))
   }
 }
@@ -273,6 +304,26 @@ pub fn new(names: registry.Registry, config: Config) -> Handle {
     config.task_ms,
     config.limits,
   )
+}
+
+/// Configures report hashing through the existing trusted host SHA-256 function.
+/// This constructor creates no storage-to-host dependency or hashing package.
+///
+/// ## Examples
+///
+/// `config_with_reports(path, session, limits, active, ms, runner, bootstrap.sha256)` supports explicit report profiles.
+pub fn config_with_reports(
+  path: String,
+  session: ids.SessionId,
+  limits: custody.Limits,
+  active: Int,
+  task_ms: Int,
+  runner: fn(Handle, remote_tool.ToolKey, effects.ToolRun) ->
+    effects.ToolOutcome,
+  sha256: fn(BitArray) -> BitArray,
+) -> Result(Config, custody.Error) {
+  config(path, session, limits, active, task_ms, runner)
+  |> result.map(fn(config) { Config(..config, sha256: option.Some(sha256)) })
 }
 
 /// Starts the actor; production embeds supervised instead.
@@ -306,8 +357,48 @@ pub fn supervised(
 fn builder(owner: Handle, config: Config) {
   actor.new_with_initialiser(5000, fn(subject) {
     use store <- result.try(
-      custody.open(config.path, config.session, config.limits)
+      case config.sha256 {
+        option.None -> custody.open(config.path, config.session, config.limits)
+        option.Some(sha256) ->
+          custody.open_with_reports(
+            config.path,
+            config.session,
+            config.limits,
+            sha256,
+          )
+      }
       |> result.replace_error("owner custody open failed"),
+    )
+    use Nil <- result.try(
+      custody.validate_finals(store, fn(key, profile, reference, payload) {
+        case profile {
+          custody.OrdinaryFinal -> Ok(Nil)
+          custody.CodeModeReportV1 -> {
+            use final <- result.try(
+              effects.decode_tool_outcome(custody.bytes(payload)),
+            )
+            use terminal <- result.try(
+              custody.report_outcome(store, key)
+              |> result.replace_error("report terminal lookup failed"),
+            )
+            use Nil <- result.try(outcome.validate_final(
+              profile,
+              reference,
+              terminal,
+              final,
+            ))
+            use request <- result.try(
+              custody.original_request(store, key)
+              |> result.replace_error("original request lookup failed"),
+            )
+            outcome.validate_original_request(request, final)
+          }
+        }
+      })
+      |> result.map_error(fn(_) {
+        let _closed = custody.close(store)
+        "owner final-report association failed"
+      }),
     )
     use outstanding <- result.try(
       custody.unreleased(store)
@@ -358,12 +449,35 @@ pub fn execute(
   request: BitArray,
   original: effects.ToolRun,
 ) -> Result(effects.ToolOutcome, custody.Error) {
+  execute_with_profile(
+    owner,
+    key,
+    arguments,
+    request,
+    original,
+    custody.OrdinaryFinal,
+  )
+}
+
+/// Starts only a Fresh original run under its trusted immutable final profile.
+///
+/// ## Examples
+///
+/// `execute_with_profile(owner, key, args, request, original, custody.CodeModeReportV1)` never derives profile from the call name.
+pub fn execute_with_profile(
+  owner: Handle,
+  key: remote_tool.ToolKey,
+  arguments: BitArray,
+  request: BitArray,
+  original: effects.ToolRun,
+  profile: custody.FinalProfile,
+) -> Result(effects.ToolOutcome, custody.Error) {
   use Nil <- result.try(input_bound(arguments, 262_144))
   use Nil <- result.try(input_bound(request, 262_144))
   let ticket = process.new_subject()
   use Nil <- result.try(
     ask(owner, fn(reply) {
-      Execute(key, arguments, request, original, ticket, reply)
+      Execute(key, profile, arguments, request, original, ticket, reply)
     }),
   )
   process.receive(ticket, owner.task_ms + 1000)
@@ -712,6 +826,46 @@ pub fn fatal_fence(
   ask(owner, fn(reply) { FenceRun(key, reply) })
 }
 
+/// Commits a checked report through the original live pinned custodian.
+/// Any error or lost reply fences the original run before returning uncertainty.
+///
+/// ## Examples
+///
+/// `retain_report(pinned_owner, original_key, report)` precedes bounded final rendering.
+pub fn retain_report(
+  owner: Handle,
+  key: remote_tool.ToolKey,
+  report: report_value.CompleteReport,
+) -> Result(report_value.ReportRef, custody.Error) {
+  case owner.destination {
+    Reclaimable -> Error(custody.Conflict)
+    Pinned(_) -> {
+      let retained = ask(owner, fn(reply) { RetainReport(key, report, reply) })
+      case retained {
+        Ok(reference) -> Ok(reference)
+        Error(error) -> {
+          let _fenced = fatal_fence(owner, key)
+          Error(error)
+        }
+      }
+    }
+  }
+}
+
+/// Reads one aligned bounded chunk through this session's existing owner door.
+/// The caller's authenticated assembly, rather than the URI, grants access.
+///
+/// ## Examples
+///
+/// `read_report_chunk(owner, reference, 0)` never contacts an executor filesystem.
+pub fn read_report_chunk(
+  owner: Handle,
+  reference: report_value.ReportRef,
+  offset: Int,
+) -> Result(custody.ReportChunk, custody.Error) {
+  ask(owner, fn(reply) { ReadReportChunk(reference, offset, reply) })
+}
+
 fn ask(
   owner: Handle,
   message: fn(process.Subject(Result(a, custody.Error))) -> Message,
@@ -731,8 +885,8 @@ fn ask(
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
-    Execute(key, args, request, original, ticket, reply) ->
-      begin(state, key, args, request, original, ticket, reply)
+    Execute(key, profile, args, request, original, ticket, reply) ->
+      begin(state, key, profile, args, request, original, ticket, reply)
     Lookup(key, args, request, reply) -> {
       let outcome = {
         use args <- result.try(custody.payload(state.config.limits, args))
@@ -836,6 +990,39 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       process.send(reply, outcome)
       resume(state)
     }
+    RetainReport(key, report, reply) -> {
+      let address = remote_tool.address(key)
+      case dict.get(state.live, address) {
+        Ok(held)
+          if held.key == key && held.profile == custody.CodeModeReportV1
+        -> {
+          let result = custody.retain_report(state.store, key, report)
+          let next = case result {
+            Ok(_) -> state
+            Error(_) ->
+              unresolved(
+                state,
+                address,
+                held,
+                "complete report retention failed",
+              )
+          }
+          process.send(reply, result)
+          resume(next)
+        }
+        Ok(_) | Error(_) -> {
+          process.send(reply, Error(custody.Conflict))
+          resume(state)
+        }
+      }
+    }
+    ReadReportChunk(reference, offset, reply) -> {
+      process.send(
+        reply,
+        custody.read_report_chunk(state.store, reference, offset),
+      )
+      resume(state)
+    }
     FenceRun(key, reply) -> {
       let address = remote_tool.address(key)
       let state = case dict.get(state.live, address) {
@@ -861,6 +1048,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 fn begin(
   state: State,
   key: remote_tool.ToolKey,
+  profile: custody.FinalProfile,
   args: BitArray,
   request: BitArray,
   original: effects.ToolRun,
@@ -868,6 +1056,20 @@ fn begin(
   reply: process.Subject(Result(Nil, custody.Error)),
 ) -> actor.Next(State, Message) {
   let admitted = {
+    use Nil <- result.try(
+      outcome.validate_admission(profile, original)
+      |> result.map_error(custody.Invalid),
+    )
+    use Nil <- result.try(case profile {
+      custody.OrdinaryFinal -> Ok(Nil)
+      custody.CodeModeReportV1 ->
+        outcome.validate_request_identity(
+          request,
+          original.call.id,
+          original.call.name,
+        )
+        |> result.map_error(custody.Invalid)
+    })
     use args <- result.try(custody.payload(state.config.limits, args))
     use request <- result.try(custody.payload(state.config.limits, request))
     use Nil <- result.try(
@@ -879,7 +1081,7 @@ fn begin(
         False -> Error(custody.Capacity)
       },
     )
-    custody.admit_fresh(state.store, key, args, request)
+    custody.admit_fresh_with_profile(state.store, key, args, request, profile)
   }
   case admitted {
     Ok(custody.Fresh) -> {
@@ -903,7 +1105,15 @@ fn begin(
           live: dict.insert(
             state.live,
             remote_tool.address(key),
-            Held(key, original, reports, cancel, AwaitingReport, ticket),
+            Held(
+              key,
+              original,
+              profile,
+              reports,
+              cancel,
+              AwaitingReport,
+              ticket,
+            ),
           ),
         ),
       )
@@ -994,17 +1204,56 @@ fn report_held(
           outcome.validate_outcome(held.original, value)
           |> result.map_error(custody.Invalid),
         )
+        use reference <- result.try(custody.report_reference(
+          state.store,
+          held.key,
+        ))
+        use terminal <- result.try(custody.report_outcome(state.store, held.key))
+        use Nil <- result.try(
+          outcome.validate_final(held.profile, reference, terminal, value)
+          |> result.map_error(custody.Invalid),
+        )
         use bytes <- result.try(
           effects.encode_tool_outcome(value)
           |> result.map_error(custody.Invalid),
         )
-        use payload <- result.try(custody.payload(state.config.limits, bytes))
-        use Nil <- result.try(custody.finish(state.store, held.key, payload))
+        use payload <- result.try(custody.final_payload(
+          state.config.limits,
+          held.profile,
+          bytes,
+        ))
+        use Nil <- result.try(custody.finish_with_reference(
+          state.store,
+          held.key,
+          payload,
+          reference,
+        ))
         Ok(#(value, payload))
       }
       case committed {
-        Ok(#(value, payload)) ->
-          answer_once(state, address, held, Ok(value), FinalCommitted(payload))
+        Ok(#(value, payload)) -> {
+          // A generic diagnostic says nothing about whether code ran. The report
+          // profile keeps that durable diagnostic without granting live discharge.
+          case held.profile, value {
+            custody.CodeModeReportV1, effects.ToolFailed(_) ->
+              unresolved(
+                state,
+                address,
+                held,
+                "complete report absent; generic diagnostic retains uncertainty",
+              )
+            custody.OrdinaryFinal, _
+            | custody.CodeModeReportV1, effects.ToolCompleted(..)
+            ->
+              answer_once(
+                state,
+                address,
+                held,
+                Ok(value),
+                FinalCommitted(payload),
+              )
+          }
+        }
         Error(error) ->
           answer_once(state, address, held, Error(error), Unresolved)
           |> fence_admission
