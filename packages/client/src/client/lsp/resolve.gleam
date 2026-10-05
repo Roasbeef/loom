@@ -631,6 +631,14 @@ pub fn satisfies(
 /// parent chain ends with it, or when the file at `path` under `root`
 /// satisfies it (the qualifier named the module rather than a type).
 ///
+/// A method that the server spells with its receiver, as gopls does
+/// (`(*Server).handle`, `(Server).handle` or `Server.handle` as one
+/// top-level entry), is named by its method part too, and its receiver
+/// counts as a parent for a qualifier: `handle`, `Server.handle` and
+/// `(*Server).handle` all find it. The same method name on two receivers
+/// in one file yields two entries, so the caller reports it as ambiguous
+/// rather than picking one.
+///
 /// Only the module match is `cased`. A parent chain is the server's own
 /// spelling of a type (`Server.handle` in Elixir is `Server`, not
 /// `server`), so it is compared with the qualifier as the model wrote it.
@@ -651,7 +659,9 @@ pub fn named(
   path path: String,
 ) -> List(#(String, Position)) {
   flatten(symbols)
-  |> list.filter(fn(entry) { entry.name == identifier })
+  |> list.filter(fn(entry) {
+    entry.name == identifier || method_part(entry.name) == Ok(identifier)
+  })
   |> list.filter(fn(entry) {
     case qualifier {
       None -> True
@@ -661,9 +671,43 @@ pub fn named(
           "/" <> string.replace(entry.parents, ".", "/"),
           "/" <> qualifier,
         )
+        || receiver_named(entry.name, qualifier)
     }
   })
   |> list.map(fn(entry) { #(qualified(entry), entry.at) })
+}
+
+// The receiver and method of an entry the server spelled as one name,
+// `(*T).M`, `(T).M` or `T.M`, with the receiver's pointer star and
+// parentheses removed. An entry with no dot in its name is not a method
+// spelled this way.
+fn method_split(name: String) -> Result(#(String, String), Nil) {
+  case list.reverse(string.split(name, ".")) {
+    [method, ..receiver] if receiver != [] && method != "" ->
+      Ok(#(without_pointer(string.join(list.reverse(receiver), ".")), method))
+    _ -> Error(Nil)
+  }
+}
+
+fn without_pointer(receiver: String) -> String {
+  receiver
+  |> string.replace("(", "")
+  |> string.replace(")", "")
+  |> string.replace("*", "")
+}
+
+fn method_part(name: String) -> Result(String, Nil) {
+  result.map(method_split(name), fn(split) { split.1 })
+}
+
+// Whether the qualifier the model wrote names this entry's receiver, in any
+// of the spellings it may use (`T`, `(*T)`, `pkg.T`, `pkg/T`).
+fn receiver_named(name: String, qualifier: String) -> Bool {
+  case method_split(name) {
+    Error(Nil) -> False
+    Ok(#(receiver, _method)) ->
+      string.ends_with("/" <> without_pointer(qualifier), "/" <> receiver)
+  }
 }
 
 // One outline entry with its ancestry spelled out: the unit `named` and
