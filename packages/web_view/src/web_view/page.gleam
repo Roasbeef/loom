@@ -120,6 +120,31 @@ pub fn home_exchange_path(ticket: String) -> String {
   prefix <> "/home?ticket=" <> ticket
 }
 
+/// The keyed address of the owner's admin page (protocol-change/065, the
+/// fifth pull request). Its socket is this address and `/ws`, as the home's is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.admin_path("abc") == "/ui/p/abc/admin"
+/// ```
+pub fn admin_path(key: String) -> String {
+  keyed_prefix(key) <> "/admin"
+}
+
+/// The address that exchanges a ticket for an admin page. The home's "Admin"
+/// button navigates to it, and the client's `web_client/switch_rule` accepts
+/// exactly this shape and the two others.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.admin_exchange_path("t") == "/ui/admin?ticket=t"
+/// ```
+pub fn admin_exchange_path(ticket: String) -> String {
+  prefix <> "/admin?ticket=" <> ticket
+}
+
 /// The page for one session: a shell holding one server component, and the
 /// script that connects it with the tab's nonce. The component carries no
 /// `route` of its own; the script sets its `csrf-token` and then its
@@ -157,6 +182,18 @@ pub fn shell(session_id: String) -> String {
 /// ```
 pub fn home_shell() -> String {
   component_document("Home", home_waiting_notice())
+}
+
+/// The page for the admin page: the same shell and scripts as the home's, with
+/// the admin page's own title and waiting paragraph.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.admin_shell(), "Loom · Admin")
+/// ```
+pub fn admin_shell() -> String {
+  component_document("Admin", admin_waiting_notice())
 }
 
 // A shell holding one server component, titled `title` (escaped here) and
@@ -263,6 +300,35 @@ pub fn home_waiting_notice() -> String {
   <> "starting, this page may have ended, or this tab may have lost its key "
   <> "for the page. Reload it. If it stays like this, run `loom ui` for a "
   <> "fresh link."
+}
+
+/// What an admin page says while it has no socket: the daemon may still be
+/// starting, the page may have ended (it lasts fifteen minutes), or the tab may
+/// have lost its key. The fresh link is the home's "Admin" button.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.admin_waiting_notice(), "fifteen minutes")
+/// ```
+pub fn admin_waiting_notice() -> String {
+  "This page is not connected to the daemon. The daemon may still be "
+  <> "starting, this page may have ended (an admin page lasts fifteen "
+  <> "minutes), or this tab may have lost its key for the page. Reload it. "
+  <> "If it stays like this, run `loom ui` and press Admin on the home page "
+  <> "for a fresh one."
+}
+
+/// `refusal` for an admin page: the same document with the admin page's
+/// advice, which names `loom ui` and the home's "Admin" button.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // page.admin_refusal(ending.PageEnded)
+/// ```
+pub fn admin_refusal(reason: Ending) -> String {
+  ended_document(ending.admin_headline(reason), ending.admin_advised(reason))
 }
 
 /// `refusal` for a home page: the same document with the home's advice, which

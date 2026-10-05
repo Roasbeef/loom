@@ -4,12 +4,13 @@
 //// A page opens another session by navigating to the ticket exchange of that
 //// session (protocol-change/051, the addendum on switching sessions), and a
 //// page opened from a home goes back to the home by navigating to the home's
-//// exchange (protocol-change/065). The server mints the ticket and writes the
-//// exchange's address into the element's `to` attribute, and the element
-//// moves the browser there. That is the one place a script acts on a value the
-//// server chose, so the value is held to the exact shapes the daemon writes
-//// and nothing else: a path on this origin, either
-//// `/ui/home?ticket=<ticket>` or
+//// exchange (protocol-change/065), and the owner's home goes to the admin page
+//// by navigating to the admin exchange (the fifth pull request). The server
+//// mints the ticket and writes the exchange's address into the element's `to`
+//// attribute, and the element moves the browser there. That is the one place a
+//// script acts on a value the server chose, so the value is held to the exact
+//// shapes the daemon writes and nothing else: a path on this origin, one of
+//// `/ui/home?ticket=<ticket>`, `/ui/admin?ticket=<ticket>` or
 //// `/ui/sessions/<id>?ticket=<ticket>`, where
 //// the identity is the canonical form of eight, four, four, four and twelve
 //// hexadecimal digits and the ticket is the 64 hexadecimal digits the
@@ -25,7 +26,8 @@ import gleam/string
 
 const prefix = "/ui/sessions/"
 
-const home_prefix = "/ui/home"
+// The two exchanges that name no session, each followed by a ticket.
+const bare_prefixes = ["/ui/home", "/ui/admin"]
 
 const ticket_marker = "?ticket="
 
@@ -35,7 +37,8 @@ const ticket_digits = 64
 const identity_groups = [8, 4, 4, 4, 12]
 
 /// The address to navigate to, or a refusal for a value that is not exactly
-/// a ticket exchange for a canonical session identity or for the home page.
+/// a ticket exchange for a canonical session identity, for the home page or
+/// for the admin page.
 ///
 /// ## Examples
 ///
@@ -43,13 +46,21 @@ const identity_groups = [8, 4, 4, 4, 12]
 /// assert switch_rule.target("https://elsewhere.example/") == Error(Nil)
 /// ```
 pub fn target(value: String) -> Result(String, Nil) {
-  case string.split_once(value, home_prefix <> ticket_marker) {
+  case list.find_map(bare_prefixes, fn(prefix) { bare_target(value, prefix) }) {
+    Ok(address) -> Ok(address)
+    Error(Nil) -> session_target(value)
+  }
+}
+
+// An exchange that names no session: the prefix, then the ticket.
+fn bare_target(value: String, prefix: String) -> Result(String, Nil) {
+  case string.split_once(value, prefix <> ticket_marker) {
     Ok(#("", ticket)) ->
       case hexadecimal(ticket, ticket_digits) {
         True -> Ok(value)
         False -> Error(Nil)
       }
-    Ok(#(_, _)) | Error(Nil) -> session_target(value)
+    Ok(#(_, _)) | Error(Nil) -> Error(Nil)
   }
 }
 

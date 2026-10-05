@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:232-180`).
+Source: `handle` (`client/daemon/server.gleam:267-180`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1043`).
+`hello_view` (`client/daemon/server.gleam:1248`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -536,7 +536,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:1872`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:2099`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -928,8 +928,8 @@ Errors: `forbidden`, `stale_epoch`, `not_found`, `busy`, `unavailable`.
 While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
-`principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:1362-1114`).
+`principals.list`, `principals.memberships`, `sessions.members`, and `ui.link`. Every mutating control command is refused. Source:
+`control_use` (`client/daemon/server.gleam:1567-1114`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1077,7 +1077,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:695`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:708`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1166,6 +1166,32 @@ Each page holds at most 100 rows and at most 60,000 bytes of them. A row cut
 off by either limit is the first row of the next page, and the client resumes
 with `after` set to `next`. Both commands are reads, so they remain available
 on an existing control socket during daemon drain.
+
+Errors: `forbidden`, `not_found`, `bad_request`, `unavailable`.
+
+### 3.24 `sessions.members`
+
+The owner-only read of who holds one session
+([protocol-change/065](../protocol-change/065-web-workspace-mode.md), the fifth
+addendum): the other direction of `principals.memberships`. A member credential
+is refused with `forbidden` as the two listings above are, and it carries no
+`epoch`. It takes a required canonical `session_id` and an optional `after`, a
+principal ID (at most 128 bytes, from the `next` of the previous page):
+
+```json
+{"v":2,"id":15,"cmd":"sessions.members","body":{"session_id":"0198c0de-0000-7000-8000-000000000001"}}
+```
+
+```json
+{"v":2,"reply_to":15,"event":"sessions.members","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","members":[{"principal_id":"alice","name":"Alice","role":"operator"}],"next":"alice"}}
+```
+
+`role` is `operator` or `observer`. The members are in principal-ID order, and
+the owner holds no membership rows, so it never appears. A session the
+catalogue does not hold is `not_found`. The page and byte bounds are the other
+listings': at most 100 rows and 60,000 bytes, and `next` is the last principal
+ID when another page follows. `loom access members SESSION [--after PRINCIPAL]`
+prints it, one JSON line for each member and a `{"next": ...}` line.
 
 Errors: `forbidden`, `not_found`, `bad_request`, `unavailable`.
 
@@ -3364,7 +3390,8 @@ below have not been edited.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one
    command `credentials.claim`, and changes the invitation and rotation
    replies; its phase 2 adds the owner-only `principals.list` and
-   `principals.memberships` (§3.23). The spec's summary lacks those too.
+   `principals.memberships` (§3.23), and `protocol-change/065` adds
+   `sessions.members` (§3.24). The spec's summary lacks those too.
 
 10. **`protocol-change/003`, `011` and `013` were written against
     `v: 1`.** Each shows a `v:1` envelope in its proposal text.

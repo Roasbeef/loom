@@ -40,6 +40,19 @@ pub fn home(reason: Option(Ending)) -> Element(message) {
   notice(reason, ending.home_headline, ending.home_advice)
 }
 
+/// The notice for an admin page that has ended, in the admin page's words
+/// (protocol-change/065, the fifth pull request): its fifteen minutes and the
+/// home's "Admin" button for a fresh one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ended.admin(Some(ending.PageEnded))
+/// ```
+pub fn admin(reason: Option(Ending)) -> Element(message) {
+  notice(reason, ending.admin_headline, ending.admin_advice)
+}
+
 // The notice for `reason`, worded by `headline` and `advice`, or nothing.
 fn notice(
   reason: Option(Ending),

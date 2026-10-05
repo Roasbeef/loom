@@ -64,6 +64,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     activity: fn(_, _) { Nil },
     rename: None,
     create: None,
+    admin: None,
   )
 }
 
@@ -1212,4 +1213,116 @@ pub fn the_rename_and_creation_forms_cannot_be_confused_test() {
     == Ok(#("/src/weft", "made", creations.Private))
   assert process.receive(renamed, 0) == Error(Nil)
   assert string.contains(drawn(after_create), "Creating the session.")
+}
+
+// --- the owner's "Admin" button (protocol-change/065, the fifth pull request) --
+
+const admin_ticket =
+  "/ui/admin?ticket=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// A page that was handed the capability, whose request answers with `answer` at
+// once and tells `asked` that it was made.
+fn administrator(asked: Subject(Nil), answer: sessions.Answer) -> home.Start {
+  home.Start(
+    ..start(),
+    admin: Some(fn(deliver) {
+      process.send(asked, Nil)
+      deliver(answer)
+    }),
+  )
+}
+
+// The button exists only on a page whose daemon handed it the capability, and
+// only once the page is connected. Its one handler is a click at the path the
+// owner's socket admits and no other, in the bar, beneath neither region the
+// other controls are in.
+pub fn the_admin_button_is_drawn_only_with_the_capability_test() {
+  let asked = process.new_subject()
+  let #(owner, _) =
+    opened(administrator(asked, sessions.Ticketed(admin_ticket)))
+  let html = drawn(owner)
+  assert string.contains(html, "home-admin")
+  assert string.contains(html, ">Admin<")
+  let keys = handlers(home.view(owner))
+  let at_the_button = list.filter(keys, string.starts_with(_, home.admin_path))
+  assert at_the_button == [home.admin_path <> "\nclick"]
+  assert !beneath_the_two_regions(home.admin_path <> "\nclick")
+
+  // A page with none draws no button and carries no handler at the path.
+  let #(plain, _) = opened(start())
+  assert !string.contains(drawn(plain), "home-admin")
+  assert !string.contains(drawn(plain), ">Admin<")
+  assert list.filter(handlers(home.view(plain)), string.starts_with(
+      _,
+      home.admin_path,
+    ))
+    == []
+
+  // And a page that has read nothing, or whose access ended, draws none.
+  let waiting = home.new(home.Start(..start(), admin: Some(fn(_) { Nil })))
+  assert !string.contains(drawn(waiting), "home-admin")
+  let ended = run(owner, home.Answered(home.Closed(ending.AccessRevoked)))
+  assert !string.contains(drawn(ended), "home-admin")
+}
+
+// The path is where the view puts it: the bar's sixth child, which the socket
+// pins. The brand, the title, the principal, the status and the notice's place
+// come before it, so adding the button moved none of them.
+pub fn the_admin_buttons_path_is_the_bars_last_child_test() {
+  assert home.admin_path == "0\t0\t5"
+  let asked = process.new_subject()
+  let #(owner, _) =
+    opened(administrator(asked, sessions.Ticketed(admin_ticket)))
+  assert list.contains(handlers(home.view(owner)), home.admin_path <> "\nclick")
+
+  // The regions the other admissions pin are where they were.
+  assert home.table_path == "0\t2\t1"
+  assert home.sidebar_path == "0\t1"
+}
+
+// A press asks the daemon once, and the ticket it answers with departs through
+// the hidden element that moves the tab, with a notice that says what is
+// happening. A refusal is the reason's fixed words and nothing departs.
+pub fn pressing_admin_asks_the_daemon_and_departs_with_its_ticket_test() {
+  let asked = process.new_subject()
+  let #(owner, _) =
+    opened(administrator(asked, sessions.Ticketed(admin_ticket)))
+  let owner = run(owner, home.AdminRequested)
+  assert process.receive(asked, 0) == Ok(Nil)
+  assert process.receive(asked, 0) == Error(Nil)
+  let html = drawn(owner)
+  assert string.contains(html, "to=\"" <> admin_ticket <> "\"")
+  assert string.contains(html, "Opening the admin page.")
+
+  let refused = process.new_subject()
+  let #(denied, _) =
+    opened(administrator(refused, sessions.Declined(sessions.NoAdmin)))
+  let denied = run(denied, home.AdminRequested)
+  let html = drawn(denied)
+  assert string.contains(html, sessions.reason_words(sessions.NoAdmin))
+  assert !string.contains(html, "to=\"/ui/admin")
+}
+
+// A page with no capability ignores the message whatever sends it, so a forged
+// press asks nothing: the page's half of the rule the daemon enforces again.
+pub fn a_page_without_the_capability_ignores_the_admin_press_test() {
+  let #(plain, _) = opened(start())
+  let pressed = run(plain, home.AdminRequested)
+  assert !string.contains(drawn(pressed), "Opening the admin page.")
+  assert !string.contains(drawn(pressed), "to=\"/ui/admin")
+
+  // A page still connecting, or already ended, asks nothing even with it.
+  let asked = process.new_subject()
+  let offered = administrator(asked, sessions.Ticketed(admin_ticket))
+  let waiting = run(home.new(offered), home.AdminRequested)
+  assert process.receive(asked, 0) == Error(Nil)
+  assert !string.contains(drawn(waiting), "Opening the admin page.")
+  let #(owner, _) = opened(offered)
+  let ended =
+    run(
+      run(owner, home.Answered(home.Closed(ending.PageEnded))),
+      home.AdminRequested,
+    )
+  assert process.receive(asked, 0) == Error(Nil)
+  assert !string.contains(drawn(ended), "Opening the admin page.")
 }

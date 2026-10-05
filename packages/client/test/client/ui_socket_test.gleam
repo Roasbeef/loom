@@ -20,6 +20,7 @@ import host/bootstrap
 import session_view/snapshot
 import storage/access
 import storage/catalogue
+import web_view/admin
 import web_view/component
 import web_view/home
 import web_view/image
@@ -919,4 +920,163 @@ pub fn only_an_owners_operating_home_may_create_test() {
   assert ui_socket.home_create_capability(owner, access.Observer, ask) == None
   assert ui_socket.home_create_capability(member, access.Operator, ask) == None
   assert ui_socket.home_create_capability(member, access.Observer, ask) == None
+}
+
+// --- the admin page (protocol-change/065, the fifth pull request) -------------
+
+// The home's capability to open the admin page is the owner's, on a page minted
+// to operate and opened by a fresh `loom ui` exchange. A member's home, an owner's
+// observer-ceiling home and every other combination have none, and no combination
+// of the other two capabilities implies it.
+pub fn only_an_owners_fresh_operating_home_may_open_the_admin_page_test() {
+  let ask = fn(_deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let reach = ui_sessions.Workspace
+  let assert Some(_) =
+    ui_socket.home_admin_capability(owner, access.Operator, reach, ask)
+  assert ui_socket.home_admin_capability(owner, access.Observer, reach, ask)
+    == None
+  assert ui_socket.home_admin_capability(member, access.Operator, reach, ask)
+    == None
+  assert ui_socket.home_admin_capability(member, access.Observer, reach, ask)
+    == None
+}
+
+// A home is fresh when a `loom ui` exchange opened it, which until the browser
+// login exists is every home. The rule is one function, and a page minted for one
+// session is no home, so it is not fresh, which also keeps the capability from
+// following any other reach.
+pub fn the_freshness_of_a_home_is_one_function_test() {
+  assert ui_socket.fresh_home(ui_sessions.Workspace) == Ok(Nil)
+  assert ui_socket.fresh_home(ui_sessions.OneSession) == Error(Nil)
+  let ask = fn(_deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  assert ui_socket.home_admin_capability(
+      owner,
+      access.Operator,
+      ui_sessions.OneSession,
+      ask,
+    )
+    == None
+}
+
+// The home's socket admits the click on the "Admin" button only for a home that
+// may open the admin page, at exactly the button's path and for a click alone. A
+// plain home and the owner's other socket drop it, and the admin socket keeps
+// every other event dropped.
+pub fn the_home_socket_admits_the_admin_click_only_for_a_home_that_may_open_it_test() {
+  let button = home.admin_path
+  let row = home.table_path <> "\t1\t2\t0\t0\t0"
+  assert ui_socket.home_admin_accepts(click_on(button))
+
+  // The same home still takes what the owner's home takes, and no more.
+  assert ui_socket.home_admin_accepts(click_on(row))
+  assert ui_socket.home_admin_accepts(submit_on(home.table_path <> "\t1\t0\t3"))
+  assert ui_socket.home_admin_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(row)
+    <> ","
+    <> click_on(button)
+    <> "]}",
+  )
+
+  // No other home admits it, whatever frame names the path.
+  assert !ui_socket.home_accepts(click_on(button))
+  assert !ui_socket.home_owner_accepts(click_on(button))
+  assert !ui_socket.home_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(row)
+    <> ","
+    <> click_on(button)
+    <> "]}",
+  )
+
+  // And the admitted path is the button's and nothing near it.
+  list.each(
+    [
+      submit_on(button),
+      click_on("0\t0"),
+      click_on("0\t0\t4"),
+      click_on("0\t0\t5\t0"),
+      click_on("0\t0\t50"),
+      click_on("0\t0\t6"),
+      click_on("0\t0\t2"),
+      "{\"kind\":1,\"path\":\"0\\t0\\t5\",\"name\":\"keydown\"}",
+      "{\"kind\":1,\"path\":\"0\\t0\\t5\",\"name\":\"input\"}",
+      "{\"kind\":1,\"name\":\"click\"}",
+      "{\"kind\":3,\"messages\":[]}",
+      "not json",
+    ],
+    fn(frame) {
+      assert !ui_socket.home_admin_accepts(frame)
+    },
+  )
+}
+
+// The admin socket admits a click or a submit beneath the page's body, where
+// every control is, alone or batched, and drops every other frame: the bar, the
+// notice's place, the body's own path, a sibling that shares its digits, a path
+// of another page, other events, and any batch with one of them in it.
+pub fn the_admin_socket_admits_only_events_beneath_the_pages_body_test() {
+  let inside = admin.body_path <> "\t1\t0\t3"
+  assert ui_socket.admin_accepts(click_on(inside))
+  assert ui_socket.admin_accepts(submit_on(inside))
+  assert ui_socket.admin_accepts(click_on(admin.body_path <> "\t0"))
+  assert ui_socket.admin_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> click_on(inside)
+    <> ","
+    <> submit_on(inside)
+    <> "]}",
+  )
+  list.each(
+    [
+      click_on(admin.body_path),
+      submit_on(admin.body_path),
+      click_on(admin.body_path <> "0"),
+      click_on("0\t2\t10"),
+      click_on("0\t2\t0"),
+      click_on("0\t2"),
+      click_on("0\t2\t2"),
+      click_on("0\t0\t5"),
+      click_on("0\t0"),
+      click_on("0\t1\t0"),
+      click_on("0\t3\t0"),
+      click_on(home.sidebar_path <> "\t1\t0"),
+      click_on(""),
+      "{\"kind\":1,\"name\":\"click\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t0\",\"name\":\"keydown\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t0\",\"name\":\"input\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t0\",\"name\":\"change\"}",
+      "{\"kind\":3,\"messages\":[]}",
+      "{\"kind\":3,\"messages\":["
+        <> click_on(inside)
+        <> ","
+        <> click_on("0\t0\t5")
+        <> "]}",
+      "{\"kind\":2,\"name\":\"value\"}",
+      "not json",
+    ],
+    fn(frame) {
+      assert !ui_socket.admin_accepts(frame)
+    },
+  )
+}
+
+// The paths the admin page adds are pinned beside the others: the button is the
+// bar's last child and the body is the centre's second, and none of the paths
+// pinned before moved.
+pub fn the_admin_pages_event_paths_are_pinned_test() {
+  assert home.admin_path == "0\t0\t5"
+  assert admin.body_path == "0\t2\t1"
+
+  // The body is the home's table's place in the centre, and the button is
+  // beneath neither the table's region nor the sidebar's, so no earlier
+  // admission covers it.
+  assert admin.body_path == home.table_path
+  assert !string.starts_with(home.admin_path, home.table_path)
+  assert !string.starts_with(home.admin_path, home.sidebar_path)
+  assert component.home_path == "0\t0\t1"
+  assert !ui_socket.home_owner_accepts(click_on(home.admin_path))
 }

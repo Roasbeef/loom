@@ -216,6 +216,13 @@ pub type Reason {
   /// one reason a request to go home has, so it has its own words rather than
   /// the switch's, which speak of a session.
   NoHome
+
+  /// The daemon could not mint a ticket for the admin page: the home page's own
+  /// standing had ended, its credential no longer authenticates as the owner,
+  /// or it was not a home an admin page may be opened from. One reason for all,
+  /// so a page learns nothing about which (protocol-change/065, the fifth pull
+  /// request).
+  NoAdmin
 }
 
 /// The words a page shows for a declined switch. They are fixed here, one per
@@ -236,6 +243,7 @@ pub fn reason_words(reason: Reason) -> String {
     NotOperator -> "Ask an operator to resume it."
     NotOpened -> "That session did not open. Resume it from a terminal."
     NoHome -> "The daemon could not open the home page. Try again."
+    NoAdmin -> "The daemon could not open the admin page. Run loom ui again."
   }
 }
 

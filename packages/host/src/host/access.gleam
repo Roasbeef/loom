@@ -46,7 +46,7 @@
 ////    encodes the one request, and `receive_reply` reads exactly one answer.
 //// 5. A refusal becomes `refusal_code`; a matching reply goes to `success`,
 ////    which re-encodes checked fields only, through `member_success`,
-////    `principal_lines` or `membership_lines`.
+////    `principal_lines`, `membership_lines` or `member_lines`.
 //// 6. `run_on` prints those lines and returns an `Outcome`; a failure after
 ////    the send carries `unknown_outcome` so a mutation is never retried.
 
@@ -132,6 +132,9 @@ type Kind {
 
   // `principals.memberships`.
   MembershipListing
+
+  // `sessions.members`.
+  MemberListing
 }
 
 // Where the printed `claim_command` points the invitee. An invitation or
@@ -157,7 +160,7 @@ type Epoch {
 }
 
 const commands_usage =
-  "list [--after PRINCIPAL] | show PRINCIPAL [--after SESSION] | invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
+  "list [--after PRINCIPAL] | show PRINCIPAL [--after SESSION] | members SESSION [--after PRINCIPAL] | invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | isolate SESSION --share-existing-transcript"
 
 /// The complete access-command usage for one binary.
 ///
@@ -267,7 +270,7 @@ fn announce(console: Console, request: Request) -> Nil {
   case request.kind {
     Member -> console.err("principal recovery ID: " <> request.subject)
     Isolation -> console.err("session ID: " <> request.subject)
-    Passthrough | PrincipalListing | MembershipListing -> Nil
+    Passthrough | PrincipalListing | MembershipListing | MemberListing -> Nil
   }
 }
 
@@ -292,7 +295,7 @@ fn note_loopback_claim(console: Console, request: Request) -> Nil {
 fn unknown_outcome(request: Request) -> String {
   case request.kind {
     Member | Isolation -> "; do not retry an unknown mutation automatically"
-    Passthrough | PrincipalListing | MembershipListing -> ""
+    Passthrough | PrincipalListing | MembershipListing | MemberListing -> ""
   }
 }
 
@@ -312,7 +315,7 @@ pub fn parse(
   use request <- result.try(parse_command(target, rest, program))
   use Nil <- result.try(case request.kind {
     Member | MembershipListing -> valid_principal(request.subject)
-    Isolation | Passthrough | PrincipalListing -> Ok(Nil)
+    Isolation | Passthrough | PrincipalListing | MemberListing -> Ok(Nil)
   })
   Ok(request)
 }
@@ -399,6 +402,18 @@ fn parse_command(
         MembershipListing,
         "principals.memberships",
         principal,
+        after_field(after),
+        NoClaim,
+      ))
+    }
+    ["members", session, ..options] -> {
+      use Nil <- result.try(session_id(session))
+      use after <- result.try(after_option(options, valid_principal))
+      Ok(Request(
+        target,
+        MemberListing,
+        "sessions.members",
+        session,
         after_field(after),
         NoClaim,
       ))
@@ -628,16 +643,18 @@ fn member_role(text: String) -> Result(Nil, String) {
 @internal
 pub fn envelope(request: Request, epoch: String) -> String {
   // A member command names its principal in the body, and a listing of one
-  // principal's memberships does too. Listings read and change nothing, so
-  // they carry no epoch to fence.
+  // principal's memberships does too; a listing of a session's members names
+  // the session. Listings read and change nothing, so they carry no epoch to
+  // fence.
   let identity = case request.kind {
     Member | MembershipListing -> [
       #("principal_id", json.String(request.subject)),
     ]
+    MemberListing -> [#("session_id", json.String(request.subject))]
     Isolation | Passthrough | PrincipalListing -> []
   }
   let fenced = case request.kind {
-    PrincipalListing | MembershipListing -> request.body
+    PrincipalListing | MembershipListing | MemberListing -> request.body
     Member | Isolation | Passthrough -> [
       #("epoch", json.String(epoch)),
       ..request.body
@@ -945,6 +962,7 @@ pub fn success(
     }
     PrincipalListing -> principal_lines(body)
     MembershipListing -> membership_lines(body, request.subject)
+    MemberListing -> member_lines(body, request.subject)
   }
 }
 
@@ -989,6 +1007,27 @@ pub fn membership_lines(
     json.String(principal),
   ))
   page_lines(fields, "memberships", membership_row)
+}
+
+/// Checks a `sessions.members` reply body for `session` and answers its lines,
+/// in the shape `principal_lines` answers: one checked row per member, then
+/// `{"next": CURSOR}` when another page follows.
+///
+/// A reply that names another session is refused, so a late answer to an
+/// earlier request cannot be drawn under the wrong session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.member_lines(body, session_id)
+/// ```
+pub fn member_lines(
+  body: JsonValue,
+  session: String,
+) -> Result(List(JsonValue), String) {
+  use fields <- result.try(object_fields(body))
+  use Nil <- result.try(equal_field(fields, "session_id", json.String(session)))
+  page_lines(fields, "members", member_row)
 }
 
 /// The `loom access` line that invites a new member to `session`, with
@@ -1185,6 +1224,25 @@ fn membership_row(value: JsonValue) -> Result(JsonValue, String) {
   Ok(
     json.Object([
       #("session_id", json.String(session)),
+      #("name", json.String(name)),
+      #("role", json.String(role)),
+    ]),
+  )
+}
+
+fn member_row(value: JsonValue) -> Result(JsonValue, String) {
+  use fields <- result.try(object_fields(value))
+  use principal <- result.try(text_field(fields, "principal_id"))
+  use Nil <- result.try(valid_principal(principal))
+  use name <- result.try(text_field(fields, "name"))
+  use role <- result.try(case list.key_find(fields, "role") {
+    Ok(json.String("operator")) -> Ok("operator")
+    Ok(json.String("observer")) -> Ok("observer")
+    Ok(_) | Error(Nil) -> Error("invalid membership role")
+  })
+  Ok(
+    json.Object([
+      #("principal_id", json.String(principal)),
       #("name", json.String(name)),
       #("role", json.String(role)),
     ]),

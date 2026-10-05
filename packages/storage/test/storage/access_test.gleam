@@ -497,6 +497,7 @@ pub fn generated_access_queries_match_sqlc_input_test() {
     sql.principal_active_credential("").0,
     sql.principal_open_claim("").0,
     sql.principal_memberships("", "").0,
+    sql.session_members("", "").0,
   ]
   assert normalize(source) == normalize(string.join(generated, "\n"))
 }
@@ -1420,6 +1421,104 @@ pub fn memberships_page_names_sessions_and_pages_by_session_test() {
     list.find(everything, fn(row) { row.session_id == first.id })
   assert original.name == "session"
   assert original.role == access.Observer
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn session_members_page_lists_one_sessions_members_in_principal_order_test() {
+  let #(_file, store, first, _invitee) = claim_fixture("session-members", 954)
+  let other = registration(955)
+  assert catalogue.reserve(store, other) == Ok(other)
+
+  // Two more members in the first session and one in the other, so the page
+  // shows the first session's members and no one else's.
+  list.each([#("zed", "a"), #("amy", "e")], fn(row) {
+    let assert Ok(_) =
+      access.invite_member(
+        store,
+        row.0,
+        "Name of " <> row.0,
+        claimed_by(row.1),
+        first.id,
+        access.Operator,
+      )
+      as "the member is invited"
+    Nil
+  })
+  let assert Ok(elsewhere) =
+    access.invite_member(
+      store,
+      "bob",
+      "Bob",
+      claimed_by("b"),
+      other.id,
+      access.Observer,
+    )
+    as "a member of the other session"
+  let assert Ok(page) = access.session_members_page(store, first.id, "")
+    as "the first session's members"
+  assert page.remainder == access.Exhausted
+  assert page.entries
+    == [
+      access.SessionMember("amy", "Name of amy", access.Operator),
+      access.SessionMember("invitee", "Invitee", access.Observer),
+      access.SessionMember("zed", "Name of zed", access.Operator),
+    ]
+  assert !list.any(page.entries, fn(row) { row.principal_id == elsewhere.id })
+
+  // The cursor is the last principal read, and a role change shows at once.
+  let assert Ok(rest) = access.session_members_page(store, first.id, "invitee")
+    as "the page after a cursor"
+  assert list.map(rest.entries, fn(row) { row.principal_id }) == ["zed"]
+  assert access.grant(store, "invitee", first.id, access.Operator) == Ok(Nil)
+  let assert Ok(changed) = access.session_members_page(store, first.id, "amy")
+    as "the changed role"
+  assert list.map(changed.entries, fn(row) { row.role })
+    == [access.Operator, access.Operator]
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn session_members_page_pages_and_refuses_unknown_sessions_test() {
+  let #(_file, store, session, _invitee) =
+    claim_fixture("session-members-bounds", 956)
+  let ids =
+    list.index_map(list.repeat(Nil, 104), fn(_, index) {
+      "member-" <> string.pad_start(int.to_string(index), 3, "0")
+    })
+  list.each(ids, fn(id) {
+    let assert Ok(unique) =
+      access.claim_digest(string.pad_start(string.slice(id, 7, 3), 64, "1"))
+      as "a distinct claim digest"
+    let assert Ok(_) =
+      access.invite_member(
+        store,
+        id,
+        "Member",
+        access.ClaimEnrollment(unique, 1000),
+        session.id,
+        access.Observer,
+      )
+      as "the member is invited"
+    Nil
+  })
+  let assert Ok(page) = access.session_members_page(store, session.id, "")
+    as "the first page"
+  assert list.length(page.entries) == access.listing_limit
+  assert page.remainder == access.Remaining
+  let assert Ok(last) = list.last(page.entries)
+  let assert Ok(rest) =
+    access.session_members_page(store, session.id, last.principal_id)
+    as "the second page"
+
+  // The invitee and 104 members make 105 rows in all.
+  assert list.length(rest.entries) == 5
+  assert rest.remainder == access.Exhausted
+  let absent = registration(957)
+  assert access.session_members_page(store, absent.id, "")
+    == Error(catalogue.Missing)
+  assert access.session_members_page(store, session.id, "bad id")
+    == Error(catalogue.Invalid(
+      "principal ID must be 1-128 ASCII identifier bytes",
+    ))
   assert catalogue.close(store) == Ok(Nil)
 }
 

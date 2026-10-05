@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:261`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:296`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2365`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:2646`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -898,6 +898,70 @@ different paths, each handler has its own decoder, and the decoders refuse each
 other's fields (`text` for a rename, `name` and `shareable` for a creation), so a
 submit reaches one handler and one message. `ui_route_test`, `ui_socket_test`, `ui_sessions_test` and
 `home_test` read each refusal and the admission.
+
+### The admin page
+
+The fifth pull request of 065 gives the owner a page to see and change who has
+access (protocol-change/065, the fifth addendum). It is the third scope under the
+ticket, cookie, key and nonce machinery: `ui_sessions.Admin`, with its own
+exchange (`/ui/admin`), page (`/ui/p/<key>/admin`) and socket (`.../admin/ws`)
+and a lifetime of `ui_sessions.admin_ms`, fifteen minutes, or the minting home's
+deadline if that is earlier. A ticket is honoured only at its own scope's
+exchange, so a session's and a home's are spent at the admin exchange and an
+admin ticket is spent at theirs. The only way to a ticket is the "Admin" button
+on the owner's home, which `ui_socket.home_admin_capability` hands to a home whose
+principal is the owner, minted to operate and fresh (`ui_socket.fresh_home`, the
+one function the browser login will tighten), and `admin_ticket_for` checks again
+at the press. `server.admin_grant` checks at every page and socket request that the
+grant is of the `Admin` scope and its credential still authenticates as the owner.
+
+`web_view/admin` is a server component in the home's frame with no sidebar and no
+panel. Its reads and its five changes both run in weft tasks
+(`ui_socket.admin_read_task`, `admin_task`): the Lustre runtime never waits on the
+registry, a read's number is how an answer that was overtaken is dropped, and a
+change is followed by a read so the page shows what the catalogue now holds. A
+read is the principals with their credential state (`manager.principal_page`),
+the owner's sessions (`authorized_page`) and, once the owner has chosen one, its
+members (`manager.session_member_page`, the `sessions.members` read). The page
+draws three lists in `view/admin_people` and `view/admin_sessions`: the people
+(owner first), the invitations waiting to be claimed, and the sessions with a
+chosen one's members. Each member of a session has a button that raises or lowers
+the role and a two-step button that removes the member; each person has a Rotate
+button and a two-step button that revokes access; a form invites a new person into
+the chosen session with a name and a role (`admin_sessions.fields` is the one
+rule for what the form may hold). The two-step shape (`view/admin_buttons`) is a
+guard against a mis-click: the first press shows what will happen in words that
+name the person and the second sends it. While a change is out every button is
+drawn disabled.
+
+The one secret the page holds is a claim. An invitation or a rotation returns the
+token to the page that asked; the component holds it until the owner presses "Hide
+the token" and draws it once in the session page's copy boxes
+(`view/admin_claim`, `<loom-copy>`), sticky at the head of the body so it stays on
+screen while the owner scrolls. The catalogue keeps only a claim's digest, so no
+read carries one, and no frame of the admin socket carries `loomclaim_` except the
+one that shows the owner a claim they just made. `ui_route_test` scans the real
+socket's frames for it and `admin_test` pins the display's life.
+
+Every change is `ui_socket.admin_for`, made afresh from the grant: the page is open
+(which is also the epoch check), the ceiling is Operator, and the credential
+authenticates as the principal the page was admitted for and that principal is
+the owner; then `manager.administer`, which authenticates the credential and the
+epoch again. An invitation, a rotation and a role raised to operator each take one
+place from `ui_sessions.reserve_invite`, the allowance the session page's
+invitation control already used, so the fourth grant in an hour across the two is
+`TooMany`; lowering a role, removing a membership and revoking credentials cost
+nothing. The invitation's dispatch (`invitation`) is shared with the session page,
+and a refusal that made nothing gives the place back through the same
+`give_back`.
+
+The admissions are the paths the two sockets take. The owner's home that holds the
+capability takes `home_admin_accepts`: the clicks and submits `home_owner_accepts`
+takes, and a click at exactly `home.admin_path` (`"0\t0\t5"`, the bar's last
+child). The admin socket takes `admin_accepts`: a click or a submit beneath
+`admin.body_path` (`"0\t2\t1"`) and nothing else. `ui_socket_test` pins both and
+the near misses, `home_test` and `admin_test` pin where the view puts its
+handlers, and no path an earlier pull request pinned moved.
 
 ## Expanding a row
 

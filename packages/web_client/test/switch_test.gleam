@@ -31,6 +31,34 @@ pub fn a_ticket_exchange_for_the_home_is_an_address_test() {
   assert switch_rule.target(upper) == Ok(upper)
 }
 
+// The admin page's exchange is the third: the owner's home goes to it
+// (protocol-change/065, the fifth pull request), and it is as exact as the
+// home's.
+pub fn a_ticket_exchange_for_the_admin_page_is_an_address_test() {
+  let address = "/ui/admin?ticket=" <> ticket()
+  assert switch_rule.target(address) == Ok(address)
+  list.each(
+    [
+      "/ui/admin",
+      "/ui/admin?ticket=",
+      "/ui/admin/?ticket=" <> ticket(),
+      "/ui/admins?ticket=" <> ticket(),
+      "/ui/admin?ticket=" <> string.drop_end(ticket(), 1),
+      "/ui/admin?ticket=" <> ticket() <> "&next=/elsewhere",
+      "/ui/admin?ticket=" <> ticket() <> "#fragment",
+      "/ui/admin?ticket=" <> string.repeat("zz", 32),
+      "//elsewhere.example/ui/admin?ticket=" <> ticket(),
+      "https://elsewhere.example/ui/admin?ticket=" <> ticket(),
+      "/ui/p/key/admin?ticket=" <> ticket(),
+      "/ui/home/ui/admin?ticket=" <> ticket(),
+      "/ui/admin?ticket=" <> ticket() <> "/ui/admin?ticket=" <> ticket(),
+    ],
+    fn(value) {
+      assert switch_rule.target(value) == Error(Nil)
+    },
+  )
+}
+
 // The home shape is as exact as the session's: no other origin, path, query,
 // fragment or ticket length reaches the browser through it.
 pub fn any_other_home_value_is_refused_test() {

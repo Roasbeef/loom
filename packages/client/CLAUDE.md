@@ -188,7 +188,7 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
 
 - `daemon/ui_sessions`: one `weft/actor` owning the ticket table (60 s,
   single use) and the UI-session table (8 h), both keyed by the SHA-256 of
-  the secret. A `Grant` carries a `Scope` (`Session(id)` or `Home`,
+  the secret. A `Grant` carries a `Scope` (`Session(id)`, `Home` or `Admin`,
   protocol-change/065), the minting credential's digest, the principal, the
   page's `ceiling` (`Observer` unless `ui.link` named `page:"operator"`) and a
   `Reach` (`OneSession | Workspace`, not yet read). `ui.link` without
@@ -197,7 +197,10 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `ui_socket.upgrade_home` serve it, a home living `ui_sessions.session_ms`.
   The router hands each page's `grant.reach` to `ui_socket.upgrade` and
   `upgrade_home`, which build the page's `Standing`, and every ticket a page
-  mints carries it.
+  mints carries it. The admin page's three routes (`server.admin_grant`,
+  `admin_socket`, `Ui.admin`, `AdminAttachment`) check the cookie's grant is of
+  the `Admin` scope and its credential authenticates as the owner at every
+  request, and `ui_socket.upgrade_admin` serves it.
   Redemption is one message: it spends
   the ticket, answers `UnknownTicket` or `OtherScope`, and mints three
   secrets, ending no other page except the principal's oldest when it
@@ -213,12 +216,17 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   own component, and the image route reads it back. It is found only through a
   live UI session, is replaced by a reload's new socket, and is dropped by the
   sweep with the page.
+  An `Admin` page (the fifth addendum) lives `admin_ms` (fifteen minutes, never
+  more than `Settings.session_ms`) and is counted against `max_pages` apart from
+  homes and sessions; its ticket redeems only at the admin exchange.
   The same actor keeps the page-minted
-  invitations' allowance: `reserve_invite` and `release_invite`, keyed by the
+  invitations' allowance, which the admin page's invitations, rotations and raised
+  roles share with the session page's invitation control: `reserve_invite` and `release_invite`, keyed by the
   credential's fingerprint and not by any page, at most `invite_limit` (three)
   in any `invite_window_ms` (an hour, the claim's own lifetime), counted and
   taken in one message.
-- `daemon/ui_http`: pure checks. `route` (the exchange at
+- `daemon/ui_http`: pure checks. `route` also routes the admin page's three
+  (`AdminExchange` at `/ui/admin?ticket=`, `AdminPage`, `AdminSocket`). `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
   its socket at `.../ws` with the `csrf-token` query, and five assets),
   `loopback_host`, `exchange_allowed` and `navigation_allowed`
@@ -348,6 +356,23 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `activity_task(ask, ids, deliver)` runs it in a weft run
   linked to the Lustre runtime and returns at once, as `resume_task` does;
   `Start.now` is `bootstrap.system_time_ms`.
+  The admin page (protocol-change/065, the fifth addendum).
+  `home_admin_capability(principal, ceiling, reach, ask)` is `Some` for the
+  owner's operating home that `fresh_home(reach)` calls fresh, `upgrade_home`
+  passes it as `Start.admin`, and a home that holds it gets `home_admin_accepts`
+  (`home_owner_accepts` and a click at `home.admin_path`). `admin_ticket_for`
+  re-derives the page at the press (open, Operator, fresh, credential authenticates
+  as the page's principal and that is the owner) and mints an `Admin` ticket with
+  `mint_before`; `admin_ticket_task` runs it in a weft run. `upgrade_admin` starts
+  `web_view/admin` over the same `websocket` with `admin_accepts` (a click or a
+  submit beneath `admin.body_path`). `admin_reading(attachment, open, chosen,
+  ended)` is the page's read and frame check (`manager.principal_page`,
+  `authorized_page`, `session_member_page`; owner first); `admin_for(standing,
+  tickets, open, epoch, address, action)` makes each of the five changes afresh
+  from the grant, takes a place from `reserve_invite` for a grant (an invitation,
+  a rotation, a role raised to operator) and none for a reduction, and shares
+  `invitation` and `give_back` with `invite_for`. `admin_read_task` and
+  `admin_task` run them in weft runs linked to the Lustre runtime.
   `ui.link` and a switch build the exchange path with `page.exchange_path`.
   An owner's operator page can also invite (protocol-change/051, the addendum
   on inviting from the session page). `ui_socket.Role` has a third value,

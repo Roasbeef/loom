@@ -74,3 +74,10 @@ JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 WHERE m.principal_id = ? AND m.session_id > ?
 ORDER BY m.session_id LIMIT 101;
+
+-- name: SessionMembers :many
+SELECT m.principal_id, p.display_name, m.role
+FROM access_memberships AS m
+JOIN access_principals AS p ON p.principal_id = m.principal_id
+WHERE m.session_id = ? AND m.principal_id > ?
+ORDER BY m.principal_id LIMIT 101;
