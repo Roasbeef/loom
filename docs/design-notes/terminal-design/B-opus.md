@@ -281,7 +281,7 @@ and the roster returns under the input.
 | Strand cards with a ring and one status line | a ring is not drawable in cells | a glyph, the name, the status line, and the cache outlook as `3m` |
 | Strand focus from dots, tags and cards | dots are cells, not buttons; no hover | `Ctrl+T` timeline cursor, `Enter` on a row; clicks are additive |
 | Breadcrumb with `All strands` and `Esc` | `Esc` already interrupts the active strand | breadcrumb with `↓ ⏎ main` |
-| `⌘B`, `⌘⌥B` | terminals do not deliver `⌘`; `Ctrl+B` is tmux's prefix; `Ctrl+Alt+B` parses as `Unknown`; any `Alt` letter is read as Escape then the letter (`interrupt_and_insert` at `tui/submit.gleam:417`) | `Shift+Tab`, which already toggles the rail |
+| `⌘B`, `⌘⌥B` | terminals do not deliver `⌘`; `Ctrl+B` is tmux's prefix; `Ctrl+Alt+B` parses as `Unknown`; any `Alt` letter is read as Escape then the letter (`interrupt_and_insert` at `tui/submit.gleam:411`) | `Shift+Tab`, which already toggles the rail |
 | Left session sidebar | costs 26 or more cells and duplicates the multiplexer | not drawn; the `←` picker |
 | 180 ms width animation, shadows, rounded cards | no | none |
 | Approval card in the dock | fits | today's bottom-anchored approval panel, unchanged in rules |
@@ -351,9 +351,9 @@ call list in both needs a new wire record (section 10).
 | Key | Today | Concept B |
 |---|---|---|
 | `←` on an empty composer | session picker (`tui/interaction.gleam:1376`) | unchanged |
-| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1492`) | unchanged; lands on `main` when another strand is focused |
+| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1473`) | unchanged; lands on `main` when another strand is focused |
 | `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1441`) | toggle the drawer, which replaces the rail |
-| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1381`) | open Strands: full body, or focus the docked drawer |
+| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1368`) | open Strands: full body, or focus the docked drawer |
 | `Ctrl+T` | unbound | timeline cursor (new) |
 | `Ctrl+G` | details everywhere | unchanged |
 | `Ctrl+D` | changes navigator focus | focus the drawer on Changes |
