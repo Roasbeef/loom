@@ -9,6 +9,12 @@ import re
 from runner import ROOT, check_case, compile_model, record, snapshot_model
 
 PROBES = {
+    "tcProbeBeamScopeIdle": "witness: idle credit death reduced capacity without scope obligation and busy death retained original uncertainty",
+    "tcProbeBeamScopeOwner": "witness: applied owner DOWN fenced idle and busy rows while prior assignment stayed uncertain and sibling progressed",
+    "tcProbeBeamScopeFence": "witness: scoped fence refused original traffic while sibling progressed and late handoff stayed stale",
+    "tcProbeBeamScopePending": "witness: scoped drain stayed busy until actual answer and original producer drain",
+    "tcProbeBeamScopeLost": "witness: service DOWN and later answer drain retained scoped uncertainty while sibling drained",
+    "tcProbeBeamScopeStale": "witness: stale answer and drain preserved reused sibling assignment before exact completion",
     "tcProbeBeamCreditStale": "witness: stale handoff refused after same credit reuse and current work completed",
     "tcProbeBeamCreditPending": "witness: caller loss and drain retained service ask until its actual answer",
     "tcProbeBeamCreditShared": "witness: two scopes shared four data and two control credits and closure refused admission",
