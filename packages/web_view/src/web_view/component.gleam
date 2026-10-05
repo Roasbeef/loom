@@ -737,8 +737,10 @@ type View(socket) {
     jobs_asked_at: Option(Int),
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
-    /// How many submits were refused with the draft kept, by the page
-    /// (`refused`) or by the lane's admission check (`submitting`). The
+    /// How many composer submits were refused with the draft kept, by the
+    /// page (`refused_draft`) or by the lane's admission check
+    /// (`submitting`); a refusal of anything but the composer's draft is
+    /// not counted. The
     /// composer's element reads it as the `refused` attribute, so a pending
     /// line it drew for a press can be taken down and the draft put back
     /// (`web_client/pending_rule`); a taken draft replaces the editor instead.
@@ -2009,9 +2011,9 @@ pub fn submit(
   images: List(String),
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case string.trim(text), images, string.byte_size(text) > prompt_limit {
-    "", [], _ -> refused(model, "Nothing to send.")
+    "", [], _ -> refused_draft(model, "Nothing to send.")
     _, _, True ->
-      refused(
+      refused_draft(
         model,
         "The draft is longer than the page sends ("
           <> int.to_string(prompt_limit)
@@ -2019,10 +2021,27 @@ pub fn submit(
       )
     _, _, False ->
       case web_image.admit(images) {
-        Error(notice) -> refused(model, notice)
+        Error(notice) -> refused_draft(model, notice)
         Ok(attached) -> submitting(model, text, delivery, attached)
       }
   }
+}
+
+// A composer submit the page refused with the draft kept: the refusal, and
+// the count the composer's element reads to take its pending line down
+// (`refusals`). Only the composer's paths count, since the element's line is
+// the composer's draft: a stale approval, a reply that found no message or a
+// control form refused are told in the notice and must leave a steer the
+// lane holds in flight, or a second press would send it twice.
+fn refused_draft(
+  model: Model(socket),
+  text: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(after, effects) = refused(model, text)
+  #(
+    Model(..after, view: View(..after.view, refusals: after.view.refusals + 1)),
+    effects,
+  )
 }
 
 // A draft that passed the page's own limits, with the images that passed
@@ -2041,13 +2060,13 @@ fn submitting(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case attached, delivery {
     [_, ..], operator.Steer ->
-      refused(
+      refused_draft(
         model,
         "Images go with Send or Queue, not Steer. Nothing was sent.",
       )
     _, _ ->
       case page_command(command.parse_with_skills(text, model.shared.skills)) {
-        Error(notice) -> refused(model, notice)
+        Error(notice) -> refused_draft(model, notice)
         Ok(session) -> {
           let attaching =
             Shared(
@@ -2345,14 +2364,7 @@ fn refused(
   text: String,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   #(
-    Model(
-      ..model,
-      view: View(
-        ..model.view,
-        refusal: Some(text),
-        refusals: model.view.refusals + 1,
-      ),
-    ),
+    Model(..model, view: View(..model.view, refusal: Some(text))),
     effect.none(),
   )
 }

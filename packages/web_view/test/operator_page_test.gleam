@@ -304,10 +304,24 @@ pub fn the_refused_count_rises_only_when_the_draft_is_kept_test() {
   assert component.drafts(model) == 1
   let _ = page_fixture.sent(wire)
 
+  // A refusal that is not the composer's leaves the count alone: a stale
+  // approval card and a reply to a message no longer on the page are told
+  // in the notice, and a steer the lane holds must stay in flight.
+  let other =
+    send(model, [
+      operator_page.Decided("esc-gone", 1, component.Deny),
+      operator_page.Replying("no-such-key"),
+    ])
+  assert component.refusals(other) == 1
+  assert component.notice(other)
+    == component.Warned(
+      "That message is no longer on the page, so no reply was started.",
+    )
+
   // The lane's admission check: a mutation on a closed connection keeps the
   // draft, and the count says so.
   let closed =
-    send(model, [
+    send(other, [
       operator_page.Observed(
         component.Arrived([connection_event.Closed("access was revoked")]),
       ),
