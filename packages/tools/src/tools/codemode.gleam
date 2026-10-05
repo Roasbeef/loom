@@ -447,6 +447,12 @@ pub type Execution {
     enforcement: Enforcement,
     refusal: PolicyRefusal,
     calls: CallLog,
+    /// What the harness changed in the submitted program before it ran,
+    /// one line per change, such as `removed unused import gleam/int (line
+    /// 3)`. Empty when the program ran as submitted. The model reads these
+    /// lines on success and on failure, and a diagnostic's line numbers
+    /// then refer to the program after the changes.
+    edits: List(String),
   )
 }
 
@@ -1519,8 +1525,37 @@ pub fn execution_value(execution: Execution) -> JsonValue {
   }
   json.Object([
     #("enforcement", enforcement_json(execution.enforcement)),
-    ..fields
+    ..list.append(edits_fields(execution), fields)
   ])
+}
+
+// The `edits` detail, present only when the harness changed the program.
+fn edits_fields(execution: Execution) -> List(#(String, JsonValue)) {
+  case execution.edits {
+    [] -> []
+    edits -> [#("edits", json.Array(list.map(edits, json.String)))]
+  }
+}
+
+// The edit lines as text after the line they follow, or nothing.
+fn edits_suffix(execution: Execution) -> String {
+  case execution.edits {
+    [] -> ""
+    edits -> "\n" <> string.join(edits, "\n")
+  }
+}
+
+// The same lines on a failure, with the sentence that explains the line
+// numbers beside them: the compiler counted lines in the program after the
+// edits, not in the one submitted.
+fn failed_edits_suffix(execution: Execution) -> String {
+  case execution.edits {
+    [] -> ""
+    _edits ->
+      edits_suffix(execution)
+      <> "\nthe line numbers in the diagnostics are for the program after "
+      <> "these removals"
+  }
 }
 
 // --- rendering the execution ----------------------------------------------
@@ -1766,13 +1801,20 @@ fn compile_outcome(
     )
   }
   let details =
-    json.Object([
-      #("status", json.String("compile_failed")),
-      #("kind", json.String(kind)),
-      #("detail", json.String(compile_detail(failure))),
-      #("sandbox", enforcement_json(execution.enforcement)),
-    ])
-  bounded_failure(ctx, body <> "\n" <> sandbox_text(execution), details)
+    json.Object(list.append(
+      [
+        #("status", json.String("compile_failed")),
+        #("kind", json.String(kind)),
+        #("detail", json.String(compile_detail(failure))),
+        #("sandbox", enforcement_json(execution.enforcement)),
+      ],
+      edits_fields(execution),
+    ))
+  bounded_failure(
+    ctx,
+    body <> failed_edits_suffix(execution) <> "\n" <> sandbox_text(execution),
+    details,
+  )
 }
 
 // The pointer as a line of its own after the text it belongs to, or nothing.
@@ -1816,15 +1858,20 @@ fn run_failed_outcome(
       "the satellite's capability channel broke protocol: " <> reason,
     )
   }
-  tool.failure(body <> "\n" <> sandbox_text(execution))
+  tool.failure(
+    body <> edits_suffix(execution) <> "\n" <> sandbox_text(execution),
+  )
   |> tool.with_details(
-    json.Object([
-      #("status", json.String("run_failed")),
-      #("kind", json.String(kind)),
-      #("detail", json.String(run_failure_detail(failure))),
-      #("sandbox", enforcement_json(execution.enforcement)),
-      #("calls", call_record.to_json(execution.calls)),
-    ]),
+    json.Object(list.append(
+      [
+        #("status", json.String("run_failed")),
+        #("kind", json.String(kind)),
+        #("detail", json.String(run_failure_detail(failure))),
+        #("sandbox", enforcement_json(execution.enforcement)),
+        #("calls", call_record.to_json(execution.calls)),
+      ],
+      edits_fields(execution),
+    )),
   )
 }
 
@@ -1878,6 +1925,7 @@ fn ran_outcome(
           #("sandbox", enforcement_json(execution.enforcement)),
           #("calls", call_record.to_json(execution.calls)),
         ],
+        edits_fields(execution),
       ]),
     )
   let pointer =
@@ -1885,7 +1933,12 @@ fn ran_outcome(
       execution.calls,
       offer.allowed_imports,
     ))
-  let text = body <> pointer <> "\n" <> sandbox_text(execution)
+  let text =
+    body
+    <> edits_suffix(execution)
+    <> pointer
+    <> "\n"
+    <> sandbox_text(execution)
   case is_error {
     True -> bounded_failure(ctx, text, details)
     False -> bounded_success(ctx, text, details)

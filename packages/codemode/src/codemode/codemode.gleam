@@ -19,6 +19,15 @@
 ////
 //// Every stage's failure is a value, not a crash: `execute` is total.
 ////
+//// # One rewrite, for unused imports only
+////
+//// A build that fails with nothing but unused-import warnings is run once
+//// more without those imports (`codemode/unused_imports`): the rewritten
+//// source is vetted again, built, content-addressed and returned as the
+//// program (`Ran.source`), and `Execution.edits` says what was removed.
+//// Any other diagnostic leaves the failure exactly as the compiler said
+//// it, and there is never a second rewrite.
+////
 //// # The durable-entry seam
 ////
 //// A code-mode program's source and its artifact are stored as entries, so
@@ -39,9 +48,11 @@ import codemode/identity.{type ExecIdentity}
 import codemode/satellite.{
   type Launcher, type Outcome, type RunError, type SatelliteConfig,
 }
+import codemode/unused_imports
 import codemode/vet.{type Rejection, type Vetted}
 import codemode/vet/policy.{type VetPolicy}
 import gleam/list
+import gleam/result
 import tools/call_record.{type CallLog}
 
 /// One whole code-mode execution: how far it got, what the kernel
@@ -68,6 +79,13 @@ pub type Execution {
     enforcement: Enforcement,
     widening: Widening,
     calls: CallLog,
+    /// What the harness changed in the submitted program before it ran, one
+    /// line per change (`removed unused import gleam/int (line 3)`), in
+    /// source order. Empty unless the build named unused imports and the
+    /// program was rebuilt without them (`unused_imports`); when it is not
+    /// empty, `Ran.source` is the rewritten program, the one that was
+    /// vetted, built and run, and diagnostics refer to its line numbers.
+    edits: List(String),
   )
 }
 
@@ -159,6 +177,7 @@ fn vet_rejected(rejections: List(Rejection), config: ExecConfig) -> Execution {
       because: "vetting refused the program, so no stage composed the grants",
     ),
     calls: call_record.empty(),
+    edits: [],
   )
 }
 
@@ -167,22 +186,69 @@ fn compile_and_run(
   vetted: Vetted,
   config: ExecConfig,
 ) -> Execution {
-  // The build's identity is *derived* here, from the execution's, rather
-  // than supplied alongside it: that derivation is the only thing standing
-  // between the build and a ledger of its own invention.
-  let compiled =
-    compile.compile(
-      vetted,
-      compile.CompileConfig(
-        ..config.compile,
-        generated: imported(config.compile.generated, vetted),
-      ),
-      identity.build_phase(config.identity),
+  let first = compile_once(vetted, config)
+
+  // One rewrite at most. The second build's result is final whatever it
+  // says: a program whose unused imports were not the whole problem gets the
+  // second build's diagnostics, and nothing is rewritten twice.
+  let #(source, compiled, edits) = case rewritten(vetted, first, config) {
+    Ok(#(next, rewrite)) -> #(
+      rewrite.source,
+      compile_once(next, config),
+      rewrite.notes,
     )
+    Error(Nil) -> #(source, first, [])
+  }
   case compiled.result {
-    Error(error) -> compile_failed(compiled.enforcement, error, config)
+    Error(error) -> compile_failed(compiled.enforcement, error, edits, config)
     Ok(artifact) ->
-      run_and_report(source, artifact, compiled.enforcement, config)
+      run_and_report(source, artifact, compiled.enforcement, edits, config)
+  }
+}
+
+// The build's identity is *derived* here, from the execution's, rather
+// than supplied alongside it: that derivation is the only thing standing
+// between the build and a ledger of its own invention.
+fn compile_once(vetted: Vetted, config: ExecConfig) -> compile.Compiled {
+  compile.compile(
+    vetted,
+    compile.CompileConfig(
+      ..config.compile,
+      generated: imported(config.compile.generated, vetted),
+    ),
+    identity.build_phase(config.identity),
+  )
+}
+
+// The program without the imports a failed build named as unused, vetted
+// again, when that is the whole of the failure.
+//
+// What runs is what was vetted, so the rewritten source goes back through
+// `vet.vet` under the same policy and the new `Vetted` is what is built. A
+// removal can only narrow what a program imports, so the vet is not
+// expected to refuse; if it ever does, the original failure stands rather
+// than a program nobody vetted being built.
+fn rewritten(
+  vetted: Vetted,
+  compiled: compile.Compiled,
+  config: ExecConfig,
+) -> Result(#(Vetted, unused_imports.Rewrite), Nil) {
+  case compiled.result {
+    Error(compile.BuildRejected(diagnostics:)) -> {
+      use rewrite <- result.try(unused_imports.rewrite(
+        vet.vetted_source(vetted),
+        diagnostics,
+        "src/" <> compile.program_module <> ".gleam",
+      ))
+      case vet.vet(rewrite.source, config.vet_policy) {
+        vet.Passed(next) -> Ok(#(next, rewrite))
+        vet.Rejected(_) -> Error(Nil)
+      }
+    }
+    Error(compile.WorkspaceSetupFailed(reason: _))
+    | Error(compile.BuildUnavailable(reason: _))
+    | Error(compile.ArtifactIncomplete(reason: _))
+    | Ok(_) -> Error(Nil)
   }
 }
 
@@ -216,6 +282,7 @@ fn imported(
 fn compile_failed(
   build: Report,
   error: CompileError,
+  edits: List(String),
   config: ExecConfig,
 ) -> Execution {
   Execution(
@@ -232,6 +299,7 @@ fn compile_failed(
         <> "widened by an approval",
     ),
     calls: call_record.empty(),
+    edits:,
   )
 }
 
@@ -239,6 +307,7 @@ fn run_and_report(
   source: String,
   artifact: Artifact,
   build: Report,
+  edits: List(String),
   config: ExecConfig,
 ) -> Execution {
   let ran =
@@ -257,6 +326,7 @@ fn run_and_report(
     enforcement: Enforcement(build:, node: ran.node),
     widening: run_widening(approved(config), ran.outcome),
     calls: ran.calls,
+    edits:,
   )
 }
 
