@@ -737,6 +737,12 @@ type View(socket) {
     jobs_asked_at: Option(Int),
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
+    /// How many submits were refused with the draft kept, by the page
+    /// (`refused`) or by the lane's admission check (`submitting`). The
+    /// composer's element reads it as the `refused` attribute, so a pending
+    /// line it drew for a press can be taken down and the draft put back
+    /// (`web_client/pending_rule`); a taken draft replaces the editor instead.
+    refusals: Int,
     /// What the session said when the page ran the operator's last command:
     /// the notice the shared step left, read at once because any later event
     /// may write it over. Empty when the command said nothing. The daemon's
@@ -936,6 +942,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       renamed: 0,
       jobs_asked_at: None,
       refusal: None,
+      refusals: 0,
       outcome: "",
       returns: 0,
       returned: [],
@@ -2047,13 +2054,25 @@ fn submitting(
               ..model.shared,
               attachments: list.map(attached, composer.ImageAttachment),
             )
+
+          // The lane's admission check is read before the command runs, as
+          // `sent_from_form` reads it: a draft the check refuses stays in
+          // the editor, and the composer's element is told so by the count.
+          // A draft the lane admits but holds behind a read is not refused.
+          let kept = case outbound.mutation_refusal(model.shared, session) {
+            Some(_) -> 1
+            None -> 0
+          }
           let #(next, effects) =
             commanded(
               Model(..model, shared: attaching),
               msg.Submit(draft: text, command: session, delivery:),
             )
           #(
-            Model(..next, shared: Shared(..next.shared, attachments: [])),
+            Model(
+              shared: Shared(..next.shared, attachments: []),
+              view: View(..next.view, refusals: next.view.refusals + kept),
+            ),
             effects,
           )
         }
@@ -2326,7 +2345,14 @@ fn refused(
   text: String,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   #(
-    Model(..model, view: View(..model.view, refusal: Some(text))),
+    Model(
+      ..model,
+      view: View(
+        ..model.view,
+        refusal: Some(text),
+        refusals: model.view.refusals + 1,
+      ),
+    ),
     effect.none(),
   )
 }
@@ -3265,6 +3291,19 @@ pub fn notice(model: Model(socket)) -> Notice {
 /// ```
 pub fn notice_serial(model: Model(socket)) -> Int {
   model.view.noticed
+}
+
+/// How many submits were refused with the draft kept, by the page or by the
+/// lane's admission check. The operator page writes it as the composer
+/// element's `refused` attribute.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.refusals(model) == 0
+/// ```
+pub fn refusals(model: Model(socket)) -> Int {
+  model.view.refusals
 }
 
 /// The model with its notice counted as changed. The operator page calls it

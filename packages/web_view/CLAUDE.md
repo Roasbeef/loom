@@ -913,13 +913,18 @@ page keys and nonces, and the relay into the session's gateway.
   latest" button while they are not, and keeps the reader's place when a
   press of "Load older" brings rows in above them. They run in the browser
   and send the server nothing. The operator's editor is drawn inside
-  `<loom-composer commands returned>`, which lists the slash commands as
+  `<loom-composer commands returned refused>`, which lists the slash commands as
   the draft grows, sends the draft on Command or Control with Enter (by
-  submitting the composer form), and puts a returned prompt in the editor.
-  Its inputs are the `commands` table, the `returned` count and the
+  submitting the composer form), puts a returned prompt in the editor, and
+  shows a pressed draft as a pending line until the server takes it.
+  Its inputs are the `commands` table, the `returned` count, the
   returned prompts as text-node children in a `returned` slot, numbered by
-  `data-n`; the editor stays the uncontrolled textarea, and keeps its place
-  when a return arrives.
+  `data-n`, and the `refused` count (`component.refusals`: the submits the
+  page or the lane's admission check refused with the draft kept), which
+  tells the element a press was refused while the editor stayed; the editor stays the
+  uncontrolled textarea, and keeps its place when a return arrives. A taken
+  draft replaces the editor and the element with it, which is how the
+  pending line leaves.
 - An operator's page also receives Lustre's `EventFired` for its handlers:
   a click on an approval button, on one of the controls or on a peer card's
   Reply, and the submit of the composer form or of one of the two control
