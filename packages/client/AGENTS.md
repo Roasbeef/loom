@@ -5930,13 +5930,13 @@ reservations. The outer service completion adapter must validate its full origin
 ServiceKey/result association before using existing exact child receipt custody;
 opaque storage bytes alone prove neither artifact correctness nor service completion.
 
-## Closed owner compiler command binding
+## Closed owner Compile and Launch command binding
 
 `remote/dispatch_binding.with_commands(binding, enrolled)` projects closed command
 callbacks over the existing owner, connection scope, actual Dispatch preparation
 and candidate allocator. It introduces no Broker or actor. Ordinary origins keep
-`configuration`'s callbacks; CompileCommand enters `remote/command_binding`, and
-SatelliteCommand refuses until Launch assembly exists. Missing dispatched command
+`configuration`'s callbacks; CompileCommand and SatelliteCommand enter
+`remote/command_binding`. Physical Launch assembly remains separate. Missing dispatched command
 custody invokes the mandatory fatal fence. Before an offer exists, whole-service
 cancellation still belongs to the assembly holding its complete ServiceKey.
 
@@ -5952,9 +5952,10 @@ immutable Prepared and original UUID. An unused retry candidate grants nothing.
 Historical receipt verifies original UUID, full scope/operation and exact Prepared
 digest before committing ordered outputs and terminal. Cancellation retains this
 late-receipt evidence. Existing historical reads never prepare, mint, clear or
-produce a sendable reservation. Fresh reservation adds three five-second asks
-(indexed offer, original service and atomic native reserve); offer admission is the
-fourth serial ask in whole Compile startup. The accepted successful-path stage
+produce a sendable reservation. Fresh Compile reservation adds three five-second asks
+(indexed offer, original service and atomic native reserve); Launch adds one read
+of the original successful Compile producer. Offer admission is the fourth serial
+ask in whole Compile startup. The accepted successful-path stage
 allowance is `44000 + clearance_wait_ms + 2 * exchange_wait_ms`; challenge lifetime
 is a separate `challenge_window_ms`, currently 1000 ms. Abandoned asks and the
 original whole-service deadline remain caller duties, not hard real-time promises.
@@ -5962,6 +5963,15 @@ See [remote custody](../../docs/architecture/remote-custody.md) for the owner bo
 The tests exercise real SQLite/custodian and original Broker clearance; they do not
 claim physical Compile/Launch or shipped remote deployment acceptance.
 
+
+Launch derives its expected command from the original retained Launch input and
+its exact successful Compile producer. The producer completion is decoded against
+its full key and enrollment, then `service_input.admit_launch` compares the actual
+artifact and original parent. Reconstructed token/socket paths prove equality
+only; they do not place a token or recreate a listener. Upstream Compile completion
+publication checks the original native evidence before this binding can consume
+it. [The review](../../docs/review/distributed-launch-command.md) distinguishes
+that trusted-history invariant from the tests' injected producer fixture.
 
 ## Whole remote Compile consumer
 
