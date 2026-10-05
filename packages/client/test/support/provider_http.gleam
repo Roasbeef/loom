@@ -232,6 +232,31 @@ pub fn with_server(
   run: fn(String) -> a,
 ) -> #(a, Result(List(ObservedRequest), String)) {
   assert list.length(script) <= 8 as "the provider script is finite and small"
+  with_bounded_script(script, 120_000, run)
+}
+
+/// Runs a finite lifecycle script that includes several real jailed builds.
+/// The longer budget is fixed and only this explicit entry permits 32 steps;
+/// ordinary peer fixtures retain their eight-step, two-minute limits.
+///
+/// ## Examples
+///
+/// `with_extended_script(steps, exercise)` owns the same loopback peer through
+/// the complete author, evaluate, activate and rollback acceptance sequence.
+pub fn with_extended_script(
+  script: List(Exchange),
+  run: fn(String) -> a,
+) -> #(a, Result(List(ObservedRequest), String)) {
+  assert list.length(script) <= 32
+    as "the lifecycle script has at most 32 steps"
+  with_bounded_script(script, 600_000, run)
+}
+
+fn with_bounded_script(
+  script: List(Exchange),
+  deadline_ms: Int,
+  run: fn(String) -> a,
+) -> #(a, Result(List(ObservedRequest), String)) {
   assert list.all(script, fn(step) {
     case step {
       Exchange(prompt, answer) -> bounded(prompt) && bounded(answer)
@@ -277,7 +302,7 @@ pub fn with_server(
     as "the original listener publishes its selected port"
   let outcomes =
     weft.new([fn() { Ok(run("http://127.0.0.1:" <> int.to_string(port))) }])
-    |> weft.deadline(120_000)
+    |> weft.deadline(deadline_ms)
     |> weft.start
 
   // Both owners stay linked to this coordinator through the callback: its
