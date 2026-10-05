@@ -122,7 +122,12 @@ fn has(lines: List(String), needle: String) -> Bool {
 
 pub fn a_completed_program_counts_its_calls_test() {
   list.each([120, 80], fn(width) {
-    assert has(lines(width), "✓ code_mode · completed · 4 calls · result")
+    assert has(lines(width), "╭─ ✓ code_mode · completed · 4 calls")
+    assert has(lines(width), "CALLS · 4 calls · 0 failed")
+    assert has(lines(width), "✓ fs.read ×2  calc.gleam · README.md")
+    assert has(lines(width), "… 2 more calls")
+    assert has(lines(width), "RESULT · object · 1 key")
+    assert has(lines(width), "  ok: true")
   })
 }
 

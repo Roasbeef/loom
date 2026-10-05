@@ -86,6 +86,14 @@ pub type Speaker {
   /// lines a compiler diagnostic names numbered the same way.
   ProgramFailure
 
+  /// A code-mode program that completed, drawn as the same titled block its
+  /// running form was so the screen keeps one frame from start to finish.
+  /// The text is laid out as `ProgramRunning`'s: a title carrying the call
+  /// count, a foot, and a body of the program's opening lines under their
+  /// numbers, the call record's rows when the result carries one, and a
+  /// `RESULT` line followed by a bounded preview of the value.
+  ProgramSettled
+
   /// The placeholder row of one image a tool returned or a person attached:
   /// its place among its row's images, its media type, its pixel size when
   /// the header says, and its byte size (`image 1 · image/png · 1200×700 ·

@@ -2703,22 +2703,24 @@ result and `joined_block_lines` for the response's blocks, since a program's
 block and its settled row differ in height. The separation fold passes over
 an empty block to the last block that drew a row.
 
-A code-mode program that settled is one `✓ code_mode · completed · result …`
-row. One the client has no result for yet, and one that failed,
+A code-mode program that is running, one that settled and one that failed
 are titled blocks drawn by `tui/program_rows`: a rule carrying the title, a
 box holding the body, and a rule carrying the foot, two cells in and one
-short of the pane's right edge, the border in `theme.current` while it waits
-and `theme.danger` when it failed. A running block shows `PROGRAM · N lines,
+short of the pane's right edge, the border in `theme.current` while it waits,
+`theme.added` when it settled and `theme.danger` when it failed. A running block shows `PROGRAM · N lines,
 M shown`, the program's first non-blank lines under their numbers, and
 `RESULT · none yet`; its foot names the `within_ms` budget the call asked
 for. A failure block shows the error; a compiler's diagnostic is cut to its
 heading with `· line N` and the source it quotes, and the foot says how
 many lines the whole error has. The key that expands a response is named
 once, on its heading; the feet carry only facts. Body rows holding a number
-and a `│` gutter are drawn as source on the raised ground. A result that
-carries the call record of protocol-change 060 adds to both: the settled row
+and a `│` gutter are drawn as source on the raised ground. A settled block keeps the
+running block's program rows, so it does not change height when the result
+arrives, and adds a `RESULT · object · 3 keys` preview with a type or size
+hint per key in place of the value's JSON. A result that
+carries the call record of protocol-change 060 adds to both: the settled title
 says `4 calls` (or the record's whole summary when any call did not settle),
-and a failure block lists the calls under `CALLS · 7 calls · 1 failed`,
+and a settled or failure block lists the calls under `CALLS · 7 calls · 1 failed`,
 consecutive calls with one capability and ending grouped as `✓ fs.read ×3
 a.gleam · b.gleam`, and drawn in the success or danger colour by that
 leading glyph. The record is written on a result only, so a block still
