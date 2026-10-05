@@ -13,7 +13,9 @@ ownership, command forwarding and the owner consumer are being assembled.
 Launch/satellite, remote LSP, registered daemon configuration and the separate-host
 ordinary-tool/code-mode acceptance run remain pending. Main `7a9adf1e` is merged into this branch. The seeded code-mode, client, tools,
 storage and executor package gates passed; the full repository and separate-host
-gates remain pending. The [merge review](review/distributed-main-integration.md)
+gates remain pending. Trusted orchestrator clustering over TLS BEAM distribution,
+ownership routing, durable cross-node messaging and planned session movement are
+also required remaining issue #697 phases. The [merge review](review/distributed-main-integration.md)
 records optional skips and existing peer-fixture failures.
 
 The combined-main executor gate passed 274 tests with no skips, including the
