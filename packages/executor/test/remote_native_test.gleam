@@ -1,5 +1,15 @@
-//// Component integration uses actual pinned TLS, SQLite and local native helpers.
-//// No prerequisite skip is a passing result. Two-host shipped E2E is root-owned.
+//// Component integration uses actual pinned TLS BEAM, SQLite and native helpers.
+//// Seventeen local controls preserve their original bodies; six transport cases
+//// use two fixed OS roles and the actual registered production endpoint. Legacy
+//// test names remain stable. Lost observation holds an actual answer until the
+//// test releases it; credit reuse still requires that answer plus transport drain.
+//// No prerequisite skip is a passing result. Shipped separate-host E2E is root-owned.
+////
+//// ## Flow
+//// `native_service_controlled` owns real pool setup and checkout fault gates.
+//// `endpoint` binds original service scope and journal; `submit` and `terminal`
+//// exercise local native custody. `beam_executor_main` hosts the six fixed
+//// transport controls through the fixed TLS BEAM fixture.
 
 import broker/dispatch
 import broker/exec
@@ -11,25 +21,22 @@ import core/msgpack as mp
 import core/remote_tool
 import executor
 import executor/remote/admission
-import executor/remote/connection
+import executor/remote/beam_endpoint as connection
 import executor/remote/dispatcher
 import executor/remote/identity
 import executor/remote/journal
-import executor/remote/listener as remote_listener
 import executor/remote/native
 import executor/remote/payload
 import executor/remote/service
-import executor/remote/tls
 import executor/remote/wire
 import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/static_supervisor as supervisor
 import gleam/result
 import gleam/string
 import gleam/time/timestamp
-import remote_tls_test
+import remote_native_beam_fixture as beam_fixture
 import simplifile
 import telemetry/log
 import weft
@@ -40,9 +47,6 @@ import weft/poll
 // census. This test-only BIF detects request actors surviving scoped drain.
 @external(erlang, "erlang", "processes")
 fn live_processes() -> List(process.Pid)
-
-@external(erlang, "executor_remote_tls_test_ffi", "fixture")
-fn tls_fixture() -> remote_tls_test.Fixture
 
 fn scope() -> identity.Scope {
   let assert Ok(session) =
@@ -253,73 +257,6 @@ fn terminal(
   bytes
 }
 
-fn credentials(
-  local: remote_tls_test.Credentials,
-  peer: remote_tls_test.Credentials,
-) -> tls.Settings {
-  let assert Ok(settings) =
-    tls.settings(
-      local.ca,
-      local.certificate,
-      local.key,
-      peer.pin,
-      1000,
-      1000,
-      500,
-    )
-  settings
-}
-
-fn transport(
-  service: service.Service,
-) -> #(connection.Config, tls.Listener, weft.Cancel, process.Subject(Nil)) {
-  assert tls.start() == Ok(Nil)
-  let fixture = tls_fixture()
-  let assert Ok(listener) =
-    tls.listen(credentials(fixture.server, fixture.client), tls.Loopback, 0)
-  let assert Ok(port) = tls.port(listener)
-  let stop = weft.cancel_signal()
-  let done = process.new_subject()
-  let _ =
-    process.spawn_unlinked(fn() {
-      let _ =
-        weft.new(list.repeat(
-          fn() { connection.serve_one(listener, service, 3000) },
-          256,
-        ))
-        |> weft.limit(4)
-        |> weft.cancel_with(stop)
-        |> weft.deadline(15_000)
-        |> weft.start
-      process.send(done, Nil)
-    })
-  #(
-    connection.Config(
-      credentials(fixture.client, fixture.server),
-      "localhost",
-      port,
-      2500,
-      "owner",
-      "linux",
-      1,
-      scope(),
-    ),
-    listener,
-    stop,
-    done,
-  )
-}
-
-fn stop_transport(
-  listener: tls.Listener,
-  stop: weft.Cancel,
-  done: process.Subject(Nil),
-) {
-  weft.cancel(stop)
-  assert process.receive(done, 4000) == Ok(Nil)
-  tls.close_listener(listener)
-}
-
 pub fn wire_bounds_versions_roles_schema_and_canonical_payload_test() {
   let path = directory("wire")
   let request = prepared(path, "printf wire")
@@ -431,6 +368,7 @@ pub fn real_native_duplicate_submission_lost_ack_and_receipt_never_launch_twice_
   let bytes = terminal(service, 1, digest)
   let assert Ok(dispatch.Completed(result)) = native.decode_terminal(bytes)
   assert result.code == 0
+
   // Discarded admission and terminal replies cannot grant a second launch.
   assert service.exchange(
       service,
@@ -498,10 +436,12 @@ pub fn stale_generation_and_conflicting_digest_fail_before_mutation_test() {
 }
 
 pub fn real_tls_owner_dispatcher_reservation_receipt_and_immediate_stdin_test() {
-  let path = directory("dispatcher")
-  let native = native_service(path)
-  let #(server, book) = endpoint(path, native, 1)
-  let #(connection, listener, stop, done) = transport(server)
+  use f <- beam_fixture.run(
+    "real_tls_owner_dispatcher_reservation_receipt_and_immediate_stdin_test",
+  )
+  let path = f.path
+  let #(server, book) = #(f.service, f.journal)
+  let connection = f.connection
   let prepared = prepared(path, "/bin/cat")
   let assert Ok(digest) = wire.prepared_digest(prepared)
   let events = process.new_subject()
@@ -591,10 +531,11 @@ pub fn real_tls_owner_dispatcher_reservation_receipt_and_immediate_stdin_test() 
   execution.release()
   assert service.exchange(server, envelope(wire.CloseScope, 1))
     == Ok(wire.ScopeRetirement)
-  stop_transport(listener, stop, done)
+  beam_fixture.release(f)
   assert journal.release(book) == Ok(Nil)
   assert journal.release(outbox) == Ok(Nil)
   let assert Ok(Nil) = simplifile.delete(path)
+  Nil
 }
 
 pub fn restart_at_committed_intent_keeps_original_bytes_and_never_launches_test() {
@@ -631,175 +572,13 @@ pub fn finite_attempt_budget_charges_challenge_and_refuses_subsecond_test() {
   assert service.attempt_budget(2100) == Ok(1000)
 }
 
-type ReplyStage {
-  AdmissionReply
-  InputReply
-  RejectedInputReply
-  PausedOutputReply(gate: process.Subject(process.Subject(Nil)))
-  TerminalReply
-  ReceiptReply
-  Finished
-}
-
-type ReplyChoice {
-  SendReply
-  LoseReply
-  RejectReply
-  PauseReply(gate: process.Subject(process.Subject(Nil)))
-}
-
-type FaultAsk {
-  Decide(
-    command: wire.Body,
-    response: wire.Body,
-    reply: process.Subject(ReplyChoice),
-  )
-}
-
-fn fault_serve(
-  listener: tls.Listener,
-  server: service.Service,
-  faults: process.Subject(FaultAsk),
-) -> Result(Nil, Nil) {
-  use socket <- result.try(
-    tls.accept(listener) |> result.map_error(fn(_) { Nil }),
-  )
-  let outcome = {
-    use bytes <- result.try(
-      tls.receive(socket) |> result.map_error(fn(_) { Nil }),
-    )
-    use hello <- result.try(
-      wire.decode(bytes, wire.Owner, "owner", "linux", scope())
-      |> result.map_error(fn(_) { Nil }),
-    )
-    use body <- result.try(
-      service.exchange(server, hello) |> result.map_error(fn(_) { Nil }),
-    )
-    use encoded <- result.try(
-      wire.encode(wire.Envelope(..hello, role: wire.Executor, body:))
-      |> result.map_error(fn(_) { Nil }),
-    )
-    use Nil <- result.try(
-      tls.send(socket, encoded) |> result.map_error(fn(_) { Nil }),
-    )
-    use bytes <- result.try(
-      tls.receive(socket) |> result.map_error(fn(_) { Nil }),
-    )
-    use command <- result.try(
-      wire.decode(bytes, wire.Owner, "owner", "linux", scope())
-      |> result.map_error(fn(_) { Nil }),
-    )
-    use body <- result.try(
-      service.exchange(server, command) |> result.map_error(fn(_) { Nil }),
-    )
-    let reply = process.new_subject()
-    process.send(faults, Decide(command.body, body, reply))
-    let assert Ok(choice) = process.receive(reply, 1000)
-    case choice {
-      LoseReply -> Ok(Nil)
-      SendReply | RejectReply | PauseReply(_) -> {
-        let body = case choice {
-          RejectReply -> wire.Rejected(2)
-          SendReply | LoseReply | PauseReply(_) -> body
-        }
-        use Nil <- result.try(case choice {
-          PauseReply(gate) -> {
-            let permit = process.new_subject()
-            process.send(gate, permit)
-            process.receive(permit, 3000)
-          }
-          SendReply | RejectReply | LoseReply -> Ok(Nil)
-        })
-        use encoded <- result.try(
-          wire.encode(wire.Envelope(..command, role: wire.Executor, body:))
-          |> result.map_error(fn(_) { Nil }),
-        )
-        tls.send(socket, encoded) |> result.map_error(fn(_) { Nil })
-      }
-    }
-  }
-  tls.close(socket)
-  outcome
-}
-
-fn fault_transport(
-  server: service.Service,
-) -> #(connection.Config, tls.Listener, weft.Cancel, process.Subject(Nil)) {
-  fault_transport_from(server, AdmissionReply)
-}
-
-fn fault_transport_from(
-  server: service.Service,
-  initial: ReplyStage,
-) -> #(connection.Config, tls.Listener, weft.Cancel, process.Subject(Nil)) {
-  assert tls.start() == Ok(Nil)
-  let fixture = tls_fixture()
-  let assert Ok(listener) =
-    tls.listen(credentials(fixture.server, fixture.client), tls.Loopback, 0)
-  let assert Ok(port) = tls.port(listener)
-  let assert Ok(faults) =
-    actor.new(initial)
-    |> actor.on_message(fn(stage, message) {
-      let Decide(command, response, reply) = message
-      let choice = case stage, command, response {
-        PausedOutputReply(gate), _, wire.Output(_, _, _, _) -> #(
-          PauseReply(gate),
-          Finished,
-        )
-        InputReply, wire.Stdin(_, _, _, _, _), _ -> #(LoseReply, Finished)
-        RejectedInputReply, wire.Stdin(_, _, _, _, _), _ -> #(
-          RejectReply,
-          Finished,
-        )
-        AdmissionReply, wire.Submit(_, _, _, _, _), _ -> #(
-          LoseReply,
-          TerminalReply,
-        )
-        TerminalReply, _, wire.Terminal(_, _, _) -> #(LoseReply, ReceiptReply)
-        ReceiptReply, wire.DurableReceipt(_, _, _), _ -> #(LoseReply, Finished)
-        _, _, _ -> #(SendReply, stage)
-      }
-      process.send(reply, choice.0)
-      actor.continue(choice.1)
-    })
-    |> actor.start
-  let stop = weft.cancel_signal()
-  let done = process.new_subject()
-  let _ =
-    process.spawn_unlinked(fn() {
-      let _ =
-        weft.new(list.repeat(
-          fn() { fault_serve(listener, server, faults.data) },
-          256,
-        ))
-        |> weft.limit(4)
-        |> weft.cancel_with(stop)
-        |> weft.deadline(15_000)
-        |> weft.start
-      process.send(done, Nil)
-    })
-  #(
-    connection.Config(
-      credentials(fixture.client, fixture.server),
-      "localhost",
-      port,
-      2500,
-      "owner",
-      "linux",
-      1,
-      scope(),
-    ),
-    listener,
-    stop,
-    done,
-  )
-}
-
 pub fn real_tls_dropped_admission_terminal_and_receipt_replies_keep_exact_one_mutation_test() {
-  let path = directory("drop-replies")
-  let native = native_service(path)
-  let #(server, book) = endpoint(path, native, 1)
-  let #(connection, listener, stop, done) = fault_transport(server)
+  use f <- beam_fixture.run(
+    "real_tls_dropped_admission_terminal_and_receipt_replies_keep_exact_one_mutation_test",
+  )
+  let path = f.path
+  let #(server, book) = #(f.service, f.journal)
+  let connection = beam_fixture.fault(f, beam_fixture.AdmissionReply)
   let request = prepared(path, "printf x >> " <> path <> "/proof")
   let assert Ok(digest) = wire.prepared_digest(request)
   let assert Ok(wire.Challenge(_, _, nonce, _)) =
@@ -809,9 +588,11 @@ pub fn real_tls_dropped_admission_terminal_and_receipt_replies_keep_exact_one_mu
       wire.Submit(key(1), digest, request, nonce, 5000),
     )
     == Error(connection.Uncertain)
+  beam_fixture.release(f)
   let bytes = terminal(server, 1, digest)
   assert connection.exchange(connection, wire.Query(key(1), digest, 64))
     == Error(connection.Uncertain)
+  beam_fixture.release(f)
   assert connection.exchange(connection, wire.Query(key(1), digest, 64))
     == Ok(wire.Terminal(key(1), digest, bytes))
   let assert Ok(result_digest) = wire.digest(bytes)
@@ -820,6 +601,7 @@ pub fn real_tls_dropped_admission_terminal_and_receipt_replies_keep_exact_one_mu
       wire.DurableReceipt(key(1), digest, result_digest),
     )
     == Error(connection.Uncertain)
+  beam_fixture.release(f)
   assert connection.exchange(
       connection,
       wire.DurableReceipt(key(1), digest, result_digest),
@@ -839,9 +621,10 @@ pub fn real_tls_dropped_admission_terminal_and_receipt_replies_keep_exact_one_mu
   ) = admission.phase(evidence)
   assert service.exchange(server, envelope(wire.CloseScope, 1))
     == Ok(wire.ScopeRetirement)
-  stop_transport(listener, stop, done)
+  beam_fixture.release(f)
   assert journal.release(book) == Ok(Nil)
   let assert Ok(Nil) = simplifile.delete(path)
+  Nil
 }
 
 fn time_cell(initial: Int) -> #(fn() -> Int, fn(Int) -> Nil) {
@@ -879,6 +662,7 @@ pub fn independent_clock_origins_expired_challenges_and_preparation_charge_origi
   let assert Ok(digest) = wire.prepared_digest(request)
   let assert Ok(wire.Challenge(_, _, nonce, _)) =
     service.exchange(server, envelope(wire.ChallengeRequest(key(1), digest), 1))
+
   // Owner clock origin is unrelated; only its 6000 ms remaining is transmitted.
   assert service.attempt_budget({ -400_000_000 + 6000 } - { -400_000_000 })
     == Ok(4900)
@@ -1123,10 +907,12 @@ pub fn cancel_before_submit_and_bare_admission_recovery_never_launch_test() {
 }
 
 pub fn owner_cancel_during_parked_durable_reservation_fences_submission_test() {
-  let path = directory("parked-cancel")
-  let pool = native_service(path)
-  let #(server, book) = endpoint(path, pool, 1)
-  let #(transport, listener, stop, done) = transport(server)
+  use f <- beam_fixture.run(
+    "owner_cancel_during_parked_durable_reservation_fences_submission_test",
+  )
+  let path = f.path
+  let #(server, book) = #(f.service, f.journal)
+  let transport = f.connection
   let prepared = prepared(path, "printf x >> " <> path <> "/proof")
   let assert Ok(digest) = wire.prepared_digest(prepared)
   let parked = process.new_subject()
@@ -1169,66 +955,74 @@ pub fn owner_cancel_during_parked_durable_reservation_fences_submission_test() {
   execution.release()
   assert service.exchange(server, envelope(wire.CloseScope, 1))
     == Ok(wire.ScopeRetirement)
-  stop_transport(listener, stop, done)
+  beam_fixture.release(f)
   assert journal.release(book) == Ok(Nil)
   let assert Ok(Nil) = simplifile.delete(path)
+  Nil
 }
 
 pub fn lost_or_rejected_stdin_ack_is_uncertain_never_success_or_receipt_test() {
-  list.each([InputReply, RejectedInputReply], fn(stage) {
-    let path = directory("input-ack")
-    let pool = native_service(path)
-    let #(server, book) = endpoint(path, pool, 1)
-    let #(transport, listener, stop, done) = fault_transport_from(server, stage)
-    let prepared = prepared(path, "/bin/cat")
-    let assert Ok(digest) = wire.prepared_digest(prepared)
-    let parked = process.new_subject()
-    let terminal_events = process.new_subject()
-    let uncertain = process.new_subject()
-    let adapter =
-      dispatcher.dispatcher(dispatcher.Config(
-        transport,
-        23,
-        10_000,
-        fn(_) {
-          let permit = process.new_subject()
-          process.send(parked, permit)
-          let assert Ok(Nil) = process.receive(permit, 3000)
-          Ok(dispatcher.Reserved(key(1), prepared))
-        },
-        fn(_, _, _, _, _) {
-          panic as "Lost stdin acknowledgement cannot become durable success."
-        },
-        fn(_, _) { process.send(uncertain, Nil) },
-        fn(_) { Nil },
-        poll.monotonic().now,
-      ))
-    let assert Ok(execution) =
-      adapter.start(
-        owner_request(prepared, fn(value) {
-          process.send(terminal_events, value)
-        }),
+  list.each(
+    [beam_fixture.InputReply, beam_fixture.RejectedInputReply],
+    fn(stage) {
+      use f <- beam_fixture.run_stage(
+        "lost_or_rejected_stdin_ack_is_uncertain_never_success_or_receipt_test",
+        stage,
       )
-    let assert Ok(permit) = process.receive(parked, 3000)
-    execution.stdin(<<"exact input":utf8>>, dispatch.EndOfInput)
-    process.send(permit, Nil)
-    assert process.receive(uncertain, 5000) == Ok(Nil)
-    assert process.receive(terminal_events, 5000)
-      == Ok(dispatch.Failed(exec.ExecutionLost(exec.RemoteOutcomeUncertain)))
-    let _ = terminal(server, 1, digest)
-    let assert Ok(evidence) = journal.inspect(book, key(1), digest)
-    let assert admission.Terminal(
-      _,
-      admission.NativeUnconfirmed,
-      admission.ReceiptPending,
-    ) = admission.phase(evidence)
-    execution.release()
-    assert service.exchange(server, envelope(wire.CloseScope, 1))
-      == Ok(wire.ScopeRetirement)
-    stop_transport(listener, stop, done)
-    assert journal.release(book) == Ok(Nil)
-    let assert Ok(Nil) = simplifile.delete(path)
-  })
+      let path = f.path
+      let #(server, book) = #(f.service, f.journal)
+      let transport = beam_fixture.fault(f, stage)
+      let prepared = prepared(path, "/bin/cat")
+      let assert Ok(digest) = wire.prepared_digest(prepared)
+      let parked = process.new_subject()
+      let terminal_events = process.new_subject()
+      let uncertain = process.new_subject()
+      let adapter =
+        dispatcher.dispatcher(dispatcher.Config(
+          transport,
+          23,
+          10_000,
+          fn(_) {
+            let permit = process.new_subject()
+            process.send(parked, permit)
+            let assert Ok(Nil) = process.receive(permit, 3000)
+            Ok(dispatcher.Reserved(key(1), prepared))
+          },
+          fn(_, _, _, _, _) {
+            panic as "Lost stdin acknowledgement cannot become durable success."
+          },
+          fn(_, _) { process.send(uncertain, Nil) },
+          fn(_) { Nil },
+          poll.monotonic().now,
+        ))
+      let assert Ok(execution) =
+        adapter.start(
+          owner_request(prepared, fn(value) {
+            process.send(terminal_events, value)
+          }),
+        )
+      let assert Ok(permit) = process.receive(parked, 3000)
+      execution.stdin(<<"exact input":utf8>>, dispatch.EndOfInput)
+      process.send(permit, Nil)
+      assert process.receive(uncertain, 5000) == Ok(Nil)
+      assert process.receive(terminal_events, 5000)
+        == Ok(dispatch.Failed(exec.ExecutionLost(exec.RemoteOutcomeUncertain)))
+      let _ = terminal(server, 1, digest)
+      let assert Ok(evidence) = journal.inspect(book, key(1), digest)
+      let assert admission.Terminal(
+        _,
+        admission.NativeUnconfirmed,
+        admission.ReceiptPending,
+      ) = admission.phase(evidence)
+      execution.release()
+      assert service.exchange(server, envelope(wire.CloseScope, 1))
+        == Ok(wire.ScopeRetirement)
+      beam_fixture.release(f)
+      assert journal.release(book) == Ok(Nil)
+      let assert Ok(Nil) = simplifile.delete(path)
+      Nil
+    },
+  )
 }
 
 pub fn thirty_three_sequential_native_commands_reclaim_active_controls_keep_retirement_inventory_test() {
@@ -1374,69 +1168,51 @@ pub fn thirty_two_active_control_limit_refuses_before_durable_payload_admission_
 }
 
 pub fn supervised_listener_idle_peer_capacity_is_finite_and_recovers_without_custody_restart_test() {
-  let path = directory("listener-credit")
-  let pool = native_service(path)
-  let #(server, book) = endpoint(path, pool, 1)
-  assert tls.start() == Ok(Nil)
-  let fixture = tls_fixture()
-  let assert Ok(listener) =
-    tls.listen(credentials(fixture.server, fixture.client), tls.Loopback, 0)
-  let assert Ok(port) = tls.port(listener)
-  assert remote_listener.configure(
-      listener,
-      server,
-      workers: 0,
-      within_ms: 1000,
-    )
-    == Error(remote_listener.InvalidCapacity)
-  assert remote_listener.configure(
-      listener,
-      server,
-      workers: 5,
-      within_ms: 1000,
-    )
-    == Error(remote_listener.InvalidCapacity)
-  assert remote_listener.configure(listener, server, workers: 2, within_ms: 0)
-    == Error(remote_listener.InvalidDeadline)
-  let assert Ok(config) =
-    remote_listener.configure(listener, server, workers: 2, within_ms: 1000)
-  let started = process.new_subject()
-  let finished = process.new_subject()
-  let _ =
-    weft.new([
-      fn() {
-        let assert Ok(tree) =
-          supervisor.new(supervisor.OneForOne)
-          |> supervisor.add(remote_listener.supervised(config))
-          |> supervisor.start
-        let finish = process.new_subject()
-        process.send(started, #(tree.pid, finish))
-        let assert Ok(Nil) = process.receive(finish, 5000)
-        Ok(Nil)
-      },
-    ])
-    |> weft.deadline(6000)
-    |> weft.start_relayed(to: finished)
-  let assert Ok(#(tree_pid, finish)) = process.receive(started, 1000)
-  let monitor = process.monitor(tree_pid)
-  let owner =
-    connection.Config(
-      credentials(fixture.client, fixture.server),
-      "localhost",
-      port,
-      1500,
-      "owner",
-      "linux",
-      1,
-      scope(),
-    )
+  use f <- beam_fixture.run(
+    "supervised_listener_idle_peer_capacity_is_finite_and_recovers_without_custody_restart_test",
+  )
+  let path = f.path
+  let #(server, book) = #(f.service, f.journal)
+  let owner = connection.Config(..f.connection, within_ms: 1500)
+
+  // Worker knobs belonged to the removed socket acceptor. BEAM transport fixes
+  // four data and two control credits; its whole lifetime still has hard bounds.
+  assert connection.configure_server([], 0)
+    == Error(connection.InvalidConfiguration)
+  assert connection.configure_server([], 30_001)
+    == Error(connection.InvalidConfiguration)
+  assert connection.configure_server([], 1000) |> result.is_ok
+  assert connection.inspect(f.endpoint) == Ok(connection.Capacity(1, 4, 2))
   let request = prepared(path, "printf x >> " <> path <> "/proof")
   let #(digest, _) = submit(server, request, 1)
   let bytes = terminal(server, 1, digest)
   assert connection.exchange(owner, wire.Query(key(1), digest, 64))
     == Ok(wire.Terminal(key(1), digest, bytes))
-  let assert Ok(first) = tls.connect(owner.tls, "localhost", port)
-  let assert Ok(second) = tls.connect(owner.tls, "localhost", port)
+
+  // Actual Query responses occupy both control credits. Nothing restarts the
+  // original service or journal when one of those answers is released later.
+  let owner = beam_fixture.fault(f, beam_fixture.HoldQueries)
+  let finished = process.new_subject()
+  let _ =
+    weft.new(list.repeat(
+      fn() {
+        connection.exchange(
+          connection.Config(..owner, within_ms: 6000),
+          wire.Query(key(1), digest, 64),
+        )
+      },
+      2,
+    ))
+    |> weft.deadline(7000)
+    |> weft.start_relayed(to: finished)
+  let assert poll.Answered(Nil) =
+    poll.until(1000, 5, fn() {
+      case connection.inspect(f.endpoint) {
+        Ok(connection.Capacity(1, 4, 0)) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "Both exact original control credits are occupied by actual asks."
   let origin = poll.monotonic().now()
   assert connection.exchange(
       connection.Config(..owner, within_ms: 150),
@@ -1444,10 +1220,20 @@ pub fn supervised_listener_idle_peer_capacity_is_finite_and_recovers_without_cus
     )
     == Error(connection.Uncertain)
   assert poll.monotonic().now() - origin < 500
-  tls.close(first)
+  let _ = beam_fixture.fault(f, beam_fixture.Finished)
+  beam_fixture.release_one(f)
   assert connection.exchange(owner, wire.Query(key(1), digest, 64))
     == Ok(wire.Terminal(key(1), digest, bytes))
-  tls.close(second)
+  beam_fixture.release(f)
+  let assert Ok(weft.PulledOutcome(weft.Completed(_, first))) =
+    process.receive(finished, 2000)
+    as "The first actual held answer completes its managed observer."
+  let assert Ok(weft.PulledOutcome(weft.Completed(_, second))) =
+    process.receive(finished, 2000)
+    as "The second actual held answer completes its managed observer."
+  assert first == wire.Terminal(key(1), digest, bytes)
+  assert second == wire.Terminal(key(1), digest, bytes)
+  assert process.receive(finished, 1000) == Ok(weft.AllDelivered)
   assert simplifile.read(path <> "/proof") == Ok("x")
   let assert Ok(evidence) = journal.inspect(book, key(1), digest)
   let assert admission.Terminal(
@@ -1455,18 +1241,11 @@ pub fn supervised_listener_idle_peer_capacity_is_finite_and_recovers_without_cus
     admission.NativeUnconfirmed,
     admission.ReceiptPending,
   ) = admission.phase(evidence)
-  tls.close_listener(listener)
-  process.send(finish, Nil)
-  let assert Ok(weft.PulledOutcome(weft.Completed(_, Nil))) =
-    process.receive(finished, 1000)
-  let assert Ok(_) =
-    process.new_selector()
-    |> process.select_specific_monitor(monitor, fn(value) { value })
-    |> process.selector_receive(2000)
   assert service.exchange(server, envelope(wire.CloseScope, 1))
     == Ok(wire.ScopeRetirement)
   assert journal.release(book) == Ok(Nil)
   let assert Ok(Nil) = simplifile.delete(path)
+  Nil
 }
 
 pub fn local_stdin_ack_timeout_fences_same_ordinal_before_possible_late_forwarding_test() {
@@ -1503,12 +1282,13 @@ pub fn local_stdin_ack_timeout_fences_same_ordinal_before_possible_late_forwardi
 }
 
 pub fn paused_tls_output_writer_cannot_block_local_native_cancellation_or_custody_test() {
-  let path = directory("paused-writer")
-  let pool = native_service(path)
-  let #(server, book) = endpoint(path, pool, 1)
+  use f <- beam_fixture.run(
+    "paused_tls_output_writer_cannot_block_local_native_cancellation_or_custody_test",
+  )
+  let path = f.path
+  let #(server, book) = #(f.service, f.journal)
   let gate = process.new_subject()
-  let #(transport, listener, stop, done) =
-    fault_transport_from(server, PausedOutputReply(gate))
+  let transport = beam_fixture.fault(f, beam_fixture.PausedOutputReply(gate))
   let request = prepared(path, "printf x; /bin/sleep 8")
   let #(digest, _) = submit(server, request, 1)
   let assert poll.Answered(_) =
@@ -1547,9 +1327,10 @@ pub fn paused_tls_output_writer_cannot_block_local_native_cancellation_or_custod
     == Ok(wire.Terminal(key(1), digest, bytes))
   assert service.exchange(server, envelope(wire.CloseScope, 1))
     == Ok(wire.ScopeRetirement)
-  stop_transport(listener, stop, done)
+  beam_fixture.release(f)
   assert journal.release(book) == Ok(Nil)
   let assert Ok(Nil) = simplifile.delete(path)
+  Nil
 }
 
 pub fn journal_failure_retains_uncertain_intent_but_cannot_prevent_local_cancel_and_drain_test() {
@@ -1654,4 +1435,17 @@ pub fn publication_children_retire_on_native_crash_and_failed_initialization_tes
   assert retired == poll.Answered(Nil)
   assert local.close(pool, draining: 100, helpers: 2000) == Ok(Nil)
   let assert Ok(Nil) = simplifile.delete(path) as "publication fixture removed"
+}
+
+/// Fixed test executor owns real helper/native/journal actors before publication.
+///
+/// ## Examples
+/// Only the fixture launcher invokes `beam_executor_main()`.
+pub fn beam_executor_main() -> Nil {
+  let #(root, _name) = beam_fixture.executor_arguments()
+  let path = root <> "/data"
+  assert simplifile.create_directory_all(path <> "/scratch/tmp") == Ok(Nil)
+  let native = native_service(path)
+  let #(actual, book) = endpoint(path, native, 1)
+  beam_fixture.host(root, actual, book)
 }
