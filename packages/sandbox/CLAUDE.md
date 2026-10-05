@@ -304,6 +304,12 @@ only Go module.
   programs retain a null sink without widening the containing `/dev`
   directory or granting device ioctls. It never sees `protected` at all;
   that list is bwrap's alone.
+  Policy roots may name individual files. `internal/llock.Apply` inspects
+  each root in the current jail view and emits file or directory rights
+  accordingly; a regular file never receives directory-only Landlock rights.
+  Explicit file grants remain exact, missing optional roots remain optional,
+  and classification errors refuse execution. Replacement between inspection
+  and native open can refuse or narrow the rule, without granting its parent.
   `internal/jail/stage2.go`'s `landlockView` is where the policy becomes
   that grant set, and a tmpfs scratch is granted there only when bwrap
   actually mounted one (issue #59). Stage 2 cannot see the mount
