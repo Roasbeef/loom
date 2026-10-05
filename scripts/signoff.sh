@@ -162,6 +162,7 @@ rm -rf "$logs"
 mkdir -p "$logs"
 export LOOM_BOOTSTRAP_E2E_SERVER="$root/bin/loomd"
 export LOOM_TEST_PROVIDER_KEY="loom-provider-fixture-key"
+export LOOM_EVOLUTION_E2E=1
 export LOOM_DECLARED_SKIPS="$root/.github/declared-skips"
 export LOOM_TEST_PARALLEL="${SIGNOFF_PARALLEL:-8}"
 started=$(date +%s)

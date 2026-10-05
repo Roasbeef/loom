@@ -85,6 +85,7 @@ host|host@build_identity_test|sets and clears LOOM_BUILD_VERSION and LOOM_BUILD_
 # and freeze another module's actors — and a sibling actor that dies between
 # the census and the suspension answers `noproc`.
 client|client@assembly_heap_census_test|differences erlang:processes/0 and suspends what it finds; node-wide
+client|client@evolution_acceptance_test|differences native helper birth identities beneath this BEAM VM across activation and rollback
 
 # --- the node's own helper ports and process count -------------------------
 # The kill-custody tests find "the new helper" by differencing the OS pids
@@ -95,3 +96,5 @@ client|client@assembly_heap_census_test|differences erlang:processes/0 and suspe
 # move. Both read state every module on the emulator shares.
 broker|broker@integration_test|differences the node's helper ports from erlang:ports() and expects exactly one new loom-exec; a sibling spawning a helper adds another
 broker|broker@leak_census_test|differences erlang:system_info(process_count) across a hundred executions; the count is node-wide
+client|client@evolution_program_acceptance_test|owns real jailed helper identities and witnessed session retirement
+client|client@evolution_prompt_acceptance_test|owns isolated coding runtimes and aggregate native helper census

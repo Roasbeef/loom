@@ -17,7 +17,7 @@ PREFIX   ?= $(HOME)/.local
 # ---------------------------------------------------------------- checking
 
 .PHONY: check
-check: binaries ## Full gate: current helpers, format, build, tests, and lint
+check: binaries codemode-seed ## Full gate: current helpers, seed, format, build, tests, and lint
 	@scripts/check.sh
 
 .PHONY: check-release-update
@@ -450,6 +450,15 @@ codemode-seed: ## Prepare the offline package cache code-mode builds clone
 .PHONY: e2e-codemode
 e2e-codemode: sandbox codemode-seed ## Code-mode end to end: jailed build, real satellite, real cap call
 	@bash scripts/test.sh codemode
+
+.PHONY: e2e-evolution
+e2e-evolution: binaries codemode-seed ## Author, test, approve, replace and roll back one real session
+	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
+		bash scripts/test.sh client --match client@evolution_acceptance_test:
+	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
+		bash scripts/test.sh client --match client@evolution_program_acceptance_test:
+	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
+		bash scripts/test.sh client --match client@evolution_prompt_acceptance_test:
 
 # ------------------------------------------------------------- the signoff
 # The merge gate on a developer's own machines instead of hosted runners:
