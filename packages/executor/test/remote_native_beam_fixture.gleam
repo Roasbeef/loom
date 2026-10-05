@@ -303,7 +303,8 @@ pub fn host(
     |> actor.start
     as "The fixed reply fault actor links to this executor role."
   let wrapped = alias(actual, proxy.data, proxy.pid)
-  let assert Ok(row) = endpoint.registration(owner, wrapped, None)
+  let assert Ok(row) =
+    endpoint.registration(owner, wrapped, None, process.self())
     as "The alias retains exact original native scope, labels and generation."
   let assert Ok(server_config) = endpoint.configure_server([row], 10_000)
     as "The endpoint has fixed four data and two control credits."

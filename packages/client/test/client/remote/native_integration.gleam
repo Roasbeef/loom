@@ -410,7 +410,8 @@ pub fn executor_main() -> Nil {
     as "Actual native service retains exact scope, generation and registration."
 
   // Endpoint credits carry only closed requests to this concrete local service.
-  let assert Ok(row) = beam_endpoint.registration(owner_peer, server, None)
+  let assert Ok(row) =
+    beam_endpoint.registration(owner_peer, server, None, process.self())
     as "Endpoint admission derives authority from the concrete service."
   let assert Ok(config) = beam_endpoint.configure_server([row], 5000)
     as "The finite endpoint registers only this original service."
