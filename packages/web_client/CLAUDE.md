@@ -201,7 +201,8 @@ components make is Gleam over it (see `internal/ffi_dom` under Key Types).
 `lustre_dev_tools` (a dev dependency here and nowhere else) into
 `packages/web_view/priv/static/web_client.mjs`, together with the page's
 stylesheet, which Tailwind builds from `src/web_client.css`, and the two
-page scripts in `assets/`. The daemon serves those files; nothing at run
+page scripts and the tab icon (`favicon.svg`, the logo's mark, light and dark
+by media query) in `assets/`. The daemon serves those files; nothing at run
 time builds anything.
 
 ## Key Types
