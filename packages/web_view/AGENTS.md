@@ -112,16 +112,21 @@ page keys and nonces, and the relay into the session's gateway.
   `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
   `view/home_table` (a list per workspace: a heading with the shortened path
   and a count, and one item per session with a glyph, the name, and a quiet
-  line of `resident · working · created 2h ago` or `saved · 2h ago`; the UTC
+  line of `working · created 2h ago` (`running` until the activity read answers; the
+  word `resident` is not drawn) or `saved · 2h ago`; the UTC
   minute is the `time`'s `title`; `home_bar` draws the session bar's `pill`
   and `Tone`) and no panel; the stylesheet hides the panel column for the
   frame class `loom-home`. `view/switch.view(address)` draws the hidden
   `<loom-switch>` for both this page and the session page. The one input is a running session's row, in the
   table and in the sidebar: `home.Opening(id)` asks `Start.open` (in the
   component's process) for a ticket, and `Linked(answer)` becomes the `to`
-  attribute of the centre's last child, a hidden `<loom-switch>`, or the
-  `home-notice` before the table (an empty node when none, so the table keeps
-  its path). `home.table_path` and `home.sidebar_path` are the two regions the
+  attribute of the centre's last child, a hidden `<loom-switch>`, or a refusal
+  `home_table.Note` beside the row. The centre's first child is an empty node, so
+  the table keeps its path; what the page says about a press is a `Note`
+  (`view/notice` `Said` fades, `Refused` stays) drawn in the row it is about, in
+  its workspace's heading when the row is gone, or under `Sessions`, and it
+  never moves the list. `Model.opening` (a running row's open) and
+  `Model.resuming` set the row's `Opening…` state and ignore a second press. `home.table_path` and `home.sidebar_path` are the two regions the
   daemon's socket admits a click beneath. A saved row is a button only on an
   `OperatorCeiling` page (`view/resume`): `home.Resuming(id)` calls
   `Start.resume(id, deliver)`, which starts the daemon's task and returns, sets
@@ -143,7 +148,7 @@ page keys and nonces, and the relay into the session's gateway.
   at once, the daemon asks the sessions in a task of its own, and the answer is
   `Observed(rows)`, one `sessions.Activity` (`NeedsYou | Working | Idle`) per
   session that answered, which the rows draw as words and a glyph hue; a row
-  with none says only `resident`. `Start.now` is the clock the ages count from,
+  with none says only `running`. `Start.now` is the clock the ages count from,
   read once per list. `ending.Advice` (`lead`, `command`) is the ending's
   advice split, `advised`/`home_advised`; `advice` is it said as a sentence.
   `ending.home_headline` and
@@ -281,16 +286,19 @@ page keys and nonces, and the relay into the session's gateway.
 - **Stopping, archiving and deleting** (protocol-change/065, the addendum on
   session actions). `web_view/actions` holds `Action` (`Stop | Archive |
   Delete`), `Answer`, `Reason` (`NotOwner | Running | Unavailable`) with fixed
-  words, and the row's `Stage` (`Calm | Confirming(session) | Working(session,
+  words, and the row's `Stage` (`Calm | Confirming(session, action) | Working(session,
   action)`). `home.Start.manage` is `Some` only for the owner's fresh operating
   home (`ui_socket.home_manage_capability`); a page with `None` draws nothing and
   ignores `StopRequested`, `ArchiveRequested`, `DeleteRequested`,
-  `DeleteConfirmed`, `DeleteCancelled` and `ActionAnswered`. `home_table.Manage`
+  `StopConfirmed`, `DeleteConfirmed`, `ConfirmCancelled` and `ActionAnswered`. `home_table.Manage`
   draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one in
   a `home-acts` group after the row's own button (the paths beneath
   `home.table_path` are unchanged; the rename button is the group's first child),
   and Delete's first press replaces the row with the fixed question and a Delete
-  and a Cancel (`home-confirm`). The request is the daemon's task and its answer
+  and a Cancel (`home-confirm`). Stop does the same (`Stop this session
+  mid-turn?`, neutral tint) when the page's own activity read has the row as
+  working or needing the person, and acts at once otherwise; a confirmation
+  acts only for the row and action that are confirming. The request is the daemon's task and its answer
   `ActionAnswered`, which words the notice and reads the list again. `home_test`
   reads it.
 - **The admin page's pill.** `admin.Start.ends_at` is the instant the page ends
