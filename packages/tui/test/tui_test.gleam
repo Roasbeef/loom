@@ -139,9 +139,9 @@ pub fn usage_footer_keeps_input_output_cache_and_cost_visible_test() {
   assert transcript_lines.cost_words(unpriced) == "est —"
   assert string.contains(transcript_lines.usage_summary(unpriced), "est — ·")
 
-  // Nothing spent yet is a true zero.
+  // Nothing spent yet has priced nothing either: unpriced, not a zero.
   let fresh = message.Usage(..unpriced, total_tokens: 0)
-  assert transcript_lines.cost_words(fresh) == "est $0.00"
+  assert transcript_lines.cost_words(fresh) == "est —"
 }
 
 pub fn elapsed_label_reads_like_a_clock_test() {
