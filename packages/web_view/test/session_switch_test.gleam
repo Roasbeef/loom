@@ -170,6 +170,13 @@ pub fn the_switch_element_is_the_centres_last_child_test() {
   let html = drawn(model)
   let assert Ok(#(_, after_dock)) = string.split_once(html, "</footer>")
   assert string.starts_with(after_dock, "<loom-switch")
+
+  // The keyboard switcher follows it, as the last child, and holds no text and
+  // no attribute.
+  assert string.starts_with(
+    after_dock,
+    "<loom-switch hidden></loom-switch><loom-switcher></loom-switcher></main>",
+  )
 }
 
 // A refusal is worded in fixed words for its reason, in the composer's

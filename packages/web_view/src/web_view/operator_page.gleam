@@ -67,6 +67,7 @@ import web_view/view/share
 import web_view/view/shell
 import web_view/view/sidebar
 import web_view/view/strip
+import web_view/view/switch
 
 /// Everything an operator's page can be told.
 pub type Msg(socket) {
@@ -256,6 +257,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       // The element that moves the browser to another page is always the
       // centre's last child, so no admitted path moves with it.
       component.switch(model),
+      switch.switcher(),
     ],
     component.panel(
       model,

@@ -140,6 +140,7 @@ fn start_with(
     },
     now: fn() { 7_400_000 },
     login: None,
+    ends_at: 7_400_000 + 14 * 60 * 1000,
   )
 }
 
@@ -1103,4 +1104,26 @@ pub fn a_rotation_claim_is_not_resent_when_a_row_is_inserted_ahead_test() {
   let #(patch, _) = patch_text(cache, shown, admin.view(refreshed))
   assert string.contains(patch, "Aaron") as "the refresh landed"
   assert !string.contains(patch, "loomclaim_")
+}
+
+// The page's lifetime is a quiet pill in the bar, counted down in the browser
+// by `<loom-elapsed remaining>` from the milliseconds left when the read was
+// taken; the body has no sentence about it. Before the first read the pill is
+// not drawn, since there is no time yet to count from.
+pub fn the_bar_says_when_the_page_ends_in_a_counted_pill_test() {
+  let reads = process.new_subject()
+  let acts = process.new_subject()
+  let model = admin.new(start_with(reads, acts, grants.Changed))
+  let html = drawn(model)
+  assert !string.contains(html, "ends in")
+  assert !string.contains(html, "loom-elapsed")
+
+  let #(model, _) = opened(start_with(reads, acts, grants.Changed))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "ends in <loom-elapsed remaining=\"840000\"></loom-elapsed>",
+  )
+  assert !string.contains(html, "fifteen minutes")
+  assert !string.contains(html, "admin-note")
 }

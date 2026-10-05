@@ -16,6 +16,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import lustre/effect
 import lustre/element.{type Element}
+import web_view/actions
 import web_view/creations
 import web_view/ending
 import web_view/home
@@ -72,6 +73,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     now: fn() { now },
     activity: fn(_, _) { Nil },
     rename: None,
+    manage: None,
     create: None,
     signins: fn() { signins.Listed([]) },
     login: None,
@@ -569,6 +571,17 @@ pub fn a_press_asks_for_a_ticket_and_the_answer_is_the_address_test() {
   assert string.contains(html, "Opening that session.")
 }
 
+// The keyboard switcher is the centre's last child on the home, after the
+// switch element, so no admitted path moves for it, and it carries nothing the
+// server wrote.
+pub fn the_session_switcher_follows_the_switch_element_test() {
+  let #(model, _) = opened(start())
+  assert string.contains(
+    drawn(model),
+    "<loom-switch hidden></loom-switch><loom-switcher></loom-switcher></main>",
+  )
+}
+
 // A refusal is worded in the reason's fixed words, draws no address, and
 // leaves the page connected.
 pub fn a_refusal_is_fixed_words_and_no_address_test() {
@@ -875,13 +888,14 @@ pub fn an_owners_home_draws_a_rename_button_after_each_row_test() {
   // Every handler a member's page has is on the owner's page at the same path.
   assert list.all(without, fn(key) { list.contains(with, key) })
 
-  // The row's own handler is the item's, first in the row; the button is the
-  // second child, so no existing path moved.
+  // The row's own handler is the item's, first in the row; the buttons are in
+  // one group, the second child, so no existing path moved. Rename is the
+  // group's first button.
   let added = list.filter(with, fn(key) { !list.contains(without, key) })
   assert list.length(added) == 4
   assert list.all(added, fn(key) {
     string.starts_with(key, home.table_path <> "\t")
-    && string.ends_with(key, "\t1\nclick")
+    && string.ends_with(key, "\t1\t0\nclick")
   })
 
   let plain = drawn(member)
@@ -1466,4 +1480,163 @@ pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
   )
   assert !string.contains(before, ">●</span>resident")
   assert string.contains(before, ">○</span>saved")
+}
+
+// The owner's fresh home draws the actions that fit each row: Stop on a running
+// session, Archive and Delete on a saved one. Every handler it adds is a click
+// beneath the region the socket already admits, and every handler the page had
+// without the capability is still at its own path.
+pub fn the_owners_fresh_home_draws_the_actions_that_fit_each_row_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+  let html = drawn(owner)
+
+  // Two running rows and two saved ones.
+  assert list.length(string.split(html, ">Stop<")) == 3
+  assert list.length(string.split(html, ">Archive<")) == 3
+  assert list.length(string.split(html, ">Delete<")) == 3
+  assert string.contains(html, "actionable")
+  assert !string.contains(html, "Delete this session? This cannot be undone.")
+
+  let #(plain, _) = opened(start())
+  let with = handlers(home.view(owner))
+  let without = handlers(home.view(plain))
+  assert list.length(with) == list.length(without) + 6
+  assert list.all(with, beneath_the_two_regions)
+  assert list.all(without, fn(key) { list.contains(with, key) })
+
+  let html = drawn(plain)
+  assert !string.contains(html, ">Stop<")
+  assert !string.contains(html, ">Archive<")
+  assert !string.contains(html, "home-act")
+}
+
+// A press on Stop asks the daemon once, for the row it was drawn on, and the
+// daemon's answer is the page's notice. While the request is out a second press
+// asks nothing.
+pub fn a_stop_asks_once_and_the_answer_is_the_notice_test() {
+  let asked = process.new_subject()
+  let ask = fn(action, session, deliver) {
+    process.send(asked, #(action, session))
+    deliver(actions.Done(action))
+  }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+  let model = run(owner, home.StopRequested("B"))
+  assert process.receive(asked, 0) == Ok(#(actions.Stop, "B"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "Stopped.")
+
+  let silent = fn(action, session, _deliver) {
+    process.send(asked, #(action, session))
+  }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(silent)))
+  let model = run(owner, home.ArchiveRequested("C"))
+  let model = run(model, home.ArchiveRequested("D"))
+  let model = run(model, home.StopRequested("A"))
+  assert process.receive(asked, 0) == Ok(#(actions.Archive, "C"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "Archiving the session.")
+  assert string.contains(drawn(model), "disabled")
+}
+
+// Delete is two presses. The first replaces the row's words with the question
+// and sends nothing; Cancel puts the row back; the second, for the same row,
+// asks once. A confirmation for another row, or with none open, asks nothing.
+pub fn a_delete_asks_only_after_the_rows_confirmation_test() {
+  let asked = process.new_subject()
+  let ask = fn(action, session, _deliver) {
+    process.send(asked, #(action, session))
+  }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+
+  let model = run(owner, home.DeleteConfirmed("C"))
+  assert process.receive(asked, 0) == Error(Nil)
+
+  let model = run(model, home.DeleteRequested("C"))
+  let html = drawn(model)
+  assert string.contains(html, "Delete this session? This cannot be undone.")
+  assert list.length(string.split(html, "This cannot be undone.")) == 2
+  assert process.receive(asked, 0) == Error(Nil)
+
+  let model = run(model, home.DeleteCancelled)
+  assert !string.contains(drawn(model), "This cannot be undone.")
+
+  let model = run(model, home.DeleteRequested("C"))
+  let model = run(model, home.DeleteConfirmed("D"))
+  assert process.receive(asked, 0) == Error(Nil)
+  let model = run(model, home.DeleteConfirmed("C"))
+  assert process.receive(asked, 0) == Ok(#(actions.Delete, "C"))
+  assert string.contains(drawn(model), "Deleting the session.")
+  let model = run(model, home.DeleteConfirmed("C"))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "disabled")
+}
+
+// A refusal is the reason's fixed words, whatever the daemon had to say.
+pub fn a_refused_action_says_the_fixed_words_test() {
+  let ask = fn(_action, _session, deliver) {
+    deliver(actions.Declined(actions.Running))
+  }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+  let model = run(owner, home.ArchiveRequested("C"))
+  assert string.contains(drawn(model), actions.reason_words(actions.Running))
+  assert actions.reason_words(actions.Running)
+    == "That session is still running. Stop it first."
+}
+
+// A page the daemon handed no capability draws no button and ignores every
+// message of the actions, an answer nobody asked for included.
+pub fn a_page_without_the_capability_ignores_the_actions_test() {
+  let #(member, _) = opened(start())
+  let model = run(member, home.StopRequested("B"))
+  let model = run(model, home.ArchiveRequested("C"))
+  let model = run(model, home.DeleteRequested("C"))
+  let model = run(model, home.DeleteConfirmed("C"))
+  let model = run(model, home.ActionAnswered(actions.Done(actions.Delete)))
+  assert drawn(model) == drawn(member)
+
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let #(owner, _) = opened(home.Start(..start(), manage: Some(ask)))
+  let model = run(owner, home.ActionAnswered(actions.Done(actions.Delete)))
+  assert drawn(model) == drawn(owner)
+}
+
+// The confirmation names the row it replaced, as a text node: a hostile name is
+// escaped there as everywhere, and the question itself is fixed words.
+pub fn the_confirmation_names_its_row_as_text_test() {
+  let hostile = "<img src=x onerror=alert(1)>"
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), sessions: fn() {
+        home.Listed([entry("C", hostile, "/src/weft", 1, Saved)])
+      }),
+    )
+  let model = run(owner, home.DeleteRequested("C"))
+  let html = drawn(model)
+  assert string.contains(html, "Delete this session? This cannot be undone.")
+  assert string.contains(
+    html,
+    "<p class=\"home-confirm-name\">&lt;img src=x onerror=alert(1)&gt;</p>",
+  )
+  assert !string.contains(html, "<img src=x onerror")
+}
+
+// A blocked row (an unreconciled creation, or a recovery that stopped) draws no
+// action on the owner's fresh home: the registry would refuse an archive or a
+// delete as busy and a stop has nothing to end, and the page would say the
+// session is running when it is not.
+pub fn a_blocked_row_draws_no_action_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let #(owner, _) =
+    opened(
+      home.Start(..start(), manage: Some(ask), sessions: fn() {
+        home.Listed([entry("X", "stuck", "/src/weft", 1, Blocked)])
+      }),
+    )
+  let html = drawn(owner)
+  assert string.contains(html, "stuck")
+  assert !string.contains(html, ">Stop<")
+  assert !string.contains(html, ">Archive<")
+  assert !string.contains(html, ">Delete<")
 }

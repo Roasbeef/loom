@@ -29,3 +29,20 @@ pub fn format(seconds: Int) -> String {
 fn pad2(value: Int) -> String {
   string.pad_start(int.to_string(value), to: 2, with: "0")
 }
+
+/// The time left before something ends, the way the admin page's pill says it:
+/// whole minutes, rounded up, from a minute on, and seconds under a minute. A
+/// page that has run out says `0s`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert duration.remaining(14 * 60 + 10) == "15m"
+/// assert duration.remaining(45) == "45s"
+/// ```
+pub fn remaining(seconds: Int) -> String {
+  case seconds >= 60 {
+    True -> int.to_string({ seconds + 59 } / 60) <> "m"
+    False -> int.to_string(int.max(0, seconds)) <> "s"
+  }
+}

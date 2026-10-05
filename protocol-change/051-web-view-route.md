@@ -3851,3 +3851,59 @@ that no waiting notice draws a backtick, and the waiting element in the shell.
 `ui_route_test` pins that both scripts build the item from the prefix and the
 bundle assigns and never replaces the location. `admin_test` pins the bar's
 `<loom-back>`.
+
+## Addendum: the session switcher (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it (round 4 of the web UI
+critique, section 5 item 4). It adds one client element and one document key
+handler. It adds no route, no event on the socket's accepted list and no field on
+the wire.
+
+**What changed.** Command or Control and K opens a popover over the page that
+lists the sessions the page's sidebar already offers, filters them as the person
+types, and opens the highlighted one on Enter or a click. Escape, a press outside
+the panel and the shortcut again close it. The element is `<loom-switcher>`
+(`web_client/switcher`), drawn after `<loom-switch>` as the centre's last child on
+the operator's page and the home, so no admitted path moves.
+
+**It adds no way to the browser's navigation.** The popover reads the sidebar's
+`.session-open` buttons from the page, takes each one's name, workspace and
+subtitle as text, and on a choice presses that session's own button
+(`HTMLElement.click`). The press is an ordinary click on an ordinary handler: the
+daemon is asked for a ticket, checks the page's role and the session's
+membership, mints it, and `<loom-switch>` navigates as it does for the sidebar.
+The switcher holds no address, mints nothing and sends the server nothing. A
+button the server has since removed is not pressed. A page with no sidebar (an
+observer's) has no row, so the list is empty.
+
+**Session text.** A name, a workspace's last segment and a subtitle are catalogue
+and prompt text. The element reads them with `textContent` and draws each as a
+text node of its own view; it never assigns one to markup, to an attribute it
+reads back, or to the document's address, and the filter compares them as
+strings and builds nothing from them (`switcher_rule`, tested under Node with a
+name that holds markup). The query the person types is the field's own `value`.
+
+**The key.** This is the page's first handler for a key outside the composer. It
+is a single `keydown` listener on the document, one for each connection and
+removed when the element leaves the page, and it reads two things: the shortcut,
+which it cancels so the browser's own use of it does not also run, and Escape,
+which it only observes. It handles no key near an approval card: an approval's
+decision is a button the person presses, and the popover opens over the page
+without touching it. While the popover is open the query field has the focus and
+handles the arrows and Enter, and leaves every other key to the browser.
+
+**What was considered.**
+
+- *A server-drawn list.* The sidebar's list is already on the page, so a second
+  draw would be a second source of the same rows and a new event to admit.
+- *Navigating from the element.* A navigation needs a ticket, which only the
+  daemon mints. Pressing the sidebar's own button is the only route that does not
+  copy the ticket mint into a client.
+
+**Cost.** One document listener and one element. The list is read when the
+popover opens, so a session created while it is open appears the next time.
+
+**Tests.** `switcher_test` (the shortcut, the arrows and Enter, an input method's
+composing keys, the filter and its order, a name that holds markup, the
+highlight's wrap), `home_test` (the element is the centre's last child and the
+handlers' paths are as they were).

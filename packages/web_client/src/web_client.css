@@ -483,14 +483,60 @@
   .home-name{font:500 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-sub{font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   .home-row.needs-you .home-activity{color:var(--color-signal-text);}
-  /* The owner's rename button sits after the row's own button and is placed
-     over its right side, beside the chevron, so the row's own path and its
-     whole-row target are the same on every page. */
-  li.home-row.renamable{position:relative;}
-  li.home-row.renamable .home-text{padding-right:84px;}
-  .home-rename{position:absolute;top:50%;right:34px;transform:translateY(-50%);margin:0;padding:2px 8px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
-  .home-rename:hover{background:var(--color-bg-raised);color:var(--color-fg);}
-  .home-rename:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  /* The owner's quiet buttons (Rename, and Stop, Archive or Delete on the
+     fresh home) are one group after the row's own button and are placed over
+     its right side, beside the chevron, so the row's own path and its
+     whole-row target are the same on every page. The text reserves room for
+     the group by its count (`acts-N`). Below 640px the group moves under the
+     row's words instead of over them. */
+  li.home-row.actionable{position:relative;}
+  li.home-row.acts-1 .home-text{padding-right:84px;}
+  li.home-row.acts-2 .home-text{padding-right:150px;}
+  li.home-row.acts-3 .home-text{padding-right:220px;}
+  .home-acts{position:absolute;top:50%;right:34px;transform:translateY(-50%);display:flex;gap:6px;}
+  .home-rename,.home-act{margin:0;padding:2px 8px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .home-rename:hover,.home-act:hover:not(:disabled){background:var(--color-bg-raised);color:var(--color-fg);}
+  .home-act-delete:hover:not(:disabled){border-color:color-mix(in srgb,var(--color-danger) 45%,transparent);background:color-mix(in srgb,var(--color-danger) 10%,var(--color-bg-raised));color:var(--color-danger-text);}
+  .home-act:disabled{opacity:.5;cursor:default;}
+  .home-rename:focus-visible,.home-act:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  /* The row's second step before a delete: the row's words are replaced by one
+     question and two buttons, on a background tinted toward the danger hue with
+     a tinted hairline, as the rename form is placed. */
+  li.home-row.confirming{background:color-mix(in srgb,var(--color-danger) 7%,transparent);border-bottom-color:color-mix(in srgb,var(--color-danger) 35%,var(--color-divider));}
+  .home-confirm{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px;padding:10px 12px;}
+  .home-confirm-text{display:flex;flex-direction:column;gap:2px;min-width:0;}
+  .home-confirm-lead{margin:0;font:500 13px/1.4 var(--font-sans);}
+  .home-confirm-name{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-confirm-actions{display:flex;gap:6px;}
+  .home-confirm-actions button{margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}
+  .home-confirm-actions button:hover{background:var(--color-bg-raised);}
+  .home-confirm-actions .home-confirm-delete{border-color:color-mix(in srgb,var(--color-danger) 55%,transparent);background:color-mix(in srgb,var(--color-danger) 14%,transparent);color:var(--color-danger-text);}
+  .home-confirm-actions button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  @media (max-width:640px){
+    li.home-row.actionable .home-text{padding-right:0;}
+    .home-acts{position:static;transform:none;padding:0 10px 8px 34px;}
+  }
+  /* The admin page's lifetime pill in the bar: `ends in 14m`, the figure counted
+     down by <loom-elapsed remaining>. The digits keep one width so the pill does
+     not shift as they change. */
+  .home-ends{font-variant-numeric:tabular-nums;white-space:nowrap;}
+  /* The session switcher (<loom-switcher>, opened by Command or Control and K):
+     a backdrop over the page and the one floating panel on it, with the query
+     field above a list of the page's sessions. The highlighted row is a tint with
+     a tinted hairline, as the completion list's is. */
+  loom-switcher{display:contents;}
+  .switcher-backdrop{position:fixed;inset:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;box-sizing:border-box;padding:12vh 16px 16px 16px;background:rgba(0,0,0,.3);}
+  .switcher{display:flex;flex-direction:column;width:min(560px,100%);max-height:min(70vh,520px);border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-raised);box-shadow:var(--shadow-float);overflow:hidden;}
+  .switcher-input{box-sizing:border-box;width:100%;margin:0;padding:12px 14px;border:0;border-bottom:1px solid var(--color-divider);background:transparent;color:var(--color-fg);font:15px/1.4 var(--font-sans);outline:none;}
+  .switcher-input:focus-visible{outline:none;}
+  .switcher-input::placeholder{color:var(--color-fg-quiet);}
+  ul.switcher-list{position:relative;flex:1 1 auto;min-height:0;list-style:none;margin:0;padding:4px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  li.switcher-row{display:flex;flex-direction:column;gap:1px;padding:6px 10px;border:1px solid transparent;border-radius:6px;cursor:pointer;}
+  li.switcher-row.current{background:color-mix(in srgb,var(--color-current) 14%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 35%,transparent);}
+  .switcher-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 14px/1.4 var(--font-sans);}
+  .switcher-detail{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .switcher-empty{margin:0;padding:12px 14px;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  .switcher-hint{margin:0;padding:8px 14px;border-top:1px solid var(--color-divider);color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   form.home-rename-form{display:flex;flex-direction:column;gap:6px;padding:8px 10px;}
   .home-rename-lead{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-rename-fields{display:flex;flex-wrap:wrap;gap:6px;}
@@ -1138,7 +1184,7 @@
   @media (max-width:1211px){
     .region-sidebar{display:none;}
     .region-sidebar.drawer{display:block;position:absolute;z-index:20;top:0;bottom:0;left:0;box-shadow:var(--shadow-float);}
-    .drawer-scrim{position:absolute;z-index:19;inset:0;background:color-mix(in srgb,var(--color-bg) 60%,transparent);}
+    .drawer-scrim{position:absolute;z-index:19;inset:0;background:rgba(0,0,0,.3);}
   }
   @media (max-width:979px){
     .shell-body{flex-direction:column;}

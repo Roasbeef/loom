@@ -70,6 +70,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     now: fn() { now },
     activity: fn(_, _) { Nil },
     rename: None,
+    manage: None,
     create: None,
     signins: read,
     login: None,

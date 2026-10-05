@@ -62,6 +62,18 @@
 //// browser fills, and the daemon checks again that the owner already holds a
 //// session in it.
 ////
+//// The owner's fresh home can also stop, archive and delete a session from its
+//// row (`Start.manage`, protocol-change/065's addendum on session actions): Stop
+//// on a running row, Archive and Delete on a saved one (`view/home_table`,
+//// `web_view/actions`). The daemon decides who has `Start.manage` (the owner's
+//// operating page that a `loom ui` exchange opened, as the Admin button is),
+//// and a page without it draws nothing and ignores the messages. Stop and
+//// Archive ask at once; Delete is two presses, the second a Delete in the row's
+//// own confirmation (`Confirming`), and the daemon is asked only after it. The
+//// request is the daemon's own task (`Working`), the answer arrives as
+//// `ActionAnswered`, and the page then reads its list again so the row is gone
+//// or changed. A refusal is the reason's fixed words in the page's notice.
+////
 //// The page also lists the browsers signed in as its principal and lets the
 //// person end them (protocol-change/065, the eighth pull request). Each list
 //// that is read starts a read of the principal's sign-ins (`Start.signins`), an
@@ -107,11 +119,13 @@
 //// 3. `answered` replaces the groups, and `observing` starts the activity read
 ////    for the running sessions it listed.
 //// 4. A press is a message `update` handles, one of `Opening`, `Resuming`,
-////    `Choosing`, `Creating`, `Renaming`, `AdminRequested`, `SigningOut`,
-////    `SigningOutAll` or `AddingDevice`, each of which asks the daemon through
+////    `Choosing`, `Creating`, `Renaming`, `StopRequested`, `ArchiveRequested`,
+////    `DeleteConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll` or
+////    `AddingDevice`, each of which asks the daemon through
 ////    its own `Start` field and leaves the answer to the effect's message.
 //// 5. `view` draws the groups through `shell_sidebar`, the offers
-////    (`resume_offer`, `rename_offer`, `create_offer`, `admin_offer`), the
+////    (`resume_offer`, `rename_offer`, `manage_offer`, `create_offer`,
+////    `admin_offer`), the
 ////    sign-ins and `press_notice`.
 ////
 //// ## Transitions
@@ -151,6 +165,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import lustre/server_component
+import web_view/actions
 import web_view/creations.{type Sharing}
 import web_view/ending.{type Ending}
 import web_view/renames
@@ -301,6 +316,17 @@ pub type Start {
     /// unless the page's principal is the daemon's owner on a page minted to
     /// operate, and the daemon checks that again when it runs.
     rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
+    /// Asks the daemon to stop, archive or delete the named session, for the
+    /// owner's fresh home (protocol-change/065, the addendum on session
+    /// actions): the daemon checks that the page is open and fresh and was
+    /// minted to operate, that its credential still authenticates as the
+    /// daemon's owner, that the identity is a canonical session identity, and
+    /// then makes the registry's own owner-checked change. It must return at
+    /// once, as `resume` must: the answer goes to the function it is given,
+    /// from the daemon's own task, as `ActionAnswered`'s message. It is `None`
+    /// unless the page is the owner's operating home that a `loom ui` exchange
+    /// opened, and the daemon checks that again when it runs.
+    manage: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
     /// Reads the principal's sign-ins, with the page's own credential, which the
     /// registry authenticates again. It runs in the component's process with the
     /// list's read, and must not run long.
@@ -410,6 +436,9 @@ pub opaque type Model {
     creating: create.State,
     /// Which row's rename form is open, and where it stands.
     edit: Edit,
+    /// Which row is waiting on the owner's second press of Delete or on the
+    /// daemon's answer to a stop, archive or delete.
+    acting: actions.Stage,
     /// The principal's sign-ins as the last read gave them.
     signins: List(Signin),
     /// Where a device link stands.
@@ -500,6 +529,31 @@ pub type Msg {
   /// cannot put a name in the page that the daemon did not store.
   RenameAnswered(answer: renames.Answer)
 
+  /// A running row's Stop was pressed. The identity is the catalogue's, fixed
+  /// when the tree was drawn, and the daemon decides whether the page's
+  /// principal may stop it.
+  StopRequested(session: String)
+
+  /// A saved row's Archive was pressed.
+  ArchiveRequested(session: String)
+
+  /// A saved row's Delete was pressed: the row asks once more before anything
+  /// is sent.
+  DeleteRequested(session: String)
+
+  /// The confirmation's Delete was pressed. It acts only for the row that is
+  /// confirming.
+  DeleteConfirmed(session: String)
+
+  /// The confirmation's Cancel was pressed: the row is as it was.
+  DeleteCancelled
+
+  /// The daemon answered a request to stop, archive or delete. It is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot put an outcome in the page that the daemon
+  /// did not reach.
+  ActionAnswered(answer: actions.Answer)
+
   /// A read of the principal's sign-ins answered. It is the effect's own
   /// message, and no handler carries it.
   SigninsRead(listing: signins.Listing)
@@ -569,6 +623,7 @@ pub fn new(start: Start) -> Model {
     resuming: None,
     creating: create.Idle,
     edit: NotEditing,
+    acting: actions.Calm,
     signins: [],
     link: NoLink,
     signin_notice: None,
@@ -821,6 +876,77 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
+    // Stop and Archive ask at once, from Calm or while another row is
+    // confirming, which they replace. The identity is the one the row was drawn
+    // with, and the daemon checks it and the page's standing again.
+    StopRequested(session:) -> start_action(model, actions.Stop, session)
+    ArchiveRequested(session:) -> start_action(model, actions.Archive, session)
+
+    // Delete's first press opens that row's confirmation. It sends nothing.
+    DeleteRequested(session:) ->
+      case model.start.manage, model.status, model.acting {
+        Some(_), Connected, actions.Calm
+        | Some(_), Connected, actions.Confirming(_)
+        -> #(
+          Model(..model, acting: actions.Confirming(session), notice: None),
+          effect.none(),
+        )
+        Some(_), Connected, actions.Working(..)
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    // The second press asks, and only for the row that is confirming, so a press
+    // for any other row, or one with no confirmation open, asks nothing.
+    DeleteConfirmed(session:) ->
+      case model.start.manage, model.status, model.acting {
+        Some(ask), Connected, actions.Confirming(open) if open == session -> #(
+          Model(
+            ..model,
+            acting: actions.Working(session, actions.Delete),
+            notice: Some(actions.working_words(actions.Delete)),
+          ),
+          managing(ask, actions.Delete, session),
+        )
+        Some(_), _, _ | None, _, _ -> #(model, effect.none())
+      }
+
+    DeleteCancelled ->
+      case model.acting {
+        actions.Confirming(_) -> #(
+          Model(..model, acting: actions.Calm),
+          effect.none(),
+        )
+        actions.Calm | actions.Working(..) -> #(model, effect.none())
+      }
+
+    // The answer ends the request, says what happened in the notice, and reads
+    // the list again, so the row is gone or changed in what the page draws. An
+    // answer that arrives when no request is out was not asked for and is
+    // dropped.
+    ActionAnswered(answer:) ->
+      case model.acting, answer {
+        actions.Working(..), actions.Done(action:) -> #(
+          Model(
+            ..model,
+            acting: actions.Calm,
+            notice: Some(actions.done_words(action)),
+          ),
+          reading(model),
+        )
+        actions.Working(..), actions.Declined(reason:) -> #(
+          Model(
+            ..model,
+            acting: actions.Calm,
+            notice: Some(actions.reason_words(reason)),
+          ),
+          reading(model),
+        )
+        actions.Calm, _ | actions.Confirming(_), _ -> #(model, effect.none())
+      }
+
     // The answer: a stored name replaces the row's in the page's own state at
     // once, the daemon's own word for it, and the next read confirms it; a
     // refusal is worded in the open form, in the reason's fixed words. An answer
@@ -985,6 +1111,51 @@ fn reading_signins(model: Model) -> Effect(Msg) {
 fn opening_admin(ask: fn(fn(sessions.Answer) -> Nil) -> Nil) -> Effect(Msg) {
   use dispatch <- effect.from
   ask(fn(answer) { dispatch(AdminLinked(answer)) })
+}
+
+// Stop and Archive: asks the daemon from its own task, for a page that was
+// handed the capability and is connected, and while no other request is out. A
+// confirmation that is open on another row is closed by the press.
+fn start_action(
+  model: Model,
+  action: actions.Action,
+  session: String,
+) -> #(Model, Effect(Msg)) {
+  case model.start.manage, model.status, model.acting {
+    Some(ask), Connected, actions.Calm
+    | Some(ask), Connected, actions.Confirming(_)
+    -> #(
+      Model(
+        ..model,
+        acting: actions.Working(session, action),
+        notice: Some(actions.working_words(action)),
+      ),
+      managing(ask, action, session),
+    )
+    Some(_), Connected, actions.Working(..)
+    | Some(_), Connecting, _
+    | Some(_), Ended(_), _
+    | None, _, _
+    -> #(model, effect.none())
+  }
+}
+
+// Starts the daemon's task for one action and returns at once; the answer
+// arrives later as `ActionAnswered`, dispatched from the task's own process.
+fn managing(
+  ask: fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil,
+  action: actions.Action,
+  session: String,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  ask(action, session, fn(answer) { dispatch(ActionAnswered(answer)) })
+}
+
+// Reads the list now, after an action changed it, without arming the timer: the
+// interval already running will fire on its own.
+fn reading(model: Model) -> Effect(Msg) {
+  use dispatch <- effect.from
+  dispatch(Answered(model.start.sessions()))
 }
 
 // Starts the daemon's rename task and returns at once; the task's answer
@@ -1182,6 +1353,7 @@ pub fn view(model: Model) -> Element(Msg) {
         Opening,
         resume_offer(model),
         rename_offer(model),
+        manage_offer(model),
         create_offer(model),
       ),
       signins_view.view(
@@ -1195,6 +1367,7 @@ pub fn view(model: Model) -> Element(Msg) {
         model.signin_notice,
       ),
       switch.view(model.departure),
+      switch.switcher(),
     ],
     element.none(),
     0,
@@ -1236,6 +1409,23 @@ fn rename_offer(model: Model) -> home_table.Rename(Msg) {
           Editing(session:, control:) ->
             Some(home_table.Open(session:, control:))
         },
+      )
+  }
+}
+
+// What the table offers for acting on a row: the buttons on a page whose daemon
+// handed it the capability, and nothing otherwise.
+fn manage_offer(model: Model) -> home_table.Manage(Msg) {
+  case model.start.manage {
+    None -> home_table.Unmanaged
+    Some(_) ->
+      home_table.Managed(
+        stop: StopRequested,
+        archive: ArchiveRequested,
+        delete: DeleteRequested,
+        confirm: DeleteConfirmed,
+        cancel: DeleteCancelled,
+        stage: model.acting,
       )
   }
 }

@@ -924,6 +924,85 @@ pub fn only_an_owners_operating_home_may_create_test() {
   assert ui_socket.home_create_capability(member, access.Observer, ask) == None
 }
 
+// The home's capability to stop, archive and delete is the owner's, on a page
+// minted to operate and opened by a fresh `loom ui` exchange, as the admin
+// page's is: a member's home, a read-only link, a home a bookmark resumed and a
+// page reached for one session have none.
+pub fn only_an_owners_fresh_operating_home_may_manage_sessions_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let home = ui_sessions.Workspace
+  let assert Some(_) =
+    ui_socket.home_manage_capability(
+      owner,
+      access.Operator,
+      home,
+      ui_sessions.Fresh,
+      ask,
+    )
+  assert ui_socket.home_manage_capability(
+      owner,
+      access.Observer,
+      home,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+  assert ui_socket.home_manage_capability(
+      owner,
+      access.Operator,
+      home,
+      ui_sessions.Resumed,
+      ask,
+    )
+    == None
+  assert ui_socket.home_manage_capability(
+      owner,
+      access.Operator,
+      ui_sessions.OneSession,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+  assert ui_socket.home_manage_capability(
+      member,
+      access.Operator,
+      home,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+  assert ui_socket.home_manage_capability(
+      member,
+      access.Observer,
+      home,
+      ui_sessions.Fresh,
+      ask,
+    )
+    == None
+}
+
+// A row's Stop, Archive and Delete are clicks beneath the sessions list's own
+// path, so no home's socket admits anything new for them: the owner's and a
+// member's both admit the click, and the component, which holds the capability
+// or does not, is what ignores it. The same buttons beside the sidebar's rows do
+// not exist, and a click at a path that only shares the list's digits is dropped.
+pub fn the_row_actions_need_no_new_admission_test() {
+  let stop = home.table_path <> "\t1\t2\t0\t1\t0"
+  let archive = home.table_path <> "\t1\t2\t0\t1\t1"
+  let delete = home.table_path <> "\t1\t2\t0\t1\t2"
+  let confirm = home.table_path <> "\t1\t2\t0\t0\t1\t0"
+  list.each([stop, archive, delete, confirm], fn(path) {
+    assert ui_socket.home_accepts(click_on(path))
+    assert ui_socket.home_owner_accepts(click_on(path))
+    assert ui_socket.home_admin_accepts(click_on(path))
+  })
+  assert !ui_socket.home_accepts(click_on("0\t2\t1"))
+  assert !ui_socket.home_accepts(click_on("0\t2\t10\t1"))
+  assert !ui_socket.home_accepts(click_on("0\t0\t1\t0"))
+}
+
 // --- the admin page (protocol-change/065, the fifth pull request) -------------
 
 // The home's capability to open the admin page is the owner's, on a page minted
