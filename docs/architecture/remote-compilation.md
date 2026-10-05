@@ -6,10 +6,12 @@ approval and budget authority. A compiler result names an executor-owned
 artifact, so the owner never interprets its location as a local filesystem path.
 
 The components described here implement the storage and validation boundaries in
-[protocol 067](../../protocol-change/067-remote-workspace-services.md). The native command admission engine is implemented. The whole Compile service,
-server-side command forwarding and shipped remote deployment still require
-assembly. The sequence below specifies that assembly's required order;
-it does not claim that a separate-host workflow has passed acceptance.
+[protocol 067](../../protocol-change/067-remote-workspace-services.md). The native
+command admission engine, whole Compile actor, owner consumer and
+concrete TLS BEAM routing are implemented components. Registered daemon
+assembly, Launch and separate-host acceptance remain pending. The sequence
+below describes their effect and receipt order; it does not claim a shipped
+remote workflow.
 
 ## Three records describe different work
 
@@ -83,11 +85,17 @@ sequenceDiagram
     participant Resource as Executor resource journal
     participant Compile as Live Compile continuation
     participant Native as Native journal and executor
-    Owner->>Resource: Retain original input and reserve outcome capacity
-    Resource-->>Compile: Original preparation claim
+    Owner->>Compile: Submit original input through the endpoint
+    Compile->>Compile: Validate and re-vet against pinned contract
+    Compile->>Resource: Atomic first admission and capacity reservation
+    Resource-->>Compile: FreshClaim or retained history
+    alt Existing row
+        Compile-->>Owner: Return retained history without preparation
+    else FreshClaim
     Compile->>Compile: Prepare exclusive allocation and offline sources
     Compile->>Resource: Commit Ready
-    Compile-->>Owner: Offer exact compiler command
+    Compile-->>Owner: Exact retained Ready
+    Owner->>Owner: Construct and retain immutable compiler offer
     Owner->>Owner: Clear and retain original native request
     Owner->>Native: Submit exact cleared request
     Native->>Native: Retain request and authority, commit Admit
@@ -100,6 +108,7 @@ sequenceDiagram
     Compile->>Resource: Commit exact outer completion
     Resource-->>Owner: Retained completion bytes
     Owner->>Owner: Commit receipt before acknowledgement
+    end
 ```
 
 The native service now calls the live association boundary between native
@@ -116,7 +125,7 @@ permit's exact endpoint, reference, native key and digest before continuing to
 launch. The existing deadline check still applies after that wait.
 
 The live context also retains the original Compile deadline in the native
-service's monotonic clock era. The Compile owner captures that deadline once at
+service's monotonic clock era. The executor whole Compile actor captures that deadline once at
 admission and copies it into subsequent contexts. Native authorization takes the
 earlier of this cap and the deadline derived from its own challenge. It retains
 the resulting Authority before admission and uses that same deadline for launch
@@ -182,7 +191,7 @@ wire format.
 envelope under a closed discriminator. Construction checks scope and physical
 operation correspondence. Decoding applies the existing aggregate frame bound
 and requires canonical bytes; the wrapper does not enlarge the Prepared limit.
-The connection checks the complete returned reference and transport generation
+The endpoint checks the complete returned reference and transport generation
 before exposing a native answer. An ordinary native reply cannot satisfy a
 command exchange.
 
@@ -190,10 +199,86 @@ The wire checks establish correspondence. The native service separately checks
 the exact retained resource association before historical control or returning an
 existing command's output. Fresh admission requires the original live claim and
 association permit described above.
-The current server reader accepts ordinary native envelopes only; enabling the
-command route awaits that service assembly. The
+The fixed TLS BEAM endpoint sends physical command envelopes through the
+registered whole Compile actor. A live route uses its original Claim and cap;
+historical lookup constructs only an associated control context. The
 [routing review](../review/distributed-physical-command-routing.md) records the
-codec, real TLS and dispatcher controls for the owner half.
+codec and dispatcher controls. The original hostile socket fixtures are being
+migrated to real TLS BEAM peers; a fixed hostile peer proves transport refusal,
+not service admission.
+
+## The original owner consumes Compile
+
+`client/remote/compile_client` projects an internal `compile.CompileService`
+from the original runner's pinned custodian Handle, session Broker, checked
+SessionEnrollment and concrete TLS BEAM endpoint. It creates no new actor,
+clock, registry or clearance authority. The enclosing custodian admits at most
+four managed bodies and durably retains unresolved run custody; this adapter
+is not a free-standing unlimited service.
+
+Before a send, the consumer validates the source input and original complete
+PhaseIdentity, derives the Compile service origin from its original parent and
+reserves the exact canonical service envelope. The native origin is separately
+CompileCommand. Its original nonzero Unix budget becomes one owner-monotonic
+deadline. The challenge exchange uses the explicit 1000-ms ticket window and
+100-ms margin; retransmission cannot create another lifetime.
+
+Ready must bind that exact service and enrollment-derived allocation. Only then
+does the owner choose a positive finite compiler wall under the original
+remaining deadline and retain one immutable offer. The private accepted command
+factory uses the shared service template, original input and actual Ready.
+Native ceiling restrictions are ordered before policy set construction and real
+Broker clearance. Protected roots and environment allowlists compare as sets;
+literal command environment, argv and cwd stay exact ordered values. Actual
+Prepared and native registered policy authority remain unchanged.
+
+The existing indexed `command_binding` resolves the full retained service and
+offer before preparation, then atomically reserves the original cleared native
+request. A discarded unused UUID candidate is harmless: the transaction returns
+the existing UUID on exact retry. Recovery never invokes that sendable path.
+The dispatcher preserves the complete CommandRef through challenge, submit,
+query, stdin, detached cancellation and native receipt.
+
+Owner settlement crosses two receipt boundaries. The dispatcher first commits
+ordered native output and terminal bytes. The Compile consumer accepts only a
+closed outer completion, at most 256 KiB, whose complete service key and native
+association match that retained receipt. Its private ordered-receipt parser
+handles the existing larger child receipt: at most 64 binary output chunks of
+16 KiB and one terminal binary of 32 KiB, within the custodian's 2-MiB aggregate.
+It re-encodes through the existing receipt codec to require canonical equality.
+The generic 256-KiB scanner cannot parse that larger existing receipt profile.
+
+Only a successful owner receipt commit permits outer ACK. A valid exact receipt
+arriving after cancellation is retained, because cancellation cannot erase an
+already completed effect. Conflicting bytes or digest refuse. Historical
+recovery observes original input and exact completion without preparing,
+minting, submitting or clearing again. Its best-effort ACK uses the existing
+finite exchange bound; an ACK failure does not discard usable owner evidence.
+
+The startup allowance is
+`44000 + clearance_wait_ms + 2 * exchange_wait_ms`, derived from serial pending
+asks and fixed control margins. `challenge_window_ms` is separately 1000 ms.
+This allowance concerns successful bounded exchanges; expiration of an abandoned
+ask cannot prove that its write was cancelled. Preparation, clearance and native
+launch still spend the original whole-service deadline.
+
+## A single trusted BEAM endpoint carries both routes
+
+`beam_endpoint.compile_registration` derives the native service and enrollment
+from its concrete whole Compile actor. Whole operations transfer canonical Input
+and return bounded metadata plus an optional exact completion segment. Physical
+native commands enter through `compile_service.send_command_exchange`, whose
+live path retains the original actor-owned Claim. A historical command context
+cannot substitute for that first-submit authority.
+
+All scopes share four data and two control credits at one fixed node rendezvous.
+Each credit retains the original final service reply subject. The actor may
+finish a forwarding task while the actual native service still owns its ask;
+only that service's answer and final transport drain permit reuse. Old local
+handoffs carry their correlation and cannot enter a reused credit. The endpoint
+bounds acknowledged content, not every message a trusted BEAM member can send.
+See [executor architecture](executor.md#one-concrete-endpoint) for membership,
+credential protection and native lifetime obligations.
 
 ## Failure preserves what can be proved
 
@@ -271,11 +356,13 @@ independent executor gate. The [first-admission review](../review/distributed-co
 records the atomic insertion and cancellation controls, including independent
 SQLite opens and commit failures. The [native-command review](../review/distributed-native-command-admission.md)
 records the next boundary: actual compiler output, cross-command control refusal,
-resource fencing before native launch and exact historical recovery. The native
-service API is implemented, while its listener and whole-service callers remain
-the next assembly work.
+resource fencing before native launch and exact historical recovery. The native engine, whole Compile actor and owner consumer now supply these
+component boundaries. Real joined controls use the original Broker, actual
+compiler/helper and independent TLS BEAM owner/executor VMs; they establish
+component custody, not separate-host filesystem isolation.
 
-Production acceptance still requires the live Compile/Launch services, exact
-command routing, executor registration and ordinary tool consumers. The final
+Production acceptance still requires registered daemon assembly, Launch/satellite,
+remote LSP and ordinary tool consumers. The native historical-context
+Missing/Conflict classification remains a separately pending correction. The final
 test must run the owner and executor on separate hosts with the workspace absent
 from the owner's disk, including cancellation, restart and lost replies.

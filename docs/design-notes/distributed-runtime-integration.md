@@ -48,8 +48,12 @@ operations, bounded transport and physical compilation components. These have
 focused tests and independent review records. Their presence does not enable
 the complete distributed workflow in the shipped daemon.
 
-The next assembly connects whole Compile ownership, native command forwarding
-and the owner consumer. Launch/satellite execution, the remote LSP host and
+Whole Compile ownership, native command forwarding and the owner consumer now
+run through the trusted TLS BEAM endpoint in the integration branch. Combined
+owner/Compile/workspace controls and native executor/owner restart tests pass
+against the merged Weft revision. The [transport transition record](../review/distributed-beam-transport-transition.md)
+keeps the exact evidence and known historical-route refusal defect.
+Launch/satellite execution, the remote LSP host and
 registered daemon configuration remain required. Acceptance must drive ordinary
 tools and code mode with the owner and executor on separate hosts and no checkout
 on the owner's disk.
