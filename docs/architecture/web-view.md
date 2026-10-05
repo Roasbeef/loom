@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3468`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3508`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -749,6 +749,15 @@ from the session page). It is the last child of the Session pane, at
   without it. The socket admits a click at or beneath the path only for an
   owner (`owner_accepts`), `invite_for` reads the principal again, and
   `manager.administer` authenticates the credential as the owner a last time.
+- **A private session.** The invitation control starts as `invites.Unshareable`
+  on an owner's page whose `Start.standing.sharing` is `Private` (the daemon
+  reads the scope with `manager.session_member_page` in
+  `ui_socket.standing_of`, the read the admin page makes; no frame is added).
+  `view/share` then draws the admin page's sentence in the control's place and
+  no button, and `component.invite` ignores a press, so the refusal that tells
+  a browser user to run `loomd` cannot be reached. A scope that could not be
+  read leaves the buttons, which the daemon still refuses correctly. Making a
+  private session shareable is not offered from the page.
 - **The request.** Two buttons, observer and operator, send
   `operator_page.Inviting(role)`; a third, "Hide the token", sends
   `Dismissing`. `component.invite` moves the control from `Ready` to `Asking`,
@@ -1384,7 +1393,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons and the Fork form (`session`, in the Session pane), and the dock's one goal line while a goal runs or is held (`dock`). It takes the messages its buttons send and the form's submit handler as values. |
 | `packages/web_view/src/web_view/view/expansion.gleam` | The budget an expanded row is cut to (300 lines, 8,000 characters) and the line that says a row was cut. |
 | `packages/web_view/src/web_view/view/lane.gleam` | The transcript lane: the line above its oldest row (`Top`, the "Load older" button), the keyed pieces as timeline rows with a dot in the strand's hue, the tags and dots that carry a marker for a listed strand (`Marks`), folded work, the cards, no row for the advisor's commentary (the panel's section is its record), and each transcript line and card body in its own leaf memo. |
-| `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node. |
+| `packages/web_view/src/web_view/markdown_view.gleam` | The elements for an answer's Markdown, drawn from `session_view/markdown`'s tree: fixed tags, classes from closed types, every string a text node; `line` is the one-row preview (bold and code kept, cut on the parsed spans) a finished sub-agent row and a strand's latest answer use. |
 | `packages/web_view/src/web_view/operator_page.gleam` | The operator's application: `Submitted`, `Decided`, `Controlled` and `Replying`, the uncontrolled composer and its total form decoder, the control forms' decoder, the approval cards. |
 | `packages/web_view/src/web_view/page.gleam` | The shell, the exchange page, the two scripts, the stylesheet, the keyed paths and the content security policy. |
 | `packages/client/src/client/daemon/server.gleam` | `/ui` routing and its check order, `ui.link`, and the `hello` `ui` field. |

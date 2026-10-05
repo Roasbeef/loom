@@ -448,16 +448,17 @@ fn piece_element(
       block_element(block, thoughts, took, draw, session)
 
     // A person's message: who sent it on a line of its own, and the words in
-    // a bubble beneath. The sender's name is session text, a text node, and
-    // the role is the author's and a fixed word from the host.
-    turns.Prompt(block:, name:, role:, ..) ->
+    // a bubble beneath. The sender's name is session text, a text node. The
+    // role beside it is the same fixed word for every message, because only a
+    // person who may operate can send one: the records do not say in which
+    // capacity the sender was attached, and a word taken from the attachments
+    // open at the moment would change as people attach and leave, so the same
+    // message would read differently on two pages and in two turns.
+    turns.Prompt(block:, name:, ..) ->
       html.div([attribute.class("prompt")], [
         html.p([attribute.class("who")], [
           html.span([attribute.class("who-name")], [html.text(name)]),
-          ..case role {
-            Some(role) -> [html.text(" · " <> role)]
-            None -> []
-          }
+          html.text(" · operator"),
         ]),
         block_element(block, dict.new(), None, draw, session),
       ])
@@ -719,11 +720,43 @@ fn item_element(
         standing,
         words,
         list.append(
-          list.map(rows, fold_row.line_row(_, draw)),
+          step_rows(standing, words, rows, draw),
           pictures(session, transcript_image.ref(key), images),
         ),
       )
     }
+  }
+}
+
+// The rows a step opens to. A failed call that has the engine's refusal opens
+// on one plain sentence and the engine's text beneath it (`fold_row.failure`),
+// in place of the call's summary, which the step's own line already says and
+// which names the tool the way the model spelled it. A failed step with no
+// refusal row, such as a rejected program, whose rows carry their own title
+// and reason, keeps its rows as they are.
+fn step_rows(
+  standing: turns.Standing,
+  words: step_words.Words,
+  rows: List(Line),
+  draw: fn(Line) -> Element(message),
+) -> List(Element(message)) {
+  let refusal =
+    list.filter(rows, fn(row) { row.speaker == transcript_line.ToolResult })
+  case standing, refusal {
+    turns.Failed, [_, ..] -> {
+      let engine = string.join(list.map(refusal, fn(row) { row.text }), "\n")
+      let rest =
+        list.filter(rows, fn(row) {
+          row.speaker != transcript_line.ToolResult
+          && row.speaker != transcript_line.ToolFailure
+        })
+      [
+        fold_row.failure(step_words.failure_sentence(words, engine), engine),
+        ..list.map(rest, fold_row.line_row(_, draw))
+      ]
+    }
+    turns.Failed, [] | turns.Pending, _ | turns.Done, _ ->
+      list.map(rows, fold_row.line_row(_, draw))
   }
 }
 
@@ -778,13 +811,22 @@ fn block_element(
 
 // A child's report under its who-line: nothing for an empty report, the text
 // alone for one short line, and otherwise the report's first line as the row
-// a reader scans, with the whole report in Markdown behind it.
+// a reader scans, with the whole report in Markdown behind it. The line is the
+// report's own Markdown cut to one row, so its bold and code draw as they do
+// in the body, and a report whose breaks arrived as the characters `\n` is
+// read with real ones first (`step_words.spoken_breaks`), so no backslash is
+// drawn and the second line is behind the chevron.
 fn result_report(report: String) -> List(Element(message)) {
-  let first = step_words.result_line(report)
-  case first, string.trim(report) == first {
+  let report = step_words.spoken_breaks(report)
+  let line = markdown_view.line(report, step_words.result_limit)
+  let trimmed = string.trim(report)
+  let longer =
+    string.contains(trimmed, "\n")
+    || string.length(trimmed) > step_words.result_limit
+  case trimmed, longer {
     "", _ -> []
-    _, True -> [html.p([attribute.class("result-line")], [html.text(first)])]
-    _, False -> [fold_row.reading(first, [card_body(report)])]
+    _, False -> [html.p([attribute.class("result-line")], line)]
+    _, True -> [fold_row.reading(line, [card_body(report)])]
   }
 }
 

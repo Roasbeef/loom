@@ -413,3 +413,31 @@ pub fn a_goal_write_is_read_on_arrival_by_the_web_lane_test() {
   assert component.status(simulate.model(answered)) == component.Connected
     as "the correlated goal board is accepted by the web host's lane"
 }
+
+// The footer of a read-only page does not tell the owner to ask the owner: a
+// page opened by the daemon's owner is told which command makes one that can
+// send, and any other person is told to ask.
+pub fn the_owner_on_a_read_only_link_is_not_told_to_ask_the_owner_test() {
+  let words = fn(reader) {
+    component.Start(
+      ..page_fixture.start(),
+      standing: component.Standing(reader:, sharing: None),
+    )
+    |> component.new
+    |> component.view
+    |> element.to_string
+  }
+
+  let owner = words(component.DaemonOwner)
+  assert string.contains(
+    owner,
+    "This link is read-only. Run loom ui for a page that can send.",
+  )
+  assert !string.contains(owner, "Ask the owner")
+
+  let member = words(component.Participant)
+  assert string.contains(
+    member,
+    "You can follow this session. Ask the owner for operator access.",
+  )
+}

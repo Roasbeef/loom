@@ -35,6 +35,7 @@ fn start() -> component.Start(ui_relay.Relay) {
     label: None,
     workspace_digest: "",
     expected: snapshot.Expected("A", "epoch", "incarnation"),
+    standing: component.unplaced,
     transport: component.Transport(
       connect: fn(_, _) { Nil },
       transmit: ui_relay.transmit,

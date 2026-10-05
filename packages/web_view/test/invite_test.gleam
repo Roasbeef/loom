@@ -19,6 +19,7 @@ import lustre/effect
 import lustre/element.{type Element}
 import page_fixture
 import web_view/component
+import web_view/creations
 import web_view/invites
 import web_view/operator_page
 
@@ -357,4 +358,43 @@ pub fn another_page_never_holds_the_invitation_test() {
 pub fn the_claim_lives_an_hour_test() {
   assert invites.claim_ttl_ms == 3_600_000
   assert invites.claim_ttl_ms < 86_400_000
+}
+
+// The owner's page for a session known to be private draws the admin page's
+// sentence and no button, so the refusal worded for a terminal is unreachable.
+// A session that may be shared, or whose scope was not read, draws the buttons.
+pub fn a_private_session_draws_one_sentence_and_no_button_test() {
+  let private = fn(sharing) {
+    let start = page_fixture.start()
+    component.Start(
+      ..start,
+      standing: component.Standing(
+        reader: component.DaemonOwner,
+        sharing: sharing,
+      ),
+      transport: component.Transport(
+        ..start.transport,
+        invite: Some(fn(_) { invites.Declined(invites.NotIsolated) }),
+      ),
+    )
+    |> component.new
+    |> component.apply([lane_fixture.captured(10, None)])
+  }
+
+  let closed = private(Some(creations.Private))
+  assert component.share(closed) == invites.Unshareable
+  let html = drawn(closed)
+  assert string.contains(html, "Private session: it shares the workspace")
+  assert string.contains(html, "Sessions created with Shareable can be.")
+  assert !string.contains(html, "Invite an observer")
+  assert !string.contains(html, "Invite an operator")
+  assert !string.contains(html, "loomd access isolate")
+  assert invite_clicks(handlers(operator_page.view(closed))) == []
+
+  // The press that would reach the daemon is ignored in the model as well.
+  let #(same, _) = component.invite(closed, invites.Observer)
+  assert component.share(same) == invites.Unshareable
+
+  assert component.share(private(Some(creations.Shareable))) == invites.Ready
+  assert component.share(private(None)) == invites.Ready
 }

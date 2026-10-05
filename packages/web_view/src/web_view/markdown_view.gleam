@@ -22,6 +22,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
@@ -40,6 +41,173 @@ import session_view/markdown.{type Block, type Inline}
 /// ```
 pub fn blocks(tree: List(Block)) -> List(Element(message)) {
   list.map(tree, block_element)
+}
+
+/// The first line of a text's Markdown as inline elements, flattened to one
+/// row and cut at `limit` characters of visible text.
+///
+/// A preview of a longer text (a sub-agent's report under its who-line, the
+/// latest answer of a strand) is the text's opening line with its bold and code
+/// kept, so the preview reads as the text does once opened and shows no
+/// asterisks or backticks. The opening is the first block that has words: a
+/// paragraph or heading, the first item of a list, the first line of a code
+/// block. A hard break inside it is a space. A cut ends in an ellipsis, made
+/// on the parsed spans so it never leaves a marker unclosed. Every string
+/// reaches the page as a text node, as in `blocks`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let children = markdown_view.line("**Done:** `calc.py` has `mul`", 140)
+/// ```
+pub fn line(text: String, limit: Int) -> List(Element(message)) {
+  let first =
+    text
+    |> string.split("\n")
+    |> list.find(fn(line) { string.trim(line) != "" })
+    |> result.unwrap("")
+
+  // The first line alone is the preview. A line that is only the start of a
+  // construct, such as the opening of a code fence, has no words of its own, so
+  // the whole text is read for them.
+  markdown.parse(first)
+  |> list.find_map(opening)
+  |> result.lazy_or(fn() { list.find_map(markdown.parse(text), opening) })
+  |> result.unwrap([])
+  |> unbroken
+  |> clip(limit)
+  |> list.map(inline_element)
+}
+
+// The inlines of the first block that has any, looking inside quotes, notes and
+// lists, and nothing for a table or a rule.
+fn opening(block: Block) -> Result(List(Inline), Nil) {
+  case block {
+    markdown.Paragraph(inlines:) | markdown.Heading(inlines:, ..) ->
+      case inlines {
+        [] -> Error(Nil)
+        [_, ..] -> Ok(inlines)
+      }
+
+    // A fence's first line stands for it, in the code face.
+    markdown.CodeBlock(text:, ..) ->
+      case string.split(string.trim(text), "\n") {
+        [""] | [] -> Error(Nil)
+        [first, ..] -> Ok([markdown.Code(string.trim(first))])
+      }
+
+    markdown.Quote(blocks:)
+    | markdown.Alert(blocks:, ..)
+    | markdown.Footnote(blocks:, ..) -> list.find_map(blocks, opening)
+
+    markdown.BulletList(items:) | markdown.OrderedList(items:, ..) ->
+      list.find_map(list.flatten(items), opening)
+
+    markdown.Table(..) | markdown.Rule -> Error(Nil)
+  }
+}
+
+// A hard break in a line that stays on one row is a space.
+fn unbroken(inlines: List(Inline)) -> List(Inline) {
+  list.map(inlines, fn(inline) {
+    case inline {
+      markdown.Break -> markdown.Text(" ")
+      markdown.Emphasis(children:) -> markdown.Emphasis(unbroken(children))
+      markdown.Strong(children:) -> markdown.Strong(unbroken(children))
+      markdown.Strikethrough(children:) ->
+        markdown.Strikethrough(unbroken(children))
+      markdown.Link(label:, destination:) ->
+        markdown.Link(unbroken(label), destination)
+      markdown.Text(..)
+      | markdown.Code(..)
+      | markdown.Image(..)
+      | markdown.Task(..)
+      | markdown.FootnoteRef(..) -> inline
+    }
+  })
+}
+
+// The inlines unchanged when their visible text fits, and otherwise cut where
+// the budget runs out, with an ellipsis in place of the rest.
+fn clip(inlines: List(Inline), limit: Int) -> List(Inline) {
+  case string.length(markdown.plain(inlines)) > limit {
+    False -> inlines
+    True -> clipped(inlines, limit).0
+  }
+}
+
+// The spans that fit in `left` characters, and what is left of the budget. A
+// negative budget means the cut was made, so nothing after it is kept.
+fn clipped(inlines: List(Inline), left: Int) -> #(List(Inline), Int) {
+  case inlines, left < 0 {
+    [], _ | _, True -> #([], left)
+    [first, ..rest], False -> {
+      let #(kept, left) = clip_one(first, left)
+      let #(more, left) = clipped(rest, left)
+      #(list.append(kept, more), left)
+    }
+  }
+}
+
+// One span against the budget: a text or code span is cut where the budget
+// ends, a span that wraps others is cut inside, and an atom is kept whole or
+// replaced by the ellipsis.
+fn clip_one(inline: Inline, left: Int) -> #(List(Inline), Int) {
+  case inline {
+    markdown.Text(text:) -> cut_text(text, left, markdown.Text)
+    markdown.Code(text:) -> cut_text(text, left, markdown.Code)
+    markdown.Emphasis(children:) -> {
+      let #(kept, left) = clipped(children, left)
+      #([markdown.Emphasis(kept)], left)
+    }
+    markdown.Strong(children:) -> {
+      let #(kept, left) = clipped(children, left)
+      #([markdown.Strong(kept)], left)
+    }
+    markdown.Strikethrough(children:) -> {
+      let #(kept, left) = clipped(children, left)
+      #([markdown.Strikethrough(kept)], left)
+    }
+    markdown.Link(label:, destination:) -> {
+      let #(kept, left) = clipped(label, left)
+      #([markdown.Link(kept, destination)], left)
+    }
+    markdown.Break
+    | markdown.Image(..)
+    | markdown.Task(..)
+    | markdown.FootnoteRef(..) -> {
+      let width = string.length(markdown.plain([inline]))
+      case width <= left {
+        True -> #([inline], left - width)
+        False -> #([markdown.Text("…")], -1)
+      }
+    }
+  }
+}
+
+fn cut_text(
+  text: String,
+  left: Int,
+  span: fn(String) -> Inline,
+) -> #(List(Inline), Int) {
+  let width = string.length(text)
+  case width <= left {
+    True -> #([span(text)], left - width)
+    False -> #([span(at_word(text, left) <> "…")], -1)
+  }
+}
+
+// The first `left` characters of a text backed up to the end of the last whole
+// word, so the ellipsis follows a word and not half of one. A cut that lands on
+// a word's end and a text with no space in it keep every character.
+fn at_word(text: String, left: Int) -> String {
+  let cut = string.slice(text, 0, left)
+  case string.slice(text, left, 1), list.reverse(string.split(cut, " ")) {
+    " ", _ -> cut
+    _, [_partial, first, ..rest] ->
+      string.trim_end(string.join(list.reverse([first, ..rest]), " "))
+    _, _ -> string.trim_end(cut)
+  }
 }
 
 fn block_element(block: Block) -> Element(message) {

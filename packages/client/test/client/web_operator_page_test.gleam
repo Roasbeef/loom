@@ -86,6 +86,7 @@ fn start_page(
       label: None,
       workspace_digest: "",
       expected: snapshot.Expected(session, "epoch", "incarnation"),
+      standing: component.unplaced,
       transport: component.Transport(
         connect: fn(inbox, opened) {
           ui_relay.start(attach, inbox, process.self(), opened, fn(_) { Nil })

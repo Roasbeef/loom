@@ -1271,6 +1271,7 @@ fn admit(
       // The digest, not the path, is what the page's storage is keyed by.
       workspace_digest: digest(attachment.registration.workspace),
       expected:,
+      standing: standing_of(role, attachment),
       transport:,
     )
   let started = case transferred {
@@ -1302,6 +1303,45 @@ fn admit(
       serving(page, signals)
     }
   }
+}
+
+// What the page is told about its principal and session beyond the capture:
+// whether the principal is the daemon's owner, and, for a page that may invite,
+// whether the session was created to be shared. The scope is the catalogue's
+// domain record, read through the owner-only members read the admin page makes
+// (`chosen_members`), so a page for a private session can say so before the
+// owner presses a button and no new frame exists. A page that cannot invite
+// reads nothing, and a read that fails leaves the scope unknown, which draws
+// the buttons as before: the daemon refuses an invitation to a private session
+// whether or not the page knew.
+fn standing_of(
+  role: Role,
+  attachment: server.Attachment(instance),
+) -> component.Standing {
+  let reader = case attachment.principal.kind {
+    access.OwnerPrincipal -> component.DaemonOwner
+    access.MemberPrincipal -> component.Participant
+  }
+  let sharing = case role {
+    Owning ->
+      case
+        manager.session_member_page(
+          attachment.registry,
+          attachment.digest,
+          attachment.session_id,
+          after: "",
+        )
+      {
+        Ok(members) ->
+          Some(case members.scope {
+            domain.SessionOnly -> creations.Shareable
+            domain.WorkspacePrivate -> creations.Private
+          })
+        Error(_) -> None
+      }
+    Observing | Operating -> None
+  }
+  component.Standing(reader:, sharing:)
 }
 
 // A started page as the socket serves it: its browser frames go to the

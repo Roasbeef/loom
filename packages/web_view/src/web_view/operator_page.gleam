@@ -51,6 +51,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/keyed
 import lustre/event
+import session_view/agent_roster
 import session_view/approval
 import session_view/operator
 import session_view/snapshot
@@ -625,8 +626,8 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
         [
           attribute.name("draft"),
           attribute.rows(3),
-          attribute.aria_label("Message to " <> component.strand(model)),
-          attribute.placeholder("Message " <> component.strand(model)),
+          attribute.aria_label("Message to " <> addressee(model)),
+          attribute.placeholder("Message " <> addressee(model)),
         ],
         "",
       ),
@@ -649,10 +650,23 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
 fn addressing(model: component.Model(socket)) -> Element(Msg(socket)) {
   html.div([attribute.class("to")], [
     html.span([], [html.text("To")]),
-    html.span([attribute.class("to-tag"), strip.hue_class(hue(model))], [
-      html.text(component.strand(model)),
-    ]),
+    html.span(
+      [
+        attribute.class("to-tag"),
+        attribute.title(component.strand(model)),
+        strip.hue_class(hue(model)),
+      ],
+      [html.text(addressee(model))],
+    ),
   ])
+}
+
+// The name the page calls the addressed strand by: the one its card carries
+// (`agent_roster.short_name`), so a sub-agent is `review-readme` and never
+// `sub:main/review-readme-d799cf20a6964d72`. The engine's identity stays in
+// the tag's `title`, an escaped tooltip, for a reader who needs it.
+fn addressee(model: component.Model(socket)) -> String {
+  agent_roster.short_name(component.strand(model))
 }
 
 fn hue(model: component.Model(socket)) -> turns.Hue {

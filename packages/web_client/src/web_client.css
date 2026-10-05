@@ -868,6 +868,14 @@
   .result-line{margin:0;color:var(--color-fg);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
   .step.reading .subject{color:var(--color-fg);}
   .result-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  /* A one-line Markdown preview (markdown_view.line): the finished row's line
+     and a strand's latest answer keep their code spans. A failed step's open
+     body leads with one sentence in the danger colour and the engine's own
+     text under it in the code face. */
+  .result-line .md-code-span,.reading .md-code-span,.detail-answer .md-code-span,.step-error-code{font:.92em/1 var(--font-mono);padding:.05em .3em;border-radius:4px;background:var(--color-code);color:var(--color-fg);}
+  .step-error{display:flex;flex-direction:column;gap:2px;margin:2px 0 4px 0;min-width:0;}
+  .step-error-sentence{margin:0;color:var(--color-danger-text);font:13px/1.5 var(--font-sans);}
+  .step-error-engine{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);}
   article.nudge,article.peer-card,article.sibling-card{background:var(--color-bg-raised);border-radius:10px;padding:9px 12px;min-width:0;}
   article.nudge{border:1px solid var(--color-advisor);}
   article.sibling-card{border:1px solid var(--color-divider);}
@@ -983,6 +991,8 @@
   .trace-subtitle{margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);}
   ul.trace-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;}
   .trace-cut,.trace-note{margin:8px 0 0 0;font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);}
+  .trace-row{flex-wrap:wrap;}
+  .trace-why{flex:1 1 100%;margin:0;font:12px/1.5 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   /* The Session pane (web_view/view/session_tab): groups that each lead with
      an eyebrow, read in this order: Session (the name with Rename, then the
      workspace), People (viewers, then the invitation buttons), Goal (the goal,

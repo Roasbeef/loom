@@ -29,7 +29,12 @@ page keys and nonces, and the relay into the session's gateway.
   in `client/daemon/ui_socket`, or an empty string; the frame writes it as
   the `workspace` attribute and `<loom-shell>` keys the reader's layout by it),
   the `snapshot.Expected` attachment every cut
-  must match, and a `Transport(socket)`. The heading shows the name (or
+  must match, a `Standing` (`reader`: `DaemonOwner` or `Participant`, so an
+  observer-ceiling page the owner opened can be told to run `loom ui`; and
+  `sharing`, the catalogue's scope for an owner's page, so a private session
+  draws `invites.Unshareable`'s one sentence and no invitation button; the
+  daemon reads it with the members read the admin page makes, no new frame;
+  `component.unplaced` for fixtures), and a `Transport(socket)`. The heading shows the name (or
   `Session` and the ID's first eight characters) with the whole ID in a
   `title`, and the workspace's last segment with the whole path in a
   `title`.

@@ -238,3 +238,34 @@ pub fn deeply_nested_input_is_bounded_test() {
   assert count(html, "<ul class=\"md-list\"") <= markdown.max_depth
   assert string.contains(html, string.repeat("[", 20_000))
 }
+
+fn previewed(source: String, limit: Int) -> String {
+  html.span([], markdown_view.line(source, limit))
+  |> element.to_string
+}
+
+// A preview is the first block's words on one row with bold and code kept, so
+// it reads as the text does once opened and shows no markers.
+pub fn a_line_keeps_bold_and_code_and_drops_the_markers_test() {
+  assert previewed("**Done:** `calc.py` has `mul`\n\nmore below", 140)
+    == "<span><strong>Done:</strong> <code class=\"md-code-span\">calc.py</code> has <code class=\"md-code-span\">mul</code></span>"
+  assert previewed("# Summary\n\nbody", 140) == "<span>Summary</span>"
+  assert previewed("- first item\n- second", 140) == "<span>first item</span>"
+  assert previewed("", 140) == "<span></span>"
+}
+
+// A cut is made on the parsed spans at a word, so a span that was open is
+// closed, no marker is left in the text, and the ellipsis stays on the row.
+pub fn a_cut_line_closes_its_spans_and_ends_in_an_ellipsis_test() {
+  let cut = previewed("**alpha beta gamma delta** epsilon", 14)
+  assert cut == "<span><strong>alpha beta…</strong></span>"
+  assert !string.contains(previewed("`abcdefghij` tail", 5), "`")
+  assert previewed("short", 140) == "<span>short</span>"
+}
+
+// Session text in a preview is text: markup in it is escaped.
+pub fn a_line_is_only_ever_text_test() {
+  let html = previewed("**<script>alert(1)</script>**", 140)
+  assert string.contains(html, "&lt;script&gt;")
+  assert !string.contains(html, "<script")
+}

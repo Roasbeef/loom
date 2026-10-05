@@ -156,3 +156,21 @@ pub fn a_strand_that_ran_no_tool_shows_its_answers_first_line_test() {
   assert string.contains(drawn, "<li>fs_read</li>")
   assert !string.contains(drawn, "Nothing to correct")
 }
+
+// The answer is drawn as the lane draws it: bold and code kept, no asterisks or
+// backticks, and a `\n` the model wrote as two characters is a break, not text.
+pub fn the_answers_line_renders_its_markdown_without_a_literal_break_test() {
+  let answered =
+    strip.Chip(
+      ..chip(agent_view.Finished, ""),
+      answer: Some("**Current content:** `# calc` \\n Tiny calculator."),
+    )
+  let drawn = element.to_string(strand_detail.view(answered))
+
+  assert string.contains(drawn, "<strong>Current content:</strong>")
+  assert string.contains(drawn, "<code class=\"md-code-span\"># calc</code>")
+  assert string.contains(drawn, "Tiny calculator.")
+  assert !string.contains(drawn, "**")
+  assert !string.contains(drawn, "`")
+  assert !string.contains(drawn, "\\n")
+}

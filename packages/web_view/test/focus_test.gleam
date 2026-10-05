@@ -347,3 +347,16 @@ pub fn the_composer_follows_the_focused_strands_activity_test() {
   let #(back, _) = component.focus(reviewer, "main")
   assert component.activity(back) == component.Idle
 }
+
+// A sub-agent's engine identity is `sub:main/<slug>-<digest>`. The composer
+// addresses it by the name its card carries, and the identity stays in the
+// tag's tooltip, escaped, for a reader who needs it.
+pub fn the_composer_names_a_sub_agent_by_its_card_name_test() {
+  let #(model, _) = operating(reviewer_running())
+  let #(model, _) = component.focus(model, lane_fixture.child)
+  let drawn = element.to_string(operator_page.view(model))
+  assert string.contains(drawn, ">&lt;b&gt;review</span>")
+  assert string.contains(drawn, "placeholder=\"Message &lt;b&gt;review\"")
+  assert string.contains(drawn, "title=\"sub:main/&lt;b&gt;review-1a2b3c\"")
+  assert !string.contains(drawn, "placeholder=\"Message sub:")
+}

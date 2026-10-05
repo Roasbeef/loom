@@ -83,6 +83,7 @@ fn started() -> Page {
       label: None,
       workspace_digest: "",
       expected: snapshot.Expected("A", "epoch", "incarnation"),
+      standing: component.unplaced,
       transport:,
     )
   let assert Ok(runtime) = lustre.start_server_component(component.app(), start)
