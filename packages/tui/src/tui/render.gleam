@@ -84,9 +84,10 @@ import session_view/strand_card
 import session_view/text_hygiene
 import session_view/transcript_line.{
   type Line, type Speaker, Assistant, Failure, ImageRow, Line, PeerMessage,
-  ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest, SentMessage,
-  Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning, System, ToolCall,
-  ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult, User,
+  ProgramFailure, ProgramRunning, ProgramSettled, Reasoning, ReasoningDigest,
+  SentMessage, Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning,
+  System, ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult,
+  User,
 }
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -819,7 +820,7 @@ pub fn render_line(line: Line, width: Int, strand: String) -> List(span.Line) {
     // A program block cuts every row to its box; a wrap could only break
     // the box's right edge onto a row of its own. An image's row is cut to
     // the pane, so its key stays at the end of the one row.
-    ProgramRunning | ProgramFailure | ImageRow(..) ->
+    ProgramRunning | ProgramFailure | ProgramSettled | ImageRow(..) ->
       speaker_rows(line, width, strand)
 
     // Every other body is laid out against the full pane and has never been
@@ -937,6 +938,7 @@ pub fn finish_markdown_rows(
     | PeerMessage
     | ProgramRunning
     | ProgramFailure
+    | ProgramSettled
     | ImageRow(..) -> marked_rows(speaker, rows, run)
   }
 }
@@ -1012,7 +1014,8 @@ fn speaker_mark(speaker: Speaker, text: String) -> #(String, style.Style) {
     | StrandMessage
     | PeerMessage
     | ProgramRunning
-    | ProgramFailure -> #("", theme.quiet_text())
+    | ProgramFailure
+    | ProgramSettled -> #("", theme.quiet_text())
     ImageRow(..) -> #("▣ ", theme.current_bold())
   }
 }
@@ -1094,9 +1097,9 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
     SentMessage | StrandMessage | PeerMessage ->
       message_rows.rows(line.speaker, line.text, width)
 
-    // A program still awaiting its result, or one that failed, is a titled
-    // block (`program_rows`).
-    ProgramRunning | ProgramFailure ->
+    // A program awaiting its result, one that failed and one that completed
+    // are titled blocks (`program_rows`).
+    ProgramRunning | ProgramFailure | ProgramSettled ->
       program_rows.rows(line.speaker, line.text, width)
 
     // An image's row names it and the key that opens it; a second row, when
@@ -1109,7 +1112,7 @@ fn speaker_rows(line: Line, width: Int, strand: String) -> List(span.Line) {
       |> list.append([span.line_plain("")])
 
     ToolDetail ->
-      markdown.render(line.text, width - string.length(mark))
+      markdown.render_detail(line.text, width - string.length(mark))
       |> prefix_rendered_lines(mark, mark_style)
     System | ToolGroup | ToolCall | ToolResult | ToolFailure | Failure ->
       body

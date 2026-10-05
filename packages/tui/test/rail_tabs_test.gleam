@@ -432,7 +432,7 @@ pub fn shift_tab_below_120_opens_and_closes_the_sheet_test() {
   let closed = key(opened, "backtab")
   assert !layout.sheet_shown(closed)
   assert closed.view.rail == None
-  assert string.contains(text(closed), "Check the calculator.")
+  assert string.contains(text(closed), "The check ran.")
 }
 
 pub fn escape_closes_the_sheet_and_gives_back_the_composer_test() {

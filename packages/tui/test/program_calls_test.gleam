@@ -1,8 +1,8 @@
 //// A code-mode program's capability calls, as whole frames.
 ////
 //// Protocol-change 060 puts a record of a foreground program's calls on its
-//// result. A program that completed says how many calls it made on its one
-//// row. A program that failed lists them in its block, grouped where
+//// result. A program that completed says how many calls it made in its
+//// block's title and lists them under it. A program that failed lists them in its block, grouped where
 //// consecutive calls share a capability and an ending, so a failed call
 //// and its error code stand out from the reads around it. A result written
 //// before the record existed draws what it always drew.
@@ -122,7 +122,12 @@ fn has(lines: List(String), needle: String) -> Bool {
 
 pub fn a_completed_program_counts_its_calls_test() {
   list.each([120, 80], fn(width) {
-    assert has(lines(width), "✓ code_mode · completed · 4 calls · result")
+    assert has(lines(width), "╭─ ✓ code_mode · completed · 4 calls")
+    assert has(lines(width), "CALLS · 4 calls · 0 failed")
+    assert has(lines(width), "✓ fs.read ×2  calc.gleam · README.md")
+    assert has(lines(width), "… 2 more calls")
+    assert has(lines(width), "RESULT · object · 1 key")
+    assert has(lines(width), "  ok: true")
   })
 }
 

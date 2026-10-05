@@ -1,14 +1,17 @@
 //// The titled blocks a code-mode program is drawn in.
 ////
-//// A program that settled is one row, like any call. A program the client
-//// has no result for yet, and one that failed, are blocks instead: a rule
-//// across the top carrying the title, the body inside a box, and a rule
-//// across the bottom carrying the foot. A running block shows the opening
-//// lines of the program, since the program text and, later, its one result
-//// are all the client receives; a failed one shows the error, with the
-//// source lines a compiler names drawn as source. The border is drawn in
-//// the danger colour for a failure and the live colour for a program still
-//// running, so the two read apart before a word of either is read.
+//// A program that is running, one that completed and one that failed are
+//// all blocks: a rule across the top carrying the title, the body inside a
+//// box, and a rule across the bottom carrying the foot. A running block
+//// shows the opening lines of the program, since the program text and,
+//// later, its one result are all the client receives. A completed one keeps
+//// those lines, so its title and program rows stay put when the result
+//// arrives, and it grows below them with the calls the program made and a
+//// preview of its value; a failed one shows the error, with the source lines a compiler names
+//// drawn as source. The border is drawn in the live colour for a program
+//// still running, the success colour for one that completed and the danger
+//// colour for one that failed, so the three read apart before a word of
+//// any is read.
 ////
 //// A line's text is laid out by `session_view/transcript_lines`: the title,
 //// a newline, the foot, a newline, and the body. A body row holding a
@@ -21,7 +24,9 @@ import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
-import session_view/transcript_line.{type Speaker, ProgramFailure}
+import session_view/transcript_line.{
+  type Speaker, ProgramFailure, ProgramSettled,
+}
 import tui/theme
 
 /// The rows a program block draws in a pane `width` cells wide: the top
@@ -45,9 +50,10 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     [title] -> #(title, "", [])
     [] -> #("", "", [])
   }
-  let edge = case speaker == ProgramFailure {
-    True -> theme.danger
-    False -> theme.current
+  let edge = case speaker {
+    ProgramFailure -> theme.danger
+    ProgramSettled -> theme.added
+    _ -> theme.current
   }
   let box = int.max(8, width - 3)
   let inside = box - 4
