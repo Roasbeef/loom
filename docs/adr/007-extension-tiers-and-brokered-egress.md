@@ -115,7 +115,7 @@ L3 loader description is superseded for this workflow; tier H remains reserved
 for a concrete separately reviewed need. Pi compatibility (#100) is outside
 this release goal.
 
-Protocol 067 defines immutable source/evidence identities, fenced central
+[Protocol 068](../../protocol-change/068-runtime-evolution.md) defines immutable source/evidence identities, fenced central
 selection, a separate idempotent session adoption audit and bounded native
 worker custody. The provider's generic evolution tools advertise and invoke an
 exact candidate/generation rather than replacing native registrations. Whole
