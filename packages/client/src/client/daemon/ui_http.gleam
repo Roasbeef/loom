@@ -58,6 +58,17 @@ pub type Route {
   /// as the socket URL's `csrf-token`.
   HomeSocket(key: String, nonce: Option(String))
 
+  /// `GET /ui/admin?ticket=<ticket>`: the admin page's ticket exchange
+  /// (protocol-change/065, the fifth pull request).
+  AdminExchange(ticket: String)
+
+  /// `GET /ui/p/<key>/admin`: the admin page.
+  AdminPage(key: String)
+
+  /// `GET /ui/p/<key>/admin/ws`: the admin component's socket, with the nonce
+  /// as the socket URL's `csrf-token`.
+  AdminSocket(key: String, nonce: Option(String))
+
   /// `GET /ui/assets/<name>`, for one of the fixed asset names.
   Asset(asset: Asset)
 
@@ -90,7 +101,7 @@ pub const max_position = 256
 
 /// Routes a `/ui` request; every route is a `GET`. The session ID is returned as the path gave it;
 /// the caller parses it as a canonical ID before using it. The home's three
-/// routes name no session (protocol-change/065).
+/// routes and the admin page's three name no session (protocol-change/065).
 ///
 /// ## Examples
 ///
@@ -123,6 +134,14 @@ pub fn route(request: Request(body)) -> Route {
     http.Get, ["ui", "p", key, "home"] -> HomePage(key)
     http.Get, ["ui", "p", key, "home", "ws"] ->
       HomeSocket(key, query(request, "csrf-token"))
+    http.Get, ["ui", "admin"] ->
+      case query(request, "ticket") {
+        Some(ticket) -> AdminExchange(ticket)
+        None -> Unknown
+      }
+    http.Get, ["ui", "p", key, "admin"] -> AdminPage(key)
+    http.Get, ["ui", "p", key, "admin", "ws"] ->
+      AdminSocket(key, query(request, "csrf-token"))
     http.Get, ["ui", "assets", name] ->
       case name {
         _ if name == page.runtime_asset -> Asset(Runtime)

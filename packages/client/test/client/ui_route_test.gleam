@@ -13,6 +13,7 @@
 //// is exercised by the relay, component and operator page tests.
 
 import broker/token
+import client/daemon/admin as access_admin
 import client/daemon/domain as domain_service
 import client/daemon/limits
 import client/daemon/manager
@@ -52,6 +53,7 @@ import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import web_view/creations
 import web_view/ending
+import web_view/grants
 import web_view/home
 import web_view/invites
 import web_view/page
@@ -91,6 +93,16 @@ type Upgrade {
   /// capability was wrongly handed out would, and `x-switch-ended` asks as
   /// a page that has ended.
   Inviting
+
+  /// The upgrades do what `Inviting` does for a session's page, and also what the
+  /// owner's admin page and the home's "Admin" button do (protocol-change/065,
+  /// the fifth pull request), so one fixture holds both ends of the grant
+  /// allowance. The home answers a request that carries `x-admin-open` as the
+  /// button's press does: 290 and the ticket's address, or 291 and the reason, or
+  /// 289 for a home with no capability unless `x-admin-force` asks the daemon
+  /// anyway. The admin page answers a request that names `x-admin-do` with the
+  /// change it asks for, and any other with the catalogue it reads.
+  Granting
 }
 
 // A daemon whose router serves the web view, with the owner credential and
@@ -175,7 +187,7 @@ fn fixture_lasting(
             Switching ->
               switching(sessions, request, attachment, ceiling, reach, open)
 
-            Inviting -> inviting(sessions, request, attachment, open)
+            Inviting | Granting -> inviting(sessions, request, attachment, open)
 
             // The session is resident but its gateway is not running: the
             // relay's attach is refused, as it is when a session is
@@ -201,21 +213,55 @@ fn fixture_lasting(
             // router admitted the page and before the component's first read,
             // which the refresh interval is far too long for a test to wait
             // out.
+            //
+            // A request that carries `x-admin-open` is the owner's press of the
+            // "Admin" button instead, answered as the stub answers it, so a test
+            // can hold an admin ticket and then watch the real admin socket.
             Real -> {
-              case req.get_header(request, "x-revoke-between") {
-                Ok(token) -> revoke(ready.state_root, token)
-                Error(Nil) -> Nil
+              case req.get_header(request, "x-admin-open") {
+                Ok(_) ->
+                  opening_admin_from_home(
+                    sessions,
+                    request,
+                    attachment,
+                    ceiling,
+                    reach,
+                    open,
+                  )
+                Error(Nil) -> {
+                  case req.get_header(request, "x-revoke-between") {
+                    Ok(token) -> revoke(ready.state_root, token)
+                    Error(Nil) -> Nil
+                  }
+                  ui_socket.upgrade_home(
+                    daemon,
+                    request,
+                    attachment,
+                    sessions,
+                    open,
+                    ceiling,
+                    reach,
+                  )
+                }
               }
-              ui_socket.upgrade_home(
-                daemon,
-                request,
-                attachment,
-                sessions,
-                open,
-                ceiling,
-                reach,
-              )
             }
+
+            // The home as the "Admin" button asks for a ticket, and otherwise as
+            // a plain read.
+            Granting ->
+              case req.get_header(request, "x-admin-open") {
+                Ok(_) ->
+                  opening_admin_from_home(
+                    sessions,
+                    request,
+                    attachment,
+                    ceiling,
+                    reach,
+                    open,
+                  )
+                Error(Nil) ->
+                  homed(ready.state_root, request, attachment, open, ceiling)
+              }
 
             // The home as a row press asks for a ticket: the same call the
             // home's transport makes, for the session a header names.
@@ -250,6 +296,38 @@ fn fixture_lasting(
 
             Stubbed | Pictured | Inviting ->
               homed(ready.state_root, request, attachment, open, ceiling)
+          }
+        },
+        admin: fn(request, attachment, open, ceiling) {
+          case serving {
+            // The admin page's own socket, as the daemon serves it.
+            Real ->
+              ui_socket.upgrade_admin(
+                daemon,
+                request,
+                attachment,
+                sessions,
+                open,
+                ceiling,
+              )
+
+            Granting ->
+              administered(sessions, request, attachment, open, ceiling)
+
+            Stubbed | Pictured | Switching | Inviting ->
+              stub(
+                278,
+                string.join(
+                  [
+                    attachment.principal.id,
+                    case ceiling {
+                      access.Operator -> "operator"
+                      access.Observer -> "observer"
+                    },
+                  ],
+                  "\n",
+                ),
+              )
           }
         },
       )),
@@ -492,6 +570,221 @@ fn creating_from_home(
       }
     }
   }
+}
+
+// The home's upgrade as the "Admin" button asks: the capability the socket hands
+// a page (`home_admin_capability`) is consulted first, and a page with none is
+// answered 289 unless `x-admin-force` asks the daemon anyway, as a forged
+// message from a page that was wrongly handed the capability would. The request
+// is run in the task the page uses (`admin_ticket_task`) and answered 290 and the
+// ticket's address, or 291 and the reason. `x-switch-ended` asks as a page that
+// has ended but whose socket is still up. A request that carries `x-admin-mint`
+// instead mints an admin ticket for the member credential it names, whom the
+// daemon would never mint one for, so a test can present the router with a grant
+// that should not exist.
+fn opening_admin_from_home(
+  tickets,
+  request,
+  attachment: server.HomeAttachment(String),
+  ceiling,
+  reach: ui_sessions.Reach,
+  open: fn() -> Result(Int, Nil),
+) {
+  let open = case req.get_header(request, "x-switch-ended") {
+    Ok(_) -> fn() { Error(Nil) }
+    Error(Nil) -> open
+  }
+  let standing = ui_socket.home_standing(attachment, ceiling, reach)
+  case req.get_header(request, "x-admin-mint") {
+    Ok(credential) -> {
+      let assert Ok(issued) =
+        ui_sessions.mint(
+          tickets,
+          ui_sessions.Grant(
+            scope: ui_sessions.Admin,
+            credential: digest_of(credential),
+            principal: result.unwrap(
+              req.get_header(request, "x-admin-mint-principal"),
+              "",
+            ),
+            ceiling: access.Operator,
+            reach: ui_sessions.Workspace,
+          ),
+        )
+        as "a ticket is minted"
+      stub(290, page.admin_exchange_path(issued.ticket))
+    }
+    Error(Nil) -> {
+      let ask = fn(deliver) {
+        ui_socket.admin_ticket_task(standing, tickets, open, deliver)
+      }
+      let capability =
+        ui_socket.home_admin_capability(
+          attachment.principal,
+          ceiling,
+          reach,
+          ask,
+        )
+      let asked = case capability, req.get_header(request, "x-admin-force") {
+        Some(ask), _ -> Some(ask)
+        None, Ok(_) -> Some(ask)
+        None, Error(Nil) -> None
+      }
+      case asked {
+        None -> stub(289, "no capability")
+        Some(ask) -> {
+          let answers = process.new_subject()
+          ask(fn(answer) { process.send(answers, answer) })
+          case process.receive(answers, 10_000) {
+            Ok(sessions.Ticketed(path)) -> stub(290, path)
+            Ok(sessions.Declined(reason)) -> stub(291, string.inspect(reason))
+            Error(Nil) -> stub(298, "the task never answered")
+          }
+        }
+      }
+    }
+  }
+}
+
+// The admin page's upgrade as the daemon's socket asks it. A request that names
+// `x-admin-do` asks for that change as the page's component would, in the task
+// the page uses (`admin_task`), with the identities and text the other
+// `x-admin-` headers carry, and is answered 292 and the claim's fields one to a
+// line, or 294 for a change that made no claim, or 293 and the reason. Any other
+// request reads the catalogue as the component does (`admin_reading`) and is
+// answered 279 and what the read found, one line for each of the principals, the
+// sessions and the chosen session's members. `x-switch-ended` asks as a page that
+// has ended but whose socket is still up.
+fn administered(
+  tickets,
+  request,
+  attachment: server.AdminAttachment(String),
+  open: fn() -> Result(Int, Nil),
+  ceiling,
+) {
+  let open = case req.get_header(request, "x-switch-ended") {
+    Ok(_) -> fn() { Error(Nil) }
+    Error(Nil) -> open
+  }
+  let standing =
+    ui_socket.Standing(
+      registry: attachment.registry,
+      digest: attachment.digest,
+      principal: attachment.principal.id,
+      ceiling:,
+      reach: ui_sessions.Workspace,
+    )
+  let header = fn(name) { result.unwrap(req.get_header(request, name), "") }
+  case req.get_header(request, "x-admin-do") {
+    Error(Nil) -> {
+      let chosen = case header("x-admin-chosen") {
+        "" -> None
+        session -> Some(session)
+      }
+      stub(
+        279,
+        case ui_socket.admin_reading(attachment, open, chosen, fn(_) { Nil }) {
+          grants.Read(snapshot) -> summary(snapshot)
+          grants.Unread -> "unread"
+          grants.Closed(reason) -> "closed " <> ending.reason(reason)
+        },
+      )
+    }
+    Ok(kind) -> {
+      let role = case header("x-admin-role") {
+        "operator" -> invites.Operator
+        _ -> invites.Observer
+      }
+      let session = header("x-admin-session")
+      let principal = header("x-admin-principal")
+      let action = case kind {
+        "invite" -> grants.Invite(session, role, header("x-admin-name"))
+        "set-role" -> grants.SetRole(session, principal, role)
+        "revoke-membership" -> grants.RevokeMembership(session, principal)
+        "revoke-credentials" -> grants.RevokeCredentials(principal)
+        _ -> grants.Rotate(principal)
+      }
+      let answers = process.new_subject()
+      ui_socket.admin_task(
+        standing,
+        tickets,
+        open,
+        attachment.epoch,
+        ui_socket.claim_address(request),
+        action,
+        fn(answer) { process.send(answers, answer) },
+      )
+      case process.receive(answers, 10_000) {
+        Ok(grants.Claimed(claim)) ->
+          stub(
+            292,
+            string.join(
+              [
+                claim.command,
+                claim.token,
+                claim.principal,
+                case claim.purpose {
+                  grants.Invited(role) -> invites.role_word(role)
+                  grants.Rotated -> "rotated"
+                },
+                int.to_string(claim.expires_in_ms),
+              ],
+              "\n",
+            ),
+          )
+        Ok(grants.Changed) -> stub(294, "changed")
+        Ok(grants.Declined(reason)) -> stub(293, string.inspect(reason))
+        Error(Nil) -> stub(298, "the task never answered")
+      }
+    }
+  }
+}
+
+// What a read of the catalogue found, one line each: the principals with their
+// kinds and credential states, the sessions, and the chosen session's members.
+fn summary(snapshot: grants.Snapshot) -> String {
+  let credential = fn(state) {
+    case state {
+      grants.Active(..) -> "active"
+      grants.ClaimOpen(..) -> "claim_open"
+      grants.ClaimExpired -> "claim_expired"
+      grants.NoCredential -> "none"
+    }
+  }
+  string.join(
+    [
+      "principals "
+        <> string.join(
+        list.map(snapshot.principals, fn(row) {
+          row.id
+          <> ":"
+          <> case row.kind {
+            grants.OwnerKind -> "owner"
+            grants.MemberKind -> "member"
+          }
+          <> ":"
+          <> credential(row.credential)
+        }),
+        ",",
+      ),
+      "sessions "
+        <> string.join(list.map(snapshot.sessions, fn(entry) { entry.id }), ","),
+      case snapshot.selection {
+        None -> "selection none"
+        Some(selection) ->
+          "selection "
+          <> selection.session
+          <> " "
+          <> string.join(
+            list.map(selection.holders, fn(holder) {
+              holder.principal <> "=" <> invites.role_word(holder.role)
+            }),
+            ",",
+          )
+      },
+    ],
+    "\n",
+  )
 }
 
 // The page's upgrade as an invitation asks for one: what `ui_socket.upgrade`
@@ -3755,5 +4048,779 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       as "the task answers once the session is resident"
     assert string.starts_with(path, "/ui/sessions/")
     assert task != process.self()
+  })
+}
+
+// --- the owner's admin page (protocol-change/065, the fifth pull request) -----
+
+// The owner's operator home, and the press of its "Admin" button: the ticket
+// the daemon mints, as the address the browser is sent to.
+fn admin_ticket(port: Int, home: Entered) -> String {
+  let pressed = home_socket(port, home, [#("x-admin-open", "1")])
+  assert pressed.status == 290
+  pressed.body
+}
+
+// An admin page opened from the owner's operator home, through the exchange.
+fn admin_page(port: Int, credential: String) -> Entered {
+  let home = enter(port, operator_home(port, credential))
+  enter(port, admin_ticket(port, home))
+}
+
+// The admin page's socket as a change asks for one, with the header that names
+// it and the ones that carry what it needs.
+fn admin_do(
+  port: Int,
+  page: Entered,
+  kind: String,
+  more: List(#(String, String)),
+) -> Answer {
+  home_socket(port, page, [#("x-admin-do", kind), ..more])
+}
+
+// What the admin page's read found, one line for each of the principals, the
+// sessions and the chosen session's members.
+fn admin_read(
+  port: Int,
+  page: Entered,
+  chosen: String,
+) -> #(String, String, String) {
+  let answer = home_socket(port, page, [#("x-admin-chosen", chosen)])
+  assert answer.status == 279
+  let assert [people, listed, selection] = string.split(answer.body, "\n")
+    as "a read is three lines"
+  #(people, listed, selection)
+}
+
+// The owner's operator home presses "Admin", the ticket exchanges once for a
+// page of the admin scope under its own key and cookie, and the page's socket
+// reaches the admin upgrade with the owner and the ceiling the ticket carried.
+pub fn an_owners_home_opens_an_admin_page_once_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let home = enter(port, operator_home(port, credential))
+    let path = admin_ticket(port, home)
+    assert string.starts_with(path, "/ui/admin?ticket=")
+
+    // The exchange's checks are the home's.
+    assert get(port, path, [host(port), #("sec-fetch-site", "cross-site")]).status
+      == 403
+    let answer = exchange(port, path)
+    let page = entered(answer)
+    assert string.ends_with(page.page, "/admin")
+    let assert Ok(set) = list.key_find(answer.headers, "set-cookie")
+      as "the cookie is set"
+    assert string.contains(set, "HttpOnly")
+    assert string.contains(set, "SameSite=Strict")
+    assert string.ends_with(
+      set,
+      "Path=" <> string.replace(page.page, "/admin", ""),
+    )
+
+    // Spent, and said so in the admin page's words.
+    let again = exchange(port, path)
+    assert again.status == 401
+    assert string.contains(
+      again.body,
+      ending.admin_headline(ending.LinkExpired),
+    )
+
+    // The page is the admin shell, which names no session and carries no nonce.
+    let opened = open_page(port, page)
+    assert opened.status == 200
+    assert string.contains(opened.body, "Loom · Admin")
+    assert !string.contains(opened.body, page.nonce)
+    assert referrer_policy(opened) == Ok("no-referrer")
+
+    // Only a first-party navigation reaches it.
+    let from = fn(site) {
+      get(port, page.page, [
+        host(port),
+        #("sec-fetch-site", site),
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+    }
+    assert from("same-origin") == 200
+    assert from("none") == 200
+    assert from("same-site") == 403
+    assert from("cross-site") == 403
+
+    // The socket needs the host, the origin, the cookie, the key and the nonce.
+    assert home_socket(port, Entered(..page, nonce: "forged"), []).status == 403
+    let upgraded = home_socket(port, page, [])
+    assert upgraded.status == 279
+    assert string.starts_with(
+      upgraded.body,
+      "principals " <> ready.owner.id <> ":owner:active",
+    )
+
+    // The home that pressed the button is unaffected.
+    assert open_page(port, home).status == 200
+  })
+}
+
+// An admin page is not on offer to a home that is not the owner's, minted to
+// operate and fresh, and the daemon refuses a press that reached it anyway: the
+// capability is the first layer and `admin_ticket_for` the third.
+pub fn only_an_owners_operating_home_is_offered_an_admin_page_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_session(ready, "admin-offer", 1201)
+    let invitee = member(ready, "admin-member", session, access.Operator)
+
+    // A member's operator home, and an owner's observer home, have no
+    // capability and no button.
+    let members_home = enter(port, operator_home(port, invitee))
+    assert home_socket(port, members_home, [#("x-admin-open", "1")]).status
+      == 289
+    let observing = enter(port, home_link(port, credential, []))
+    assert home_socket(port, observing, [#("x-admin-open", "1")]).status == 289
+
+    // Asked anyway, the daemon refuses each in the same words and mints nothing.
+    let forced = fn(page) {
+      home_socket(port, page, [
+        #("x-admin-open", "1"),
+        #("x-admin-force", "1"),
+      ])
+    }
+    let member_refused = forced(members_home)
+    assert member_refused.status == 291
+    assert member_refused.body == "NoAdmin"
+    let observer_refused = forced(observing)
+    assert observer_refused.status == 291
+    assert observer_refused.body == "NoAdmin"
+
+    // A home that has ended asks nothing of the registry.
+    let owners = enter(port, operator_home(port, credential))
+    let ended =
+      home_socket(port, owners, [
+        #("x-admin-open", "1"),
+        #("x-switch-ended", "1"),
+      ])
+    assert ended.status == 291
+    assert ended.body == "NoAdmin"
+  })
+}
+
+// A ticket is honoured only at the exchange of its own scope: a session's and a
+// home's at the admin exchange, and an admin ticket at either of theirs, are each
+// refused and spent, and no cookie is set for any.
+pub fn an_admin_ticket_redeems_only_at_the_admin_exchange_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_session(ready, "admin-scopes", 1202)
+    let for_session = link(port, credential, session)
+    let for_home = home_link(port, credential, [])
+    let home = enter(port, operator_home(port, credential))
+    let for_admin = admin_ticket(port, home)
+    let other_admin = admin_ticket(port, home)
+
+    // A session's ticket and a home's presented at the admin exchange.
+    let session_at_admin = "/ui/admin?ticket=" <> after_ticket(for_session)
+    let home_at_admin = "/ui/admin?ticket=" <> after_ticket(for_home)
+    let refused = exchange(port, session_at_admin)
+    assert refused.status == 403
+    assert list.key_find(refused.headers, "set-cookie") == Error(Nil)
+    let refused = exchange(port, home_at_admin)
+    assert refused.status == 403
+    assert list.key_find(refused.headers, "set-cookie") == Error(Nil)
+
+    // An admin ticket presented at the home's exchange and at a session's.
+    let admin_at_home = "/ui/home?ticket=" <> after_ticket(for_admin)
+    let admin_at_session =
+      "/ui/sessions/" <> session <> "?ticket=" <> after_ticket(other_admin)
+    let refused = exchange(port, admin_at_home)
+    assert refused.status == 403
+    assert list.key_find(refused.headers, "set-cookie") == Error(Nil)
+    let refused = exchange(port, admin_at_session)
+    assert refused.status == 403
+    assert list.key_find(refused.headers, "set-cookie") == Error(Nil)
+
+    // All four are spent: none opens its own exchange afterwards.
+    assert exchange(
+        port,
+        "/ui/sessions/" <> session <> "?ticket=" <> after_ticket(for_session),
+      ).status
+      == 401
+    assert exchange(port, for_home).status == 401
+    assert exchange(port, for_admin).status == 401
+    assert exchange(port, other_admin).status == 401
+  })
+}
+
+// A cookie opens only the scope it was issued for. The admin page's opens no
+// session page and no home, a home's and a session's open no admin page, and the
+// sockets are refused across scopes before any upgrade.
+pub fn an_admin_cookie_opens_only_the_admin_page_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_session(ready, "admin-cookies", 1203)
+    let home = enter(port, operator_home(port, credential))
+    let admin = enter(port, admin_ticket(port, home))
+    let session_page = enter(port, link(port, credential, session))
+    let key_of = fn(page: Entered, suffix) {
+      string.replace(page.page, suffix, "")
+    }
+    let admin_key = key_of(admin, "/admin")
+    let home_key = key_of(home, "/home")
+    let session_key = key_of(session_page, "/sessions/" <> session)
+    let under = fn(path, cookie) {
+      get(port, path, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> cookie),
+      ]).status
+    }
+
+    // The admin cookie on the home's and a session's path, and theirs on the
+    // admin's, under their own keys.
+    assert under(admin_key <> "/home", admin.cookie) == 403
+    assert under(admin_key <> "/sessions/" <> session, admin.cookie) == 403
+    assert under(home_key <> "/admin", home.cookie) == 403
+    assert under(session_key <> "/admin", session_page.cookie) == 403
+
+    // A cookie under another page's key is no page at all.
+    assert under(admin_key <> "/admin", home.cookie) == 401
+    assert under(home_key <> "/admin", admin.cookie) == 401
+    assert open_page(port, admin).status == 200
+    assert open_page(port, home).status == 200
+
+    // The sockets are refused across scopes: the admin's cookie at the home's
+    // socket and the home's at the admin's.
+    let socket = fn(path, nonce, cookie) {
+      get(port, path <> "/ws?csrf-token=" <> nonce, [
+        host(port),
+        #("cookie", "loom_ui=" <> cookie),
+        #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ]).status
+    }
+    assert socket(admin_key <> "/home", admin.nonce, admin.cookie) == 403
+    assert socket(home_key <> "/admin", home.nonce, home.cookie) == 403
+    assert socket(admin.page, admin.nonce, admin.cookie) == 279
+  })
+}
+
+// A grant for the admin scope whose credential is not the owner's is refused at
+// every request, whatever minted it: the router asks the registry who the
+// credential is, so no ticket can open the admin page for a member.
+pub fn a_members_credential_holds_no_admin_page_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_session(ready, "admin-forged", 1204)
+    let invitee = member(ready, "admin-forged-member", session, access.Operator)
+    let home = enter(port, operator_home(port, credential))
+    let forged =
+      home_socket(port, home, [
+        #("x-admin-open", "1"),
+        #("x-admin-mint", invitee),
+        #("x-admin-mint-principal", "admin-forged-member"),
+      ])
+    assert forged.status == 290
+
+    // The exchange honours the ticket, since a ticket records no principal's
+    // kind, and the page and its socket are refused.
+    let page = enter(port, forged.body)
+    let refused = open_page(port, page)
+    assert refused.status == 403
+    assert string.contains(
+      refused.body,
+      ending.admin_headline(ending.AccessRevoked),
+    )
+    assert home_socket(port, page, []).status == 403
+  })
+}
+
+// A revoked credential's admin page is refused at its next request.
+pub fn a_revoked_owner_credential_ends_the_admin_page_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let page = admin_page(port, credential)
+    assert open_page(port, page).status == 200
+    assert home_socket(port, page, []).status == 279
+
+    // The owner's own credential is revoked in the catalogue, as the router's
+    // next check will find.
+    revoke(ready.state_root, credential)
+    let reloaded = open_page(port, page)
+    assert reloaded.status == 401
+    assert string.contains(
+      reloaded.body,
+      ending.admin_headline(ending.AccessRevoked),
+    )
+    assert string.contains(reloaded.body, "subject=\"link\" text=\"loom ui\"")
+    assert home_socket(port, page, []).status == 401
+  })
+}
+
+// The admin page reads the principals with their credential state, a pending
+// invitation as an open claim, and a chosen session's members, and each change
+// shows at the page's next read.
+pub fn the_admin_page_reads_and_each_change_shows_at_the_next_read_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "admin-reads", 1205)
+    let page = admin_page(port, credential)
+    let owner = ready.owner.id
+
+    // Before anyone is invited: the owner alone, the session, no selection.
+    let #(people, listed, selection) = admin_read(port, page, "")
+    assert people == "principals " <> owner <> ":owner:active"
+    assert listed == "sessions " <> session
+    assert selection == "selection none"
+
+    // An invitation is a pending claim and a member of the session.
+    let invited =
+      minted(
+        admin_do(port, page, "invite", [
+          #("x-admin-session", session),
+          #("x-admin-role", "observer"),
+          #("x-admin-name", "  Ana Admin  "),
+        ]),
+      )
+    assert claim.validate_token(invited.token) == Ok(Nil)
+    assert string.starts_with(invited.principal, "guest-")
+    assert invited.role == "observer"
+    assert invited.expires_in_ms == 3_600_000
+    assert invited.command
+      == "loom claim --addr ws://127.0.0.1:"
+      <> int.to_string(port)
+      <> "/v2/control"
+    let #(people, _, selection) = admin_read(port, page, session)
+    assert string.contains(people, invited.principal <> ":member:claim_open")
+
+    // The owner leads, though a `guest-` identity sorts above `owner-` ones.
+    assert string.starts_with(
+      people,
+      "principals " <> owner <> ":owner:active,",
+    )
+    assert selection
+      == "selection " <> session <> " " <> invited.principal <> "=observer"
+
+    // The suggested name is the principal's name, trimmed.
+    assert catalogue_rows(
+        ready.state_root,
+        "SELECT display_name FROM access_principals WHERE principal_id = ?",
+        [sqlight.text(invited.principal)],
+      )
+      == ["Ana Admin"]
+
+    // The claim redeems once, and the listing then shows an active credential.
+    let invitee = claim.random_credential()
+    assert field(
+        daemon_claim_test.redeem(port, invited.token, claim.digest(invitee)),
+        "event",
+      )
+      == Ok(json.String("credentials.claim"))
+    let #(people, _, _) = admin_read(port, page, session)
+    assert string.contains(people, invited.principal <> ":member:active")
+
+    // Raising the role, then lowering it, then removing the member.
+    assert admin_do(port, page, "set-role", [
+        #("x-admin-session", session),
+        #("x-admin-principal", invited.principal),
+        #("x-admin-role", "operator"),
+      ]).status
+      == 294
+    assert role_in(ready.state_root, invited.principal, session) == ["operator"]
+    let #(_, _, selection) = admin_read(port, page, session)
+    assert selection
+      == "selection " <> session <> " " <> invited.principal <> "=operator"
+    assert admin_do(port, page, "set-role", [
+        #("x-admin-session", session),
+        #("x-admin-principal", invited.principal),
+        #("x-admin-role", "observer"),
+      ]).status
+      == 294
+    assert role_in(ready.state_root, invited.principal, session) == ["observer"]
+    assert admin_do(port, page, "revoke-membership", [
+        #("x-admin-session", session),
+        #("x-admin-principal", invited.principal),
+      ]).status
+      == 294
+    assert grants_of(ready.state_root, invited.principal) == []
+    let #(_, _, selection) = admin_read(port, page, session)
+    assert selection == "selection " <> session <> " "
+
+    // Revoking the credentials ends the invitee's access and keeps the identity.
+    assert admin_do(port, page, "revoke-credentials", [
+        #("x-admin-principal", invited.principal),
+      ]).status
+      == 294
+    let #(people, _, _) = admin_read(port, page, session)
+    assert string.contains(people, invited.principal <> ":member:none")
+    assert members(ready.state_root) == [invited.principal]
+  })
+}
+
+// A rotation voids what a principal held and makes a new claim, shown once. The
+// page's read never carries a claim.
+pub fn a_rotation_makes_a_claim_and_only_its_digest_is_kept_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "admin-rotate", 1206)
+    let page = admin_page(port, credential)
+    let invited =
+      minted(
+        admin_do(port, page, "invite", [
+          #("x-admin-session", session),
+          #("x-admin-role", "operator"),
+        ]),
+      )
+    let rotated =
+      minted(
+        admin_do(port, page, "rotate", [
+          #("x-admin-principal", invited.principal),
+        ]),
+      )
+    assert rotated.role == "rotated"
+    assert rotated.principal == invited.principal
+    assert rotated.token != invited.token
+    assert claim.validate_token(rotated.token) == Ok(Nil)
+    assert rotated.expires_in_ms == 3_600_000
+
+    // The earlier claim is void and the new one is open, and the new one binds.
+    assert catalogue_rows(
+        ready.state_root,
+        "SELECT state FROM access_claims WHERE principal_id = ? ORDER BY state",
+        [sqlight.text(invited.principal)],
+      )
+      == ["open", "void"]
+    let digest = claim.digest(claim.random_credential())
+    assert field(daemon_claim_test.redeem(port, rotated.token, digest), "event")
+      == Ok(json.String("credentials.claim"))
+
+    // Neither token is in any file under the state root; only digests are.
+    let assert Ok(files) = simplifile.get_files(ready.state_root)
+      as "the state root lists"
+    list.each(files, fn(file) {
+      let assert Ok(bytes) = simplifile.read_bits(file) as "the file reads"
+      assert !holds(bytes, bit_array.from_string(invited.token))
+      assert !holds(bytes, bit_array.from_string(rotated.token))
+    })
+
+    // A read of the catalogue carries none.
+    let read = home_socket(port, page, [#("x-admin-chosen", session)])
+    assert !string.contains(read.body, "loomclaim_")
+  })
+}
+
+// The admin page's grants and the session page's invitations are one
+// allowance, the credential's: three in the window across both, and the fourth is
+// refused wherever it is asked. A role raised to operator, a rotation and an
+// invitation are grants; lowering a role, removing a member and revoking
+// credentials are not.
+pub fn the_fourth_grant_across_the_admin_page_and_a_session_page_is_refused_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "admin-limit", 1207)
+    let admin = admin_page(port, credential)
+    let session_page = enter(port, operate(port, credential, session))
+    let asked = fn(role) {
+      admin_do(port, admin, "invite", [
+        #("x-admin-session", session),
+        #("x-admin-role", role),
+      ])
+    }
+
+    // Two from the admin page and one from the session page are the three.
+    let first = minted(asked("observer"))
+    let second = minted(asked("observer"))
+    assert minted(invite(port, session_page, "observer")).principal != ""
+    let made = members(ready.state_root)
+    assert list.length(made) == ui_sessions.invite_limit
+
+    // The fourth is refused on each surface, and on a second admin page of the
+    // same credential, which starts with nothing left.
+    let refused = asked("observer")
+    assert refused.status == 293
+    assert refused.body == "TooMany"
+    assert invite(port, session_page, "observer").body == "TooMany"
+    let again = admin_page(port, credential)
+    assert admin_do(port, again, "invite", [
+        #("x-admin-session", session),
+        #("x-admin-role", "operator"),
+      ]).body
+      == "TooMany"
+
+    // A role raised to operator is a grant, and so is a rotation: both refused,
+    // and the catalogue is as it was.
+    let raise = fn(page) {
+      admin_do(port, page, "set-role", [
+        #("x-admin-session", session),
+        #("x-admin-principal", first.principal),
+        #("x-admin-role", "operator"),
+      ])
+    }
+    let raised = raise(admin)
+    assert raised.status == 293
+    assert raised.body == "TooMany"
+    assert role_in(ready.state_root, first.principal, session) == ["observer"]
+    assert admin_do(port, admin, "rotate", [
+        #("x-admin-principal", second.principal),
+      ]).body
+      == "TooMany"
+    assert members(ready.state_root) == made
+
+    // Every reduction still works with the allowance spent: lowering a role
+    // (here one that is already lowest), removing a member and revoking
+    // credentials.
+    assert admin_do(port, admin, "set-role", [
+        #("x-admin-session", session),
+        #("x-admin-principal", first.principal),
+        #("x-admin-role", "observer"),
+      ]).status
+      == 294
+    assert admin_do(port, admin, "revoke-membership", [
+        #("x-admin-session", session),
+        #("x-admin-principal", first.principal),
+      ]).status
+      == 294
+    assert admin_do(port, admin, "revoke-credentials", [
+        #("x-admin-principal", second.principal),
+      ]).status
+      == 294
+    assert grants_of(ready.state_root, first.principal) == []
+  })
+}
+
+// A role raised to operator costs one of the three, and a demotion costs none:
+// after any number of demotions the credential still has what it had.
+pub fn a_raised_role_costs_an_allowance_and_a_demotion_costs_none_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "admin-raise", 1208)
+    let admin = admin_page(port, credential)
+    let session_page = enter(port, operate(port, credential, session))
+    let first =
+      minted(
+        admin_do(port, admin, "invite", [
+          #("x-admin-session", session),
+          #("x-admin-role", "observer"),
+        ]),
+      )
+
+    // Six demotions and two removals that change nothing cost nothing.
+    list.each(list.repeat(Nil, 6), fn(_) {
+      assert admin_do(port, admin, "set-role", [
+          #("x-admin-session", session),
+          #("x-admin-principal", first.principal),
+          #("x-admin-role", "observer"),
+        ]).status
+        == 294
+    })
+
+    // So the second and third places are still there: a raise and an invitation
+    // from the session page.
+    assert admin_do(port, admin, "set-role", [
+        #("x-admin-session", session),
+        #("x-admin-principal", first.principal),
+        #("x-admin-role", "operator"),
+      ]).status
+      == 294
+    assert role_in(ready.state_root, first.principal, session) == ["operator"]
+    assert minted(invite(port, session_page, "observer")).principal != ""
+
+    // The fourth place does not exist.
+    assert invite(port, session_page, "observer").body == "TooMany"
+    assert admin_do(port, admin, "set-role", [
+        #("x-admin-session", session),
+        #("x-admin-principal", first.principal),
+        #("x-admin-role", "operator"),
+      ]).body
+      == "TooMany"
+  })
+}
+
+// A refusal that made nothing gives its place back: a name the catalogue will
+// not take, a session that is not shared, a session or a person that is not
+// there. After all of them the credential still has every place.
+pub fn a_refused_grant_costs_nothing_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let shared = create_shared_session(ready, "admin-refused", 1209)
+    let private = create_session(ready, "admin-private", 1210)
+    let page = admin_page(port, credential)
+    let absent = "0198c0de-0000-7000-8000-0000000000ff"
+    let refusal = fn(more) {
+      let refused = admin_do(port, page, "invite", more)
+      assert refused.status == 293
+      refused.body
+    }
+    list.each(list.repeat(Nil, 4), fn(_) {
+      assert refusal([#("x-admin-session", private)]) == "NotIsolated"
+      assert refusal([
+          #("x-admin-session", shared),
+          #("x-admin-name", string.repeat("n", 257)),
+        ])
+        == "InvalidName"
+      assert refusal([#("x-admin-session", absent)]) == "NotFound"
+      assert refusal([#("x-admin-session", "not-a-session")]) == "NotFound"
+      let raise =
+        admin_do(port, page, "set-role", [
+          #("x-admin-session", shared),
+          #("x-admin-principal", "nobody"),
+          #("x-admin-role", "operator"),
+        ])
+      assert raise.body == "NotFound"
+      let rotate =
+        admin_do(port, page, "rotate", [#("x-admin-principal", "nobody")])
+      assert rotate.body == "NotFound"
+    })
+    assert members(ready.state_root) == []
+
+    // All three places remain.
+    list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
+      assert admin_do(port, page, "invite", [
+          #("x-admin-session", shared),
+          #("x-admin-role", "observer"),
+        ]).status
+        == 292
+    })
+  })
+}
+
+// A page that has ended but whose socket is still up changes nothing and reads
+// nothing: the change is `NotOwner`, and the read says the page ended.
+pub fn an_ended_admin_page_changes_and_reads_nothing_test() {
+  fixture_with(Granting, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "admin-ended", 1211)
+    let page = admin_page(port, credential)
+    let before = members(ready.state_root)
+    let refused =
+      admin_do(port, page, "invite", [
+        #("x-admin-session", session),
+        #("x-switch-ended", "1"),
+      ])
+    assert refused.status == 293
+    assert refused.body == "NotOwner"
+    assert members(ready.state_root) == before
+    let read = home_socket(port, page, [#("x-switch-ended", "1")])
+    assert read.body == "closed " <> ending.reason(ending.PageEnded)
+  })
+}
+
+// The daemon's own checks, made from the standing it holds and not from any
+// page: an observer-ceiling page, a member's credential and a credential that is
+// not the page's principal each change nothing and cost no allowance.
+pub fn the_daemon_refuses_a_standing_that_is_not_the_owners_operating_one_test() {
+  fixture_with(Granting, fn(ready, _, credential) {
+    let session = create_shared_session(ready, "admin-standing", 1212)
+    let invitee =
+      member(ready, "admin-standing-member", session, access.Operator)
+    let address = Ok("ws://127.0.0.1:1/v2/control")
+    let #(member_standing, tickets) =
+      standing_of(ready, "admin-standing-member", access.Operator)
+    let observer = owner_standing(ready, credential, access.Observer)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let ask = fn(standing, action) {
+      ui_socket.admin_for(
+        standing,
+        tickets,
+        page_open,
+        ready.epoch,
+        address,
+        action,
+      )
+    }
+    let invite = grants.Invite(session, invites.Observer, "")
+    assert ask(observer, invite) == grants.Declined(grants.NotOwner)
+    assert ask(member_standing, invite) == grants.Declined(grants.NotOwner)
+    assert ask(ui_socket.Standing(..owner, principal: "someone-else"), invite)
+      == grants.Declined(grants.NotOwner)
+    assert ui_socket.admin_for(
+        owner,
+        tickets,
+        fn() { Error(Nil) },
+        ready.epoch,
+        address,
+        invite,
+      )
+      == grants.Declined(grants.NotOwner)
+    assert members(ready.state_root) == ["admin-standing-member"]
+    assert invitee != ""
+
+    // None of them took a place: the owner's own standing, with its own table of
+    // tickets, still has all three.
+    list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
+      let assert grants.Claimed(_) = ask(owner, invite) as "an invitation"
+      Nil
+    })
+    assert ask(owner, invite) == grants.Declined(grants.TooMany)
+  })
+}
+
+// A stale epoch is the registry's own refusal, which the page words as the
+// daemon being unable, and it gives the place back.
+pub fn a_stale_epoch_changes_nothing_test() {
+  fixture_with(Granting, fn(ready, _, credential) {
+    let session = create_shared_session(ready, "admin-epoch", 1213)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let #(_, tickets) = standing_of(ready, "unused", access.Operator)
+    let invite = grants.Invite(session, invites.Observer, "")
+    list.each(list.repeat(Nil, 5), fn(_) {
+      assert ui_socket.admin_for(
+          owner,
+          tickets,
+          page_open,
+          "an-earlier-daemon",
+          Ok("ws://127.0.0.1:1/v2/control"),
+          invite,
+        )
+        == grants.Declined(grants.Unavailable)
+    })
+    assert members(ready.state_root) == []
+  })
+}
+
+// The admin change runs in a task of its own: the caller returns at once and the
+// answer comes later, from another process.
+pub fn the_admin_change_runs_off_the_callers_process_test() {
+  fixture_with(Granting, fn(ready, _, credential) {
+    let session = create_shared_session(ready, "admin-task", 1214)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let #(_, tickets) = standing_of(ready, "unused", access.Operator)
+    let answers = process.new_subject()
+    ui_socket.admin_task(
+      owner,
+      tickets,
+      page_open,
+      ready.epoch,
+      Ok("ws://127.0.0.1:1/v2/control"),
+      grants.Invite(session, invites.Observer, ""),
+      fn(answer) { process.send(answers, #(answer, process.self())) },
+    )
+    let assert Ok(#(grants.Claimed(_), task)) = process.receive(answers, 10_000)
+      as "the task answers"
+    assert task != process.self()
+  })
+}
+
+// The real admin component behind the real socket: it draws the principals, a
+// pending invitation among them as a claim that is open, and its frames carry no
+// claim at all, because the catalogue keeps only a claim's digest and the page
+// asked for none. The invitation is made from a terminal's command, so the token
+// is known to the test and can be looked for.
+pub fn the_real_admin_socket_carries_no_claim_test() {
+  fixture_with(Real, fn(ready, port, credential) {
+    let session = create_shared_session(ready, "admin-real", 1215)
+    let assert Ok(invite) =
+      access_admin.parse(["invite", session, "pending-one", "observer", "Pen"])
+    let assert Ok(invited) =
+      access_admin.exchange(
+        "ws://127.0.0.1:" <> int.to_string(port) <> "/v2/control",
+        credential,
+        ready.epoch,
+        invite,
+      )
+    let assert Ok(json.String(token)) = field(invited, "claim")
+      as "an invitation carries a claim"
+    let home = enter(port, operator_home(port, credential))
+    let pressed = home_socket(port, home, [#("x-admin-open", "1")])
+    assert pressed.status == 290
+    let page = enter(port, pressed.body)
+    let socket = connect_socket(port, page, [])
+    let closed = read_until_closed(socket, [])
+    let _ = ffi_ws.tcp_close(socket)
+    let drawn = string.join(closed.texts, "\n")
+
+    // The page drew its people, the pending invitation, and the owner's session.
+    assert string.contains(drawn, "pending-one")
+    assert string.contains(drawn, "claim open")
+    assert string.contains(drawn, "Admin")
+    assert string.contains(drawn, "admin-real")
+
+    // No frame carries a claim, whole or in part.
+    assert !string.contains(drawn, "loomclaim_")
+    assert !string.contains(drawn, token)
+    assert !string.contains(drawn, string.drop_start(token, 10))
   })
 }
