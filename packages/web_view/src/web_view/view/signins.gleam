@@ -124,7 +124,9 @@ fn bookmark_line(bookmark: Option(String)) -> Element(message) {
     None -> element.none()
     Some(address) ->
       html.p([attribute.class("home-bookmark")], [
-        html.text("Bookmark this address to come back without `loom`: "),
+        html.text("Bookmark this address to come back without "),
+        html.code([], [html.text("loom")]),
+        html.text(": "),
         html.code([attribute.class("home-bookmark-text")], [html.text(address)]),
       ])
   }
