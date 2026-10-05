@@ -19,16 +19,24 @@ import session_view/markdown
 import web_view/component
 import web_view/markdown_view
 
+// A memo is drawn as a marker comment in a string, which the browser does
+// not receive as a node, so it is taken out before a fence's markup is read.
+fn unmemoized(html: String) -> String {
+  string.replace(html, "<!-- lustre:memo -->", "")
+}
+
 fn page(texts: List(String)) -> String {
   component.new(page_fixture.start())
   |> component.apply([lane_fixture.answered(texts)])
   |> component.view
   |> element.to_string
+  |> unmemoized
 }
 
 fn drawn(source: String) -> String {
   html.div([], markdown_view.blocks(markdown.parse(source)))
   |> element.to_string
+  |> unmemoized
 }
 
 fn count(haystack: String, needle: String) -> Int {
@@ -105,8 +113,55 @@ pub fn a_code_fence_labels_its_language_as_text_test() {
   let html = drawn("```gleam\npub fn main() { <b> }\n```")
   assert string.contains(
     html,
-    "<div class=\"md-code\"><span class=\"md-code-lang\">gleam</span><pre><code><span>pub fn main() { &lt;b&gt; }</span></code></pre></div>",
+    "<div class=\"md-code\"><span class=\"md-code-lang\">gleam</span><pre><code><span><span class=\"tok-kw\">pub</span> <span class=\"tok-kw\">fn</span> main() { &lt;b&gt; }</span>",
   )
+  assert string.contains(html, "main() { &lt;b&gt; }")
+  assert !string.contains(html, "<b>")
+}
+
+// A language the scanner has no rules for, and a fence with none, draw as one
+// text node per line with no token markup.
+pub fn an_unknown_language_is_not_coloured_test() {
+  let html = drawn("```rust\nlet x = 1;\n```")
+  assert string.contains(
+    html,
+    "<pre><code><span>let x = 1;</span></code></pre>",
+  )
+  assert !string.contains(html, "tok-")
+}
+
+// A program is session text. Its tokens' text is text nodes and its classes
+// come from the closed kind type, so a string that closes a tag and opens a
+// script is characters and nothing else.
+pub fn hostile_text_in_a_gleam_fence_stays_escaped_text_test() {
+  let html =
+    drawn("```gleam\nlet s = \"</span><script>alert(1)</script>\"\n```")
+  assert string.contains(
+    html,
+    "<span class=\"tok-str\">&quot;&lt;/span&gt;&lt;script&gt;alert(1)&lt;/script&gt;&quot;</span>",
+  )
+  assert !string.contains(html, "<script>")
+  assert !string.contains(html, "</span><script")
+}
+
+// The language tag chooses the scanner and is otherwise only a label: a tag
+// shaped like an attribute breakout is escaped text and never a class.
+pub fn a_hostile_language_tag_never_reaches_a_class_test() {
+  let html = drawn("```x\" onmouseover=\"alert(1)\nlet x\n```")
+
+  // The fence is still a code block, with the tag as an escaped text label.
+  assert string.contains(html, "<div class=\"md-code\">")
+  assert string.contains(html, "<span class=\"md-code-lang\">x&quot;</span>")
+  assert string.contains(html, "<pre><code><span>let x</span></code></pre>")
+  assert !string.contains(html, "onmouseover=\"alert")
+  assert !string.contains(html, "tok-")
+}
+
+pub fn a_diff_fence_draws_added_and_removed_lines_test() {
+  let html = drawn("```diff\n-old\n+new\n context\n```")
+  assert string.contains(html, "<span class=\"tok-del\">-old</span>\n")
+  assert string.contains(html, "<span class=\"tok-add\">+new</span>\n")
+  assert string.contains(html, "<span> context</span>")
 }
 
 pub fn a_table_test() {

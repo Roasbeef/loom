@@ -64,6 +64,67 @@ pub fn gleam_code_distinguishes_tokens_without_changing_text_test() {
     |> string.contains("  // exact bytes\n▎   report.text(\"live\")")
 }
 
+// The tokenizer lives in `session_view/code_tokens` and the web view draws
+// the same tokens, so this pins what the terminal does with each kind of
+// token: the style a span carries, not only that styles differ. A change to
+// the shared scanner that moved a boundary or a kind would show here.
+pub fn gleam_code_spans_keep_each_kind_style_test() {
+  let rendered =
+    markdown.render("```gleam\npub fn Foo(x) { \"s\\\"q\" 12 // c\n```", 80)
+  let spans =
+    list.flat_map(rendered, fn(line) {
+      let span.Line(spans:, ..) = line
+      spans
+    })
+    |> list.filter(fn(value) {
+      !list.contains(["▎ ", "gleam", ""], value.content)
+    })
+    |> list.map(fn(value) { #(value.content, value.style) })
+  let plain = style.new(theme.paper, style.Default, style.none())
+  let comment = style.add_modifier(theme.quiet_text(), style.italic())
+  let literal = style.new(theme.signal, style.Default, style.none())
+  let kind = style.new(theme.signal, style.Default, style.bold())
+
+  assert spans
+    == [
+      #("pub", theme.current_bold()),
+      #(" ", plain),
+      #("fn", theme.current_bold()),
+      #(" ", plain),
+      #("Foo", kind),
+      #("(", theme.quiet_text()),
+      #("x", plain),
+      #(")", theme.quiet_text()),
+      #(" ", plain),
+      #("{", theme.quiet_text()),
+      #(" ", plain),
+      #("\"s\\\"q\"", literal),
+      #(" ", plain),
+      #("12", literal),
+      #(" ", plain),
+      #("// c", comment),
+    ]
+}
+
+pub fn diff_fence_lines_keep_their_kind_style_test() {
+  let rendered =
+    markdown.render("```diff\n+added\n-removed\n@@ -1 +1 @@\n context\n```", 80)
+  let spans =
+    list.flat_map(rendered, fn(line) {
+      let span.Line(spans:, ..) = line
+      spans
+    })
+    |> list.map(fn(value) { #(value.content, value.style) })
+
+  assert list.contains(spans, #("+added", theme.diff_added()))
+  assert list.contains(spans, #("-removed", theme.diff_removed()))
+  assert list.contains(spans, #("@@ -1 +1 @@", theme.current_bold()))
+  assert list.contains(spans, #(
+    " context",
+    style.new(theme.paper, style.Default, style.none()),
+  ))
+}
+
 pub fn links_remain_clickable_test() {
   let links =
     markdown.render("read [the docs](https://example.com/docs)", 80)
