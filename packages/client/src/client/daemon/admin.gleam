@@ -25,7 +25,7 @@ pub type Request =
 
 /// The complete access-command usage, shared with the top-level dispatcher.
 pub const usage =
-  "usage: loomd access [--state-dir PATH] list [--after PRINCIPAL] | show PRINCIPAL [--after SESSION] | invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | signins PRINCIPAL [--after FINGERPRINT] | revoke-login PRINCIPAL FINGERPRINT | isolate SESSION --share-existing-transcript"
+  "usage: loomd access [--state-dir PATH] list [--after PRINCIPAL] | show PRINCIPAL [--after SESSION] | members SESSION [--after PRINCIPAL] | invite SESSION PRINCIPAL ROLE NAME [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | set-role SESSION PRINCIPAL ROLE | revoke SESSION PRINCIPAL | rotate PRINCIPAL [--ttl 30m|24h|7d] [--claim-addr URL | --credential-digest HEX] | revoke-credentials PRINCIPAL | signins PRINCIPAL [--after FINGERPRINT] | revoke-login PRINCIPAL FINGERPRINT | isolate SESSION --share-existing-transcript"
 
 /// Runs one administration request and exits with its status. A claim token is
 /// printed only on standard output, only on explicit success, and never with

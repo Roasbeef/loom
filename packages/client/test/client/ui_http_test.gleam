@@ -359,3 +359,34 @@ pub fn only_the_resume_page_may_submit_a_form_test() {
   let ordinary = ui_http.secured(response.new(200), "127.0.0.1:4000")
   assert response.get_header(ordinary, "content-security-policy") == Ok(none)
 }
+
+// The admin page's three routes (protocol-change/065, the fifth pull request)
+// are the home's with their own word: the exchange carries a ticket, the page and
+// its socket sit under a page key, and every other shape is nothing.
+pub fn the_admin_pages_routes_are_exact_test() {
+  let with_ticket = fn(path) {
+    get(path, []) |> request.set_query([#("ticket", "t1")])
+  }
+  assert ui_http.route(with_ticket("/ui/admin")) == ui_http.AdminExchange("t1")
+  assert ui_http.route(get("/ui/admin", [])) == ui_http.Unknown
+  assert ui_http.route(with_ticket("/ui/admin/x")) == ui_http.Unknown
+  assert ui_http.route(with_ticket("/ui/admins")) == ui_http.Unknown
+  assert ui_http.route(get("/ui/p/k1/admin", [])) == ui_http.AdminPage("k1")
+  assert ui_http.route(
+      get("/ui/p/k1/admin/ws", []) |> request.set_query([#("csrf-token", "n1")]),
+    )
+    == ui_http.AdminSocket("k1", Some("n1"))
+  assert ui_http.route(get("/ui/p/k1/admin/ws", []))
+    == ui_http.AdminSocket("k1", None)
+  assert ui_http.route(get("/ui/p/k1/admin/x", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/p/k1/admin/ws/x", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/p/admin", [])) == ui_http.Unknown
+
+  // Every route is a GET, and the home's stay as they were.
+  assert ui_http.route(
+      get("/ui/p/k1/admin", []) |> request.set_method(http.Post),
+    )
+    == ui_http.Unknown
+  assert ui_http.route(with_ticket("/ui/home")) == ui_http.HomeExchange("t1")
+  assert ui_http.route(get("/ui/p/k1/home", [])) == ui_http.HomePage("k1")
+}

@@ -76,6 +76,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     sign_out: fn(_) { signins.Declined(signins.NotFound) },
     sign_out_all: fn() { signins.Revoked },
     device: None,
+    admin: None,
   )
 }
 

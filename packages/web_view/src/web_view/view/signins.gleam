@@ -177,7 +177,13 @@ fn row(
 // ends and, for a login a device link made, the fingerprint of the one it came
 // from, in the daemon's own digits. Each is a quiet phrase joined by a middle
 // dot.
-fn history(signin: Signin, now: Int) -> String {
+///
+/// ## Examples
+///
+/// ```gleam
+/// // signins.history(row, now) == "signed in 2h ago · not used since · ends in 29d"
+/// ```
+pub fn history(signin: Signin, now: Int) -> String {
   let signed = "signed in " <> sessions.ago(now, signin.issued_at_ms)
   let used = case signin.last_resumed_ms {
     Some(at) -> ["last used " <> sessions.ago(now, at)]

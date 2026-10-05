@@ -813,6 +813,16 @@ fn web_view(
               seen,
             )
           },
+          admin: fn(request, attachment, open, ceiling) {
+            ui_socket.upgrade_admin(
+              daemon,
+              request,
+              attachment,
+              sessions,
+              open,
+              ceiling,
+            )
+          },
         ),
       )
     }

@@ -561,6 +561,223 @@ pub fn the_page_cap_is_counted_per_scope_test() {
   })
 }
 
+// --- the admin page (protocol-change/065, the fifth pull request) -------------
+
+// An admin grant for `principal`: the owner's page, minted to operate, from a
+// home.
+fn admin_for(principal: String) -> ui_sessions.Grant {
+  ui_sessions.Grant(..home_for(principal), scope: ui_sessions.Admin)
+}
+
+fn admin_ticket(sessions, principal: String) -> String {
+  let assert Ok(issued) = ui_sessions.mint(sessions, admin_for(principal))
+    as "an admin ticket is minted"
+  issued.ticket
+}
+
+// An admin page lives fifteen minutes from its exchange, and a home opened at the
+// same moment lives eight hours: the admin page's end leaves the home alone.
+pub fn an_admin_page_ends_at_fifteen_minutes_and_the_home_does_not_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(home) =
+    ui_sessions.redeem(
+      sessions,
+      home_ticket(sessions, "alice"),
+      ui_sessions.HomeExchange,
+    )
+    as "the home is opened"
+  let assert Ok(admin) =
+    ui_sessions.redeem(
+      sessions,
+      admin_ticket(sessions, "alice"),
+      ui_sessions.AdminExchange,
+    )
+    as "the admin page is opened"
+  assert admin.grant == admin_for("alice")
+  assert ui_sessions.admin_ms == 900_000
+
+  process.send(time, Advance(ui_sessions.admin_ms - 1))
+  assert looked_up(sessions, admin.cookie) == Ok(admin_for("alice"))
+  process.send(time, Advance(1))
+  assert looked_up(sessions, admin.cookie) == Error(Nil)
+
+  // The home that opened beside it is unaffected, up to its own eight hours.
+  assert looked_up(sessions, home.cookie) == Ok(home_for("alice"))
+  process.send(time, Advance(28_800_000 - ui_sessions.admin_ms - 1))
+  assert looked_up(sessions, home.cookie) == Ok(home_for("alice"))
+  process.send(time, Advance(1))
+  assert looked_up(sessions, home.cookie) == Error(Nil)
+}
+
+// The admin page, opened from a home, ends no later than that home, so a chain
+// home, admin never outlives the home it began from, and an admin ticket minted in
+// the last minute of its home's life opens nothing.
+pub fn an_admin_page_ends_no_later_than_the_home_that_opened_it_test() {
+  let time = clock()
+  let sessions = table(time)
+  process.send(time, Advance(1000))
+  let assert Ok(issued) =
+    ui_sessions.mint_before(sessions, admin_for("alice"), 301_000)
+    as "an admin ticket is minted from a home with five minutes left"
+  let assert Ok(admin) =
+    ui_sessions.redeem(sessions, issued.ticket, ui_sessions.AdminExchange)
+    as "the admin page is opened"
+  process.send(time, Advance(299_999))
+  assert looked_up(sessions, admin.cookie) == Ok(admin_for("alice"))
+  process.send(time, Advance(1))
+  assert looked_up(sessions, admin.cookie) == Error(Nil)
+
+  // A ticket that outlived its source opens nothing and displaces nothing.
+  let assert Ok(late) =
+    ui_sessions.mint_before(sessions, admin_for("alice"), 301_500)
+    as "an admin ticket is minted"
+  process.send(time, Advance(1000))
+  assert ui_sessions.redeem(sessions, late.ticket, ui_sessions.AdminExchange)
+    == Error(ui_sessions.UnknownTicket)
+}
+
+// A table configured with a page lifetime shorter than fifteen minutes shortens
+// the admin page's too: it never outlives a page of the table.
+pub fn an_admin_page_never_outlives_the_tables_page_lifetime_test() {
+  let time = clock()
+  let counter = counter()
+  let assert Ok(sessions) =
+    ui_sessions.start(ui_sessions.Settings(
+      now: fn() { process.call(time, 1000, Read) },
+      entropy: fn(size) { distinct_bytes(counter, size) },
+      ticket_ms: 60_000,
+      device_ms: 60_000,
+      session_ms: 120_000,
+    ))
+    as "a table with two-minute pages starts"
+  let assert Ok(admin) =
+    ui_sessions.redeem(
+      sessions,
+      admin_ticket(sessions, "alice"),
+      ui_sessions.AdminExchange,
+    )
+    as "the admin page is opened"
+  process.send(time, Advance(119_999))
+  assert looked_up(sessions, admin.cookie) == Ok(admin_for("alice"))
+  process.send(time, Advance(1))
+  assert looked_up(sessions, admin.cookie) == Error(Nil)
+}
+
+// A ticket redeems only at the exchange of its own scope. The admin exchange
+// refuses a session's ticket and a home's, and the other two refuse the admin
+// ticket, each spent and each adding nothing.
+pub fn the_admin_exchange_redeems_only_an_admin_ticket_test() {
+  let sessions = table(clock())
+  let session_ticket = mint(sessions, "s1")
+  let home = home_ticket(sessions, "alice")
+  let admin = admin_ticket(sessions, "alice")
+  let other_admin = admin_ticket(sessions, "alice")
+  assert ui_sessions.sizes(sessions) == Ok(#(4, 0))
+
+  assert ui_sessions.redeem(sessions, session_ticket, ui_sessions.AdminExchange)
+    == Error(ui_sessions.OtherScope)
+  assert ui_sessions.redeem(sessions, home, ui_sessions.AdminExchange)
+    == Error(ui_sessions.OtherScope)
+  assert ui_sessions.redeem(sessions, admin, ui_sessions.HomeExchange)
+    == Error(ui_sessions.OtherScope)
+  assert ui_sessions.redeem(
+      sessions,
+      other_admin,
+      ui_sessions.SessionExchange("s1"),
+    )
+    == Error(ui_sessions.OtherScope)
+  assert ui_sessions.sizes(sessions) == Ok(#(0, 0))
+
+  // Every one is spent, so none opens a page at its own exchange afterwards.
+  assert ui_sessions.redeem(sessions, admin, ui_sessions.AdminExchange)
+    == Error(ui_sessions.UnknownTicket)
+  assert ui_sessions.redeem(sessions, other_admin, ui_sessions.AdminExchange)
+    == Error(ui_sessions.UnknownTicket)
+  assert ui_sessions.redeem(sessions, home, ui_sessions.HomeExchange)
+    == Error(ui_sessions.UnknownTicket)
+}
+
+// The admin scope is counted apart from the home's and each session's: a fifth
+// admin page ends the oldest admin page and nothing else, and a fifth home ends
+// no admin page.
+pub fn the_page_cap_counts_the_admin_scope_apart_test() {
+  let sessions = table(clock())
+  let assert Ok(home) =
+    ui_sessions.redeem(
+      sessions,
+      home_ticket(sessions, "alice"),
+      ui_sessions.HomeExchange,
+    )
+    as "a home"
+  let pages =
+    list.repeat(Nil, ui_sessions.max_pages)
+    |> list.map(fn(_) {
+      let assert Ok(redeemed) =
+        ui_sessions.redeem(
+          sessions,
+          admin_ticket(sessions, "alice"),
+          ui_sessions.AdminExchange,
+        )
+        as "an admin page under the cap"
+      redeemed.cookie
+    })
+  let assert Ok(newest) =
+    ui_sessions.redeem(
+      sessions,
+      admin_ticket(sessions, "alice"),
+      ui_sessions.AdminExchange,
+    )
+    as "the fifth admin page"
+  let assert [oldest, ..rest] = pages
+  assert looked_up(sessions, oldest) == Error(Nil)
+  list.each([newest.cookie, ..rest], fn(cookie) {
+    assert looked_up(sessions, cookie) == Ok(admin_for("alice"))
+  })
+  assert looked_up(sessions, home.cookie) == Ok(home_for("alice"))
+
+  // Homes up to their own cap leave every admin page standing.
+  list.each(list.repeat(Nil, ui_sessions.max_pages + 1), fn(_) {
+    let assert Ok(_) =
+      ui_sessions.redeem(
+        sessions,
+        home_ticket(sessions, "alice"),
+        ui_sessions.HomeExchange,
+      )
+      as "a home"
+    Nil
+  })
+  list.each([newest.cookie, ..rest], fn(cookie) {
+    assert looked_up(sessions, cookie) == Ok(admin_for("alice"))
+  })
+}
+
+// One allowance serves every surface that grants. The same credential's
+// reservations from any page are counted together, which is what lets the admin
+// page's invitations, rotations and raised roles and the session page's
+// invitations be held to three an hour between them: they all ask the one
+// function.
+pub fn every_grant_surface_reserves_from_the_one_allowance_test() {
+  let time = clock()
+  let sessions = table(time)
+  let assert Ok(digest) = access.credential_digest(string.repeat("b", 64))
+    as "a digest"
+  list.each(list.repeat(Nil, ui_sessions.invite_limit), fn(_) {
+    assert ui_sessions.reserve_invite(sessions, digest) == Ok(Nil)
+  })
+  assert ui_sessions.reserve_invite(sessions, digest) == Error(Nil)
+
+  // A demotion reserves nothing, so it is not a call here at all; a refused grant
+  // gives its place back and the next asks again.
+  ui_sessions.release_invite(sessions, digest)
+  assert ui_sessions.reserve_invite(sessions, digest) == Ok(Nil)
+  assert ui_sessions.reserve_invite(sessions, digest) == Error(Nil)
+
+  // The place frees an hour after it was taken.
+  process.send(time, Advance(ui_sessions.invite_window_ms))
+  assert ui_sessions.reserve_invite(sessions, digest) == Ok(Nil)
+}
+
 // --- the readers of a page's images ----------------------------------------
 
 // A reader that answers every request with one image, so a test can tell

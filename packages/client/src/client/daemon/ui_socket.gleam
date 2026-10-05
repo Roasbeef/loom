@@ -110,6 +110,19 @@
 //// a fresh home (`Origin`) and the credential's grant allowance has a place. A
 //// home the bookmark resumed is handed no device capability, and the daemon
 //// refuses the request from one as well.
+//// The owner's home also draws an "Admin" button (protocol-change/065, the fifth
+//// pull request), and the admin page it opens is the third page this socket
+//// serves. The button is admitted as the creation control is, and only a little
+//// narrower: the socket takes a click at `home.admin_path` only for a home whose
+//// principal is the owner, minted to operate and opened by a fresh `loom ui`
+//// exchange (`home_admin_capability`, `home_admin_accepts`), and
+//// `admin_ticket_for` is the daemon's own check, made afresh in a task of its own
+//// (`admin_ticket_task`). `upgrade_admin` starts `web_view/admin` over the same
+//// `websocket`. The page's reads of the catalogue (`admin_reading`) are also what
+//// end it, and each of its five changes (`admin_for`) is made afresh in a task of
+//// its own (`admin_task`): the page open, its ceiling, the credential
+//// authenticating as the owner, the epoch, and, for a grant, the one allowance
+//// the session page's invitation control is held to.
 ////
 //// ## Flow
 ////
@@ -118,7 +131,8 @@
 //// 1. `upgrade` reads the page's `role_of` its attachment, builds the relay
 ////    `Attach` and the invitation capability, and opens `websocket`.
 ////    `upgrade_home` opens the same `websocket` for a home, whose `admit_home`
-////    starts its component through `launch` in place of `start_page`.
+////    starts its component through `launch` in place of `start_page`, and
+////    `upgrade_admin` does the same for the admin page through `admit_admin`.
 //// 2. The socket's first turn handles `Admit`, which calls `admit`: it takes
 ////    the permit's custody with `root.transfer`, then builds the component's
 ////    transport from `listed_for`, `opened_for` and `ticket_for`.
@@ -178,9 +192,11 @@ import telemetry/field
 import telemetry/level
 import telemetry/log
 import telemetry/owner
+import web_view/admin
 import web_view/component
 import web_view/creations
 import web_view/ending
+import web_view/grants
 import web_view/home
 import web_view/invites
 import web_view/operator_page
@@ -658,9 +674,23 @@ pub fn upgrade_home(
         )
       },
     )
-  let admits = case rename, creating {
-    None, None -> home_accepts
-    Some(_), _ | _, Some(_) -> home_owner_accepts
+
+  // The owner's operating home that a `loom ui` exchange opened may also open
+  // the admin page, and its socket then admits the one click that asks for it
+  // (`home_admin_accepts`). Every other home draws no button and admits no such
+  // click, so each layer holds alone.
+  let administering =
+    home_admin_capability(
+      attachment.principal,
+      ceiling,
+      seen.grant.reach,
+      seen.grant.origin,
+      fn(deliver) { admin_ticket_task(standing, tickets, open, deliver) },
+    )
+  let admits = case rename, creating, administering {
+    _, _, Some(_) -> home_admin_accepts
+    Some(_), _, None | None, Some(_), None -> home_owner_accepts
+    None, None, None -> home_accepts
   }
 
   // The page's own sign-ins. Every home reads and ends its principal's logins,
@@ -692,6 +722,7 @@ pub fn upgrade_home(
       rename,
       creating,
       signing,
+      administering,
       admits,
       open,
       ceiling,
@@ -824,11 +855,33 @@ pub fn home_owner_accepts(frame: String) -> Bool {
   }
 }
 
-// What a home socket admits besides a click on a row: nothing, or the owner's
-// submit of one of its forms.
+/// The browser messages an owner's home page takes when it may open the admin
+/// page: what `home_owner_accepts` takes, and a `click` at `home.admin_path`,
+/// where the "Admin" button is (protocol-change/065, the fifth pull request). It
+/// is started only for a home whose principal is the daemon's owner, minted to
+/// operate and opened by a fresh `loom ui` exchange (`home_admin_capability`), so
+/// every other home, an owner's resumed one included, drops the click even if a
+/// frame names the path. The path is exact: the bar holds no other handler, and a
+/// path that merely begins with the same digits is not admitted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !ui_socket.home_accepts("{\"kind\":1,\"name\":\"click\",\"path\":\"0\\t0\\t5\"}")
+/// ```
+pub fn home_admin_accepts(frame: String) -> Bool {
+  case json.parse(frame, home_event(Administering)) {
+    Ok(accepted) -> accepted
+    Error(_) -> False
+  }
+}
+
+// What a home socket admits besides a click on a row: nothing, the owner's
+// submit of one of its forms, or that and the click on the "Admin" button.
 type HomeRights {
   Browsing
   Submitting
+  Administering
 }
 
 fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
@@ -838,8 +891,9 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
       use name <- decode.field("name", decode.string)
       use path <- decode.field("path", decode.string)
       decode.success(case name, rights {
-        "click", _ -> home_row_path(path)
-        "submit", Submitting ->
+        "click", Administering -> home_row_path(path) || path == home.admin_path
+        "click", Browsing | "click", Submitting -> home_row_path(path)
+        "submit", Submitting | "submit", Administering ->
           string.starts_with(path, home.table_path <> "\t")
         _, _ -> False
       })
@@ -877,6 +931,7 @@ fn admit_home(
     fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
   ),
   signing: Signing,
+  administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
   admits: fn(String) -> Bool,
   open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
@@ -909,6 +964,7 @@ fn admit_home(
       sign_out: signing.out,
       sign_out_all: signing.all,
       device: signing.device,
+      admin: administering,
     )
   let started = case transferred {
     Error(reason) -> {
@@ -2262,7 +2318,7 @@ pub fn invite_for(
           case invited(attachment, address, chosen) {
             Ok(invitation) -> invites.Minted(invitation)
             Error(refusal) -> {
-              give_back(tickets, attachment, refusal)
+              give_back(tickets, attachment.digest, refusal)
               invites.Declined(reason_of(refusal))
             }
           }
@@ -2326,12 +2382,37 @@ type Refusal {
   Undrawn
 }
 
-// The dispatch. The claim is drawn here and handed to the registry as a
-// digest, and the token comes back only in the invitation the caller shows.
+// The session page's invitation: the page's own session, the daemon's default
+// name.
 fn invited(
   attachment: server.Attachment(instance),
   address: String,
   chosen: invites.Role,
+) -> Result(invites.Invitation, Refusal) {
+  invitation(
+    attachment.registry,
+    attachment.digest,
+    attachment.epoch,
+    attachment.session_id,
+    address,
+    chosen,
+    None,
+  )
+}
+
+// The dispatch both invitations share, the session page's and the admin page's,
+// so a claim and its principal are made one way whichever asked. The claim is
+// drawn here and handed to the registry as a digest, and the token comes back
+// only in the invitation the caller shows. `named` is the inviter's suggested
+// name, which the caller has already judged, or none for the daemon's own.
+fn invitation(
+  registry: manager.Manager(instance),
+  digest: access.Digest,
+  epoch: String,
+  session: String,
+  address: String,
+  chosen: invites.Role,
+  named: Option(String),
 ) -> Result(invites.Invitation, Refusal) {
   use #(enrollment, claim_token) <- result.try(
     server.claim_enrollment(invites.claim_ttl_ms)
@@ -2348,18 +2429,13 @@ fn invited(
     invites.Observer -> access.Observer
     invites.Operator -> access.Operator
   }
+  let name = option.unwrap(named, "Guest " <> string.drop_start(id, 6))
   use principal <- result.map(
     manager.administer(
-      attachment.registry,
-      attachment.digest,
-      attachment.epoch,
-      manager.Invite(
-        id,
-        "Guest " <> string.drop_start(id, 6),
-        enrollment,
-        attachment.session_id,
-        member,
-      ),
+      registry,
+      digest,
+      epoch,
+      manager.Invite(id, name, enrollment, session, member),
     )
     |> result.map_error(Managed),
   )
@@ -2377,7 +2453,7 @@ fn invited(
 // one stays counted.
 fn give_back(
   tickets: ui_sessions.Sessions,
-  attachment: server.Attachment(instance),
+  credential: access.Digest,
   refusal: Refusal,
 ) -> Nil {
   case refusal {
@@ -2388,7 +2464,7 @@ fn give_back(
     | Managed(manager.AdminBusy)
     | Managed(manager.AdminForeignPath)
     | Managed(manager.AdminMetadata(..))
-    | Undrawn -> ui_sessions.release_invite(tickets, attachment.digest)
+    | Undrawn -> ui_sessions.release_invite(tickets, credential)
   }
 }
 
@@ -2555,6 +2631,944 @@ pub fn rename_task(
     weft.new([
       fn() {
         deliver(rename_for(standing, open, epoch, target, name))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
+/// The capability to open the admin page that a home page minted for
+/// `principal` with `ceiling` and `reach` is handed: `ask` for the daemon's
+/// owner on a page minted to operate and opened by a fresh `loom ui` exchange,
+/// and none for any other (protocol-change/065, the fifth pull request). The
+/// daemon checks all of it again when the request runs (`admin_ticket_for`).
+///
+/// The origin rule is `fresh_home` and nothing else reads it, so a home the
+/// bookmark resumed is refused in one place.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_admin_capability(member, access.Operator, ui_sessions.Workspace, ui_sessions.Fresh, ask) == None
+/// ```
+@internal
+pub fn home_admin_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  reach: ui_sessions.Reach,
+  origin: ui_sessions.Origin,
+  ask: fn(fn(sessions.Answer) -> Nil) -> Nil,
+) -> Option(fn(fn(sessions.Answer) -> Nil) -> Nil) {
+  case principal.kind, ceiling, fresh_home(reach, origin) {
+    access.OwnerPrincipal, access.Operator, Ok(Nil) -> Some(ask)
+    access.OwnerPrincipal, access.Operator, Error(Nil)
+    | access.OwnerPrincipal, access.Observer, _
+    | access.MemberPrincipal, access.Operator, _
+    | access.MemberPrincipal, access.Observer, _
+    -> None
+  }
+}
+
+/// Whether a home page was opened by a fresh `loom ui` exchange, which is the
+/// only home an admin page may be opened from (protocol-change/065, the fifth
+/// pull request; the design note's section 4.3, ruled by the owner on
+/// 2026-10-04). It is the one place the rule is judged: the capability and the
+/// ticket both ask it.
+///
+/// A fresh step is what bounds the admin page's fifteen minutes. A page that a
+/// bookmark could mint again would bound nothing against a stolen login, so the
+/// owner runs `loom ui` on the day they administer. A home is fresh when it is
+/// a home (the `Workspace` reach) and a `loom ui` exchange or a device link
+/// opened it, not the bookmark's resume (`Origin`, protocol-change/065, the
+/// eighth pull request). The origin travels on every ticket a page mints, so a
+/// chain that began at a resumed home is never fresh.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.fresh_home(ui_sessions.Workspace, ui_sessions.Fresh) == Ok(Nil)
+/// ```
+@internal
+pub fn fresh_home(
+  reach: ui_sessions.Reach,
+  origin: ui_sessions.Origin,
+) -> Result(Nil, Nil) {
+  case reach, origin {
+    ui_sessions.Workspace, ui_sessions.Fresh -> Ok(Nil)
+    ui_sessions.Workspace, ui_sessions.Resumed | ui_sessions.OneSession, _ ->
+      Error(Nil)
+  }
+}
+
+/// A ticket for an admin page of the asking home's owner, or the reason there is
+/// none (protocol-change/065, the fifth pull request).
+///
+/// Each step is the daemon's own and is made afresh, with the digest of the
+/// credential the page was admitted under, and none is taken from the page:
+///
+/// 0. The asking home must still be open: `open` answers its deadline while its
+///    UI session is live and unreplaced. The deadline goes on the ticket
+///    (`ui_sessions.mint_before`), so the admin page ends at the earlier of this
+///    home's end and fifteen minutes from its own exchange, and a chain home,
+///    admin, never outlives the home it began from.
+/// 1. The home must have been minted to operate, and must be a fresh one
+///    (`fresh_home`).
+/// 2. The credential must still authenticate, as the principal the home was
+///    admitted for, and that principal must be the daemon's owner.
+/// 3. The ticket carries the home's own credential, principal and ceiling, so an
+///    admin page can do no more than the home that asked. Its reach is
+///    `Workspace`, and a ticket redeems only at the admin exchange.
+///
+/// Every refusal is `NoAdmin`, whose words do not say which step failed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_ticket_for(standing, tickets, open)
+/// ```
+@internal
+pub fn admin_ticket_for(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+) -> sessions.Answer {
+  let outcome = {
+    use _ <- result.try(
+      fresh_home(standing.reach, standing.origin)
+      |> result.replace_error(sessions.NoAdmin),
+    )
+    use until <- result.try(
+      owner_operating(standing, open) |> result.replace_error(sessions.NoAdmin),
+    )
+    ui_sessions.mint_in(
+      tickets,
+      ui_sessions.Grant(
+        scope: ui_sessions.Admin,
+        credential: standing.digest,
+        principal: standing.principal,
+        ceiling: standing.ceiling,
+        reach: ui_sessions.Workspace,
+        origin: ui_sessions.Fresh,
+        remember: ui_sessions.Forgotten,
+      ),
+      until,
+      standing.login,
+    )
+    |> result.replace_error(sessions.NoAdmin)
+  }
+  case outcome {
+    Ok(issued) -> sessions.Ticketed(page.admin_exchange_path(issued.ticket))
+    Error(reason) -> sessions.Declined(reason)
+  }
+}
+
+// The steps an admin ticket and every admin change begin with: the asking page
+// is open (its deadline is the answer), was minted to operate, and its credential
+// still authenticates as the principal it was admitted for, who is the daemon's
+// owner. A member's page is refused here even if a message reached it.
+fn owner_operating(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+) -> Result(Int, Nil) {
+  use until <- result.try(open())
+  use _ <- result.try(
+    operating_ceiling(standing.ceiling) |> result.replace_error(Nil),
+  )
+  use principal <- result.try(
+    manager.authenticate(standing.registry, standing.digest)
+    |> result.replace_error(Nil),
+  )
+  case principal.id == standing.principal, principal.kind {
+    True, access.OwnerPrincipal -> Ok(until)
+    True, access.MemberPrincipal | False, _ -> Error(Nil)
+  }
+}
+
+/// Starts `admin_ticket_for` in a run of its own and returns at once, so the
+/// page's runtime is free while the registry authenticates; `deliver` is
+/// called, from that run, with the answer, whatever it is.
+///
+/// The run is a weft run with one task, linked to the calling process, which is
+/// the page's runtime, as `resume_task`'s is: a page that goes away cancels it.
+/// Every step of `admin_ticket_for` is bounded by its own call timeouts, so the
+/// task always answers within seconds and needs no deadline of its own. Its last
+/// act is `deliver`, so a page that stays open is always answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_ticket_task(standing, tickets, open, deliver)
+/// ```
+@internal
+pub fn admin_ticket_task(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  deliver: fn(sessions.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(admin_ticket_for(standing, tickets, open))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
+/// Upgrades one checked admin request to the admin component's socket
+/// (protocol-change/065, the fifth pull request).
+///
+/// The admin page is bound to no session, so there is no relay, no lane and no
+/// gateway: the socket starts `web_view/admin`, which asks the daemon for the
+/// catalogue when it opens and on a timer, and for the owner's changes when a
+/// button is pressed, each in a task of its own. The permit is an observer's,
+/// whose frame limit is the one this socket takes: the page sends clicks and one
+/// small form, and `admin_accepts` admits nothing else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.upgrade_admin(root, request, attachment, tickets, open, access.Operator)
+/// ```
+pub fn upgrade_admin(
+  daemon: root.Root(instance),
+  request: Request(mist.Connection),
+  attachment: server.AdminAttachment(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  ceiling: access.Role,
+) -> Response(mist.ResponseData) {
+  let settled = process.new_subject()
+  let limit = root.message_limit(root.Observer)
+  let standing = admin_standing(attachment, ceiling)
+
+  // The address a claim's command names is the one the page was reached at, as
+  // the session page's invitation makes it.
+  let address = claim_address(request)
+  websocket(request, limit, settled, fn(signals) {
+    admit_admin(
+      daemon,
+      attachment,
+      standing,
+      tickets,
+      open,
+      address,
+      signals,
+      settled,
+    )
+  })
+}
+
+/// The browser messages an admin page takes: Lustre's `EventFired` for a `click`
+/// or a `submit`, alone or batched, at a path beneath `admin.body_path`, where
+/// every control of the page is, and nothing else. Every other frame is dropped
+/// before it costs the component a render, a batch with one of them included.
+///
+/// Each handler names the principal or the session the server drew, and the
+/// invitation form's fields are judged by the page's own decoder, so the frame
+/// chooses only among the controls that were drawn. The path and the separator
+/// are exact, so a path that merely begins with the same digits is not admitted,
+/// and the top bar, which holds no handler on this page, is not either. The daemon
+/// checks the page, the credential and the owner again for every change
+/// (`admin_for`), whatever frame reached it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !ui_socket.admin_accepts("{\"kind\":1,\"name\":\"click\",\"path\":\"0\\t0\\t5\"}")
+/// ```
+pub fn admin_accepts(frame: String) -> Bool {
+  case json.parse(frame, admin_event()) {
+    Ok(accepted) -> accepted
+    Error(_) -> False
+  }
+}
+
+fn admin_event() -> decode.Decoder(Bool) {
+  use kind <- decode.field("kind", decode.int)
+  case kind {
+    1 -> {
+      use name <- decode.field("name", decode.string)
+      use path <- decode.field("path", decode.string)
+      decode.success(
+        { name == "click" || name == "submit" }
+        && string.starts_with(path, admin.body_path <> "\t"),
+      )
+    }
+    3 -> {
+      use messages <- decode.field(
+        "messages",
+        decode.list(decode.recursive(fn() { admin_event() })),
+      )
+      decode.success(messages != [] && list.all(messages, fn(ok) { ok }))
+    }
+    _ -> decode.success(False)
+  }
+}
+
+// What an admin page asks the daemon with: the registry, the credential it was
+// admitted under, its principal and the ceiling it was minted with. Its reach is
+// `Workspace` and its origin `Fresh`, which only the tickets a page mints read,
+// and the admin page mints none; the login it was opened from is the one its
+// sign-in rows mark as this browser.
+fn admin_standing(
+  attachment: server.AdminAttachment(instance),
+  ceiling: access.Role,
+) -> Standing(instance) {
+  Standing(
+    registry: attachment.registry,
+    digest: attachment.digest,
+    principal: attachment.principal.id,
+    ceiling:,
+    reach: ui_sessions.Workspace,
+    origin: ui_sessions.Fresh,
+    login: attachment.login,
+  )
+}
+
+// Takes the permit in the socket's first handler turn, as `admit_home` does, and
+// then starts the admin component with its two requests as closures over the
+// attachment: each starts the daemon's task and returns at once.
+fn admit_admin(
+  daemon: root.Root(instance),
+  attachment: server.AdminAttachment(instance),
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  address: Result(String, Nil),
+  signals: process.Subject(Signal),
+  settled: process.Subject(Nil),
+) -> mist.Next(Phase, Signal) {
+  let transferred = root.transfer(daemon, attachment.permit, within: 1000)
+  process.send(settled, Nil)
+
+  // A change needs only the epoch of the attachment, since the registry and the
+  // credential it asks with are the standing's, so its closure keeps that.
+  let epoch = attachment.epoch
+  let start =
+    admin.Start(
+      name: attachment.principal.display_name,
+      refresh_ms: admin.refresh_ms,
+      read: fn(chosen, deliver) {
+        admin_read_task(attachment, open, chosen, deliver, fn(reason) {
+          process.send(signals, Ended(reason))
+        })
+      },
+      act: fn(action, deliver) {
+        admin_task(standing, tickets, open, epoch, address, action, deliver)
+      },
+      now: bootstrap.system_time_ms,
+      login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
+    )
+  let started = case transferred {
+    Error(reason) -> {
+      upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)
+      Error(Nil)
+    }
+    Ok(Nil) ->
+      launch(admin.app(), start, admin_accepts)
+      |> result.map_error(fn(_) {
+        upgrade_log.closed_early(
+          upgrade_log.Page,
+          "start_page",
+          "the component did not start",
+        )
+      })
+  }
+  case started {
+    // The permit transfer was slow or the component's start ran over its
+    // budget: the close is one the client runtime retries.
+    Error(Nil) -> closing(ending.close(ending.DaemonNotReady))
+    Ok(#(_, page)) -> serving(page, signals)
+  }
+}
+
+/// What the admin page reads of the catalogue, as the page's principal with the
+/// digest of the credential the page was admitted under: who exists and what
+/// each can authenticate with, the owner's sessions, and, when the owner has
+/// chosen one, that session's members. Every row is a catalogue field. A claim
+/// is not among them, because the catalogue holds only its digest.
+///
+/// The read is the page's frame check as well, as the home's is. A page whose UI
+/// session has ended, or whose credential no longer authenticates as the owner,
+/// is not read anything: the answer is `Closed`, and `ended` tells the socket,
+/// which closes after the component has drawn why. A registry that does not
+/// answer is `Unread`, which keeps the page's last snapshot and ends nothing,
+/// since a slow registry is no reason to sign the owner out.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_reading(attachment, open, None, ended)
+/// ```
+@internal
+pub fn admin_reading(
+  attachment: server.AdminAttachment(instance),
+  open: fn() -> Result(Int, Nil),
+  chosen: Option(String),
+  ended: fn(ending.Ending) -> Nil,
+) -> grants.Reading {
+  case admin_snapshot(attachment, open, chosen) {
+    Ok(snapshot) -> grants.Read(snapshot)
+    Error(Unreadable) -> grants.Unread
+    Error(Gone(reason)) -> {
+      ended(reason)
+      grants.Closed(reason)
+    }
+  }
+}
+
+// The three reads of a snapshot, each made afresh: the page is live, the
+// principals with their credential state, the owner's sessions, and the chosen
+// session's members. A credential that no longer authenticates as the owner is
+// the registry's own refusal on the first read.
+fn admin_snapshot(
+  attachment: server.AdminAttachment(instance),
+  open: fn() -> Result(Int, Nil),
+  chosen: Option(String),
+) -> Result(grants.Snapshot, Failure) {
+  use _ <- result.try(open() |> result.replace_error(Gone(ending.PageEnded)))
+  use people <- result.try(
+    manager.principal_page(
+      attachment.registry,
+      attachment.digest,
+      after: "",
+      now_ms: bootstrap.system_time_ms(),
+    )
+    |> result.map_error(admin_failure),
+  )
+  use #(_, views) <- result.try(
+    manager.authorized_page(attachment.registry, attachment.digest, after: "")
+    |> result.map_error(authentication_failure),
+  )
+  use selection <- result.try(chosen_members(attachment, chosen))
+  use logins <- result.map(admin_logins(attachment, people.entries))
+  grants.Snapshot(
+    principals: owner_first(list.map(people.entries, listed_principal)),
+    more_principals: more_of(people.remainder),
+    sessions: list.map(list.take(views, sessions.listed_limit), listed_entry),
+    selection:,
+    logins:,
+  )
+}
+
+// The most principals whose sign-ins one read lists. A principal beyond them
+// still shows its count, and the terminal's `loom access signins` lists any.
+const admin_logins_principals = 20
+
+// The sign-ins of each principal that holds any, the first few of at most
+// `admin_logins_principals` of them, each read as the page's owner with the
+// registry's own `signins` (which authenticates the credential and names the
+// principal again). A principal whose read the registry did not answer is left
+// out, so a slow answer shows the count and no rows rather than ending the page.
+fn admin_logins(
+  attachment: server.AdminAttachment(instance),
+  rows: List(access.Listing),
+) -> Result(List(grants.Logins), Failure) {
+  list.filter(rows, fn(row) { row.logins > 0 })
+  |> list.take(admin_logins_principals)
+  |> list.try_map(fn(row) {
+    case
+      manager.signins(
+        attachment.registry,
+        attachment.digest,
+        Some(row.principal.id),
+        after: "",
+        now_ms: bootstrap.system_time_ms(),
+      )
+    {
+      Ok(#(_, page)) ->
+        Ok(grants.Logins(
+          principal: row.principal.id,
+          count: row.logins,
+          shown: list.map(
+            list.take(page.entries, grants.signins_shown),
+            listed_signin,
+          ),
+        ))
+      Error(error) -> Error(admin_failure(error))
+    }
+  })
+}
+
+// The chosen session's members, or none when no session is chosen or the
+// catalogue holds none by that identity. A chosen identity that is not a session
+// identity is none too: a page only ever chooses one it drew.
+fn chosen_members(
+  attachment: server.AdminAttachment(instance),
+  chosen: Option(String),
+) -> Result(Option(grants.Selection), Failure) {
+  case chosen {
+    None -> Ok(None)
+    Some(session) ->
+      case ids.parse_session_id(session) {
+        Error(_) -> Ok(None)
+        Ok(_) ->
+          case
+            manager.session_member_page(
+              attachment.registry,
+              attachment.digest,
+              session,
+              after: "",
+            )
+          {
+            Ok(page) ->
+              Ok(
+                Some(grants.Selection(
+                  session:,
+                  holders: list.map(page.entries, listed_holder),
+                  more: more_of(page.remainder),
+                )),
+              )
+            Error(manager.AdminMetadata(catalogue.Missing)) -> Ok(None)
+            Error(error) -> Error(admin_failure(error))
+          }
+      }
+  }
+}
+
+// The registry's refusal of an administration read as the page's failure: a
+// credential that is not the owner's or no longer exists ends the page, and
+// anything else is the registry failing to answer.
+fn admin_failure(error: manager.AdminError) -> Failure {
+  case error {
+    manager.AdminForbidden -> Gone(ending.AccessRevoked)
+    manager.AdminMetadata(catalogue.Missing) -> Gone(ending.AccessRevoked)
+    manager.AdminMetadata(catalogue.Invalid(_))
+    | manager.AdminMetadata(catalogue.Unsupported)
+    | manager.AdminMetadata(catalogue.Conflict)
+    | manager.AdminMetadata(catalogue.Database(_))
+    | manager.IsolationRequired
+    | manager.AdminStaleEpoch
+    | manager.AdminUnavailable
+    | manager.AdminBusy
+    | manager.AdminForeignPath -> Unreadable
+  }
+}
+
+// The owner leads the list and the invited follow in the catalogue's identity
+// order, so the owner is where the eye starts and an invitation's `guest-` name
+// does not sort above them.
+fn owner_first(rows: List(grants.Principal)) -> List(grants.Principal) {
+  let #(owners, members) =
+    list.partition(rows, fn(row) {
+      case row.kind {
+        grants.OwnerKind -> True
+        grants.MemberKind -> False
+      }
+    })
+  list.append(owners, members)
+}
+
+fn more_of(remainder: access.Remainder) -> grants.More {
+  case remainder {
+    access.Exhausted -> grants.Whole
+    access.Remaining -> grants.Truncated
+  }
+}
+
+// One principal as the page draws it: the catalogue's own fields and the
+// credential's state, with a fingerprint and a lifetime and nothing to sign in
+// with.
+fn listed_principal(row: access.Listing) -> grants.Principal {
+  grants.Principal(
+    id: row.principal.id,
+    name: row.principal.display_name,
+    kind: case row.principal.kind {
+      access.OwnerPrincipal -> grants.OwnerKind
+      access.MemberPrincipal -> grants.MemberKind
+    },
+    credential: case row.credential {
+      access.CredentialActive(fingerprint:, claimed_at_ms:) ->
+        grants.Active(fingerprint:, claimed_at_ms:)
+      access.CredentialClaimOpen(expires_in_ms:) ->
+        grants.ClaimOpen(expires_in_ms:)
+      access.CredentialClaimExpired -> grants.ClaimExpired
+      access.CredentialNone -> grants.NoCredential
+    },
+  )
+}
+
+fn listed_holder(row: access.SessionMember) -> grants.Holder {
+  grants.Holder(
+    principal: row.principal_id,
+    name: row.name,
+    role: page_role(row.role),
+  )
+}
+
+fn page_role(role: access.Role) -> invites.Role {
+  case role {
+    access.Observer -> invites.Observer
+    access.Operator -> invites.Operator
+  }
+}
+
+/// Starts `admin_reading` in a run of its own and returns at once, so the page's
+/// runtime is free while the registry answers; `deliver` is called, from that
+/// run, with the reading, whatever it is, and `ended` tells the socket a page that
+/// can no longer be served.
+///
+/// The run is a weft run with one task, linked to the calling process, which is
+/// the page's runtime, as `resume_task`'s is: a page that goes away cancels it.
+/// Every step of the reading is bounded by its own call timeouts, so the task
+/// always answers within seconds and needs no deadline of its own. Its last act
+/// is `deliver`, so a page that stays open is always answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_read_task(attachment, open, None, deliver, ended)
+/// ```
+@internal
+pub fn admin_read_task(
+  attachment: server.AdminAttachment(instance),
+  open: fn() -> Result(Int, Nil),
+  chosen: Option(String),
+  deliver: fn(grants.Reading) -> Nil,
+  ended: fn(ending.Ending) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(admin_reading(attachment, open, chosen, ended))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
+}
+
+/// Makes one change the admin page asked for, or gives the reason it did not
+/// (protocol-change/065, the fifth pull request). It blocks the calling process
+/// for the registry's call, so a page's component never calls it directly:
+/// `admin_task` runs it in a run of its own.
+///
+/// Each step is the daemon's and is made afresh, with the digest of the
+/// credential the page was admitted under, and nothing is taken from the page but
+/// the identities the server drew into its tree and the text of a name:
+///
+/// 0. The asking page must still be open (`open`). That is also the page's epoch,
+///    as for `resume_for`: a page that is open was admitted by this daemon and by
+///    no earlier one. A page that ended but whose socket is still up changes
+///    nothing (`NotOwner`).
+/// 1. The page's ceiling must be Operator, and the credential must still
+///    authenticate as the principal the page was admitted for, and that
+///    principal must be the daemon's owner. Each is `NotOwner`.
+/// 2. A change that grants access, an invitation, a rotation or a role raised to
+///    operator, must have one of the credential's allowance left
+///    (`ui_sessions.reserve_invite`), counted for the credential and not for the
+///    page, and counted with the session page's invitation control: a page taken
+///    by a program is held to three an hour across both (`TooMany`). A change
+///    that only reduces access, lowering a role, removing a membership or
+///    revoking credentials, is not counted. A raised role is counted whatever
+///    the member held, since a read of the held role would be a second read to
+///    save a place on a no-op.
+/// 3. `manager.administer` is the registry turn `loomd access` runs: it
+///    authenticates the credential and the epoch a second time and needs the
+///    owner, so it is the last word on who may. A refusal that made nothing gives
+///    an allowance back; an unknown outcome (the registry did not answer) keeps
+///    it spent, since the change may have been made.
+///
+/// An invitation's principal identity is the daemon's, `guest-` and eight
+/// hexadecimal digits, and its name is the suggested one when it passes the
+/// catalogue's display-name rule. A claim exists in this function's result and
+/// nowhere else: it is not logged, stored or put in a URL, and the catalogue
+/// holds only its digest.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_for(standing, tickets, open, epoch, Ok(address), grants.Rotate("alice"))
+/// ```
+@internal
+pub fn admin_for(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  epoch: String,
+  address: Result(String, Nil),
+  action: grants.Action,
+) -> grants.Answer {
+  let outcome = {
+    use _ <- result.try(administering(standing, open))
+    case action {
+      grants.Invite(session:, role:, name:) ->
+        invite_for_admin(standing, tickets, epoch, address, session, role, name)
+      grants.SetRole(session:, principal:, role: invites.Operator) ->
+        granted(
+          standing,
+          tickets,
+          epoch,
+          manager.SetRole(principal, session, access.Operator),
+        )
+      grants.SetRole(session:, principal:, role: invites.Observer) ->
+        reduced(
+          standing,
+          epoch,
+          manager.SetRole(principal, session, access.Observer),
+        )
+      grants.RevokeMembership(session:, principal:) ->
+        reduced(standing, epoch, manager.RevokeMembership(principal, session))
+      grants.RevokeCredentials(principal:) ->
+        reduced(standing, epoch, manager.RevokeMember(principal))
+      grants.RevokeSignin(principal:, fingerprint:) ->
+        revoke_signin_for_admin(standing, epoch, principal, fingerprint)
+      grants.Rotate(principal:) ->
+        rotate_for_admin(standing, tickets, epoch, address, principal)
+    }
+  }
+  case outcome {
+    Ok(answer) -> answer
+    Error(reason) -> grants.Declined(reason)
+  }
+}
+
+// The steps every change begins with: the page is open, was minted to operate,
+// and its credential still authenticates as the owner it was admitted for.
+fn administering(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+) -> Result(Nil, grants.Reason) {
+  owner_operating(standing, open)
+  |> result.replace(Nil)
+  |> result.replace_error(grants.NotOwner)
+}
+
+// One sign-in of the named principal ended, which only reduces access and costs
+// no allowance. The registry authenticates the owner's credential and the epoch
+// in the same turn as the write and drops its frame memo before it answers, so
+// every page the login minted ends at its next frame. The log says which login,
+// by fingerprint, as the control command's does.
+fn revoke_signin_for_admin(
+  standing: Standing(instance),
+  epoch: String,
+  principal: String,
+  fingerprint: String,
+) -> Result(grants.Answer, grants.Reason) {
+  case
+    manager.revoke_login(
+      standing.registry,
+      standing.digest,
+      epoch,
+      Some(principal),
+      fingerprint,
+    )
+  {
+    Ok(#(revoked, digest)) -> {
+      ui_login.revoked(revoked, digest)
+      Ok(grants.Changed)
+    }
+    Error(error) -> Error(admin_reason(error))
+  }
+}
+
+// A change that grants access: one allowance first, then the registry turn, and
+// the allowance back when the turn made nothing.
+fn granted(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  epoch: String,
+  action: manager.Administration,
+) -> Result(grants.Answer, grants.Reason) {
+  use _ <- result.try(
+    ui_sessions.reserve_invite(tickets, standing.digest)
+    |> result.replace_error(grants.TooMany),
+  )
+  case manager.administer(standing.registry, standing.digest, epoch, action) {
+    Ok(_) -> Ok(grants.Changed)
+    Error(error) -> {
+      give_back(tickets, standing.digest, Managed(error))
+      Error(admin_reason(error))
+    }
+  }
+}
+
+// A change that only reduces access, which costs no allowance.
+fn reduced(
+  standing: Standing(instance),
+  epoch: String,
+  action: manager.Administration,
+) -> Result(grants.Answer, grants.Reason) {
+  case manager.administer(standing.registry, standing.digest, epoch, action) {
+    Ok(_) -> Ok(grants.Changed)
+    Error(error) -> Error(admin_reason(error))
+  }
+}
+
+// An invitation into a session the page chose, with the suggested name when it
+// is one, and one allowance. The name and the session are judged before the
+// allowance is taken, so a refused name costs nothing.
+fn invite_for_admin(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  epoch: String,
+  address: Result(String, Nil),
+  session: String,
+  role: invites.Role,
+  name: String,
+) -> Result(grants.Answer, grants.Reason) {
+  use named <- result.try(suggested_name(name))
+  use _ <- result.try(
+    ids.parse_session_id(session) |> result.replace_error(grants.NotFound),
+  )
+  use address <- result.try(address |> result.replace_error(grants.Unavailable))
+  use _ <- result.try(
+    ui_sessions.reserve_invite(tickets, standing.digest)
+    |> result.replace_error(grants.TooMany),
+  )
+  case
+    invitation(
+      standing.registry,
+      standing.digest,
+      epoch,
+      session,
+      address,
+      role,
+      named,
+    )
+  {
+    Ok(made) ->
+      Ok(
+        grants.Claimed(grants.Claim(
+          principal: made.principal,
+          purpose: grants.Invited(role),
+          command: made.command,
+          token: made.token,
+          expires_in_ms: made.expires_in_ms,
+        )),
+      )
+    Error(refusal) -> {
+      give_back(tickets, standing.digest, refusal)
+      Error(refusal_reason(refusal))
+    }
+  }
+}
+
+// The suggested name: none when blank, the trimmed text when it passes the
+// catalogue's display-name rule, and a refusal when it does not.
+fn suggested_name(name: String) -> Result(Option(String), grants.Reason) {
+  case string.trim(name) {
+    "" -> Ok(None)
+    text ->
+      catalogue.display_name(text)
+      |> result.map(fn(_) { Some(text) })
+      |> result.replace_error(grants.InvalidName)
+  }
+}
+
+// A rotation of one principal's credentials, which makes a new claim and costs
+// one allowance.
+fn rotate_for_admin(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  epoch: String,
+  address: Result(String, Nil),
+  principal: String,
+) -> Result(grants.Answer, grants.Reason) {
+  use address <- result.try(address |> result.replace_error(grants.Unavailable))
+  use _ <- result.try(
+    ui_sessions.reserve_invite(tickets, standing.digest)
+    |> result.replace_error(grants.TooMany),
+  )
+  case rotation(standing, epoch, address, principal) {
+    Ok(claim) -> Ok(grants.Claimed(claim))
+    Error(refusal) -> {
+      give_back(tickets, standing.digest, refusal)
+      Error(refusal_reason(refusal))
+    }
+  }
+}
+
+// The dispatch: a claim is drawn and handed to the registry as a digest, and the
+// token comes back only in the claim the page shows.
+fn rotation(
+  standing: Standing(instance),
+  epoch: String,
+  address: String,
+  principal: String,
+) -> Result(grants.Claim, Refusal) {
+  use #(enrollment, claim_token) <- result.try(
+    server.claim_enrollment(invites.claim_ttl_ms)
+    |> result.replace_error(Undrawn),
+  )
+  use rotated <- result.map(
+    manager.administer(
+      standing.registry,
+      standing.digest,
+      epoch,
+      manager.RotateMember(principal, enrollment),
+    )
+    |> result.map_error(Managed),
+  )
+  grants.Claim(
+    principal: rotated.id,
+    purpose: grants.Rotated,
+    command: "loom claim --addr " <> address,
+    token: claim_token,
+    expires_in_ms: invites.claim_ttl_ms,
+  )
+}
+
+// The fixed reason for a refused administration. A principal or session the
+// catalogue does not hold is `NotFound`, which is what a row that was removed
+// since it was drawn reads as; the rest are the daemon's to sort out.
+fn admin_reason(error: manager.AdminError) -> grants.Reason {
+  case error {
+    manager.IsolationRequired -> grants.NotIsolated
+    manager.AdminForbidden -> grants.NotOwner
+    manager.AdminMetadata(catalogue.Missing) -> grants.NotFound
+    manager.AdminMetadata(catalogue.Invalid(_))
+    | manager.AdminMetadata(catalogue.Unsupported)
+    | manager.AdminMetadata(catalogue.Conflict)
+    | manager.AdminMetadata(catalogue.Database(_))
+    | manager.AdminStaleEpoch
+    | manager.AdminUnavailable
+    | manager.AdminBusy
+    | manager.AdminForeignPath -> grants.Unavailable
+  }
+}
+
+fn refusal_reason(refusal: Refusal) -> grants.Reason {
+  case refusal {
+    Managed(error) -> admin_reason(error)
+    Undrawn -> grants.Unavailable
+  }
+}
+
+/// Starts `admin_for` in a run of its own and returns at once, so the page's
+/// runtime is free while the registry answers; `deliver` is called, from that
+/// run, with the answer, whatever it is.
+///
+/// The run is a weft run with one task, linked to the calling process, which is
+/// the page's runtime, as `rename_task`'s is: a page that goes away cancels it,
+/// and a change the registry has already begun finishes on the registry's own
+/// turn. Every step of `admin_for` is bounded by its own call timeouts, so the
+/// task always answers within seconds and needs no deadline of its own. Its last
+/// act is `deliver`, so a page that stays open is always answered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.admin_task(standing, tickets, open, epoch, Ok(address), grants.Rotate("alice"), deliver)
+/// ```
+@internal
+pub fn admin_task(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  epoch: String,
+  address: Result(String, Nil),
+  action: grants.Action,
+  deliver: fn(grants.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(admin_for(standing, tickets, open, epoch, address, action))
         Ok(Nil)
       },
     ])

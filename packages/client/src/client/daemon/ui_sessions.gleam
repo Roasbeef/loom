@@ -37,7 +37,13 @@
 //// (protocol-change/051, the addendum on inviting from the session page): how
 //// many invitations a credential's pages have asked for lately, keyed by the
 //// credential and not by any page, so that opening another page, or switching
-//// from page to page, does not reset the count a stolen page is held to.
+//// from page to page, does not reset the count a stolen page is held to. The
+//// owner's admin page (protocol-change/065, the fifth pull request) draws on the
+//// same allowance for every change that grants access, an invitation, a rotation
+//// or a role raised to operator, so the fourth grant in an hour across it and a
+//// session page's invitation control is refused. An admin page is a third scope
+//// beside a session's and the home's, redeemed only at its own exchange, and
+//// lives `admin_ms` rather than `session_ms`.
 ////
 //// A page and a ticket also know which browser login they belong to
 //// (protocol-change/065, PR 8). A ticket that is `Remembered` sets a login when
@@ -113,9 +119,20 @@ pub const device_ms = 600_000
 /// switching.
 pub const session_ms = 28_800_000
 
+/// How long an admin page lives from its exchange, in milliseconds: fifteen
+/// minutes (protocol-change/065, the fifth pull request; 053's bound).
+///
+/// The admin page changes who may see the owner's sessions, so it is the page
+/// a stolen cookie is worth most on and the one that lives shortest. The home
+/// that minted it is unaffected when it ends, and the owner presses "Admin"
+/// again for another. A page lives no longer than `Settings.session_ms` either,
+/// so a table configured with a shorter page lifetime shortens this one too.
+pub const admin_ms = 900_000
+
 /// The most live UI sessions one principal holds for one session, and, as a
-/// separate count, for its home (protocol-change/065): a home page is a scope
-/// of its own, so opening homes never ends a session's page.
+/// separate count, for its home and for its admin page (protocol-change/065):
+/// each is a scope of its own, so opening homes never ends a session's page and
+/// opening an admin page never ends a home.
 ///
 /// The bound is on pages in this table, and so on the memory they hold: a
 /// live page keeps a cookie, a key and a nonce, and while its browser is
@@ -140,8 +157,10 @@ pub const max_pages = ending.max_pages
 /// How often the tables are swept, in milliseconds.
 pub const sweep_ms = 60_000
 
-/// The most invitations the pages of one credential may mint in
-/// `invite_window_ms`.
+/// The most grants of access the pages of one credential may make in
+/// `invite_window_ms`: invitations from a session page, and from the admin page
+/// invitations, rotations and roles raised to operator. The name is the
+/// invitation's, which was the only grant a page could make when it was chosen.
 ///
 /// A page's invitation is a claim that becomes a credential outliving the
 /// page and every check the page is held to, so a page that a program other
@@ -196,6 +215,11 @@ pub type Scope {
   /// The principal's home page, which lists the sessions the credential may
   /// see and is bound to no session.
   Home
+
+  /// The owner's admin page (protocol-change/065, the fifth pull request),
+  /// bound to no session. It lives `admin_ms`, and its ticket is redeemed only
+  /// at the admin exchange, so a session's ticket and a home's both fail there.
+  Admin
 }
 
 /// How a page was reached (protocol-change/065). The daemon writes it when it
@@ -250,6 +274,9 @@ pub type Exchange {
 
   /// `/ui/home`.
   HomeExchange
+
+  /// `/ui/admin`.
+  AdminExchange
 }
 
 /// Which pages a link was minted for, which decides whether the page it
@@ -925,7 +952,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
 
         Ok(Ticket(grant:, until:, login:)) -> {
-          let lasts = state.settings.session_ms
+          let lasts = lifetime(state.settings, grant.scope)
           let ends = case until {
             Some(bound) -> int.min(bound, now + lasts)
             None -> now + lasts
@@ -1125,6 +1152,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+// How long a page of this scope lives from its exchange. An admin page lives
+// `admin_ms` unless the table's own page lifetime is shorter.
+fn lifetime(settings: Settings, scope: Scope) -> Int {
+  case scope {
+    Admin -> int.min(admin_ms, settings.session_ms)
+    Home | Session(_) -> settings.session_ms
+  }
+}
+
 // The instants of a credential's invitations or creations that are still inside
 // the window, newest first. A table is read with its own window.
 fn recent_instants(
@@ -1170,12 +1206,19 @@ fn with_room(
 }
 
 // Whether a ticket of `scope` is honoured at `exchange`: the session's own
-// ticket at its exchange and a home's at the home's, and no other pairing.
+// ticket at its exchange, a home's at the home's and an admin page's at the
+// admin exchange, and no other pairing.
 fn at_exchange(scope: Scope, exchange: Exchange) -> Bool {
   case scope, exchange {
     Session(id), SessionExchange(wanted) -> id == wanted
-    Home, HomeExchange -> True
-    Session(_), HomeExchange | Home, SessionExchange(_) -> False
+    Home, HomeExchange | Admin, AdminExchange -> True
+    Session(_), HomeExchange
+    | Home, SessionExchange(_)
+    | Home, AdminExchange
+    | Session(_), AdminExchange
+    | Admin, SessionExchange(_)
+    | Admin, HomeExchange
+    -> False
   }
 }
 

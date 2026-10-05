@@ -201,12 +201,19 @@ fn showing(
   )
 }
 
-// One labelled copy box. `subject` is one of two fixed words, and `text` is
-// the daemon's own value; `<loom-copy>` (`packages/web_client`) draws the text
-// itself as a text node in its shadow root and copies it when the button is
-// pressed, and only if it has the shape the subject allows. The box carries
-// no child and no handler on the server's side.
-fn field(label: String, subject: String, text: String) -> Element(message) {
+/// One labelled copy box. `subject` is one of two fixed words, and `text` is
+/// the daemon's own value; `<loom-copy>` (`packages/web_client`) draws the text
+/// itself as a text node in its shadow root and copies it when the button is
+/// pressed, and only if it has the shape the subject allows. The box carries
+/// no child and no handler on the server's side. The admin page shows a claim
+/// it made in the same boxes (`view/admin_claim`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // share.field("Command", "command", invitation.command)
+/// ```
+pub fn field(label: String, subject: String, text: String) -> Element(message) {
   html.div([attribute.class("share-field")], [
     html.span([attribute.class("share-label")], [html.text(label)]),
     element.element(

@@ -81,18 +81,34 @@
 //// fired at and never a login, and the daemon answers only for the principal's
 //// own.
 ////
+//// The owner's page also draws an "Admin" button in its top bar
+//// (protocol-change/065, the fifth pull request). `Start.admin` is `Some` only
+//// for the owner's page minted to operate and opened by a `loom ui` exchange (the
+//// daemon decides, in `ui_socket.home_admin_capability`), and a page without it
+//// draws nothing and ignores the message. Pressing it (`AdminRequested`) starts
+//// the daemon's own task, which mints a ticket for an admin page, and the answer
+//// arrives as `AdminLinked`: the ticket's address departs through the same
+//// hidden `<loom-switch>`, or a refusal is the reason's fixed words.
+////
 //// ## Flow
 ////
-//// `init` → `update` → `refreshing` → `answered` → `observing` → `view`
+//// `app` → `init` → `update` → `refreshing` → `answered` → `view`
 ////
-//// 1. `init` makes the refresh timer's subject and hands it back as
-////    `TimerReady`.
-//// 2. `update` takes each message; a tick or the first timer calls `refreshing`.
-//// 3. `refreshing` reads the sessions and the sign-ins in the component's own
-////    process and arms the timer again.
-//// 4. `answered` replaces the groups, and `observing` starts the activity read
-////    for the running sessions the list holds.
-//// 5. `view` draws the frame with the sessions, the sign-ins and the notice.
+//// 1. `init` starts the component and `wire` makes the refresh timer; the
+////    timer's subject arrives as `TimerReady`, and `update` answers it, and
+////    every `Ticked` after it, with `refreshing`.
+//// 2. `refreshing` asks `Start.sessions` for the list and `Start.signins` for
+////    the sign-ins, hands the answers to `answered` and `SigninsRead`, and arms
+////    the timer for the next read.
+//// 3. `answered` replaces the groups, and `observing` starts the activity read
+////    for the running sessions it listed.
+//// 4. A press is a message `update` handles, one of `Opening`, `Resuming`,
+////    `Choosing`, `Creating`, `Renaming`, `AdminRequested`, `SigningOut`,
+////    `SigningOutAll` or `AddingDevice`, each of which asks the daemon through
+////    its own `Start` field and leaves the answer to the effect's message.
+//// 5. `view` draws the groups through `shell_sidebar`, the offers
+////    (`resume_offer`, `rename_offer`, `create_offer`, `admin_offer`), the
+////    sign-ins and `press_notice`.
 ////
 //// ## Transitions
 ////
@@ -169,6 +185,15 @@ pub const table_path = "0\t2\t1"
 /// socket admits a click beneath it for every home, whatever its ceiling, and
 /// `home_test` fails if the view moves the region.
 pub const signins_path = "0\t2\t2"
+
+/// The Lustre event path of the "Admin" button on the owner's home: the top bar
+/// is the first child of the frame, and the button is the bar's sixth child,
+/// after the brand, the title, the principal, the status and the notice's place
+/// (`view/home_bar`). It is the only handler in the bar, and the home's socket
+/// admits a click at exactly this path and only for the owner's home that was
+/// handed the capability (`client/daemon/ui_socket.home_admin_accepts`).
+/// `home_test` fails if the view moves it.
+pub const admin_path = "0\t0\t5"
 
 /// How long the page's list stands before it is read again, in milliseconds.
 /// The list changes when a session is created, renamed, archived or opened,
@@ -292,6 +317,15 @@ pub type Start {
     /// only for a page a `loom ui` exchange opened, and the daemon checks that
     /// again, and the credential's allowance, whatever this page said.
     device: Option(fn() -> signins.Answer),
+    /// Asks the daemon to mint a ticket for the admin page
+    /// (protocol-change/065, the fifth pull request). It is `Some` only for the
+    /// owner's page minted to operate and opened by a `loom ui` exchange, and
+    /// then it is the page's whole offer: a page with `None` draws no button and
+    /// ignores the message. It must return at once, and the answer goes to the
+    /// function it is given, from the daemon's own task, as `AdminLinked`'s
+    /// message. The daemon checks the page, its ceiling, the credential and the
+    /// owner again, whatever this page said.
+    admin: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
   )
 }
 
@@ -432,6 +466,15 @@ pub type Msg {
   /// message, dispatched from the daemon's task, and no handler carries it, so
   /// a browser cannot send one.
   Created(answer: creations.Answer)
+
+  /// The "Admin" button was pressed: ask the daemon for a ticket to an admin
+  /// page. A page with no `Start.admin` ignores it.
+  AdminRequested
+
+  /// The daemon answered a request for an admin page. It is the effect's own
+  /// message, dispatched from the daemon's task, and no handler carries it, so
+  /// a browser cannot send one.
+  AdminLinked(answer: sessions.Answer)
 
   /// A row's Rename button was pressed: open that row's form. Only an owner's
   /// page draws the button, and the daemon checks again when a name is sent. The
@@ -713,6 +756,34 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         )
       }
 
+    // The button asks the daemon from its own task so the runtime stays free,
+    // on a page that was handed the capability and is connected. The page that
+    // has none draws no button, so this arm is the second layer.
+    AdminRequested ->
+      case model.start.admin, model.status {
+        Some(ask), Connected -> #(
+          Model(..model, notice: Some("Opening the admin page.")),
+          opening_admin(ask),
+        )
+        Some(_), Connecting | Some(_), Ended(_) | None, _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    // A ticket departs for the admin page, or the reason is the notice.
+    AdminLinked(answer:) ->
+      case answer {
+        sessions.Ticketed(path:) -> #(
+          Model(..model, departure: Some(path)),
+          effect.none(),
+        )
+        sessions.Declined(reason:) -> #(
+          Model(..model, notice: Some(sessions.reason_words(reason))),
+          effect.none(),
+        )
+      }
+
     EditCancelled ->
       case model.edit {
         Editing(_, renames.Asking) | NotEditing -> #(model, effect.none())
@@ -904,6 +975,13 @@ fn reading_signins(model: Model) -> Effect(Msg) {
   dispatch(SigninsRead(model.start.signins()))
 }
 
+// Starts the daemon's task that mints an admin ticket and returns at once; the
+// answer arrives later as `AdminLinked`, dispatched from the task's own process.
+fn opening_admin(ask: fn(fn(sessions.Answer) -> Nil) -> Nil) -> Effect(Msg) {
+  use dispatch <- effect.from
+  ask(fn(answer) { dispatch(AdminLinked(answer)) })
+}
+
 // Starts the daemon's rename task and returns at once; the task's answer
 // arrives later as `RenameAnswered`, dispatched from the task's own process.
 fn renaming(
@@ -1075,11 +1153,13 @@ pub fn view(model: Model) -> Element(Msg) {
   shell.view(
     shell.Home,
     home_bar.view(
+      title: "Home",
       name: model.start.name,
       ceiling: ceiling_words(model.start.ceiling),
       status: status_words(model.status),
       tone: status_tone(model.status),
       notice: ended.home(ended_ending(model.status)),
+      trailing: admin_offer(model),
     ),
     shell_sidebar(model),
     [
@@ -1109,6 +1189,16 @@ pub fn view(model: Model) -> Element(Msg) {
     0,
     "",
   )
+}
+
+// What the bar offers for opening the admin page: a button on the page whose
+// daemon handed it the capability while it is connected, and an empty node
+// otherwise, so the bar keeps its children.
+fn admin_offer(model: Model) -> Element(Msg) {
+  case model.start.admin, model.status {
+    Some(_), Connected -> home_bar.admin(AdminRequested)
+    Some(_), Connecting | Some(_), Ended(_) | None, _ -> element.none()
+  }
 }
 
 // What the page offers for a saved row: a button on a page minted to operate,

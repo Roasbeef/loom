@@ -63,15 +63,16 @@ callers own launch timing, authentication policy, and application messages.
   arguments.
 - `host/access` is the owner's access command (protocol-change/053), one
   implementation behind `loomd access` and `loom access`. `parse(arguments,
-  program)` turns the positional grammar (`list`, `show`, `invite`,
+  program)` turns the positional grammar (`list`, `show`, `members`, `invite`,
   `set-role`, `revoke`, `rotate`, `revoke-credentials`, `isolate`) into an
   opaque `Request` whose target is `Local` (the state directory's endpoint
   record and `owner.token`) or `Remote` (`--addr` with `--token-file`, which
   only `Loom` accepts). `run(arguments, program, check)` prints through a
   `Console` and answers `Succeeded` or `Failed`; the binary turns that into
   its exit status, and `check` lets `loomd` add the daemon's own decoder as a
-  further refusal. `principal_lines` and `membership_lines` are the listing
-  checks on their own, and `invite_line` and `rotate_line` render the `loom
+  further refusal. `principal_lines`, `membership_lines` and `member_lines` (a
+  session's members, `loom access members SESSION [--after PRINCIPAL]`) are the
+  listing checks on their own, and `invite_line` and `rotate_line` render the `loom
   access` lines the terminal's `/access` overlay shows in place of granting
   (phase 3). Replies are re-encoded from checked fields: a listing row
   keeps a 16-hex fingerprint and never a longer value, a claim is printed only

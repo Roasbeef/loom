@@ -331,6 +331,76 @@ pub fn home_advised(ending: Ending) -> Advice {
   }
 }
 
+/// `headline` for the admin page (protocol-change/065, the fifth pull
+/// request). It is the home's, with the words for an ending only the admin page
+/// has: the page's fifteen minutes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ending.admin_headline(ending.PageEnded) == "This admin page has ended."
+/// ```
+pub fn admin_headline(ending: Ending) -> String {
+  case ending {
+    PageEnded -> "This admin page has ended."
+    AccessRevoked -> "Your access was revoked or changed."
+    DaemonNotReady -> "The daemon was not ready."
+    LinkExpired -> "This link has expired or was already used."
+    SessionStopped | NotOpen | ConnectionFailed ->
+      "The connection to the daemon failed."
+  }
+}
+
+/// `advised` for the admin page: an admin page lasts fifteen minutes, and a
+/// fresh one is `loom ui` and the home's "Admin" button, which is why the
+/// command is the home's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ending.admin_advised(ending.LinkExpired).command == Some("loom ui")
+/// ```
+pub fn admin_advised(ending: Ending) -> Advice {
+  let command = Some("loom ui")
+  let fresh = " Then press Admin on the home page for a fresh admin page."
+  case ending {
+    PageEnded ->
+      Advice(
+        "An admin page lasts fifteen minutes, and the daemon forgets every "
+          <> "page when it restarts."
+          <> fresh,
+        command,
+      )
+    AccessRevoked ->
+      Advice("Ask the owner to restore your access." <> fresh, command)
+    DaemonNotReady ->
+      Advice(
+        "It may still be starting. Reload this page in a moment. If it keeps "
+          <> "failing, it needs a new link."
+          <> fresh,
+        command,
+      )
+    LinkExpired ->
+      Advice("A link works once, within 60 seconds." <> fresh, command)
+    SessionStopped | NotOpen | ConnectionFailed ->
+      Advice(
+        "Reload this page. If it fails again, it needs a new link." <> fresh,
+        command,
+      )
+  }
+}
+
+/// `advice` for the admin page: `admin_advised` said as a sentence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(ending.admin_advice(ending.PageEnded), "fifteen minutes")
+/// ```
+pub fn admin_advice(ending: Ending) -> String {
+  sentence(admin_advised(ending))
+}
+
 /// `advice` for a home page: `home_advised` said as a sentence.
 ///
 /// ## Examples

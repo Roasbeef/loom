@@ -140,3 +140,35 @@ pub fn the_sentence_is_the_lead_then_the_command_test() {
     assert string.starts_with(ending.home_advice(reason), home.lead)
   })
 }
+
+// The admin page's endings (protocol-change/065, the fifth pull request): the
+// same reasons as the home's, with the words an admin page needs. Its fresh link
+// is the home's command, since an admin page is opened from the home's button,
+// and the lifetime it names is its own fifteen minutes and never the home's
+// eight hours. An ending only a session can reach reads as a failed connection.
+pub fn the_admin_pages_endings_name_its_own_lifetime_test() {
+  list.each(ending.all(), fn(reason) {
+    let advised = ending.admin_advised(reason)
+    assert advised.command == Some("loom ui")
+    assert string.contains(advised.lead, "Press Admin on the home page")
+      || string.contains(advised.lead, "press Admin on the home page")
+      || string.contains(advised.lead, "Then press Admin")
+    assert string.starts_with(ending.admin_advice(reason), advised.lead)
+    assert string.ends_with(
+      ending.admin_advice(reason),
+      "Run `loom ui` for a fresh link.",
+    )
+    assert !string.contains(advised.lead, "eight hours")
+    assert !string.contains(ending.admin_headline(reason), "session")
+      || reason == ending.SessionStopped
+  })
+  assert ending.admin_headline(ending.PageEnded) == "This admin page has ended."
+  assert string.contains(
+    ending.admin_advice(ending.PageEnded),
+    "An admin page lasts fifteen minutes",
+  )
+  assert ending.admin_headline(ending.AccessRevoked)
+    == ending.home_headline(ending.AccessRevoked)
+  assert ending.admin_headline(ending.NotOpen)
+    == "The connection to the daemon failed."
+}

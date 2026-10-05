@@ -11,9 +11,10 @@
 //// (protocol-change/051): a page per session, the ticket exchange, the
 //// page's socket and a fixed list of assets, and a home page that is bound
 //// to no session (protocol-change/065) with the same three routes under its
-//// own scope (`home_grant`, `home_socket`). Without it every `/ui` path is
-//// a 404 and the control `hello` does not name the view, so the two v2
-//// endpoints are the whole surface, as spec Part 1.6 says.
+//// own scope (`home_grant`, `home_socket`), and the owner's admin page, a third
+//// scope with its own three routes (`admin_grant`, `admin_socket`). Without it
+//// every `/ui` path is a 404 and the control `hello` does not name the view, so
+//// the two v2 endpoints are the whole surface, as spec Part 1.6 says.
 ////
 //// ## Flow
 ////
@@ -37,7 +38,8 @@
 //// 6. A `/ui` request takes `web_socket` for the page's socket or
 ////    `web_document` for the page, the ticket exchange and images, each
 ////    re-checking cookie, grant and credential through `page_grant`. The
-////    home's socket and page take `home_socket` and `home_grant` instead.
+////    home's socket and page take `home_socket` and `home_grant` instead, and
+////    the admin page's take `admin_socket` and `admin_grant`.
 
 import broker/token
 import client/daemon/manager
@@ -136,6 +138,43 @@ pub type Ui(instance) {
       fn() -> Result(Int, Nil),
       PageGrant,
     ) -> Response(mist.ResponseData),
+    /// Upgrades a checked admin request to the admin component's socket
+    /// (protocol-change/065, the fifth pull request). It takes the same custody
+    /// of the attachment's permit, and its third and fourth arguments are the
+    /// page's deadline check and ceiling, as for `home`. The page has no reach:
+    /// it draws no way to another page.
+    admin: fn(
+      Request(mist.Connection),
+      AdminAttachment(instance),
+      fn() -> Result(Int, Nil),
+      access.Role,
+    ) -> Response(mist.ResponseData),
+  )
+}
+
+/// One authorized admin page, which is bound to no session and whose principal
+/// is the daemon's owner. It holds what the admin socket needs to read the
+/// catalogue and to ask for the owner's changes, and the daemon's own epoch,
+/// which every change is fenced with.
+pub type AdminAttachment(instance) {
+  AdminAttachment(
+    /// Current daemon lifetime identity, which the registry's dispatch checks
+    /// every change against.
+    epoch: String,
+    /// The authenticated principal the page was opened for, whom `admin_grant`
+    /// has already found to be the daemon's owner.
+    principal: access.Principal,
+    /// Digest for repeated authorization; never the plaintext credential.
+    digest: access.Digest,
+    /// Transferred to the actual WebSocket PID in that process's first
+    /// handler turn, before it serves a frame.
+    permit: root.Permit,
+    /// The registry the page's reads and changes go to.
+    registry: manager.Manager(instance),
+    /// The browser login the page was opened from, when it was, which the page
+    /// marks in the owner's own sign-ins. A page a `loom ui` exchange opened
+    /// has none.
+    login: Option(ui_sessions.Issuer),
   )
 }
 
@@ -293,6 +332,9 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
         // `form-action 'none'`.
         ui_http.LoginPage(key) ->
           ui_http.secured_for(login_page(request, key), host, page.OwnForms)
+
+        ui_http.AdminSocket(key, nonce) ->
+          admin_socket(config, ui, request, host, key, nonce)
         route -> ui_http.secured(web_document(config, ui, request, route), host)
       }
   }
@@ -473,6 +515,97 @@ fn home_upgrade(
   }
 }
 
+// The admin page's socket (protocol-change/065, the fifth pull request): the
+// home's checks in the home's order, against a grant of the `Admin` scope, and
+// then one more that no other page has: the principal the credential
+// authenticates as must be the daemon's owner (`admin_grant`).
+fn admin_socket(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  host: String,
+  key: String,
+  nonce: Option(String),
+) {
+  let checked = {
+    use Nil <- result.try(case ui_http.origin_matches(request, host) {
+      True -> Ok(Nil)
+      False -> Error(plain(403, "forbidden origin"))
+    })
+    use nonce <- result.try(
+      option.to_result(nonce, Nil)
+      |> result.map_error(fn(_) { plain(403, "forbidden page") }),
+    )
+    use #(state, page, cookie, principal) <- result.try(admin_grant(
+      config,
+      ui,
+      request,
+      key,
+    ))
+    use Nil <- result.try(case ui_sessions.admits(page, nonce) {
+      True -> Ok(Nil)
+      False -> Error(plain(403, "forbidden page"))
+    })
+    Ok(#(state, ui_sessions.grant(page), cookie, principal))
+  }
+  case checked {
+    Error(response) -> ui_http.secured(response, host)
+    Ok(#(state, grant, cookie, principal)) ->
+      admin_upgrade(
+        config,
+        ui,
+        request,
+        state,
+        principal,
+        grant,
+        ui_sessions.login_of(ui.sessions, cookie),
+        ui_sessions.open_until(ui.sessions, cookie, grant),
+      )
+  }
+}
+
+// Reserves the permit and hands the admin page's attachment to the upgrade,
+// which takes custody of it in the socket's process, as `home_upgrade` does.
+fn admin_upgrade(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  state: root.Ready(instance),
+  principal: access.Principal,
+  grant: ui_sessions.Grant,
+  login: Option(ui_sessions.Issuer),
+  open: fn() -> Result(Int, Nil),
+) {
+  case
+    upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
+      root.acquire(config.daemon, root.Observer, within: 1000)
+    })
+  {
+    Error(reason) -> {
+      upgrade_log.refused(upgrade_log.Page, "acquire", reason)
+      plain(503, reason)
+    }
+    Ok(permit) -> {
+      let response =
+        ui.admin(
+          request,
+          AdminAttachment(
+            epoch: state.epoch,
+            principal:,
+            digest: grant.credential,
+            permit:,
+            registry: state.registry,
+            login:,
+          ),
+          open,
+          grant.ceiling,
+        )
+      root.release(config.daemon, permit)
+      response
+    }
+  }
+}
+
 fn web_document(
   config: Config(instance),
   ui: Ui(instance),
@@ -483,7 +616,9 @@ fn web_document(
     ui_http.Unknown
     | ui_http.Socket(..)
     | ui_http.HomeSocket(..)
-    | ui_http.LoginPage(..) -> plain(404, "unknown endpoint")
+    | ui_http.LoginPage(..)
+    | ui_http.AdminSocket(..) -> plain(404, "unknown endpoint")
+
     ui_http.Asset(asset) -> {
       let #(content_type, body) = ui_assets.body(ui.assets, asset)
       document(200, content_type, body)
@@ -549,6 +684,40 @@ fn web_document(
             Error(response) -> response
             Ok(_) ->
               document(200, "text/html; charset=utf-8", page.home_shell())
+          }
+      }
+
+    // The admin page, kept to the same two rules: a navigation from this origin
+    // or from outside any page, and a cookie under the key that names a live
+    // page of the `Admin` scope whose credential is still the owner's.
+    ui_http.AdminPage(key) ->
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden navigation")
+        True ->
+          case admin_grant(config, ui, request, key) {
+            Error(response) -> response
+            Ok(_) ->
+              document(200, "text/html; charset=utf-8", page.admin_shell())
+          }
+      }
+
+    // The admin exchange is the home's twin: a session's ticket or a home's
+    // presented here is spent and refused, and no page is added, and an admin
+    // ticket presented at either of theirs is too, since each exchange redeems
+    // only its own scope (`ui_sessions.redeem`).
+    ui_http.AdminExchange(ticket) ->
+      case ui_http.exchange_allowed(request) {
+        False -> plain(403, "forbidden exchange")
+        True ->
+          case
+            ui_sessions.redeem(ui.sessions, ticket, ui_sessions.AdminExchange)
+          {
+            Error(ui_sessions.UnknownTicket) ->
+              refused_admin(401, ending.LinkExpired)
+            Error(ui_sessions.OtherScope) ->
+              plain(403, "ticket names another page")
+            Ok(redeemed) ->
+              entered(config, ui, redeemed, page.admin_path(redeemed.key))
           }
       }
 
@@ -713,6 +882,8 @@ fn resume_exchange(
           entered(config, ui, redeemed, page.home_path(redeemed.key))
         ui_sessions.Session(id) ->
           entered(config, ui, redeemed, page.session_path(redeemed.key, id))
+        ui_sessions.Admin ->
+          entered(config, ui, redeemed, page.admin_path(redeemed.key))
       }
   }
 }
@@ -877,7 +1048,8 @@ fn home_grant(
   let grant = ui_sessions.grant(page)
   use Nil <- result.try(case grant.scope {
     ui_sessions.Home -> Ok(Nil)
-    ui_sessions.Session(_) -> Error(refused_home(403, ending.PageEnded))
+    ui_sessions.Session(_) | ui_sessions.Admin ->
+      Error(refused_home(403, ending.PageEnded))
   })
   use state <- result.try(
     ready(config, upgrade_log.Page)
@@ -889,6 +1061,46 @@ fn home_grant(
     })
     |> result.map_error(fn(_) { refused_home(401, ending.AccessRevoked) }),
   )
+  #(state, page, cookie, principal)
+}
+
+// An admin page's `page_grant`: the cookie names a live UI session under this
+// key whose scope is `Admin`, its credential still authenticates, and the
+// principal it authenticates as is the daemon's owner. The last is checked here
+// as well as when a ticket is minted, because the admin page is the one page
+// that changes who may see what, so no earlier check is trusted to stay true:
+// a credential that was the owner's when the page was opened and is not now ends
+// the page at its next request. The answer is `home_grant`'s.
+fn admin_grant(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  key: String,
+) {
+  use #(cookie, page) <- result.try(
+    keyed_page(ui, request, key)
+    |> result.map_error(fn(_) { refused_admin(401, ending.PageEnded) }),
+  )
+  let grant = ui_sessions.grant(page)
+  use Nil <- result.try(case grant.scope {
+    ui_sessions.Admin -> Ok(Nil)
+    ui_sessions.Session(_) | ui_sessions.Home ->
+      Error(refused_admin(403, ending.PageEnded))
+  })
+  use state <- result.try(
+    ready(config, upgrade_log.Page)
+    |> result.map_error(fn(_) { refused_admin(503, ending.DaemonNotReady) }),
+  )
+  use principal <- result.try(
+    asked(upgrade_log.Page, "authenticate", fn() {
+      manager.authenticate(state.registry, grant.credential)
+    })
+    |> result.map_error(fn(_) { refused_admin(401, ending.AccessRevoked) }),
+  )
+  use Nil <- result.map(case principal.kind {
+    access.OwnerPrincipal -> Ok(Nil)
+    access.MemberPrincipal -> Error(refused_admin(403, ending.AccessRevoked))
+  })
   #(state, page, cookie, principal)
 }
 
@@ -967,6 +1179,12 @@ fn refused_page(status: Int, reason: Ending, id: String) {
 // words, which name no session.
 fn refused_home(status: Int, reason: Ending) {
   document(status, "text/html; charset=utf-8", page.home_refusal(reason))
+}
+
+// `refused_page` for the admin page: the same fixed documents, with its words,
+// which name its fifteen minutes and the home's "Admin" button.
+fn refused_admin(status: Int, reason: Ending) {
+  document(status, "text/html; charset=utf-8", page.admin_refusal(reason))
 }
 
 fn document(status: Int, content_type: String, body: String) {
@@ -1647,6 +1865,7 @@ fn control(
             | protocol.PrincipalMemberships(..)
             | protocol.CredentialSignins(..)
             | protocol.RevokeLogin(..)
+            | protocol.SessionMembers(..)
             | protocol.UiLink(..)
             | protocol.ListSessions(..)
             | protocol.SessionActivity(..)
@@ -1688,6 +1907,7 @@ fn control_use(command: protocol.Command) {
     | protocol.ListPrincipals(_)
     | protocol.PrincipalMemberships(..)
     | protocol.CredentialSignins(..)
+    | protocol.SessionMembers(..)
     | protocol.UiLink(..)
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
@@ -2094,6 +2314,26 @@ fn dispatch_class(
           [
             #("principal_id", json.String(id)),
             #("memberships", json.Array(list.map(bounded, pair.second))),
+          ],
+          next_field(bounded, more),
+        )),
+      ))
+    }
+    protocol.SessionMembers(id, after) -> {
+      use Nil <- result.try(owner(principal))
+      use page <- result.try(
+        manager.session_member_page(state.registry, digest, id, after:)
+        |> result.map_error(admin_error_code),
+      )
+      let rows =
+        list.map(page.entries, fn(row) { #(row.principal_id, member_json(row)) })
+      use #(bounded, more) <- result.try(bounded_rows(rows, page.remainder))
+      Ok(#(
+        "sessions.members",
+        json.Object(list.append(
+          [
+            #("session_id", json.String(id)),
+            #("members", json.Array(list.map(bounded, pair.second))),
           ],
           next_field(bounded, more),
         )),
@@ -2628,6 +2868,14 @@ fn membership_json(row: access.MembershipEntry) -> JsonValue {
     #("session_id", json.String(row.session_id)),
     #("name", json.String(row.name)),
     #("role", json.String(role)),
+  ])
+}
+
+fn member_json(row: access.SessionMember) -> JsonValue {
+  json.Object([
+    #("principal_id", json.String(row.principal_id)),
+    #("name", json.String(row.name)),
+    #("role", json.String(role_text(row.role))),
   ])
 }
 

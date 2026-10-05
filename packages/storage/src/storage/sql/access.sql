@@ -122,3 +122,10 @@ SELECT last_resumed_ms FROM access_credentials WHERE digest = ? AND kind = 'brow
 
 -- name: StampLoginResumed :exec
 UPDATE access_credentials SET last_resumed_ms = ? WHERE digest = ? AND kind = 'browser';
+
+-- name: SessionMembers :many
+SELECT m.principal_id, p.display_name, m.role
+FROM access_memberships AS m
+JOIN access_principals AS p ON p.principal_id = m.principal_id
+WHERE m.session_id = ? AND m.principal_id > ?
+ORDER BY m.principal_id LIMIT 101;

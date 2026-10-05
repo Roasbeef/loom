@@ -139,6 +139,11 @@ pub type Command {
   /// the login minted ends at its next frame.
   RevokeLogin(principal_id: Option(String), fingerprint: String, epoch: String)
 
+  /// Lists one session's members after one principal ID, each with its display
+  /// name and role in that session (protocol-change/065). Owner-only. An empty
+  /// cursor starts the listing.
+  SessionMembers(session_id: String, after: String)
+
   /// Reads daemon readiness and aggregate capacity counts.
   Status
 
@@ -470,6 +475,15 @@ fn decode_fields(
       use fingerprint <- result.try(fingerprint_field(fields, "fingerprint"))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       RevokeLogin(target, fingerprint, epoch)
+    }
+
+    "sessions.members" -> {
+      use session <- result.try(session_id(fields))
+      use after <- result.map(case list.key_find(fields, "after") {
+        Error(Nil) -> Ok("")
+        Ok(_) -> text_field(fields, "after", 128)
+      })
+      SessionMembers(session, after)
     }
     "status" -> Ok(Status)
     "ui.link" -> {
