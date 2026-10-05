@@ -561,14 +561,16 @@ its opaque `CommittedResult` authorizes `collect`, which freezes immutable
 identity and UUID fences permanently. Broker release grants no collection
 authority. Frozen rows continue to consume bounded capacity.
 
-The owner journal is format version 3. Version 2 upgrades additively in one
-immediate transaction after exact metadata/limits, aggregate accounting and
-bounded legacy row-header validation; the empty command-offer table and version
-bump commit together. Valid ID-less cancelled/frozen fences require an empty
-request, NULL terminal and their full fence reservation; migration preserves the
-prior cancellation-before-allocation followed by collection history. Older daemons
-refuse format 3. `admit_fresh` atomically returns `Fresh`
+The owner journal is format version 4. Previous unshipped formats are refused:
+they lack a run discharge proof and cannot safely be migrated to `Released`.
+`admit_fresh` atomically returns `Fresh` with `run_custody = 'unreleased'`
 only when the reservation was inserted; `Retained` is never dispatch permission.
+`RunCustody` separates `Unreleased` and `Released` from retained/frozen recovery
+state. `unreleased` uses an indexed bounded existence query at owner startup.
+`discharge` commits only against the exact retained outcome; the live custodian
+alone calls it after complete run delivery and no sticky unresolved disposition.
+Failed discharge preserves custody. Collection requires `Released`, returns
+`CollectionPending` otherwise, and preserves that marker when freezing bytes.
 `validate_request` compares exact immutable scope/argument bytes without creating
 missing evidence. A `cancel_child` origin fence can precede UUID allocation: its
 cancelled row has a NULL request ID, and later admission refuses that original
