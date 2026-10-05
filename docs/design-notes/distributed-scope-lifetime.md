@@ -1,8 +1,9 @@
 # Scoped executor lifetime
 
-Status: proposed implementation contract, reviewed by Astra. The lifecycle API
-and native close-state correction await owner approval. This note does not change
-protocol 067 or claim that the production host already implements these rules.
+Status: accepted implementation contract. The owner approved the reviewed
+lifecycle API and native close-state correction after reviewing the proposal.
+Implementation and its runtime correspondence tests remain in progress; the
+passing P model does not establish production host behavior.
 
 ## The failure this closes
 
