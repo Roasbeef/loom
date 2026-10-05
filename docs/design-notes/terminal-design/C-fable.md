@@ -545,8 +545,8 @@ arrow first so a reader scanning the gutter sees traffic, and the detail's
 carries the source, target, body and `State`
 (`session_view/agent_messages.gleam:29`: pending, failed, accepted, started),
 projected from the sender's `agent_send` invocation and its result
-(`agent_send`, `tools/agent.gleam:1850`; the steered delivery at
-`steered_outcome`, `tools/agent.gleam:1923`). That state is receipt on the
+(`agent_send`, `tools/agent.gleam:1858`; the steered delivery at
+`steered_outcome`, `tools/agent.gleam:1931`). That state is receipt on the
 sender's side and never proof that the recipient read the message, and the
 row says `accepted`, not `read`.
 

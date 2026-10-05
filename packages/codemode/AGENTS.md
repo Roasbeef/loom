@@ -163,16 +163,25 @@ session and sends it many invocations.
   so the module's one effectful function was advertised and refused).
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
-  Before decoding anything it asks `Agency.holds` whether the calling
-  strand's active tool list names the `agent_*` tool that does the same
-  thing (`strand.spawn` needs `agent_spawn`, `wait` `agent_wait`, `send`
-  `agent_send`, `note` `agent_note`, `notes` `agent_notes`, `roster`
-  `agent_roster`; `report.emit` needs none) and otherwise refuses with
-  `tool_not_held`, so a program cannot do what the strand's tools forbid.
-  The question is asked on every call, never snapshotted at install.
+  It does not decide whether the strand may use a capability at all:
+  `codemode/tool_gate` does (see its entry below).
   `strand.spawn` carries an optional catalogue-name `model` unchanged into
   `SpawnRequest`; absent or nil preserves default routing, and a non-string
   is refused before the Agency is called. The result remains a handle.
+- `codemode/tool_gate.{required_tool, precheck}` — the strand's tool list
+  applied to its programs. `required_tool` is the one table from
+  capability to authorizing tool (`strand.*` to `agent_*`, `proc.run` and
+  `job.start` to `bash`, `job.poll`/`job.list` to `job_poll`, `job.send`
+  and `job.kill` to their tools, `fs.write`/`fs.edit` to `fs_write`/
+  `fs_edit`, `schedule.*` to `schedule_*`, `notes.put` to `agent_note`);
+  reads, `kv.*`, `report.emit`, `peer.*`, `workflow.*` and `mcp.*` have no
+  row and stay open. `precheck(holds, strand, source_index)` builds the
+  `satellite.Precheck` the host runs in each call's worker, via
+  `SatelliteConfig.precheck`, before the plan is served or cleared.
+  `holds` is `Agency.holds`, asked on every call; only a genuinely absent
+  tool is `tool_not_held`, and any other refusal keeps its own code and
+  still stops the call. `satellite.no_precheck` admits everything and is
+  what the persistent extension host uses: extensions are not strands.
 - `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal,
   ScheduleRequest, ScheduleCreated, ScheduleRow, ScheduleWake,
   ScheduleRefusal, JobDoor, no_jobs, routing,
