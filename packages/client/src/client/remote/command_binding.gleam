@@ -1,4 +1,4 @@
-//// Closed owner custody for the compiler beneath one retained Compile service.
+//// Closed owner custody for native commands beneath retained Compile and Launch services.
 ////
 //// The original session Broker has already cleared a real Dispatch. This module
 //// independently compares its immutable offer/input/enrollment and actual Prepared
@@ -12,11 +12,13 @@
 //// cannot promise that the executor performed no effect. Recovery reads data only
 //// through existing custodian APIs and never calls prepare/mint or returns Reserved.
 ////
-//// Fresh reservation has three existing five-second asks: offer, service and
-//// atomic native reservation. Receipt has three; cancellation has two. Caller
+//// Compile reservation has three existing five-second asks: offer, service and
+//// atomic native reservation. Launch additionally reads its original successful
+//// Compile producer. Receipt has three; cancellation has two. Caller
 //// assembly owns aggregate admission and the unchanged whole-service deadline.
 //// These successful-call budgets are not hard real-time bounds on abandoned asks.
-//// SatelliteCommand is explicitly unsupported until its closed Launch assembly.
+//// SatelliteCommand must match the original retained successful Compile before
+//// the cleared native request enters custody. This binding creates no live channel.
 ////
 //// `new` pins local capabilities. `reserve` enters `resolved_offer`, `expected`
 //// and `checked_prepared` before one atomic reserve. `receive` reads original
@@ -35,6 +37,7 @@ import core/command
 import core/ids
 import core/remote_tool
 import core/workspace
+import executor/remote/compile_completion as completion
 import executor/remote/dispatcher
 import executor/remote/identity
 import executor/remote/wire
@@ -91,7 +94,7 @@ pub fn new(
   Ok(Binding(owner, enrolled, scope, prepare, mint))
 }
 
-/// Reserves unchanged actual Prepared only after closed original Compile checks.
+/// Reserves unchanged actual Prepared only after closed original service checks.
 /// The atomic custodian operation owns cancellation and original UUID uniqueness.
 /// A discarded candidate never replaces that logical identity. This API belongs
 /// only to the live cleared Dispatch; recovery must use historical reads instead.
@@ -260,14 +263,13 @@ fn resolved_offer(
 ) -> Result(#(custody.CommandOfferPayload, offer.CommandOffer), custody.Error) {
   use role <- result.try(remote_tool.child_role(origin) |> invalid)
   use Nil <- result.try(case role {
-    remote_tool.CompileCommand -> Ok(Nil)
-    remote_tool.SatelliteCommand ->
-      Error(custody.Invalid("unsupported SatelliteCommand"))
+    remote_tool.CompileCommand | remote_tool.SatelliteCommand -> Ok(Nil)
     remote_tool.Compile
     | remote_tool.Launch
     | remote_tool.AdmittedCapability(_, _, _)
     | remote_tool.Capability(_)
-    | remote_tool.Workspace(_) -> Error(custody.Invalid("not a CompileCommand"))
+    | remote_tool.Workspace(_) ->
+      Error(custody.Invalid("not a physical service command"))
   })
   use accepted <- result.try(custodian.command_offer_for_origin(
     binding.owner,
@@ -304,18 +306,37 @@ fn expected(
 ) -> Result(service_command.ExpectedCommand, custody.Error) {
   let service = command.service(offer.reference(proposal))
   use retained <- result.try(custodian.service_child(binding.owner, service))
-  use body <- result.try(custody.service_input(retained.0))
+  use body <- result.try(checked_input(service, retained.0))
+
+  // The outer role selects one closed template. A native child cannot infer
+  // its producer, paths or policy from caller-supplied argv or an Artifact alone.
+  case command.service_role(service) {
+    command.CompileService -> compile_expected(binding, service, body, proposal)
+    command.LaunchService -> launch_expected(binding, service, body, proposal)
+  }
+}
+
+fn checked_input(
+  service: command.ServiceKey,
+  retained: custody.ServiceRequest,
+) -> Result(BitArray, custody.Error) {
+  use body <- result.try(custody.service_input(retained))
+  use digest <- result.try(hash(body))
+  let #(input_digest, _, _) = command.digests(service)
+  case custody.service_identity(retained) == service && digest == input_digest {
+    True -> Ok(body)
+    False -> Error(custody.Conflict)
+  }
+}
+
+fn compile_expected(
+  binding: Binding,
+  service: command.ServiceKey,
+  body: BitArray,
+  proposal: offer.CommandOffer,
+) -> Result(service_command.ExpectedCommand, custody.Error) {
   use original <- result.try(input.decode_compile(body) |> invalid)
   let facts = input.compile_facts(original)
-  use body_digest <- result.try(hash(body))
-  let #(input_digest, _, _) = command.digests(service)
-  use Nil <- result.try(
-    bool.guard(
-      !{ input.encode_compile(original) == body && body_digest == input_digest },
-      Error(custody.Conflict),
-      fn() { Ok(Nil) },
-    ),
-  )
   use Nil <- result.try(
     enrollment.matches(binding.enrolled, facts.enrolled) |> invalid,
   )
@@ -331,6 +352,67 @@ fn expected(
     service,
     original,
     locations,
+    offer.data(proposal).requirements.limits.wall_s,
+  )
+  |> invalid
+}
+
+fn launch_expected(
+  binding: Binding,
+  service: command.ServiceKey,
+  body: BitArray,
+  proposal: offer.CommandOffer,
+) -> Result(service_command.ExpectedCommand, custody.Error) {
+  use original <- result.try(input.decode_launch(body) |> invalid)
+  let producer = input.launch_facts(original).compiled_by
+  use held <- result.try(custodian.service_child(binding.owner, producer))
+  use producer_body <- result.try(checked_input(producer, held.0))
+  use producer_input <- result.try(
+    input.decode_compile(producer_body) |> invalid,
+  )
+  use Nil <- result.try(
+    enrollment.matches(
+      binding.enrolled,
+      input.compile_facts(producer_input).enrolled,
+    )
+    |> invalid,
+  )
+  use bytes <- result.try(option.to_result(held.1, custody.Missing))
+  use compiled <- result.try(
+    completion.decode(binding.enrolled, producer, custody.bytes(bytes))
+    |> invalid,
+  )
+
+  // Only canonical original success can link the artifact. Historical Ready
+  // supplies equality, never permission to recreate a listener or token.
+  use admitted <- result.try(
+    input.admit_launch(
+      service,
+      binding.enrolled,
+      original,
+      producer,
+      completion.compiled(compiled),
+    )
+    |> invalid,
+  )
+  use paths <- result.try(
+    enrollment.launch_paths(binding.enrolled, service) |> invalid,
+  )
+  use ready <- result.try(
+    resources.admit_launch_resources(
+      binding.enrolled,
+      service,
+      producer,
+      paths.0,
+      paths.1,
+      paths.2,
+    )
+    |> invalid,
+  )
+  service_command.launch(
+    binding.enrolled,
+    admitted,
+    ready,
     offer.data(proposal).requirements.limits.wall_s,
   )
   |> invalid
@@ -406,6 +488,6 @@ fn normalized(value: policy.SandboxPolicy) -> policy.SandboxPolicy {
 fn invalid(value: Result(a, e)) -> Result(a, custody.Error) {
   result.replace_error(
     value,
-    custody.Invalid("invalid retained compiler evidence"),
+    custody.Invalid("invalid retained physical service evidence"),
   )
 }
