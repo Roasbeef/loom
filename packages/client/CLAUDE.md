@@ -44,6 +44,13 @@ never installs it. `agency.holds` returns `ToolNotHeld` only for a tool
 absent from a readable list and lets `AgencyUnavailable` and `PlaneFailed`
 flow through.
 
+`async_codemode.launch` likewise projects the preceding router before
+constructing the execution's wrapper. Its admitted work closure retains the
+prepared configuration once; the wrapper adds no path to the original host
+configuration. The regression observes the actual `async_runs.Launch` message
+after a process copy, grows an unrelated entropy payload, and requires exactly
+one payload's growth while preserving the execution identity and deadline.
+
 ## Gateway membership and restart captures
 
 The gateway projects `Options.registry` into a private name-keyed dictionary
