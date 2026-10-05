@@ -12,6 +12,7 @@ import client/blocksummarybook
 import client/catalog
 import client/directories
 import client/escalate
+import client/evolution/control as evolution_control
 import client/gateway
 import client/goalcommand
 import client/grants
@@ -636,6 +637,92 @@ type AuthMessage {
     Result(#(access.Principal, access.Authority), String),
     Subject(Nil),
   )
+}
+
+pub fn evolution_dispatch_preserves_native_identity_test() {
+  let calls = process.new_subject()
+  let seam =
+    evolution_control.Seam(command: fn(authority, principal, action, _) {
+      process.send(calls, #(authority, principal, action))
+      Ok(json.Object([#("generation", json.Int(3))]))
+    })
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_evolution(_, seam),
+    )
+  let #(handle, _, _) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      771,
+      protocol.Evolution(
+        "approve",
+        json.Object([
+          #("authority", json.String("owner")),
+          #("principal", json.String("forged")),
+        ]),
+      ),
+    )),
+  )
+  let assert protocol.SnapshotEvent(protocol.EvolutionSnapshot(_)) =
+    next_reply(harness, 771, 8).event
+    as "the authenticated seam returns a correlated receipt"
+  assert process.receive(calls, within: 1000)
+    == Ok(#(access.Participant(access.Operator), "alice", "approve"))
+}
+
+pub fn evolution_observer_reads_but_never_mutates_test() {
+  let calls = process.new_subject()
+  let seam =
+    evolution_control.Seam(command: fn(authority, principal, action, _) {
+      process.send(calls, #(authority, principal, action))
+      Ok(json.Object([]))
+    })
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_evolution(_, seam),
+    )
+  let #(handle, _, _) =
+    authenticated(harness, access.Participant(access.Observer), process.self())
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      772,
+      protocol.Evolution("approve", json.Object([])),
+    )),
+  )
+  let assert protocol.ErrorEvent(code: "forbidden", ..) =
+    next_reply(harness, 772, 8).event
+    as "an observer approval never reaches the native catalogue"
+  assert process.receive(calls, within: 1) == Error(Nil)
+
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      773,
+      protocol.Evolution("status", json.Object([])),
+    )),
+  )
+  let assert protocol.SnapshotEvent(protocol.EvolutionSnapshot(_)) =
+    next_reply(harness, 773, 8).event
+    as "bounded status reads remain available to visible observers"
+  assert process.receive(calls, within: 1000)
+    == Ok(#(access.Participant(access.Observer), "alice", "status"))
 }
 
 pub fn authenticated_observer_cannot_mutate_test() {

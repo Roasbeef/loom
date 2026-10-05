@@ -287,6 +287,10 @@ pub type Command {
   /// Change gateway-defined configuration keys.
   SetConfig(strand: Option(String), config: JsonValue)
 
+  /// Inspects or governs an immutable evolution candidate. The authenticated
+  /// binding supplies authority; the body cannot name an operator identity.
+  Evolution(action: String, arguments: JsonValue)
+
   /// List every schedule this session holds — the operator's
   /// `[[schedule]]` tables and the strands' own — answered by a
   /// `schedules` snapshot. Read-only, and deliberately empty-bodied:
@@ -378,6 +382,9 @@ pub type Snapshot {
 
   /// Bounded asynchronous context accounting.
   ContextSnapshot(board: JsonValue)
+
+  /// A bounded catalogue observation or exact operator transition receipt.
+  EvolutionSnapshot(board: JsonValue)
 
   /// Complete editable text and revision of one transient held input.
   QueuedInputSnapshot(board: JsonValue)
@@ -791,6 +798,13 @@ pub fn encode_command(envelope: CommandEnvelope) -> String {
 fn command_body(command: Command) -> #(String, JsonValue) {
   case command {
     EscalationsDecided -> #("escalations_decided", json.Object([]))
+    Evolution(action:, arguments:) -> #(
+      "evolution",
+      json.Object([
+        #("action", json.String(action)),
+        #("arguments", arguments),
+      ]),
+    )
     EscalationsGet(ids) -> #(
       "escalations_get",
       json.Object([
@@ -1093,6 +1107,28 @@ fn decode_command_body(
         [] -> Ok(EscalationsDecided)
         _ -> Error("escalations_decided takes no fields")
       }
+    }
+    "evolution" -> {
+      use fields <- result.try(body_fields(body))
+      use action <- result.try(required_string(fields, "action"))
+      use _ <- result.try(case action {
+        "catalogue"
+        | "inspect"
+        | "evidence"
+        | "status"
+        | "approve"
+        | "revoke"
+        | "select"
+        | "rollback"
+        | "admit_tasks"
+        | "mark_outcome" -> Ok(Nil)
+        other -> Error("unsupported evolution action: " <> other)
+      })
+      use arguments <- result.try(case list.key_find(fields, "arguments") {
+        Ok(json.Object(items)) -> Ok(json.Object(items))
+        Ok(_) | Error(Nil) -> Error("evolution arguments must be an object")
+      })
+      Ok(Evolution(action:, arguments:))
     }
     "escalations_get" -> {
       use fields <- result.try(body_fields(body))
@@ -1578,6 +1614,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       json.Object([#("mode", json.String("worktree_diff")), #("board", board)])
     ContextSnapshot(board:) ->
       json.Object([#("mode", json.String("context")), #("board", board)])
+    EvolutionSnapshot(board:) ->
+      json.Object([#("mode", json.String("evolution")), #("board", board)])
     LiveJobsSnapshot(board:) ->
       json.Object([#("mode", json.String("live_jobs")), #("board", board)])
     AdvisorPendingSnapshot(board:) ->
@@ -2100,6 +2138,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(body_fields(body))
   use mode <- result.try(required_string(fields, "mode"))
   case mode {
+    "evolution" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing evolution board"),
+      )
+      Ok(SnapshotEvent(EvolutionSnapshot(board:)))
+    }
     "full" -> {
       use session <- result.try(required_string(fields, "session"))
       use next_seq <- result.try(required_int(fields, "next_seq"))

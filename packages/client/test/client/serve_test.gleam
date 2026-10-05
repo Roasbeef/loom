@@ -166,6 +166,7 @@ fn settings_under(root: String) -> serve.Settings {
   // no tool call could ever run under.
   let root = absolute(root)
   serve.Settings(
+    evolution_profiles: None,
     peer_directory: None,
     first_prompt: None,
     codemode_sockets: None,

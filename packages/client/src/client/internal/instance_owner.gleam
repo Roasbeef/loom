@@ -36,6 +36,9 @@ pub type Part {
   /// before anything which could outlive it.
   ToolConfig
 
+  /// Promoted executable generations, after runtime drain and before services.
+  Evolution
+
   /// Restartable composition services which can still read session storage.
   Services
 
@@ -368,7 +371,17 @@ fn block(
 fn clean(
   cleanups: Dict(Part, fn() -> Result(Nil, String)),
 ) -> Result(Nil, Failure) {
-  [Runtime, ToolConfig, Services, Broker, Helpers, Mcp, Storage, Namespace]
+  [
+    Runtime,
+    ToolConfig,
+    Evolution,
+    Services,
+    Broker,
+    Helpers,
+    Mcp,
+    Storage,
+    Namespace,
+  ]
   |> list.try_each(fn(part) {
     case dict.get(cleanups, part) {
       Error(Nil) -> Ok(Nil)
