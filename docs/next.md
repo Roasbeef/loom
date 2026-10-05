@@ -16,27 +16,36 @@ local cumulative allocation savings from installed resident-memory claims.
 |---|---|
 | Web editor completion data, recent-answer Markdown and settled reports | Leaf memo fixes and constructor/patch regressions committed. |
 | Growing terminal paragraph | Redundant trim removed; incremental/full-render checkpoint regression extended. |
-| Etui ASCII width and left alignment | Separate etui branch at `d55b562`; 1,001 Erlang and 947 JavaScript tests passed. |
+| Etui ASCII width and left alignment | Separate etui branch at `7365d47`, including the second-pass four-byte scan; 1,002 Erlang and 948 JavaScript tests passed. |
+| Detached code-mode worker | `9adddf030` projects the preceding router before retaining it. The actual admission regression halves unrelated payload growth in flattened words; all 81 code-mode tests passed. |
+| Warm Gleam language server | `d219796fc` hashes canonical inventory values, eliminating restarts from key-order rewrites. All 46 manager tests and five additional real downloader/warm-server runs passed. |
 | Reproduction | Existing terminal driver plus new `scripts/web_view_perf.sh`. Matched comparisons used Gleam 1.19.0 and OTP 29. |
-| Dependency integration | Both source pins and generated manifests select `d55b562`. Local resolution used a command-scoped Git URL rewrite to the sibling repository; the committed public URLs are unchanged. The commit remains unpublished pending approval. |
-| Full Loom gate | Integrated `make check` exited 0 with Gleam 1.19.0. Both initially failing LSP tests passed in isolation and in the full rerun; tests and deadlines were unchanged. |
-| Independent review | One fresh report-only review found no actionable issue. Fable/Opus were unavailable; a fresh inherited-model context was used. |
+| Dependency integration | Both source pins and generated manifests select `7365d47`. Local resolution used a command-scoped Git URL rewrite to the sibling repository; the committed public URLs are unchanged. The commit remains unpublished pending approval. |
+| Full Loom gate | Integrated `make check` at `d219796fc` exited 0: 2,874 client, 1,231 terminal and 657 web-view tests, conformance, Go checks and zero lint errors. Earlier failed logs remain available. |
+| Independent review | One fresh report-only pass for each body of work found no actionable issue. The second pass independently ran the worker admission and ASCII chunk boundary regressions; the LSP pass traced fingerprint and keeper reuse invariants. Fable/Opus were unavailable; fresh inherited-model contexts were used. |
 | Public review | New branches and draft PR publication require explicit owner approval after automatic approval review rejected the export. No existing PR or remote branch was altered. |
 
 The repeated local comparison removed 83.3% of reductions and 78.8% of
 allocated words for 100 unchanged operator views. At 2,048 streamed frames,
-the combined terminal changes removed 62.5% of reductions and 53.0% of
+the combined terminal changes removed 63.6% of reductions and 53.0% of
 allocated words per frame. The six-agent 120x40 styled-cell/cursor witness
 matched byte for byte through forty scroll frames. These are fixture results,
 not a percentage claim about the installed daemon or terminal.
 
+The live code-mode configuration measures 480,696 flattened bytes, against
+1,024 for the predecessor router its wrapper requires. Narrowing the wrapper
+removes that redundant environment on admission and managed-task transfer.
+This is an expanded term-copy estimate; original heap sharing, literal and
+binary sharing, and live RSS savings remain separate measurement questions.
+
 ## What to do next
 
-1. Preserve the green integrated baseline: `make check` exited 0 against
-   the exact etui pin, resolved locally. The first full attempt failed two
-   client LSP tests, which passed in isolation and the full rerun without
-   source or deadline changes. After approved publication, verify a normal
-   remote resolution as well. No local path dependency is committed.
+1. Preserve the integrated green candidate: `make check` exited 0 at
+   `d219796fc`, with the exact etui `7365d47` pin resolved locally. The
+   order-only LSP restart is fixed; the listing and terminal fixtures also
+   passed unchanged inside that full run. After approved publication,
+   verify normal remote dependency resolution. No local path dependency
+   is committed.
 2. Obtain the owner's explicit publication approval before pushing either
    topic branch or opening the two draft PRs. The automatic rejection was
    about exporting unpublished code/performance results to public GitHub,
@@ -69,7 +78,24 @@ do not retain the whole page model to read two fields.
 
 ASCII optimization requires a whole-string fallback. A following combining
 mark or VS16 can change the preceding ASCII grapheme's width; independently
-counting an ASCII prefix would break rendering.
+counting an ASCII prefix would break rendering. The four-byte scan checks
+every byte and keeps the same fallback and single-byte tail.
+
+The async execution wrapper retains only its predecessor router. Its prepared
+configuration continues to own required launch inputs; request identity,
+policy, workflow custody, step rewriting and the fixed deadline are unchanged.
+Do not strip the supervisor's registry merely because its expanded size is
+large: that child restart callback still needs its executable tool registry.
+
+The package inventory hashes canonical table and string values, not the
+compiler's map iteration order. Every supported key and value still contributes;
+real package, version or git-commit changes invalidate the lease. Manifest and
+project configuration hashes remain complete source digests. Keep the existing
+path admission, missing-file identity and metadata read bounds.
+
+Keep the buffer experiments out of the candidate. Cell equality checks cost
+more reductions; repeated-cell and row reuse did not offer a consistent CPU
+and allocation improvement. Their private measurements are in the report.
 
 No public interface, wire shape, dependency set or host scheduling policy
 changes in this work. Session logic still belongs in `session_view`; frame
@@ -84,12 +110,14 @@ in [execution](execution.md). This edition does not reopen those decisions.
 
 ## Verification boundaries
 
-The integrated full-gate log is `/private/tmp/loom-cpu-20261005/check-full-integrated.log`.
-It passed all package gates, including 2,871 client, 1,231 terminal and 657
-web-view tests. House lint reported zero errors and its existing census
-warnings. Doc-check passed with zero errors and historical citation/staleness
-warnings. The first failed full log and isolated LSP reruns remain beside it.
-
+The integrated candidate full-gate log is
+`/private/tmp/loom-cpu-20261005/check-full-round3.log`. `make check` returned
+exit 0 at source revision `d219796fc`, with etui `7365d47`. It passed all
+package gates, including 2,874 client, 1,231 terminal and 657 web-view tests,
+conformance and Go checks. House lint reported zero errors and 2,109 census
+warnings. Doc-check passed separately with zero errors and 190 historical
+citation/staleness warnings. Earlier failed full logs and isolated cases remain
+beside the green log; their failures were not hidden or assertions relaxed.
 
 `make check` is the full local gate; capture its own exit status. It does not
 include `make doc-check`. Run format, lint and doc checks before publication.
