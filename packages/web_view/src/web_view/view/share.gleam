@@ -90,6 +90,11 @@ pub fn view(
   case share {
     invites.Withheld -> element.none()
     invites.Unshareable -> private(moving, presses)
+    invites.Bookmarked -> bookmarked(element.none())
+    invites.BookmarkedPrivate ->
+      bookmarked(
+        html.p([attribute.class("share-lead")], [html.text(private_words)]),
+      )
     invites.Showing(invitation:) -> showing(invitation, presses)
     invites.Ready | invites.Asking | invites.Refused(..) ->
       buttons(presses, share)
@@ -100,6 +105,28 @@ pub fn view(
 /// be shared. The admin page says the same words for the same session.
 pub const private_words =
   "Private session: it shares the workspace's notes and history, so it cannot be shared. Sessions created with Shareable can be."
+
+/// What a bookmark's page says where the control would be: why there is no
+/// button and how to get a page that has one. It is the home's sentence for a
+/// resumed home (protocol-change/065, the addendum on the home's notes), and it
+/// draws no handler, so the region keeps its path.
+pub const bookmark_words =
+  "This page was opened from a bookmark, so it cannot invite people or make a session shareable. Run loom ui for a page that can."
+
+// The control of a bookmark's page: the heading, the session's private sentence
+// when it has one, and `bookmark_words`.
+fn bookmarked(lead: Element(message)) -> Element(message) {
+  html.section(
+    [attribute.class("share"), attribute.aria_label("Invite to this session")],
+    [
+      html.h3([attribute.class("share-title")], [
+        html.text("Invite to this session"),
+      ]),
+      lead,
+      html.p([attribute.class("share-lead")], [html.text(bookmark_words)]),
+    ],
+  )
+}
 
 // The control for a private session: its heading and the sentence, and for the
 // owner the button that makes it shareable, in the region's place so no path
@@ -251,6 +278,8 @@ fn button(
       html.button([attribute.disabled(True), ..common], [html.text(label)])
     invites.Withheld
     | invites.Unshareable
+    | invites.Bookmarked
+    | invites.BookmarkedPrivate
     | invites.Ready
     | invites.Showing(..)
     | invites.Refused(..) ->
@@ -267,6 +296,8 @@ fn status(share: Share) -> Element(message) {
       ])
     invites.Withheld
     | invites.Unshareable
+    | invites.Bookmarked
+    | invites.BookmarkedPrivate
     | invites.Ready
     | invites.Asking
     | invites.Showing(..) ->

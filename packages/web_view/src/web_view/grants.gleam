@@ -317,8 +317,9 @@ pub type Reason {
   /// drew a row that was removed since.
   NotFound
 
-  /// The session did not finish stopping in time, so nothing was moved. It is
-  /// stopping or stopped and still private, and a second press carries on.
+  /// The session did not finish stopping in time, so it was not moved. The stop
+  /// was issued and still completes; the session is private and, once saved, a
+  /// second press moves it and leaves it saved.
   NotStopped
 
   /// The session could not be moved to its own history. It is private, and
@@ -359,7 +360,7 @@ pub fn reason_words(reason: Reason) -> String {
     NotIsolated -> invites.reason_words(invites.NotIsolated)
     NotFound -> "That session or person is no longer there. The page reloads."
     NotStopped ->
-      "The session did not finish stopping, so nothing changed. It is still private. Try again in a moment."
+      "The session is still stopping, so it was not moved and is still private. Once it is saved, press again; it will be moved and left saved."
     NotMoved ->
       "The session could not be made shareable and is still private. Try again."
     Stranded ->

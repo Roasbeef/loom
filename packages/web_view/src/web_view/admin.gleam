@@ -57,6 +57,19 @@
 //// every other frame (`client/daemon/ui_socket.admin_accepts`). A name is the
 //// peer's and is only ever a text node.
 ////
+//// ## Flow
+////
+//// `init` → `update` → `reading` → `landed` → `answered` → `view`
+////
+//// 1. `init` starts the refresh timer, and `update` answers the timer by asking
+////    for a read (`reading`), which runs the daemon's read and returns at once.
+//// 2. The read's answer arrives as `Answered`; `landed` drops one that was
+////    overtaken, and `answered` applies a snapshot to the model.
+//// 3. A press is `Choosing`, `Arming` or `Asking`. `Asking` sends the change to
+////    the daemon through `acting` and `settled` words the answer, then reads again.
+//// 4. `view` draws the model: the people, and the sessions with the chosen
+////    session's members.
+////
 //// ## Transitions
 ////
 //// <!-- transitions: admin.Status -->
@@ -659,9 +672,35 @@ fn answered(model: Model, reading: Reading) -> Model {
         chosen: still_chosen(model.chosen, snapshot),
         armed: still_armed(model.armed, snapshot),
         editing: still_editing(model.editing, snapshot),
+        waiting: still_waiting(model.waiting, snapshot),
       )
     grants.Unread -> model
     grants.Closed(ending:) -> Model(..model, status: Ended(ending:))
+  }
+}
+
+// An ask that is out survives a read, except making a session shareable once a
+// read finds that session shareable. The task runs in a process no page owns and
+// its answer goes to this page's runtime, which can be gone; a task that never
+// delivers would leave every button disabled for good. A read that shows the
+// scope already changed is the page's proof the change was made, so the ask is
+// no longer out. The task may still be resuming the session, and its answer, if
+// it arrives later, finds no ask out and is dropped.
+fn still_waiting(
+  waiting: Option(Action),
+  snapshot: grants.Snapshot,
+) -> Option(Action) {
+  case waiting {
+    Some(grants.MakeShareable(session:)) ->
+      case
+        list.any(snapshot.summaries, fn(row) {
+          row.session == session && row.scope == creations.Shareable
+        })
+      {
+        True -> None
+        False -> waiting
+      }
+    Some(_) | None -> waiting
   }
 }
 

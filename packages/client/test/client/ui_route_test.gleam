@@ -215,7 +215,14 @@ fn fixture_lasting(
 
             Switching -> switching(sessions, request, attachment, seen, open)
 
-            Inviting | Granting -> inviting(sessions, request, attachment, open)
+            Inviting | Granting ->
+              inviting(
+                sessions,
+                request,
+                attachment,
+                open,
+                origin_of(request, seen),
+              )
 
             // The session is resident but its gateway is not running: the
             // relay's attach is refused, as it is when a session is
@@ -913,15 +920,25 @@ fn summary(snapshot: grants.Snapshot) -> String {
 
 // The page's upgrade as an invitation asks for one: what `ui_socket.upgrade`
 // does with the role it admitted, without the Lustre component in the way.
+// The origin the daemon is asked as. `x-origin-resumed` asks as a page that a
+// bookmark opened, which the stub cannot reach through a real login.
+fn origin_of(request, seen: server.PageGrant) -> ui_sessions.Origin {
+  case req.get_header(request, "x-origin-resumed") {
+    Ok(_) -> ui_sessions.Resumed
+    Error(Nil) -> seen.grant.origin
+  }
+}
+
 fn inviting(
   tickets,
   request,
   attachment: server.Attachment(String),
   open: fn() -> Result(Int, Nil),
+  origin: ui_sessions.Origin,
 ) {
   case req.get_header(request, "x-shareable") {
-    Ok(_) -> shareabling(request, attachment, open)
-    Error(Nil) -> inviting_in(tickets, request, attachment, open)
+    Ok(_) -> shareabling(request, attachment, open, origin)
+    Error(Nil) -> inviting_in(tickets, request, attachment, open, origin)
   }
 }
 
@@ -933,20 +950,28 @@ fn shareabling(
   request,
   attachment: server.Attachment(String),
   open: fn() -> Result(Int, Nil),
+  origin: ui_sessions.Origin,
 ) {
   let open = case req.get_header(request, "x-switch-ended") {
     Ok(_) -> fn() { Error(Nil) }
     Error(Nil) -> open
   }
   let ask = fn() {
-    case ui_socket.shareable_for(attachment, open) {
-      grants.Changed -> stub(296, "changed")
-      grants.Declined(reason) -> stub(297, string.inspect(reason))
-      grants.Claimed(..) -> stub(297, "a claim")
+    // `x-shareable-task` asks as the page's capability does, through the task
+    // that outlives the page, and answers at once: the request's process ends
+    // while the task runs.
+    case req.get_header(request, "x-shareable-task") {
+      Ok(_) -> {
+        ui_socket.shareable_task(attachment, origin, open, fn(_) { Nil })
+        stub(298, "started")
+      }
+      Error(Nil) -> asked_now(attachment, origin, open)
     }
   }
   let capability =
-    ui_socket.shareable_capability(ui_socket.role_of(attachment), fn(_) { Nil })
+    ui_socket.shareable_capability(ui_socket.role_of(attachment), origin, fn(_) {
+      Nil
+    })
   case capability, req.get_header(request, "x-invite-force") {
     Some(_), _ | None, Ok(_) -> ask()
     None, Error(Nil) ->
@@ -957,11 +982,26 @@ fn shareabling(
   }
 }
 
+fn asked_now(
+  attachment: server.Attachment(String),
+  origin: ui_sessions.Origin,
+  open: fn() -> Result(Int, Nil),
+) {
+  {
+    case ui_socket.shareable_for(attachment, origin, open) {
+      grants.Changed -> stub(296, "changed")
+      grants.Declined(reason) -> stub(297, string.inspect(reason))
+      grants.Claimed(..) -> stub(297, "a claim")
+    }
+  }
+}
+
 fn inviting_in(
   tickets,
   request,
   attachment: server.Attachment(String),
   open: fn() -> Result(Int, Nil),
+  origin: ui_sessions.Origin,
 ) {
   let chosen = case req.get_header(request, "x-invite-role") {
     Ok("operator") -> invites.Operator
@@ -975,6 +1015,7 @@ fn inviting_in(
     case
       ui_socket.invite_for(
         attachment,
+        origin,
         tickets,
         open,
         ui_socket.claim_address(request),
@@ -999,14 +1040,21 @@ fn inviting_in(
       invites.Declined(reason) -> stub(293, string.inspect(reason))
     }
   }
+  let capability =
+    ui_socket.invite_capability(ui_socket.role_of(attachment), origin, fn(_) {
+      invites.Declined(invites.Unavailable)
+    })
   case
+    capability,
     ui_socket.role_of(attachment),
     req.get_header(request, "x-invite-force")
   {
-    ui_socket.Owning, _ -> ask()
-    _, Ok(_) -> ask()
-    ui_socket.Operating, Error(Nil) -> stub(294, "no capability")
-    ui_socket.Observing, Error(Nil) -> stub(295, "no capability")
+    Some(_), _, _ -> ask()
+    None, _, Ok(_) -> ask()
+    None, ui_socket.Operating, Error(Nil)
+    | None, ui_socket.Owning, Error(Nil)
+    -> stub(294, "no capability")
+    None, ui_socket.Observing, Error(Nil) -> stub(295, "no capability")
   }
 }
 
@@ -7832,5 +7880,58 @@ pub fn an_owner_makes_a_running_private_session_shareable_test() {
     let again = enter(port, operate(port, credential, session))
     assert invite(port, again, "observer").status == 292
     assert shareable_with(port, again, []).status == 296
+  })
+}
+
+// A page that a bookmark opened mints no access: the owner's operator page gets
+// neither capability, and a press forced from it is refused as `NotOwner`
+// before the session is stopped or an invitation is made. The session is still
+// running, still private, and nobody was invited.
+pub fn a_bookmarks_page_may_not_mint_access_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_session(ready, "bookmark-mint", 1504)
+    let page = enter(port, operate(port, credential, session))
+    let bookmark = [#("x-origin-resumed", "1")]
+    let force = [#("x-invite-force", "1"), ..bookmark]
+
+    assert shareable_with(port, page, bookmark).status == 294
+    assert invite_with(port, page, "observer", bookmark).status == 294
+
+    let refused = shareable_with(port, page, force)
+    assert refused.status == 297
+    assert refused.body == "NotOwner"
+    let refused = invite_with(port, page, "observer", force)
+    assert refused.status == 293
+    assert refused.body == "NotOwner"
+
+    assert scope_in(ready.state_root, session) == ["workspace_private"]
+    assert running_now(ready, session)
+    assert members(ready.state_root) == []
+  })
+}
+
+// The property the design rests on: the task outlives the request that began it.
+// The stub answers at once and its process goes, and the session still ends up
+// session-only and running again, which a task linked to that process could not
+// do once the stop had ended the page.
+pub fn the_task_outlives_the_page_that_asked_for_it_test() {
+  fixture_with(Inviting, fn(ready, port, credential) {
+    let session = create_session(ready, "task-outlives", 1505)
+    let page = enter(port, operate(port, credential, session))
+    let started = shareable_with(port, page, [#("x-shareable-task", "1")])
+    assert started.status == 298
+
+    let assert poll.Answered(Nil) =
+      poll.until(within: 10_000, every: 20, attempt: fn() {
+        case
+          scope_in(ready.state_root, session) == ["session_only"]
+          && running_now(ready, session)
+        {
+          True -> poll.Done(Nil)
+          False -> poll.Retry
+        }
+      })
+      as "the session becomes session-only and runs again"
+    Nil
   })
 }

@@ -479,9 +479,14 @@ pub fn upgrade(
   // request's own host, so the address the command names is the one the page
   // was reached at.
   let address = claim_address(request)
+
+  // An invitation and a shareable session are new access, so both are handed
+  // only to a page a `loom ui` exchange opened, never to one a bookmark opened
+  // (`mints_access`).
+  let origin = seen.grant.origin
   let invite =
-    invite_capability(role, fn(chosen) {
-      invite_for(attachment, tickets, open, address, chosen)
+    invite_capability(role, origin, fn(chosen) {
+      invite_for(attachment, origin, tickets, open, address, chosen)
     })
 
   // The capability to rename is an owner's too, and is made from the same
@@ -503,8 +508,8 @@ pub fn upgrade(
   // The capability to make the session shareable is an owner's as well, and
   // its task outlives the page it was asked from (`shareable_task`).
   let shareable =
-    shareable_capability(role, fn(deliver) {
-      shareable_task(attachment, open, deliver)
+    shareable_capability(role, origin, fn(deliver) {
+      shareable_task(attachment, origin, open, deliver)
     })
   websocket(request, limit, settled, fn(signals) {
     admit(
@@ -1296,7 +1301,7 @@ fn admit(
       Error(Nil)
     }
     Ok(Nil) ->
-      start_page(role, start(standing_of(role, attachment)))
+      start_page(role, start(standing_of(role, seen.grant.origin, attachment)))
       |> result.map_error(fn(_) {
         upgrade_log.closed_early(
           upgrade_log.Page,
@@ -1332,6 +1337,7 @@ fn admit(
 // whether or not the page knew.
 fn standing_of(
   role: Role,
+  origin: ui_sessions.Origin,
   attachment: server.Attachment(instance),
 ) -> component.Standing {
   let reader = case attachment.principal.kind {
@@ -1357,7 +1363,33 @@ fn standing_of(
       }
     Observing | Operating -> None
   }
-  component.Standing(reader:, sharing:)
+
+  // An owner's page that a bookmark opened is the one page that would have the
+  // invitation control but for how it was opened, which is what it says.
+  let opening = case role, mints_access(origin) {
+    Owning, Error(Nil) -> component.FromBookmark
+    Owning, Ok(Nil) | Observing, _ | Operating, _ -> component.FromLink
+  }
+  component.Standing(reader:, sharing:, opening:)
+}
+
+/// Whether a page's origin may mint access: an invitation, or a session made
+/// shareable. Only a page a `loom ui` exchange, a claim or a device link opened
+/// may. A page a bookmark opened, or one a bookmark's home opened, may not, as
+/// it cannot start the admin page or make a device link
+/// (protocol-change/065, the eighth pull request).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.mints_access(ui_sessions.Resumed) == Error(Nil)
+/// ```
+@internal
+pub fn mints_access(origin: ui_sessions.Origin) -> Result(Nil, Nil) {
+  case origin {
+    ui_sessions.Fresh -> Ok(Nil)
+    ui_sessions.Resumed -> Error(Nil)
+  }
 }
 
 // A started page as the socket serves it: its browser frames go to the
@@ -2443,17 +2475,24 @@ pub fn activity_task(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.invite_for(attachment, tickets, open, Ok(address), invites.Observer)
+/// // ui_socket.invite_for(attachment, ui_sessions.Fresh, tickets, open, Ok(address), invites.Observer)
 /// ```
 @internal
 pub fn invite_for(
   attachment: server.Attachment(instance),
+  origin: ui_sessions.Origin,
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
   address: Result(String, Nil),
   chosen: invites.Role,
 ) -> invites.Answer {
-  case may_invite(open, attachment.principal, address) {
+  let standing = {
+    use _ <- result.try(
+      mints_access(origin) |> result.replace_error(invites.NotOwner),
+    )
+    may_invite(open, attachment.principal, address)
+  }
+  case standing {
     Error(reason) -> invites.Declined(reason)
     Ok(address) ->
       case ui_sessions.reserve_invite(tickets, attachment.digest) {
@@ -2477,16 +2516,17 @@ pub fn invite_for(
 /// ## Examples
 ///
 /// ```gleam
-/// assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
+/// assert ui_socket.invite_capability(ui_socket.Operating, ui_sessions.Fresh, ask) == None
 /// ```
 @internal
 pub fn invite_capability(
   role: Role,
+  origin: ui_sessions.Origin,
   ask: fn(invites.Role) -> invites.Answer,
 ) -> Option(fn(invites.Role) -> invites.Answer) {
-  case role {
-    Owning -> Some(ask)
-    Observing | Operating -> None
+  case role, mints_access(origin) {
+    Owning, Ok(Nil) -> Some(ask)
+    Owning, Error(Nil) | Observing, _ | Operating, _ -> None
   }
 }
 
@@ -2629,25 +2669,27 @@ fn reason_of(refusal: Refusal) -> invites.Reason {
 }
 
 /// The capability to make the page's session shareable that a page of `role` is
-/// handed: `ask` for an owner's page and none for any other, which is the whole
-/// of who may draw and use the control (protocol-change/065, the addendum on
-/// making a session shareable). It is the invitation control's rule, because the
-/// two controls sit in one region and the second is the first's way out of a
-/// private session.
+/// handed: `ask` for an owner's page that a `loom ui` exchange opened and none
+/// for any other, which is the whole of who may draw and use the control
+/// (protocol-change/065, the addendum on making a session shareable). It is the
+/// invitation control's rule, because the two controls sit in one region and the
+/// second is the first's way out of a private session. A page a bookmark opened
+/// is handed neither, since a shareable session is new access.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert ui_socket.shareable_capability(ui_socket.Operating, ask) == None
+/// assert ui_socket.shareable_capability(ui_socket.Operating, ui_sessions.Fresh, ask) == None
 /// ```
 @internal
 pub fn shareable_capability(
   role: Role,
+  origin: ui_sessions.Origin,
   ask: fn(fn(grants.Answer) -> Nil) -> Nil,
 ) -> Option(fn(fn(grants.Answer) -> Nil) -> Nil) {
-  case role {
-    Owning -> Some(ask)
-    Observing | Operating -> None
+  case role, mints_access(origin) {
+    Owning, Ok(Nil) -> Some(ask)
+    Owning, Error(Nil) | Observing, _ | Operating, _ -> None
   }
 }
 
@@ -2660,8 +2702,8 @@ pub fn shareable_capability(
 /// credential the page was admitted under, and nothing is taken from the page:
 /// the session is the attachment's.
 ///
-/// 0. The asking page must still be open and must hold the owner's authority in
-///    its session: an observer-ceiling page, a member's page and a page that
+/// 0. The page must not be one a bookmark opened, which cannot mint access, and
+///    it must still be open and hold the owner's authority in its session: an observer-ceiling page, a member's page and a page that
 ///    has ended are `NotOwner`, so a page learns nothing else about its
 ///    standing.
 /// 1. `shareable.make` authenticates the credential as the daemon's owner
@@ -2672,14 +2714,18 @@ pub fn shareable_capability(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.shareable_for(attachment, open)
+/// // ui_socket.shareable_for(attachment, ui_sessions.Fresh, open)
 /// ```
 @internal
 pub fn shareable_for(
   attachment: server.Attachment(instance),
+  origin: ui_sessions.Origin,
   open: fn() -> Result(Int, Nil),
 ) -> grants.Answer {
   let outcome = {
+    use _ <- result.try(
+      mints_access(origin) |> result.replace_error(grants.NotOwner),
+    )
     use _ <- result.try(open() |> result.replace_error(grants.NotOwner))
     use _ <- result.try(case role_of(attachment) {
       Owning -> Ok(Nil)
@@ -2715,15 +2761,16 @@ pub fn shareable_for(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.shareable_task(attachment, open, deliver)
+/// // ui_socket.shareable_task(attachment, ui_sessions.Fresh, open, deliver)
 /// ```
 @internal
 pub fn shareable_task(
   attachment: server.Attachment(instance),
+  origin: ui_sessions.Origin,
   open: fn() -> Result(Int, Nil),
   deliver: fn(grants.Answer) -> Nil,
 ) -> Nil {
-  detached(fn() { shareable_for(attachment, open) }, deliver)
+  detached(fn() { shareable_for(attachment, origin, open) }, deliver)
 }
 
 /// The capability to rename the page's session that a page of `role` is
@@ -4385,30 +4432,22 @@ pub fn admin_task(
   }
 }
 
-// Runs `ask` in a weft run that no page owns, and delivers its answer. A
-// stopped session ends every page open on it, and a run linked to a page's
-// runtime ends with the page, so the stop that begins this task would cancel it
-// after the stop and before the isolation, leaving the session stopped and
-// private. The run is therefore started from a process of its own, which is
-// linked to nothing and ends with the run; every step it makes is bounded by
-// its own call timeouts, so it always ends. `deliver` goes to a runtime that may
-// be gone, which a send to a dead process ignores.
+// Runs `ask` in a process that no page owns, and delivers its answer. A stopped
+// session ends every page open on it, so a run that a page's runtime owns ends
+// with the page, between the stop and the isolation, and leaves the session
+// stopped and private. No weft shape fits: every weft start links its scope to
+// the process that calls it, and a run the caller does not outlive is cancelled,
+// while this one must outlive the page the stop ends. The process is therefore a
+// plain `spawn_unlinked`, which ends when `ask` returns. `ask` is bounded by the
+// registry's call timeouts and by the 15 s stop wait and 30 s resume wait
+// (`shareable`), so the worst case is about 90 s, and a deadline would only
+// kill a task that was about to answer. `deliver` goes to a runtime that may be
+// gone, which a send to a dead process ignores.
 fn detached(
   ask: fn() -> grants.Answer,
   deliver: fn(grants.Answer) -> Nil,
 ) -> Nil {
-  let _ =
-    process.spawn_unlinked(fn() {
-      let _ =
-        weft.new([
-          fn() {
-            deliver(ask())
-            Ok(Nil)
-          },
-        ])
-        |> weft.start
-      Nil
-    })
+  let _ = process.spawn_unlinked(fn() { deliver(ask()) })
   Nil
 }
 

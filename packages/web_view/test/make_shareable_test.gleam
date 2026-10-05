@@ -47,6 +47,7 @@ fn page(
     standing: component.Standing(
       reader: component.DaemonOwner,
       sharing: Some(sharing),
+      opening: component.FromLink,
     ),
     transport: component.Transport(
       ..start.transport,
@@ -249,4 +250,46 @@ pub fn a_done_task_draws_the_invitation_buttons_test() {
   let html = drawn(model)
   assert string.contains(html, "Invite an observer")
   assert !string.contains(html, "Make shareable")
+}
+
+// An owner's page that a bookmark opened is handed neither capability, which the
+// daemon decides and the page only draws: no button of either control, one quiet
+// sentence that says why and how to get a page that can, and nothing the browser
+// can press in the region. A private session keeps its own sentence.
+pub fn a_bookmarks_page_draws_a_sentence_and_no_button_test() {
+  let bookmarked = fn(sharing) {
+    let start = page_fixture.start()
+    component.Start(
+      ..start,
+      standing: component.Standing(
+        reader: component.DaemonOwner,
+        sharing: Some(sharing),
+        opening: component.FromBookmark,
+      ),
+    )
+    |> component.new
+    |> component.apply([lane_fixture.captured(10, None)])
+  }
+
+  let private = bookmarked(creations.Private)
+  assert component.share(private) == invites.BookmarkedPrivate
+  let html = drawn(private)
+  assert string.contains(html, "Private session: it shares the workspace")
+  assert string.contains(
+    html,
+    "This page was opened from a bookmark, so it cannot invite people or make a session shareable. Run loom ui for a page that can.",
+  )
+  assert !string.contains(html, "Make shareable")
+  assert !string.contains(html, "Invite an observer")
+  assert region_clicks(private) == 0
+
+  let shareable = bookmarked(creations.Shareable)
+  assert component.share(shareable) == invites.Bookmarked
+  assert string.contains(drawn(shareable), "opened from a bookmark")
+  assert !string.contains(drawn(shareable), "Private session")
+  assert region_clicks(shareable) == 0
+
+  // No press reaches the daemon, since the page has no capability.
+  let #(same, _) = component.invite(shareable, invites.Observer)
+  assert component.share(same) == invites.Bookmarked
 }

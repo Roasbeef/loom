@@ -400,7 +400,24 @@ pub type Standing {
     /// control or the host could not read it. A session known to be private
     /// draws no invitation buttons (`invites.Unshareable`).
     sharing: Option(creations.Sharing),
+    /// How an owner's page was opened. A page a bookmark opened cannot mint
+    /// access, so it is handed neither the invitation nor the make-shareable
+    /// capability and draws a sentence in their place (`invites.Bookmarked`).
+    opening: Opening,
   )
+}
+
+/// How the page was opened, for an owner's page that would otherwise draw the
+/// invitation control.
+pub type Opening {
+  /// A `loom ui` exchange, a claim or a device link opened it, or it is not an
+  /// owner's page. The capabilities, where the principal has them, are handed
+  /// out.
+  FromLink
+
+  /// The page's principal is the owner and a bookmark opened the page, or a page
+  /// a bookmark's home opened. Nothing that mints access is offered.
+  FromBookmark
 }
 
 /// Who the page's principal is to the daemon.
@@ -414,7 +431,8 @@ pub type Reader {
 
 /// A standing that says nothing: a member, and a session whose sharing was not
 /// read. Fixtures and hosts with no catalogue start from it.
-pub const unplaced = Standing(reader: Participant, sharing: None)
+pub const unplaced =
+  Standing(reader: Participant, sharing: None, opening: FromLink)
 
 /// What the daemon's catalogue says about a session, for the page's
 /// heading. Neither field comes from the session's transcript: the name is
@@ -943,10 +961,19 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       listed_at: None,
       departure: None,
       resuming: None,
-      share: case start.transport.invite, start.standing.sharing {
-        Some(_), Some(creations.Private) -> invites.Unshareable
-        Some(_), Some(creations.Shareable) | Some(_), None -> invites.Ready
-        None, _ -> invites.Withheld
+      share: case
+        start.transport.invite,
+        start.standing.sharing,
+        start.standing.opening
+      {
+        None, Some(creations.Private), FromBookmark -> invites.BookmarkedPrivate
+        None, Some(creations.Shareable), FromBookmark
+        | None, None, FromBookmark
+        -> invites.Bookmarked
+        Some(_), Some(creations.Private), _ -> invites.Unshareable
+        Some(_), Some(creations.Shareable), _ | Some(_), None, _ ->
+          invites.Ready
+        None, _, FromLink -> invites.Withheld
       },
       moving: case start.transport.shareable, start.standing.sharing {
         Some(_), Some(creations.Private) -> shareables.Idle
@@ -2602,6 +2629,8 @@ pub fn invite(
     | Some(_), invites.Showing(..)
     | Some(_), invites.Withheld
     | Some(_), invites.Unshareable
+    | Some(_), invites.Bookmarked
+    | Some(_), invites.BookmarkedPrivate
     | None, _
     -> #(model, effect.none())
   }
@@ -2632,6 +2661,8 @@ fn invited(model: Model(socket), answer: invites.Answer) -> Model(socket) {
       Model(..model, view: View(..model.view, share: invites.Refused(reason)))
     invites.Withheld, _
     | invites.Unshareable, _
+    | invites.Bookmarked, _
+    | invites.BookmarkedPrivate, _
     | invites.Ready, _
     | invites.Showing(..), _
     | invites.Refused(..), _
@@ -2652,8 +2683,12 @@ pub fn dismiss_invitation(model: Model(socket)) -> Model(socket) {
   case model.view.share {
     invites.Showing(..) | invites.Refused(..) ->
       Model(..model, view: View(..model.view, share: invites.Ready))
-    invites.Withheld | invites.Unshareable | invites.Ready | invites.Asking ->
-      model
+    invites.Withheld
+    | invites.Unshareable
+    | invites.Bookmarked
+    | invites.BookmarkedPrivate
+    | invites.Ready
+    | invites.Asking -> model
   }
 }
 

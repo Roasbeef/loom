@@ -674,18 +674,33 @@ pub fn the_principal_check_refuses_a_member_on_its_own_test() {
 // The capability is handed to an owner's page and to no other.
 pub fn only_an_owning_page_is_handed_the_capability_test() {
   let ask = fn(_) { invites.Declined(invites.Unavailable) }
-  assert ui_socket.invite_capability(ui_socket.Observing, ask) == None
-  assert ui_socket.invite_capability(ui_socket.Operating, ask) == None
-  let assert Some(_) = ui_socket.invite_capability(ui_socket.Owning, ask)
+  let fresh = ui_sessions.Fresh
+  assert ui_socket.invite_capability(ui_socket.Observing, fresh, ask) == None
+  assert ui_socket.invite_capability(ui_socket.Operating, fresh, ask) == None
+  let assert Some(_) = ui_socket.invite_capability(ui_socket.Owning, fresh, ask)
+
+  // A page a bookmark opened is handed none, whoever its principal is.
+  assert ui_socket.invite_capability(ui_socket.Owning, ui_sessions.Resumed, ask)
+    == None
 }
 
 // Making a session shareable has the invitation control's rule: an owner's page
 // is handed it, and a member's page and a read-only page are not.
 pub fn only_an_owning_page_is_handed_make_shareable_test() {
   let ask = fn(_deliver) { Nil }
-  assert ui_socket.shareable_capability(ui_socket.Observing, ask) == None
-  assert ui_socket.shareable_capability(ui_socket.Operating, ask) == None
-  let assert Some(_) = ui_socket.shareable_capability(ui_socket.Owning, ask)
+  let fresh = ui_sessions.Fresh
+  assert ui_socket.shareable_capability(ui_socket.Observing, fresh, ask) == None
+  assert ui_socket.shareable_capability(ui_socket.Operating, fresh, ask) == None
+  let assert Some(_) =
+    ui_socket.shareable_capability(ui_socket.Owning, fresh, ask)
+
+  // A page a bookmark opened mints no access: an owner's page gets none.
+  assert ui_socket.shareable_capability(
+      ui_socket.Owning,
+      ui_sessions.Resumed,
+      ask,
+    )
+    == None
 }
 
 // A page whose transport hands it the capability to go home that
