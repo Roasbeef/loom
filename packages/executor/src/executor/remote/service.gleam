@@ -40,7 +40,7 @@
 ////
 //// ## Flow
 ////
-//// `exchange` -> `handle` -> `apply_envelope` -> `submit` -> `first_submit`
+//// `exchange` -> `handle` -> `handle_exchange` -> `apply_envelope` -> `submit` -> `first_submit`
 //// -> `launch`; `query` reads retained custody without launching.
 ////
 //// `live_command_context` checks Claim identity; `command_context` reads history.
@@ -49,9 +49,12 @@
 //// `associate_command` orders its permit; `ticket_route` binds both nonce lanes.
 //// `validate_command` checks the complete local endpoint and original identity.
 //// `command_deadline` clamps live command authority to original elapsed custody.
+//// `handle_open_exchange` applies ordinary work only after `validate_envelope`.
+//// `close_scope` retains one original native disposition even on durable failure;
+//// repeated close only retries the exact original durable confirmations.
 ////
 //// 1. `exchange` admits one bounded service ask outside the network writer.
-//// 2. `apply_envelope` fences peer, role, scope and generation before mutation.
+//// 2. `validate_envelope` fences peer, role, scope and generation before mutation.
 //// 3. `submit` compares exact materialization and returns original evidence.
 //// 4. `first_submit` persists request, authority and admission before intent.
 //// 5. `launch` consumes only a live committed authorization into native custody.
@@ -212,6 +215,19 @@ type AdmissionGate {
   Quiesced
 }
 
+// One live service owns one native-close attempt. Durable retries cannot
+// reconstruct its proof from actor death or invoke the stopped native actor.
+type NativeClose {
+  /// No native close has been attempted by this original service.
+  NativeOpen
+
+  /// The original native close returned its actual retirement proof.
+  NativeRetired
+
+  /// A failed or lost native close remains uncertain for this service lifetime.
+  NativeUncertain
+}
+
 type State {
   State(
     config: Config,
@@ -222,6 +238,7 @@ type State {
     subject: process.Subject(Message),
     sequence: Int,
     gate: AdmissionGate,
+    native_close: NativeClose,
   )
 }
 
@@ -379,6 +396,7 @@ fn builder(
         subject,
         0,
         Accepting,
+        NativeOpen,
       ))
       |> actor.returning(subject),
     )
@@ -585,15 +603,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(State(..state, gate: Quiesced, tickets: []))
     }
     Shutdown(reply) -> {
-      let state = State(..state, gate: Quiesced, tickets: [])
-      case close_scope(state) {
+      let #(next, outcome) = close_scope(state)
+      case outcome {
         Ok(_) -> {
           process.send(reply, Ok(Nil))
           actor.stop()
         }
         Error(error) -> {
           process.send(reply, Error(error))
-          actor.continue(state)
+          actor.continue(next)
         }
       }
     }
@@ -650,6 +668,28 @@ fn handle_exchange(
   envelope: wire.Envelope,
   reply: process.Subject(Result(wire.Body, Error)),
 ) -> actor.Next(State, Message) {
+  // Closure returns retained state even on failure. Ordinary exchanges keep
+  // their existing all-or-error mutation contract and validation ordering.
+  case validate_envelope(state, route, envelope), envelope.body {
+    Ok(Nil), wire.CloseScope if envelope.generation == state.generation -> {
+      let #(next, outcome) = close_scope(state)
+      process.send(reply, outcome)
+      actor.continue(next)
+    }
+    Error(error), _ -> {
+      process.send(reply, Error(error))
+      actor.continue(state)
+    }
+    Ok(Nil), _ -> handle_open_exchange(state, route, envelope, reply)
+  }
+}
+
+fn handle_open_exchange(
+  state: State,
+  route: Route,
+  envelope: wire.Envelope,
+  reply: process.Subject(Result(wire.Body, Error)),
+) -> actor.Next(State, Message) {
   case apply_envelope(state, route, envelope) {
     Ok(#(next, body)) -> {
       process.send(reply, Ok(body))
@@ -662,11 +702,11 @@ fn handle_exchange(
   }
 }
 
-fn apply_envelope(
+fn validate_envelope(
   state: State,
   route: Route,
   envelope: wire.Envelope,
-) -> Result(#(State, wire.Body), Error) {
+) -> Result(Nil, Error) {
   let config = state.config
   use Nil <- result.try(
     case
@@ -681,7 +721,15 @@ fn apply_envelope(
       False -> Error(Invalid)
     },
   )
-  use Nil <- result.try(command_body(route, envelope.body))
+  command_body(route, envelope.body)
+}
+
+fn apply_envelope(
+  state: State,
+  route: Route,
+  envelope: wire.Envelope,
+) -> Result(#(State, wire.Body), Error) {
+  let config = state.config
   case envelope.body {
     wire.ChallengeRequest(_, _)
       | wire.Submit(_, _, _, _, _)
@@ -723,7 +771,7 @@ fn apply_envelope(
       use body <- result.try(query(state, key, digest, 64))
       Ok(#(state, body))
     }
-    wire.CloseScope -> close_scope(state)
+    wire.CloseScope -> Error(Invalid)
     _ -> Error(Invalid)
   }
 }
@@ -1348,27 +1396,45 @@ fn feed(
   }
 }
 
-fn close_scope(state: State) -> Result(#(State, wire.Body), Error) {
-  // Durability failure leaves proof uncertain, but cannot prevent local drain.
-  // Both attempts run; retirement is advertised only if fence and drain succeed.
+fn close_scope(state: State) -> #(State, Result(wire.Body, Error)) {
+  // Quiescence and the original native disposition survive every outward error.
+  // Covered identities cannot grow after this point; retries only confirm them.
+  let state = State(..state, gate: Quiesced, tickets: [])
   let fenced = journal.close_epoch(state.config.journal)
-  let drained = local.close(state.config.native, draining: 2000, helpers: 5000)
-  use Nil <- result.try(fenced |> durable)
-  use Nil <- result.try(drained |> result.map_error(fn(_) { Uncertain }))
-  use Nil <- result.try(
-    list.try_each(dict.to_list(state.covered), fn(pair) {
-      let #(key, digest) = pair
-      journal.apply(
-        state.config.journal,
-        key,
-        digest,
-        admission.ConfirmRetirement,
-      )
-      |> durable
-      |> result.replace(Nil)
-    }),
-  )
-  Ok(#(state, wire.ScopeRetirement))
+  let disposition = case state.native_close {
+    NativeOpen ->
+      case local.close(state.config.native, draining: 2000, helpers: 5000) {
+        Ok(Nil) -> NativeRetired
+        Error(_) -> NativeUncertain
+      }
+    NativeRetired | NativeUncertain -> state.native_close
+  }
+  let state = State(..state, native_close: disposition)
+
+  // Native success alone never advertises complete scope retirement. The exact
+  // original journal and covered-key confirmations must also succeed.
+  let outcome = {
+    use Nil <- result.try(fenced |> durable)
+    use Nil <- result.try(case disposition {
+      NativeRetired -> Ok(Nil)
+      NativeOpen | NativeUncertain -> Error(Uncertain)
+    })
+    use Nil <- result.try(
+      list.try_each(dict.to_list(state.covered), fn(pair) {
+        let #(key, digest) = pair
+        journal.apply(
+          state.config.journal,
+          key,
+          digest,
+          admission.ConfirmRetirement,
+        )
+        |> durable
+        |> result.replace(Nil)
+      }),
+    )
+    Ok(wire.ScopeRetirement)
+  }
+  #(state, outcome)
 }
 
 fn phase_code(phase: admission.Phase) -> Int {
