@@ -408,7 +408,7 @@ page keys and nonces, and the relay into the session's gateway.
   `view/diff` draws each as its own row: the old and new numbers in a quiet
   gutter, the sign, and the text in a span, all text nodes. Added lines are
   green with a green `+`, removed red with a red `−`, a hunk header sits in a
-  quiet band. The box scrolls sideways and never wraps. A diff is cut at
+  quiet band. The two numbers and the sign are one `.diff-gutter` cell that is `position:sticky;left:0` on its row's own background, so the box scrolls sideways under a fixed gutter and never wraps. A diff is cut at
   `diff_view.max_lines` with `n more lines not shown`.
 - **Prompts, spawns, results and reviews.** A person's message is
   `turns.Prompt`: `lane` draws its sender as a line of its own (`<span
@@ -436,7 +436,7 @@ page keys and nonces, and the relay into the session's gateway.
   row before anything streams: while the followed strand's phase is `assistant`
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
-  server timer; before the generation clock starts it says `Thinking` alone), and the first fragment replaces it with `Reasoning` or the
+  server timer; before the generation clock starts it says `Thinking` alone; `component.clocked` starts the clock the first time the page sees the `assistant` phase in a capture, since the phase event that starts it is the terminal's, and ends it when another phase comes with no stream drawn), and the first fragment replaces it with `Reasoning` or the
   answer. The region is a row of the
   timeline with its own dot, which pulses while the region exists. `live.Answer(line)` is the answer so far,
   drawn by the lane's own assistant line. A tool call being composed is not
@@ -559,14 +559,21 @@ page keys and nonces, and the relay into the session's gateway.
   it is the heading and one line saying so, so the pane is always drawn and
   the panes after it never move. It reads no worktree: the daemon serves
   worktree bytes to an Owner binding only.
-- `session_tab.view(goal, cost, jobs, viewers, share)` draws the Session pane,
-  the panel's third. Its children are the title, a memoized list of rows and
-  `share`, the invitation control's place, in that order so the control's path
-  never moves. The rows are the goal (the terminal's own row, `goal_view.row`, or
-  `none`), the followed strand's live jobs, where the page shows them the
-  attached viewers (`session_view/session_summary`, one line per principal:
-  `Owner · owner, operator · 3 pages · you`) and the estimated cost, the
-  figure alone since the row's label says estimate. Schedules are not a row: the shared record keeps a schedule
+- `session_tab.view(goal, cost, jobs, viewers, workspace, share, controls, rename)`
+  draws the Session pane, the panel's third. Its children are the title, a
+  memoized `div.session-rows` of groups, `share`, `controls` and `rename`, in
+  that order so the three controls' paths never move (`invite_path`,
+  `session_controls_path`, `rename_path`). The groups read Session (the name
+  with its Rename control, then the workspace), People (the viewers, then the
+  invitation buttons), Goal (the terminal's own row, `goal_view.row`, or `none`,
+  then its buttons), Fork, Jobs and Cost, each under an eyebrow heading and with
+  no rules. The DOM order is not that order: the stylesheet makes the pane a
+  flex column, the rows wrapper and the controls section `display:contents`, and
+  gives each piece an `order` (`.pane-session`). The viewers are
+  `session_view/session_summary` (one line per principal: `Owner · owner,
+  operator · 3 pages · you`) and the cost is the figure with `estimated`, or a
+  dash alone for an unpriced session. The page holds no creation time, so none
+  is drawn. Schedules are not a row: the shared record keeps a schedule
   listing only as transcript lines the page does not draw. The component asks
   for the jobs on a `Ticked` when the page opened or last asked
   `jobs_refresh_ms` (10 s) ago and no answer is outstanding. The clock starts

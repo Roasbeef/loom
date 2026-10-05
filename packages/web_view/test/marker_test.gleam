@@ -270,7 +270,7 @@ pub fn a_strands_view_draws_the_figures_it_knows_test() {
     "<dt class=\"detail-term\">Running</dt>",
     "loom-elapsed",
   ])
-  assert !string.contains(html, "Cost")
+  assert !string.contains(html, "<dt class=\"detail-term\">Cost</dt>")
 }
 
 fn chip(

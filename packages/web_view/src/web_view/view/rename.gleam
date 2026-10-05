@@ -55,6 +55,7 @@ pub fn view(
       html.section(
         [
           attribute.class("controls"),
+          attribute.class("session-rename"),
           attribute.aria_label("Rename this session"),
         ],
         [

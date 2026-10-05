@@ -1,8 +1,23 @@
-//// The Session tab of the strand panel: the session's goal, its live jobs,
-//// the attached viewers and its estimated cost, drawn as a key and value list
-//// on both pages. The cost row's label says it is an estimate, so its value is
-//// the figure alone (`$0.12`), and a viewer is a principal, not an attachment:
-//// one person's three pages are one line that counts them.
+//// The Session tab of the strand panel: the session's workspace, the attached
+//// viewers, its goal and live jobs and its estimated cost, drawn on both
+//// pages as groups that each lead with a heading in the panel's eyebrow style.
+//// A viewer is a principal, not an attachment: one person's three pages are
+//// one line that counts them.
+////
+//// The groups read in this order: Session (the name with its Rename control,
+//// then the workspace), People (the viewers and the invitation buttons), Goal
+//// (the pinned goal and its buttons), Fork, Jobs and Cost. The pane's
+//// children are not in that order and cannot be. The invitation control, the
+//// operator's controls and the rename control are the pane's third, fourth
+//// and fifth children, at the paths the page socket admits events beneath
+//// (`component.invite_path`, `component.session_controls_path`,
+//// `component.rename_path`), and a path is a position, so moving a child
+//// would move what the socket admits. The reading order is the stylesheet's:
+//// `.pane-session` is a column whose children carry an `order`, and the rows
+//// wrapper and the controls section are `display:contents`, so each group
+//// and control is placed on its own. This module draws the groups and the
+//// stylesheet places them; a test pins each group's class and the pane's
+//// child count.
 ////
 //// The rows are `session_view`'s wherever it words them
 //// (`session_summary`, `goal_view.row`), so the terminal can draw the same
@@ -16,20 +31,27 @@
 //// watch, and who else is watching is not theirs to learn (the same ruling
 //// that keeps the session list off an observer's page). This module keeps that
 //// policy out of the summary: the caller hands in `Some(viewers)` or `None`,
-//// and a page passes `None` where it does not show the row.
+//// and a page passes `None` where it does not show the group.
 ////
 //// Schedules are not a row: the shared record keeps a schedule listing only as
-//// transcript lines the page does not draw, so there is nothing to show.
+//// transcript lines the page does not draw, so there is nothing to show. The
+//// session's creation time is not a row either: the page holds no such
+//// reading, and drawing one would take a catalogue field the wire does not
+//// carry.
 ////
 //// The pane is drawn whether or not the Session tab shows (`view/panel`), and
-//// always has its heading and the cost row, so its place in the panel never
-//// moves. Below the list it has two more children: the owner's invitation
-//// control (`view/share`), or an empty node on a page that has none, and the
-//// operator's session controls (`view/controls`), or an empty node.
+//// always has its heading and the Goal, Jobs and Cost groups, so its place in
+//// the panel never moves. After the rows it has three more children: the
+//// owner's invitation control (`view/share`), or an empty node on a page that
+//// has none, the operator's session controls (`view/controls`), or an empty
+//// node, and the owner's rename control (`view/rename`), or an empty node.
 ////
 //// Job lines, which carry a command excerpt, viewer names and the goal's
 //// objective, are session and principal text: each is drawn as a text node,
-//// never as an attribute, a class or a key, and every class is a literal. The rows carry no handler; the invitation control's are its own.
+//// never as an attribute, a class or a key, and every class is a literal. The
+//// workspace is the catalogue's validated directory, drawn as a text node and
+//// also as a `title`, as the top bar does. The rows carry no handler; the
+//// controls' are their own.
 
 import gleam/int
 import gleam/list
@@ -42,35 +64,38 @@ import session_view/session_summary.{
   type Jobs, type Viewer, type Viewers, Another, Live, Unread, You,
 }
 
-/// The Session pane: the goal, the jobs, the viewers where the page shows them,
-/// the estimated cost, and, below them, the invitation control where the page
-/// has one.
+/// The Session pane: the workspace, the viewers where the page shows them,
+/// the goal, the jobs and the estimated cost, and, after them, the invitation
+/// control where the page has one.
 ///
 /// `goal` is the terminal's goal row as its words (`goal_view.row`), empty when
 /// no goal is pinned or none was read. `cost` is the session's running total
-/// as a figure (`$0.12`), without the word `est`, which the row's label says. The list of rows is memoized on all four, so
-/// a page whose rows did not change diffs nothing. `share` is the invitation
-/// control (`web_view/view/share`), which only an owner's page draws and which
-/// is `element.none()` everywhere else. It is the pane's third child, after the
-/// title and the list, and it stays there, so the path of its handlers
-/// (`component.invite_path`) does not depend on what the rows hold. `controls`
-/// is the operator's goal buttons and Fork form (`view/controls.session`), or
-/// `element.none()` on an observer's page. It is the pane's fourth child,
-/// after the invitation control and not before it, so that adding it moved no
-/// path the socket admits. `rename` is the owner's rename control
-/// (`view/rename`), or `element.none()` on any other page, and is the pane's
-/// fifth and last child for the same reason.
+/// as a figure (`$0.12`), without the word `est`, which the group's note says.
+/// `workspace` is the working directory the catalogue gives the session, or
+/// `None` when the label was not read, which draws no workspace group. The
+/// rows are memoized on all five, so a page whose rows did not change diffs
+/// nothing. `share` is the invitation control (`web_view/view/share`), which
+/// only an owner's page draws and which is `element.none()` everywhere else.
+/// It is the pane's third child, after the title and the rows, and it stays
+/// there, so the path of its handlers (`component.invite_path`) does not
+/// depend on what the rows hold. `controls` is the operator's goal buttons and
+/// Fork form (`view/controls.session`), or `element.none()` on an observer's
+/// page. It is the pane's fourth child, after the invitation control and not
+/// before it, so that adding it moved no path the socket admits. `rename` is
+/// the owner's rename control (`view/rename`), or `element.none()` on any
+/// other page, and is the pane's fifth and last child for the same reason.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), element.none(), element.none(), element.none())
+/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), element.none(), element.none(), element.none())
 /// ```
 pub fn view(
   goal: List(String),
   cost: String,
   jobs: Jobs,
   viewers: Option(Viewers),
+  workspace: Option(String),
   share: Element(message),
   controls: Element(message),
   rename: Element(message),
@@ -83,7 +108,7 @@ pub fn view(
     ],
     [
       html.h2([attribute.class("panel-title")], [html.text("Session")]),
-      rows(goal, cost, jobs, viewers),
+      rows(goal, cost, jobs, viewers, workspace),
       share,
       controls,
       rename,
@@ -91,97 +116,149 @@ pub fn view(
   )
 }
 
-// The key and value list, memoized on what it is drawn from.
+// The groups, memoized on what they are drawn from. The wrapper is the pane's
+// second child and the stylesheet makes it `display:contents`, so each group
+// is placed in the pane's column by its own `order`.
 fn rows(
   goal: List(String),
   cost: String,
   jobs: Jobs,
   viewers: Option(Viewers),
+  workspace: Option(String),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(goal),
     element.ref(cost),
     element.ref(jobs),
     element.ref(viewers),
+    element.ref(workspace),
   ])
-  html.dl(
-    [attribute.class("session-list")],
+  html.div(
+    [attribute.class("session-rows")],
     list.flatten([
-      goal_row(goal),
-      jobs_row(jobs),
-      viewers_row(viewers),
-      [term("Est. cost"), value([html.p([], [html.text(cost)])])],
+      workspace_group(workspace),
+      people_group(viewers),
+      [
+        group("goal", Some("Goal"), goal_rows(goal)),
+        group("jobs", Some("Jobs"), jobs_rows(jobs)),
+        group("cost", Some("Cost"), [
+          cost_line(cost),
+        ]),
+      ],
     ]),
   )
 }
 
-// The goal row: the terminal's words for a pinned goal, or that there is none.
-fn goal_row(goal: List(String)) -> List(Element(message)) {
-  case goal {
-    [] -> [
-      term("Goal"),
-      value([html.p([attribute.class("session-quiet")], [html.text("none")])]),
-    ]
-    lines -> [
-      term("Goal"),
-      value(list.map(lines, fn(line) { html.p([], [html.text(line)]) })),
-    ]
-  }
+// One group: an optional eyebrow heading and its rows. The class names the
+// group, which is how the stylesheet places it. The Session group has no
+// heading of its own, because the pane's title is its heading.
+fn group(
+  name: String,
+  heading: Option(String),
+  rows: List(Element(message)),
+) -> Element(message) {
+  html.div(
+    [
+      attribute.role("group"),
+      attribute.class("session-group"),
+      attribute.class("session-group-" <> name),
+    ],
+    case heading {
+      Some(words) -> [
+        html.h3([attribute.class("session-eyebrow")], [html.text(words)]),
+        ..rows
+      ]
+      None -> rows
+    },
+  )
 }
 
-// The jobs row: the count and the daemon's board, or that none was read.
-fn jobs_row(jobs: Jobs) -> List(Element(message)) {
-  case jobs {
-    Unread -> [
-      term("Jobs"),
-      value([
-        html.p([attribute.class("session-quiet")], [html.text("not read yet")]),
-      ]),
-    ]
-    Live(total: 0, ..) -> [
-      term("Jobs"),
-      value([
-        html.p([attribute.title("At the last refresh")], [html.text("none")]),
-      ]),
-    ]
-    Live(total:, rows:, omitted:) -> [
-      term("Jobs"),
-      value([
-        html.p([], [
-          html.text(int.to_string(total) <> " live"),
-          html.span([attribute.class("session-quiet")], [
-            html.text(" · at last refresh"),
-          ]),
+// The workspace of the Session group, or nothing when the label was not read.
+// The name and its Rename control are the pane's last child, which the
+// stylesheet draws first in the group.
+fn workspace_group(workspace: Option(String)) -> List(Element(message)) {
+  case workspace {
+    None -> []
+    Some(path) -> [
+      group("workspace", None, [
+        html.p([attribute.class("session-workspace"), attribute.title(path)], [
+          html.text(path),
         ]),
-        html.ul(
-          [attribute.class("session-jobs")],
-          list.map(rows, fn(row) { html.li([], [html.text(row)]) }),
-        ),
-        more(omitted, " more jobs not shown"),
       ]),
     ]
   }
 }
 
-// The viewers row, or nothing for a page that does not show them.
-fn viewers_row(viewers: Option(Viewers)) -> List(Element(message)) {
+// The People group: the viewers, or nothing for a page that does not show
+// them. The invitation control, where there is one, follows it in the column.
+fn people_group(viewers: Option(Viewers)) -> List(Element(message)) {
   case viewers {
     None -> []
-    Some(viewers) -> [
-      term("Viewers"),
-      value([
-        html.p([], [html.text(int.to_string(viewers.total) <> " attached")]),
-        html.ul(
-          [attribute.class("session-viewers")],
-          list.map(viewers.rows, viewer),
-        ),
-        more(
-          viewers.total - list.fold(viewers.rows, 0, fn(n, v) { n + v.pages }),
-          " more not shown",
-        ),
+    Some(viewers) -> [group("people", Some("People"), viewer_rows(viewers))]
+  }
+}
+
+// The cost: the figure and the word that says it is an estimate. An unpriced
+// session has no figure to qualify, so the dash stands alone.
+fn cost_line(cost: String) -> Element(message) {
+  case cost {
+    "—" -> html.p([attribute.class("session-quiet")], [html.text(cost)])
+    figure ->
+      html.p([], [
+        html.text(figure),
+        html.span([attribute.class("session-quiet")], [html.text(" estimated")]),
+      ])
+  }
+}
+
+// The goal: the terminal's words for a pinned goal, or that there is none.
+fn goal_rows(goal: List(String)) -> List(Element(message)) {
+  case goal {
+    [] -> [
+      html.p([attribute.class("session-quiet")], [html.text("none")]),
+    ]
+    lines -> list.map(lines, fn(line) { html.p([], [html.text(line)]) })
+  }
+}
+
+// The jobs: the count and the daemon's board, or that none was read.
+fn jobs_rows(jobs: Jobs) -> List(Element(message)) {
+  case jobs {
+    Unread -> [
+      html.p([attribute.class("session-quiet")], [html.text("not read yet")]),
+    ]
+    Live(total: 0, ..) -> [
+      html.p([attribute.title("At the last refresh")], [html.text("none")]),
+    ]
+    Live(total:, rows:, omitted:) -> [
+      html.p([], [
+        html.text(int.to_string(total) <> " live"),
+        html.span([attribute.class("session-quiet")], [
+          html.text(" · at last refresh"),
+        ]),
       ]),
+      html.ul(
+        [attribute.class("session-jobs")],
+        list.map(rows, fn(row) { html.li([], [html.text(row)]) }),
+      ),
+      more(omitted, " more jobs not shown"),
     ]
   }
+}
+
+// The viewers: how many are attached and one line for each principal.
+fn viewer_rows(viewers: Viewers) -> List(Element(message)) {
+  [
+    html.p([], [html.text(int.to_string(viewers.total) <> " attached")]),
+    html.ul(
+      [attribute.class("session-viewers")],
+      list.map(viewers.rows, viewer),
+    ),
+    more(
+      viewers.total - list.fold(viewers.rows, 0, fn(n, v) { n + v.pages }),
+      " more not shown",
+    ),
+  ]
 }
 
 // One principal: the name, the roles its pages hold, how many pages when more
@@ -215,12 +292,4 @@ fn more(left: Int, words: String) -> Element(message) {
         html.text("+" <> int.to_string(left) <> words),
       ])
   }
-}
-
-fn term(label: String) -> Element(message) {
-  html.dt([attribute.class("session-term")], [html.text(label)])
-}
-
-fn value(children: List(Element(message))) -> Element(message) {
-  html.dd([attribute.class("session-value")], children)
 }

@@ -31,6 +31,7 @@ fn drawn(jobs, viewers) -> String {
     "$0.00",
     jobs,
     viewers,
+    None,
     element.none(),
     element.none(),
     element.none(),
@@ -45,11 +46,53 @@ pub fn nothing_to_say_still_draws_the_heading_and_the_cost_test() {
   assert string.contains(html, "<section aria-label=\"Session\"")
   assert string.contains(html, "pane pane-session")
   assert string.contains(html, "Session</h2>")
-  assert string.contains(html, "Est. cost")
+  assert string.contains(html, "Cost</h3>")
   assert string.contains(html, "$0.00")
 
   // The label says it is an estimate, so the figure does not say it again.
   assert !string.contains(html, "est $")
+}
+
+// The groups are in the order a reader scans, each under an eyebrow heading:
+// the pane's title is the Session group's, then People, Goal, Jobs and Cost.
+// The pane keeps five children so the handlers' paths hold, and the
+// stylesheet puts the controls and the invitation among the groups.
+pub fn the_groups_read_session_people_goal_jobs_cost_test() {
+  let html =
+    element.to_string(session_tab.view(
+      [],
+      "$0.12",
+      Unread,
+      Some(Viewers([], 1)),
+      Some("/src/loom"),
+      element.none(),
+      element.none(),
+      element.none(),
+    ))
+  let positions =
+    list.map(
+      [
+        "Session</h2>",
+        "session-group-workspace",
+        "People</h3>",
+        "Goal</h3>",
+        "Jobs</h3>",
+        "Cost</h3>",
+      ],
+      fn(part) {
+        let assert Ok(#(before, _)) = string.split_once(html, part)
+          as "every group is drawn"
+        string.length(before)
+      },
+    )
+  assert positions == list.sort(positions, int.compare)
+  assert string.contains(html, "/src/loom")
+  assert !string.contains(html, "Est. cost")
+
+  // A page that shows no viewers and read no label draws neither group.
+  let bare = drawn(Unread, None)
+  assert !string.contains(bare, "People")
+  assert !string.contains(bare, "session-group-workspace")
 }
 
 pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
@@ -58,6 +101,7 @@ pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
       ["goal active · 10/100 tokens · 2 continuations · ship it"],
       "$0.12",
       Unread,
+      None,
       None,
       element.none(),
       element.none(),
@@ -81,6 +125,7 @@ pub fn the_goal_is_only_ever_a_text_node_test() {
       ["goal active · <script>alert(1)</script>"],
       "$0.00",
       Unread,
+      None,
       None,
       element.none(),
       element.none(),

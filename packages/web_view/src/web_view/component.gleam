@@ -3487,6 +3487,7 @@ pub fn panel(
       cost_figure(model),
       jobs(model),
       viewers,
+      option.map(model.view.label, fn(label) { label.workspace }),
       share,
       controls,
       rename,
