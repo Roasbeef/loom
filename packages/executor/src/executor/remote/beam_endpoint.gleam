@@ -6,7 +6,9 @@
 //// Once an ask reaches service custody, reuse requires its actual answer and
 //// AllDelivered. A handoff carries its run reference; an unconsumed handoff
 //// arriving after reuse is discarded before touching the new registration. Lost or
-//// uncertain custody retires a credit until the embedding owner proves drain.
+//// uncertain custody permanently retains its original assignment. Idle actor loss
+//// reduces capacity without charging a scope. Six canonical records are the only
+//// allocation state; no fence, DOWN or timeout returns assigned capacity.
 //// The host must treat this subtree as Temporary and separately drain native
 //// effects before replacing it. No endpoint death establishes native retirement.
 ////
@@ -14,6 +16,10 @@
 ////
 //// `registration` and `compile_registration` derive concrete authority;
 //// `configure_server`, `start` and `register` own bounded local enrollment.
+//// `monitored_row` watches each local scope owner; `fence` permanently closes its
+//// row. `inspect_drain` uses `drain_snapshot` and `exact_row` to observe scoped
+//// custody. `handle` retains normal credit loss and `available_count` counts only
+//// canonical Available records. Scope owner DOWN applies the same row fence.
 //// `exchange`, `workspace_exchange` and `compile_exchange` enter `owner_exchange`;
 //// `exchange_command` preserves the complete original physical command route.
 //// `reserve` assigns one stable credit. `begin_credit` starts managed transport;
@@ -30,6 +36,7 @@
 
 import core/command
 import core/workspace as cw
+import executor/internal/ffi_distribution
 import executor/remote/compile_service as compile
 import executor/remote/compile_wire
 import executor/remote/distribution
@@ -44,6 +51,7 @@ import executor/remote/workspace_transfer as transfer
 import gleam/bit_array
 import gleam/bool
 import gleam/dynamic
+import gleam/erlang/node
 import gleam/erlang/process
 import gleam/erlang/reference
 import gleam/list
@@ -109,6 +117,8 @@ pub opaque type Registration {
     workspace: Option(workspace.Service),
     /// Optional concrete whole Compile owner retaining original live Claims.
     compile: Option(compile.Service),
+    /// Concrete local scope owner; its applied DOWN permanently fences this row.
+    lifetime_owner: process.Pid,
   )
 }
 
@@ -152,19 +162,58 @@ type Gate {
   Closed
 }
 
-type State {
-  State(
-    config: ServerConfig,
-    data: List(process.Subject(CreditMessage)),
-    control: List(process.Subject(CreditMessage)),
-    gate: Gate,
+/// Scoped transport custody after an exact permanent registration fence.
+/// Native retirement, semantic continuations and journal release remain separate.
+pub type DrainState {
+  /// The row is active or an original assigned credit still owns its work.
+  Busy
+
+  /// The row is fenced and no credit retains its original assignment.
+  Drained
+
+  /// A lost credit permanently retains an unresolved original assignment.
+  DrainUncertain
+}
+
+type RowGate {
+  Active
+  Fenced
+}
+
+type Row {
+  Row(registration: Registration, owner_monitor: process.Monitor, gate: RowGate)
+}
+
+type Assignment {
+  Assignment(registration: Registration, correlation: reference.Reference)
+}
+
+type Disposition {
+  Available
+  Assigned(Assignment)
+  Unusable(Option(Assignment))
+}
+
+type CreditRecord {
+  CreditRecord(
+    lane: protocol.Lane,
+    subject: process.Subject(CreditMessage),
+    monitor: process.Monitor,
+    disposition: Disposition,
   )
+}
+
+type State {
+  State(rows: List(Row), credits: List(CreditRecord), gate: Gate)
 }
 
 type Message {
   Reserve(Reservation)
-  Available(protocol.Lane, process.Subject(CreditMessage))
+  Released(process.Subject(CreditMessage), Assignment)
+  Down(process.Down)
   Register(Registration, process.Subject(Result(Nil, Error)))
+  Fence(Registration, process.Subject(Result(Nil, Error)))
+  InspectDrain(Registration, process.Subject(Result(DrainState, Error)))
   Inspect(process.Subject(Capacity))
   Quiesce
   Stop
@@ -249,12 +298,18 @@ type Credit {
 /// Derives labels and scope from the concrete native service.
 ///
 /// ## Examples
-/// `registration(owner_peer, native_service, Some(workspace_service))` binds both.
+/// `registration(owner_peer, native_service, Some(workspace_service), process.self())`
+/// binds both to their concrete local lifetime owner.
 pub fn registration(
   owner: distribution.Peer,
   native: service.Service,
   semantic: Option(workspace.Service),
+  lifetime_owner: process.Pid,
 ) -> Result(Registration, Error) {
+  use <- bool.guard(
+    ffi_distribution.pid_node(lifetime_owner) != node.self(),
+    Error(InvalidConfiguration),
+  )
   let config = service.configuration(native)
   let binding =
     protocol.Binding(
@@ -270,22 +325,24 @@ pub fn registration(
     },
     Error(InvalidConfiguration),
   )
-  Ok(Registration(owner, binding, native, semantic, None))
+  Ok(Registration(owner, binding, native, semantic, None, lifetime_owner))
 }
 
 /// Derives native and enrollment authority from the concrete whole Compile owner.
 ///
 /// ## Examples
-/// `compile_registration(owner_peer, whole, None)` cannot substitute a native endpoint.
+/// `compile_registration(owner_peer, whole, None, process.self())` retains native authority.
 pub fn compile_registration(
   owner: distribution.Peer,
   whole: compile.Service,
   semantic: Option(workspace.Service),
+  lifetime_owner: process.Pid,
 ) -> Result(Registration, Error) {
   use row <- result.try(registration(
     owner,
     compile.native_service(whole),
     semantic,
+    lifetime_owner,
   ))
   use <- bool.guard(
     semantic_scope(row.binding.scope) != Ok(compile.scope(whole)),
@@ -338,6 +395,33 @@ pub fn register(
 ) -> Result(Nil, Error) {
   let reply = process.new_subject()
   process.send(server.subject, Register(registration, reply))
+  process.receive(reply, 1000) |> result.unwrap(Error(Uncertain))
+}
+
+/// Permanently fences the exact original row before services stop.
+/// The acknowledgement proves application of the fence, never transport drain.
+/// Registration and cleanup fencing must be sent in order by the same owner.
+///
+/// ## Examples
+/// `fence(server, original_row)` is idempotent for that exact registration.
+pub fn fence(server: Server, exact_row: Registration) -> Result(Nil, Error) {
+  let reply = process.new_subject()
+  process.send(server.subject, Fence(exact_row, reply))
+  process.receive(reply, 1000) |> result.unwrap(Error(Uncertain))
+}
+
+/// Scans six original credit dispositions for an exact permanently enrolled row.
+/// Active rows report Busy. Unusable original assignments take precedence over
+/// busy ones. A timeout or endpoint loss cannot manufacture a Drained answer.
+///
+/// ## Examples
+/// `inspect_drain(server, original_row)` returns Ok(Drained) only after fencing.
+pub fn inspect_drain(
+  server: Server,
+  exact_row: Registration,
+) -> Result(DrainState, Error) {
+  let reply = process.new_subject()
+  process.send(server.subject, InspectDrain(exact_row, reply))
   process.receive(reply, 1000) |> result.unwrap(Error(Uncertain))
 }
 
@@ -590,8 +674,13 @@ fn builder(
       process.new_selector()
       |> process.select(subject)
       |> process.select_map(rendezvous(process.self()), Reserve)
+      |> process.select_monitors(Down)
     Ok(
-      actor.initialised(State(config, data, control, Open))
+      actor.initialised(State(
+        list.map(config.registrations, monitored_row),
+        list.append(data, control),
+        Open,
+      ))
       |> actor.selecting(selector)
       |> actor.returning(subject),
     )
@@ -610,46 +699,156 @@ fn rendezvous(pid: process.Pid) -> process.Subject(Reservation) {
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Reserve(reservation) -> reserve(state, reservation)
-    Available(protocol.Data, credit) ->
-      actor.continue(State(..state, data: [credit, ..state.data]))
-    Available(protocol.Control, credit) ->
-      actor.continue(State(..state, control: [credit, ..state.control]))
+    Released(subject, original) -> {
+      // Only this concrete actor's current original assignment can restore it.
+      let credits =
+        list.map(state.credits, fn(credit) {
+          case credit.subject == subject, credit.disposition {
+            True, Assigned(current) if current == original ->
+              CreditRecord(..credit, disposition: Available)
+            _, _ -> credit
+          }
+        })
+      actor.continue(State(..state, credits: credits))
+    }
+    Down(process.ProcessDown(monitor, _, _)) -> {
+      // Idle loss removes capacity without inventing a scope obligation. Busy
+      // loss preserves the original row and correlation for the entire lifetime.
+      let credits =
+        list.map(state.credits, fn(credit) {
+          case credit.monitor == monitor, credit.disposition {
+            True, Available ->
+              CreditRecord(..credit, disposition: Unusable(None))
+            True, Assigned(original) ->
+              CreditRecord(..credit, disposition: Unusable(Some(original)))
+            _, _ -> credit
+          }
+        })
+      let rows =
+        list.map(state.rows, fn(row) {
+          case row.owner_monitor == monitor {
+            True -> Row(..row, gate: Fenced)
+            False -> row
+          }
+        })
+      actor.continue(State(..state, rows: rows, credits: credits))
+    }
+    Down(process.PortDown(_, _, _)) -> actor.continue(state)
     Register(row, reply) -> {
       let added = case state.gate {
-        Open -> add_registration(state.config.registrations, row)
+        Open ->
+          add_registration(
+            list.map(state.rows, fn(row) { row.registration }),
+            row,
+          )
         Closed -> Error(InvalidConfiguration)
       }
-      process.send(reply, result.map(added, fn(_) { Nil }))
       case added {
-        Ok(rows) ->
-          actor.continue(
-            State(
-              ..state,
-              config: ServerConfig(..state.config, registrations: rows),
-            ),
-          )
-        Error(_) -> actor.continue(state)
+        Ok(_) -> {
+          // Monitoring precedes eligibility. An already-dead owner queues DOWN;
+          // reservations racing before its applied fence can still lose capacity.
+          let next = State(..state, rows: [monitored_row(row), ..state.rows])
+          process.send(reply, Ok(Nil))
+          actor.continue(next)
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
       }
+    }
+    Fence(exact, reply) -> {
+      case exact_row(state, exact) {
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
+        Ok(_) -> {
+          let rows =
+            list.map(state.rows, fn(row) {
+              case row.registration == exact {
+                True -> Row(..row, gate: Fenced)
+                False -> row
+              }
+            })
+          let next = State(..state, rows: rows)
+          process.send(reply, Ok(Nil))
+          actor.continue(next)
+        }
+      }
+    }
+    InspectDrain(exact, reply) -> {
+      process.send(reply, drain_snapshot(state, exact))
+      actor.continue(state)
     }
     Inspect(reply) -> {
       process.send(
         reply,
         Capacity(
-          list.length(state.config.registrations),
-          list.length(state.data),
-          list.length(state.control),
+          list.length(state.rows),
+          available_count(state.credits, protocol.Data),
+          available_count(state.credits, protocol.Control),
         ),
       )
       actor.continue(state)
     }
     Quiesce -> actor.continue(State(..state, gate: Closed))
     Stop -> {
-      list.each(list.append(state.data, state.control), fn(credit) {
-        process.send(credit, CloseCredit)
+      list.each(state.credits, fn(credit) {
+        process.send(credit.subject, CloseCredit)
       })
       actor.stop()
     }
   }
+}
+
+fn monitored_row(registration: Registration) -> Row {
+  Row(registration, process.monitor(registration.lifetime_owner), Active)
+}
+
+fn exact_row(state: State, exact: Registration) -> Result(Row, Error) {
+  list.find(state.rows, fn(row) { row.registration == exact })
+  |> result.replace_error(InvalidConfiguration)
+}
+
+fn drain_snapshot(
+  state: State,
+  exact: Registration,
+) -> Result(DrainState, Error) {
+  use row <- result.try(exact_row(state, exact))
+  case row.gate {
+    Active -> Ok(Busy)
+    Fenced -> {
+      let lost =
+        list.any(state.credits, fn(credit) {
+          case credit.disposition {
+            Unusable(Some(original)) -> original.registration == exact
+            Available | Assigned(_) | Unusable(None) -> False
+          }
+        })
+      let assigned =
+        list.any(state.credits, fn(credit) {
+          case credit.disposition {
+            Assigned(original) -> original.registration == exact
+            Available | Unusable(_) -> False
+          }
+        })
+      case lost, assigned {
+        True, _ -> Ok(DrainUncertain)
+        False, True -> Ok(Busy)
+        False, False -> Ok(Drained)
+      }
+    }
+  }
+}
+
+fn available_count(credits: List(CreditRecord), lane: protocol.Lane) -> Int {
+  list.fold(credits, 0, fn(count, credit) {
+    case credit.lane == lane && credit.disposition == Available {
+      True -> count + 1
+      False -> count
+    }
+  })
 }
 
 fn reserve(
@@ -662,29 +861,44 @@ fn reserve(
   {
     False -> Error(Nil)
     True ->
-      list.find_map(state.config.registrations, fn(row) {
+      list.find_map(state.rows, fn(row) {
+        let registration = row.registration
         use <- bool.guard(
-          !distribution.owns(row.owner, reservation.caller),
+          row.gate != Active
+            || !distribution.owns(registration.owner, reservation.caller),
           Error(Nil),
         )
-        protocol.decode_header(row.binding, reservation.header)
-        |> result.map(fn(route) { #(row, route) })
+        protocol.decode_header(registration.binding, reservation.header)
+        |> result.map(fn(route) { #(registration, route) })
       })
   }
   case admitted {
     Error(_) -> actor.continue(state)
-    Ok(#(row, route)) ->
-      case protocol.route_lane(route), state.data, state.control {
-        protocol.Data, [credit, ..rest], _ -> {
-          process.send(credit, Begin(row, route, reservation))
-          actor.continue(State(..state, data: rest))
+    Ok(#(row, route)) -> {
+      let lane = protocol.route_lane(route)
+      case
+        list.find(state.credits, fn(credit) {
+          credit.lane == lane && credit.disposition == Available
+        })
+      {
+        Error(_) -> actor.continue(state)
+        Ok(selected) -> {
+          // Record original custody before publishing Begin. Neither a fence nor
+          // DOWN can later return this assignment without its matching release.
+          let original = Assignment(row, reservation.correlation)
+          let credits =
+            list.map(state.credits, fn(credit) {
+              case credit.subject == selected.subject {
+                True -> CreditRecord(..credit, disposition: Assigned(original))
+                False -> credit
+              }
+            })
+          let next = State(..state, credits: credits)
+          process.send(selected.subject, Begin(row, route, reservation))
+          actor.continue(next)
         }
-        protocol.Control, _, [credit, ..rest] -> {
-          process.send(credit, Begin(row, route, reservation))
-          actor.continue(State(..state, control: rest))
-        }
-        _, _, _ -> actor.continue(state)
       }
+    }
   }
 }
 
@@ -692,7 +906,7 @@ fn start_credit(
   parent: process.Subject(Message),
   lane: protocol.Lane,
   within_ms: Int,
-) -> Result(process.Subject(CreditMessage), actor.StartError) {
+) -> Result(CreditRecord, actor.StartError) {
   actor.new_with_initialiser(1000, fn(subject) {
     let requests = process.new_subject()
     let native_reply = process.new_subject()
@@ -734,7 +948,9 @@ fn start_credit(
   |> actor.on_message(handle_credit)
   |> actor.trapping_exits(True)
   |> actor.start
-  |> result.map(fn(started) { started.data })
+  |> result.map(fn(started) {
+    CreditRecord(lane, started.data, process.monitor(started.pid), Available)
+  })
 }
 
 fn handle_credit(
@@ -1033,7 +1249,14 @@ fn available(state: Credit) -> actor.Next(Credit, CreditMessage) {
           state.selector,
           process.deselect_specific_monitor,
         )
-      process.send(state.parent, Available(state.lane, state.subject))
+      case state.registration, state.correlation {
+        Some(row), Some(correlation) ->
+          process.send(
+            state.parent,
+            Released(state.subject, Assignment(row, correlation)),
+          )
+        _, _ -> Nil
+      }
       actor.continue(
         Credit(
           ..state,

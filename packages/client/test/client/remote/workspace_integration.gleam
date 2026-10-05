@@ -332,7 +332,12 @@ pub fn executor_main() -> Nil {
   // No native command is allocated by this filesystem-only component fixture.
   let #(native_executor, native_remote, native_book) = concrete_native(root)
   let assert Ok(row) =
-    connection.registration(owner, native_remote, Some(semantic))
+    connection.registration(
+      owner,
+      native_remote,
+      Some(semantic),
+      process.self(),
+    )
     as "Enrollment derives exact scope from concrete executor-local services."
   let assert Ok(config) = connection.configure_server([row], 10_000)
     as "The single scope shares four data and two control credits."
