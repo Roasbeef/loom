@@ -1,6 +1,7 @@
 import client/evolution/evaluate
 import client/evolution/record
 import client/evolution/record_test
+import client/evolution/retirement
 import client/evolution/store
 import client/internal/ffi_os
 import codemode/compile
@@ -49,9 +50,14 @@ pub fn compiler_failure_is_durable_author_evidence_after_retirement_test() {
   }
   let run = fn(_) { Error(store.Unavailable("runner must not run")) }
   let assert Ok(evidence) =
-    evaluate.extension_owned(catalogue, candidate.id, scratch, build, run, fn() {
-      Ok(Nil)
-    })
+    evaluate.extension_owned(
+      catalogue,
+      candidate.id,
+      scratch,
+      build,
+      run,
+      retirement.repeat(fn() { Ok(Nil) }),
+    )
     as "failed compilation creates durable evidence"
   evidence.verdict |> should.equal(record.Failed)
   string.contains(evidence.observation, "author check has a type error")
@@ -83,12 +89,14 @@ pub fn unconfirmed_executor_cleanup_retains_retry_and_writes_no_evidence_test() 
       scratch,
       build,
       fn(_) { Error(store.Unknown) },
-      fn() { Error("native executor still owns workers") },
+      retirement.repeat(fn() { Error("native executor still owns workers") }),
     )
   let assert Error(store.CleanupUnconfirmed(reason, retry)) = refused
     as "cleanup witness survives failed evaluation"
   reason |> should.equal("native executor still owns workers")
-  retry() |> should.equal(Error(reason))
+  let assert Error(failure) = retirement.perform(retry)
+    as "the retained continuation can ask the native owner again"
+  failure.reason |> should.equal(reason)
   store.read_evidence(catalogue, record.evidence_placeholder())
   |> should.equal(Error(store.Unknown))
 }
@@ -111,7 +119,7 @@ pub fn partial_trial_is_inconclusive_and_cannot_be_approved_test() {
       scratch,
       build,
       fn(_) { Error(store.Unavailable("evaluation cancelled")) },
-      fn() { Ok(Nil) },
+      retirement.repeat(fn() { Ok(Nil) }),
     )
     as "partial result is recorded after retirement"
   let assert record.Inconclusive(reason) = evidence.verdict

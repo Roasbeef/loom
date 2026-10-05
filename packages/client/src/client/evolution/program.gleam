@@ -4,6 +4,7 @@
 
 import client/codemode
 import client/evolution/record
+import client/evolution/retirement
 import client/evolution/store
 import core/json as value
 import gleam/json
@@ -100,7 +101,7 @@ pub fn test_owned(
         ),
       ))
     },
-    retire,
+    retirement.repeat(retire),
   )
 }
 
@@ -117,12 +118,14 @@ pub fn test_with(
   catalogue: store.Store,
   id: record.CandidateId,
   run: fn(String) -> Result(surface.Execution, store.Refusal),
-  retire: fn() -> Result(Nil, String),
+  retire: retirement.Task,
 ) -> Result(record.Evidence, store.Refusal) {
   let observed = test_execution(catalogue, id, run)
   use Nil <- result.try(
-    retire()
-    |> result.map_error(fn(reason) { store.CleanupUnconfirmed(reason, retire) }),
+    retirement.perform(retire)
+    |> result.map_error(fn(failure) {
+      store.CleanupUnconfirmed(failure.reason, failure.retry)
+    }),
   )
   use #(verdict, observation) <- result.try(case observed {
     Ok(execution) -> {

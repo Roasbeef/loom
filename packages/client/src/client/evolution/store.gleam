@@ -12,6 +12,7 @@
 //// remain write-once audit entries and selections use generation-aware CAS.
 
 import client/evolution/record
+import client/evolution/retirement
 import client/extension/manifest
 import client/internal/ffi_os
 import codemode/vet/package
@@ -79,7 +80,7 @@ pub type Refusal {
   TestFailed(reason: String)
 
   /// Retirement is unproven; the owner must retain this retry witness.
-  CleanupUnconfirmed(reason: String, retire: fn() -> Result(Nil, String))
+  CleanupUnconfirmed(reason: String, retire: retirement.Task)
 
   /// A native dependency failed.
   Unavailable(reason: String)
@@ -444,19 +445,14 @@ pub fn select_request(
   use Nil <- result.try(bound(request_id, 256, "operator request id"))
   use Nil <- result.try(bound(reason, 4096, "operator reason"))
   let signature =
-    json.to_string(
-      json.object([
-        #("candidate", json.string(record.id_string(id))),
-        #("evidence", json.string(record.evidence_string(evidence_id))),
-        #("scope", record.encode_scope(scope)),
-        #("name", json.string(name)),
-        #("expected", case expected {
-          None -> json.null()
-          Some(selection) -> json.string(encode_selection(selection))
-        }),
-        #("principal", json.string(principal)),
-        #("reason", json.string(reason)),
-      ]),
+    selection_signature(
+      id,
+      evidence_id,
+      scope,
+      name,
+      expected,
+      principal,
+      reason,
     )
   with_session(store, fn(opened) {
     use prior <- result.try(receipt_in(opened, request_id))
@@ -481,6 +477,104 @@ pub fn select_request(
         )
     }
   })
+}
+
+/// Recovers the original submitted request before any new staging or CAS.
+///
+/// The receipt retains the original full expected selection. A retry supplies
+/// its original generation, so current selection changes cannot alter its
+/// request identity. Every other submitted field still belongs to the signature.
+///
+/// ## Examples
+///
+/// `request_receipt(store, id, evidence, scope, name, 0, owner, reason, token)`
+/// returns the original acknowledgement after a later selection supersedes it.
+pub fn request_receipt(
+  store: Store,
+  id: record.CandidateId,
+  evidence_id: record.EvidenceId,
+  scope: record.Scope,
+  name: String,
+  expected_generation: Int,
+  principal: String,
+  reason: String,
+  request_id: String,
+) -> Result(Option(record.Selection), Refusal) {
+  use Nil <- result.try(owner(store, scope, principal))
+  use Nil <- result.try(bound(request_id, 256, "operator request id"))
+  use Nil <- result.try(bound(reason, 4096, "operator reason"))
+  with_session(store, fn(opened) {
+    use prior <- result.try(receipt_in(opened, request_id))
+    case prior {
+      None -> Ok(None)
+      Some(#(written_signature, selected)) -> {
+        use expected_text <- result.try(
+          json.parse(written_signature, {
+            use expected <- decode.field(
+              "expected",
+              decode.optional(decode.string),
+            )
+            decode.success(expected)
+          })
+          |> result.replace_error(Corrupt("invalid receipt expectation")),
+        )
+        use expected <- result.try(case expected_text {
+          None -> Ok(None)
+          Some(text) ->
+            json.parse(text, selection_decoder())
+            |> result.map(Some)
+            |> result.replace_error(Corrupt("invalid receipt expectation"))
+        })
+        let generation = case expected {
+          None -> 0
+          Some(selection) -> selection.generation
+        }
+        let signature =
+          selection_signature(
+            id,
+            evidence_id,
+            scope,
+            name,
+            expected,
+            principal,
+            reason,
+          )
+
+        // Replaying an acknowledged action transfers no new executable custody.
+        case
+          signature == written_signature && generation == expected_generation
+        {
+          True -> Ok(Some(selected))
+          False -> Error(Changed)
+        }
+      }
+    }
+  })
+}
+
+fn selection_signature(
+  id: record.CandidateId,
+  evidence_id: record.EvidenceId,
+  scope: record.Scope,
+  name: String,
+  expected: Option(record.Selection),
+  principal: String,
+  reason: String,
+) -> String {
+  json.to_string(
+    json.object([
+      #("candidate", json.string(record.id_string(id))),
+      #("evidence", json.string(record.evidence_string(evidence_id))),
+      #("scope", record.encode_scope(scope)),
+      #("name", json.string(name)),
+      #("expected", case expected {
+        None -> json.null()
+        Some(selection) -> json.string(encode_selection(selection))
+      }),
+      #("principal", json.string(principal)),
+      #("reason", json.string(reason)),
+    ]),
+  )
 }
 
 /// Reads a completed activation receipt through the caller's scope capability.
@@ -739,12 +833,13 @@ fn with_session(
   case retire() {
     Ok(Nil) -> outcome
     Error(_) ->
-      Error(
-        CleanupUnconfirmed("SQLite retirement did not confirm release", fn() {
+      Error(CleanupUnconfirmed(
+        "SQLite retirement did not confirm release",
+        retirement.repeat(fn() {
           retire()
           |> result.replace_error("SQLite retirement remains unconfirmed")
         }),
-      )
+      ))
   }
 }
 

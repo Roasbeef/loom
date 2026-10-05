@@ -162,6 +162,133 @@ pub fn superseded_request_receipt_and_aba_generation_test() {
   |> should.equal(Error(store.Changed))
 }
 
+pub fn original_request_identity_survives_supersession_and_reopen_test() {
+  let catalogue = opened()
+  let candidate = record_test.candidate()
+  let evidence = approved(catalogue, candidate)
+  let assert Ok(one) =
+    store.select_request(
+      catalogue,
+      candidate.id,
+      evidence.id,
+      candidate.scope,
+      candidate.name,
+      None,
+      "operator",
+      "original",
+      "retry",
+    )
+    as "original acknowledged request commits"
+  let assert Ok(two) =
+    store.select_request(
+      catalogue,
+      candidate.id,
+      evidence.id,
+      candidate.scope,
+      candidate.name,
+      Some(one),
+      "operator",
+      "later generation",
+      "retry-after-one",
+    )
+    as "the second request binds a full expected selection"
+  let assert Ok(three) =
+    store.select(
+      catalogue,
+      candidate.id,
+      evidence.id,
+      candidate.scope,
+      candidate.name,
+      Some(two),
+      "operator",
+      "supersede both requests",
+    )
+    as "a third generation supersedes both durable receipts"
+  let assert Ok(reopened) =
+    store.open(
+      store.root(catalogue),
+      store.Owner,
+      candidate.identity,
+      clock.fixed(2),
+    )
+    as "a new native capability has no in-memory request state"
+
+  store.request_receipt(
+    reopened,
+    candidate.id,
+    evidence.id,
+    candidate.scope,
+    candidate.name,
+    0,
+    "operator",
+    "original",
+    "retry",
+  )
+  |> should.equal(Ok(Some(one)))
+  store.request_receipt(
+    reopened,
+    candidate.id,
+    evidence.id,
+    candidate.scope,
+    candidate.name,
+    1,
+    "operator",
+    "original",
+    "retry",
+  )
+  |> should.equal(Error(store.Changed))
+  store.request_receipt(
+    reopened,
+    candidate.id,
+    evidence.id,
+    candidate.scope,
+    candidate.name,
+    0,
+    "operator",
+    "changed reason",
+    "retry",
+  )
+  |> should.equal(Error(store.Changed))
+  store.request_receipt(
+    reopened,
+    candidate.id,
+    record.evidence_placeholder(),
+    candidate.scope,
+    candidate.name,
+    0,
+    "operator",
+    "original",
+    "retry",
+  )
+  |> should.equal(Error(store.Changed))
+  store.request_receipt(
+    reopened,
+    candidate.id,
+    evidence.id,
+    candidate.scope,
+    candidate.name,
+    0,
+    "other operator",
+    "original",
+    "retry",
+  )
+  |> should.equal(Error(store.Changed))
+  store.request_receipt(
+    reopened,
+    candidate.id,
+    evidence.id,
+    candidate.scope,
+    candidate.name,
+    1,
+    "operator",
+    "later generation",
+    "retry-after-one",
+  )
+  |> should.equal(Ok(Some(two)))
+  store.selected(reopened, candidate.scope, candidate.name)
+  |> should.equal(Ok(Some(three)))
+}
+
 pub fn revocation_blocks_selection_and_current_invocation_test() {
   let catalogue = opened()
   let candidate = record_test.candidate()

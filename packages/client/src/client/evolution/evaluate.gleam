@@ -4,6 +4,7 @@
 //// Durable evidence is written only after the native runner proves cleanup.
 
 import client/evolution/record
+import client/evolution/retirement
 import client/evolution/store
 import client/extension/archive
 import client/extension/install
@@ -126,7 +127,14 @@ pub fn extension(
   build: install.Build,
   run: fn(compile.Artifact) -> Result(Observation, store.Refusal),
 ) -> Result(record.Evidence, store.Refusal) {
-  extension_owned(catalogue, id, directory, build, run, fn() { Ok(Nil) })
+  extension_owned(
+    catalogue,
+    id,
+    directory,
+    build,
+    run,
+    retirement.repeat(fn() { Ok(Nil) }),
+  )
 }
 
 /// Retires the native evaluation executor on every path before writing evidence.
@@ -144,12 +152,14 @@ pub fn extension_owned(
   directory: String,
   build: install.Build,
   run: fn(compile.Artifact) -> Result(Observation, store.Refusal),
-  retire: fn() -> Result(Nil, String),
+  retire: retirement.Task,
 ) -> Result(record.Evidence, store.Refusal) {
   let outcome = tested(catalogue, id, directory, build, run)
   use Nil <- result.try(
-    retire()
-    |> result.map_error(fn(reason) { store.CleanupUnconfirmed(reason, retire) }),
+    retirement.perform(retire)
+    |> result.map_error(fn(failure) {
+      store.CleanupUnconfirmed(failure.reason, failure.retry)
+    }),
   )
   case outcome {
     Ok(#(verdict, observation)) ->

@@ -7,6 +7,7 @@ import broker/budget
 import broker/exec
 import broker/policy as sandbox
 import client/evolution/record
+import client/evolution/retirement
 import client/evolution/store
 import client/extension/archive
 import codemode/vet/package
@@ -122,14 +123,16 @@ pub fn snapshot_owned(
   ctx: tool.Ctx,
   path: String,
   runner: broker.Broker,
-  retire: fn() -> Result(Nil, String),
+  retire: retirement.Task,
 ) -> Result(archive.Tree, store.Refusal) {
   let captured = snapshot_call(ctx, path, runner)
 
   // Retirement owns all paths, including clearance refusal and timeout.
   use Nil <- result.try(
-    retire()
-    |> result.map_error(fn(reason) { store.CleanupUnconfirmed(reason, retire) }),
+    retirement.perform(retire)
+    |> result.map_error(fn(failure) {
+      store.CleanupUnconfirmed(failure.reason, failure.retry)
+    }),
   )
   use bytes <- result.try(captured)
   archive.extract(
