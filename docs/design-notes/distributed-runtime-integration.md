@@ -59,8 +59,12 @@ package gates; the [lifecycle review](../review/distributed-scoped-lifetime-runt
 records their remaining enclosing-host obligations.
 The reviewed [scoped lifetime proposal](distributed-scope-lifetime.md) describes
 the next host boundary; the owner approved its API and native close-state change.
-The [final-result proposal](distributed-final-results.md) records the separate
-accepted Launch result representation and its remaining retention mechanics.
+The [final-result design](distributed-final-results.md) now has implemented
+complete-report storage, bounded foreground rendering, typed reads and optional
+owner-local routing. The [renderer review](../review/distributed-report-renderer.md)
+records a production fingerprint mismatch found after injected tests passed and
+its correction. Real satellite retrieval is being checked separately; default
+registered-host wiring and companion lifecycle are still pending.
 Launch/satellite execution, the remote LSP host and registered daemon
 configuration remain required. Acceptance must drive ordinary tools and code
 mode with the owner and executor on separate hosts and no checkout on the

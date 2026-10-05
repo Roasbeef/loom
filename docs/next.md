@@ -3,87 +3,95 @@
 ## Distributed runtime integration (unmerged)
 
 [PR #819](https://github.com/Roasbeef/loom/pull/819) is the single draft review
-for issue #697. It replaces the 37 component PRs while preserving their commits
-and review records. The [integration guide](design-notes/distributed-runtime-integration.md)
-maps the design, architecture and remaining acceptance criteria.
+for issue #697, replacing 37 component PRs while retaining their commits and
+review records. Integration source is now `fb6d078e0`. The owner has authorized
+TLS BEAM executors, scoped endpoint lifetimes, original native-close proof,
+and bounded transcript previews backed by complete durable reports. No API
+permission hold remains for those changes. No main merge is authorized.
 
-Native execution, owner custody, semantic workspace operations and physical
-compilation components are implemented and individually reviewed. Whole Compile
-ownership, command forwarding and the owner consumer now use the trusted TLS
-BEAM endpoint. The Git-pinned Weft dependency is merged upstream. Combined
-owner, workspace and Compile controls pass all 68 tests; twelve endpoint and
-command-route controls pass, and the real native E2E covers executor generation
-replacement and owner SQLite restart. The workspace E2E also passes through
-independent TLS BEAM roles, including an exact queued Submit retained after
-its actual caller deadline and join. Astra replay and the receipt mutation
-confirm that control. The [transport review](review/distributed-beam-transport-transition.md)
-records independent review and transport limits. The historical-refusal,
-scoped-endpoint and native-close corrections are now implemented and independently
-reviewed. Their [lifecycle review](review/distributed-scoped-lifetime-runtime.md)
-records the combined gates and the distinction between endpoint drain and physical
-retirement. The owner approved bounded previews with durable complete-value
-references; their codec is implemented, while storage, rendering and read routing
-remain in progress.
-The [owner discharge fix](review/distributed-owner-discharge.md) now retains
-unresolved run obligations across worker loss and owner restart. The earlier storage gate passed 193 tests; the current full client gate passes
-2,847 tests, with 15 explicit optional SKIP notices. These skipped paths still
-need Linux `/proc`, shipped-server or language-server prerequisites for full coverage.
-Launch/satellite, remote LSP, registered daemon configuration and the separate-host
-ordinary-tool/code-mode acceptance run remain pending. Main `7a9adf1e` is merged into this branch. The seeded code-mode, client, tools,
-storage and executor package gates passed. The full repository invocation passed
-the package gates, then failed a Go sandbox test because PATH selected the Codex
-`rg` under `/Applications`. The full Go replay passed with Homebrew `rg`, and
-the remaining full lint passed with zero errors. The original aggregate remains
-a failed run; final repository and separate-host gates remain pending. Trusted orchestrator clustering over TLS BEAM distribution,
-ownership routing, durable cross-node messaging and planned session movement are
-also required remaining issue #697 phases. The [merge review](review/distributed-main-integration.md)
-records optional skips and existing peer-fixture failures.
+The [integration guide](design-notes/distributed-runtime-integration.md) maps
+components and remaining product criteria. Native execution, semantic workspace
+operations, whole Compile, command forwarding and owner custody use the trusted
+TLS BEAM endpoint. The merged Weft revision is pinned. Executors share the
+runtime trust domain; satellites remain jailed and distribution-disabled, and
+executor membership does not grant Raft voting membership.
 
-The [Khepri compatibility probe](review/distributed-khepri-compatibility.md)
-passed bounded three-node partition/reconciliation/restart controls through an
-actual Gleam caller on OTP 29. Additional count/byte capacity and stale-observation
-controls passed. A production wrapper, receipt-retention lifecycle and the
-remaining D3 operational checks are still required before adoption.
+The scoped native host now fences its original endpoint row, drains transport
+while producers remain alive, retains the actual original native close proof,
+and releases the journal only after the separate required proofs. The full
+executor gate passes 314 tests with no skips. Independent review replayed 17
+TLS controls and five compiling mutants. The
+[scoped host review](review/distributed-scoped-host.md) states the limits: this
+host does not yet own Compile/Launch resources or prove whole-system retirement.
 
-The current full executor gate passes 306 tests with no skips, including all 23
-native controls after their TLS BEAM migration. Independent Astra review verified
-the migration preserves the original native assertions. The complete-report codec
-passes 185 Erlang tests and 72 Node finite-value checks in the core gate; its
-[review](review/distributed-report-codec.md) records the JavaScript u64 limitation
-and the unimplemented custody/read-path obligations. Scoped host retirement
-and the remaining old-socket consumers are next; the endpoint must fence a
-closing scope before its services stop while preserving sibling capacity. The
-[Compile observation adapter](review/distributed-compile-observation.md) remains
-covered by the package gate. The
-native original-deadline follow-up passed its 20 focused controls, and the exact
-final P live-association source passed all 90 bounded cases/probes at 100 schedules. See the [deadline review](review/distributed-native-command-admission.md)
-and [model review](review/distributed-live-association-model.md) for limits.
-Those results do not establish assembled-system acceptance.
+Complete-report storage, foreground rendering, typed capability reads and
+owner-local read-route composition are committed. SQLite format 5 reserves the
+full allowance before execution, commits the complete report before its bounded
+final, validates exact history on reopen, and refuses reclaimable handles for
+retention. The authenticated reader installs its route and 261-call ceiling
+from one owner/session choice. See the [storage](review/distributed-report-storage.md),
+[renderer](review/distributed-report-renderer.md) and
+[router](review/distributed-report-router.md) reviews.
 
-The [owner discharge model](review/distributed-owner-discharge-model.md) adds
-eight normal cases, eight exact reachability probes and nine compiling mutation
-witnesses. The current full P gate, including the proposed scoped TLS BEAM credit model,
-passed 126 cases/probes and 56 mutation controls before the report-custody
-extension. The corrected report extension now passes 146 cases/probes; Astra
-found and verified the correction for unclassified report-free finals. The
-[report model review](review/distributed-report-custody-model.md) records twelve
-new report mutations and nine replayed owner mutations, with their respective
-source baselines. Independent Astra review
-replayed the scoped cases, probes and four new mutations. The
-[scoped-model review](review/distributed-scoped-drain-model.md) separates these
-bounded results from the scoped endpoint implementation and its enclosing host,
-which is still being assembled.
-The model assumes truthful COMMIT/drain events and makes no native-retirement or
-whole-system proof claim.
+A real compiler-path check found that report metadata expected bare hex while
+production artifacts use `sha256-` plus 64 hex digits. That mismatch is corrected;
+metadata now preserves the original fingerprint while URI content digests retain
+their separate bare-hex contract. A real jailed run reproduced the original
+failure. A Sol worker has a passing genuine producer/readback run and is adding
+actual cross-reference quota exhaustion before freezing the test for root replay.
+This evidence is not yet a committed live acceptance gate.
 
-Worker commits enter the integration branch after focused checks and review.
-The owner has now authorized TLS BEAM executors in the same runtime trust
-domain as orchestrators. Replacement of the custom socket transport is in
-progress under the [protocol amendment](../protocol-change/067-remote-workspace-services.md#addendum-trusted-executor-distribution).
-Keep satellites outside distribution and Raft voter membership separate.
-Run full gates at integration milestones and final adversarial review on the
-assembled candidate. Keep architecture docs aligned with the component they
-explain; retain evidence in `docs/review/` instead of accumulating it here.
+Current root gates pass 186 core tests plus 72 JavaScript finite-value controls,
+182 cap tests, 202 storage tests and 707 tools tests. The current focused client
+replay passes 101 tests with no skips. The earlier complete client gate at the
+storage integration milestone passed 2,855 tests with fifteen explicit optional
+SKIPs: one Linux `/proc`, thirteen shipped-server and one rust-analyzer control.
+Package lint and documentation checks pass with existing warnings. The previous
+aggregate repository run failed a Go sandbox test because PATH selected Codex's
+`rg`; its separate Go replay with Homebrew `rg` and full lint passed. That failed
+aggregate has not become a passing aggregate by combining later commands.
+
+Two component freezes are awaiting integration. The owner Launch command slice
+adds SatelliteCommand validation using original successful Compile custody and
+actual Broker clearance; twenty controls and four compiled mutants pass. The
+raw terminal decoder validates transport shape and terminal budgets before
+large generic MessagePack allocation. Its worker passed 185 core, 24 broker,
+36 satellite and twelve JavaScript scanner controls plus five compiled mutants;
+a separate Sol reader is reviewing it. The scanner's JS tail recursion is fixed,
+while the unrelated generic JS decoder's large-sibling stack limit is explicitly
+recorded. Neither freeze has been imported yet.
+
+Astra is reviewing the next concrete Launch/duplex-channel design. Whole Launch
+must own token placement after successful Compile, typed uncertain launch,
+executor-local listener/token custody, and actual final-recipient consumption
+credit. Endpoint request credits cannot substitute for channel consumption.
+The owner host must retain completed replies in their original admitted slots
+until the bounded writer consumes them. Independent cancellation and original
+native retirement remain separate from channel close and report COMMIT.
+
+The corrected P report-custody extension passes 146 bounded cases/probes, with
+twelve new report mutations and nine replayed owner mutations. The prior full
+P gate passed 126 cases/probes and 56 mutants before that extension; the entire
+old mutant suite has not been replayed after it. The
+[model review](review/distributed-report-custody-model.md) explains truthful
+COMMIT/drain assumptions and the producer-provenance correction. These are
+bounded model checks, not an implementation refinement or power-loss proof.
+
+Next: finish the live retained-report gate; integrate the cold-reviewed terminal
+preflight and Launch command slices; implement the reviewed Launch resource and
+consumed-stream boundary; wire remote LSP and registered daemon assembly; then
+run the actual separate-host ordinary-tool/code-mode/LSP acceptance with no owner
+checkout. Retained-report companion archive/restore/compaction is still required.
+Executor pools, Khepri-backed orchestrator ownership/routing, durable cross-node
+messaging and controlled session movement (C1/C2/C3/M1) remain required issue #697
+work. The bounded Khepri compatibility probe passed; a production wrapper and
+receipt-retention lifecycle are still pending. Current main must be integrated
+before the final full repository gate and adversarial assembled-system review.
+
+Preserve the unrelated untracked `packages/client/test/owner_binding_runner.gleam`
+and the main checkout's unrelated files. Workers own isolated slices; the root
+owns integration, final gates and commits. The PR remains draft until the full
+acceptance criteria are met.
 
 The following handoff comes from current main and describes work already on that
 branch. Its stated baselines and verification limits remain attached to those
