@@ -3446,11 +3446,12 @@ fn pending(wiring: Wiring, operation: OpId) -> List(AgentMessage) {
   case ask(wiring.name, pending_timeout_ms, TakePending(operation, _)) {
     Ok([]) -> []
 
-    // A timed-out take hands this run no nudges, whatever the actor did
-    // with the queue afterwards; the line is what tells an operator why a
-    // run began without advice the board listed.
+    // A failed take hands this run no nudges: `ask` answers Error for an
+    // unregistered name, a callee that went down and a timeout alike, and
+    // the line is what tells an operator why a run began without advice the
+    // board listed.
     Error(Nil) -> {
-      log.warn(wiring.logger, "advisor.pending_take_timed_out", [])
+      log.warn(wiring.logger, "advisor.pending_take_failed", [])
       []
     }
 

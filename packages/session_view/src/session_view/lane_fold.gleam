@@ -925,7 +925,7 @@ fn render_cut(
     transcript:,
   )
   |> event_fold.settle_pending_cache(cut.next_seq)
-  |> retire_nudges_delivered_in_cut(cut, view, active, branch.records)
+  |> retire_nudges_delivered_in_cut(cut, view)
   |> session_model.record_surface(AgentMessagesCaptured)
   |> session_model.invalidate_transcript
   // A completed cut can make the operation idle before the next animation
@@ -935,35 +935,24 @@ fn render_cut(
   |> session_model.mark_activity
 }
 
-// A delivery frame inside the cut retires a held nudges board. The active
-// strand's records are the cut's own branch walk; when the operator is
-// watching another strand the primary's branch is walked here, which costs
-// something only while a board is held.
+// A delivery frame inside the cut retires a held nudges board. The walk is
+// over the cut's own main branch rather than the active strand's records:
+// while the operator reads history on main, the displayed branch is a window
+// frozen at the scroll, and a delivery committed since would never be seen
+// there. The walk costs something only while a board is held.
 fn retire_nudges_delivered_in_cut(
   shared: Shared(socket, recorder, source, replay_source),
   cut: snapshot.Captured,
   view: snapshot_view.View,
-  active: String,
-  active_records: List(protocol.EntryRecord),
 ) -> Shared(socket, recorder, source, replay_source) {
   case shared.nudges {
     None -> shared
 
     Some(_) ->
-      case active == advisor_pending.primary_strand {
-        True ->
-          surfaces.retire_nudges_delivered_since_board(shared, active_records)
-
-        False ->
-          surfaces.retire_nudges_delivered_since_board(
-            shared,
-            snapshot_view.branch(
-              view,
-              cut.window,
-              advisor_pending.primary_strand,
-            ).records,
-          )
-      }
+      surfaces.retire_nudges_delivered_since_board(
+        shared,
+        snapshot_view.branch(view, cut.window, advisor_pending.primary_strand).records,
+      )
   }
 }
 
