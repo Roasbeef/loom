@@ -32,6 +32,7 @@ fn invitation(role: invites.Role) -> invites.Invitation {
   invites.Invitation(
     principal: "guest-1a2b3c4d",
     role:,
+    page: "http://127.0.0.1:4000/ui/claim",
     command: "loom claim --addr ws://127.0.0.1:4000/v2/control",
     token:,
     expires_in_ms: invites.claim_ttl_ms,

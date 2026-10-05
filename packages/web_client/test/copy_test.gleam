@@ -189,3 +189,36 @@ pub fn the_device_subject_copies_only_an_exchange_address_test() {
   assert copy_rule.words(copy_rule.Device, copy_rule.Idle) == "Copy link"
   assert copy_rule.words(copy_rule.Device, copy_rule.Copied) == "Link copied"
 }
+
+// The claim box's address copies only the browser claim address: `http://`, a
+// loopback host and port, and `/ui/claim` with nothing after it.
+pub fn the_claim_address_subject_copies_only_the_claim_page_test() {
+  assert copy_rule.subject("claim-address") == Ok(copy_rule.ClaimPage)
+  let address = "http://127.0.0.1:4000/ui/claim"
+  assert copy_rule.text(copy_rule.ClaimPage, address) == Ok(address)
+  let bracketed = "http://[::1]:4000/ui/claim"
+  assert copy_rule.text(copy_rule.ClaimPage, bracketed) == Ok(bracketed)
+  list.each(
+    [
+      "",
+      "http://127.0.0.1:4000/ui/claim/",
+      "http://127.0.0.1:4000/ui/claim?x=1",
+      "http://127.0.0.1:4000/ui/claim\nrm -rf ~",
+      "https://127.0.0.1:4000/ui/claim",
+      "http:///ui/claim",
+      "http://127.0.0.1:4000/x/ui/claim",
+      "http://evil.example/ cat /ui/claim",
+      " http://127.0.0.1:4000/ui/claim",
+      "http://" <> string.repeat("a", 65) <> "/ui/claim",
+      command,
+      token,
+    ],
+    fn(value) {
+      assert copy_rule.text(copy_rule.ClaimPage, value) == Error(Nil)
+    },
+  )
+  assert copy_rule.text(copy_rule.Command, address) == Error(Nil)
+  assert copy_rule.words(copy_rule.ClaimPage, copy_rule.Idle) == "Copy address"
+  assert copy_rule.words(copy_rule.ClaimPage, copy_rule.Copied)
+    == "Address copied"
+}

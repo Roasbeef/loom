@@ -30,9 +30,16 @@
 //// control of a session's page.
 ////
 //// A claim an ask makes is held in the model until the owner hides it
-//// (`Dismissed`) and drawn once (`view/admin_claim`). It is the only secret the
-//// component ever holds and the only frame of the page's socket that can carry
-//// one: a read holds none, because the catalogue keeps only a claim's digest.
+//// (`Dismissed`) and drawn once (`view/admin_claim`), beside the action that
+//// made it: under the invitation form for an invitation, and under the person's
+//// row for a rotation. It is the only secret the component ever holds and the
+//// only frame of the page's socket that can carry one: a read holds none,
+//// because the catalogue keeps only a claim's digest.
+////
+//// What the page says about an ask is a line beside what was acted on, not a
+//// box at the top (`view/notice`): a change that was made is a quiet line that
+//// fades, and a refusal stays beside its control, in words that name the
+//// allowance and when it frees (`grants.reason_words`).
 ////
 //// Every message but a press is the component's own. A press names the
 //// principal or session the server drew into the tree, so the browser's event
@@ -73,12 +80,12 @@ import web_view/ending.{type Ending}
 import web_view/grants.{type Action, type Answer, type Claim, type Reading}
 import web_view/invites
 import web_view/view/admin_buttons.{type Busy, type Presses}
-import web_view/view/admin_claim
 import web_view/view/admin_people
 import web_view/view/admin_sessions
 import web_view/view/ended
 import web_view/view/heading
 import web_view/view/home_bar
+import web_view/view/notice.{type Spoken, Spoken}
 import web_view/view/shell
 
 /// The Lustre event path of the page's body: the centre column is the third
@@ -165,10 +172,15 @@ pub opaque type Model {
     waiting: Option(Action),
     /// The revocation the owner has armed with a first press, if any.
     armed: Option(Action),
-    /// What the page last said about an ask, in fixed words.
-    notice: Option(String),
+    /// What the page last said about an ask, in fixed words, with the action it
+    /// is about, which decides where it is drawn.
+    notice: Option(Spoken),
     /// The claim an ask made, until the owner hides it.
     claim: Option(Claim),
+    /// The last refusal of a grant for want of allowance: the Unix time in
+    /// milliseconds at which a place frees and the refusal's own words, which the
+    /// buttons that grant carry in their `title` until then.
+    spent: Option(#(Int, String)),
   )
 }
 
@@ -243,6 +255,7 @@ pub fn new(start: Start) -> Model {
     armed: None,
     notice: None,
     claim: None,
+    spent: None,
   )
 }
 
@@ -370,14 +383,42 @@ fn settled(
       reading(Model(..model, claim: Some(claim), notice: None), Continue)
     grants.Changed ->
       reading(
-        Model(..model, notice: Some(grants.changed_words(action))),
+        Model(
+          ..model,
+          notice: Some(Spoken(action, notice.Said(grants.changed_words(action)))),
+        ),
         Continue,
       )
     grants.Declined(reason:) ->
       reading(
-        Model(..model, notice: Some(grants.reason_words(reason))),
+        Model(
+          ..model,
+          notice: Some(Spoken(
+            action,
+            notice.Refused(grants.reason_words(reason)),
+          )),
+          spent: spent_by(reason, model.spent),
+        ),
         Continue,
       )
+  }
+}
+
+// The allowance state after a refusal: a refusal for want of allowance records
+// when a place frees and the words that say so, and any other refusal leaves what
+// was recorded, since it says nothing about the allowance.
+fn spent_by(
+  reason: grants.Reason,
+  before: Option(#(Int, String)),
+) -> Option(#(Int, String)) {
+  case reason {
+    grants.TooMany(free_at_ms:, ..) ->
+      Some(#(free_at_ms, grants.reason_words(reason)))
+    grants.NotOwner
+    | grants.NotIsolated
+    | grants.NotFound
+    | grants.InvalidName
+    | grants.Unavailable -> before
   }
 }
 
@@ -518,10 +559,12 @@ pub fn claim(model: Model) -> Option(Claim) {
 /// names the page, the principal and the most the page may do, and carries the
 /// notice of a page that ended.
 ///
-/// The centre's children are, in order, the notice of the last ask (an empty
-/// node when there is none, so the body keeps its path), and the body
-/// (`body_path`), which holds the claim's slot, a line of lead, the people, the
-/// waiting invitations and the sessions, in that order.
+/// The centre's children are, in order, a place that holds nothing (the notice
+/// used to be drawn there, and `body_path` and the daemon's socket pin the body
+/// at the place after it), and the body (`body_path`), which holds a line of
+/// lead, the people and the sessions. A notice and a claim are drawn inside the
+/// section of what was acted on, so nothing on the page is sticky and nothing
+/// covers the lists.
 ///
 /// ## Examples
 ///
@@ -541,7 +584,7 @@ pub fn view(model: Model) -> Element(Msg) {
       trailing: back_home(),
     ),
     shell.Unlisted,
-    [notice(model.notice), body(model)],
+    [element.none(), body(model)],
     element.none(),
     0,
     "",
@@ -557,28 +600,18 @@ fn back_home() -> Element(Msg) {
   element.element("loom-back", [], [html.text("Home")])
 }
 
-// The words of the last ask, or the empty node that keeps the body's place.
-fn notice(notice: Option(String)) -> Element(Msg) {
-  case notice {
-    None -> element.none()
-    Some(words) ->
-      html.p([attribute.class("home-notice"), attribute.role("status")], [
-        html.text(words),
-      ])
-  }
-}
-
-// The body: the claim's slot, a line that says what the page is and when it ends,
-// then the lists. Before the first read it holds the claim's empty slot, that
-// line and one that says the page is reading.
+// The body: a line that says what the page is and when it ends, then the lists.
+// Before the first read it holds that line and one that says the page is reading.
 fn body(model: Model) -> Element(Msg) {
   let presses = presses()
   let busy = busy(model)
   html.div([attribute.class("admin-body")], [
-    admin_claim.view(model.claim, Dismissed),
     html.p([attribute.class("admin-lead")], [
+      html.text("Who can use this daemon, and what each can do."),
+    ]),
+    html.p([attribute.class("admin-note")], [
       html.text(
-        "Who can use this daemon, and what each can do. This page ends fifteen minutes after it opened; run loom ui and press Admin on the home page for another.",
+        "This page ends fifteen minutes after it opened; press Admin on the home page for another.",
       ),
     ]),
     ..case model.snapshot {
@@ -595,15 +628,18 @@ fn body(model: Model) -> Element(Msg) {
           model.start.login,
           model.now,
           model.armed,
+          model.notice,
+          model.claim,
           presses,
           busy,
         ),
-        admin_people.pending(snapshot.principals, model.armed, presses, busy),
         admin_sessions.view(
           snapshot.sessions,
           model.chosen,
           snapshot.selection,
           model.armed,
+          model.notice,
+          model.claim,
           presses,
           busy,
         ),
@@ -614,9 +650,11 @@ fn body(model: Model) -> Element(Msg) {
 
 // Whether a button may be pressed: not while an ask is out.
 fn busy(model: Model) -> Busy {
-  case model.waiting {
-    Some(_) -> admin_buttons.Occupied
-    None -> admin_buttons.Free
+  case model.waiting, model.spent {
+    Some(_), _ -> admin_buttons.Occupied
+    None, Some(#(frees, words)) if model.now < frees ->
+      admin_buttons.Spent(words)
+    None, Some(_) | None, None -> admin_buttons.Free
   }
 }
 

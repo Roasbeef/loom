@@ -51,7 +51,29 @@ check() {
 		return 2
 	fi
 
-	found=$(awk -v classes="$classes" '
+	found=$(scan "$css" mono)
+	if [ -n "$found" ]; then
+		printf 'web_client_css_check: %s\n' "$found" >&2
+		echo "web_client_css_check: a rule sets the monospace face on a row; name the code's own class instead" >&2
+		return 1
+	fi
+
+	found=$(scan "$css" sticky)
+	if [ -n "$found" ]; then
+		printf 'web_client_css_check: %s\n' "$found" >&2
+		echo "web_client_css_check: a rule under .admin-body sets position:sticky; the admin page's claim and notices scroll with the page" >&2
+		return 1
+	fi
+}
+
+# scan <css> <mode>: print each rule that breaks the rule of `mode`. `mono` is
+# a rule naming one of `classes` that sets the monospace face; `sticky` is a
+# rule naming `.admin-body` that sets `position:sticky`.
+scan() {
+	local css="$1"
+	local mode="$2"
+
+	awk -v mode="$mode" -v classes="$classes" '
 		{
 			text = $0
 			# Comments go first: their prose names these classes freely.
@@ -73,6 +95,13 @@ check() {
 				while (match(selector, /[{};]/)) {
 					selector = substr(selector, RSTART + 1)
 				}
+				if (mode == "sticky") {
+					if (body ~ /position:[ \t]*sticky/ && selector ~ /\.admin-body([^A-Za-z0-9_-]|$)/) {
+						gsub(/[ \t\n]+/, " ", selector)
+						printf "%s sets position:sticky\n", selector
+					}
+					continue
+				}
 				if (body !~ /--font-mono|monospace/) continue
 				for (i = 1; i <= n; i++) {
 					if (selector ~ ("\\." names[i] "([^A-Za-z0-9_-]|$)")) {
@@ -82,13 +111,7 @@ check() {
 				}
 			}
 		}
-	' < <(tr '\n' ' ' <"$css"))
-
-	if [ -n "$found" ]; then
-		printf 'web_client_css_check: %s\n' "$found" >&2
-		echo "web_client_css_check: a rule sets the monospace face on a row; name the code's own class instead" >&2
-		return 1
-	fi
+	' < <(tr '\n' ' ' <"$css")
 }
 
 # ------------------------------------------------------------- the self-test
@@ -119,7 +142,10 @@ self_test() {
 		'.todo-panel{font:12px monospace;}' \
 		'.identity{font:13px var(--font-mono);}' \
 		'.approval-head{font:600 13px var(--font-mono);}' \
-		'@media (max-width:640px){main.x{padding:0;}.step .line{font:12px var(--font-mono);}}'; do
+		'@media (max-width:640px){main.x{padding:0;}.step .line{font:12px var(--font-mono);}}' \
+		'.admin-body section.share{position:sticky;top:0;}' \
+		'main.centre > .admin-body .x{position: sticky;}' \
+		'@media (max-width:640px){.admin-body{padding:0;position:sticky;}}'; do
 		name=$(printf '%s' "$body" | tr -c 'A-Za-z0-9' '_')
 		printf '%s\n' "$body" >"$tmp/$name.css"
 		if check "$tmp/$name.css" >/dev/null 2>&1; then
@@ -135,7 +161,10 @@ self_test() {
 		'.line{font:14px/1.5 var(--font-sans);}' \
 		'pre.tool-result{font:12px/1.5 var(--font-mono);}' \
 		'/* .line names --font-mono in a comment */ .x{color:red;}' \
-		'.line{margin:0;}.diff-row{font:12px var(--font-mono);}'; do
+		'.line{margin:0;}.diff-row{font:12px var(--font-mono);}' \
+		'.admin-body{overflow-y:auto;}.jump-anchor{position:sticky;bottom:0;}' \
+		'.admin-bodyx{position:sticky;}' \
+		'/* .admin-body is position:sticky in a comment */ .x{color:red;}'; do
 		printf '%s\n' "$body" >"$tmp/ok.css"
 		if ! check "$tmp/ok.css" >/dev/null 2>&1; then
 			echo "web_client_css_check: self-test: '$body' failed the check" >&2

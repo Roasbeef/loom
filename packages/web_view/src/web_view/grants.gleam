@@ -26,7 +26,10 @@
 //// (`client/daemon/ui_sessions.invite_limit`). Every change that only reduces
 //// access costs nothing.
 
+import gleam/int
 import gleam/option.{type Option}
+import gleam/string
+import web_view/creations.{type Sharing}
 import web_view/ending.{type Ending}
 import web_view/invites.{type Role}
 import web_view/sessions.{type Entry}
@@ -114,6 +117,12 @@ pub type Selection {
     holders: List(Holder),
     /// Whether these are all of them.
     more: More,
+    /// Whether the session may be shared. The registry holds the scope the
+    /// session was created with, which `sessions.members` reports
+    /// (protocol-change/065, the addendum on `scope`). A private session shares
+    /// its notes and history with its workspace, so the page draws no
+    /// invitation form for it.
+    scope: Sharing,
   )
 }
 
@@ -220,6 +229,10 @@ pub type Claim {
     principal: String,
     /// What the claim was made for.
     purpose: Purpose,
+    /// The address a person without `loom` opens to claim in a browser:
+    /// `http://`, the host the page was reached at and `/ui/claim`
+    /// (`web_view/page.claim_path`). It names no token.
+    page: String,
     /// The command the person runs, `loom claim --addr ...`. It names the
     /// address and never the token.
     command: String,
@@ -255,8 +268,11 @@ pub type Reason {
   /// This credential has granted as often as it may recently. The count is the
   /// daemon's and is kept for the credential and not for the page, so opening
   /// another page does not reset it, and it is shared with the invitation
-  /// control on a session's page.
-  TooMany
+  /// control on a session's page. `used` is how many places the window holds,
+  /// which is the whole allowance, and `free_at_ms` is the Unix time in
+  /// milliseconds at which the oldest of them leaves the window, so the next
+  /// grant is possible then.
+  TooMany(used: Int, free_at_ms: Int)
 
   /// The session still shares its history with its workspace, so the daemon
   /// refuses to give another person a seat in it until it is isolated.
@@ -287,13 +303,55 @@ pub type Reason {
 pub fn reason_words(reason: Reason) -> String {
   case reason {
     NotOwner -> "Only the owner can administer from a page."
-    TooMany ->
-      "This credential has granted access several times recently. Wait, or use loomd access from a terminal."
+    TooMany(used:, free_at_ms:) ->
+      int.to_string(used)
+      <> " grants in the last hour is the most a credential may make. The next is free at "
+      <> clock_words(free_at_ms)
+      <> ". Until then, use loomd access from a terminal."
     NotIsolated -> invites.reason_words(invites.NotIsolated)
     NotFound -> "That session or person is no longer there. The page reloads."
     InvalidName ->
       "Use a name of up to 256 bytes with no control or invisible characters."
     Unavailable -> "The daemon could not make that change. Try again."
+  }
+}
+
+// A Unix time in milliseconds as the UTC time of day to the minute, rounded up so a time is never shown before it comes, `HH:MM UTC`.
+// The page cannot know the owner's zone, so it names the one it counts in.
+fn clock_words(milliseconds: Int) -> String {
+  let minutes = { int.max(milliseconds, 0) + 59_999 } / 60_000 % 1440
+  pad(minutes / 60) <> ":" <> pad(minutes % 60) <> " UTC"
+}
+
+fn pad(number: Int) -> String {
+  case number < 10 {
+    True -> "0" <> int.to_string(number)
+    False -> int.to_string(number)
+  }
+}
+
+/// A principal's identity as the page draws it: the prefix before its first
+/// hyphen and the first eight characters after it, so
+/// `owner-2056528fe1be0db0f7105a24da3aac4dcf722898c6655129c0eabc6231181a05`
+/// reads `owner-2056528f`. An identity that is already that short, as a
+/// `guest-` one is, is unchanged. The whole identity goes in the element's
+/// `title`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert grants.short_identity("guest-956fb176") == "guest-956fb176"
+/// assert grants.short_identity("owner-2056528fe1be0db0f7105a24da3aac4d")
+///   == "owner-2056528f"
+/// ```
+pub fn short_identity(identity: String) -> String {
+  case string.split_once(identity, "-") {
+    Ok(#(prefix, rest)) ->
+      case string.length(rest) > 8 {
+        True -> prefix <> "-" <> string.slice(rest, 0, 8)
+        False -> identity
+      }
+    Error(Nil) -> string.slice(identity, 0, 8)
   }
 }
 

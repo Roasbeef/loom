@@ -932,13 +932,19 @@ change is followed by a read so the page shows what the catalogue now holds. A
 read is the principals with their credential state (`manager.principal_page`),
 the owner's sessions (`authorized_page`) and, once the owner has chosen one, its
 members (`manager.session_member_page`, the `sessions.members` read). The page
-draws three lists in `view/admin_people` and `view/admin_sessions`: the people
-(owner first), the invitations waiting to be claimed, and the sessions with a
-chosen one's members. Each member of a session has a button that raises or lowers
-the role and a two-step button that removes the member; each person has a Rotate
-button and a two-step button that revokes access; a form invites a new person into
-the chosen session with a name and a role (`admin_sessions.fields` is the one
-rule for what the form may hold). The two-step shape (`view/admin_buttons`) is a
+draws two lists in `view/admin_people` and `view/admin_sessions`: the people
+(owner first, each once, with `People · 5 · 1 invited` for the heading and an open
+claim drawn in its person's row) and the sessions with a chosen one's members.
+Each member of a session has a button that raises or lowers the role and a
+two-step button that removes the member. A person's buttons follow what they hold:
+Rotate and a two-step Revoke access for an active credential, one two-step `Void
+invitation` for an open claim, Rotate alone for none. Identities are drawn as a
+prefix and eight characters with the whole in a `title`
+(`grants.short_identity`). A form invites a new person into the chosen session
+with a name and a role (`admin_sessions.fields` is the one rule for what the form
+may hold); a session whose members read reports the `workspace_private` scope
+(`grants.Selection.scope`, the `scope` field of `sessions.members`) draws one
+sentence in its place, since the registry would refuse the invitation. The two-step shape (`view/admin_buttons`) is a
 guard against a mis-click: the first press shows what will happen in words that
 name the person and the second sends it. While a change is out every button is
 drawn disabled.
@@ -946,8 +952,20 @@ drawn disabled.
 The one secret the page holds is a claim. An invitation or a rotation returns the
 token to the page that asked; the component holds it until the owner presses "Hide
 the token" and draws it once in the session page's copy boxes
-(`view/admin_claim`, `<loom-copy>`), sticky at the head of the body so it stays on
-screen while the owner scrolls. The catalogue keeps only a claim's digest, so no
+(`view/admin_claim`, `<loom-copy>`), beside the action that made it: under the
+invitation form for an invitation (`admin_claim.for_session`) and under the
+person's row for a rotation (`for_person`). Nothing on the page is sticky, and
+`scripts/web_client_css_check.sh` refuses a `position:sticky` rule under
+`.admin-body`. The box leads with the browser claim address (`share.handover`:
+`http://` and the page's host, `/ui/claim`, a `<loom-copy subject="claim-address">`),
+then the token, then the `loom claim` command for a person who has `loom`. Each
+claim place is one child of its parent, `element.none()` when no claim belongs
+there, so a claim appearing never moves another path and the differ never has a
+reason to resend the token (`admin_test` diffs the real patches and finds the
+token in the one that shows it). A notice is a line beside what was acted on
+(`view/notice`: `Said` fades, `Refused` stays), and a refused fourth grant names
+the count and the UTC time a place frees (`ui_sessions.reserve_invite` answers the
+wall-clock instant). The catalogue keeps only a claim's digest, so no
 read carries one, and no frame of the admin socket carries `loomclaim_` except the
 one that shows the owner a claim they just made. `ui_route_test` scans the real
 socket's frames for it and `admin_test` pins the display's life.

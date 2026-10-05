@@ -90,7 +90,7 @@ only by `UiLink` (`client/daemon/server.gleam:2051`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:1161`)). The
-exchange redeems it once (`redeem` (`ui_sessions.gleam:690`)), the page and
+exchange redeems it once (`redeem` (`ui_sessions.gleam:696`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
 order: `loopback_host` (`ui_http.gleam:203`), then `navigation_allowed`
@@ -297,7 +297,7 @@ that adds it says what the narrowed holder may ask.
 
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
-(`authenticate` (`client/daemon/manager.gleam:1228`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1247`), `session_authority`,
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
 gateway's per-frame re-check and the admin dispatch all run unchanged
@@ -641,7 +641,7 @@ login add these cases.
 `sessions.create` is owner-only (`CreateSession`
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
-`create_scoped` (`client/daemon/manager.gleam:1334`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:1353`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:672`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any

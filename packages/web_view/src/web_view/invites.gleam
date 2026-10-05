@@ -41,6 +41,10 @@ pub type Invitation {
     principal: String,
     /// The role the invitee will hold in this session.
     role: Role,
+    /// The address a person without `loom` opens to claim in a browser:
+    /// `http://`, the host the page was reached at and `/ui/claim`
+    /// (`web_view/page.claim_path`). It names no token.
+    page: String,
     /// The command the invitee runs, `loom claim --addr ...`. It names the
     /// address and never the token.
     command: String,

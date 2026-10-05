@@ -1121,3 +1121,13 @@ pub fn the_admin_pages_event_paths_are_pinned_test() {
   assert component.home_path == "0\t0\t1"
   assert !ui_socket.home_owner_accepts(click_on(home.admin_path))
 }
+
+// The address a person without `loom` opens to claim in a browser is made from
+// the command's own address: the same host and port, `http`, and `/ui/claim`. It
+// carries no token and no path of the control socket.
+pub fn the_browser_claim_address_is_made_from_the_commands_address_test() {
+  assert ui_socket.browser_claim_address("ws://127.0.0.1:4000/v2/control")
+    == "http://127.0.0.1:4000/ui/claim"
+  assert ui_socket.browser_claim_address("ws://[::1]:53599/v2/control")
+    == "http://[::1]:53599/ui/claim"
+}
