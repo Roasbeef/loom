@@ -10,7 +10,9 @@
 //// per field and the reducer pays for a call. A setter returns the record
 //// unchanged in every other field, exactly as the record update it replaces;
 //// several fields are set by piping the record through one setter after
-//// another.
+//// another. A chain of N setters builds N intermediate records where the
+//// replaced update built one. The result is identical, and the extra
+//// short-lived allocation is accepted for the compile-time win.
 ////
 //// A setter exists for each field that three or more call sites set. A
 //// field with fewer keeps its record update at the call site, where a setter
@@ -21,8 +23,8 @@
 //// `notice` → `strands` → `peer`
 ////
 //// The module is a table, not a path. Those three are the setters the callers
-//// use most, and every other setter has the same one-field shape, in the order
-//// of how many call sites set it.
+//// use most, and every other setter has the same one-field shape, roughly in
+//// the order of how many call sites set them when the module was written.
 
 import session_view/model.{type Shared, Shared} as _
 

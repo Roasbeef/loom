@@ -9,7 +9,10 @@
 //// the setter here, so the record is expanded once per field and the handler
 //// pays for a call. A setter returns the view unchanged in every other field,
 //// exactly as the record update it replaces; several fields are set by
-//// piping the view through one setter after another.
+//// piping the view through one setter after another. A chain of N setters
+//// builds N intermediate records where the replaced update built one. The
+//// result is identical, and the extra short-lived allocation is accepted for
+//// the compile-time win.
 ////
 //// A setter exists for each field that three or more call sites set. A
 //// field with fewer keeps its record update at the call site, where a setter
