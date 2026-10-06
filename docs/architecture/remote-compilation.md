@@ -397,3 +397,42 @@ successful completion. The existing `service_input.admit_launch` and
 admitted wall time and original Launch Ready resources. Compile-specific APIs
 remain role guarded. The same canonical Prepared, UUID, policy and finite native
 authority checks apply; historical recovery grants no new native permit.
+
+
+## Whole Launch executor-local owner
+
+The authenticated local `launch_service` admits closed token placement and keeps
+one through four original live entries beside its bounded metadata lane. Before
+Claim or file effects, it validates the retained successful Compile producer and
+hashes that producer's actual beam directory against the immutable manifest.
+The original actor retains Claim and socket ownership before preparing exclusive
+canonical paths, private token permissions and a listener, then commits LaunchReady.
+The existing owner Broker supplies the cleared SatelliteCommand through the live
+Claim route; Launch adds no native execution engine.
+
+Finite `Observed(preparation, LaunchStatus)` answers separate admission from
+socket handoff. `install_host` accepts the trusted original host once and returns an
+`Installed(deadline_ms)` receipt from the same active original entry, then its
+paused connection asynchronously after acceptance and weft adoption of both socket
+children. The caller installs the connection before activation. Historical Query
+cannot return a live connection or mint another Claim. The executor-local reader
+orders bounded cap frames and End; native terminal observation retains its closed
+journal evidence independently and never emits End.
+
+Definite owner refusal uses `RefuseBeforeNative` and the atomic original Claim
+fence, including after Ready. Lost replies and timeouts remain uncertain. Cleanup
+closes the original listener and accepted socket independently before joining
+blocked I/O. A committed no-dispatch refusal, actual child joins, original path
+removal and resource release COMMIT establish ResourcesReleased. Cancellation
+can also establish no-dispatch custody after its original fence commits and
+exact same-row Unassociated readback succeeds. It does not create a historical
+RefusedBeforeNative result. Original preparation and socket joins must precede
+directory removal; lost fence, readback or join remains unresolved. A separate
+six-second observation grace never extends the immutable dispatch deadline.
+Associated native
+terminal evidence currently retains unresolved resource retirement. Active slots
+remain held until the original continuation and cleanup witnesses all settle.
+A historical replay owns no Claim or channel; its completed observation-only
+entry releases admission capacity after its actual managed task drains.
+BEAM routing, stream binding, owner client integration and default assembly remain
+separate integration work; this local owner alone is not distributed E2E acceptance.
