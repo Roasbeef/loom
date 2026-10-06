@@ -47,6 +47,7 @@ pub fn canonical_header_exact_scope_generation_and_closed_routes_test() {
     protocol.Launch(launch_wire.Cancel),
     protocol.Launch(launch_wire.Acknowledge(digest)),
     protocol.Launch(launch_wire.RefuseBeforeNative),
+    protocol.LaunchBind,
   ]
   list.each(routes, fn(route) {
     let assert Ok(bytes) = protocol.header(binding(), route) as "closed header"
@@ -152,8 +153,8 @@ pub fn statuses_are_closed_and_do_not_accept_trailing_bytes_test() {
   assert protocol.decode_status(<<1, 5>>) == Error(Nil)
 }
 
-// Route five remains unavailable until an independently checked stream bind exists.
-pub fn launch_route_four_is_finite_and_route_five_is_reserved_test() {
+// Route five admits only a finite checked stream installation.
+pub fn launch_route_four_and_bind_route_five_are_finite_test() {
   assert protocol.route_lane(protocol.Launch(launch_wire.ChallengeRequest))
     == protocol.Data
   assert protocol.route_lane(
@@ -169,4 +170,16 @@ pub fn launch_route_four_is_finite_and_route_five_is_reserved_test() {
     as "finite route four encodes"
   let assert <<1, 4, rest:bytes>> = bytes as "Launch uses its new route"
   assert protocol.decode_header(binding(), <<1, 5, rest:bits>>) == Error(Nil)
+  let assert Ok(bind) = protocol.header(binding(), protocol.LaunchBind)
+    as "finite bind encodes"
+  assert protocol.route_lane(protocol.LaunchBind) == protocol.Control
+  assert protocol.decode_header(binding(), bind) == Ok(protocol.LaunchBind)
+  assert protocol.receiver(protocol.LaunchBind, transfer.Invocation, <<
+      "LWC",
+      1,
+      0,
+      1:32,
+      0:size(256),
+    >>)
+    == Error(Nil)
 }

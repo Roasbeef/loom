@@ -22,6 +22,8 @@
 //// canonical Available records. Scope owner DOWN applies the same row fence.
 //// `attach_launch` checks original shared resource custody before publication.
 //// `exchange`, `workspace_exchange`, `compile_exchange` and `launch_exchange` enter `owner_exchange`;
+//// `bind_launch` enters `owner_bind`; `serve_bind` retains a checked finite
+//// installation answer until `receive_acceptance` acknowledges its door.
 //// `exchange_command` preserves the complete original physical command route.
 //// `reserve` assigns one stable credit. `begin_credit` starts managed transport;
 //// `admit` hands off one decoded operation to its concrete service.
@@ -44,6 +46,7 @@ import executor/remote/compile_wire
 import executor/remote/distribution
 import executor/remote/identity
 import executor/remote/internal/beam_protocol as protocol
+import executor/remote/launch_beam
 import executor/remote/launch_service as launch
 import executor/remote/launch_wire
 import executor/remote/resource_journal as resources
@@ -239,15 +242,21 @@ type Reply {
   Consumed(reference.Reference, Int)
   Returned(reference.Reference, Int, BitArray)
   WorkspaceStatus(reference.Reference, BitArray)
+  BindReturned(reference.Reference, BitArray, launch_beam.Door)
 }
 
 type Frame {
   Input(reference.Reference, Int, BitArray)
   ReplyConsumed(reference.Reference, Int)
   StatusConsumed(reference.Reference)
+  BindInput(reference.Reference, BitArray, launch_beam.Door)
 }
 
 type Request {
+  BindRequest(
+    launch_beam.Offer,
+    process.Subject(Result(launch_beam.Acceptance, Nil)),
+  )
   LaunchRequest(
     launch_wire.Command,
     resources.Input,
@@ -643,6 +652,20 @@ pub fn launch_exchange(
     ))
     decode_segments(returned)
   })
+}
+
+/// Installs the original Launch host through one finite control credit.
+/// A lost answer remains uncertain and must not cause a new bind attempt.
+/// Socket acceptance and stream drain belong to the returned bridge actor.
+///
+/// ## Examples
+/// `bind_launch(config, launch_beam.offer(owner))` returns its checked acceptance.
+pub fn bind_launch(
+  config: Config,
+  offered: launch_beam.Offer,
+) -> Result(launch_beam.Acceptance, Error) {
+  use binding <- result.try(client_binding(config))
+  bounded(config.within_ms, fn() { owner_bind(config, binding, offered) })
 }
 
 /// Exchanges one exact semantic invocation and validates any completion.
@@ -1138,6 +1161,35 @@ fn begin_credit(
 
 fn admit(state: Credit, request: Request) -> actor.Next(Credit, CreditMessage) {
   case state.registration, state.pending, request {
+    Some(row), NoAsk, BindRequest(offered, reply) -> {
+      case row.launch {
+        None -> {
+          process.send(reply, Error(Nil))
+          available(state)
+        }
+        Some(whole) -> {
+          // Only the finite local Installed acknowledgement runs in this credit.
+          // The original stream actor owns socket acceptance and its deadline.
+          case launch_beam.serve(whole, row.owner, row.binding, offered) {
+            Ok(executor) -> {
+              process.send(reply, Ok(launch_beam.acceptance(executor)))
+              available(state)
+            }
+            Error(launch_beam.Invalid) -> {
+              process.send(reply, Error(Nil))
+              available(state)
+            }
+            Error(launch_beam.Uncertain) -> {
+              process.send(reply, Error(Nil))
+
+              // Installation may have reached original owner custody. Actor loss
+              // retains this assignment after the network worker retires.
+              actor.stop()
+            }
+          }
+        }
+      }
+    }
     Some(row), NoAsk, NativeRequest(envelope, reply) -> {
       service.send_exchange(
         row.native,
@@ -1468,12 +1520,48 @@ fn serve(
     reservation.reply,
     Granted(reservation.correlation, incoming),
   ))
-  use bytes <- result.try(receive_input(route, reservation, incoming))
+  case route {
+    protocol.LaunchBind -> serve_bind(row, reservation, incoming, requests)
+    protocol.Native(_)
+    | protocol.NativeCommand(_)
+    | protocol.Workspace(_)
+    | protocol.Compile(_)
+    | protocol.Launch(_) -> {
+      use bytes <- result.try(receive_input(route, reservation, incoming))
+      let reply = process.new_subject()
+      use request <- result.try(decode_request(row, route, bytes, reply))
+      process.send(requests, #(reservation.correlation, request))
+      use bytes <- result.try(process.receive_forever(reply))
+      return_output(route, reservation, incoming, bytes)
+    }
+  }
+}
+
+// The exact acceptance stays in this transport task until its single ACK.
+fn serve_bind(
+  row: Registration,
+  reservation: Reservation,
+  incoming: process.Subject(Frame),
+  requests: process.Subject(#(reference.Reference, Request)),
+) -> Result(Nil, Nil) {
+  use offered <- result.try(case process.receive_forever(incoming) {
+    BindInput(ref, bytes, door) if ref == reservation.correlation ->
+      launch_beam.offer_from_wire(row.owner, bytes, door)
+      |> result.replace_error(Nil)
+    BindInput(_, _, _)
+    | Input(_, _, _)
+    | ReplyConsumed(_, _)
+    | StatusConsumed(_) -> Error(Nil)
+  })
   let reply = process.new_subject()
-  use request <- result.try(decode_request(row, route, bytes, reply))
-  process.send(requests, #(reservation.correlation, request))
-  use bytes <- result.try(process.receive_forever(reply))
-  return_output(route, reservation, incoming, bytes)
+  process.send(requests, #(reservation.correlation, BindRequest(offered, reply)))
+  use accepted <- result.try(process.receive_forever(reply))
+  let #(bytes, door) = launch_beam.acceptance_fields(accepted)
+  use _ <- result.try(sent(
+    reservation.reply,
+    BindReturned(reservation.correlation, bytes, door),
+  ))
+  consumed(incoming, reservation.correlation, 0)
 }
 
 fn decode_request(
@@ -1484,6 +1572,7 @@ fn decode_request(
 ) -> Result(Request, Nil) {
   let binding = row.binding
   case route {
+    protocol.LaunchBind -> Error(Nil)
     protocol.Native(lane) -> {
       use envelope <- result.try(protocol.native(binding, wire.Owner, bytes))
       use actual <- result.try(protocol.lane(envelope.body))
@@ -1594,7 +1683,10 @@ fn input_frame(
   case process.receive_forever(incoming) {
     Input(ref, index, bytes) if ref == correlation && index == ordinal ->
       Ok(bytes)
-    Input(_, _, _) | ReplyConsumed(_, _) | StatusConsumed(_) -> Error(Nil)
+    Input(_, _, _)
+    | ReplyConsumed(_, _)
+    | StatusConsumed(_)
+    | BindInput(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1630,6 +1722,7 @@ fn return_output(
   bytes: BitArray,
 ) -> Result(Nil, Nil) {
   case route, bytes {
+    protocol.LaunchBind, _ -> Error(Nil)
     protocol.Workspace(_), <<1, 2, completion:bytes>> -> {
       use _ <- result.try(workspace_status(reservation, incoming, <<1, 2>>))
       return_content(route, reservation, incoming, completion)
@@ -1659,7 +1752,10 @@ fn workspace_status(
   ))
   case process.receive_forever(incoming) {
     StatusConsumed(ref) if ref == reservation.correlation -> Ok(Nil)
-    Input(_, _, _) | ReplyConsumed(_, _) | StatusConsumed(_) -> Error(Nil)
+    Input(_, _, _)
+    | ReplyConsumed(_, _)
+    | StatusConsumed(_)
+    | BindInput(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1689,7 +1785,10 @@ fn consumed(
   case process.receive_forever(incoming) {
     ReplyConsumed(ref, index) if ref == correlation && index == ordinal ->
       Ok(Nil)
-    Input(_, _, _) | ReplyConsumed(_, _) | StatusConsumed(_) -> Error(Nil)
+    Input(_, _, _)
+    | ReplyConsumed(_, _)
+    | StatusConsumed(_)
+    | BindInput(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1748,7 +1847,74 @@ fn owner_exchange(
     Granted(_, _)
     | Consumed(_, _)
     | Returned(_, _, _)
-    | WorkspaceStatus(_, _) -> Error(Nil)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
+  }
+}
+
+fn owner_bind(
+  config: Config,
+  binding: protocol.Binding,
+  offered: launch_beam.Offer,
+) -> Result(launch_beam.Acceptance, Nil) {
+  use _ <- result.try(
+    distribution.connect(config.peer, config.within_ms)
+    |> result.replace_error(Nil),
+  )
+  use endpoint <- result.try(
+    distribution.endpoint(config.peer, config.within_ms)
+    |> result.replace_error(Nil),
+  )
+  use header <- result.try(protocol.header(binding, protocol.LaunchBind))
+  let reply = process.new_subject()
+  let correlation = reference.new()
+  use _ <- result.try(sent(
+    rendezvous(endpoint),
+    Reservation(header, correlation, process.self(), reply),
+  ))
+  case process.receive_forever(reply) {
+    Granted(ref, incoming) if ref == correlation -> {
+      use <- bool.guard(
+        case process.subject_owner(incoming) {
+          Ok(pid) -> !distribution.owns(config.peer, pid)
+          Error(Nil) -> True
+        },
+        Error(Nil),
+      )
+      let #(bytes, door) = launch_beam.offer_fields(offered)
+      use _ <- result.try(sent(incoming, BindInput(correlation, bytes, door)))
+      receive_acceptance(config.peer, bytes, correlation, incoming, reply)
+    }
+    Granted(_, _)
+    | Consumed(_, _)
+    | Returned(_, _, _)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
+  }
+}
+
+fn receive_acceptance(
+  peer: distribution.Peer,
+  original_binding: BitArray,
+  correlation: reference.Reference,
+  incoming: process.Subject(Frame),
+  reply: process.Subject(Reply),
+) -> Result(launch_beam.Acceptance, Nil) {
+  case process.receive_forever(reply) {
+    BindReturned(ref, bytes, door) if ref == correlation -> {
+      use <- bool.guard(bytes != original_binding, Error(Nil))
+      use accepted <- result.try(
+        launch_beam.acceptance_from_wire(peer, bytes, door)
+        |> result.replace_error(Nil),
+      )
+      use _ <- result.try(sent(incoming, ReplyConsumed(correlation, 0)))
+      Ok(accepted)
+    }
+    Granted(_, _)
+    | Consumed(_, _)
+    | Returned(_, _, _)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1776,7 +1942,8 @@ fn input_consumed(
     Granted(_, _)
     | Consumed(_, _)
     | Returned(_, _, _)
-    | WorkspaceStatus(_, _) -> Error(Nil)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1827,12 +1994,14 @@ fn receive_status_or_output(
         Granted(_, _)
         | Consumed(_, _)
         | Returned(_, _, _)
-        | WorkspaceStatus(_, _) -> Error(Nil)
+        | WorkspaceStatus(_, _)
+        | BindReturned(_, _, _) -> Error(Nil)
       }
     protocol.Native(_)
     | protocol.NativeCommand(_)
     | protocol.Compile(_)
     | protocol.Launch(_) -> receive_output(route, correlation, incoming, reply)
+    protocol.LaunchBind -> Error(Nil)
   }
 }
 
@@ -1855,7 +2024,8 @@ fn receive_output(
     Granted(_, _)
     | Consumed(_, _)
     | Returned(_, _, _)
-    | WorkspaceStatus(_, _) -> Error(Nil)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1881,7 +2051,8 @@ fn returned_chunks(
     Granted(_, _)
     | Consumed(_, _)
     | Returned(_, _, _)
-    | WorkspaceStatus(_, _) -> Error(Nil)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
   }
 }
 
