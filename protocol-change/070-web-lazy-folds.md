@@ -60,6 +60,15 @@ is the id of a fold of a turn the page holds; any other number changes nothing.
 It reads nothing new and sends no command: the steps come from records the page
 already holds, never from the event.
 
+*Which turns are held.* The turns a page holds are chosen as if every fold were
+closed, so a press never changes where the page is cut, trims its history or
+fills a paged page. The rows those turns leave over go to the open folds, most
+recently opened first. A fold that does not fit whole, if it is the most recent
+that did not, draws its newest steps that do; a fold opened before it that does
+not fit is closed. While a running turn is alone over the limit the page keeps
+loaded older records in its window untrimmed, and draws them once the turn
+settles.
+
 *Admission.* The observer's page socket admits a `click` at the divider's exact
 path and no other event there (`component.fold_click`), as it admits the older
 button's, the home button's and a chip's. The path is the lane's keyed list,

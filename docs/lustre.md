@@ -1245,7 +1245,8 @@ All apply to 5.7.1. Re-check each when the pin moves.
       an engine identity; no key contains tab, CR or LF.
 - [ ] Every handler in the tree is one the page's role may send; an
       observer's view has only the "Load older" click, at
-      `component.older_path`, the chips' clicks and the dividers' clicks at
+      `component.older_path`, the chips' clicks, the Home button's click at
+      `component.home_path` and the dividers' clicks at
       `component.fold_click`'s exact path, which `ui_socket.observer_accepts`
       admits and `page_events_test` pins. `update` re-checks each command against the
       current state.

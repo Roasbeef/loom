@@ -485,13 +485,14 @@ page keys and nonces, and the relay into the session's gateway.
   one to the newest steps its room allows (`Folding` is `Folded | Unfolded(hidden)
   | Open`). `View.folds` is the list of open fold numbers, most recently opened
   first; a number is the sequence of the first record the fold holds
-  (`turns.Work.id`), the daemon's number and never session text. When opening
-  one pushes the page past its limit, `squeezed` closes the oldest-opened folds
-  first; a fold that alone does not fit draws its newest steps and a line says
-  how many earlier ones are not shown. The running turn is `Open` and is counted
+  (`turns.Work.id`), the daemon's number and never session text. The turns
+  held are chosen with every fold closed, so a press never changes where the
+  page is cut or its `Paging`; the rows they leave over go to the open folds,
+  most recently opened first, and an older-opened fold that does not fit is
+  closed. The most recent that does not fit draws its newest steps and a line
+  says how many earlier ones are not shown. The running turn is `Open` and is counted
   by every row of its blocks; when it alone is over the limit (`Overrun`) the
-  page draws its newest blocks but keeps its whole record in the history
-  window, so once it settles it is one divider with its prompt, and `Paging`
+  page draws its newest blocks but leaves the history window untrimmed, so once it settles it is one divider with its prompt, and `Paging`
   does not go `Full` because of it. `FoldToggled(fold)` opens or closes a fold
   (`folded_at`): it acts only on a `Connected` page with a cut, and only on a
   number that is the id of a fold of a held turn, as `OlderRequested` acts only
