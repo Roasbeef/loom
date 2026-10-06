@@ -172,7 +172,15 @@ with these forks: they define the same modules.
   every read. This capability creates neither a reader process nor a lease.
   Each function takes a final wait budget in milliseconds, capped at 5,000.
   The shared monitored exchange in `internal/snapshot_call` returns
-  `ReadTimedOut` or `ReaderUnavailable` instead of panicking.
+  `ReadTimedOut` or `ReaderUnavailable` instead of panicking. Only the
+  second proves the actor dead; the first is a deadline, and a late reply
+  lands in the mailbox of the process that made the call, so a long-lived
+  caller makes the exchange from a short-lived weft run (the gateway's
+  transfer capture does). Measured on a 28 MB, 4,727-message real session,
+  `capture` takes 1.5 to 11 ms: the cut reads the maintained `session` row for
+  stats and high-water, index ranges for registers, and one `ix_entry_seq`
+  search for the recent window, so its cost does not grow with history. A
+  timeout therefore means the actor was busy elsewhere, not that capture is slow.
   `KeyPage(namespace, prefix, after, limit)` selects at most 100 ascending
   register headers after an exclusive key cursor, before values are copied.
   Every page is a fresh coherent cut; a removed cursor still names the same
