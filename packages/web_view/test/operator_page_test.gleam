@@ -356,6 +356,22 @@ pub fn a_later_outcome_replaces_the_notice_test() {
   assert component.notice(model) == component.Said("Sent")
 }
 
+// A steer the daemon holds is drawn in the lane as a held row with how it will
+// run, so the daemon's "queued" answer adds no footer word beside it. The word
+// used to read "Queued" for a steer and stayed after the row had settled.
+pub fn a_held_steer_leaves_no_footer_word_test() {
+  let #(model, wire) = running("operator")
+  let model =
+    send(model, [operator_page.Submitted("go left", operator.Steer, [])])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one steer is one command"
+  let model =
+    send(model, [
+      reply(frame, "\"mutation_outcome\",\"body\":{\"status\":\"queued\"}"),
+    ])
+  assert component.notice(model) == component.Quiet
+}
+
 // A command the daemon refuses replaces the "sent" notice with the refusal,
 // which the shared step words as the code and the daemon's message. The
 // message is the daemon's own text, and the page draws it as text only.

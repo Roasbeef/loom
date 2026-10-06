@@ -397,7 +397,7 @@ record would need a new control command.
 | Region | Data | Source today |
 |---|---|---|
 | Gutter hues | strand hue | `hue` at `session_view/turns.gleam:248` |
-| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1144`, plus a failure count from the steps' results |
+| Worked divider with failure count | the turn's steps | `divider` at `session_view/turns.gleam:1185`, plus a failure count from the steps' results |
 | Collapsed repeats (`agent_wait ×15`) | consecutive identical calls | a new rule in `project` at `session_view/tool_activity.gleam:55`; no wire change |
 | Collapsed repeated errors (`429 ×20`) | consecutive identical local lines | a fold in `session_view` over `Shared.transcript`; no wire change |
 | Harness notices as system lines | the `[loom] ` prefix | recognised today only to bound the turn, `harness_injection_summary` at `session_view/composer.gleam:444`; the line builder still draws a User turn |

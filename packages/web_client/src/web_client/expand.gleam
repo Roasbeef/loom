@@ -123,6 +123,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         effect.batch([
           event.emit(fold.toggled_event, json.null()),
           publish(model.kind, shown),
+          opened(shown),
         ]),
       )
     }
@@ -139,7 +140,10 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       let model = Model(..model, mark:)
       #(model, claim(model))
     }
-    HandedOver -> #(Model(..model, shown: expand_rule.Open), effect.none())
+    HandedOver -> #(
+      Model(..model, shown: expand_rule.Open),
+      opened(expand_rule.Open),
+    )
 
     // An open live row that leaves lets its offer run out in a moment, unless
     // the settled row took it first (the note is gone then).
@@ -147,6 +151,14 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       expand_rule.Live, expand_rule.Open -> expire_offer()
       _, _ -> effect.none()
     })
+  }
+}
+
+// The custom state the stylesheet reads, set while the body is shown.
+fn opened(shown: Shown) -> Effect(Msg) {
+  case shown {
+    expand_rule.Open -> component.set_pseudo_state(expand_rule.open_state)
+    expand_rule.Closed -> component.remove_pseudo_state(expand_rule.open_state)
   }
 }
 

@@ -59,3 +59,8 @@ pub fn an_open_live_row_offers_its_state_to_the_settled_row_that_follows_test() 
   assert !expand_rule.offers("", left)
   assert !expand_rule.offers("soon", left)
 }
+
+// The stylesheet hides an open reasoning row's preview by this custom state.
+pub fn an_open_row_publishes_the_state_the_stylesheet_reads_test() {
+  assert expand_rule.open_state == "open"
+}

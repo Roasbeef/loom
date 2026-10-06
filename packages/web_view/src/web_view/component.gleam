@@ -157,6 +157,7 @@ import session_view/inbox
 import session_view/lane_fold
 import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
+import session_view/notice_words
 import session_view/operator
 import session_view/outbound
 import session_view/pasted_image
@@ -4053,8 +4054,19 @@ pub fn notice(model: Model(socket)) -> Notice {
   case model.view.refusal, model.shared.answer, model.view.outcome {
     Some(text), _, _ -> Warned(text)
     None, "", "" -> Quiet
-    None, "", text -> Said(text)
-    None, text, _ -> Said(text)
+    None, "", text -> said(text)
+    None, text, _ -> said(text)
+  }
+}
+
+// The words of an outcome as a notice. An outcome that only says the daemon
+// holds the input is left out: the lane draws the held row with how it will
+// run, and a footer word beside it repeated that and outlived the row once
+// it settled.
+fn said(text: String) -> Notice {
+  case notice_words.holds(text) {
+    True -> Quiet
+    False -> Said(text)
   }
 }
 

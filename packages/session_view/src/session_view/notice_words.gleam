@@ -19,6 +19,8 @@
 //// `outcome` words the daemon's answer to it, one status at a time. Both
 //// fall back on `done`, which is the one place the command table lives.
 
+import gleam/list
+
 /// The words for a command that has just been written to the wire and has
 /// not been answered. Most say only that the command went; a goal
 /// command, which the server answers within a round trip, says what is being
@@ -65,9 +67,35 @@ pub fn outcome(command: String, status: String) -> String {
     "queued", "prompt" | "queued", "prompt_content" ->
       "Queued for the next turn"
     "queued", "edit_queued_input" -> "Queued input updated"
+    "queued", "steer" -> "Steering · runs next"
     "queued", _ -> "Queued"
     _, _ -> done(command)
   }
+}
+
+/// Whether a footer outcome only says the daemon is holding the operator's
+/// input, which a host that draws the held input itself need not repeat.
+///
+/// The web page draws a held prompt or steer in the lane, with how it will
+/// run, and settles it into the transcript when it runs. The footer's
+/// "Queued" beside it said the same thing a second time and, once the row had
+/// settled, outlived it, so the page leaves these words out.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert notice_words.holds(notice_words.outcome("steer", "queued"))
+/// assert !notice_words.holds(notice_words.outcome("deny", "committed"))
+/// ```
+pub fn holds(text: String) -> Bool {
+  list.contains(
+    [
+      outcome("prompt", "queued"),
+      outcome("steer", "queued"),
+      outcome("follow_up", "queued"),
+    ],
+    text,
+  )
 }
 
 /// The words for a command that has been carried out.
