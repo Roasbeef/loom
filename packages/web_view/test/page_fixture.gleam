@@ -493,6 +493,45 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
   )
 }
 
+/// The daemon's answer to the `block_summaries` read the lane sent as
+/// request `id`: the stored labels it found, each an entry's text, a content
+/// index and the label.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.block_summaries(9, [#("0198c0de-0000-7000-8000-000000000006", 0, "Reads.")])
+/// ```
+pub fn block_summaries(
+  id: Int,
+  found: List(#(String, Int, String)),
+) -> connection_event.Message {
+  reply(
+    id,
+    "snapshot",
+    json.Object([
+      #("mode", json.String("block_summaries")),
+      #(
+        "board",
+        json.Object([
+          #(
+            "summaries",
+            json.Array(
+              list.map(found, fn(label) {
+                json.Object([
+                  #("entry", json.String(label.0)),
+                  #("block", json.Int(label.1)),
+                  #("text", json.String(label.2)),
+                ])
+              }),
+            ),
+          ),
+        ]),
+      ),
+    ]),
+  )
+}
+
 /// The daemon's refusal of the read the lane sent as request `id`.
 ///
 /// ## Examples

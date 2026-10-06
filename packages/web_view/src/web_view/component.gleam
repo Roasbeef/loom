@@ -187,6 +187,7 @@ import session_view/transcript_line.{
   type CacheNotice, type Line, type Stream, Assistant, Line,
 }
 import session_view/transcript_lines
+import session_view/turn_labels
 import session_view/turn_ledger
 import session_view/turns
 import session_view/worktree_view
@@ -1715,10 +1716,11 @@ fn serviced(
 ) -> #(Model(socket), List(step_effect.Effect(socket, Nil))) {
   case
     history_view.range(model.shared.scrollback),
-    history_view.lineage(model.shared.scrollback)
+    history_view.lineage(model.shared.scrollback),
+    block_summary.next_read(model.shared.summaries)
   {
-    None, None -> #(model, effects)
-    Some(_), _ | None, Some(_) -> {
+    None, None, None -> #(model, effects)
+    Some(_), _, _ | None, Some(_), _ | None, None, Some(_) -> {
       let #(shared, sent) = step.update(model.shared, tick_at(at))
       let model = settled(Model(..model, shared:)) |> settled_projection
       #(model, list.append(effects, sent))
@@ -2154,10 +2156,30 @@ fn resumed(model: Model(socket)) -> Model(socket) {
 // keeps what it reads apart from the window, so a read through a turn of
 // thousands of records never evicts the live end.
 fn relaned(model: Model(socket)) -> Model(socket) {
-  case model.shared.captured {
+  let laid = case model.shared.captured {
     None -> settled_projection(model)
     Some(#(cut, view)) -> relaid(model, cut, view, 4) |> settled_projection
   }
+  labels_wanted(laid)
+}
+
+// Marks the reasoning blocks the page now draws as wanted, so the lane reads
+// the stored summarizer labels the page lacks for them (`block_summary.want`;
+// the shared step sends the read once the lane is free). This is the one place
+// the page learns which blocks it draws, and it runs when a projection was
+// rebuilt: the window's turns, the closed turns the page holds, the steps of
+// a fold the reader opened and a page of older history all end up in `pieces`,
+// so a block that arrived through a lineage read or an opened fold is asked
+// about like one in the window. A block already labelled, already asked about
+// or already waiting is not added again, and the read names at most
+// `block_summary.max_blocks` of them.
+fn labels_wanted(model: Model(socket)) -> Model(socket) {
+  let summaries =
+    block_summary.want(
+      model.shared.summaries,
+      turn_labels.keys(model.view.pieces),
+    )
+  Model(..model, shared: Shared(..model.shared, summaries:))
 }
 
 // One pass of the projection, and another when the read the pass chose was
@@ -5111,6 +5133,12 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 
 /// The lane's pieces, in order (`session_view/turns`).
 ///
+/// A reasoning block the summarizer has labelled is drawn as a summarized row.
+/// The label is read from the shared record when the pieces are read, and is
+/// never kept in the pieces the page holds, so a label that arrives after a
+/// turn was sealed, or after a fold's steps were read, shows on the next draw
+/// (`session_view/turn_labels`).
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -5118,6 +5146,7 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 /// ```
 pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.view.pieces
+  |> turn_labels.apply(model.shared.summaries)
   |> turns.with_decisions(decisions.from_ledger(
     model.shared.approvals,
     model.view.raised,

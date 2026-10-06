@@ -789,6 +789,19 @@ page keys and nonces, and the relay into the session's gateway.
 - An approval card is headed `<b>strand</b> wants to <approval.wants(tool)>`,
   with the strand from the escalation record's scope
   (`component.raised_on`) and the arming delay drawn as the `Arming…` note.
+- A settled reasoning row shows the summarizer's label as the terminal does
+  (`Reasoning (summarized) · N lines · T`, the label as the preview, the block's
+  own text behind the chevron). `component.pieces` applies the labels from
+  `Shared.summaries` on every read (`session_view/turn_labels.apply`), so a block
+  that streamed with a live label keeps it when it settles and until its stored
+  label arrives, and a sealed turn or an opened fold shows a label that arrives
+  later with nothing re-sealed. `relaned` marks the long reasoning blocks the
+  pieces draw as wanted (`labels_wanted`, `turn_labels.keys`), so blocks that
+  arrived through a lineage read or an opened fold are read like the window's;
+  the shared step's tick sends the `block_summaries` read (at most
+  `block_summary.max_blocks` names, each block asked once per attachment), and
+  `serviced` ticks when one is owed. The lane draws the label only as a text
+  node (`lane.summary_row`).
 - A decided approval is a `turns.Decided` piece: `session_view/decisions`
   reads the approval ledger (`shared.approvals`) and the strands the
   captures saw pending requests raised on (`View.raised`), and

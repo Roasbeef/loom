@@ -976,14 +976,31 @@ fn block_element(
           let held = result.unwrap(dict.get(thoughts, row.0), [])
           case held {
             [first, ..] ->
-              reasoning_row(step_words.Raw, first.text, held, took, heir, draw)
+              reasoning_row(
+                step_words.Raw,
+                first.text,
+                first.text,
+                held,
+                took,
+                heir,
+                draw,
+              )
             [] ->
-              reasoning_row(step_words.Raw, row.1.text, [], took, heir, draw)
+              reasoning_row(
+                step_words.Raw,
+                row.1.text,
+                row.1.text,
+                [],
+                took,
+                heir,
+                draw,
+              )
           }
         }
         transcript_line.Reasoning ->
           reasoning_row(
             step_words.Raw,
+            row.1.text,
             row.1.text,
             more_of(row.1.text),
             took,
@@ -991,7 +1008,13 @@ fn block_element(
             draw,
           )
         transcript_line.SummarizedReasoning ->
-          summary_row(row.1.text, took, heir, draw)
+          summary_row(
+            row.1.text,
+            result.unwrap(dict.get(thoughts, row.0), []),
+            took,
+            heir,
+            draw,
+          )
         _ -> fold_row.line_row(row.1, draw)
       }
     })
@@ -1013,13 +1036,16 @@ fn block_element(
 // whole text beside it when the page holds it), the whole text itself, or a
 // provider's summary. The row is the terminal's heading (`step_words`: the
 // verb, the line count when there is more to open, the time), then a one-line
-// Markdown preview of the text's first line, and behind the chevron the whole
-// text as Markdown. `body` is what opens: empty when the preview already says
-// everything, in which case the row has no chevron and no count. The text is
-// the model's or the provider's and is drawn only as text nodes.
+// Markdown preview, and behind the chevron the whole text as Markdown. `text`
+// is the block's own text, which the line count is read from, and `shown` is
+// what the preview is a line of: the same text for a raw block, the summary
+// for a summarized one. `body` is what opens: empty when the preview already
+// says everything, in which case the row has no chevron and no count. The text
+// is the model's or the provider's and is drawn only as text nodes.
 fn reasoning_row(
   provenance: step_words.Provenance,
   text: String,
+  shown: String,
   body: List(Line),
   took: Option(Int),
   heir: fold_row.Handoff,
@@ -1031,7 +1057,7 @@ fn reasoning_row(
   }
   fold_row.reasoning(
     step_words.reasoning_of(provenance, count, took),
-    preview(text),
+    preview(shown),
     list.map(body, fold_row.line_row(_, draw)),
     heir,
   )
@@ -1055,9 +1081,14 @@ fn preview(text: String) -> List(Element(message)) {
 
 // A summarized block's row text is the terminal's header line and the summary
 // beneath it; the summary is the text, and the header's words are the
-// heading's.
+// heading's. When the page holds the block's own text (`held`, the full form
+// `turns` keeps by the row's key), the row is the terminal's: the heading
+// counts the lines of the block the summary stands for and the time it took,
+// the summary is the preview, and the chevron opens the block's own text. A
+// summary alone, with no text behind it, counts and opens its own lines.
 fn summary_row(
   text: String,
+  held: List(Line),
   took: Option(Int),
   heir: fold_row.Handoff,
   draw: fn(Line) -> Element(message),
@@ -1066,14 +1097,28 @@ fn summary_row(
     Ok(#(_, summary)) -> summary
     Error(Nil) -> text
   }
-  reasoning_row(
-    step_words.Summarized,
-    summary,
-    more_of(summary),
-    took,
-    heir,
-    draw,
-  )
+  case held {
+    [first, ..] ->
+      reasoning_row(
+        step_words.Summarized,
+        first.text,
+        summary,
+        held,
+        took,
+        heir,
+        draw,
+      )
+    [] ->
+      reasoning_row(
+        step_words.Summarized,
+        summary,
+        summary,
+        more_of(summary),
+        took,
+        heir,
+        draw,
+      )
+  }
 }
 
 // The body of a block whose whole text is the row's text: the text itself
