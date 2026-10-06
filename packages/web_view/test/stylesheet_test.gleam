@@ -7,18 +7,14 @@
 //// gen-client` writes and `make web_assets --check` keeps current, so a
 //// change to the source rules reaches this file only through a rebuild.
 
-import gleam/bit_array
 import gleam/string
+import simplifile
 import web_view/page
-
-@external(erlang, "stylesheet_ffi", "read")
-fn read(path: String) -> Result(BitArray, Nil)
 
 fn stylesheet() -> String {
   let assert Ok(path) = page.static_file(page.stylesheet_asset)
     as "the stylesheet is in priv"
-  let assert Ok(bytes) = read(path) as "the stylesheet reads"
-  let assert Ok(text) = bit_array.to_string(bytes) as "it is text"
+  let assert Ok(text) = simplifile.read(path) as "the stylesheet reads"
   text
 }
 
