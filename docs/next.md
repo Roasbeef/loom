@@ -25,7 +25,7 @@ local cumulative allocation savings from installed resident-memory claims.
 | Full Loom gate | Earlier `d219796fc` exited 0. The new JSON candidate at `c9ff4bba3` remains pending: full runs failed broker cancellation grace and web patch count, while a separate task ran 26 CPU-load workers. The failed and isolated logs are retained; assertions and deadlines are unchanged. |
 | Independent review | One fresh report-only pass for each body of work found no actionable issue. The second pass ran worker admission and ASCII boundary regressions; the LSP pass traced fingerprint/keeper invariants, and the JSON pass checked byte boundaries, generated JavaScript and binary ownership. Fable/Opus were unavailable; fresh inherited-model contexts were used. |
 | Pickglass follow-up | Owner-requested [issue #6](https://github.com/Roasbeef/pickglass/issues/6) proposes bounded CLI allocation counters, coverage/units, export and teardown tests. |
-| Public review | The owner authorized publication of the optimizations so far on 2026-10-05. The etui draft PR is open; the Loom draft PR follows it. Integration and live remeasurement wait for the other merges to land. |
+| Public review | The owner authorized publication on 2026-10-05. Drafts [Loom #873](https://github.com/Roasbeef/loom/pull/873) and [etui #7](https://github.com/Roasbeef/etui/pull/7) are open. Etui's hosted test passed; Loom conflicts with current `main` and has no reported checks yet. Rebase and remeasurement follow the other merges. |
 
 The repeated local comparison removed 83.3% of reductions and 78.8% of
 allocated words for 100 unchanged operator views. At 2,048 streamed frames,
@@ -47,7 +47,7 @@ binary sharing, and live RSS savings remain separate measurement questions.
 
 ## What to do next
 
-1. Let the other merges land, then update the candidate and rerun the
+1. Let the other merges land, then rebase Loom #873 and rerun the
    integrated gate with normal remote dependency resolution. Keep existing
    deadlines and leave another task's CPU load alone unless authorized.
    `make check` previously exited 0 at `d219796fc`, with etui `7365d47`;
