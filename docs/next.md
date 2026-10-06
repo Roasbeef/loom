@@ -1,11 +1,13 @@
 # Current handoff
 
 This edition covers explicit configuration hot reload on
-`codex/config-hot-reload`, based on main `cc9ec305d`, on October 6, 2026
-(America/Los_Angeles). The source commits are `453551935`, `a4f09ef29` and `887a2877c`.
+`codex/config-hot-reload`, rebased onto main `92df4a413` after PR #889 merged, on October 6, 2026
+(America/Los_Angeles). The original source commits were `453551935`, `a4f09ef29` and `887a2877c`;
+rebased source commits are `9682a663f`, `2f69e89f2`, `6e97ed3c2` and `05af94f3e`.
+A source-only range comparison verifies the reviewed patches are unchanged.
 The original checkout and its unrelated untracked files were preserved.
-Publication and exact-head Linux signoff are the next authorized steps. No
-merge or installed process change has been performed.
+PR #901 is published. Final-head Linux signoff is the next authorized step.
+This feature has not been merged or installed.
 
 The preceding edition described the October 5 CPU integration and PR #873.
 Its measurements remain in [the investigation](review/beam-cpu-2026-10-05.md).
@@ -104,6 +106,12 @@ role-chain prose. The fixes use bounded reads in daemon and domain startup,
 capture active operation metadata with the context cut, wait for publication
 before releasing the provider response, and correct role documentation.
 
-Finish focused validation and review of those deltas, publish a draft PR and
-run exact-head Linux signoff before marking it ready. Preserve the original
-checkout. Merging and installation remain separate steps.
+Focused validation passes: nine context tests, six daemon diagnostic tests and
+the real provider reload test. Compiling mutations fail the new startup and
+context assertions, and restored source passes. The bounded adversarial recheck
+clears all four findings. PR #901 is published as a draft.
+
+The first Linux signoff was canceled after PR #889 merged and changed the base.
+The rebase conflicts were documentation citations and the preceding handoff;
+source patches compare identically. Run final-head Linux signoff before marking
+PR #901 ready. Preserve the original checkout. Merging and installation remain separate steps.

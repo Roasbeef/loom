@@ -1173,9 +1173,9 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:634`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:642`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
-are already durable in the intent (`client/agency.gleam:520`):
+are already durable in the intent (`client/agency.gleam:521`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
 the digest is sixteen fixed hex characters over the operation, the
 minting step and the source index. The model never supplies a name, so it
@@ -1503,7 +1503,7 @@ and revoked when it answers — so a node that outlives an execution
 outlives no authority.
 
 Registration is where an extension meets the harness, and the seam that
-lets it is `registry` (`client/contributions.gleam:451`): the tool table
+lets it is `registry` (`client/contributions.gleam:452`): the tool table
 is an ordered list of contributions, each naming its origin. Within one
 contribution a repeated name is the author overriding themselves; between
 two it takes the boot down naming both, because an extension that could

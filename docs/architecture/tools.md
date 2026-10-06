@@ -174,7 +174,7 @@ list of **contributions**, each a `Contribution(origin, tools)` whose
 
 ### The built-in contribution
 
-`built_in` (`client/contributions.gleam:308`) takes one `Option` per
+`built_in` (`client/contributions.gleam:309`) takes one `Option` per
 plane and returns the host's own contribution in a fixed order:
 
 1. the five core tools, `bash`, `grep`, `fs_read`, `fs_write`, and
@@ -220,7 +220,7 @@ covers how discovery turns an install record into tools.
 
 ### Collisions and deactivation
 
-`registry` (`client/contributions.gleam:451`) refuses a name that two
+`registry` (`client/contributions.gleam:452`) refuses a name that two
 contributions both claim. The refusal is a `Collision` naming both
 origins, and `client/serve` turns it into a boot failure. It is never a
 warning and never "last registration wins". If an extension could
