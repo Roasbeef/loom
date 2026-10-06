@@ -1,163 +1,162 @@
 # Current handoff
 
-This edition records the CPU and allocation work measured on 2026-10-05,
-against Loom `153fc6b60` and its pinned etui `4d5e466`. It concerns the
-`perf/beam-render-cost` and `perf/ascii-width` branches. At the original
-measurement cuts, the installed daemon ran `153fc6b60`;
-both running terminals used `553999027`. These installed revisions have not
-been remeasured during the rebase.
-No candidate was installed, no running VM restarted and no live module patched.
+This edition is baselined on main `32846807b2678edebb7f07e1969f6047bf0b1692`
+and the optimization source at `34c0db0f0a343a2cf4b41068d3fb001f3bf92317`,
+measured on October 5, 2026 (America/Los_Angeles). The claims below were
+checked against those builds, the actual gate logs and GitHub state.
+The evidence-only commit following that source must receive its own final
+remote-head signoff before merge.
 
-The complete evidence, units, profiler limits and reproduction commands are
-in [the investigation](review/beam-cpu-2026-10-05.md). That report separates
-local cumulative allocation savings from installed resident-memory claims.
+The complete counters, workloads, observation limits and historical failures
+are in [the investigation](review/beam-cpu-2026-10-05.md). Rewrite this handoff
+after another body of work rather than carrying its status forward.
 
-## Where the work stands
+## Where the tree is
 
-| Change | State |
+| Body of work | Verified state |
 |---|---|
-| Web editor completion data, recent-answer Markdown and settled reports | Leaf memo fixes and constructor/patch regressions committed. |
-| Growing terminal paragraph | Redundant trim removed; incremental/full-render checkpoint regression extended. |
-| Etui ASCII width and left alignment | Separate etui branch at `7365d47`, including the second-pass four-byte scan; 1,002 Erlang and 948 JavaScript tests passed. |
-| Detached code-mode worker | `9adddf030` projects the preceding router before retaining it. The actual admission regression halves unrelated payload growth in flattened words; all 81 code-mode tests passed. |
-| Warm Gleam language server | `d219796fc` hashes canonical inventory values, eliminating restarts from key-order rewrites. All 46 manager tests and five additional real downloader/warm-server runs passed. |
-| JSON string codec | `1d0f8d05c` scans four safe bytes together and avoids the encoder's slice wrapper. All 140 Erlang core tests passed; both new boundary tests pass on JavaScript, whose nine baseline failures remain. |
-| Reproduction | Existing terminal driver plus `scripts/web_view_perf.sh` and `scripts/json_perf.sh`. Matched comparisons used Gleam 1.19.0 and OTP 29. |
-| Dependency integration | Both source pins and generated manifests select `7365d47`, merged in [etui #7](https://github.com/Roasbeef/etui/pull/7) at `31691c734`. The pinned commit remains an ancestor of public etui main. Earlier validation used a command-scoped Git URL rewrite; rebased validation uses the unchanged GitHub URL. |
-| Full Loom gate | Earlier `d219796fc` exited 0. The rebased source at `989defd37` passed core, session_view, web_view and tui gates. Client has 2,888 passes and one concurrent shareable-session failure, also reproduced in isolation and on untouched main `c92129aba`. The exact-head full gate remains pending; earlier broker/web failures and all logs are retained. |
-| Independent review | One fresh report-only pass for each body of work found no actionable issue. The second pass ran worker admission and ASCII boundary regressions; the LSP pass traced fingerprint/keeper invariants, and the JSON pass checked byte boundaries, generated JavaScript and binary ownership. The rebase compatibility pass found no actionable issue in memo inputs, paragraph joining, generated assets or upstream docs. Fable/Opus were unavailable; fresh inherited-model contexts were used. |
-| Pickglass follow-up | Owner-requested [issue #6](https://github.com/Roasbeef/pickglass/issues/6) proposes bounded CLI allocation counters, coverage/units, export and teardown tests. |
-| Public review | [Etui #7](https://github.com/Roasbeef/etui/pull/7) is merged with its pinned-head hosted test passing. [Loom #873](https://github.com/Roasbeef/loom/pull/873) is ready for review and rebased onto `c92129aba`; exact-head hosted checks and live remeasurement remain pending. Loom has not been merged or installed. |
+| Same-day integration | All 49 other PRs in the owner's October 5 creation window merged before integration began. PR #873 was rebased onto `32846807b`; backup `backup/perf-before-merged-cohort-20261005` preserves the former head. |
+| Web rendering | Leaf memos retain projected editor, answer and report inputs. The editor now also keys on upstream's refusal counter; a real-page regression and a failing mutation control verify draft-restoration invalidation. |
+| Terminal | The growing paragraph no longer trims an already-trimmed parser head. Incremental/full-render tests and complete styled-cell/cursor witnesses pass. Upstream highlighting behavior remains. |
+| Etui | Both pins and generated manifests select `7365d47`, merged through [etui #7](https://github.com/Roasbeef/etui/pull/7). Its ASCII path preserves the whole-string Unicode fallback. |
+| Worker admission | The code-mode wrapper projects the predecessor router before closure construction while preserving upstream strand tools, tool gate and launch custody. The actual admission regression remains in the full client gate. |
+| Warm LSP | Canonical inventory hashing subsumes upstream line sorting. The upstream reordered-inventory test and semantic version, git-commit and membership tests remain. |
+| JSON | Four-byte safe scans and the direct encoder helper preserve total decoding, UTF-8 validation and string ownership. The full core suite passes. |
+| Generated web assets | `make gen-client` regenerated the combined sources; CSS differs from main only in three source digests. Other upstream assets remain intact. |
+| Local validation | Full `make check` returned its own exit 0 on `34c0db0f`: 140 core, 349 session-view, 750 web-view, 2,944 client and 1,241 TUI tests, plus the other package, conformance and Go gates. Lint has zero errors and 2,157 warnings. Separate doc-check returned 0 with zero errors and 190 warnings before this rewrite. |
+| Independent review | A fresh report-only rebase review found no reachable issue in the conflict resolutions, memo inputs, upstream assets or terminal behavior. Earlier work also received separate reviews; these do not replace gates. |
+| Hosted validation | Exact-source Linux client, fast, conformance, runtime/storage/session/events, static, bootstrap, jail, compiler and soak checks pass. Deliverables and the macOS lanes were still running at this edition's verification cut. Containerized Linux signoff remains pending. |
+| Publication | [Loom #873](https://github.com/Roasbeef/loom/pull/873) is open and ready. The owner explicitly authorized rebasing, measuring and admin-merging it after validation. Nothing from this task has been installed into the running daemon or terminal. |
+| Pickglass | The owner-requested [allocation CLI issue #6](https://github.com/Roasbeef/pickglass/issues/6) is now closed. The local allocation command completed a bounded installed-daemon profile with explicit coverage and word/byte counters. |
 
-The repeated local comparison removed 83.3% of reductions and 78.8% of
-allocated words for 100 unchanged operator views. At 2,048 streamed frames,
-the combined terminal changes removed 64.2% of reductions and 53.0% of
-allocated words per frame. The six-agent 120x40 styled-cell/cursor witness
-matched byte for byte through forty scroll frames. These are fixture results,
-not a percentage claim about the installed daemon or terminal.
+The previous edition's blocked client gate and missing Loom merge authorization
+are no longer current. Main fixed the concurrent shareable stop/isolation race;
+the unchanged test now passes locally in 57 ms and hosted Linux client passes.
+The historical failed main control and failed hosted artifact remain in the
+report, rather than being reclassified as a proven load flake.
 
-The JSON codec fixture removed 68.2%/37.5% of plain-string encoding/decoding
-reductions and 24.6%/18.3% for escaped strings. Allocation was nearly flat.
-Its contribution to the terminal fixture was another 1.5% reduction in work,
-so the isolated codec percentages must not be applied to the whole app.
+## Measured combination
 
-The live code-mode configuration measures 480,696 flattened bytes, against
-1,024 for the predecessor router its wrapper requires. Narrowing the wrapper
-removes that redundant environment on admission and managed-task transfer.
-This is an expanded term-copy estimate; original heap sharing, literal and
-binary sharing, and live RSS savings remain separate measurement questions.
+Fresh single-scheduler main/candidate/main/candidate comparisons used the same
+Gleam 1.19.0 and OTP 29 toolchain. The web fixture removes 83.1% of reductions
+and 78.6% of cumulative allocated words for one hundred unchanged views.
+At 2,048 streamed frames, the terminal removes 65.0% of reductions and 52.5%
+of words per frame. Six-agent paint removes 43.9% of reductions and forty
+scroll events remove 35.8%; the styled-cell and cursor witness is identical.
+JSON codec reductions fall 68.2%/37.5% for plain encode/decode and 25.1%/18.7%
+for escaped strings, with allocation nearly flat. These percentages describe
+the fixtures, not the installed applications. Traced allocation and untraced
+timing were separate passes.
+
+Natural-memory probes used separate observers, with no forced collection or
+term walks before or between cuts. Web owner capacity after the render fixture
+falls from 385,208 to 318,232 bytes; RSS is essentially flat. The terminal's
+closed 2,048-frame owner capacities are essentially equal, 1,803,768 versus
+1,803,800 bytes. An active one-shot cut gives the candidate a larger heap;
+a longer stream shows phase-dependent capacity rather than monotonic growth.
+Both owners have 2,918,416 bytes at 8,192 frames. Carriers, allocated blocks,
+RSS and physical footprint vary separately and do not establish installed
+resident-memory savings. [Issue #454](https://github.com/Roasbeef/loom/issues/454)
+remains open.
+
+The installed daemon changed release directory through another actor before
+the later Pickglass cut. Its source revision is unavailable in that capture;
+PID 40075 remains an unnamed terminal and PID 5645 is gone. These live cuts
+cannot be used as matched candidate evidence. No production process was
+restarted, hotpatched or forced through GC by this task.
 
 ## What to do next
 
-1. Complete the exact-head repository and hosted gates for rebased Loom #873.
-   The rebase preserves all functional optimization patches and regenerates
-   the stylesheet from combined sources. Keep existing deadlines and leave
-   another task's CPU load alone unless authorized. The older full gate at
-   `d219796fc` does not validate the rebased source.
-2. Review Loom #873 with the merged etui dependency. The owner authorized
-   merging etui #7 and removing Loom from draft; Loom merge and deployment
-   remain separate decisions.
-3. Before installing, prepare a concrete source shipment and follow
-   [updating](updating.md). Coordinate a graceful shared-daemon restart;
-   terminals retain their old client tree until reopened. Do not force-kill
-   a busy daemon or equate an installed tree with a switched running VM.
-4. Repeat matched live stream, report and terminal-scroll workloads on the
-   selected candidate. Capture process heaps, allocator carriers and physical
-   footprint at the same cuts. No forced GC precedes a retention claim.
-   Issue #454 remains open as a measurement objective here: this work does
-   not establish installed resident-memory savings.
-5. Refresh the wider roadmap from current source and GitHub before choosing
-   another feature. This investigation did not audit the terminal revamp,
-   workspace-mode issue queue or release state. The preceding handoff's
-   broader snapshot was based on `556e419af` on 2026-10-04; it is available
-   in Git history and must not be read as today's status.
+1. Publish the evidence-only commit, verify its static gates and obtain the
+   repository's exact-remote-head `signoff/linux`. Inspect any actual failure
+   and preserve existing assertions and deadlines. Exit: the latest published
+   head passes the required validation, with no unresolved correctness or
+   performance regression. Historical green checks are insufficient.
+2. Recheck main immediately before merging #873. Rebase and revalidate if a
+   newer main changes the measured combination. The owner authorized
+   `gh pr merge --admin --merge --match-head-commit` at the verified head.
+   Exit: GitHub reports merged and its merge commit is in main's ancestry;
+   then disable the existing integration watcher without archiving the chat.
+3. Installation remains a separate operation. Follow [updating](updating.md)
+   for an approved shipment and graceful daemon transition. Terminals retain
+   their old client tree until reopened. Exit: the chosen installed identities
+   and matched active/idle/released workloads are observed without disrupting
+   busy sessions. Do not infer resident savings from the source fixtures.
+4. Refresh the wider roadmap from current source and GitHub before choosing
+   another feature. This investigation does not establish today's release or
+   workspace-mode rollout state. Exit: any new work has its own current plan
+   and validation boundary.
 
-## Rulings and implementation boundaries
+## Rulings already made
 
-The existing projection cache is already installed and was observed to hit:
-the component projection rebuilt once while 110 views were rendered in one
-three-second cut. Do not attribute the older projection-cache improvement to
-this patch or introduce a second cache for it.
+Each of these is settled. Re-open one only with new evidence, and record the
+reopening where the ruling lives.
 
-Keep render memos at leaves. Lustre 5.7.1 discards nested memo entries when
-an outer memo hits. Project closure inputs before constructing the callback;
-do not retain the whole page model to read two fields.
+**Render ownership.** Keep memos at leaves and project closure inputs before
+construction. Lustre 5.7.1 discards nested entries when an outer memo hits.
+A model input used inside a memo must participate in its references, including
+the refusal counter. Constructor and patch regressions live in the web-view
+render-memo tests; the [investigation](review/beam-cpu-2026-10-05.md) records
+the cache and mutation evidence.
 
-ASCII optimization requires a whole-string fallback. A following combining
-mark or VS16 can change the preceding ASCII grapheme's width; independently
-counting an ASCII prefix would break rendering. The four-byte scan checks
-every byte and keeps the same fallback and single-byte tail.
+**Unicode fallback.** An ASCII optimization rejects the whole string if any
+byte is outside printable ASCII. Following combining marks and variation
+selectors can alter an earlier grapheme's width. Preserve the original fallback
+and the boundary regressions in etui #7.
 
-The async execution wrapper retains only its predecessor router. Its prepared
-configuration continues to own required launch inputs; request identity,
-policy, workflow custody, step rewriting and the fixed deadline are unchanged.
-Do not strip the supervisor's registry merely because its expanded size is
-large: that child restart callback still needs its executable tool registry.
+**Custody and copying.** Worker projection retains only the predecessor router;
+prepared configuration still owns launch inputs. Do not remove a supervisor's
+required executable registry because its flattened size is large. Flat size,
+process capacity, cumulative allocation and OS residency are different metrics,
+as described in [daemon memory evidence](design-notes/daemon-memory.md).
 
-The package inventory hashes canonical table and string values, not the
-compiler's map iteration order. Every supported key and value still contributes;
-real package, version or git-commit changes invalidate the lease. Manifest and
-project configuration hashes remain complete source digests. Keep the existing
-path admission, missing-file identity and metadata read bounds.
+**Canonical identity.** Supported inventory keys and values all contribute to
+the fingerprint. Versions, git commits and membership changes invalidate it;
+key order does not. Keep path admission, read bounds, missing-file identity
+and full project/manifest digests. The manager regressions cover these cases.
 
-JSON chunks check every byte for quote, backslash and C0 controls, then resume
-the single-byte path on any exception. Flushes still end at ASCII boundaries
-and validate UTF-8. Keep the existing parser's string ownership; a direct
-returned subbinary shortcut could retain a much larger backing input.
+**Codec ownership.** Every chunk checks quote, backslash and C0 bytes. Flushes
+validate UTF-8 at the same boundaries. Preserve copied string ownership; a
+returned subbinary can otherwise retain a much larger backing input.
 
-Keep the buffer experiments out of the candidate. Cell equality checks cost
-more reductions; repeated-cell and row reuse did not offer a consistent CPU
-and allocation improvement. Their private measurements are in the report.
+**Verification.** [Execution](execution.md) owns the gate and signoff rules.
+Only the repository runner posts the Linux signoff. The rule requires the
+actual published head, and admin merge authorization does not make a failed
+test ready.
 
-No public interface, wire shape, dependency set or host scheduling policy
-changes in this work. Session logic still belongs in `session_view`; frame
-arrival wakes the host. The profile did not find an idle polling storm.
+## Deliberately open
 
-The broader settled decisions belong in their durable documents: terminal
-behavior in [the terminal design](design-notes/terminal-design.md), workspace
-authority in [065 by name](../protocol-change/065-web-workspace-mode.md),
-strand-origin rollout in [updating](updating.md), executor custody in
-[the executor architecture](architecture/executor.md), and merge verification
-in [execution](execution.md). This edition does not reopen those decisions.
+- Installed resident-memory savings and the remaining ownership census in
+  **#454** are unmeasured by this source comparison.
+- SQLite bursts remain workload-dependent; this work did not change them.
+- Buffer equality and row-reuse experiments remain excluded because their
+  CPU/allocation tradeoffs were not consistently favorable.
+- Production installation and live workload matching remain separate from
+  the authorized PR integration.
 
-## Verification boundaries
+None of these is unfinished work somebody forgot. The first and last need
+additional measurements and an operational transition, not another claim
+based on flattened term size.
 
-The previous integrated candidate full-gate log is
-`/private/tmp/loom-cpu-20261005/check-full-round3.log`. `make check` returned
-exit 0 at source revision `d219796fc`, with etui `7365d47`. It passed all
-package gates, including 2,874 client, 1,231 terminal and 657 web-view tests,
-conformance and Go checks. House lint reported zero errors and 2,109 census
-warnings. Doc-check passed separately with zero errors and 190 historical
-citation/staleness warnings. Earlier failed full logs and isolated cases remain
-beside the green log; their failures were not hidden or assertions relaxed.
+## How to verify
 
-The JSON candidate at `c9ff4bba3` has not passed the integrated gate.
-`check-full-round4.log` exited 2 at broker cancellation grace; that case passed
-unchanged in isolation. `check-full-round4-rerun.log` exited 2 at web delivery
-patch count, and its first isolated run instead timed out at actor startup.
-A baseline-JSON control and a second unchanged candidate run passed. The
-report records these distinct outcomes and the concurrent separate load task:
-26 `yes` workers using about 1,206%
-aggregate CPU. Do not infer a proven cause from that coincidence or replace
-the current gate result with the older green log. Doc-check passed for this
-body with zero errors and 188 historical warnings.
+`make check` is the full local gate; `make doc-check` runs separately.
+Use a clean isolated control and the same compiler/OTP for the bounded
+`web_view_perf.sh`, `json_perf.sh` and `tui_perf.sh` comparisons. Record exact
+build identities and equal-output witnesses; keep timing untraced. The raw
+observations and scripts remain private under `/private/tmp/loom-cpu-20261005`.
 
-The rebased source at `989defd37` passed 140 core, 325 session_view,
-682 web_view and 1,233 terminal tests. Client had 2,888 passes and one
-concurrent shareable-session failure. The exact case failed unchanged in
-isolation and on untouched main `c92129aba`, both at the second-task receive
-wait. This establishes a failing main control, not its cause or a green
-client gate. Binaries, asset digests, lint and doc-check passed separately;
-lint has zero errors and 2,119 warnings, doc-check zero errors and 188
-warnings. The rebase compatibility review found no actionable issue.
-`rebase-*.log` files in the evidence directory retain these outcomes. The
-full rebased gate, hosted CI and Linux signoff remain pending.
+**Each gate needs its own exit code.** The `cohort-check-full.log` local run
+returned zero. A following `tail` is not evidence of that result.
 
-`make check` is the full local gate; capture its own exit status. It does not
-include `make doc-check`. Run format, lint and doc checks before publication.
-A changed terminal/client shipment also needs the repository's signoff lanes
-before merge. Darwin-only testing cannot prove Linux enforcement: the local
-run has explicit Linux witness skips and a missing rust-analyzer prerequisite.
-The local run also skipped code-mode seed-dependent fixtures. No
-`signoff/linux` or hosted-CI success is claimed here, and no merge is
-requested or authorized by this handoff.
+**Darwin skips are not Linux proof.** The local gate explicitly skipped seed,
+shipped-server, Linux enforcement and unavailable rust-analyzer fixtures.
+`make signoff-remote` builds fresh prerequisites and runs the Linux lanes.
+Verify its actual status on the final remote head before merge.
+
+**Natural capacity is not reachable size.** Do not force GC before a retention
+claim or insert state walks between matched observation cuts. Census allocations
+belong on a separate observer; carrier capacity, allocated blocks, RSS and
+physical footprint must stay separate. Read [execution](execution.md) and
+[BEAM memory review](../skills/beam-memory-review/SKILL.md) for the remaining
+measurement and validation hazards.
