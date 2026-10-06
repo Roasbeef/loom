@@ -65,6 +65,29 @@ workspace, catalogue and code-mode refusal inputs before constructing the
 restart specification. Those callbacks retain the runtime inputs they require,
 but no longer add a path through the complete startup `Settings` record.
 
+## Transfer captures and a slow storage actor
+
+`begin_transfer` does not wait for storage. It starts a one-task weft run
+whose task calls `snapshot_reader.capture`, so the run owns the reply subject
+and the five-second deadline, and the answer returns to the hub as
+`CaptureReported` through the pending entry in `State.captures`. The entry
+holds the request's reply capability, because `request_frame` clears the
+connection's own copy when it returns. A late reply goes to a task that has
+already exited, so it is never an unexpected message in the hub's mailbox, and
+the hub keeps serving every other attachment while one capture is outstanding.
+
+`reader_failed` fences the hub (`ReaderPoisoned`, every attachment closed, the
+incarnation's stop capability invoked) only for `snapshot.ReaderUnavailable`,
+which `storage/internal/snapshot_call` reports when its monitor sees the
+storage actor die. `ReadTimedOut` is only a deadline. It refuses the one
+request in band as `snapshot_failed` ("retry the request"), drops that
+transfer, and leaves the attachment open for the client's retry. The cost is
+that a storage actor which is alive but never answers no longer retires its
+session by itself; each retry queues one more capture behind it, bounded by
+the one request a connection may have in flight. The goal, advisor, block
+summary and notes reads still call `capture` from the hub's own process, so
+they can still receive a late reply there; they take the same refusal.
+
 ## Provider observation capture
 
 `wiring.request_image_classifier` projects the session before constructing

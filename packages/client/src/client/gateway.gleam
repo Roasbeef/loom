@@ -47,15 +47,15 @@
 //// credited transfer remains the one place the 64 KiB bound and the
 //// retention window are enforced; and it leaves through `deliver`, so it is
 //// re-authorized per frame exactly as a reply is.
-//// Authentication is rechecked before admission and delivery. A reader that
-//// is gone, or that spends its whole budget on the server's own capture,
-//// permanently poisons this actor and invokes its exact incarnation's stop
-//// capability, without waiting for the requesting gateway itself to retire.
-//// A continuation's reads are funded from the client's remaining retention
-//// window and from the wall of the request they answer, so exhausting one of
-//// those refuses that request and drops that transfer and touches nothing
-//// else: a caller's timeout stops the caller's wait, never the server's
-//// cleanup.
+//// Authentication is rechecked before admission and delivery. A storage actor
+//// that is gone, which the exchange proves by monitoring it, permanently
+//// poisons this actor and invokes its exact incarnation's stop capability,
+//// without waiting for the requesting gateway itself to retire. A storage
+//// actor that is merely slow does not: a transfer's capture is asked of it by
+//// a weft run that owns the reply subject and the deadline, so this mailbox
+//// never waits for storage and a late answer dies with the run. A capture or
+//// continuation that times out refuses that one request, in band, and tells
+//// the client to retry; it drops that transfer and touches nothing else.
 ////
 //// ## Authority
 ////
@@ -170,7 +170,10 @@
 //// `deliver` calls `check_binding` before an authenticated socket receives it.
 //// For the resulting goal read, follow `request_frame`, `network_dispatch`,
 //// `network_command`, `run_command` and `read_goal`. Bounded transcript
-//// capture uses `begin_transfer`; a goal board has its own reply path.
+//// capture starts in `begin_transfer`, which returns without answering; its
+//// weft run reports back as `CaptureReported`, and `capture_reported` answers
+//// the held reply through `answer_capture` and `captured_transfer`, or refuses
+//// it through `reader_failed`. A goal board has its own reply path.
 //// `reader_failed` refuses a bounded read without treating that refusal as
 //// connection loss. `reply_error` uses the same authenticated reply path.
 //// For held input, start with `hold_prompt`, `release_halt` and `halted_queue`.
@@ -392,6 +395,14 @@ pub opaque type Message {
   Request(connection: Int, text: String, reply: Subject(Result(String, String)))
   MaintainTransfers
   ObservationReported(connection: Int, pulled: weft.Pulled(JsonValue, String))
+
+  /// A transfer's capture has an outcome, or its run has ended without one.
+  /// The capture was asked of storage by a weft run, never by this mailbox, so
+  /// this is the only way its answer, or its silence, reaches the hub.
+  CaptureReported(
+    capture: Int,
+    pulled: weft.Pulled(snapshot.Cut, snapshot.Error),
+  )
   LeasePreview(process.Pid, Int, Subject(Result(Int, String)))
   Preview(Int, String, String, String, String, Subject(Result(Nil, String)))
   ReleasePreview(Int, Subject(Nil))
@@ -432,6 +443,12 @@ type State {
     subject: Subject(Message),
     selector: process.Selector(Message),
     observations: Dict(Int, PendingObservation),
+    // Transfer captures in flight, by capture number. A number rather than a
+    // connection id, because a connection's next request can arrive before
+    // the run's final word for the previous one, and the two must not share
+    // a slot.
+    captures: Dict(Int, PendingCapture),
+    next_capture: Int,
     worktree_diff: Option(fn() -> Result(JsonValue, String)),
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
@@ -823,6 +840,39 @@ type PendingObservation {
   )
 }
 
+// One transfer's capture while a weft run asks storage for it. The run owns the
+// reply subject and the deadline, so a reply that arrives after the deadline
+// goes to a process that has already exited and never reaches this mailbox.
+// The entry stays selected until Weft has delivered its final word, so that
+// word is never a stray message either.
+type PendingCapture {
+  PendingCapture(
+    /// The attachment that asked, answered only if it is still attached.
+    connection: Int,
+    /// The wire request this capture answers.
+    request: Int,
+    /// What the transfer will carry once its cut arrives.
+    window: transfer.Window,
+    /// The asking request's reply capability. `request_frame` clears the
+    /// connection's own copy as soon as it returns, so the capture keeps the
+    /// one reply the socket is still waiting for.
+    response: Subject(Result(String, String)),
+    /// The monotonic instant the capture began, which opens the transfer's
+    /// retention window at the same point a synchronous read would have.
+    started: Int,
+    reports: Subject(weft.Pulled(snapshot.Cut, snapshot.Error)),
+    progress: CaptureProgress,
+  )
+}
+
+type CaptureProgress {
+  /// No outcome yet; a second transfer on this connection is refused.
+  Awaiting
+
+  /// The request was answered; only the run's final word is outstanding.
+  Answered
+}
+
 // Worktree reads retain owner authority; context exposes session metadata.
 type ObservationKind {
   WorktreeObservation
@@ -1068,6 +1118,8 @@ fn start_with_delivery(
         subject:,
         selector: process.select_monitors(selector, SocketDown),
         observations: dict.new(),
+        captures: dict.new(),
+        next_capture: 1,
         worktree_diff: options.worktree_diff,
         live_jobs: options.live_jobs,
         context: options.context,
@@ -1727,6 +1779,16 @@ fn continue(state: State) -> actor.Next(State, Message) {
         })
       },
     )
+
+  // Each capture's report channel is selected from admission until its final
+  // word, the same lifetime an observation's is, so Weft's last message finds
+  // a receiver and is not logged as an unexpected one.
+  let selector =
+    dict.fold(state.captures, selector, fn(selector, capture, pending) {
+      process.select_map(selector, pending.reports, fn(pulled) {
+        CaptureReported(capture, pulled)
+      })
+    })
   actor.continue(state) |> actor.with_selector(selector)
 }
 
@@ -1734,6 +1796,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     ObservationReported(connection:, pulled:) ->
       continue(observation_reported(state, connection, pulled))
+    CaptureReported(capture:, pulled:) ->
+      continue(capture_reported(state, capture, pulled))
     LeasePreview(pid, expires, reply) ->
       continue(lease_preview(state, pid, expires, reply))
     Preview(source, operation, generation, kind, text, reply) ->
@@ -1955,6 +2019,23 @@ fn request_frame(
   response: Subject(Result(String, String)),
 ) -> State {
   let state = expire_transfers(revalidate(state, connection))
+  with_response(state, connection, response, fn(state) {
+    network_dispatch(state, connection, text)
+  })
+}
+
+// Runs `answer` with the connection's one reply capability installed, then
+// takes it back. Both the request that was just admitted and a capture that
+// finishes later answer through here, so a reply can leave only while a
+// request's capability is held and no push can ever find it. An attachment
+// that is gone, was never authenticated, or belongs to a poisoned hub is told
+// it is closed instead, because the socket is still waiting for one reply.
+fn with_response(
+  state: State,
+  connection: Int,
+  response: Subject(Result(String, String)),
+  answer: fn(State) -> State,
+) -> State {
   case state.health, dict.get(state.connections, connection) {
     Reading, Ok(Connection(authentication: Authenticated(..), ..) as link) -> {
       let state =
@@ -1963,7 +2044,7 @@ fn request_frame(
           connection,
           Connection(..link, response: Some(response)),
         )
-      let state = network_dispatch(state, connection, text)
+      let state = answer(state)
       case dict.get(state.connections, connection) {
         Ok(link) ->
           put_connection(state, connection, Connection(..link, response: None))
@@ -2166,7 +2247,9 @@ fn begin_transfer(
     id,
   )
   use <- bool.lazy_guard(
-    link.transfer != None || link.subscription == Unsubscribed,
+    link.transfer != None
+      || link.subscription == Unsubscribed
+      || capturing(state, connection),
     fn() {
       reply_error(
         state,
@@ -2211,11 +2294,140 @@ fn begin_transfer(
   }
 
   // The capture is the server's own question, funded with the reader's whole
-  // budget rather than with anything a client paced, so an expiry here is
-  // evidence about the storage actor.
-  case state.runtime.session.snapshot_reader.capture(plan, 5000) {
-    Error(error) -> reader_failed(state, connection, id, error, ReaderBudget)
-    Ok(cut) -> captured_transfer(state, connection, id, link, cut, window, now)
+  // budget, but this mailbox never waits for it. A weft run owns the reply
+  // subject and the deadline, and hands the cut back as `CaptureReported`, so
+  // a storage actor that is slow keeps this hub serving every other
+  // attachment, and an answer that comes after the deadline is delivered to a
+  // process that has already exited. The request's reply capability moves into
+  // the pending entry, because `request_frame` clears the connection's copy
+  // before this answer exists.
+  use response <- or_reply(
+    option.to_result(link.response, #("closed", "attachment is closed")),
+    state,
+    connection,
+    id,
+  )
+  let capture = state.runtime.session.snapshot_reader.capture
+  let reports = process.new_subject()
+  let run =
+    weft.new([fn() { capture(plan, capture_wait_ms) }])
+    |> weft.deadline(capture_deadline_ms)
+  let run = case link.consumer {
+    Some(socket) -> weft.cancel_when_exits(run, socket)
+    None -> run
+  }
+  let _relay = weft.start_relayed(run, to: reports)
+  let pending =
+    PendingCapture(
+      connection:,
+      request: id,
+      window:,
+      response:,
+      started: now,
+      reports:,
+      progress: Awaiting,
+    )
+  State(
+    ..state,
+    captures: dict.insert(state.captures, state.next_capture, pending),
+    next_capture: state.next_capture + 1,
+  )
+}
+
+// How long the reader may take to answer a capture, which is the most a
+// storage exchange may wait. The run's deadline is only the backstop for a
+// reader that ignores its own budget, and both sit inside the six seconds the
+// socket waits for its one reply.
+const capture_wait_ms = 5000
+
+const capture_deadline_ms = 5500
+
+fn capturing(state: State, connection: Int) -> Bool {
+  list.any(dict.values(state.captures), fn(pending) {
+    pending.connection == connection && pending.progress == Awaiting
+  })
+}
+
+// A capture's report is one of three things: the run's one outcome, its final
+// word after that, or its final word with no outcome before it. Only the
+// first, or the third, answers the socket, and the entry is dropped only at a
+// final word so that word still has a receiver.
+fn capture_reported(
+  state: State,
+  capture: Int,
+  pulled: weft.Pulled(snapshot.Cut, snapshot.Error),
+) -> State {
+  case dict.get(state.captures, capture) {
+    Error(Nil) -> state
+    Ok(pending) ->
+      case pulled {
+        weft.NotYet -> state
+        weft.PulledOutcome(outcome:) -> {
+          let state =
+            State(
+              ..state,
+              captures: dict.insert(
+                state.captures,
+                capture,
+                PendingCapture(..pending, progress: Answered),
+              ),
+            )
+          answer_capture(state, pending, capture_result(outcome))
+        }
+        weft.AllDelivered | weft.RunLost(..) -> {
+          let state = case pending.progress {
+            Answered -> state
+
+            // The run ended without saying anything, so the socket is still
+            // waiting. That is a capture that did not answer, and it costs
+            // this one request.
+            Awaiting ->
+              answer_capture(state, pending, Error(snapshot.ReadTimedOut))
+          }
+          State(..state, captures: dict.delete(state.captures, capture))
+        }
+      }
+  }
+}
+
+// What a finished run says about its one read. Only a read that returned says
+// anything about storage; a run that was cancelled, cut off by its deadline,
+// or lost its worker produced no answer, which is the same thing a timeout is.
+fn capture_result(
+  outcome: weft.Outcome(snapshot.Cut, snapshot.Error),
+) -> Result(snapshot.Cut, snapshot.Error) {
+  case outcome {
+    weft.Completed(value:, ..) -> Ok(value)
+    weft.Failed(error:, ..) -> Error(error)
+    weft.Abandoned(..)
+    | weft.NeverStarted(..)
+    | weft.Crashed(..)
+    | weft.DrainProofLost(..)
+    | weft.CancellationUnconfirmed(..) -> Error(snapshot.ReadTimedOut)
+  }
+}
+
+// Answers the request that asked for this capture, from the hub's own
+// process. The cut is assembled with the roster, pending inputs and settings
+// as they are now, which is no staler than the synchronous read was.
+fn answer_capture(
+  state: State,
+  pending: PendingCapture,
+  captured: Result(snapshot.Cut, snapshot.Error),
+) -> State {
+  use state <- with_response(state, pending.connection, pending.response)
+  case captured {
+    Ok(cut) ->
+      captured_transfer(
+        state,
+        pending.connection,
+        pending.request,
+        cut,
+        pending.window,
+        pending.started,
+      )
+    Error(error) ->
+      reader_failed(state, pending.connection, pending.request, error)
   }
 }
 
@@ -2223,11 +2435,19 @@ fn captured_transfer(
   state: State,
   connection: Int,
   id: Int,
-  link: Connection,
   cut: snapshot.Cut,
   window: transfer.Window,
   now: Int,
 ) -> State {
+  use link <- or_reply(
+    result.replace_error(dict.get(state.connections, connection), #(
+      "closed",
+      "attachment is closed",
+    )),
+    state,
+    connection,
+    id,
+  )
   let snapshot_id =
     int.to_string(connection) <> ":" <> int.to_string(state.next_transfer)
 
@@ -2507,9 +2727,9 @@ fn continue_read(
 ) -> State {
   case outcome {
     // A continuation's reads are funded from what is left of the client's own
-    // retention window and of this request's wall, never from the reader's
-    // whole budget, so an expiry here is the caller's wait running out.
-    Error(error) -> reader_failed(state, connection, id, error, CallerRemainder)
+    // retention window and of this request's wall, so an expiry here is the
+    // caller's wait running out and `reader_failed` refuses only this request.
+    Error(error) -> reader_failed(state, connection, id, error)
     Ok(value) -> {
       use next <- or_reply(
         accept(current, value)
@@ -2535,37 +2755,30 @@ fn retain_transfer(
   }
 }
 
-// What an expired read wait actually proves about the reader.
+// What a failed read says about the storage actor behind it, which is the only
+// thing that decides whether this hub is fenced.
 //
-// The capture that opens a transfer waits the reader's own whole budget, so
-// nothing but a wedged storage actor can exhaust it. A continuation's reads are
-// funded from the remainder of the client's retention window and of this
-// request's wall, and the client paces those continuations, so exhausting one
-// says the caller ran out of time and nothing at all about the reader. Reading
-// the second as the first is what let a read-only observer, by timing one
-// frame, poison the hub and stop the session for every attachment.
-type ReadWait {
-  /// The reader was given its whole budget and did not answer.
-  ReaderBudget
-
-  /// The wait was whatever a caller-paced transfer had left.
-  CallerRemainder
-}
-
+// `ReaderUnavailable` is proof: the exchange monitors the actor, so it is
+// reported only when that process is absent or died before replying. Nothing
+// can answer for it afterwards, and its custody must drain before the session
+// is reopened. `ReadTimedOut` is not proof of anything but a deadline. The
+// actor may simply be behind a long write, a startup burst or a stalled disk,
+// and every read here is asked from a process that owns its own reply subject,
+// so a late answer has nowhere to land and a repeat is safe. It therefore
+// costs the one request that waited, which is told to retry, and nothing else.
+// Reading it as a dead reader is what let one slow capture disconnect every
+// client of a session and refuse every later attach until it was reopened.
 fn reader_failed(
   state: State,
   connection: Int,
   id: Int,
   error: snapshot.Error,
-  waited: ReadWait,
 ) -> State {
-  case error, waited {
-    // The reader actor was absent or died before replying, which is evidence
-    // about the reader whoever was waiting on it; and a full budget spent with
-    // no answer is the storage actor wedged. Timeout does not cancel the
-    // original query, so fence this actor before requesting exact-incarnation
-    // cleanup, and never synchronously await it.
-    snapshot.ReaderUnavailable, _ | snapshot.ReadTimedOut, ReaderBudget -> {
+  case error {
+    // Timeout does not cancel work already queued, but the actor is gone, so
+    // fence this hub before requesting exact-incarnation cleanup, and never
+    // synchronously await it.
+    snapshot.ReaderUnavailable -> {
       let poisoned = State(..state, health: ReaderPoisoned)
       list.each(dict.values(state.connections), fn(link) {
         case link.authentication {
@@ -2585,16 +2798,16 @@ fn reader_failed(
       )
     }
 
-    // A caller's timeout stops the caller's wait, never the server's cleanup:
-    // this request is refused in band, this transfer is dropped so nothing
-    // retries the read, and the hub and every other attachment carry on.
-    snapshot.ReadTimedOut, CallerRemainder -> {
+    // The request is refused in band and its transfer is dropped, so nothing
+    // retries the read on this connection's behalf; the client's own retry
+    // asks again. The hub and every other attachment carry on.
+    snapshot.ReadTimedOut -> {
       reply_error(
         state,
         connection,
         id,
         "snapshot_failed",
-        "bounded snapshot read did not answer within this request",
+        "storage did not answer in time; retry the request",
       )
       retain_transfer(state, connection, None)
     }
@@ -2602,12 +2815,11 @@ fn reader_failed(
     // A refused bounded goal read can leave the socket attached. The client
     // must invalidate its observation on this correlated snapshot_failed;
     // waiting for transport loss would keep a stale board indefinitely.
-    snapshot.StorageFailure(_), _
-    | snapshot.InvalidRequest, _
-    | snapshot.MetadataTooLarge, _
-    | snapshot.RecordTooLarge(..), _
-    | snapshot.MissingRecord, _
-    -> {
+    snapshot.StorageFailure(_)
+    | snapshot.InvalidRequest
+    | snapshot.MetadataTooLarge
+    | snapshot.RecordTooLarge(..)
+    | snapshot.MissingRecord -> {
       reply_error(
         state,
         connection,
@@ -4392,7 +4604,7 @@ fn read_goal(state: State, connection: Int, id: Int) -> State {
     }
 
     Error(goal_pending.Unreadable(error:)) ->
-      reader_failed(state, connection, id, error, ReaderBudget)
+      reader_failed(state, connection, id, error)
   }
 }
 
@@ -4473,7 +4685,7 @@ fn read_advisor_pending(state: State, connection: Int, id: Int) -> State {
     }
 
     Error(advisor_pending.Unreadable(error:)) ->
-      reader_failed(state, connection, id, error, ReaderBudget)
+      reader_failed(state, connection, id, error)
   }
 }
 
@@ -4508,7 +4720,7 @@ fn read_block_summaries(
       state
     }
 
-    Error(error) -> reader_failed(state, connection, id, error, ReaderBudget)
+    Error(error) -> reader_failed(state, connection, id, error)
   }
 }
 
@@ -6788,7 +7000,7 @@ fn read_notes(state: State, connection: Int, id: Int, strand: String) -> State {
       )
       state
     }
-    Error(error) -> reader_failed(state, connection, id, error, ReaderBudget)
+    Error(error) -> reader_failed(state, connection, id, error)
   }
 }
 
