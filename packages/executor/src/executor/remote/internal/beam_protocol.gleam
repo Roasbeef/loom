@@ -56,6 +56,9 @@ pub type Route {
 
   /// Physical command routed by its original live whole-service Claim.
   NativeCommand(lane: Lane)
+
+  /// Finite installation of the original Launch stream door.
+  LaunchBind
 }
 
 /// Exact administrative configuration used by both codec directions.
@@ -119,6 +122,7 @@ pub fn route_lane(route: Route) -> Lane {
     | Launch(launch_wire.Acknowledge(_))
     | Launch(launch_wire.RefuseBeforeNative) -> Control
     NativeCommand(lane) -> lane
+    LaunchBind -> Control
   }
 }
 
@@ -154,6 +158,7 @@ pub fn header(binding: Binding, route: Route) -> Result(BitArray, Nil) {
       |> result.replace_error(Nil)
     NativeCommand(Data) -> Ok(<<1, 3, 0>>)
     NativeCommand(Control) -> Ok(<<1, 3, 1>>)
+    LaunchBind -> Ok(<<1, 5>>)
   })
   Ok(<<prefix:bits, hello:bits>>)
 }
@@ -166,6 +171,7 @@ pub fn header(binding: Binding, route: Route) -> Result(BitArray, Nil) {
 pub fn decode_header(binding: Binding, bytes: BitArray) -> Result(Route, Nil) {
   use <- bool.guard(bit_array.byte_size(bytes) > 1024, Error(Nil))
   use #(route, hello) <- result.try(case bytes {
+    <<1, 5, hello:bytes>> -> Ok(#(LaunchBind, hello))
     <<1, 0, 0, hello:bytes>> -> Ok(#(Native(Data), hello))
     <<1, 0, 1, hello:bytes>> -> Ok(#(Native(Control), hello))
     <<1, 1, 0, hello:bytes>> -> Ok(#(Workspace(Submit), hello))
@@ -294,6 +300,7 @@ pub fn receiver(
           transfer.Completion | transfer.CompileCompletion -> total > 524_300
         }
       Workspace(_) -> False
+      LaunchBind -> True
     },
     Error(Nil),
   )
