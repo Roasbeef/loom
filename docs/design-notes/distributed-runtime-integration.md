@@ -70,8 +70,14 @@ are still pending. The [terminal preflight](../review/distributed-terminal-prefl
 and [owner Launch binding](../review/distributed-launch-command.md) are integrated;
 the [consumed Launch channel](distributed-launch-channel.md) is the next runtime
 boundary under implementation and formal modeling.
-Launch/satellite execution, the remote LSP host and registered daemon
-configuration remain required. Acceptance must drive ordinary tools and code
+The [remote Launch consumer](../review/distributed-launch-client.md) now composes
+the original stream with actual satellite capability traffic and retained
+native/outer receipts. It passes the independent complete client gate and
+original-journal reopen controls. Native retirement remains unresolved; the
+[exact-helper proposal](distributed-launch-native-retirement.md) and
+[bounded Compile rewrite identity](distributed-compile-rewrite.md) await owner
+decisions. Registered Compile/Launch, remote LSP and daemon configuration remain
+required. Acceptance must drive ordinary tools and code
 mode with the owner and executor on separate hosts and no checkout on the
 owner's disk.
 
