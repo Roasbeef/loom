@@ -389,6 +389,17 @@ type Message(instance) {
   /// A session's first accepted prompt, to be reduced to its subtitle. There
   /// is no reply: the sender is a hub that must not wait on the registry.
   SeedSubtitle(String, String)
+
+  /// A folder a session was just created in, to be remembered. There is no
+  /// reply: the creation has already succeeded and a failed write only means
+  /// the folder is not offered again.
+  RememberFolder(String)
+
+  /// The remembered folders, newest first.
+  RecentFolders(Subject(Result(List(catalogue.Recent), Error)))
+
+  /// Forget the remembered folder with this identity.
+  ForgetFolder(Int, Subject(Result(Nil, Error)))
   Rename(
     access.Digest,
     String,
@@ -1074,6 +1085,63 @@ pub fn seed_subtitle(
   prompt: String,
 ) -> Nil {
   process.send(manager.commands, SeedSubtitle(id, prompt))
+}
+
+/// Remembers a folder a session was just created in, without waiting
+/// (protocol-change/074).
+///
+/// The control command's creation calls this once a session exists, so a folder
+/// is remembered whichever surface created in it: the terminal, a control
+/// client or a page. It carries no credential, since it is made by the daemon's
+/// own code after the creation was authorized, and the write runs in the
+/// registry's turn with every other catalogue change. A failed write leaves the
+/// folder out of the recent list and nothing else, so it is not reported.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.remember_folder(registry, "/Users/o/code/app")
+/// ```
+@internal
+pub fn remember_folder(manager: Manager(instance), workspace: String) -> Nil {
+  process.send(manager.commands, RememberFolder(workspace))
+}
+
+/// Reads the remembered folders, newest first, each with the identity the
+/// catalogue gave it.
+///
+/// This is not an authorization: the caller has already decided that the
+/// asking principal is the owner (`ui_socket.recent_for`), since the list is
+/// the owner's alone and belongs to no session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.recent_folders(registry)
+/// ```
+@internal
+pub fn recent_folders(
+  manager: Manager(instance),
+) -> Result(List(catalogue.Recent), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: RecentFolders)
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Forgets the remembered folder with this identity, as `recent_folders`
+/// numbered it. An identity that is gone is not an error.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.forget_folder(registry, 4)
+/// ```
+@internal
+pub fn forget_folder(
+  manager: Manager(instance),
+  id: Int,
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: ForgetFolder(id, _))
+  |> result.unwrap(Error(Unavailable))
 }
 
 /// Archives or restores a stopped session under owner and epoch authority.
@@ -1876,6 +1944,26 @@ fn handle(
     }
     SeedSubtitle(id, prompt) -> {
       let _written = catalogue.seed_subtitle(book.catalogue, id, prompt)
+      sm.keep(book)
+    }
+    RememberFolder(workspace) -> {
+      let _written = catalogue.remember_folder(book.catalogue, workspace)
+      sm.keep(book)
+    }
+    RecentFolders(reply) -> {
+      process.send(
+        reply,
+        catalogue.recent_folders(book.catalogue)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    ForgetFolder(id, reply) -> {
+      process.send(
+        reply,
+        catalogue.forget_folder(book.catalogue, id)
+          |> result.map_error(Catalogue),
+      )
       sm.keep(book)
     }
     Rename(caller, epoch, id, name, reply) -> {

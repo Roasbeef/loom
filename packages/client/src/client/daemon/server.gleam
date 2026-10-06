@@ -2772,7 +2772,10 @@ fn dispatch_class(
 /// one path. The caller must be the owner; the workspace is canonicalized on
 /// the daemon's host; a configuration path is canonicalized and an empty one is
 /// kept as the registration's own choice. The registry's own turn reserves the
-/// identity under `request.request_key`, which is stable across a retry.
+/// identity under `request.request_key`, which is stable across a retry. Once
+/// the session exists its canonical workspace is remembered among the owner's
+/// recent folders (`manager.remember_folder`), so every surface that creates
+/// feeds the list the home page offers.
 ///
 /// The error is the control command's own code: `forbidden` for a caller that
 /// is not the owner, `invalid_workspace` and `invalid_configuration` for a path
@@ -2806,15 +2809,23 @@ pub fn create_session(
     }
     |> result.replace_error("invalid_configuration"),
   )
-  manager.create_scoped(
-    registry,
-    manager.Creation(..request, workspace:, configuration:),
-    directory:,
-    generator: config.generator(),
-    scope:,
-    configuration: config.domain_configuration,
+  use created <- result.map(
+    manager.create_scoped(
+      registry,
+      manager.Creation(..request, workspace:, configuration:),
+      directory:,
+      generator: config.generator(),
+      scope:,
+      configuration: config.domain_configuration,
+    )
+    |> result.map_error(error_code),
   )
-  |> result.map_error(error_code)
+
+  // The folder is remembered once the session exists, under the canonical text
+  // the catalogue holds, so the home can offer it again after every session in
+  // it is gone (protocol-change/074). A creation that failed leaves no trace.
+  manager.remember_folder(registry, workspace)
+  created
 }
 
 fn operator(authority) {
