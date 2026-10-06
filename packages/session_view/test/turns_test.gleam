@@ -331,6 +331,55 @@ pub fn the_divider_says_a_turn_was_interrupted_test() {
     == "Worked 12s · 2 steps · 1 file · 1 failed · interrupted"
 }
 
+// A steer or a Stop that lands while a command runs aborts no response, since
+// the response that asked for the command was already written. The command's
+// own result says the broker stopped it, and that alone makes the turn
+// interrupted; a command stopped by its own deadline is a failure and nothing
+// more.
+pub fn a_command_stopped_on_request_makes_the_turn_interrupted_test() {
+  let divider = fn(timed_out: Bool) {
+    let stopped =
+      message.ToolResultMessage(
+        "c1",
+        "bash",
+        [message.ToolResultText("[command was cancelled]", None)],
+        Some(
+          json.Object([
+            #("cancelled", json.Bool(True)),
+            #("timed_out", json.Bool(timed_out)),
+          ]),
+        ),
+        None,
+        None,
+        True,
+        12_000,
+      )
+    let laid =
+      pieces_of(
+        [
+          item(1, 10_000, said("fetch it", None)),
+          item(
+            2,
+            11_000,
+            assistant([
+              call(
+                "c1",
+                "bash",
+                json.Object([#("command", json.String("curl"))]),
+              ),
+            ]),
+          ),
+          item(3, 12_000, stopped),
+        ],
+        [],
+      )
+    let assert [_, turns.Work(worked:, ..)] = laid
+    turns.divider(worked)
+  }
+  assert divider(False) == "Worked 2s · 1 step · 1 failed · interrupted"
+  assert divider(True) == "Worked 2s · 1 step · 1 failed"
+}
+
 pub fn a_running_turn_is_drawn_open_test() {
   // The strand is still working on the first turn: no later input yet.
   let laid = pieces_of(list.take(items(), 7), [#("main", "op-1")])
