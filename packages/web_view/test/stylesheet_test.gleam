@@ -49,3 +49,24 @@ pub fn a_rows_buttons_keep_clear_of_its_chevron_test() {
   let css = stylesheet()
   assert string.contains(css, "position:absolute;top:50%;right:46px")
 }
+
+// F140: a sidebar row reserves a column for the archive button and the button
+// is a 24px square in it, so it never lies over the row's dot or activity word.
+pub fn the_archive_button_has_a_column_of_its_own_test() {
+  let css = stylesheet()
+  assert string.contains(
+    css,
+    "li.session:has(>.session-archive){padding-right:",
+  )
+  assert string.contains(css, "width:24px;height:24px")
+}
+
+// F143: a home row's buttons sit in three fixed columns, Rename first, so
+// Rename is where it is on every row whichever buttons the row has.
+pub fn a_rows_buttons_keep_their_columns_test() {
+  let css = stylesheet()
+  assert string.contains(css, "grid-template-columns:72px 72px 64px")
+  assert string.contains(css, ".home-rename{grid-column:1}")
+  assert string.contains(css, ".home-act{grid-column:2}")
+  assert string.contains(css, ".home-act-delete{grid-column:3}")
+}
