@@ -37,7 +37,7 @@ fn drawn(pieces: List(turns.Piece)) -> String {
 fn work(items: List(turns.Item)) -> turns.Piece {
   turns.Work(
     "work:1.0",
-    turns.Worked(Some(22_000), 2, 1, 0),
+    turns.Worked(Some(22_000), 2, 1, 0, turns.Finished),
     items,
     turns.Folded,
   )
@@ -671,4 +671,32 @@ pub fn a_reports_first_line_keeps_text_that_only_looks_like_a_marker_test() {
     head("- a list item\nmore"),
     "<span class=\"subject\">a list item</span>",
   )
+}
+
+// F145: a failed response's cause is labelled, so it reads as the turn's status
+// and not as the assistant's words. The label is fixed text beside the cause,
+// which stays one escaped text node.
+pub fn a_failed_turns_cause_carries_a_failed_label_test() {
+  let cause =
+    Block("2.0", FromSpacer, [
+      #("2.0:0", Line(transcript_line.Failure, "secret KEY <b>is missing")),
+    ])
+  let html = drawn([turns.Plain(cause, dict.new(), None)])
+  assert string.contains(html, "class=\"failure-label\">Failed:</span>")
+  assert string.contains(html, " secret KEY &lt;b&gt;is missing")
+  assert !string.contains(html, "<b>")
+}
+
+// F144: a turn whose response was aborted says so on its divider.
+pub fn an_interrupted_turn_says_so_on_its_divider_test() {
+  let html =
+    drawn([
+      turns.Work(
+        "work:1.0",
+        turns.Worked(Some(12_000), 0, 0, 0, turns.Interrupted),
+        [],
+        turns.Folded,
+      ),
+    ])
+  assert string.contains(html, "Worked 12s · interrupted")
 }

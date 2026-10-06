@@ -241,7 +241,7 @@ for a host with no surfaces.
   `turns.attributed` sets it on that principal's messages, never the reader's), one
   `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
   on an approval; its `Worked` figures come from the records, failed calls included, which
-  `turns.divider` prints as `· 1 failed`; a result whose call lies outside the
+  `turns.divider` prints as `· 1 failed`, and `Worked.ending` is `Interrupted` when a response of the turn was aborted (its row leads with `transcript_lines.stopped_words`), which the divider prints as `· interrupted`; a result whose call lies outside the
   window counts as one step, so a turn cut inside a long run of calls shows a
   figure that grows as older rows load). A response that failed says why on a
   `Plain` row beside the divider, never inside the fold. The fold's

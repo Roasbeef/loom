@@ -3389,6 +3389,12 @@ fn message_lines(
   }
 }
 
+/// The row's words for a response that was aborted. They are a constant so a
+/// reader of the rows that must know a response was aborted (the turn divider
+/// says `interrupted`) compares against the words that `assistant_terminal_lines`
+/// drew and not against a copy.
+pub const stopped_words = "Stopped"
+
 /// The durable stop reason distinguishes a user abort from a failed turn. A
 /// clean abort commits no diagnostic at all, so an `Aborted` message that
 /// carries one names a stop the harness could not establish: an unconfirmed
@@ -3403,10 +3409,10 @@ pub fn assistant_terminal_lines(
 ) -> List(Line) {
   case reason, diagnostic {
     message.Aborted, Some(text) -> [
-      Line(System, "Stopped"),
+      Line(System, stopped_words),
       Line(ToolDetail, text),
     ]
-    message.Aborted, None -> [Line(System, "Stopped")]
+    message.Aborted, None -> [Line(System, stopped_words)]
     _, Some(text) -> [Line(Failure, text)]
     _, None -> []
   }
