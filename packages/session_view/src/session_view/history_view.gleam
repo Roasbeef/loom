@@ -358,7 +358,7 @@ pub fn cancel(state: State) -> State {
 /// is the leaf's ancestry below `before_seq`. A turn the host closed a moment
 /// ago is still in the newest records the daemon sent, so most scans of recent
 /// turns need no read at all, and a scan of older ones starts below what is
-/// already here. The scan is `Quiet` after this call: the host looks at what it
+/// already here. The scan is `Idle` after this call: the host looks at what it
 /// holds, and asks for more with `scan_older` when it is not enough.
 ///
 /// The scan's records never enter the window, so the live end the host draws
