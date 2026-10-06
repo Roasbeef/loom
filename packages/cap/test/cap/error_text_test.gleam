@@ -30,6 +30,10 @@ pub fn lsp_errors_render_with_the_qualified_name_hint_test() {
       Some("the go server rooted at /work/app"),
     ))
     == "symbol not found: util.Greet; searched the go server rooted at /work/app"
+  assert string.ends_with(
+    lsp.error_text(lsp.NotFound("Accept", Some("the go server rooted at /w"))),
+    "for a method); searched the go server rooted at /w",
+  )
   assert lsp.error_text(lsp.Unsupported("gopls", "callHierarchy"))
     == "server gopls does not support callHierarchy"
   assert lsp.error_text(lsp.LspDenied("invalid_argument", "line below 1"))

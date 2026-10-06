@@ -212,7 +212,7 @@ fn stopped(
   }
 }
 
-// Reads the registry until it holds nothing for the session. A drain that
+// Reads the registry until the stop has drained. A drain that
 // outlasts the wait is not an error of the stop, which still completes, but the
 // session cannot be isolated while a process holds it, so the task ends here
 // and a second press finds it saved.
@@ -220,7 +220,7 @@ fn stopped(
 // The stop is in place before this runs (the registry marks the slot closing in
 // the turn that answers `stop_session`), so a session seen opening or resident
 // is a new incarnation that another task resumed after its own isolation. The
-// rest this task waited for has already come and gone, and waiting on for
+// rest this task waited for has already come and gone, and waiting for
 // `Saved` would only expire. The task goes on to `manager.isolate`, which the
 // registry refuses for a session something holds, and `isolated` then reads
 // that refusal as the change another press made.

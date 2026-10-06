@@ -1308,12 +1308,12 @@ pub fn a_spawn_from_a_child_is_refused_by_its_tool_list_test() {
   assert string.contains(message, "agent_spawn")
 }
 
-pub fn a_spawn_without_agent_spawn_is_refused_by_the_router_test() {
-  // A child spawned with a narrowed tool list may not spawn from a program,
-  // and the refusal is the router's own, in the sentence a program reads:
-  // the Agency is never asked. Spawning is the gated capability a child
-  // reliably lacks, since the messaging floor gives every child agent_send
-  // and agent_note but never agent_spawn.
+pub fn a_notes_read_without_agent_notes_is_refused_by_the_router_test() {
+  // A child spawned with a narrowed tool list may not read the blackboard
+  // from a program, and the refusal is the router's own, in the sentence a
+  // program reads: the Agency, which would serve a child this read, is never
+  // asked. The messaging floor gives every child agent_send and agent_note
+  // but never agent_notes, so this is a gate the floor cannot open.
   let live = start_runtime()
   let silent =
     msgpack.MapValue([
@@ -1330,10 +1330,15 @@ pub fn a_spawn_without_agent_spawn_is_refused_by_the_router_test() {
     as "the narrowed spawn must be admitted"
   let child = child_of(value)
   let #(code, message) =
-    refused(live, child, "strand.spawn", spawn_args("nested"))
+    refused(
+      live,
+      child,
+      "strand.notes",
+      msgpack.MapValue([pair("prefix", msgpack.NilValue)]),
+    )
   assert code == "tool_not_held"
   assert message
-    == "strand.spawn needs agent_spawn, which this strand does not hold"
+    == "strand.notes needs agent_notes, which this strand does not hold"
 }
 
 pub fn a_call_as_an_unknown_strand_fails_closed_test() {
