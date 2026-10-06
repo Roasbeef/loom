@@ -211,10 +211,12 @@ fn build_string(text: String) -> StringTree {
 // of which are ASCII, and no byte of a multi-byte UTF-8 sequence is below
 // 0x80, so a byte scan can neither split a codepoint nor miss an escape.
 // The pattern keeps the BEAM's match context alive across the loop, so
-// each step costs a byte compare rather than a new binary; the slices
-// are validated in place, not copied. This was a per-codepoint fold that
-// built one binary per character, and on a 1.3 MB request body it was the
-// whole of the encode time (issue #359).
+// four safe bytes advance together without allocating a new binary. A
+// chunk containing an escape falls back to the original byte step, so
+// `run_start` and `at` still bracket whole codepoints at every flush.
+// The slices are validated in place, not copied. This was a per-codepoint
+// fold that built one binary per character, and on a 1.3 MB request body
+// it was the whole of the encode time (issue #359).
 fn escape_runs(
   tree: StringTree,
   whole: BitArray,
@@ -223,6 +225,20 @@ fn escape_runs(
   at: Int,
 ) -> Result(StringTree, Nil) {
   case rest {
+    <<a, b, c, d, more:bits>>
+      if a >= 0x20
+      && a != 0x22
+      && a != 0x5C
+      && b >= 0x20
+      && b != 0x22
+      && b != 0x5C
+      && c >= 0x20
+      && c != 0x22
+      && c != 0x5C
+      && d >= 0x20
+      && d != 0x22
+      && d != 0x5C
+    -> escape_runs(tree, whole, more, run_start, at + 4)
     <<byte, more:bits>> if byte == 0x22 || byte == 0x5C || byte < 0x20 -> {
       use tree <- result.try(flush_run(tree, whole, run_start, at))
       escape_runs(
@@ -242,6 +258,8 @@ fn escape_runs(
 // same walk over `whole`, so the slice cannot be out of range and, cut at
 // ASCII, cannot be invalid UTF-8; the `Result` is what keeps this total
 // without a `let assert`, and the caller falls back to the slow path.
+// A binary match enforces both bounds without the slice wrapper's extra
+// Result and continuation; UTF-8 validation remains at the text boundary.
 fn flush_run(
   tree: StringTree,
   whole: BitArray,
@@ -251,9 +269,13 @@ fn flush_run(
   case at > run_start {
     False -> Ok(tree)
     True -> {
-      use run <- result.try(bit_array.slice(whole, run_start, at - run_start))
-      use text <- result.try(bit_array.to_string(run))
-      Ok(string_tree.append(tree, text))
+      let length = at - run_start
+      case whole {
+        <<_:bytes-size(run_start), run:bytes-size(length), _:bits>> ->
+          bit_array.to_string(run)
+          |> result.map(fn(text) { string_tree.append(tree, text) })
+        _ -> Error(Nil)
+      }
     }
   }
 }
@@ -557,8 +579,24 @@ fn parse_string_body(
 // How many leading bytes are neither a quote, a backslash nor a control.
 // Every byte of a multi-byte codepoint is at least 0x80, so the count can
 // only stop on an ASCII byte and the run it measures is whole codepoints.
+// Four-byte chunks check every byte; any exceptional byte resumes the
+// single-byte path, preserving the exact stop and the one-to-three-byte tail.
 fn clean_run(rest: BitArray, count: Int) -> Int {
   case rest {
+    <<a, b, c, d, more:bits>>
+      if a >= 0x20
+      && a != 0x22
+      && a != 0x5C
+      && b >= 0x20
+      && b != 0x22
+      && b != 0x5C
+      && c >= 0x20
+      && c != 0x22
+      && c != 0x5C
+      && d >= 0x20
+      && d != 0x22
+      && d != 0x5C
+    -> clean_run(more, count + 4)
     <<byte, more:bits>> if byte != 0x22 && byte != 0x5C && byte >= 0x20 ->
       clean_run(more, count + 1)
     _ -> count
