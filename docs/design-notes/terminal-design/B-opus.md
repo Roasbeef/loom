@@ -403,7 +403,7 @@ record would need a new control command.
 | Harness notices as system lines | the `[loom] ` prefix | recognised today only to bound the turn, `harness_injection_summary` at `session_view/composer.gleam:444`; the line builder still draws a User turn |
 | Spawn tree, roster, Strands tab | status, words, time, tokens | `Line` at `session_view/agent_roster.gleam:84`, `chips` at `session_view/agent_roster.gleam:393` |
 | Activity line | the active operation | `tui/layout` labels today (`active_status_label`) |
-| Status rule: ctx | context estimate | `footer` at `session_view/context_view.gleam:358` |
+| Status rule: ctx | context estimate | `footer` at `session_view/context_view.gleam:370` |
 | Status rule: cost | session total | `usage` at `session_view/model.gleam:353` |
 | Status rule: needs you | approvals per strand | `needing` at `session_view/strand_card.gleam:240` |
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |

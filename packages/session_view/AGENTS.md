@@ -453,7 +453,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   `retire_delivered_nudges` for a pushed entry,
   `retire_nudges_delivered_since_board` for a captured cut, `refuse_goal`),
   the `sync_*` edges with
-  `context_refresh_due`, `advisor_nudges_action` and `goal_action`, which
+  `context_refresh_due`, `context_usage_due` (a provider usage row landing on the
+  live active strand, at most once per `usage_refresh_interval_ms` of the
+  selection's `context_view.State.marked_ms`), `advisor_nudges_action` and `goal_action`, which
   compare two records, and the goal commands `submit_goal_action` and
   `confirming`. A dropped queue read appends `queue_request.Dropped`, and a
   goal board or failed goal read appends a `GoalObservation`. The functions

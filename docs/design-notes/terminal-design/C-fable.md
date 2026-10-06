@@ -744,7 +744,7 @@ No single key sends a decision.
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |
 | Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:596`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:83`) is a `session_view` change, no wire change |
 | Session tab: viewers | the presence roster | yes | `viewers` (`session_view/session_summary.gleam:122`) |
-| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:4439`), `footer` (`session_view/context_view.gleam:358`) |
+| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:4439`), `footer` (`session_view/context_view.gleam:370`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:514`) |
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
 | Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:342`), `render` (`tui/approval_panel.gleam:286`) |
