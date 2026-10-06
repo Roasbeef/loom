@@ -489,7 +489,9 @@ The role an operator's page acts with is the smallest of three things:
   a grant. An observer who asks for an operator page gets an observer page.
 - **Operator, always.** No page ever carries `Owner`. The gateway gives an
   owner one thing an operator lacks within a session, the worktree bytes,
-  and a page never needs them.
+  and a page never needs them. (Amended by the addendum of 2026-10-05: an
+  owner's page and an operator's page are now handed a daemon-run read of the
+  worktree for the Changes tab, which does not go through the gateway.)
 
 So without `--operate`, even an owner or operator gets an observer page.
 With it, an operator or owner gets an operator page, and an observer still
@@ -3178,7 +3180,8 @@ hour.
 
 `Transport.invite` runs in the component's process, and `manager.administer`
 waits up to five seconds. That blocks the page's runtime for as long as the
-daemon takes, as `Transport.open` and `Transport.sessions` do, and
+daemon takes, as `Transport.open` does (and as `Transport.sessions` did until
+the addendum on the sidebar's read below moved it into a task), and
 `docs/lustre.md`'s checklist prefers a relay process for blocking work. The
 call is one registry dispatch, a press is rare and is refused while one is
 out, so the addendum follows the switching precedent and does not add a
@@ -4056,3 +4059,237 @@ with `web view asset favicon.svg is unreadable`, as it does for the others.
 `ui_http_test` pins the route and that `/favicon.ico` is `Unknown`. `ui_route_test`
 serves the asset and compares it with the priv file, with its content type and the
 policy. `page_test` pins the link in every document.
+
+## Addendum: the sidebar's read leaves the runtime (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the fix/older-latency branch ·
+**Raised by**: the owner's recording of a session page during a busy turn,
+where a press of "Load older" was not reflected for about thirty seconds
+
+This addendum changes nothing on the wire, in the routes or in what a socket
+admits. It changes which process makes one daemon call.
+
+### What changed
+
+- **`Transport.sessions` starts a task and returns.** The sidebar's read of
+  the principal's sessions (one registry call, `manager.authorized_page`)
+  was made inside the page's Lustre runtime, from the effect that asks for
+  it on `Opened` and every `sessions_refresh_ms`. Lustre performs an effect
+  inside the runtime process and broadcasts the render only after it
+  returns, and the call waits up to five seconds, so a registry busy with a
+  turn could hold the page for up to five seconds every thirty, with every
+  click, every pushed frame and every patch waiting behind it. The read now
+  runs in a weft run of its own (`ui_socket.listed_task`), as a resume, a
+  rename and the home's activity read already do, and answers as the
+  component's own `SessionsListed`. An observer's page is delivered its
+  empty list without a task, as before.
+- **`Transport.sessions` takes the function the answer is delivered to**,
+  the shape `resume` and `rename` have; it answers no value.
+- **The home's three timer-driven reads take the same shape.** `home.Start`'s
+  `sessions`, `signins` and `who` ran in the home's runtime from the one
+  effect that refreshes the page on open and every `home.refresh_ms`: the
+  list is `authorized_page` and `authorized_roles`, the sign-ins one
+  registry call and the name one more, four calls of up to five seconds
+  each, so up to twenty seconds inside the home's runtime. Each now takes
+  the function its answer is delivered to and starts a task
+  (`ui_socket.home_task`), answering as `Answered`, `SigninsRead` and
+  `NameRead`; the sign-ins and the name are asked once the list has answered
+  and was not `Closed`, as before, and the refresh timer is armed from the
+  list's answer, so the next interval still starts after the read.
+
+### What was considered
+
+- **A shorter registry timeout.** It would bound the stall and not remove it,
+  and the call is correct at its timeout: the registry is allowed to be
+  slow, the page is not allowed to wait for it.
+- **Leaving the press-time calls in the runtime** (`Transport.open`, `home`
+  and `invite` on the session page; `open`, `sign_out`, `sign_out_all` and
+  `device` on the home). Each runs only on a press and is refused while one
+  is out. The wait is still the whole page's, not the press's: Lustre runs
+  the effect before it broadcasts the render, so every frame and click waits
+  with it. They stay as they were because a press is rare and the wait is
+  one call; the timer-driven reads ran unasked and charged their wait to
+  whatever the person did next.
+
+### Cost
+
+One short-lived process per sidebar read, at most one every thirty seconds
+per page, and three per home refresh.
+
+### Verification
+
+`sidebar_test` pins that a read which answers late, or never, leaves `Opened`
+and the ticks after it returning at once with an empty sidebar, and that the
+list lands as `SessionsListed` when the task delivers it. `ui_socket_test`
+pins that `listed_task` returns while its read still waits and delivers once
+the read answers, and that an observer's page is answered with no read.
+`home_test` pins that a list which answers late leaves the home open with
+no groups, that the sign-ins and the name are asked after the list and not
+after a closed one, and that the timer is armed from the answer.
+
+## Addendum: the strand key on the transcript (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/strand-history branch ·
+**Raised by**: the report that switching strands loses the reader's place
+
+This addendum adds one attribute to the transcript element. It adds no route, no
+event and no field on the wire, and it changes no admission rule.
+
+### What changed
+
+- **`<loom-follow>` carries `data-strand-key`.** The lane draws it from the strand on
+  screen (`Marks.key`), a decimal integer the page assigns to each strand name the
+  first time it shows it, from 1, with a counter in `View.strand_keys`. The
+  element keeps the reader's scroll place in memory under that number, for the life
+  of the element, and puts a strand back where the reader left it. It stores
+  nothing outside the element.
+- **The key is not text.** A strand's name can be chosen by a peer, so it never
+  reaches an attribute, class or key (the headline rule). The counter carries
+  none of the name's characters and cannot collide, which a hash of a name a peer
+  chose could, and the element decodes it totally (a value that is
+  not a whole number is ignored).
+
+### What was considered
+
+- **The strip position as the key.** It is already a number, but it shifts when a
+  strand settles, so a place saved under it could be restored to another strand.
+- **Keeping the place on the server.** Scrolling is the browser's, and a render per
+  scroll is what the lane avoids.
+
+### Cost
+
+One more attribute on one element, and one small map in the page's model, which
+grows by one entry for each distinct strand name the page shows.
+
+### Verification
+
+`focus_test` pins that the lane draws the counter's number, never the name, and gives two strands two numbers; `follow_test`
+pins the save and restore rule, including a strand left at the bottom.
+
+## Addendum: the Changes tab reads the worktree (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/changes-worktree branch ·
+**Raised by**: an owner report (a session in a `.claude/worktrees/` workspace
+showed an empty Changes tab although its agent had changed files) and the
+owner's ruling that followed
+
+This addendum reverses a ruling. The decision of 2026-09-29 (issue #569) was
+that a page is never shown worktree bytes, so the Changes tab folded only the
+agent's own `fs_edit` and `fs_write` records and said it left out shell and
+editor changes. The owner has ruled that the tab shows the session workspace's
+Git diff, so that those changes appear. The earlier text above that says "a
+page never needs them" and that a page's relay is capped at Operator stays true
+of the attachment and of the gateway. What changes is that a page is now
+handed one daemon-run read that the gateway never admitted to it. It adds no
+event to the socket's accepted list, no handler, no wire command and no field
+on the wire, and it touches no frozen interface.
+
+### What changed
+
+- **A page reads the workspace through a capability, not the gateway.** The
+  gateway's `worktree_diff` read stays an `Owner` binding's, and `worktree_owner`
+  and the read-only classification are untouched, so the terminal's behaviour
+  and every other client's are unchanged. The daemon instance keeps the same
+  closure it gives the gateway (`serve.Instance.worktree`, projected onto
+  `serve.Resident`), and `ui_socket.upgrade` hands the page a
+  `Transport.worktree` capability made from it.
+- **The gate.** The capability exists only on an owner's page and on an
+  operator's page (`ui_socket.worktree_capability`: not `Observing`). Each time
+  it is called, `ui_socket.worktree_answer` runs the attachment's own check
+  again (the UI session is still open, the credential still authenticates, the
+  membership record still stands), caps the answer by the page's ceiling and by
+  Operator (`ui_relay.capped`), and runs the observation only for Operator. An
+  observer, an operator whose page was minted with an observer's ceiling, and a
+  page whose grant was revoked or whose UI session ended are answered
+  `Declined`, and the observation does not run. No page carries `Owner`, and
+  this does not give one.
+- **Nothing the page sends reaches the read.** The capability takes no
+  argument. The workspace, its repository, the session's recorded starting
+  commit and every bound are the instance's own, set when the session booted.
+- **The read is the existing bounded observation**
+  (`client/worktree_diff.capture_since`), the one the terminal's `/diff` reads:
+  every Git call is jailed through the session's broker with filesystem grants
+  demoted to reads, at most twenty-four files, a patch cut at sixteen
+  kilobytes, an encoded board under forty, one shared deadline, and a census
+  that counts the files that did not fit. Untracked files are diffed against
+  empty and a binary file is reported as binary with no patch. The page decodes
+  it with the terminal's total decoder (`session_view/worktree_view.decode`)
+  and refuses a board that exceeds the same bounds, so it does not rely on the
+  daemon's. The base is HEAD for the files, and the commits since the session's
+  recorded starting commit are a separate section whose heading is the daemon's
+  own words when no starting commit was recorded.
+- **It runs as a task and never blocks the page.** `ui_socket.worktree_task`
+  starts a weft run linked to the page's runtime, with a deadline of its own,
+  and returns at once, as `activity_task` does; the answer arrives as the
+  component's own `Worktreed` message, which no handler carries. A run that is
+  cancelled delivers nothing and the page treats a read out for thirty seconds
+  as lost.
+- **When the page asks.** Once when it opens, and again after the transcript
+  shows a tool result it has not read since, at most once in four seconds
+  (`web_view/worktrees`). Nothing is read while nothing happens. The server
+  component cannot tell which tab is showing without a new event, and this
+  proposal admits none, so there is no tab-open read, and a hidden tab costs
+  nothing beyond the reads a tool result causes.
+- **What the tab draws.** The files that differ from HEAD, each a `details`
+  with the shared red and green diff drawer, a label that says "against HEAD",
+  files left out counted and not named, a cut patch marked, and the commits
+  since the session started. A workspace that is not a checkout, a refused
+  read and a failed read fall back to the agent's own edit board with one fixed
+  sentence that says why. An observer's page never asks and draws the edit
+  board as before. The path and every diff line are text nodes. What the pane
+  says of a file's status and kind is chosen from closed sets, and no text the
+  daemon's failure carried is forwarded.
+
+### What was considered
+
+- **Widen `worktree_owner` for pages.** The gateway cannot tell a page's
+  attachment from a terminal's operator binding, so the widening would admit
+  every operator terminal and every other client. It is the shared admission the
+  owner asked to leave alone.
+- **A new gateway command for pages.** It would add a frozen-interface entry and
+  a second admission path in the gateway for one reader. A capability the
+  daemon hands to the page, in the shape of the rename and resume capabilities,
+  needs neither.
+- **A whole-session fold of the agent's edit results.** It would fix the case of
+  an edit older than the loaded window, and not the case of a shell or editor
+  change, which is the report. It remains a possible follow-up.
+- **Name the files left out of a large diff.** The daemon's census keeps their
+  number and not their names. A `git diff --numstat` call would list them with
+  counts, at the cost of one more jailed call inside the shared deadline.
+  Deferred.
+
+### Cost
+
+- A page of an owner or of an invited operator now shows repository bytes the
+  agent may never have displayed, including the contents of untracked files
+  that Git does not ignore. An operator can already ask the agent to read any
+  file in the workspace, so this widens what the page shows without when it
+  does, and the gate above is the whole of the protection. A secret in a
+  tracked or unignored file is shown to those two kinds of page.
+- Each read costs up to twenty-four jailed Git calls inside an eight-second
+  deadline. Reads are coalesced to one in four seconds per page, so a session
+  with several operator pages runs several.
+- Reads are counted per credential and not per page
+  (`ui_sessions.reserve_worktree_read`, two in four seconds, the rolling
+  allowance invitations use), so many sockets cannot spend the session's helper
+  pool, which the agent's own tools share. A refused read is `Unreadable` and
+  the page tries again after its next tool result.
+- Unlike a tool read, this read leaves no transcript record the owner can
+  audit.
+- The resident instance holds one more closure over the workspace path and the
+  broker handle.
+- The tab lags a shell change until the next tool result or page open, and does
+  not show a change made while the agent is idle.
+
+### Verification
+
+`worktree_page_test` (client) pins who is handed the capability, that an owner
+and an operator are answered, that an observer, an observer's ceiling and a
+revoked page are refused without running the observation, that a failure's
+text is not forwarded, that a board past the page's own bounds is refused, that
+a workspace that is not a checkout is a board, that a hidden-directory path
+with markup survives as data, and that asking returns before the observation
+finishes. `worktree_diff_test` observes a real linked worktree under
+`.claude/worktrees/` whose `.git` is a file. `worktree_read_test` (web_view)
+pins the pane, its bounds, its fallbacks, the escaping of a hostile path and
+line, and when the page asks.

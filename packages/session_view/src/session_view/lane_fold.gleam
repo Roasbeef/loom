@@ -263,11 +263,12 @@ pub fn apply_channel_update(
 }
 
 // The reads the host issues on its own account: the automatic reads, the
-// pending-decisions lookup a capture triggers, and the history read a host's
-// own paging control asks for. A refusal of one is no command's outcome.
+// pending-decisions lookup a capture triggers, the decided-approvals read a
+// page makes when it opens, and the history read a host's own paging control
+// asks for. A refusal of one is no command's outcome.
 fn host_read(command: String) -> Bool {
   case command {
-    "history" | "escalations_get" -> True
+    "history" | "escalations_get" | "escalations_decided" -> True
     _ -> session_channel.is_read(command)
   }
 }
@@ -1383,6 +1384,12 @@ fn apply_request_refused(
   use <- bool.lazy_guard(command == "block_summaries", fn() {
     Shared(..shared, summaries: block_summary.refused(shared.summaries))
   })
+
+  // The decided-approvals read a page makes when it opens is no command of
+  // the operator's. An older daemon refuses it as unknown and a session over
+  // the metadata budget refuses it as failed; either way the page keeps the
+  // decisions it saw live and says nothing.
+  use <- bool.lazy_guard(command == "escalations_decided", fn() { shared })
 
   // A notes read refused while no notes surface is open was the todo
   // panel's seed. An older daemon refuses it, and an error row would report

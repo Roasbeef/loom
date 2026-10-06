@@ -123,7 +123,7 @@
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -204,6 +204,7 @@ import web_view/view/strip
 import web_view/view/switch
 import web_view/view/todo_panel
 import web_view/view/trace
+import web_view/worktrees
 
 /// The most frames one `Arrived` carries: the frame the selector matched
 /// and up to this many less one already waiting behind it.
@@ -470,13 +471,29 @@ pub type Transport(socket) {
     /// A monotonic reading in milliseconds, for the lane's deadlines. The
     /// component reads it once at the top of each message.
     now: fn() -> Int,
-    /// The sessions the page's principal may see, for the sidebar: the
-    /// daemon's authorized catalogue read for an operator's page, or an
-    /// empty list when it fails or the page is an observer's.
-    /// It runs in the component's process when the page opens and every
-    /// `sessions_refresh_ms` after, and it must not run long: the page's
-    /// runtime waits for it.
-    sessions: fn() -> List(sessions.Entry),
+    /// Starts the read of the sessions the page's principal may see, for the
+    /// sidebar, and returns at once: the daemon's authorized catalogue read
+    /// for an operator's page, or an empty list when it fails or the page is
+    /// an observer's. It is asked when the page opens and every
+    /// `sessions_refresh_ms` after. The read runs in the daemon's own task,
+    /// which calls the function it is given with the list, and that call is
+    /// dispatched as `SessionsListed`; the page's runtime never waits for
+    /// it, because the catalogue read is a registry call that can wait on a
+    /// busy daemon for seconds, and a runtime that waited would hold every
+    /// click and every patch behind it (protocol-change/051: the runtime
+    /// never blocks).
+    sessions: fn(fn(List(sessions.Entry)) -> Nil) -> Nil,
+    /// Asks the daemon what the named running sessions are doing, for the
+    /// sidebar's words and dots: the same read the home makes
+    /// (`home.Start.activity`, protocol-change/050), for at most
+    /// `sessions.activity_limit` identities the page's own list holds, and the
+    /// daemon keeps only those the page's credential holds. It returns at
+    /// once: the daemon asks from a task of its own and `deliver` is called
+    /// from there with one state for each session that answered, so the page's
+    /// runtime never waits for it. An observer's page lists nothing and asks
+    /// nothing.
+    activity: fn(List(String), fn(List(#(String, sessions.Activity))) -> Nil) ->
+      Nil,
     /// Asks the daemon for a ticket to open the named session, for an
     /// operator's page that pressed its row: the daemon checks that the page's
     /// principal holds that session and that a process runs it, and mints a
@@ -540,6 +557,16 @@ pub type Transport(socket) {
     /// stopping ends this page, so the answer reaches it only when the task
     /// refused before the stop.
     shareable: Option(fn(fn(grants.Answer) -> Nil) -> Nil),
+    /// Asks the daemon to observe the session's Git working tree for the
+    /// Changes tab (protocol-change/051, the addendum on the worktree read). It
+    /// must return at once: the daemon runs the observation in a task of its
+    /// own, which calls the function it is given with the answer, and that call
+    /// is dispatched as `Worktreed`. It is `None` for an observer's page, which
+    /// is never shown worktree bytes. The daemon takes the session, the
+    /// workspace and every bound from its own records and checks the page's
+    /// standing again each time it is called, so a page whose grant was
+    /// revoked is answered `Declined`.
+    worktree: Option(fn(fn(worktrees.Read) -> Nil) -> Nil),
   )
 }
 
@@ -662,6 +689,15 @@ type Earlier {
   Unheld
 }
 
+// Whether the page has sent its one read of the session's decided approvals.
+type Decided {
+  // The read is owed: the lane has no cut yet, or the lane was busy.
+  Owed
+
+  // The read was sent, and its answer joins the approval ledger like a lookup.
+  Asked
+}
+
 // The shared record with the web's handles bound: the component has no
 // recorder and its two inboxes have no sources to tell apart, so all three
 // are `Nil`.
@@ -704,6 +740,18 @@ type View(socket) {
     transport: Transport(socket),
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
+    /// The `paging` of each strand the reader left, keyed by strand name,
+    /// for the life of the page. `focus` parks the departing strand's here
+    /// and restores the arriving strand's, so a strand whose older rows the
+    /// reader loaded is still held at that depth when they come back. The
+    /// key is a name the session lists and is never drawn.
+    parked_paging: Dict(String, Paging),
+    /// The number the page gave each strand it has shown, from 1, in the order
+    /// it first showed them. The lane draws it as `data-strand-key`, which
+    /// `<loom-follow>` keeps the reader's scroll place under. A counter and
+    /// not a digest of the name: it cannot collide, and a name a peer chose
+    /// never reaches the attribute.
+    strand_keys: Dict(String, Int),
     /// Whether older rows than the page holds exist, derived with `blocks`.
     earlier: Earlier,
     /// The page strand's transcript blocks that the page holds, the newest
@@ -720,6 +768,18 @@ type View(socket) {
     /// folded when the projection is built, so a message that changed none
     /// of its inputs costs the Changes section no fold.
     changes: changes_view.Board,
+    /// What the page knows of the workspace's Git tree, for the Changes tab,
+    /// whether a read is out, when the last one was asked on the transport's
+    /// clock, and the sequence of the newest tool result the page had seen when
+    /// it asked (`worktrees`). A newer one in the records is the reason to
+    /// ask again.
+    worktree: worktrees.Read,
+    asking: worktrees.Asking,
+    worktree_asked_at: Option(Int),
+    worktree_seen: Int,
+    /// The sequence of the newest tool result the held records carry, derived
+    /// with `changes`.
+    latest_result: Int,
     /// The `code_mode` programs the held window carries
     /// (`session_view/trace_view`), folded with `changes` for the same
     /// reason.
@@ -740,6 +800,10 @@ type View(socket) {
     /// so the next one waits `sessions_refresh_ms`.
     groups: List(sessions.Group),
     listed_at: Option(Int),
+    /// What the sidebar's running sessions were last said to be doing, by
+    /// identity. It is asked for after each read of the list, so it runs on the
+    /// list's cadence, and a session with no answer says "running".
+    activity: dict.Dict(String, sessions.Activity),
     /// The ticket exchange the daemon minted for the session the operator
     /// chose, which `<loom-switch>` navigates to. It stays until the next
     /// switch replaces it: the ticket is single use and lives 60 seconds, so
@@ -766,8 +830,21 @@ type View(socket) {
     /// not the daemon answered. A refused read is therefore not repeated on
     /// every tick.
     jobs_asked_at: Option(Int),
+    /// Whether the page has asked for the session's decided approvals. A page
+    /// that opens after a decision never saw the request pending, so it reads
+    /// the decisions once its first cut is adopted and seeds the approval
+    /// ledger the transcript's decision rows come from.
+    decided: Decided,
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
+    /// How many composer submits were refused with the draft kept, by the
+    /// page (`refused_draft`) or by the lane's admission check
+    /// (`submitting`); a refusal of anything but the composer's draft is
+    /// not counted. The
+    /// composer's element reads it as the `refused` attribute, so a pending
+    /// line it drew for a press can be taken down and the draft put back
+    /// (`web_client/pending_rule`); a taken draft replaces the editor instead.
+    refusals: Int,
     /// What the session said when the page ran the operator's last command:
     /// the notice the shared step left, read at once because any later event
     /// may write it over. Empty when the command said nothing. The daemon's
@@ -866,6 +943,12 @@ pub type Msg(socket) {
   /// handler carries it, so a browser cannot send one.
   SessionsListed(entries: List(sessions.Entry))
 
+  /// The daemon's answer to the activity read a list started: one state for
+  /// each running session that answered. Like `SessionsListed` it is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it.
+  ActivityObserved(rows: List(#(String, sessions.Activity)))
+
   /// The daemon asks for one of the images the page draws, to answer a
   /// request for its address (protocol-change/051, the addendum on images).
   /// `ref` and `position` are the name and place the page drew the image
@@ -902,6 +985,13 @@ pub type Msg(socket) {
   /// carries it, so a browser cannot send one and cannot make the page believe
   /// the session can be shared when the daemon did not say so.
   MadeShareable(answer: grants.Answer)
+
+  /// The daemon answered a request to observe the workspace. It is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot send one and cannot put a diff in the
+  /// page that the daemon did not observe. The read is `Seen`, `Declined` or
+  /// `Unreadable`.
+  Worktreed(read: worktrees.Read)
 }
 
 /// The Lustre application for one session's observer page.
@@ -941,11 +1031,21 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       reader: start.standing.reader,
       transport: start.transport,
       paging: Tail,
+      parked_paging: dict.new(),
+      strand_keys: dict.from_list([#(shared.active_strand, 1)]),
       earlier: Reached,
       blocks: [],
       pieces: [],
       projected: projected_of(shared, Tail),
       changes: changes_view.empty(),
+      worktree: case start.transport.worktree {
+        Some(_) -> worktrees.Unread
+        None -> worktrees.Withheld
+      },
+      asking: worktrees.Idle,
+      worktree_asked_at: None,
+      worktree_seen: -1,
+      latest_result: 0,
       trace: trace_view.empty(),
       streams: [],
       strip: strip.Strip(
@@ -959,6 +1059,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       status: Connecting,
       groups: [],
       listed_at: None,
+      activity: dict.new(),
       departure: None,
       resuming: None,
       share: case
@@ -986,7 +1087,9 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       },
       renamed: 0,
       jobs_asked_at: None,
+      decided: Owed,
       refusal: None,
+      refusals: 0,
       outcome: "",
       returns: 0,
       returned: [],
@@ -1145,17 +1248,22 @@ pub fn update(
 
     // The sidebar's list is the catalogue's own order and the page groups it,
     // at most `listed_limit` sessions. Nothing about the lane moved.
-    SessionsListed(entries:) -> #(
-      Model(
-        ..model,
-        view: View(
-          ..model.view,
-          groups: sessions.grouped(
-            list.take(entries, sessions.listed_limit),
-            model.shared.session,
-          ),
-        ),
-      ),
+    SessionsListed(entries:) -> {
+      let groups =
+        sessions.grouped(
+          list.take(entries, sessions.listed_limit),
+          model.shared.session,
+        )
+      #(
+        Model(..model, view: View(..model.view, groups:)),
+        observing(model.view.transport, groups),
+      )
+    }
+
+    // What the running sessions are doing replaces the last answer. The page
+    // draws a word and a dot from it and nothing else moves.
+    ActivityObserved(rows:) -> #(
+      Model(..model, view: View(..model.view, activity: dict.from_list(rows))),
       effect.none(),
     )
 
@@ -1182,6 +1290,29 @@ pub fn update(
     Renamed(answer:) -> #(renamed(model, answer), effect.none())
 
     MadeShareable(answer:) -> #(made_shareable(model, answer), effect.none())
+
+    // The observation is the page's own state and changes nothing the lane
+    // holds. The next read waits for a newer tool result, so this asks for
+    // nothing.
+    //
+    // A throttled read keeps the last answer on the page and forgets which
+    // tool result it covered, so the next ask comes after the usual interval.
+    // Any other answer, a refusal included, replaces what is drawn.
+    Worktreed(read: worktrees.Throttled) -> #(
+      Model(
+        ..model,
+        view: View(..model.view, asking: worktrees.Idle, worktree_seen: -1),
+      ),
+      effect.none(),
+    )
+
+    Worktreed(read:) -> #(
+      Model(
+        ..model,
+        view: View(..model.view, worktree: read, asking: worktrees.Idle),
+      ),
+      effect.none(),
+    )
   }
 }
 
@@ -1270,10 +1401,35 @@ fn jobs_wanted(model: Model(socket), at: Int) -> Model(socket) {
   }
 }
 
-// The read itself, in the component's process, answered as a message.
+// Starts the activity read for the running sessions the sidebar lists, in the
+// order it draws them and no more than the home's bound, and returns at once;
+// the answer arrives later as `ActivityObserved`, dispatched from the daemon's
+// task. A list with no running session asks nothing.
+fn observing(
+  transport: Transport(socket),
+  groups: List(sessions.Group),
+) -> Effect(Msg(socket)) {
+  let running =
+    list.flat_map(groups, fn(group) { group.entries })
+    |> list.filter(fn(entry) { entry.residency == sessions.Live })
+    |> list.take(sessions.activity_limit)
+    |> list.map(fn(entry) { entry.id })
+  case running {
+    [] -> effect.none()
+    [_, ..] -> {
+      use dispatch <- effect.from
+      transport.activity(running, fn(rows) { dispatch(ActivityObserved(rows)) })
+    }
+  }
+}
+
+// Starts the read and returns. The transport's task hands the list back
+// through `dispatch`, which sends the runtime a message from whichever
+// process the task runs in, so the effect holds the runtime for no longer
+// than the start of a task.
 fn listing(transport: Transport(socket)) -> Effect(Msg(socket)) {
   use dispatch <- effect.from
-  dispatch(SessionsListed(transport.sessions()))
+  transport.sessions(fn(entries) { dispatch(SessionsListed(entries)) })
 }
 
 // The step's tick at `at`. The two readings are the same one because the
@@ -1299,7 +1455,41 @@ fn stepping(
       let #(shared, effects) = step.update(done.0, message)
       #(shared, list.append(done.1, effects))
     })
+
+  // The decided-approvals read is asked once the messages have left the lane
+  // idle, and the tick that follows it carries the frame out, so the read
+  // leaves in the message that freed the lane and not in some later one.
+  let owed = model.view.decided
+  let model = decisions_read(Model(..model, shared:), at)
+  let #(shared, effects) = case owed, model.view.decided {
+    Owed, Asked -> {
+      let #(shared, sent) = step.update(model.shared, tick_at(at))
+      #(shared, list.append(effects, sent))
+    }
+    Owed, Owed | Asked, _ -> #(model.shared, effects)
+  }
   finished(Model(..model, shared:), effects, at)
+}
+
+// Sends the one read of the session's decided approvals, once the lane has
+// adopted a cut and has no request out. A busy lane refuses it, and the read
+// stays owed for the next message to ask again; only a sent read is spent.
+// The read never waits in the lane's queue, which would hold the slot an
+// operator's first command needs. The frame leaves with the step the message
+// is about to run.
+fn decisions_read(model: Model(socket), at: Int) -> Model(socket) {
+  case model.view.decided, model.shared.channel {
+    Owed, Some(lane) ->
+      case session_channel.decided(lane, now: at) {
+        Ok(lane) ->
+          Model(
+            shared: session_model.hold_channel(model.shared, lane),
+            view: View(..model.view, decided: Asked),
+          )
+        Error(_) -> model
+      }
+    Owed, None | Asked, _ -> model
+  }
 }
 
 // The end of every message: what the page draws is derived from the record
@@ -1311,7 +1501,54 @@ fn finished(
   at: Int,
 ) -> #(Model(socket), Effect(Msg(socket))) {
   let model = settled(model) |> refreshed |> rearm(at)
-  #(model, perform(model.view.transport, effects))
+  let #(model, observing) = observed(model, at)
+  #(model, effect.batch([perform(model.view.transport, effects), observing]))
+}
+
+// Asks the daemon to observe the workspace when the page may, no read is out,
+// the transcript shows a tool result the last read did not see (the page's
+// first read is owed from the start), and `worktrees.refresh_ms` have passed
+// since the last ask. A burst of tool calls therefore asks once, and a page
+// with nothing happening asks nothing. The answer arrives as `Worktreed`.
+fn observed(
+  model: Model(socket),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let view = model.view
+  let since = case view.worktree_asked_at {
+    Some(before) -> at - before
+    None -> worktrees.lost_ms
+  }
+
+  // A read that never answered is lost after `lost_ms`, and is asked again.
+  let free = case view.asking {
+    worktrees.Idle -> since >= worktrees.refresh_ms
+    worktrees.Out -> since >= worktrees.lost_ms
+  }
+  case view.transport.worktree, free, view.worktree_seen {
+    Some(ask), True, seen if seen != view.latest_result -> #(
+      Model(
+        ..model,
+        view: View(
+          ..view,
+          asking: worktrees.Out,
+          worktree_asked_at: Some(at),
+          worktree_seen: view.latest_result,
+        ),
+      ),
+      asking_worktree(ask),
+    )
+    _, _, _ -> #(model, effect.none())
+  }
+}
+
+// Starts the daemon's task and returns at once. Its answer arrives later as
+// `Worktreed`, dispatched from the task's own process.
+fn asking_worktree(
+  ask: fn(fn(worktrees.Read) -> Nil) -> Nil,
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  ask(fn(read) { dispatch(Worktreed(read)) })
 }
 
 // Takes the prompts the daemon handed back out of the shared record, which
@@ -1352,7 +1589,21 @@ fn taken(model: Model(socket)) -> Model(socket) {
 // are forgotten.
 fn settled(model: Model(socket)) -> Model(socket) {
   let held = taken(model)
-  Model(..held, shared: step.forget_surfaces(held.shared))
+  Model(
+    shared: step.forget_surfaces(held.shared),
+    view: View(..held.view, strand_keys: numbered(held)),
+  )
+}
+
+// The strand keys with the strand on screen numbered, if the page has not
+// shown it before. The next number is one past the count, since numbers are
+// never taken back.
+fn numbered(model: Model(socket)) -> Dict(String, Int) {
+  let keys = model.view.strand_keys
+  case dict.has_key(keys, model.shared.active_strand) {
+    True -> keys
+    False -> dict.insert(keys, model.shared.active_strand, dict.size(keys) + 1)
+  }
 }
 
 // What the page says when prompts come back: how many, for which strand, and
@@ -1715,6 +1966,7 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           earlier:,
           paging:,
           changes: changes_view.fold(branch.records),
+          latest_result: worktrees.latest_result(branch.records),
           trace: trace_view.fold(branch.records),
         ),
       ))
@@ -2052,9 +2304,9 @@ pub fn submit(
   images: List(String),
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case string.trim(text), images, string.byte_size(text) > prompt_limit {
-    "", [], _ -> refused(model, "Nothing to send.")
+    "", [], _ -> refused_draft(model, "Nothing to send.")
     _, _, True ->
-      refused(
+      refused_draft(
         model,
         "The draft is longer than the page sends ("
           <> int.to_string(prompt_limit)
@@ -2062,10 +2314,27 @@ pub fn submit(
       )
     _, _, False ->
       case web_image.admit(images) {
-        Error(notice) -> refused(model, notice)
+        Error(notice) -> refused_draft(model, notice)
         Ok(attached) -> submitting(model, text, delivery, attached)
       }
   }
+}
+
+// A composer submit the page refused with the draft kept: the refusal, and
+// the count the composer's element reads to take its pending line down
+// (`refusals`). Only the composer's paths count, since the element's line is
+// the composer's draft: a stale approval, a reply that found no message or a
+// control form refused are told in the notice and must leave a steer the
+// lane holds in flight, or a second press would send it twice.
+fn refused_draft(
+  model: Model(socket),
+  text: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(after, effects) = refused(model, text)
+  #(
+    Model(..after, view: View(..after.view, refusals: after.view.refusals + 1)),
+    effects,
+  )
 }
 
 // A draft that passed the page's own limits, with the images that passed
@@ -2084,26 +2353,38 @@ fn submitting(
 ) -> #(Model(socket), Effect(Msg(socket))) {
   case attached, delivery {
     [_, ..], operator.Steer ->
-      refused(
+      refused_draft(
         model,
         "Images go with Send or Queue, not Steer. Nothing was sent.",
       )
     _, _ ->
       case page_command(command.parse_with_skills(text, model.shared.skills)) {
-        Error(notice) -> refused(model, notice)
+        Error(notice) -> refused_draft(model, notice)
         Ok(session) -> {
           let attaching =
             Shared(
               ..model.shared,
               attachments: list.map(attached, composer.ImageAttachment),
             )
+
+          // The lane's admission check is read before the command runs, as
+          // `sent_from_form` reads it: a draft the check refuses stays in
+          // the editor, and the composer's element is told so by the count.
+          // A draft the lane admits but holds behind a read is not refused.
+          let kept = case outbound.mutation_refusal(model.shared, session) {
+            Some(_) -> 1
+            None -> 0
+          }
           let #(next, effects) =
             commanded(
               Model(..model, shared: attaching),
               msg.Submit(draft: text, command: session, delivery:),
             )
           #(
-            Model(..next, shared: Shared(..next.shared, attachments: [])),
+            Model(
+              shared: Shared(..next.shared, attachments: []),
+              view: View(..next.view, refusals: next.view.refusals + kept),
+            ),
             effects,
           )
         }
@@ -2974,9 +3255,12 @@ pub fn openable(model: Model(socket), id: String) -> Option(sessions.Entry) {
 /// for the strand being left is dropped before the record parks its window
 /// (`history_view.resume`), because the reply to it could not be placed and a
 /// parked window stuck at "Pending" would leave the strand's lane reading
-/// "Loading" for good when the reader came back. The row limit starts again at
-/// `Tail`, as a page's first strand does, and the projection and the strip are
-/// rebuilt by `refreshed`, since the strand is one of their inputs.
+/// "Loading" for good when the reader came back. The row limit is
+/// parked beside the window under the strand's name and restored with it, so a
+/// strand the reader paged back keeps its depth when they return, and a strand
+/// not yet left starts at `Tail`, as a page's first strand does. The projection
+/// and the strip are rebuilt by `refreshed`, since the strand is one of their
+/// inputs.
 ///
 /// Focusing cancels the lane's unsent frames, as the terminal's
 /// `cancel_pending` does, so a submit or a decision still queued behind the
@@ -3028,10 +3312,40 @@ fn focus_at(
           answer: "",
         )
       let #(focused, effects) = step.focus(parked, strand, stamp(at))
+
+      // The row limit is parked with the history window under the strand's
+      // name. Restoring the window without its limit would let the next
+      // projection trim the older rows the reader loaded back down to
+      // `live_rows`, which is the history this keeps.
+      let remembered =
+        dict.insert(
+          model.view.parked_paging,
+          shared.active_strand,
+          model.view.paging,
+        )
+
+      // The depth is used only over a window that still holds rows. The
+      // record empties a parked window when its strand leaves the capture
+      // (`lane_fold.prune_parked_scrollback`), and a strand that later
+      // returns under the same name must open at `Tail`: `Full` over an empty
+      // window draws no Load older, so the reader could not page.
+      let arriving = case
+        dict.get(remembered, strand),
+        dict.get(shared.parked_scrollback, #(shared.session, strand))
+      {
+        Ok(depth), Ok(window) if window.strand != "" -> depth
+        _, _ -> Tail
+      }
       finished(
         Model(
           shared: focused,
-          view: View(..model.view, paging: Tail, refusal: None, outcome: ""),
+          view: View(
+            ..model.view,
+            paging: arriving,
+            parked_paging: dict.delete(remembered, strand),
+            refusal: None,
+            outcome: "",
+          ),
         ),
         effects,
         at,
@@ -3220,10 +3534,12 @@ pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
 
 /// The live region's rows: the reasoning the provider is writing, with how
 /// much of it has arrived, how long the generation has run and the
-/// summarizer's headline when one was pushed, and the answer as it stands.
-/// All of it is the terminal's own state (`Shared.streams`,
-/// `Shared.summaries` and the generation clock), and the page reads no
-/// extra frame for it.
+/// summarizer's headline when one was pushed, the answer as it stands, and
+/// after them the inputs the daemon holds for the strand (a steer waiting
+/// for the next boundary, the prompts queued behind the turn), as the
+/// terminal draws them. All of it is the terminal's own state
+/// (`Shared.streams`, `Shared.summaries`, the generation clock and the
+/// capture's `pending_inputs`), and the page reads no extra frame for it.
 ///
 /// The elapsed time is a reading, not a running clock: the browser counts
 /// on from it (`<loom-elapsed>`), so the server draws again when a fragment
@@ -3251,6 +3567,7 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
         "thinking" ->
           Ok(live.Thinking(
             progress: transcript_lines.line_count(text),
+            text:,
             elapsed_ms:,
             headline: block_summary.live(shared.summaries, stream.generation),
           ))
@@ -3268,10 +3585,27 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
   // event or a first fragment, the row says `Thinking` with no time: the
   // operation's own clock also counts earlier generations of the turn, so it
   // would read minutes under an answer that just landed.
-  case streamed, session_model.active_strand_phase(shared) {
+  let streamed = case streamed, session_model.active_strand_phase(shared) {
     [], Some("assistant") -> [live.Opened(elapsed_ms:)]
     _, _ -> streamed
   }
+
+  // The held inputs are the newest thing on the page: typed after the run
+  // above them started, and run after it. The capture lists them, so a
+  // message the daemon took but has not run is drawn from the capture that
+  // first lists it until the one that no longer does, when its own row has
+  // landed above (`transcript_lines.held_inputs` is the terminal's rule).
+  let held =
+    session_model.presentation(shared)
+    |> transcript_lines.held_inputs
+    |> option.unwrap([])
+    |> list.map(fn(input) {
+      live.Held(
+        text: input.text,
+        words: transcript_lines.held_words(input.kind),
+      )
+    })
+  list.append(streamed, held)
 }
 
 /// The sidebar's groups: the principal's sessions by workspace, newest
@@ -3287,6 +3621,19 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
 /// ```
 pub fn session_groups(model: Model(socket)) -> List(sessions.Group) {
   model.view.groups
+}
+
+/// What the sidebar's running sessions were last said to be doing, by identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sidebar.view(groups, id, bars, component.session_activity(model), Opening, resume)
+/// ```
+pub fn session_activity(
+  model: Model(socket),
+) -> dict.Dict(String, sessions.Activity) {
+  model.view.activity
 }
 
 /// The agent strip as the page draws it.
@@ -3437,6 +3784,20 @@ pub fn notice(model: Model(socket)) -> Notice {
 /// ```
 pub fn notice_serial(model: Model(socket)) -> Int {
   model.view.noticed
+}
+
+/// How many composer submits were refused with the draft kept, by the page
+/// or by the lane's admission check; a stale approval, a reply with no
+/// message or a refused control form do not count. The operator page writes
+/// it as the composer element's `refused` attribute.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.refusals(model) == 0
+/// ```
+pub fn refusals(model: Model(socket)) -> Int {
+  model.view.refusals
 }
 
 /// The model with its notice counted as changed. The operator page calls it
@@ -3710,7 +4071,14 @@ pub fn panel(
     strip.count(model.view.strip),
     strip.view(model.view.strip, focus),
     detail(model),
-    changes.view(model.view.changes),
+    changes.view(
+      model.view.changes,
+      case model.view.earlier {
+        Reached -> changes.Whole
+        Unheld -> changes.Partial
+      },
+      model.view.worktree,
+    ),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),
       cost_figure(model),
@@ -3785,6 +4153,8 @@ pub fn marks(model: Model(socket)) -> lane.Marks {
     active: model.shared.active_strand,
     hue: turns.hue(model.shared.strands, model.shared.active_strand),
     positions: strip.positions(model.view.strip),
+    key: dict.get(model.view.strand_keys, model.shared.active_strand)
+      |> result.unwrap(0),
   )
 }
 

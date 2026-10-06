@@ -150,6 +150,20 @@ pub fn an_edit_is_a_file_with_counts_and_kinded_rows_test() {
   assert changes_view.totals(board) == "1 file · +2 -1"
 }
 
+// The fold keys on the path an edit names and filters nothing by its
+// segments, so a workspace under a hidden directory (a `.claude/worktrees/`
+// checkout) lists its edits like any other. A session whose Changes tab is
+// empty has therefore had no `fs_edit` or `fs_write` in the records the page
+// holds, not an edit the fold dropped.
+pub fn an_edit_under_a_hidden_directory_is_listed_test() {
+  let path = "/home/u/proj/.claude/worktrees/wt-1/.config/calc.gleam"
+  let board = changes_view.fold(records([edited(path, calc_diff)]))
+
+  let assert [file] = board.files as "the edit is a file"
+  assert file.path == path
+  assert #(file.added, file.removed) == #(2, 1)
+}
+
 pub fn two_edits_of_one_path_are_one_file_in_order_test() {
   let board =
     changes_view.fold(

@@ -424,13 +424,15 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       transmit: fn(wire, frame) { process.send(wire, frame) },
       shut: fn(_) { Nil },
       now:,
-      sessions: fn() { [] },
+      sessions: fn(deliver) { deliver([]) },
+      activity: fn(_, _) { Nil },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       resume: fn(_, _) { Nil },
       invite: None,
       home: None,
       rename: None,
       shareable: None,
+      worktree: None,
     ),
   )
 }
@@ -464,6 +466,20 @@ pub fn refusal(id: Int) -> connection_event.Message {
 /// ```
 pub fn first_reads_refused() -> List(connection_event.Message) {
   [refusal(4), refusal(5), refusal(6), refusal(7)]
+}
+
+/// The refusal of the read of the session's decided approvals, which the
+/// page asks in the message that frees the lane after the four reads of
+/// `first_reads_refused`, so it is request eight and arrives in a message of
+/// its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.decided_read_refused()
+/// ```
+pub fn decided_read_refused() -> List(connection_event.Message) {
+  [refusal(8)]
 }
 
 /// A page for `role` whose lane has completed its first transfer and every

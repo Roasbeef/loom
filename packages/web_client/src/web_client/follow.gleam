@@ -77,7 +77,18 @@
 //// the transcript by however far the held row moved, then lets go. A
 //// scroll by the reader while it waits moves the held position with them.
 ////
-//// The element takes no attribute. Its shadow root holds one default slot,
+//// The page shows one strand at a time in this one transcript, and the reader
+//// leaves a strand where they were reading it. The server draws the strand's
+//// numeric key as `data-strand-key` on the element (a number the page assigned the
+//// strand, so no model or peer text reaches an attribute). When the key changes
+//// the element keeps the departing strand's place in memory under its key, for
+//// the life of the element: the offset if the reader had scrolled up, or "at
+//// the bottom". It then puts the arriving strand where it was left, or follows
+//// the tail if it was left at the bottom or never seen. Nothing is stored
+//// outside the element.
+////
+//// The element takes one attribute, `data-strand-key`, read as a whole
+//// number; anything else is ignored. Its shadow root holds one default slot,
 //// through which the server's lane is shown as the server rendered and
 //// escaped it, and, while the reader is away from the bottom, one button
 //// whose label is fixed here. It reads no text, handles no key, and
@@ -86,6 +97,7 @@
 //// touches them.
 
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -98,8 +110,8 @@ import lustre/element/html
 import lustre/event
 import web_client/fold
 import web_client/follow_rule.{
-  type Extent, type Reader, Detached, Displaced, Extent, Following, Leading,
-  Reading, Restored, Waiting,
+  type Extent, type Memory, type Reader, Detached, Displaced, Extent, Following,
+  Leading, Reading, Restored, Waiting,
 }
 import web_client/internal/ffi_dom
 
@@ -149,7 +161,13 @@ pub type Anchor {
 /// it is on the page, and the row it holds in place while older rows are
 /// loading above it.
 pub type Model {
-  Model(reader: Reader, watching: Option(Watching), anchor: Option(Anchor))
+  Model(
+    reader: Reader,
+    watching: Option(Watching),
+    anchor: Option(Anchor),
+    key: Option(Int),
+    memory: Memory,
+  )
 }
 
 /// Everything the element can be told.
@@ -197,6 +215,9 @@ pub type Msg {
   /// The older rows arrived and the held row is back where it was, or the
   /// row left the page: nothing is held any more.
   Released
+
+  /// The server drew the transcript of the strand with this numeric key.
+  Keyed(key: Int)
 }
 
 /// Registers the element with the browser.
@@ -210,13 +231,26 @@ pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
     component.on_connect(Connected),
     component.on_disconnect(Disconnected),
+    component.on_attribute_change(follow_rule.key_attribute, keyed),
   ])
   |> lustre.register(name)
 }
 
+// The strand key decoded totally: a whole number is a message, and anything
+// else is none.
+fn keyed(value: String) -> Result(Msg, Nil) {
+  int.parse(value) |> result.map(Keyed)
+}
+
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(
-    Model(reader: follow_rule.start(), watching: None, anchor: None),
+    Model(
+      reader: follow_rule.start(),
+      watching: None,
+      anchor: None,
+      key: None,
+      memory: follow_rule.forgotten(),
+    ),
     effect.none(),
   )
 }
@@ -305,6 +339,20 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     )
     Held(anchor:) -> #(Model(..model, anchor:), effect.none())
     Released -> #(Model(..model, anchor: None), measure(model.watching))
+
+    // The server drew another strand's transcript. Where the reader stood in
+    // the strand they left is kept under its key, taken from the last scroll
+    // heard, which is the position before the change; the strand shown now
+    // gets the place it was left at, or the tail when it was left at the
+    // bottom or never seen. A held row belongs to the old rows and is let go.
+    Keyed(key:) ->
+      case follow_rule.keyed(model.key, model.memory, model.reader, key) {
+        follow_rule.Unchanged -> #(model, effect.none())
+        follow_rule.Changed(key:, memory:, reader:, arrival:) -> #(
+          Model(..model, reader:, anchor: None, key: Some(key), memory:),
+          arrive(model.watching, arrival),
+        )
+      }
 
     // The button is the way back to the tail without a scroll: it follows
     // again from here, and nothing stays held.
@@ -415,6 +463,35 @@ fn to_bottom(watching: Option(Watching)) -> Effect(Msg) {
     Some(Watching(host:, ..)) -> {
       use _ <- effect.from
       ffi_dom.set_scroll_top(host, ffi_dom.scroll_height(host))
+    }
+  }
+}
+
+// Applies an arrival once the new rows are painted: to the bottom, or back to
+// the offset the reader left the strand at. The browser clamps an offset
+// past the end of the content.
+fn arrive(
+  watching: Option(Watching),
+  arrival: follow_rule.Arrival,
+) -> Effect(Msg) {
+  case watching {
+    None -> effect.none()
+    Some(Watching(host:, ..)) -> {
+      use dispatch, _ <- effect.after_paint
+      case arrival {
+        follow_rule.Tail ->
+          ffi_dom.set_scroll_top(host, ffi_dom.scroll_height(host))
+        follow_rule.Resume(top:) -> ffi_dom.set_scroll_top(host, top)
+      }
+
+      // The browser clamps an offset past the end of the content, and a
+      // clamp that leaves the offset where it was raises no scroll event, so
+      // the position and the gap are read again for the button's state.
+      dispatch(Scrolled(
+        top: ffi_dom.scroll_top(host),
+        extent: extent_of(host),
+        at: ffi_dom.now(),
+      ))
     }
   }
 }

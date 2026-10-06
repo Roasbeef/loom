@@ -388,10 +388,29 @@ bundled release does. The client wrapper preserves its installed location for
 sibling daemon discovery.
 
 Links and complete wrapper files are renamed individually; installation is not
-a transaction across the whole client/server pair. Old trees and alternate
-client-shape links are retained for manual cleanup. Existing legacy directories
+a transaction across the whole client/server pair. Existing legacy directories
 at `server`, `client`, or `tui` require an offline migration or a fresh prefix.
 See [updating](updating.md) for restart, rollback, and cleanup procedures.
+
+After the links are switched, the installer removes superseded trees of the
+two stems it just repointed: `server` and the installed client stem (`client`,
+or `tui` for a slim install). It keeps the tree every link selects, the tree
+each repointed link selected before this installation (one rollback step), and
+any tree a live process uses. A tree is in use when a command line from
+`ps -axo command` contains its path, or when `lsof` reports an open file or
+working directory inside it. If `lsof` is absent only the `ps` check runs. If
+`ps` or `lsof` fails, nothing is deleted. Only real directories named exactly
+`server.<8 alphanumerics>`, `client.<8 alphanumerics>` or `tui.<8
+alphanumerics>` are candidates, so `legacy-backup.*`, `update.lock`, symlinks
+and other entries are never touched. The installer prints one line per tree
+removed, one per tree kept because it is in use, and a total. Set
+`LOOM_KEEP_OLD_TREES=1` to skip pruning. This applies to every prefix and to
+`make install-debug`, because they share the installer, and to `loom update`,
+which runs the same script.
+
+Pruning assumes no other installation runs on the same prefix at the same
+time. `loom update` serializes on `update.lock`; two concurrent `make install`
+runs do not, and one could remove the tree the other is still copying.
 
 ## Installing for live profiling
 

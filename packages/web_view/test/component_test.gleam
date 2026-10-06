@@ -64,6 +64,7 @@ pub fn a_push_to_an_idle_lane_is_reduced_on_arrival_test() {
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(page_fixture.transfer("observer", []))
     |> arrive(page_fixture.first_reads_refused())
+    |> arrive(page_fixture.decided_read_refused())
   assert !in_flight(following)
 
   let pushed =
@@ -330,16 +331,17 @@ pub fn a_session_without_a_name_is_named_by_its_short_identity_test() {
 }
 
 // The lane is drawn inside `<loom-follow>`, the client component that keeps
-// the newest row in view, and it carries no attribute: the element reads
-// the page's scroll position and the lane's size, never session text.
+// the newest row in view, and it carries one attribute besides its class, the
+// strand's numeric key: the element reads the page's scroll position and the
+// lane's size, never session text.
 pub fn the_lane_is_drawn_inside_the_follower_test() {
   let page =
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(page_fixture.transfer("observer", []))
   let html = element.to_string(simulate.view(page))
   let assert Ok(#(_, inside)) =
-    string.split_once(html, "<loom-follow class=\"follow\">")
-    as "the page draws the follower with no attribute but its class"
+    string.split_once(html, "<loom-follow class=\"follow\" data-strand-key=\"")
+    as "the page draws the follower with its strand key"
   let assert Ok(#(lane, _)) = string.split_once(inside, "</loom-follow>")
     as "the follower is closed"
   assert string.contains(lane, "class=\"transcript lane\"")
@@ -358,7 +360,7 @@ pub fn the_observers_frame_is_bar_centre_panel_test() {
     "<loom-shell class=\"loom-session\" needing=\"0\" sidebar=\"none\">",
     "class=\"session-head\"",
     "<main class=\"centre\">",
-    "<loom-follow class=\"follow\">",
+    "<loom-follow class=\"follow\" data-strand-key=\"",
     "class=\"observer-bar\"",
     "</main>",
     "<aside aria-label=\"Strand panel\" class=\"panel\" slot=\"right\">",
@@ -388,6 +390,7 @@ pub fn a_goal_write_is_read_on_arrival_by_the_web_lane_test() {
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(page_fixture.transfer("observer", []))
     |> arrive(page_fixture.first_reads_refused())
+    |> arrive(page_fixture.decided_read_refused())
   assert !in_flight(following) as "all capture-triggered reads have settled"
   let invalidated =
     simulate.message(
@@ -405,7 +408,7 @@ pub fn a_goal_write_is_read_on_arrival_by_the_web_lane_test() {
       invalidated,
       component.Arrived([
         connection_event.Incoming(
-          "{\"v\":2,\"reply_to\":8,\"event\":\"snapshot\",\"body\":{\"mode\":\"goal\",\"board\":{\"status\":\"none\",\"observed_at_ms\":0}}}",
+          "{\"v\":2,\"reply_to\":9,\"event\":\"snapshot\",\"body\":{\"mode\":\"goal\",\"board\":{\"status\":\"none\",\"observed_at_ms\":0}}}",
         ),
       ]),
     )

@@ -2640,7 +2640,9 @@ policy remains independent and continues to refuse every link.
 
 `files.publish` invokes this running client's `priv/install.sh`, never an
 installer from the incoming archive. The publisher copies fresh immutable
-trees and switches links; old trees survive success and failure. Updates to
+trees and switches links, then prunes superseded trees that no link selects,
+that are not the repointed links' previous trees, and that no live process
+uses (docs/updating.md). A failed install prunes nothing. Updates to
 one prefix serialize on `lib/loom/update.lock`. Installed wrappers carry their
 prefix and selected client shape for subsequent updates.
 

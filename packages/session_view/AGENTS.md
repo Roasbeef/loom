@@ -320,7 +320,9 @@ for a host with no surfaces.
   sentence; `without_idle_advisor` is the page's filter.
 - `decisions` (`from_ledger`, `strands`, `words`): the approval decisions the
   approval ledger holds, with the author, the verdict and the strand the
-  request was raised on (from the pending cell the capture held). `turns.with_decisions` places each as a
+  request was raised on (from the pending cell the capture held, or the
+  record's own scope when the page read `escalations_decided`, whose answer
+  arrives as `LookedUp(records, [])`). `turns.with_decisions` places each as a
   `turns.Decided` piece by the register sequence that committed it, which
   storage numbers from the same counter as transcript entries.
 - `approval.wants(tool)`: the fixed words for what a request asks to do
@@ -577,7 +579,8 @@ attribution lead and fence `client/memory` builds its text from), `context_view`
 None of its own. The package defines no actor, message or register. It
 decodes the ClientGateway protocol (spec Part 1.6, `docs/client-protocol.md`)
 frames a host hands it, and the frames it asks the host to write are
-`subscribe`, `snapshot_next`, `catch_up`, `history`, `escalations_get` and,
+`subscribe`, `snapshot_next`, `catch_up`, `history`, `escalations_get`,
+`escalations_decided` (`session_channel.decided`, sent only to an idle lane) and,
 through `submit`, the session's mutations. A read-only host never calls
 `submit`; the web view's operator page reaches it through `commands.act`,
 with any session command a draft names except adding a directory, and its

@@ -494,7 +494,7 @@ and a `▸` row naming the program's line count and the sandbox's enforcement
 summary, which `Ctrl+g` expands to the program and the full result. A running
 program's box shows the first lines of the source with token styling, as the
 compact row does today (`code_mode_program`,
-`session_view/transcript_lines.gleam:2371`, six lines), then `▸ 15 more lines
+`session_view/transcript_lines.gleam:2397`, six lines), then `▸ 15 more lines
 · budget 12k of 40k · Ctrl+g`. A completed program is one row with its value
 in a few words (`completed · 1.1s · value: 41 exports`). The Trace tab
 (section 7) draws the latest program the same way.
@@ -506,7 +506,7 @@ error on a `└` line, and the row reads `7 calls · 1 failed`. That frame is
 labelled as needing the change, in the frame itself and in its name.
 
 **Data.** The program source and its name come from the invocation's
-arguments (`code_mode_program`, `session_view/transcript_lines.gleam:3493`).
+arguments (`code_mode_program`, `session_view/transcript_lines.gleam:3519`).
 The state and the result come from the result's `status`, `value`, `message`,
 `failure` and `rejections` fields (`execution_value`,
 `tools/codemode.gleam:1336`), and the sandbox's enforcement report
@@ -583,7 +583,7 @@ hue, with the body under it, and a `●` in the gutter. A reply is `→ main →
 peer lnd-review / main · peer_send · admitted · 50s ago`. The rule the design
 makes visible: the `◇ peer` heading, the hue and the word `authenticated` are
 drawn only from an entry whose `Origin` is a `PeerOrigin`
-(`peer_message_lines`, `session_view/transcript_lines.gleam:2607`). Text that
+(`peer_message_lines`, `session_view/transcript_lines.gleam:2633`). Text that
 merely says "peer · lnd-review / main · authenticated" is session text and is
 drawn where it came from: in the frame, a tool result quotes exactly that line
 and it appears as the tool's output in the quiet colour with a `└`, with no
@@ -618,8 +618,8 @@ preview`, where `o` hands the bytes to the platform opener the `loom ui
 --open` path already has, and `v` draws a braille preview through
 `etui/braille` in the same box. The placeholder is the row every host draws
 today (`[image image/png]`, `UserImage` at
-`session_view/transcript_lines.gleam:2274` and `ToolResultImage` at
-`session_view/transcript_lines.gleam:2932`); the concept gives it the
+`session_view/transcript_lines.gleam:2300` and `ToolResultImage` at
+`session_view/transcript_lines.gleam:2958`); the concept gives it the
 figures and the keys.
 
 **Detection without guessing.** The terminal is asked, not inferred from
@@ -730,7 +730,7 @@ No single key sends a decision.
 | Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:520` |
 | Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:298`), `hue` (`session_view/turns.gleam:248`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
-| Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2602`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
+| Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2628`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
 | Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1369`) |
 | Strand detail | task, now, update, pending, recent, approvals | yes | `Row` (`session_view/agent_view.gleam:79`) |
 | Strand detail: messages out | sends with state | yes | `Item` (`session_view/agent_messages.gleam:52`) |
@@ -738,13 +738,13 @@ No single key sends a decision.
 | Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:472`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:224`) |
 | Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
-| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3493`), `execution_value` (`tools/codemode.gleam:1498`) |
+| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3519`), `execution_value` (`tools/codemode.gleam:1498`) |
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
 | Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:236`) |
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |
 | Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:596`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:83`) is a `session_view` change, no wire change |
 | Session tab: viewers | the presence roster | yes | `viewers` (`session_view/session_summary.gleam:122`) |
-| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:4358`), `footer` (`session_view/context_view.gleam:358`) |
+| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:4384`), `footer` (`session_view/context_view.gleam:358`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:514`) |
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
 | Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:342`), `render` (`tui/approval_panel.gleam:286`) |

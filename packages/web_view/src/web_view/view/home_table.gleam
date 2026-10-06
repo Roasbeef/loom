@@ -66,6 +66,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre/attribute.{type Attribute}
 import lustre/element.{type Element}
@@ -229,6 +230,7 @@ pub fn view(
       [_, ..] ->
         list.map(groups, group(
           _,
+          sessions.titles(groups),
           activity,
           now,
           open,
@@ -243,9 +245,12 @@ pub fn view(
   ])
 }
 
-// One workspace: its heading and the list of its sessions.
+// One project: its heading and the list of its sessions. The heading is the
+// project's directory name, qualified when two projects share one
+// (`sessions.titles`), and the project's whole path is its `title`.
 fn group(
   group: Group,
+  titles: Dict(String, String),
   activity: Dict(String, Activity),
   now: Int,
   open: fn(String) -> message,
@@ -259,9 +264,12 @@ fn group(
   html.section([attribute.class("home-group")], [
     html.div([attribute.class("home-group-head")], [
       html.h3(
-        [attribute.class("home-workspace"), attribute.title(group.workspace)],
+        [attribute.class("home-workspace"), attribute.title(group.project)],
         [
-          html.text(heading.shorten_path(group.workspace)),
+          html.text(result.unwrap(
+            dict.get(titles, group.project),
+            heading.shorten_path(group.project),
+          )),
           html.span([attribute.class("home-count")], [
             html.text(int.to_string(list.length(group.entries))),
           ]),
@@ -312,13 +320,20 @@ type Standing {
 // A running session says what it is doing once the daemon has said, and
 // "running" until then. The activity word stands in for "running" and does not
 // follow it, since a session that is working is running. A session on disk is
-// "saved", and one whose open the daemon has not answered says "Opening…" and
-// nothing else.
+// "saved", one whose open the daemon has not answered says "Opening…" and
+// nothing else, and one the daemon will not open from a page (`Blocked`) says
+// "needs attention" and carries a title that says why.
 type State {
   Running(activity: Option(String))
   Stored
+  Attention
   Waking
 }
+
+// The title of a blocked row's words. It is a fixed sentence for the closed
+// `Blocked` reason and never the daemon's text (protocol-change/051).
+const attention_title =
+  "This session was never finished, or its recovery stopped. Nothing is running it and a page cannot open it. You can archive or delete it."
 
 fn standing(
   entry: Entry,
@@ -340,7 +355,8 @@ fn standing(
         Error(Nil) -> Standing("live", "●", Running(None))
       }
     Saved, resume.Opening, _ -> Standing("opening", "…", Waking)
-    Saved, _, _ | Blocked, _, _ -> Standing("saved", "○", Stored)
+    Saved, _, _ -> Standing("saved", "○", Stored)
+    Blocked, _, _ -> Standing("saved", "○", Attention)
   }
 }
 
@@ -484,7 +500,7 @@ fn offered(
 ) -> List(Element(message)) {
   case standing.state {
     Waking -> []
-    Running(_) | Stored -> acts(entry, rename, manage)
+    Running(_) | Stored | Attention -> acts(entry, rename, manage)
   }
 }
 
@@ -518,13 +534,15 @@ fn acts(
       act("home-act", "Stop this session", "Stop", stop(entry.id), working),
     ]
 
-    // A blocked row gets no action. The registry still holds a slot for it
-    // (an unreconciled creation or a recovery that stopped), so an archive or a
-    // delete is refused as busy, a stop has nothing to end, and the page would
-    // say "still running" for a session that is not. It needs the owner at a
-    // terminal (`sessions.Blocked`).
-    Managed(..), Blocked -> []
-    Managed(archive:, delete:, ..), Saved -> [
+    // A blocked row is on disk and nothing runs it, so it can be archived or
+    // deleted like a saved one, and a stop has nothing to end. An unreconciled
+    // creation holds no registry slot, so the registry takes both. A session
+    // whose recovery stopped does hold one: the registry refuses it as busy
+    // and the row says so, because releasing a slot whose holder is still
+    // alive could let a second writer open the same database.
+    Managed(archive:, delete:, ..), Saved
+    | Managed(archive:, delete:, ..), Blocked
+    -> [
       act(
         "home-act",
         "Archive this session: hide it and keep its history",
@@ -720,7 +738,7 @@ fn quiet_line(
 ) -> List(Element(message)) {
   let line = case standing.state {
     Waking -> [html.text("Opening…")]
-    Running(_) | Stored -> described(standing, entry, now)
+    Running(_) | Stored | Attention -> described(standing, entry, now)
   }
   case note {
     Some(notice) -> list.append(line, [inline(notice)])
@@ -740,6 +758,11 @@ fn described(
     ]
     Running(None) -> [html.text("running")]
     Stored | Waking -> [html.text("saved")]
+    Attention -> [
+      html.span([attribute.title(attention_title)], [
+        html.text("needs attention"),
+      ]),
+    ]
   }
 
   // The person's role in this session ends the standing's words, after the
@@ -750,7 +773,7 @@ fn described(
       list.append(lead, [html.text(" · " <> sessions.role_words(role))])
     None -> lead
   }
-  case entry.subtitle {
+  let words = case entry.subtitle {
     Some(subtitle) -> [
       html.span([attribute.class("home-subtitle")], [html.text(subtitle)]),
       html.text(" · "),
@@ -763,6 +786,21 @@ fn described(
         Saved | Blocked -> list.append(lead, [html.text(" · "), age])
       }
     }
+  }
+
+  // A session in a git worktree leads its quiet line with the worktree's
+  // directory name, and the whole path is that word's title. The path is the
+  // host's own, never a session's.
+  case sessions.worktree(entry) {
+    Some(tree) -> [
+      html.span(
+        [attribute.class("home-tree"), attribute.title(entry.workspace)],
+        [html.text(tree)],
+      ),
+      html.text(" · "),
+      ..words
+    ]
+    None -> words
   }
 }
 

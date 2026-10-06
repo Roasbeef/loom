@@ -26,7 +26,7 @@
 
 import gleam/int
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import lustre/attribute
@@ -100,24 +100,96 @@ pub fn memory(words: Words, body: List(Element(message))) -> Element(message) {
   )
 }
 
-/// A reasoning block as a row: `Reasoning · 4s`, with the reasoning behind
-/// it. The time is the response's, from the records, and is left out when
-/// they give none.
+/// Whether a settled reasoning row may take the open state of a live row
+/// that has just settled into it. The server marks the newest settled
+/// reasoning row of the lane `Takes` and every other `Declines`.
+pub type Handoff {
+  /// The newest settled reasoning row of the lane.
+  Takes
+
+  /// Any other settled reasoning row.
+  Declines
+}
+
+/// A reasoning block as a row: its words (`Reasoning · 162 lines · 4s`), then
+/// a one-line preview of what the model wrote, with the whole reasoning behind
+/// them. The preview is Markdown cut to one line (`markdown_view.line`), so a
+/// glance says what the model was thinking, and it ends in an ellipsis when
+/// it is cut. A block with nothing more than the preview to say passes no
+/// body and is drawn as a line with no chevron.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // fold_row.reasoning(Some(4000), [thought_rows])
+/// // fold_row.reasoning(words, [fold_row.preview_span([html.text("Check 7")])], [thought_rows], fold_row.Takes)
 /// ```
 pub fn reasoning(
-  took_ms: Option(Int),
+  words: Words,
+  preview: List(Element(message)),
+  body: List(Element(message)),
+  heir: Handoff,
+) -> Element(message) {
+  openable(
+    [
+      attribute.class("step"),
+      attribute.class("thought"),
+      attribute.attribute("kind", "settled"),
+      attribute.attribute("handoff", case heir {
+        Takes -> "yes"
+        Declines -> "no"
+      }),
+    ],
+    list.append(spoken(words), preview),
+    body,
+  )
+}
+
+/// A reasoning block still streaming as a row of the same shape: `head` is
+/// the row's own words (the verb and a clock the browser counts), then the
+/// one-line preview of the latest line, with the reasoning so far behind the
+/// chevron. The row is marked `kind="live"`, so `<loom-expand>` keeps its
+/// open state for the settled row that replaces it (`kind="settled"`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.live_reasoning([verb, clock], [html.text("Checking 7")], [so_far])
+/// ```
+pub fn live_reasoning(
+  head: List(Element(message)),
+  preview: List(Element(message)),
   body: List(Element(message)),
 ) -> Element(message) {
   openable(
-    [attribute.class("step"), attribute.class("thought")],
-    spoken(step_words.reasoning(took_ms)),
+    [
+      attribute.class("step"),
+      attribute.class("thought"),
+      attribute.attribute("kind", "live"),
+    ],
+    list.append(head, previewed(preview)),
     body,
   )
+}
+
+// The one-line preview after a row's words, or nothing when there is none.
+fn previewed(preview: List(Element(message))) -> List(Element(message)) {
+  case preview {
+    [] -> []
+    [_, ..] -> [preview_span(preview)]
+  }
+}
+
+/// The span a reasoning row's one-line preview is drawn in. `reasoning` takes
+/// its preview already drawn, as a list holding this span or nothing, so the
+/// caller can memoize it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.preview_span([html.text("Check 7")])
+/// ```
+pub fn preview_span(children: List(Element(message))) -> Element(message) {
+  html.span([attribute.class("subject"), attribute.class("preview")], children)
 }
 
 /// A row whose line is the report's first line and whose body is the rest, for

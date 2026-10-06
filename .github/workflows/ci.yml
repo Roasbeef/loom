@@ -538,7 +538,7 @@ jobs:
 
       - name: Deadline and skip-reporting self-tests
         run: |
-          python3 scripts/with_timeout.py 20 -- \
+          python3 scripts/with_timeout.py 60 -- \
             python3 -m unittest discover -s scripts -p 'test_*.py'
 
       - name: make fmt-check

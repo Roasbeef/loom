@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:338`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:344`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3678`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3929`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -261,8 +261,11 @@ sequenceDiagram
 The page's role is the smallest of three things: the principal's
 membership role, the ceiling the link was minted with, and Operator
 (`ui_relay.capped`). A page never carries `Owner`: the one power an owner
-has inside a session beyond an operator's is the worktree bytes, and a
-page does not need them. Without `--operate` every page is an observer's,
+has inside a session beyond an operator's is the worktree bytes. The gateway
+still refuses a page that read, but an owner's page and an operator's page
+are handed a daemon-run read of the workspace for the Changes tab, under an
+admission of its own that is checked again at every read (protocol-change/051,
+the addendum of 2026-10-05). Without `--operate` every page is an observer's,
 whatever the person's membership says.
 
 ```mermaid
@@ -432,7 +435,14 @@ operator presses again. On a synchronized lane a read in flight does not
 refuse it, and the lane queues the decision behind the read. The lane
 itself refuses a mutation when the attachment's role is observer
 (`session_channel.can_mutate`), which is a third layer under the
-component's type and the gateway's role check. The step leaves the facts a
+component's type and the gateway's role check. A decision draws a row in
+the transcript ("Owner allowed bash") from the approval ledger. A page
+opened after the decision never saw the request pending, so it sends one
+`escalations_decided` read when its lane first idles after the capture's
+reads (`component.decisions_read`; never queued, so an operator's first
+command is not refused behind it) and the answer joins the ledger as an
+exact lookup does, keyed by escalation id: a decision seen live and read is
+one row. The step leaves the facts a
 command recorded on the record; the component reads `DraftTaken` to know
 the command consumed the composer's draft, then drops them
 (`step.forget_surfaces`).
@@ -485,14 +495,21 @@ draws what the terminal draws for that interval, from the same state: the
 shared record's `streams` for the followed strand
 (`transcript_lines.display_streams`, which also seeds a stream from the
 capture's sampled preview when the page attached mid-answer), the
-summarizer's `summaries` for the request's headline (protocol 050), and the
-generation clock. No read and no socket event is added. `component.live`
+summarizer's `summaries` for the request's headline (protocol 050), the
+generation clock, and the inputs the daemon holds for the strand (the
+capture's `pending_inputs`, filtered by `transcript_lines.held_inputs` and
+worded by `held_words`, the terminal's own rule), so a steer or a queued
+prompt the daemon took is on the page until the capture that no longer lists
+it. No read and no socket event is added. `component.live`
 turns them into `live.Row`s and `view/live` draws them as the last entry of
 the lane's keyed list, keyed `live`:
 
-- a reasoning row, `12 lines · <loom-elapsed> so far`, or with a headline
-  the same count and clock and the headline as text beneath. The thinking
-  itself is never drawn. The time is a `<loom-elapsed offset>` in
+- a reasoning row, `Reasoning · <loom-elapsed>` and a one-line preview of the
+  latest line, a `<loom-expand kind="live">` that opens to the reasoning so far
+  as Markdown (cut at the last blank line so only the paragraph being written
+  is parsed again), with the headline as text beneath when there is one. An
+  open live row hands its open state to the settled row that replaces it. The
+  count of lines is the row's title. The time is a `<loom-elapsed offset>` in
   milliseconds since the generation clock started, so the browser counts the
   seconds and the server renders again for a fragment and not to move a
   clock (the chips' mechanism);
@@ -654,12 +671,28 @@ to the strand on screen. The socket admits an observer's click beneath
 **The sidebar.** `ui_socket` gives the component `Transport.sessions`, the
 authorized catalogue read the terminal's session picker uses
 (`manager.authorized_page`) made with the page's credential digest, so a
-member sees only their own sessions and a revoked credential none. The
-component reads it when the page opens and at most every 30 seconds on a
+member sees only their own sessions and a revoked credential none. The read
+runs in a weft task of the daemon's (`ui_socket.listed_task`) and answers
+as the component's `SessionsListed`, so the page's runtime, which once made
+the registry call itself and could wait up to five seconds on a busy
+registry with every click and patch held behind it, never waits for it. The
+component starts it when the page opens and at most every 30 seconds on a
 tick (an observer's page is given an empty list and draws no sidebar, so a
 stolen observer link does not disclose the principal's other sessions),
-groups it by workspace (`web_view/sessions`), and `view/sidebar`
-draws it as the frame's second child (the left column). The row of the session
+groups it by project (`web_view/sessions`), and `view/sidebar`
+draws it as the frame's second child (the left column). A project is the
+repository a session's workspace belongs to: the daemon reads it from the
+filesystem (`client/daemon/ui_project`: a plain checkout is its own project, a
+git worktree's `.git` file is followed to the main repository and accepted only
+when the repository's own backlink names the worktree, anything else has none),
+with no cache, in the same task that reads the catalogue. It reaches the component as the
+entry's `project` field, in process and not on a wire, so it needs no protocol
+addendum. The heading is the project's directory name, qualified by its parent
+directory when two projects share one; a worktree's row leads its quiet line with the
+worktree's name, whose `title` is the whole path. The sidebar lists running sessions
+and keeps the saved ones behind a quiet "N saved" line: they stay in the
+document, so the session switcher still lists them, and `<loom-saved>` shows
+them in place in the browser and remembers the choice in local storage. The row of the session
 on screen also carries one thin bar per live strand in the strand's hue, drawn
 from the strip the page already has and pulsing while the strand works; the
 bars are decoration with no handler and no focus. An empty `nav` child sits
@@ -1420,10 +1453,12 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/strand_detail.gleam` | A strand's own view in the Strands tab, while a strand other than `main` is in focus: the back link (a marker, no handler), the ring, name and status line, the figures a card leaves out (model, context, cache, running) and the tools it ran lately. |
 | `packages/web_view/src/web_view/view/crumb.gleam` | The breadcrumb above the transcript while a strand other than `main` is in focus: the session and strand names and an `All strands` link that is a marker, with no handler, and an `Esc` hint for the shell's key. |
 | `packages/web_view/src/web_view/view/sidebar.gleam` | The session sidebar: the principal's sessions by workspace, memoized, the frame's second child. A row for a running session other than the one on screen is a button that asks to open it. |
-| `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, `grouped`, the ordering (current workspace first, newest first), `label`, and `Answer` and `Reason` with their fixed words, which a switch request and its refusal are made of. |
+| `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry` (with its `project`), `Residency` and `Group`, `grouped` (by project), `titles`, `worktree`, the ordering (current project first, newest first), `label`, and `Answer` and `Reason` with their fixed words, which a switch request and its refusal are made of. |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary; a board with every task closed is not drawn) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/trace.gleam` | The Trace pane: the session's `code_mode` programs (`session_view/trace_view`), the newest with its state, result excerpt and a collapsed budget line, the earlier ones as rows, the panel's fourth pane after Session. It lists programs, the newest with the rows of its call record, and says a program with no record lists none; every string is a text node and it holds no handler. |
-| `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results and `fs_write` calls named (a write is one hunk of added lines, `written · N lines`) and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |
+| `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results and `fs_write` calls named (a write is one hunk of added lines, `written · N lines`) and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It is also the dispatcher: given a board of a Git checkout (`web_view/worktrees.Seen`) it draws `view/worktree`, and otherwise the edit board, with one sentence when the workspace was looked for and not shown. |
+| `packages/web_view/src/web_view/view/worktree.gleam` | The Changes pane drawn from the daemon's bounded observation of the session's workspace: the files that differ from HEAD (status words from a closed set, a `details` each with the shared red and green diff drawer), files left out counted, a cut patch marked, and the commits since the session started as a second section. Paths and diff lines are text nodes. |
+| `packages/web_view/src/web_view/worktrees.gleam` | The page's read of the workspace: `Read` (withheld, unread, the daemon's board, declined, unreadable), `Asking`, `latest_result` (the tool-result sequence that says the tree may have changed), and the two timings (`refresh_ms`, `lost_ms`). The component asks once on open and after a new tool result, at most once in four seconds, through `Transport.worktree`, a capability that is `None` on an observer's page. |
 | `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane, as groups under eyebrow headings (Session, People, Goal, Fork, Jobs, Cost; the stylesheet orders them, the children keep their pinned paths): the workspace, the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
 | `packages/web_view/src/web_view/invites.gleam` | The invitation an owner's page may mint: `Role` (observer or operator, never an owner), `Invitation`, `Reason` with its fixed words, `Answer`, the control's `Share` state and `claim_ttl_ms` (one hour). |
 | `packages/web_view/src/web_view/view/share.gleam` | The invitation control in the Session pane: two buttons, or the invitation with a `<loom-copy>` box for the command and for the token. Drawn on an owner's page only; the messages its buttons send are values handed in. |
