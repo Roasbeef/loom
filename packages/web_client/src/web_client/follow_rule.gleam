@@ -256,6 +256,25 @@ pub fn keeping(standing: Standing, held: Float) -> Keeping {
   }
 }
 
+/// How far to scroll the transcript to put a pressed divider back where it was
+/// in the viewport, given where its top edge was when it was pressed (`held`)
+/// and where it is now. A divider that has moved by less than a pixel is where
+/// it was, so the transcript is left alone; an opened fold grows the lane below
+/// the divider, and a layout that moves the divider with it is undone here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert follow_rule.holding(592.0, 331.0) == -261.0
+/// assert follow_rule.holding(592.0, 592.4) == 0.0
+/// ```
+pub fn holding(held: Float, now: Float) -> Float {
+  case float.absolute_value(now -. held) <. 1.0 {
+    True -> 0.0
+    False -> now -. held
+  }
+}
+
 /// The size of the transcript at a moment: the height of everything in it
 /// and the height of the box that shows it, in pixels. Either changing is the
 /// layout moving, which is not the reader.

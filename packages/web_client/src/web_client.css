@@ -449,6 +449,11 @@
      it is always drawn. Its question replaces the row, on a tinted background with a tinted
      hairline, and neither draws a shadow or an edge bar. */
   li.session{position:relative;padding-right:30px;}
+  /* A row that is not a button (the page's own, a saved row while another
+     resume is out) has no 7px of the button's padding, so its activity word
+     would end 7px to the right of the words in the rows that are buttons.
+     It reserves them, and one column holds every row's word and dot. */
+  li.session:not(:has(>.session-open)){padding-right:37px;}
   .session-archive{position:absolute;top:50%;right:4px;transform:translateY(-50%);box-sizing:border-box;width:24px;height:24px;margin:0;padding:0;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:14px/1 var(--font-sans);text-align:center;cursor:pointer;opacity:0;pointer-events:none;}
   li.session:hover>.session-archive,li.session:focus-within>.session-archive,.session-archive:focus-visible{opacity:1;pointer-events:auto;}
   .session-archive:hover:not(:disabled){background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));color:var(--color-fg);}
@@ -800,8 +805,11 @@
      squeezing rows. The scroller fills the centre, so its scrollbar is at
      the column's edge, and its children are the transcript's 780px column,
      centred. */
-  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;padding-bottom:16px;}
+  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;padding-bottom:56px;}
   loom-follow.follow > *{flex-shrink:0;width:100%;max-width:780px;align-self:center;box-sizing:border-box;}
+  /* The scroller ends in room for the "Jump to latest" button below (56px: its
+     12px off the bottom edge, its height and a gap), so the last row of the
+     transcript is never under it when the reader has scrolled to the end. */
   /* The "Jump to latest" button, drawn inside the client component while
      the reader is away from the bottom. Its wrapper has no height and
      sticks to the bottom edge of the scroller, so the button floats over
