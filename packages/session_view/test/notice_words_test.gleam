@@ -54,3 +54,18 @@ pub fn no_notice_is_a_wire_name_test() {
     })
   })
 }
+
+pub fn a_steer_the_daemon_holds_is_worded_as_one_test() {
+  assert notice_words.outcome("steer", "queued") == "Steering · runs next"
+}
+
+// The page draws a held input in the lane, so the footer words that only say
+// the daemon holds it are the ones it leaves out.
+pub fn only_the_holding_words_are_held_test() {
+  assert notice_words.holds(notice_words.outcome("prompt", "queued"))
+  assert notice_words.holds(notice_words.outcome("steer", "queued"))
+  assert notice_words.holds(notice_words.outcome("follow_up", "queued"))
+  assert !notice_words.holds(notice_words.outcome("deny", "committed"))
+  assert !notice_words.holds(notice_words.outcome("steer", "admitted"))
+  assert !notice_words.holds("")
+}
