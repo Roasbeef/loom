@@ -182,6 +182,7 @@ fn observe_execution(id: ExecIdentity) -> List(#(OpId, String)) {
         clock: clock.fixed(at: t),
         write_token_file: satellite.private_token_writer(dir),
         unlink_token_file: satellite.unlink_token_file,
+        precheck: satellite.no_precheck,
         router: recording_router(seen),
         ceilings: [],
         call_timeout_ms: 3000,

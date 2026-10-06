@@ -368,7 +368,7 @@ The survey of mailbox reads, at the commit this slice started from:
   which read through `connection.receive`, and the four places that call it:
   the wheel and drag arms of `apply_input`
   (`packages/tui/src/tui.gleam:1500`, `packages/tui/src/tui.gleam:1520`), the
-  key drain (`tui/interaction.gleam:1750` (`drain_connection`)) and the tick
+  key drain (`tui/interaction.gleam:1725` (`drain_connection`)) and the tick
   (`tui/tick.gleam:146` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:492` (`prepare`),
   `tui/attachment.gleam:537` (`drain`) and
@@ -377,7 +377,7 @@ The survey of mailbox reads, at the commit this slice started from:
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:143` (`drain_reconnect`)), the control reply
   (`tui/tick.gleam:142` (`drain_control`)), the picker's activity reply
-  (`tui/session_control.gleam:1351` (`drain_activity`)), and the session
+  (`tui/session_control.gleam:1357` (`drain_activity`)), and the session
   switch, which read through `sessions.receive` and `weft.pull` in
   `tui/sessions`, a module S5 deleted with the unreachable local switch.
   Each answers a job the step started, and they move when job starts
@@ -905,11 +905,11 @@ around it, at the commit this slice started from:
 
 | Read | Site | Where it ran | After S6 |
 |---|---|---|---|
-| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:161` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:207` |
-| a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:541` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
+| a pasted image: `file_info`, a 12-byte prefix, then the body up to 20 MiB | `image_drop.load_paste`, called by the composer's paste handler, `paste_unlocked` at `tui/interaction.gleam:167` | in the step | before the step, in `read_paste`, which phase 3 folded into `message` at `tui/runtime.gleam:207` |
+| a new session's configuration: `HOME`, the canonical state root, the kind and canonical path of `--config`, or whether `<state-root>/loom.toml` exists | `bootstrap.session_configuration`, called by `create_session` at `tui/session_control.gleam:547` | in the step | a job, `Configure` at `tui/job_runner.gleam:302` |
 | the workspace of an opened or created session: the `.git` marker and `HEAD` | `daemon_selection.target`, which calls `discover_from` at `tui/daemon/selection.gleam:551` | the attachment worker, since S5 | unchanged |
 | the owner token after a daemon death | `daemon_selection.relaunch`, which calls `read_private_bounded` at `tui/daemon/selection.gleam:136` | the relaunch worker, since S4 | unchanged |
-| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:756`, `discover_from` at `tui.gleam:794`, `read` at `tui.gleam:1436`, `read_private_bounded` at `tui.gleam:2096`, `start` at `tui.gleam:955`, `decode_file` at `tui.gleam:1901`, `configure` at `tui/tick.gleam:55` | before the loop | unchanged |
+| the working directory's workspace, `--workspace`, `--token-file`, the owner token, daemon resolution, the recording header, a replayed recording, and the Herdr and palette environment | `discover` at `tui.gleam:756`, `discover_from` at `tui.gleam:794`, `read` at `tui.gleam:1436`, `read_private_bounded` at `tui.gleam:2096`, `start` at `tui.gleam:955`, `decode_file` at `tui.gleam:1901`, `configure` at `tui/tick.gleam:61` | before the loop | unchanged |
 | the record-based session discovery that fed the local switch | `tui/sessions` and `tui/bootstrap` | deleted in S5 | gone; no definition or caller remains |
 
 Recording appends are writes, and have been effects since S3. Two reads in

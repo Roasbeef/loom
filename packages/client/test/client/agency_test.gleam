@@ -107,7 +107,10 @@ fn counting_clock(from: Int, by: Int) -> Clock {
 }
 
 fn tools_of_main() -> List(String) {
-  ["agent_note", "agent_send", "agent_spawn", "agent_wait", "bash", "fs_read"]
+  [
+    "agent_note", "agent_send", "agent_spawn", "agent_wait", "bash", "fs_read",
+    "peer_send",
+  ]
 }
 
 fn configuration() -> machine_strand.StrandConfiguration {
@@ -785,7 +788,14 @@ pub fn a_default_spawn_set_is_unchanged_by_the_floor_test() {
     harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("plain"))
     as "a default spawn must be accepted"
   assert spawned.tools
-    == ["agent_note", "agent_send", "agent_wait", "bash", "fs_read"]
+    == [
+      "agent_note",
+      "agent_send",
+      "agent_wait",
+      "bash",
+      "fs_read",
+      "peer_send",
+    ]
   close(harness)
 }
 
@@ -840,6 +850,33 @@ pub fn a_notice_names_the_caller_as_parent_test() {
       None,
     )
   assert string.contains(notice, "a subagent of `sub:main/a-0123456789abcdef`.")
+}
+
+pub fn the_agency_reports_which_tools_a_strand_holds_test() {
+  // The answer comes from the strand's own durable configuration: the
+  // parent holds what it was seeded with, a narrowed child holds only what
+  // it was narrowed to, and a strand with no configuration holds nothing.
+  let harness = start_harness(Settles("done"))
+  let caller = caller_on("main", "turn-1:holds", 0)
+  let assert Ok(spawned) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(..a_spawn("narrow"), tools: Some(["fs_read"])),
+    )
+    as "narrowing must be accepted"
+  assert harness.seam.holds(caller, "agent_spawn") == Ok(Nil)
+  assert harness.seam.holds(caller, "job_kill")
+    == Error(agent.ToolNotHeld(tool: "job_kill"))
+    as "a tool the parent was never given is not held"
+  let child = caller_on(spawned.strand, "turn-1:holds", 1)
+  assert harness.seam.holds(child, "fs_read") == Ok(Nil)
+  assert harness.seam.holds(child, "agent_spawn")
+    == Error(agent.ToolNotHeld(tool: "agent_spawn"))
+    as "narrowing the child withdraws the tool from it"
+  assert harness.seam.holds(caller_on("ghost", "turn-1:holds", 2), "fs_read")
+    == Error(agent.NotAddressable(strand: "ghost"))
+    as "a strand with no configuration is not addressable, and proceeds nowhere"
+  close(harness)
 }
 
 pub fn a_spawn_with_an_unusable_purpose_is_refused_test() {

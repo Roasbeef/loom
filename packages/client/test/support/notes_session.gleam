@@ -48,7 +48,15 @@ pub fn open(path: String, time: Clock) -> Session {
     machine_strand.StrandConfiguration(
       model: machine_strand.ModelIdentity(provider: "acme", model_id: "loom-1"),
       thinking_level: machine_strand.ThinkingOff,
-      active_tool_names: ["agent_spawn", "code_mode"],
+      // The root strand holds every tool a program's capabilities are
+      // gated on, as the shipped main does: `agent_*`, `bash`, `fs_write`,
+      // `fs_edit`, `job_*` and `schedule_*` (`codemode/tool_gate`).
+      active_tool_names: [
+        "agent_note", "agent_notes", "agent_roster", "agent_send", "agent_spawn",
+        "agent_wait", "bash", "code_mode", "fs_edit", "fs_write", "job_kill",
+        "job_poll", "job_send", "schedule_cancel", "schedule_create",
+        "schedule_list",
+      ],
     )
   let base = api.default_options(configuration)
   let assert Ok(runtime) =

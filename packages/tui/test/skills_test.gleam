@@ -7,6 +7,7 @@ import gleam/list
 import gleam/option.{None}
 import session_view/command
 import session_view/model as session_model
+import session_view/shared_set
 import session_view/skills
 import tui
 import tui/connection
@@ -36,13 +37,11 @@ pub fn disconnected_skill_submission_retains_its_draft_test() {
   let model =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Disconnected,
-        skills: [
+      shared: base.shared
+        |> shared_set.peer(session_model.Disconnected)
+        |> shared_set.skills([
           command.Suggestion("/review-code", "Inspect code", True),
-        ],
-      ),
+        ]),
     )
   let updated =
     model

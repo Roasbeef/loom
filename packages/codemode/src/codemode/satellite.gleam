@@ -524,6 +524,14 @@ pub type SatelliteConfig {
     unlink_token_file: fn(String) -> Nil,
     /// Maps capability calls to clearances.
     router: CapRouter,
+    /// A check run in the call's own worker, after admission and before
+    /// anything is served or cleared. An `Error` settles the call with that
+    /// refusal and nothing else happens. It runs in the worker and not in
+    /// the router because the router runs in this host's actor, which must
+    /// only do cheap work: a check that reads durable state belongs on the
+    /// process that is allowed to wait. `no_precheck` for a host with
+    /// nothing to ask.
+    precheck: Precheck,
     /// Lifetime admission ceilings, by capability. Empty for a seam that
     /// needs none; see `CapCeiling` for why the orchestration seam does.
     ceilings: List(CapCeiling),
@@ -531,6 +539,11 @@ pub type SatelliteConfig {
     call_timeout_ms: Int,
   )
 }
+
+/// The question a worker asks before it serves one call: may this call
+/// proceed at all? See `SatelliteConfig.precheck`.
+pub type Precheck =
+  fn(CapRequest) -> Result(Nil, CapDenial)
 
 // --- the host actor -------------------------------------------------------
 
@@ -582,6 +595,7 @@ type State {
     env: List(#(String, String)),
     cwd: String,
     router: CapRouter,
+    precheck: Precheck,
     // The lifetime admission ceilings this execution runs under, and the
     // tally they are checked against. Both live here rather than in the
     // router because the host is the one thing there is exactly one of
@@ -615,6 +629,18 @@ type State {
 }
 
 // --- run ------------------------------------------------------------------
+
+/// The precheck that admits every call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // satellite.no_precheck(request) == Ok(Nil)
+/// ```
+///
+pub fn no_precheck(_request: CapRequest) -> Result(Nil, CapDenial) {
+  Ok(Nil)
+}
 
 /// Runs a compiled artifact in a jailed satellite, servicing its
 /// capability calls through `broker` under the run phase's identity, and
@@ -857,6 +883,7 @@ fn start_host(
         env: config.env,
         cwd: config.cwd,
         router: config.router,
+        precheck: config.precheck,
         ceilings: config.ceilings,
         admitted: dict.new(),
         clock:,
@@ -1134,7 +1161,13 @@ fn route_cap_call(
         denial.code,
         framing.CapErr(code: denial.code, message: denial.message),
       )
-    Ok(plan) -> admit_cap_call(state, now, id, cap, args, plan)
+    Ok(plan) ->
+      admit_cap_call(state, now, id, cap, args, plan, fn() {
+        state.precheck(request)
+        |> result.map_error(fn(denial) {
+          framing.CapErr(code: denial.code, message: denial.message)
+        })
+      })
   }
 }
 
@@ -1159,6 +1192,7 @@ fn admit_cap_call(
   cap: String,
   args: MsgPackValue,
   plan: CapPlan,
+  check: fn() -> Result(Nil, CapOutcome),
 ) -> State {
   let already = admitted_count(state, cap)
   case ceiling_reached(state, cap, already) {
@@ -1185,7 +1219,8 @@ fn admit_cap_call(
             "budget",
             budget_denial(outstanding),
           )
-        False -> dispatch_cap_call(state, now, id, cap, args, already, plan)
+        False ->
+          dispatch_cap_call(state, now, id, cap, args, already, plan, check)
       }
     }
   }
@@ -1201,6 +1236,7 @@ fn dispatch_cap_call(
   args: MsgPackValue,
   already: Int,
   plan: CapPlan,
+  check: fn() -> Result(Nil, CapOutcome),
 ) -> State {
   let #(ledger, seq) = call_record.admit(state.ledger, cap, args, now)
   let admitted = dict.insert(state.admitted, cap, already + 1)
@@ -1216,6 +1252,7 @@ fn dispatch_cap_call(
       ),
       state.broker,
       plan,
+      check,
       state.call_timeout_ms,
     )
   let inflight =
@@ -1344,6 +1381,7 @@ fn spawn_worker(
   settling: Settling,
   broker: Broker,
   plan: CapPlan,
+  check: fn() -> Result(Nil, CapOutcome),
   call_timeout_ms: Int,
 ) -> Option(weft.Cancel) {
   let owner = process.self()
@@ -1355,17 +1393,25 @@ fn spawn_worker(
     ClearedCall(..) | ServedHere(_) -> None
   }
   process.spawn_unlinked(fn() {
-    case plan {
-      ClearedCall(spec:, render:) ->
-        run_collector(settling, broker, spec, render, call_timeout_ms)
-      ServedHere(serve:) -> run_service(settling, serve, call_timeout_ms, None)
-      ScopedService(serve:) ->
-        run_service(
-          settling,
-          serve,
-          call_timeout_ms,
-          option.map(service, fn(signal) { #(signal, owner) }),
-        )
+    // The precheck runs here, on the worker, so a slow answer delays this
+    // one call and never the host actor. A refusal settles the call before
+    // the plan is touched: nothing is served and nothing is cleared.
+    case check() {
+      Error(outcome) -> settling.done(outcome)
+      Ok(Nil) ->
+        case plan {
+          ClearedCall(spec:, render:) ->
+            run_collector(settling, broker, spec, render, call_timeout_ms)
+          ServedHere(serve:) ->
+            run_service(settling, serve, call_timeout_ms, None)
+          ScopedService(serve:) ->
+            run_service(
+              settling,
+              serve,
+              call_timeout_ms,
+              option.map(service, fn(signal) { #(signal, owner) }),
+            )
+        }
     }
   })
   service
@@ -3054,11 +3100,14 @@ fn dispatch_invocation_call(
   already: Int,
   plan: CapPlan,
 ) -> Hosting {
+  // The long-lived host serves no strand and asks no tool question:
+  // `HostConfig` has no precheck, so this admits every call.
   let service =
     spawn_worker(
       host_settling(hosting, id),
       hosting.config.broker,
       plan,
+      fn() { Ok(Nil) },
       hosting.config.call_timeout_ms,
     )
   Hosting(

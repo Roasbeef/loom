@@ -20,6 +20,7 @@ import gleam/result
 import gleam/string
 import session_view/connection_event
 import session_view/model as session_model
+import session_view/shared_set
 import session_view/transcript_line
 import session_view/transcript_lines
 import tui/inbound
@@ -31,7 +32,7 @@ import tui_test/pushed
 fn expanded(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: session_model.Shared(..model.shared, details_expanded: True),
+    shared: shared_set.details_expanded(model.shared, True),
   )
 }
 

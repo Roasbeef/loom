@@ -33,6 +33,7 @@ import tui/bootstrap
 import tui/effect
 import tui/layout_memory.{type Layout, Layout, Target}
 import tui/model.{type Model, Model, View} as tui_model
+import tui/view_set
 
 /// Reads the layout memory under the state root and applies this
 /// workspace's layout to the model.
@@ -77,8 +78,10 @@ pub fn apply(model: Model, target: layout_memory.Target) -> Model {
   Model(
     ..model,
     view: View(
-      ..model.view,
-      rail: target.saved.rail,
+      ..{
+        model.view
+        |> view_set.rail(target.saved.rail)
+      },
       rail_tab: target.saved.tab,
       layout_target: Some(target),
     ),

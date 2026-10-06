@@ -125,6 +125,14 @@ pub fn abort(broker: broker.Broker) -> fn(ids.OpId, String) -> Nil {
   fn(operation, step) { broker.abort_step(broker, operation, step) }
 }
 
+/// The capabilities the input router adds: the running execution's own
+/// mailbox and progress channel to the run that owns it. Published so a
+/// test can check that `codemode/tool_gate` has decided what each needs.
+pub const serviced_caps = [
+  "execution.receive", "execution.ready", "execution.receive_enveloped",
+  "execution.progress", "execution.delivery",
+]
+
 fn input_router(
   service: address.Address(async_runs.Message),
   strand: String,

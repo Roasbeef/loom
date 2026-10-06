@@ -19,6 +19,10 @@ import tools/agent
 import tools/blob
 import tools/codemode
 
+/// The one capability this router adds, published so a test can check that
+/// `codemode/tool_gate` has decided what it needs.
+pub const serviced_caps = ["workflow.step"]
+
 /// Wraps only the background orchestration router with durable child steps.
 ///
 /// ## Examples

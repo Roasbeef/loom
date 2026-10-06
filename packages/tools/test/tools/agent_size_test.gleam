@@ -55,6 +55,7 @@ fn padded_agency(padding_words: Int) -> agent.Agency {
     },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
 

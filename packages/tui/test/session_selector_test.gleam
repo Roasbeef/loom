@@ -17,6 +17,7 @@ import tui/model as tui_model
 import tui/render
 import tui/session_selector
 import tui/theme
+import tui/view_set
 import tui/workspace
 
 fn sessions() -> List(protocol.Session) {
@@ -193,9 +194,9 @@ pub fn session_selector_arrows_repaint_the_cached_terminal_frame_test() {
   let initial =
     tui_model.Model(
       ..initial,
-      view: tui_model.View(
-        ..initial.view,
-        overlay: tui_model.DaemonSelector(selector(0)),
+      view: view_set.overlay(
+        initial.view,
+        tui_model.DaemonSelector(selector(0)),
       ),
     )
   let initial = tui.update(backend.Resize(96, 24), initial)

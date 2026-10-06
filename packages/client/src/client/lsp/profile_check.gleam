@@ -224,7 +224,7 @@ fn describe_error(error: QueryError) -> String {
     query.NoServer(reason:) -> "no server: " <> reason
     query.Unsupported(server:, request:) ->
       "the " <> server <> " server does not support " <> request
-    query.NotFound(query: _) -> "the symbol was not found"
+    query.NotFound(query: _, searched: _) -> "the symbol was not found"
     query.Ambiguous(candidates:) ->
       "ambiguous between "
       <> set_text(

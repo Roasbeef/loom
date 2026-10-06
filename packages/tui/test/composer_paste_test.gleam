@@ -6,11 +6,12 @@ import etui/widgets/textarea
 import gleam/option.{None}
 import gleam/string
 import session_view/composer
-import session_view/model as session_model
 import session_view/pasted_image
+import session_view/shared_set
 import tui
 import tui/connection
 import tui/model as tui_model
+import tui/view_set
 import tui/workspace
 
 fn model(draft: String) -> tui_model.Model {
@@ -18,11 +19,9 @@ fn model(draft: String) -> tui_model.Model {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    view: tui_model.View(
-      ..base.view,
-      input: textarea.state_from_string(draft),
-      history_draft: draft,
-    ),
+    view: base.view
+      |> view_set.input(textarea.state_from_string(draft))
+      |> view_set.history_draft(draft),
   )
 }
 
@@ -47,7 +46,7 @@ pub fn inline_paste_inserts_without_replacing_a_draft_test() {
   let pasted =
     tui.update(backend.Paste(" middle "), {
       let base = model("")
-      tui_model.Model(..base, view: tui_model.View(..base.view, input: cursor))
+      tui_model.Model(..base, view: view_set.input(base.view, cursor))
     })
   assert textarea.value(pasted.view.input) == "before middle after"
   assert pasted.view.history_draft == "before middle after"
@@ -61,8 +60,8 @@ pub fn multiline_paste_keeps_the_suffix_and_existing_image_attachment_test() {
   let initial = {
     let base = model("")
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, attachments: [image()]),
-      view: tui_model.View(..base.view, input: cursor),
+      shared: shared_set.attachments(base.shared, [image()]),
+      view: view_set.input(base.view, cursor),
     )
   }
   let pasted = tui.update(backend.Paste("middle\n"), initial)
@@ -79,7 +78,7 @@ pub fn compact_paste_keeps_the_draft_and_existing_attachments_test() {
     let base = model("review this")
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, attachments: [image()]),
+      shared: shared_set.attachments(base.shared, [image()]),
     )
   }
   let pasted = tui.update(backend.Paste(source), initial)

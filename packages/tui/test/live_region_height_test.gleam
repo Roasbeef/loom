@@ -31,12 +31,14 @@ import gleam/option.{None}
 import gleam/string
 import session_view/connection_event
 import session_view/model as session_model
+import session_view/shared_set
 import session_view/transcript_line
 import session_view/transcript_lines
 import tui
 import tui/connection
 import tui/inbound
 import tui/model as tui_model
+import tui/view_set
 import tui/workspace
 import tui_test/gateway
 
@@ -54,12 +56,10 @@ fn model() -> tui_model.Model {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    shared: session_model.Shared(
-      ..base.shared,
-      transcript: [],
-      records: [],
-      notice: "fixture",
-    ),
+    shared: base.shared
+      |> shared_set.transcript([])
+      |> shared_set.records([])
+      |> shared_set.notice("fixture"),
   )
 }
 
@@ -83,8 +83,8 @@ fn rows_at(model: tui_model.Model, columns: Int) -> Int {
 
 fn expanded(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
-    shared: session_model.Shared(..model.shared, details_expanded: True),
-    view: tui_model.View(..model.view, rendered_revision: -1),
+    shared: shared_set.details_expanded(model.shared, True),
+    view: view_set.rendered_revision(model.view, -1),
   )
 }
 

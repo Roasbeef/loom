@@ -20,9 +20,9 @@ import machine/codec
 import machine/operation
 import session_view/agent_roster.{Changed, Unchanged}
 import session_view/agent_view
-import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
@@ -37,6 +37,7 @@ import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/render
+import tui/view_set
 import tui/workspace
 
 // --- fixtures --------------------------------------------------------------
@@ -244,13 +245,9 @@ pub fn the_strip_grows_a_row_per_agent_up_to_its_cap_test() {
 pub fn geometry_and_drawn_strip_agree_across_screen_heights_test() {
   let base = model()
   let base =
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(..base.shared, strands: roster()),
-    )
+    tui_model.Model(..base, shared: shared_set.strands(base.shared, roster()))
   list.each([0, 12, 15, 16, 20, 40, 100], fn(height) {
-    let base =
-      tui_model.Model(..base, view: tui_model.View(..base.view, height:))
+    let base = tui_model.Model(..base, view: view_set.height(base.view, height))
     assert layout.strip_height(base)
       == agent_strip.height(layout.strip_lines(base), height)
   })
@@ -501,10 +498,7 @@ pub fn the_strip_draws_one_row_per_live_agent_under_the_footer_test() {
   let text =
     {
       let base = model()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, strands: roster()),
-      )
+      tui_model.Model(..base, shared: shared_set.strands(base.shared, roster()))
     }
     |> painted(120, 30)
   let lines = string.split(text, "\n")
@@ -519,10 +513,7 @@ pub fn a_short_terminal_keeps_its_rows_for_the_conversation_test() {
   let text =
     {
       let base = model()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, strands: roster()),
-      )
+      tui_model.Model(..base, shared: shared_set.strands(base.shared, roster()))
     }
     |> painted(120, 15)
   assert !string.contains(text, "audit-panics ")
@@ -533,10 +524,10 @@ pub fn down_enters_the_strip_and_enter_opens_the_agent_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: session_model.Shared(..base.shared, strands: roster()),
-        view: tui_model.View(
-          ..base.view,
-          input: textarea.state_from_string("main draft"),
+        shared: shared_set.strands(base.shared, roster()),
+        view: view_set.input(
+          base.view,
+          textarea.state_from_string("main draft"),
         ),
       )
     }
@@ -570,10 +561,7 @@ pub fn typing_while_browsing_returns_the_key_to_the_composer_test() {
   let browsing =
     {
       let base = model()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, strands: roster()),
-      )
+      tui_model.Model(..base, shared: shared_set.strands(base.shared, roster()))
     }
     |> sized(120, 30)
     |> press("down")
@@ -587,10 +575,7 @@ pub fn escape_and_up_from_the_top_hand_the_keyboard_back_test() {
   let browsing =
     {
       let base = model()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, strands: roster()),
-      )
+      tui_model.Model(..base, shared: shared_set.strands(base.shared, roster()))
     }
     |> sized(120, 30)
     |> press("down")
@@ -606,8 +591,8 @@ pub fn down_walks_history_before_it_enters_the_strip_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: session_model.Shared(..base.shared, strands: roster()),
-        view: tui_model.View(..base.view, history: ["older"]),
+        shared: shared_set.strands(base.shared, roster()),
+        view: view_set.history(base.view, ["older"]),
       )
     }
     |> sized(120, 30)
@@ -623,10 +608,7 @@ pub fn opening_a_sub_agent_badges_the_composer_with_its_task_test() {
   let opened =
     {
       let base = model()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, strands: roster()),
-      )
+      tui_model.Model(..base, shared: shared_set.strands(base.shared, roster()))
     }
     |> sized(120, 30)
     |> press("down")
@@ -639,10 +621,7 @@ pub fn x_stops_the_selected_agent_without_retargeting_test() {
   let stopped =
     {
       let base = model()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, strands: roster()),
-      )
+      tui_model.Model(..base, shared: shared_set.strands(base.shared, roster()))
     }
     |> sized(120, 30)
     |> press("down")
@@ -677,11 +656,8 @@ pub fn an_overlay_takes_the_keyboard_out_of_the_strip_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: session_model.Shared(..base.shared, strands: roster()),
-        view: tui_model.View(
-          ..base.view,
-          input: textarea.state_from_string("send me"),
-        ),
+        shared: shared_set.strands(base.shared, roster()),
+        view: view_set.input(base.view, textarea.state_from_string("send me")),
       )
     }
     |> sized(120, 30)
@@ -690,9 +666,9 @@ pub fn an_overlay_takes_the_keyboard_out_of_the_strip_test() {
   let covered =
     tui_model.Model(
       ..browsing,
-      view: tui_model.View(
-        ..browsing.view,
-        overlay: tui_model.AgentInspector(agents.inspect("main")),
+      view: view_set.overlay(
+        browsing.view,
+        tui_model.AgentInspector(agents.inspect("main")),
       ),
     )
   let closed = covered |> press("esc")
@@ -710,11 +686,8 @@ pub fn a_strip_that_disappears_returns_the_keyboard_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: session_model.Shared(..base.shared, strands: roster()),
-        view: tui_model.View(
-          ..base.view,
-          input: textarea.state_from_string("send me"),
-        ),
+        shared: shared_set.strands(base.shared, roster()),
+        view: view_set.input(base.view, textarea.state_from_string("send me")),
       )
     }
     |> sized(120, 30)
@@ -722,7 +695,7 @@ pub fn a_strip_that_disappears_returns_the_keyboard_test() {
   let settled =
     tui_model.Model(
       ..browsing,
-      shared: session_model.Shared(..browsing.shared, strands: [
+      shared: shared_set.strands(browsing.shared, [
         protocol.Strand("main", Some("main"), None),
       ]),
     )
@@ -736,10 +709,7 @@ pub fn x_on_an_idle_primary_stops_nothing_test() {
   let stopped =
     {
       let base = model()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, strands: roster()),
-      )
+      tui_model.Model(..base, shared: shared_set.strands(base.shared, roster()))
     }
     |> sized(120, 30)
     |> press("down")
@@ -839,11 +809,8 @@ pub fn ctrl_o_opens_and_closes_the_agent_inspector_test() {
     {
       let base = model()
       tui_model.Model(
-        shared: session_model.Shared(..base.shared, strands: roster()),
-        view: tui_model.View(
-          ..base.view,
-          input: textarea.state_from_string("draft"),
-        ),
+        shared: shared_set.strands(base.shared, roster()),
+        view: view_set.input(base.view, textarea.state_from_string("draft")),
       )
     }
     |> sized(120, 30)

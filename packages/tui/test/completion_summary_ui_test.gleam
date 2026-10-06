@@ -12,9 +12,9 @@ import gleam/option.{None, Some}
 import gleam/string
 import session_view/composer
 import session_view/live_jobs
-import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import tui
 import tui/connection
 import tui/frame
@@ -24,6 +24,7 @@ import tui/queue_editor
 import tui/render
 import tui/side_surfaces
 import tui/summary_panel
+import tui/view_set
 import tui/workspace
 
 fn model() {
@@ -31,12 +32,12 @@ fn model() {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, attachments: [
+      shared: shared_set.attachments(base.shared, [
         composer.Attachment("retained context", 4),
       ]),
-      view: tui_model.View(
-        ..base.view,
-        input: textarea.state_from_string("continue my unfinished draft"),
+      view: view_set.input(
+        base.view,
+        textarea.state_from_string("continue my unfinished draft"),
       ),
     )
   }
@@ -96,10 +97,7 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
     )
   let initial = {
     let base = model()
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(..base.shared, jobs: Some(board)),
-    )
+    tui_model.Model(..base, shared: shared_set.jobs(base.shared, Some(board)))
   }
   let opened = side_surfaces.open_summary(initial) |> key("3")
   let text = painted(opened)
@@ -119,16 +117,16 @@ pub fn live_jobs_remain_a_separately_timestamped_observation_test() {
   let other =
     tui_model.Model(
       ..opened,
-      shared: session_model.Shared(..opened.shared, active_strand: "other"),
+      shared: shared_set.active_strand(opened.shared, "other"),
     )
   assert !string.contains(painted(other), "job-7")
   assert string.contains(
     painted(
       tui_model.Model(
         ..other,
-        shared: session_model.Shared(
-          ..other.shared,
-          jobs_notice: "Live jobs observed separately from completion",
+        shared: shared_set.jobs_notice(
+          other.shared,
+          "Live jobs observed separately from completion",
         ),
       ),
     ),
@@ -187,11 +185,9 @@ pub fn summary_separates_current_context_from_cumulative_usage_test() {
   let updated =
     tui_model.Model(
       ..initial,
-      shared: session_model.Shared(
-        ..initial.shared,
-        records: [protocol.EntryRecord("main", measured)],
-        usage: cumulative,
-      ),
+      shared: initial.shared
+        |> shared_set.records([protocol.EntryRecord("main", measured)])
+        |> shared_set.usage(cumulative),
     )
   let text = painted(side_surfaces.open_summary(updated) |> key("2"))
   assert string.contains(text, "Input 9000")
@@ -208,18 +204,15 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
   let opened =
     {
       let base = model()
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, jobs: Some(board)),
-      )
+      tui_model.Model(..base, shared: shared_set.jobs(base.shared, Some(board)))
     }
     |> side_surfaces.open_summary
     |> fn(model) {
       tui_model.Model(
         ..model,
-        shared: session_model.Shared(
-          ..model.shared,
-          jobs_notice: "Refreshing live jobs; previous observation may be stale",
+        shared: shared_set.jobs_notice(
+          model.shared,
+          "Refreshing live jobs; previous observation may be stale",
         ),
       )
     }
@@ -236,10 +229,7 @@ pub fn jobs_tab_retains_selected_identity_and_keeps_refresh_notice_test() {
     inbound.apply_channel_update(
       tui_model.Model(
         ..opened,
-        shared: session_model.Shared(
-          ..opened.shared,
-          jobs_awaiting: Some(#("", "main")),
-        ),
+        shared: shared_set.jobs_awaiting(opened.shared, Some(#("", "main"))),
       ),
       session_channel.Auxiliary(protocol.LiveJobsSnapshot(reordered)),
     )

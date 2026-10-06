@@ -1284,7 +1284,7 @@ fn hover(
     |> result.map_error(request_error(session, _)),
   )
   case answer {
-    None -> Error(query.NotFound(query: asked))
+    None -> Error(query.NotFound(query: asked, searched: None))
     Some(found) -> {
       let at = case found.range {
         Some(span) -> span.start
@@ -1337,7 +1337,8 @@ fn calls(
     |> result.map_error(request_error(session, _)),
   )
   use item <- result.try(
-    list.first(items) |> result.replace_error(query.NotFound(query: asked)),
+    list.first(items)
+    |> result.replace_error(query.NotFound(query: asked, searched: None)),
   )
 
   // Each edge is the other end and the file its call sites lie in, which
@@ -1828,7 +1829,7 @@ fn on_line(
       text.symbol_position(content, line, symbol.identifier)
       |> result.replace_error(Nil)
     })
-    |> result.replace_error(query.NotFound(query: asked)),
+    |> result.replace_error(query.NotFound(query: asked, searched: None)),
   )
   Ok(Target(session:, path: owned.path, at:))
 }
@@ -1859,7 +1860,7 @@ fn in_outline(
     |> list.map(fn(entry) { refine(content, entry.1, symbol.identifier) })
     |> list.unique
   case found {
-    [] -> Error(query.NotFound(query: asked))
+    [] -> Error(query.NotFound(query: asked, searched: None))
     [at] -> Ok(Target(session:, path: owned.path, at:))
     many ->
       Error(
@@ -1914,7 +1915,11 @@ fn anywhere(
       })
   }
   case found {
-    [] -> Error(query.NotFound(query: asked))
+    [] ->
+      Error(query.NotFound(
+        query: asked,
+        searched: Some(searched_root(identity)),
+      ))
     [one] -> Ok(Target(session:, path: one.path, at: one.at))
     many ->
       Error(
@@ -1930,6 +1935,14 @@ fn anywhere(
         ),
       )
   }
+}
+
+// Where a bare-name search looked, worded for an empty answer. A bare name
+// is searched in the server's root only, so "not found" is a statement
+// about that tree, and a model whose question concerned another clone
+// reads the mismatch from the root named here.
+fn searched_root(identity: Identity) -> String {
+  "the " <> identity.server.name <> " server rooted at " <> identity.root
 }
 
 // Where to search, and what was found. With a server already chosen, its
@@ -1999,7 +2012,11 @@ fn by_project(
       }
     })
   case list.reverse(projects) {
-    [] -> Error(query.NotFound(query: asked))
+    [] ->
+      Error(query.NotFound(
+        query: asked,
+        searched: Some("the workspace " <> manager.workspace),
+      ))
     [#(identity, _first)] ->
       Ok(#(
         identity,
@@ -3421,7 +3438,9 @@ fn collect_references(
   use #(collection, at) <- result.try(case asked.line {
     Some(line) ->
       text.symbol_position(file.content, line, symbol.identifier)
-      |> result.replace_error(observation.QueryFailed(query.NotFound(asked)))
+      |> result.replace_error(
+        observation.QueryFailed(query.NotFound(asked, searched: None)),
+      )
       |> result.map(fn(at) { #(collection, at) })
     None -> resolve_observed_target(collection, asked, file, symbol)
   })
@@ -3541,7 +3560,7 @@ fn resolve_observed_target(
     |> list.map(fn(entry) { refine(file.content, entry.1, symbol.identifier) })
     |> list.unique
   case found {
-    [] -> Error(observation.QueryFailed(query.NotFound(asked)))
+    [] -> Error(observation.QueryFailed(query.NotFound(asked, searched: None)))
     [at] -> Ok(#(collection, at))
     many ->
       Error(

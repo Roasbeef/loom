@@ -22,7 +22,8 @@
 import session_view/attempt
 import session_view/connection_event
 import session_view/inbox
-import session_view/model.{type Shared, Shared}
+import session_view/model.{type Shared}
+import session_view/shared_set
 
 /// Files a frame into the adopted connection inbox when it was read from
 /// that inbox's source, and refuses it otherwise.
@@ -46,7 +47,7 @@ pub fn file_frame(
   message: connection_event.Message,
 ) -> Result(Shared(socket, recorder, source, replay_source), Nil) {
   case source == inbox.source(shared.inbox) {
-    True -> Ok(Shared(..shared, inbox: inbox.push(shared.inbox, message)))
+    True -> Ok(shared_set.inbox(shared, inbox.push(shared.inbox, message)))
     False -> Error(Nil)
   }
 }
@@ -68,5 +69,5 @@ pub fn file_replayed(
   shared: Shared(socket, recorder, source, replay_source),
   event: attempt.Event,
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(..shared, replay_inbox: inbox.push(shared.replay_inbox, event))
+  shared_set.replay_inbox(shared, inbox.push(shared.replay_inbox, event))
 }

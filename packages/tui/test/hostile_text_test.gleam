@@ -38,7 +38,7 @@ import gleam/option.{None}
 import gleam/string
 import session_view/approval
 import session_view/connection_event
-import session_view/model as session_model
+import session_view/shared_set
 import tui
 import tui/agents
 import tui/approval_panel
@@ -47,6 +47,7 @@ import tui/connection
 import tui/frame
 import tui/layout_memory
 import tui/model as tui_model
+import tui/view_set
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -93,7 +94,7 @@ pub fn hostile_tool_calls_render_inert_test() {
     let base = quiet_model(connection.new_inbox())
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, details_expanded: True),
+      shared: shared_set.details_expanded(base.shared, True),
     )
   }
   let expanded = last_rows(detailed, 96, 30, calls())
@@ -136,10 +137,7 @@ pub fn hostile_agent_names_render_inert_test() {
     let base = quiet_model(rail_inbox)
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        rail: option.Some(layout_memory.RailShown),
-      ),
+      view: view_set.rail(base.view, option.Some(layout_memory.RailShown)),
     )
   }
   // The rail draws each agent in one row with the row renderer the strip and
@@ -161,9 +159,9 @@ pub fn hostile_agent_names_render_inert_test() {
     let base = quiet_model(overlay_inbox)
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        overlay: tui_model.AgentInspector(agents.inspect("main")),
+      view: view_set.overlay(
+        base.view,
+        tui_model.AgentInspector(agents.inspect("main")),
       ),
     )
   }
@@ -180,9 +178,9 @@ pub fn hostile_agent_names_render_inert_test() {
     let base = quiet_model(child_inbox)
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        overlay: tui_model.AgentInspector(agents.inspect("sub:one")),
+      view: view_set.overlay(
+        base.view,
+        tui_model.AgentInspector(agents.inspect("sub:one")),
       ),
     )
   }
@@ -210,11 +208,8 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
   let model = {
     let base = quiet_model(connection.new_inbox())
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, approvals: [review]),
-      view: tui_model.View(
-        ..base.view,
-        overlay: tui_model.ApprovalInspector(panel),
-      ),
+      shared: shared_set.approvals(base.shared, [review]),
+      view: view_set.overlay(base.view, tui_model.ApprovalInspector(panel)),
     )
   }
   let rows = last_rows(model, 110, 30, [])
@@ -236,10 +231,7 @@ pub fn hostile_approval_detail_shows_escapes_not_controls_test() {
     last_rows(
       tui_model.Model(
         ..model,
-        view: tui_model.View(
-          ..model.view,
-          overlay: tui_model.ApprovalInspector(raw),
-        ),
+        view: view_set.overlay(model.view, tui_model.ApprovalInspector(raw)),
       ),
       110,
       30,
@@ -389,12 +381,10 @@ fn quiet_model(inbox: Subject(connection_event.Message)) -> tui_model.Model {
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        transcript: [],
-        strands: [],
-        notice: "ready",
-      ),
+      shared: base.shared
+        |> shared_set.transcript([])
+        |> shared_set.strands([])
+        |> shared_set.notice("ready"),
     )
   }
 }

@@ -17,12 +17,14 @@ import session_view/approval
 import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript_line
 import tui/approval_panel
 import tui/inbound
 import tui/model as tui_model
+import tui/view_set
 import tui_test/pushed
 
 fn author(name) {
@@ -370,7 +372,7 @@ pub fn tool_result_lookup_and_tail_retirement_match_strand_and_call_test() {
       let base = pushed.attached()
       tui_model.Model(
         ..base,
-        shared: session_model.Shared(..base.shared, tool_tails: [
+        shared: shared_set.tool_tails(base.shared, [
           tail("main", "call-main", 0),
           tail("main", "call-running", 1),
           tail("sub:1", "call-peer", 0),
@@ -488,7 +490,7 @@ pub fn a_decision_closes_the_dialog_unless_it_is_refused_test() {
   let opened =
     tui_model.Model(
       ..captured,
-      shared: session_model.Shared(..captured.shared, strands: [
+      shared: shared_set.strands(captured.shared, [
         protocol.Strand("main", Some("main"), None),
       ]),
     )
@@ -501,10 +503,7 @@ pub fn a_decision_closes_the_dialog_unless_it_is_refused_test() {
   let offline =
     tui_model.Model(
       ..opened,
-      shared: session_model.Shared(
-        ..opened.shared,
-        peer: session_model.Disconnected,
-      ),
+      shared: shared_set.peer(opened.shared, session_model.Disconnected),
     )
   let refused =
     inbound.decide_captured_approval(offline, review, approval_panel.Deny)
@@ -519,7 +518,7 @@ pub fn deferred_question_is_not_reopened_until_its_sequence_changes_test() {
   let deferred =
     tui_model.Model(
       ..opened,
-      view: tui_model.View(..opened.view, overlay: tui_model.NoOverlay),
+      view: view_set.overlay(opened.view, tui_model.NoOverlay),
     )
   let same = capture_permission(deferred, first)
   assert same.view.overlay == tui_model.NoOverlay
@@ -549,11 +548,9 @@ pub fn late_lookup_preserves_the_open_question_and_selection_test() {
   let looking_up =
     tui_model.Model(
       ..opened,
-      view: tui_model.View(
-        ..opened.view,
-        overlay: tui_model.ApprovalInspector(selected),
-        inspecting_approval: Some("permission"),
-      ),
+      view: opened.view
+        |> view_set.overlay(tui_model.ApprovalInspector(selected))
+        |> view_set.inspecting_approval(Some("permission")),
     )
   let newer = capture_permission(pushed.attached(), pending_permission_cut(32))
   let updated =
@@ -656,10 +653,7 @@ pub fn deliberate_inspection_of_a_resolved_decision_stays_open_test() {
     inbound.apply_channel_update(
       tui_model.Model(
         ..captured,
-        view: tui_model.View(
-          ..captured.view,
-          inspecting_approval: Some("permission"),
-        ),
+        view: view_set.inspecting_approval(captured.view, Some("permission")),
       ),
       session_channel.LookedUp(captured.shared.approvals, []),
     )
@@ -689,10 +683,7 @@ pub fn metadata_refresh_preserves_the_footer_notice_test() {
   let prior =
     tui_model.Model(
       ..initial,
-      shared: session_model.Shared(
-        ..initial.shared,
-        notice: "streaming thinking",
-      ),
+      shared: shared_set.notice(initial.shared, "streaming thinking"),
     )
   let refreshed =
     inbound.apply_channel_update(

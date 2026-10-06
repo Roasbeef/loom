@@ -20,6 +20,7 @@ import tui/model as tui_model
 import tui/render
 import tui/session_selector
 import tui/theme
+import tui/view_set
 import tui/workspace
 
 const minute = 60_000
@@ -172,9 +173,9 @@ fn painted(
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        overlay: tui_model.DaemonSelector(build(model.view.wall_ms)),
+      view: view_set.overlay(
+        model.view,
+        tui_model.DaemonSelector(build(model.view.wall_ms)),
       ),
     )
   let #(buf, _) =

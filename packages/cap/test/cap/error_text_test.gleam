@@ -16,14 +16,24 @@ import cap/proc
 import cap/report
 import cap/schedule
 import cap/search
+import gleam/option.{None, Some}
 import gleam/string
 
 pub fn lsp_errors_render_with_the_qualified_name_hint_test() {
-  assert lsp.error_text(lsp.NotFound("util.Greet"))
+  assert lsp.error_text(lsp.NotFound("util.Greet", None))
     == "symbol not found: util.Greet"
-  let bare = lsp.error_text(lsp.NotFound("AcceptForScheme"))
+  let bare = lsp.error_text(lsp.NotFound("AcceptForScheme", None))
   assert string.starts_with(bare, "symbol not found: AcceptForScheme; ")
   assert string.contains(bare, "Receiver.Method")
+  assert lsp.error_text(lsp.NotFound(
+      "util.Greet",
+      Some("the go server rooted at /work/app"),
+    ))
+    == "symbol not found: util.Greet; searched the go server rooted at /work/app"
+  assert string.ends_with(
+    lsp.error_text(lsp.NotFound("Accept", Some("the go server rooted at /w"))),
+    "for a method); searched the go server rooted at /w",
+  )
   assert lsp.error_text(lsp.Unsupported("gopls", "callHierarchy"))
     == "server gopls does not support callHierarchy"
   assert lsp.error_text(lsp.LspDenied("invalid_argument", "line below 1"))

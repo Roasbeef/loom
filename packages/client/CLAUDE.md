@@ -33,6 +33,17 @@ unrelated configuration in its environment. Capture-size regressions grow
 unrelated executor or host payloads and require both readers to remain the
 same size. Behavioral assertions independently pin observation and routing.
 
+`codemode.serving` also fills `Config.strand_tools` from the Agency's `holds`
+for every seam selection, and the execution configuration turns it into
+`tool_gate.precheck` on the satellite host. The precheck runs in each call's
+worker and refuses a capability whose authorizing tool (`codemode/tool_gate`'s
+table: `bash`, `fs_write`, `fs_edit`, `job_*`, `schedule_*`, `agent_*`) the
+calling strand's durable active list lacks. `None` means no messaging plane
+and no check. The extension dispatch host is a separate configuration and
+never installs it. `agency.holds` returns `ToolNotHeld` only for a tool
+absent from a readable list and lets `AgencyUnavailable` and `PlaneFailed`
+flow through.
+
 ## Gateway membership and restart captures
 
 The gateway projects `Options.registry` into a private name-keyed dictionary

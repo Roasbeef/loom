@@ -21,9 +21,9 @@ import machine/strand
 import session_view/cache_miss
 import session_view/cache_watch
 import session_view/connection_event
-import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
@@ -35,6 +35,7 @@ import tui/inbound
 import tui/interaction
 import tui/model as tui_model
 import tui/render
+import tui/view_set
 import tui/workspace
 import tui_test/gateway
 import tui_test/pushed
@@ -97,7 +98,7 @@ fn initial(now: Int) -> tui_model.Model {
       )
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
+      view: view_set.transport_time_ms(base.view, fn() { 0 }),
     )
   }
 }
@@ -105,7 +106,7 @@ fn initial(now: Int) -> tui_model.Model {
 fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    view: tui_model.View(..model.view, monotonic_time_ms: fn() { now }),
+    view: view_set.monotonic_time_ms(model.view, fn() { now }),
   )
 }
 
@@ -204,7 +205,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
   let expanded =
     tui_model.Model(
       ..idle,
-      shared: session_model.Shared(..idle.shared, details_expanded: True),
+      shared: shared_set.details_expanded(idle.shared, True),
     )
   assert string.contains(text(expanded), ", idle 10m ·")
     as "the detailed footer also displays the warning, on the cache figure"
@@ -224,7 +225,7 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
       let base = at(quiet, 600_000)
       tui_model.Model(
         ..base,
-        shared: session_model.Shared(..base.shared, strands: [
+        shared: shared_set.strands(base.shared, [
           protocol.Strand(
             id: "main",
             name: Some("main"),
@@ -244,9 +245,9 @@ pub fn the_footer_states_the_cache_outlook_before_the_next_prompt_test() {
     |> fn(base) {
       tui_model.Model(
         ..base,
-        shared: session_model.Shared(
-          ..base.shared,
-          cache: cache_watch.Ledger(
+        shared: shared_set.cache(
+          base.shared,
+          cache_watch.Ledger(
             ..base.shared.cache,
             watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
           ),
@@ -265,9 +266,9 @@ pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
   let watched =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        cache: cache_watch.Ledger(
+      shared: shared_set.cache(
+        base.shared,
+        cache_watch.Ledger(
           ..base.shared.cache,
           watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
         ),
@@ -279,9 +280,9 @@ pub fn changing_the_model_discards_the_old_watch_before_the_next_row_test() {
   let requested =
     tui_model.Model(
       ..shown,
-      view: tui_model.View(
-        ..shown.view,
-        input: textarea.state_from_string("/model another-provider"),
+      view: view_set.input(
+        shown.view,
+        textarea.state_from_string("/model another-provider"),
       ),
     )
   let switched = tui.update(backend.KeyPress("enter"), requested)
@@ -335,9 +336,9 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
   let initial =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        cache: cache_watch.Ledger(
+      shared: shared_set.cache(
+        base.shared,
+        cache_watch.Ledger(
           ..base.shared.cache,
           watches: dict.from_list([#("main", watch_with(cache_miss.Split))]),
         ),
@@ -400,10 +401,7 @@ pub fn captured_provider_switch_discards_only_changed_model_evidence_test() {
 // The preview model's strand roster, emptied: an idle session has no live
 // operation, and the outlook's suppression is keyed on one.
 fn clear_strands(model: tui_model.Model) -> tui_model.Model {
-  tui_model.Model(
-    ..model,
-    shared: session_model.Shared(..model.shared, strands: []),
-  )
+  tui_model.Model(..model, shared: shared_set.strands(model.shared, []))
 }
 
 // A watch holding the priced prefix at time zero under the stated horizon.

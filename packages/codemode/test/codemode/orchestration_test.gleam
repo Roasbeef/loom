@@ -605,6 +605,7 @@ pub fn every_agency_refusal_keeps_its_name_test() {
       received: json.Object([]),
       mismatch: agent.FieldMissing(name: "ok", expects: agent.BooleanField),
     ),
+    agent.ToolNotHeld(tool: "agent_send"),
     agent.PlaneFailed(reason: "down"),
   ]
   assert list.all(cases, fn(refusal) {
@@ -642,6 +643,7 @@ fn expected_code(refusal: agent.Refusal) -> String {
     agent.NameAlreadyMinted(..) -> "name_already_minted"
     agent.ParentRunEnded(..) -> "parent_run_ended"
     agent.ResultSchemaUnmet(..) -> "result_schema_unmet"
+    agent.ToolNotHeld(..) -> "tool_not_held"
     agent.PlaneFailed(..) -> "plane_failed"
   }
 }
@@ -1359,6 +1361,7 @@ fn run_peer_with(
         clock: clock.fixed(at: t),
         write_token_file: satellite.private_token_writer(dir),
         unlink_token_file: satellite.unlink_token_file,
+        precheck: satellite.no_precheck,
         router: orchestration.router(seam(agency)),
         ceilings:,
         call_timeout_ms: 3000,

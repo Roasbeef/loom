@@ -24,6 +24,7 @@ import tui/connection
 import tui/job
 import tui/model as tui_model
 import tui/runtime
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 import weft
@@ -92,10 +93,7 @@ fn captured_attempt(
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(key, None),
-      ),
+      view: view_set.candidate(model.view, attachment.opening(key, None)),
     )
     |> runtime.hold(job.AttachArrived(key, job.Published(prepared)))
   let captured = tui.update(backend.Tick, model)

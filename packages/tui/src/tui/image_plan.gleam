@@ -42,8 +42,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import session_view/image_header.{type Picture}
-import session_view/model.{Shared}
 import session_view/protocol
+import session_view/shared_set
 import session_view/transcript_image
 import tui/effect
 import tui/image_box
@@ -219,9 +219,9 @@ fn queue(model: Model, outcome: image_shown.Outcome) -> Model {
     [#(_, failure), ..] ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "could not draw an image: " <> explanation(failure),
+        shared: shared_set.notice(
+          model.shared,
+          "could not draw an image: " <> explanation(failure),
         ),
       )
       |> tui_model.invalidate_frame

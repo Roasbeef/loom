@@ -18,9 +18,9 @@ import machine/codec as machine_codec
 import machine/strand
 import session_view/command
 import session_view/context_view as context
-import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/surfaces
@@ -32,6 +32,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/render
 import tui/side_surfaces
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 
@@ -208,9 +209,9 @@ pub fn inspector_retains_the_draft_and_shows_unavailable_without_a_connection_te
   let original =
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        input: textarea.state_from_string("unfinished draft"),
+      view: view_set.input(
+        base.view,
+        textarea.state_from_string("unfinished draft"),
       ),
     )
   let opened =
@@ -271,10 +272,7 @@ pub fn refused_refresh_invalidates_the_cached_percentage_test() {
   let refreshing =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        context: context.sent(observed, 9),
-      ),
+      shared: shared_set.context(base.shared, context.sent(observed, 9)),
     )
   let refused =
     inbound.apply_channel_update(
@@ -295,9 +293,9 @@ pub fn automatic_context_read_preserves_the_session_refusal_notice_test() {
   let refused =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        notice: "open session: not_found: request refused",
+      shared: shared_set.notice(
+        base.shared,
+        "open session: not_found: request refused",
       ),
     )
   let reading =
@@ -396,12 +394,10 @@ fn observing(
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        active_strand: "main",
-        strands: [protocol.Strand("main", Some("main"), phase)],
-        captured: Some(#(captured, view)),
-      ),
+      shared: base.shared
+        |> shared_set.active_strand("main")
+        |> shared_set.strands([protocol.Strand("main", Some("main"), phase)])
+        |> shared_set.captured(Some(#(captured, view))),
     )
   }
 }
@@ -420,7 +416,7 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   // always worth a read.
   let idle = observing(first, "first", None)
   assert surfaces.context_refresh_due(
-    session_model.Shared(..idle.shared, captured: None),
+    shared_set.captured(idle.shared, None),
     idle.shared,
   )
 
@@ -440,7 +436,7 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
   // a transition that changes none of the four starts nothing.
   assert surfaces.context_refresh_due(
     settled.shared,
-    session_model.Shared(..settled.shared, active_strand: "fork"),
+    shared_set.active_strand(settled.shared, "fork"),
   )
   assert surfaces.context_refresh_due(
     settled.shared,
@@ -454,11 +450,12 @@ pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {
   let pending =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        worktree: worktree_view.request(worktree_view.new(), "owner"),
-        context: waiting(8),
-      ),
+      shared: base.shared
+        |> shared_set.worktree(worktree_view.request(
+          worktree_view.new(),
+          "owner",
+        ))
+        |> shared_set.context(waiting(8)),
     )
 
   // Both reads borrow the same bounded server worker. An acknowledged context
@@ -473,7 +470,7 @@ pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {
       backend.Tick,
       tui_model.Model(
         ..pending,
-        shared: session_model.Shared(..pending.shared, context: context.new()),
+        shared: shared_set.context(pending.shared, context.new()),
       ),
     )
   assert released.shared.worktree.awaiting != None

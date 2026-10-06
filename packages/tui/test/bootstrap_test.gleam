@@ -31,6 +31,7 @@ import tui/runtime
 import tui/session_control
 import tui/session_selector
 import tui/terminal_lane
+import tui/view_set
 import tui/workspace
 import weft
 import weft/poll
@@ -434,12 +435,12 @@ fn run_real_server_lifecycle(server: String) -> Nil {
         // This draft is unassigned until the first session is adopted.
         session: "",
       ),
-      view: tui_model.View(
-        ..model.view,
-        local_options: Some(options),
-        overlay: tui_model.DaemonSelector(session_selector.new(empty, "")),
-        input: text_area.state_from_string("retained draft"),
-      ),
+      view: model.view
+        |> view_set.local_options(Some(options))
+        |> view_set.overlay(
+          tui_model.DaemonSelector(session_selector.new(empty, "")),
+        )
+        |> view_set.input(text_area.state_from_string("retained draft")),
     )
     |> runtime.adopt_control(host)
 
@@ -448,9 +449,9 @@ fn run_real_server_lifecycle(server: String) -> Nil {
   let invalid =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        local_options: Some(
+      view: view_set.local_options(
+        model.view,
+        Some(
           bootstrap.Options(
             ..options,
             config: filepath.join(root, "absent/loom.toml"),
@@ -467,7 +468,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
       backend.KeyPress("n"),
       tui_model.Model(
         ..refused,
-        view: tui_model.View(..refused.view, local_options: Some(options)),
+        view: view_set.local_options(refused.view, Some(options)),
       ),
     ))
   let switched = wait_for_attachment(creating, 20_000)
@@ -689,10 +690,7 @@ fn wait_for_attachment(model: tui_model.Model, within: Int) {
         let model =
           list.fold(
             decided,
-            tui_model.Model(
-              ..model,
-              view: tui_model.View(..model.view, candidate: next),
-            ),
+            tui_model.Model(..model, view: view_set.candidate(model.view, next)),
             tui_model.emit_attachment,
           )
           |> runtime.flush
