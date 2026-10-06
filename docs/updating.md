@@ -139,8 +139,10 @@ builds from different installations selected. Rerun installation to select a
 complete pair. Failed copies remain on disk, but are never published as a
 successful release.
 
-The installer never restarts a daemon or deletes an older release tree. Disk
-usage grows with each installation; see manual cleanup below.
+The installer never restarts a daemon. After switching the links it removes
+older release trees that no link selects, that were not selected by the
+repointed links just before this installation, and that no live process uses;
+see "Pruning old trees" below.
 
 ## Migrate a legacy installation
 
@@ -246,16 +248,40 @@ snapshot, the live `entries` frame and `loom replay` all fail to decode. Rerun
 installation so the `client` link names the new build, and restart every client
 before selecting the new `server`.
 
+## Pruning old trees
+
+Each installation, including `loom update` and `make install-debug`, ends by
+removing superseded trees under `lib/loom` for `server` and the installed
+client stem (`client` or `tui`). It keeps:
+
+- the tree each of the `server`, `client` and `tui` links now selects;
+- the tree each repointed link selected before this installation, which is
+  the one-step rollback;
+- any tree in use by a live process: its path appears in a command line from
+  `ps -axo command`, or `lsof` shows an open file or working directory inside
+  it.
+
+The installer prints a line for each tree removed, a line for each tree kept
+because it is in use, and a total. If `ps` or `lsof` fails, nothing is
+deleted; if `lsof` is not installed, only the `ps` check runs. Only real
+directories named `<stem>.` followed by exactly eight letters or digits
+are removed, so `legacy-backup.*`, `update.lock`, symlinks and anything else
+under `lib/loom` are left alone. Interrupted copies match the pattern and are
+removed once no process uses them. `LOOM_KEEP_OLD_TREES=1 make install` skips
+pruning for one installation.
+
+A long-lived process can survive several installations, which is why the
+in-use check exists and why a bare current-and-previous rule would be
+insufficient. A process that has already exited, or one the check cannot see,
+does not hold a tree. Do not run two installations on one prefix at once: the
+update lock serializes `loom update`, but `make install` does not take it, and
+one installation could remove the tree the other is still copying.
+
 ## Manual cleanup
 
-Keep every tree selected by `server`, `client`, or `tui`, and any rollback
-builds you want. Remove other trees only after establishing that no running
-client or daemon uses them. A current/previous-link policy is insufficient:
-a long-lived process can survive several installs, and clients are not
-represented by the daemon endpoint record.
-
-The simplest maintenance procedure is to stop all Loom clients and daemons
-using the prefix, prevent automatic restarts, inspect the links, and remove
-only explicitly selected obsolete directories. Interrupted unpublished copies
-can be removed during that same maintenance window. Normal installation
-performs no pruning.
+Pruning does not remove trees that a running process uses, trees of the other
+client shape, or legacy directories. To remove one, first establish that no
+client or daemon uses it. Clients are not represented by the daemon endpoint
+record. The simplest procedure is to stop all Loom clients and daemons using
+the prefix, prevent automatic restarts, inspect the links, and remove only
+explicitly selected obsolete directories.
