@@ -290,7 +290,7 @@ type Phase {
 /// fourth is the divider of a settled turn's work (`component.fold_click`),
 /// whose message names a fold by a number the server drew into the handler and
 /// asks the page to draw or drop that turn's steps from records it already
-/// holds, so it reads nothing new and sends nothing (protocol-change/068). It
+/// holds, so it reads nothing new and sends nothing (protocol-change/070). It
 /// is admitted at the divider's exact path and nowhere beneath or beside it.
 /// Every other message is dropped here, a batch included, so
 /// it costs the component no render; the gateway refuses any mutation from an

@@ -589,7 +589,7 @@ MB where the same rows as plain text held 2.5 MB (#587).
 **The window.** The page holds the newest turns of `main` whose drawn rows
 fit `component.live_rows` (150). A settled turn is drawn as its prompt, its
 answer and one divider, and its steps are drawn only while the reader has its
-fold open (protocol-change/068), so a turn of 170 calls costs the page what a
+fold open (protocol-change/070), so a turn of 170 calls costs the page what a
 turn of two does. The turns are cut between turns (`turns.grouped`), so the oldest
 row the page holds is a turn's input. A turn keyed by its input keeps its
 key when rows are added above it or the oldest turn leaves, and its lines'

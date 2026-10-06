@@ -339,7 +339,7 @@ Loom's observer component registers no attribute, no property and no
 context, and its view attaches handlers whose messages are reads or changes of
 what the page draws from records it already holds: the lane's "Load older"
 click (051, the addendum on history paging), a chip's focus and a settled
-turn's divider (068), so every one of these is dropped and `ui_socket`
+turn's divider (070), so every one of these is dropped and `ui_socket`
 forwards only those clicks, each at its fixed path. That is the "by type" layer of 051's read-only enforcement. The
 operator's component, `web_view/operator_page`, attaches exactly two
 kinds of handler, a click on an approval button and the composer form's
@@ -504,7 +504,7 @@ tree it last rendered, and only if that handler's decoder succeeds
   observer's view attaches only reads and changes of what the page draws:
   the "Load older" read (051, the addendum on history paging), a chip's
   focus, and a settled turn's divider, which draws or drops the steps of
-  records the page holds (068).
+  records the page holds (070).
 - **The message a handler sends is fixed when the tree is rendered, and
   can arrive after the model moved on.** `update` must still check the
   message against the current state, and the engine must carry what it was

@@ -67,7 +67,7 @@ pub fn the_observers_page_carries_the_older_click_and_the_chips_test() {
 }
 
 // A settled turn's divider carries one click, at the path the observer's socket
-// admits (`component.fold_click`, protocol-change/068), on both pages. Nothing
+// admits (`component.fold_click`, protocol-change/070), on both pages. Nothing
 // else on either page is a handler beyond the chips and the older button, and a
 // page whose turns are open carries the same dividers, since each one closes
 // its fold.

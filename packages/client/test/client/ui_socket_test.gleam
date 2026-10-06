@@ -171,7 +171,7 @@ pub fn an_observer_socket_accepts_a_chip_click_test() {
   )
 }
 
-// Protocol-change/068: an observer's socket admits a click at the divider of a
+// Protocol-change/070: an observer's socket admits a click at the divider of a
 // settled turn's work, at its exact path, and not at its neighbours: another
 // place in the row, a key that is not a work's, a forged number, another event
 // at the divider's path, or a batch.

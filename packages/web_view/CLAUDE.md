@@ -477,7 +477,7 @@ page keys and nonces, and the relay into the session's gateway.
   its fold open (below). `component.Paging` is `Tail | Paged | Full`; `Full`
   means a paged page had to cut a whole turn, so it loads no more, and a page
   that fits again after a fold closed is `Paged` again.
-- **Lazy folds** (protocol-change/068, `session_view/fold_budget`). A settled
+- **Lazy folds** (protocol-change/070, `session_view/fold_budget`). A settled
   turn's `Work` piece holds no steps unless its fold is open: `relaned` weighs
   each turn (`fold_budget.weigh`: its closed rows, and what its fold would add),
   keeps the newest turns that fit (`held`, `fold_budget.fit`) and calls
@@ -1161,7 +1161,7 @@ page keys and nonces, and the relay into the session's gateway.
   node. The page socket admits from an observer only a click at
   `component.older_path`, beneath `component.strip_path` or at a divider's
   exact path (`component.fold_click`; protocol-change/051, the addenda on
-  history paging and strand focus, and 068), and
+  history paging and strand focus, and 070), and
   `page_events_test` pins that the observer's handlers are exactly those.
   The sidebar and every other region add none. The strand panel is the
   frame's last child, so a region added after it does not move an admitted

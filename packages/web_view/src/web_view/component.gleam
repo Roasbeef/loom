@@ -971,7 +971,7 @@ pub type Msg(socket) {
   /// names no fold the page holds changes nothing. Like `OlderRequested` it
   /// changes what the page draws from records the page already holds and
   /// sends no command, so an observer's page may carry it
-  /// (protocol-change/068).
+  /// (protocol-change/070).
   FoldToggled(fold: Int)
 
   /// A chip of the agent strip was pressed: show this strand and address it.
@@ -3833,7 +3833,7 @@ fn older_at(
 /// place beneath a row, is not a divider. The page socket admits a `click` from
 /// an observer at such a path and no other event beyond `older_path`'s and
 /// the strand panel's (`client/daemon/ui_socket.observer_accepts`,
-/// protocol-change/068). `page_events_test` fails if the view moves the button,
+/// protocol-change/070). `page_events_test` fails if the view moves the button,
 /// so the two cannot drift apart.
 ///
 /// ## Examples

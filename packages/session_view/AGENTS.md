@@ -558,7 +558,7 @@ would add), `fit` takes the weights newest first with the open folds and the
 limit and says how many turns fit and which open fold must draw fewer steps, and
 `draw` empties a closed fold's items and cuts an open one's to the newest that
 fit. It is pure and portable, and the web view's `component.held` is its one
-caller (protocol-change/068).
+caller (protocol-change/070).
 
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and

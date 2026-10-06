@@ -1,4 +1,4 @@
-# protocol-change/068: a settled turn's steps are drawn on request, over a page event
+# protocol-change/070: a settled turn's steps are drawn on request, over a page event
 
 **Status**: ACCEPTED 2026-10-05 · **Affects**: the web view's page socket (the
 observer's accepted events) and the lane's markup · **Raised by**: the web UI

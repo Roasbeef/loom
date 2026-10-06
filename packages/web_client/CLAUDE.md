@@ -37,7 +37,7 @@ renders again just for it:
   server's document says only `Loom` until then, never the identity.
 - `<loom-fold>` opens and closes a fold with no round trip: the todo board's.
   A settled turn's divider is not this element: it is a button the server draws,
-  whose press the server answers (protocol-change/068), and `<loom-follow>` tells
+  whose press the server answers (protocol-change/070), and `<loom-follow>` tells
   its click by the fixed `data-loom-fold` marker.
 - `<loom-expand>` is a row of a turn's fold: one line with one chevron, and a
   body behind it. The server draws the line and the body as children

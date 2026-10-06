@@ -223,7 +223,7 @@ pub type Replies(message) {
 /// page draws them from the records it holds. The message carries the fold's
 /// number (`turns.Work.id`) and nothing from the browser, so both pages draw
 /// the button and an observer's socket admits its click at one path
-/// (`component.fold_click`, protocol-change/068).
+/// (`component.fold_click`, protocol-change/070).
 pub type Folds(message) {
   /// The dividers carry no handler: pressing one does nothing. A lane drawn
   /// for a test that does not open folds has no message to send.
