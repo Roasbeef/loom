@@ -436,6 +436,7 @@ fn row(
     Saved, _ | Blocked, _ -> html.div([attribute.class("home-item")], body)
   }
   let classes = [attribute.class("home-row"), attribute.class(standing.class)]
+  let manage = in_row(manage)
   case rename, manage {
     Offered(open: Some(Open(session:, control:)), cancel:, submit:, ..), _
       if session == entry.id
@@ -465,7 +466,8 @@ fn row(
             action,
             case action {
               actions.Delete -> confirm_delete(entry.id)
-              actions.Stop | actions.Archive -> confirm_stop(entry.id)
+              actions.Stop | actions.Archive | actions.StopArchive ->
+                confirm_stop(entry.id)
             },
             cancel,
           ),
@@ -587,7 +589,20 @@ fn act(
 fn confirm_class(action: actions.Action) -> String {
   case action {
     actions.Delete -> "confirm-delete"
-    actions.Stop | actions.Archive -> "confirm-stop"
+    actions.Stop | actions.Archive | actions.StopArchive -> "confirm-stop"
+  }
+}
+
+// What the row itself sees of the page's stage. Stop and Delete ask in the
+// row; the sidebar's Archive and Stop-and-archive ask in the sidebar
+// (`view/archiving`), so for the row the page is calm while one of those asks,
+// and the same state never draws the question twice.
+fn in_row(manage: Manage(message)) -> Manage(message) {
+  case manage {
+    Managed(stage: actions.Confirming(action: actions.Archive, ..), ..) as managed
+    | Managed(stage: actions.Confirming(action: actions.StopArchive, ..), ..) as managed ->
+      Managed(..managed, stage: actions.Calm)
+    Managed(..) | Unmanaged -> manage
   }
 }
 
@@ -608,7 +623,7 @@ fn confirming(
       "Delete",
       "home-confirm-go home-confirm-delete",
     )
-    actions.Stop | actions.Archive -> #(
+    actions.Stop | actions.Archive | actions.StopArchive -> #(
       "Stop this session",
       "Stop this session mid-turn?",
       "Stop",

@@ -517,6 +517,30 @@ pub fn upgrade(
       shareable_task(attachment, origin, open, deliver)
     })
 
+  // The sidebar's archive action is the home's Archive button on another page:
+  // the same capability, so the same rules. It exists only on an owner's
+  // operating page that a fresh `loom ui` exchange opened and that was minted
+  // for the whole workspace, never on a bookmark's page or a page of one
+  // session, and `manage_for` decides each press again.
+  let managing =
+    home_manage_capability(
+      attachment.principal,
+      ceiling,
+      seen.grant.reach,
+      origin,
+      fn(action, target, deliver) {
+        manage_task(
+          standing,
+          open,
+          attachment.epoch,
+          attachment.sessions_directory,
+          action,
+          target,
+          deliver,
+        )
+      },
+    )
+
   // The capability to read the workspace is an owner's or an operator's, and
   // the daemon asks `attach.check` again each time it is called, so a page whose
   // grant was revoked or whose UI session ended is refused at its next read.
@@ -544,6 +568,7 @@ pub fn upgrade(
       rename,
       shareable,
       worktree,
+      managing,
       seen,
       expected,
       signals,
@@ -1272,6 +1297,7 @@ fn admit(
   rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
   shareable: Option(fn(fn(grants.Answer) -> Nil) -> Nil),
   worktree: Option(fn(fn(worktrees.Read) -> Nil) -> Nil),
+  managing: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
   seen: server.PageGrant,
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
@@ -1313,6 +1339,7 @@ fn admit(
       rename:,
       shareable:,
       worktree:,
+      manage: managing,
     )
 
   // The start takes its standing as an argument because reading it can wait on
@@ -3237,16 +3264,18 @@ pub fn manage_for(
     )
     case action {
       actions.Stop -> stop_for(standing.registry, target)
-      actions.Archive ->
-        manager.set_visibility(
-          standing.registry,
-          standing.digest,
-          epoch,
-          target,
-          catalogue.Archived,
-        )
-        |> result.replace(Nil)
-        |> result.map_error(action_refusal)
+      actions.Archive -> archive_for(standing, epoch, target)
+
+      // The sidebar's one action on a running row. The stop returns once the
+      // registry reports the session saved, or when its wait ends, and the
+      // archive follows in this task. A session that outlasted the wait is
+      // still held, so the registry refuses the archive as busy and the page
+      // says the session is still running: the stop was made and the owner may
+      // ask again.
+      actions.StopArchive -> {
+        use _ <- result.try(stop_for(standing.registry, target))
+        archive_for(standing, epoch, target)
+      }
       actions.Delete ->
         manager.delete_session(
           standing.registry,
@@ -3263,6 +3292,25 @@ pub fn manage_for(
     Ok(Nil) -> actions.Done(action)
     Error(reason) -> actions.Declined(reason)
   }
+}
+
+// Hides the session from the lists, keeping everything it holds. The registry
+// authenticates the credential and the epoch in its own turn, needs the owner,
+// and refuses a session a process still holds.
+fn archive_for(
+  standing: Standing(instance),
+  epoch: String,
+  target: String,
+) -> Result(Nil, actions.Reason) {
+  manager.set_visibility(
+    standing.registry,
+    standing.digest,
+    epoch,
+    target,
+    catalogue.Archived,
+  )
+  |> result.replace(Nil)
+  |> result.map_error(action_refusal)
 }
 
 // Begins the stop and waits, within `stop_wait_ms`, for the registry to report

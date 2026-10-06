@@ -443,6 +443,30 @@
   .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
   .session-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  /* The archive action of a row (web_view/view/archiving): a quiet button laid
+     over the right end of the row, so the row's own button keeps its place. It
+     is drawn on hover and on keyboard focus and stays in the tab order when
+     hidden, so the keyboard reaches it; while hidden it takes no pointer, so the
+     row's own button gets every click. Touch has no hover, so there it sits in
+     the row. Its question replaces the row, on a tinted background with a tinted
+     hairline, and neither draws a shadow or an edge bar. */
+  li.session{position:relative;}
+  .session-archive{position:absolute;top:50%;right:4px;transform:translateY(-50%);margin:0;padding:1px 8px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);white-space:nowrap;cursor:pointer;opacity:0;pointer-events:none;}
+  li.session:hover>.session-archive,li.session:focus-within>.session-archive,.session-archive:focus-visible{opacity:1;pointer-events:auto;}
+  .session-archive:hover:not(:disabled){background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));color:var(--color-fg);}
+  .session-archive:disabled{opacity:.6;pointer-events:none;cursor:default;}
+  .session-archive:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  @media (hover:none){
+    .session-archive{position:static;transform:none;align-self:center;margin:0 4px 0 0;opacity:1;pointer-events:auto;}
+  }
+  li.session.confirming{display:block;padding:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
+  .session-confirm-lead{margin:0;font:500 12px/1.4 var(--font-sans);}
+  .session-confirm-name{margin:2px 0 8px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .session-confirm-actions{display:flex;flex-wrap:wrap;gap:6px;}
+  .session-confirm-actions button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .session-confirm-actions button:hover{background:var(--color-bg-raised);}
+  .session-confirm-actions .session-confirm-go{border-color:color-mix(in srgb,var(--color-current) 55%,transparent);background:color-mix(in srgb,var(--color-current) 14%,transparent);}
+  .session-confirm-actions button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   /* The home page (web_view/home, protocol-change/065): the same frame with
      no strand panel. The frame's element draws the panel's column and its
      button around an empty slot, so the host's `loom-home` class leaves both

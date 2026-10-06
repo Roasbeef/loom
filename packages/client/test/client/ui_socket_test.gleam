@@ -50,6 +50,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       rename: None,
       shareable: None,
       worktree: None,
+      manage: None,
     ),
   )
 }
