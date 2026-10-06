@@ -9,7 +9,9 @@
 -export([ws_roundtrip/4, which/1, run/3, gzip/1,
          origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1,
          owner_label_of/1, reductions_of/1, log_capture_start/0,
-         log_capture_stop/0, log/2, workspace_credentials/0]).
+         log_capture_stop/0, log/2, workspace_credentials/0,
+         launch_companion/1, launch_kill_scope/1,
+         launch_suspend_broker/1, launch_resume_broker/1]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -409,3 +411,57 @@ workspace_peer(Root) ->
     {Type, Der} = proplists:get_value(key, Conf),
     Pem = public_key:pem_encode([{Type, Der, not_encrypted}]),
     {credentials, maps:get(cert, Root), Cert, Pem, crypto:hash(sha256, Cert)}.
+
+%% This probe is coupled to the fixture-owned Gleam close closure and Execution
+%% representation. It projects only local process identity, never live authority.
+launch_companion(Close) when is_function(Close, 0) ->
+    case erlang:fun_info(Close, env) of
+        {env, [{execution, {subject, Pid, Ref}}]}
+                when is_pid(Pid), node(Pid) =:= node(), is_reference(Ref) ->
+            {ok, Pid};
+        _ -> {error, nil}
+    end;
+launch_companion(_) -> {error, nil}.
+
+%% The original companion links its original relay, which links the actual scope.
+%% Bounded stack/links witnesses select only that fixture's original native run.
+%% Killing the scope propagates through those real links; no RunLost is injected.
+launch_kill_scope(Companion) when is_pid(Companion), node(Companion) =:= node() ->
+    case process_info(Companion, links) of
+        {links, Links} when length(Links) =< 8 ->
+            Relays = [P || P <- Links, is_pid(P), launch_frame(P, relay_outcomes)],
+            case Relays of
+                [Relay] ->
+                    case process_info(Relay, links) of
+                        {links, Children} when length(Children) =< 8 ->
+                            Scopes = [P || P <- Children, is_pid(P),
+                                P =/= Companion, launch_frame(P, loop)],
+                            case Scopes of
+                                [Scope] -> exit(Scope, kill), {ok, nil};
+                                _ -> {error, nil}
+                            end;
+                        _ -> {error, nil}
+                    end;
+                _ -> {error, nil}
+            end;
+        _ -> {error, nil}
+    end;
+launch_kill_scope(_) -> {error, nil}.
+
+launch_frame(Pid, Function) ->
+    case process_info(Pid, current_stacktrace) of
+        {current_stacktrace, Frames} when length(Frames) =< 16 ->
+            lists:any(fun({weft, F, _, _}) -> F =:= Function orelse
+                             (Function =:= loop andalso F =:= '-loop/1-anonymous-1-');
+                         (_) -> false end, Frames);
+        _ -> false
+    end.
+
+%% These local OTP controls fault only the fixture's original Broker reply path.
+launch_suspend_broker(Pid) when is_pid(Pid), node(Pid) =:= node() ->
+    try sys:suspend(Pid, 1000) of ok -> {ok, nil} catch _:_ -> {error, nil} end;
+launch_suspend_broker(_) -> {error, nil}.
+
+launch_resume_broker(Pid) when is_pid(Pid), node(Pid) =:= node() ->
+    try sys:resume(Pid, 1000) of ok -> {ok, nil} catch _:_ -> {error, nil} end;
+launch_resume_broker(_) -> {error, nil}.
