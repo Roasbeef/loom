@@ -20,6 +20,8 @@ fn path() -> String {
     as "the test has a working directory"
   here
   <> "/build/reload-"
+  <> int.to_string(ffi_os.system_time_ms())
+  <> "-"
   <> int.to_string(ffi_os.unique_positive_integer())
   <> ".toml"
 }

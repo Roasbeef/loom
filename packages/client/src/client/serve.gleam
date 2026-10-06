@@ -1767,6 +1767,7 @@ fn load_config(
         }),
       )
       parse_config(text)
+      |> result.map_error(fn(reason) { path <> ": " <> reason })
     }
   }
 }
@@ -1792,7 +1793,7 @@ fn configuration_source(
       use selected <- result.try(
         config_reload.selected_source(path)
         |> result.replace_error(
-          "the explicit configuration is unreadable or exceeds 1 MiB",
+          path <> ": the explicit configuration is unreadable or exceeds 1 MiB",
         ),
       )
       Ok(Some(selected))
