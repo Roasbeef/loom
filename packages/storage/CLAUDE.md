@@ -643,14 +643,18 @@ with an incompatible cancellation schema.
 bounded canonical identity header before opaque exact service input. Its outer
 Compile/Launch child uses the existing nine-MiB request and configured full
 completion reservation. `service_child` compares the complete original key;
-changed scope, coordinates, UUID or input conflicts. Both fixed outer roles
-belong to a retained managed ToolKey; no system parent is invented here.
+changed scope, coordinates, UUID or input conflicts. Original Compile, rewritten
+Compile and Launch belong to a retained managed ToolKey; no system parent is
+invented here. Rewrite admission and readback require its exact Original input
+and retained completion. Storage checks structural lineage; the custodian actor
+validates actual BuildRejected semantics and deterministic rewriting before any
+storage mutation, without adding a storage-to-codemode dependency.
 
 `CommandOfferPayload` bounds immutable proposal bytes before mailbox delivery.
 The separate command-offer table retains full CommandRef identity, indexed
 service/native projections and exact content/digest. Named Parrot/sqlc queries
-check aggregate persistent counts/bytes; at most two offer purposes exist per
-parent, and global offer count is capped by the already persisted child limit.
+check aggregate persistent counts/bytes; at most three closed offer purposes exist
+per parent (Original Compile, rewritten Compile and Satellite), and global offer count is capped by the already persisted child limit.
 Offer admission reserves the entire configured allowance capped at 256 KiB.
 Frozen fences retain identity/digest and continue consuming count/byte capacity.
 Every header checks types, lengths, scalar projections and the full unused
@@ -667,8 +671,8 @@ allocated native rows; original native bytes survive and matching late receipt
 remains admissible. No partial Prepared, offer UUID or process ledger exists.
 
 `command_offer_for_origin(store, ChildOrigin)` is a historical indexed read on the
-lifetime-UNIQUE native_origin column. It admits only CompileCommand and
-SatelliteCommand, checks the complete retained managed parent/session, and uses
+lifetime-UNIQUE native_origin column. It admits only ChildRole CompileCommand,
+CompileRewriteCommand and SatelliteCommand, checks the complete retained managed parent/session, and uses
 LIMIT 2 with guarded scalar lengths before the existing bounded value query.
 Shared header accounting checks the full unused offer allowance before loading
 bytes; canonical full CommandRef, service, address and native-origin equality
@@ -678,8 +682,8 @@ offer allocates no native UUID and grants no clearance or reservation. The exist
 atomic `admit_command_child` still refuses cancelled authority. No scan, new
 schema, table, or origin-rebinding operation is introduced.
 
-`collect` returns CollectionPending before any freeze whenever either deterministic
-outer Compile/Launch child or any offer exists for its verified ToolKey. This
+`collect` returns CollectionPending before any freeze whenever any deterministic
+outer Compile, CompileRewrite or Launch child, or any offer, exists for its verified ToolKey. This
 covers no-offer resource uncertainty and orphan/corrupt offers. Final Failed or
 Unknown readback is not physical recovery transfer. New physical service parents
 remain bounded and retained until an actual whole-service custody transfer can

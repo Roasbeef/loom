@@ -263,8 +263,11 @@ fn resolved_offer(
 ) -> Result(#(custody.CommandOfferPayload, offer.CommandOffer), custody.Error) {
   use role <- result.try(remote_tool.child_role(origin) |> invalid)
   use Nil <- result.try(case role {
-    remote_tool.CompileCommand | remote_tool.SatelliteCommand -> Ok(Nil)
+    remote_tool.CompileCommand
+    | remote_tool.CompileRewriteCommand
+    | remote_tool.SatelliteCommand -> Ok(Nil)
     remote_tool.Compile
+    | remote_tool.CompileRewrite
     | remote_tool.Launch
     | remote_tool.AdmittedCapability(_, _, _)
     | remote_tool.Capability(_)

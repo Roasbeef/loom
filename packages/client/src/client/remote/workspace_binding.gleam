@@ -255,6 +255,8 @@ fn provenance(
       use Nil <- result.try(case role {
         remote_tool.Workspace(_) -> Ok(Nil)
         remote_tool.Compile
+        | remote_tool.CompileRewrite
+        | remote_tool.CompileRewriteCommand
         | remote_tool.Launch
         | remote_tool.CompileCommand
         | remote_tool.SatelliteCommand

@@ -202,7 +202,7 @@ fn compile_and_run(
   vetted: Vetted,
   config: ExecConfig,
 ) -> Execution {
-  let first = compile_once(vetted, config)
+  let first = compile_once(vetted, compile.Original, config)
 
   // One rewrite at most. The second build's result is final whatever it
   // says: a program whose unused imports were not the whole problem gets the
@@ -210,7 +210,7 @@ fn compile_and_run(
   let #(source, compiled, edits) = case rewritten(vetted, first, config) {
     Ok(#(next, rewrite)) -> #(
       rewrite.source,
-      compile_once(next, config),
+      compile_once(next, compile.UnusedImportRewrite, config),
       rewrite.notes,
     )
     Error(Nil) -> #(source, first, [])
@@ -225,8 +225,13 @@ fn compile_and_run(
 // The build's identity is *derived* here, from the execution's, rather
 // than supplied alongside it: that derivation is the only thing standing
 // between the build and a ledger of its own invention.
-fn compile_once(vetted: Vetted, config: ExecConfig) -> compile.Compiled {
+fn compile_once(
+  vetted: Vetted,
+  attempt: compile.CompileAttempt,
+  config: ExecConfig,
+) -> compile.Compiled {
   config.compile.compile(compile.CompileRequest(
+    attempt:,
     vetted:,
     dependencies: config.compile.dependencies,
     generated: imported(config.compile.generated, vetted),

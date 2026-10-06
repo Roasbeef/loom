@@ -263,10 +263,11 @@ fn invoke(
 
     // Exact successful owner-retained Compile evidence precedes reservation.
     // This lookup never invokes the compiler or treats an artifact as a path.
-    use producer_origin <- result.try(
-      remote_tool.tool_child(parent, remote_tool.Compile)
-      |> result.replace_error(Invalid),
-    )
+    use producer_origin <- result.try(successful_producer_origin(
+      config,
+      parent,
+      artifact,
+    ))
     use row <- result.try(
       custodian.child(config.owner, producer_origin)
       |> result.replace_error(Uncertain),
@@ -1090,4 +1091,56 @@ fn normalized(value: policy.SandboxPolicy) -> policy.SandboxPolicy {
     protected: list.sort(list.unique(value.protected), string.compare),
     env_allow: list.sort(list.unique(value.env_allow), string.compare),
   )
+}
+
+// Artifact identity selects among exactly two immutable physical producers.
+// Full input/completion/artifact checks still follow; UUID equality is no authority.
+fn successful_producer_origin(
+  config: Config,
+  parent: remote_tool.ToolKey,
+  artifact: compile.Artifact,
+) -> Result(remote_tool.ChildOrigin, Error) {
+  use request_id <- result.try(case artifact {
+    compile.ExecutorArtifact(request_id:, ..) -> Ok(request_id)
+    compile.Artifact(..) -> Error(Invalid)
+  })
+  use original <- result.try(
+    remote_tool.tool_child(parent, remote_tool.Compile)
+    |> result.replace_error(Invalid),
+  )
+  use row <- result.try(
+    custodian.child(config.owner, original)
+    |> result.replace_error(Uncertain),
+  )
+  case ids.entry_id_to_string(row.0) == request_id {
+    True -> Ok(original)
+    False -> {
+      use rewrite <- result.try(
+        remote_tool.tool_child(parent, remote_tool.CompileRewrite)
+        |> result.replace_error(Invalid),
+      )
+
+      // A missing optional Rewrite is a witnessed producer mismatch before
+      // any Launch reservation; failed storage reads retain uncertain custody.
+      use row <- result.try(
+        custodian.child(config.owner, rewrite)
+        |> result.map_error(fn(error) {
+          case error {
+            custody.Missing -> Invalid
+            custody.Conflict
+            | custody.Capacity
+            | custody.Frozen
+            | custody.Invalid(_)
+            | custody.CollectionPending
+            | custody.Unavailable(_) -> Uncertain
+          }
+        }),
+      )
+      use <- bool.guard(
+        ids.entry_id_to_string(row.0) != request_id,
+        Error(Invalid),
+      )
+      Ok(rewrite)
+    }
+  }
 }

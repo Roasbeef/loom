@@ -69,6 +69,7 @@
 import broker/command as offer
 import broker/enrollment
 import broker/policy
+import codemode/compile
 import codemode/service_command
 import codemode/service_input as input
 import codemode/service_resources as resources
@@ -1686,6 +1687,7 @@ fn checked_row(
     validate(config.enrolled, Input(key, body.input))
     |> result.replace_error(Corrupt),
   )
+  use Nil <- result.try(check_compile_lineage(connection, config, key))
   use Nil <- result.try(
     case
       validated.id == row.id
@@ -1980,6 +1982,11 @@ fn insert(
   rows: List(sql.ResourceHeaders),
   original: Validated,
 ) -> Result(Answer, Error) {
+  use Nil <- result.try(check_compile_lineage(
+    connection,
+    config,
+    original.original.key,
+  ))
   let reserved = list.fold(rows, 0, fn(total, row) { total + reservation(row) })
   let required =
     bit_array.byte_size(original.address)
@@ -3287,5 +3294,28 @@ fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
       Nil
     }
     Waiting(_) -> Nil
+  }
+}
+
+// Closed key construction bounds this dependency to one version-one predecessor.
+// Reopening and direct reservation retain the same committed-failure obligation.
+fn check_compile_lineage(
+  connection: sqlight.Connection,
+  config: Config,
+  key: command.ServiceKey,
+) -> Result(Nil, Error) {
+  case command.compile_predecessor(key) {
+    None -> Ok(Nil)
+    Some(previous) -> {
+      use retained <- result.try(producer_completion(
+        connection,
+        config,
+        previous,
+      ))
+      case completion.compiled(retained).result {
+        Error(compile.BuildRejected(_)) -> Ok(Nil)
+        _ -> Error(Conflict)
+      }
+    }
   }
 }
