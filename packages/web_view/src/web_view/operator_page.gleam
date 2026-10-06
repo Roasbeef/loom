@@ -691,7 +691,9 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
   // returned drafts until an editor input changes, and capture only those
   // inputs rather than the page's session and transport in the memo.
   use <- element.memo([
-    element.ref(returns), element.ref(returned), element.ref(refusals),
+    element.ref(returns),
+    element.ref(returned),
+    element.ref(refusals),
   ])
   element.element(
     "loom-composer",

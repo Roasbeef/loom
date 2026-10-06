@@ -15,6 +15,7 @@ import page_fixture
 import session_view/agent_roster
 import session_view/agent_view
 import session_view/connection_event
+import session_view/operator
 import session_view/turns
 import web_view/component
 import web_view/operator_page
@@ -63,6 +64,35 @@ pub fn unchanged_editor_reuses_commands_and_a_return_refreshes_it_test() {
     counted(fn() { patch(cache, view, operator_page.view(page)) })
   assert tables == 1
   assert string.contains(text, "deploy when green")
+}
+
+// A refusal keeps the draft's editor, so its counter must invalidate the leaf
+// memo even though neither returned prompt input changed.
+pub fn a_refused_submit_refreshes_the_editor_and_then_reuses_it_test() {
+  let page = page_fixture.ready(process.new_subject(), "operator")
+  let view = operator_page.view(page)
+  let cache = first(view)
+  let refused =
+    operator_page.update(
+      page,
+      operator_page.Submitted("   ", operator.Prompt, []),
+    ).0
+  assert component.refusals(refused) == component.refusals(page) + 1
+  assert component.returns(refused) == component.returns(page)
+  assert component.returned(refused) == component.returned(page)
+
+  let #(#(text, view, cache), tables, _) =
+    counted(fn() {
+      let next = operator_page.view(refused)
+      let #(text, cache) = patch(cache, view, next)
+      #(text, next, cache)
+    })
+  assert tables == 1
+  assert string.contains(text, "refused")
+
+  let #(#(_, _), tables, _) =
+    counted(fn() { patch(cache, view, operator_page.view(refused)) })
+  assert tables == 0
 }
 
 fn chip() -> strip.Chip {
