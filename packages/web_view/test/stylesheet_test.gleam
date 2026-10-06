@@ -112,6 +112,12 @@ pub fn the_jump_button_has_a_strip_no_row_reaches_test() {
   let css = stylesheet()
   assert string.contains(css, "container-type:inline-size")
   assert string.contains(css, "padding-right:clamp(0px,438px - 50cqw,48px)")
+  // The anchor's own padding is set in the rule that also names the scroller,
+  // which outranks `loom-follow.follow > *` and its clamp.
+  assert string.contains(
+    css,
+    "loom-follow.follow>.jump-anchor{align-self:stretch;max-width:none;padding-right:8px}",
+  )
   assert string.contains(css, ".jump-latest{")
   assert string.contains(css, "width:32px;height:32px;")
 }
