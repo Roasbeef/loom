@@ -794,6 +794,7 @@ pub fn collect(
       },
       scan_branch: fn(_, query) { storage.scan_branch(source, query) },
       scan_entries: fn(_, query) { storage.scan_entries(source, query) },
+      scan_entry_heads: fn(_, query) { storage.scan_entry_heads(source, query) },
       scan_usage: fn(_, query) { storage.scan_usage(source, query) },
       stats: fn(_) { storage.stats(source) },
       close: fn(_) { storage.close(source) },

@@ -4,8 +4,8 @@
 //// either spelled as code reads it, has to find that entry, and two
 //// receivers sharing a method name have to stay two entries.
 
-import client/lsp/profile
-import client/lsp/resolve
+import codemode/lsp_host/profile
+import codemode/lsp_host/resolve
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}

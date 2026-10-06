@@ -4114,7 +4114,8 @@ pub fn an_owners_home_creates_a_session_and_the_tab_lands_on_it_test() {
     // workspace, with the scope the box chose.
     let assert Ok(view) = manager.get(ready.registry, created)
     assert view.registration.name == "fresh session"
-    assert view.registration.workspace == ready.state_root
+    assert view.registration.workspace
+      == workspace.LocalBinding(ready.state_root)
     assert result.is_ok(manager.resolve(ready.registry, created))
     let assert Ok(shared) = manager.session_domain(ready.registry, created)
     assert shared.scope == domain.SessionOnly
@@ -4318,7 +4319,7 @@ pub fn the_eleventh_creation_in_an_hour_is_refused_test() {
         assert string.starts_with(path, "/ui/sessions/")
         let assert Ok(creation) = process.receive(asked, 0)
         assert creation.name == "session " <> int.to_string(number)
-        assert creation.workspace == ready.state_root
+        assert creation.workspace == workspace.LocalBinding(ready.state_root)
         assert string.starts_with(creation.request_key, "web-")
       })
       |> list.length
@@ -6446,7 +6447,7 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
         ready.registry,
         manager.Creation(
           "admin-scope-private",
-          ready.state_root,
+          workspace.LocalBinding(ready.state_root),
           "admin-scope-private",
           "",
         ),
@@ -6483,7 +6484,7 @@ pub fn the_admin_read_summarises_each_listed_session_test() {
         ready.registry,
         manager.Creation(
           "admin-rows-private",
-          ready.state_root,
+          workspace.LocalBinding(ready.state_root),
           "admin-rows-private",
           "",
         ),

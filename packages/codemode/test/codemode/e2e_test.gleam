@@ -658,7 +658,7 @@ fn run_unused_import(prerequisites: Prerequisites) -> Nil {
   // member, and the artifact's address is over what was built from it.
   assert ran_source
     == "import cap/report\nimport gleam/list.{length}\n\npub fn main() -> report.Outcome {\n  case length([\"ran\"]) {\n    1 -> report.text(\"ran\")\n    _ -> report.text(\"unexpected\")\n  }\n}\n"
-  assert string.starts_with(artifact.manifest_hash, "sha256-")
+  assert string.starts_with(compile.artifact_hash(artifact), "sha256-")
   assert outcome == satellite.Completed(value: msgpack.StringValue("ran"))
   assert execution.edits
     == [

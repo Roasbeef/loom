@@ -69,6 +69,7 @@ fn config(service: compile.CompileService) -> codemode.ExecConfig {
       write_token_file: fn(_token) { Error("no physical token requested") },
       unlink_token_file: fn(_path) { Nil },
       router: satellite.default_router,
+      precheck: satellite.no_precheck,
       ceilings: [],
       call_timeout_ms: 1000,
     ),

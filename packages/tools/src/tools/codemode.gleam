@@ -103,8 +103,8 @@ import gleam/result
 import gleam/string
 import tools/blob
 import tools/call_record.{type CallLog}
-import tools/codemode_pointer
 import tools/code_report
+import tools/codemode_pointer
 import tools/codemode_recipes
 import tools/directory_access
 import tools/fs
