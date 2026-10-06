@@ -215,3 +215,22 @@ strand had no input at all, so completing its newest turn by reading back to its
 input could end only at the strand's first record, which on a long session was
 hundreds of reads in a row. A feed and a goal feed are inputs, so each review is
 a turn and the newest is completed by reading back to its feed.
+
+*A scan that finds none of its records stops, and the press goes on.* Every
+history read is an interval of a hundred sequences of the whole session, and the
+scan keeps only the records of its own ancestry. A strand sparse among the
+session's sequences (the main strand after sub-agents wrote thousands of records,
+the advisor after a long main turn) would be read one interval after another down
+to the first sequence. A scan now stops after eight reads in a row that add
+nothing (`history_view.scan_floor`), is given up as a refused read is, and the
+page remembers the sequence it got to (`View.resume`), so a press of "Load older"
+starts below it and each press goes further. A scan that is finding its records
+never reaches the limit. A strand's first read starts below the cut's lowest
+sequence and not at its cursor, so the cut is not read again.
+
+*Not covered.* A strand whose newest record is over the presentation limit reaches
+the page as a descriptor with no payload, and the page cannot read its parent
+from it, so such a strand still opens as the beginning with no "Load older". The
+descriptor would have to carry the parent; that is a wire change and is not made
+here. The advisor's feed change is to `session_view/turns`, which the web view
+draws from; the terminal does not use it.

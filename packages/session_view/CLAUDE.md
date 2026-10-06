@@ -133,7 +133,7 @@ for a host with no surfaces.
   below such a record proves it), and `scan_end` drops it. It is bounded at 4,096 records
   and 32 MiB, private to the module, and a page that would take it past the
   bound is cut at the oldest end, so it still ends at its leaf, and the scan is
-  unreadable afterwards. A `cancel` abandons it. The window is the same value after a scan as before it.
+  unreadable afterwards. `Scanning.barren` counts reads in a row that added nothing, and `scan_floor` gives the sequence reached once there are eight, which the host takes as a reason to stop and resume below it (a strand sparse among the session's sequences). A `cancel` abandons it. The window is the same value after a scan as before it.
 - `protocol.Event`, `protocol.EntryRecord` and the board types, and
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live

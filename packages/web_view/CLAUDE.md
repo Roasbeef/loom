@@ -511,7 +511,10 @@ page keys and nonces, and the relay into the session's gateway.
   strand: it reads from the leaf, as the turns below the window are read, once
   (a refusal sets `Completion` to `Spent`, and the page then offers Load older,
   whose press reads from the leaf again; a cut that names no leaf is the
-  beginning). `ForLead`, the start
+  beginning). A scan stops after eight reads in a row that add nothing
+  (`history_view.scan_floor`, a strand sparse among the session's sequences);
+  `paused` gives it up like a refusal and keeps the sequence it reached in
+  `View.resume`, which the next `ForTail` or `ForOlder` starts below. `ForLead`, the start
   of the turn the window began inside (a page opened on a settled session holds
   only the end of its newest turn, and draws nothing for it until the start is
   read, so the divider's figures are the turn's), `ForSteps`, the newest

@@ -67,6 +67,10 @@ pub type Scan {
     before_seq: Int,
     /// The scan's own outstanding or deferred read.
     request: Request,
+    /// How many reads in a row added nothing to what the scan holds, which is
+    /// what a strand sparse among the session's sequences costs: every
+    /// interval is another strand's records.
+    barren: Int,
   )
 
   /// A read of the scan was refused, or the lane was lost, so the scan was
@@ -81,6 +85,13 @@ pub type Scan {
 const scan_records = 4096
 
 const scan_bytes = 33_554_432
+
+// How many reads in a row may add nothing before a scan stops being readable.
+// Each read is an interval of a hundred sequences, so a strand whose records
+// are further apart than that is read in steps of this many intervals, and the
+// host resumes from `scan_floor` when the reader asks for more. A scan that is
+// finding its strand's records never reaches it.
+const scan_barren = 8
 
 /// Presentation retention never supplies operation or authorization metadata.
 pub type State {
@@ -277,8 +288,8 @@ pub fn sent(state: State, before: Int) -> State {
 
 fn pending(scan: Scan, before: Int) -> Scan {
   case scan {
-    Scanning(leaf:, window:, before_seq:, ..) ->
-      Scanning(leaf:, window:, before_seq:, request: Pending(before))
+    Scanning(leaf:, window:, before_seq:, barren:, ..) ->
+      Scanning(leaf:, window:, before_seq:, request: Pending(before), barren:)
     Unscanned | Abandoned -> scan
   }
 }
@@ -366,6 +377,7 @@ pub fn scan(
           window:,
           before_seq: next,
           request: Quiet,
+          barren: 0,
         ),
       )
     }
@@ -412,14 +424,33 @@ pub fn scanned(
 @internal
 pub fn scan_older(state: State, missing: Option(String)) -> State {
   case state.scan, missing {
-    Scanning(leaf:, window:, before_seq:, request: Quiet), Some(_)
+    Scanning(leaf:, window:, before_seq:, request: Quiet, barren:), Some(_)
       if before_seq > 1
     ->
       State(
         ..state,
-        scan: Scanning(leaf:, window:, before_seq:, request: Wanted),
+        scan: Scanning(leaf:, window:, before_seq:, request: Wanted, barren:),
       )
     _, _ -> state
+  }
+}
+
+/// The sequence a scan that stopped for want of finding anything had reached,
+/// or nothing when it did not stop for that. A host that was told the scan is
+/// not readable and holds no turn from it starts its next scan below this
+/// sequence, so each press goes further down and none reads the same intervals.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert history_view.scan_floor(history_view.empty()) == option.None
+/// ```
+@internal
+pub fn scan_floor(state: State) -> Option(Int) {
+  case state.scan {
+    Scanning(before_seq:, barren:, ..) if barren >= scan_barren ->
+      Some(before_seq)
+    Scanning(..) | Unscanned | Abandoned -> None
   }
 }
 
@@ -564,7 +595,8 @@ pub fn accept(
 ) -> State {
   case state.request == Pending(before), state.scan {
     True, _ -> accepted(state, page, before, after, view, KeepOldest)
-    False, Scanning(leaf:, window:, before_seq:, request: Pending(asked))
+    False,
+      Scanning(leaf:, window:, before_seq:, request: Pending(asked), barren:)
       if asked == before
     -> {
       let reading =
@@ -585,6 +617,12 @@ pub fn accept(
           window: read.window,
           before_seq: read.before_seq,
           request: Quiet,
+          barren: case
+            list.length(read.window.items) > list.length(window.items)
+          {
+            True -> 0
+            False -> barren + 1
+          },
         ),
       )
     }

@@ -874,6 +874,12 @@ type View(socket) {
     /// `Reached` once a read found nothing below the page's oldest turn, which
     /// says the strand has no more even where its last record names a parent.
     floor: Earlier,
+    /// The sequence the last read for the strand's newest or older turns got
+    /// to before it stopped, having found none of the strand's records in a run
+    /// of intervals (`history_view.scan_floor`). The next such read starts below
+    /// it, so a strand that is sparse among the session's sequences is read in
+    /// steps and not all at once.
+    resume: Option(Int),
     /// The closed turns of each strand the reader left, by the strand's name,
     /// for the life of the page, as `parked_paging` is kept: the history
     /// window of a parked strand has been trimmed to what the closed turns do
@@ -1192,6 +1198,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       older: Unasked,
       completion: Untried,
       floor: Unheld,
+      resume: None,
       parked_sealed: dict.new(),
       blocks: [],
       pieces: [],
@@ -2264,20 +2271,47 @@ fn read(
         transcript.branch_blocks(branch, cut, view, shared.active_strand, [])
       let source = source_of(shared.scrollback, branch)
       case found(model, purpose, blocks, branch, view, source) {
-        Ok(taken) -> ended(taken)
+        Ok(taken) ->
+          ended(Model(..taken, view: View(..taken.view, resume: None)))
         Error(Nil) ->
-          Model(
-            ..model,
-            shared: Shared(
-              ..shared,
-              scrollback: history_view.scan_older(
-                shared.scrollback,
-                branch.unloaded,
-              ),
-            ),
-          )
+          case history_view.scan_floor(shared.scrollback) {
+            Some(floor) -> paused(model, purpose, floor)
+            None ->
+              Model(
+                ..model,
+                shared: Shared(
+                  ..shared,
+                  scrollback: history_view.scan_older(
+                    shared.scrollback,
+                    branch.unloaded,
+                  ),
+                ),
+              )
+          }
       }
     }
+  }
+}
+
+// A read that went through a run of intervals and found none of the records it
+// is after: the strand is sparse among the session's sequences. It is given up
+// as a refused one is, so the page offers "Load older" and nothing is read in a
+// loop, and for the turns the page lacks it remembers how far down it got, so
+// the press goes on from there and not from the start.
+fn paused(model: Model(socket), purpose: Purpose, floor: Int) -> Model(socket) {
+  let resume = case purpose {
+    ForOlder | ForTail -> Some(floor)
+    ForLead | ForSteps(_) | Resting -> None
+  }
+  abandoned(Model(..model, view: View(..model.view, resume:)))
+}
+
+// The sequence a read for the strand's turns starts below: the one it was
+// given, or the one an earlier read of the same turns got to.
+fn lowered(model: Model(socket), before: Int) -> Int {
+  case model.view.resume {
+    Some(floor) -> int.min(floor, before)
+    None -> before
   }
 }
 
@@ -2373,18 +2407,14 @@ fn below(
 // The strand's newest turns, read from its leaf because the window held none of
 // its records. They are the first turns the page closes, so they are taken as
 // the turns below the window are. A read that found nothing to draw (a strand
-// whose records draw no row) is not tried again: with no turn closed, the page
-// would ask for them on every layout.
+// whose records draw no row) marks the floor reached, which is what keeps the
+// page from asking for them on every layout.
 fn first_turns(
   model: Model(socket),
   found: List(turn_ledger.Sealed),
   source: turn_ledger.Source,
 ) -> Model(socket) {
-  let model = below(model, found, source)
-  case found {
-    [_, ..] -> model
-    [] -> Model(..model, view: View(..model.view, completion: Spent))
-  }
+  below(model, found, source)
 }
 
 // The turn the window held only the end of, whole at last. It is the newest
@@ -3251,7 +3281,7 @@ fn wanted(
     Unfinished, Ok(end), _ -> Some(#(ForLead, end.id, end.seq + 1))
     _, _, Some(#(leaf, before)) ->
       case view.completion {
-        Untried -> Some(#(ForTail, leaf, before))
+        Untried -> Some(#(ForTail, leaf, lowered(model, before)))
         Spent -> reader_asked(model, window, cut)
       }
     _, _, None -> reader_asked(model, window, cut)
@@ -3269,9 +3299,19 @@ fn reader_asked(
     Some(turn) -> Some(#(ForSteps(turn.0), turn.1.end.id, turn.1.end.seq + 1))
     None ->
       case model.view.older, below_origin(model, window, cut) {
-        Pressed, Some(#(leaf, before)) -> Some(#(ForOlder, leaf, before))
+        Pressed, Some(#(leaf, before)) ->
+          Some(#(ForOlder, leaf, lowered(model, before)))
         Pressed, None | Unasked, _ -> None
       }
+  }
+}
+
+// The lowest sequence the cut holds, or the cursor when it holds nothing. A
+// strand the cut holds none of is below it, so the cut is not read again.
+fn below_cut(cut: snapshot.Captured) -> Int {
+  case list.last(cut.window.items) {
+    Ok(oldest) -> snapshot.sequence(oldest)
+    Error(Nil) -> cut.next_seq
   }
 }
 
@@ -3286,13 +3326,17 @@ fn unread_tail(
   window: Window,
   cut: snapshot.Captured,
 ) -> Option(#(String, Int)) {
-  case model.view.sealed, window.records, window.unloaded {
-    [], [], Some(leaf) ->
+  case model.view.floor, model.view.sealed, window.records, window.unloaded {
+    Unheld, [], [], Some(leaf) ->
       case ids.parse_entry_id(leaf) {
-        Ok(_) -> Some(#(leaf, cut.next_seq))
+        Ok(_) -> Some(#(leaf, below_cut(cut)))
         Error(_) -> None
       }
-    [], [], None | [], [_, ..], _ | [_, ..], _, _ -> None
+    Unheld, [], [], None
+    | Unheld, [], [_, ..], _
+    | Unheld, [_, ..], _, _
+    | Reached, _, _, _
+    -> None
   }
 }
 
@@ -4783,6 +4827,7 @@ fn focus_at(
             older: Unasked,
             completion: Untried,
             floor: Unheld,
+            resume: None,
             folds: [],
             parked_paging: dict.delete(remembered, strand),
             refusal: None,

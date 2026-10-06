@@ -200,6 +200,73 @@ pub fn a_strand_that_only_receives_feeds_opens_in_a_few_reads_test() {
   assert component.pieces(page) != []
 }
 
+// The number of history reads among `frames`, and the lowest sequence any of
+// them asked below.
+fn read_cost(frames: List(String)) -> #(Int, Int) {
+  let asked =
+    list.filter_map(frames, fn(frame) {
+      case string.split(frame, "\"before_seq\":") {
+        [_, rest] ->
+          case string.contains(frame, "\"cmd\":\"history\"") {
+            True ->
+              case string.split(rest, "}") {
+                [digits, ..] -> int.parse(digits)
+                [] -> Error(Nil)
+              }
+            False -> Error(Nil)
+          }
+        _ -> Error(Nil)
+      }
+    })
+  #(list.length(asked), list.fold(asked, 1_000_000, int.min))
+}
+
+// A strand sparse among the session's sequences is read in steps. Its leaf is
+// below five thousand records another strand wrote, and every interval of a
+// hundred sequences holds none of its own, so a read that went on until it found
+// one would be fifty reads. The page reads at most eight intervals that find
+// nothing, says so by offering Load older, and each press goes on below where the
+// last stopped until the turn is found.
+pub fn a_sparse_strand_is_read_in_steps_test() {
+  let main = lane_fixture.batched([[2]])
+  let archive = lane_fixture.advised(main, 5000)
+  let capture =
+    lane_fixture.newest_by(archive, 50, [
+      #("main", list.length(main)),
+      #("advisor", list.length(archive)),
+    ])
+  let wire = process.new_subject()
+  let #(page, frames) =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([capture])
+    |> page_fixture.run(component.update, [component.Ticked])
+    |> lane_fixture.served(wire, archive, capture, "operator")
+  let #(reads, lowest) = read_cost(frames)
+  assert reads <= 8
+  assert spoken(page) == []
+  assert component.top(page) == lane.Earlier
+  press_until_drawn(page, wire, archive, capture, lowest, 0)
+}
+
+fn press_until_drawn(page, wire, archive, capture, lowest: Int, presses: Int) {
+  case spoken(page) {
+    [] -> {
+      assert presses < 10
+      let #(page, frames) =
+        page_fixture.run(page, component.update, [component.OlderRequested])
+        |> lane_fixture.served(wire, archive, capture, "operator")
+      let #(reads, next) = read_cost(frames)
+      assert reads <= 8
+      assert next < lowest
+      press_until_drawn(page, wire, archive, capture, next, presses + 1)
+    }
+    drawn -> {
+      assert presses >= 2
+      assert drawn == ["question 1", "answer 1"]
+    }
+  }
+}
+
 // A refused read is not asked again by the page: it offers Load older, the
 // reader's press tries again, and the turn is drawn when that is answered.
 pub fn a_refused_read_is_left_to_the_reader_test() {
