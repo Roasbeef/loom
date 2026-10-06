@@ -152,3 +152,41 @@ from it beyond the transcript now draws from the summaries: the Changes and
 Trace boards and the sequence of the newest tool result, which says when the
 workspace is read again. A cache miss noticed after its turn closed is drawn
 after that turn's pieces.
+
+## Addendum 2026-10-06: four rules the first live review corrected
+
+No wire protocol changes. These adjust rules above that the first review of an
+implementation found wrong.
+
+*A fold never draws a result without its call.* The read that fills a fold
+stops at an interval of a hundred sequences, and a model that issues its calls
+in one message and gets the results as one record each can leave the read
+between the two. The results it holds name no call, so the fold does not draw
+them, and they do not count toward the hundred rows that fill it: the read goes
+on until it holds a hundred rows of whole steps, or cannot go further. The
+number of earlier steps a fold says it does not show is the divider's count of
+the turn's steps less the steps it draws.
+
+*A scan stops at a record it cannot load.* A record over the presentation limit
+reaches the page as a descriptor with no payload, and the parent a scan is
+missing is then a record no read below it will prove. A scan that holds that
+descriptor is not readable, so it ends there and does not walk every sequence
+beneath it to the strand's first.
+
+*A refused read gives up on one lead.* `completion: Spent` stops the page from
+asking again for the lead it could not complete. It lasts until that lead has
+been closed; records that arrive afterwards with no input of their own are a
+lead that has not been tried, and are read.
+
+*A page a running turn crowded is paged again when the turn settles.* A paged
+page that had to cut a turn is full, as above. When the cut is the running
+turn's own rows, drawn open, the page is `Crowded` and says the same while the
+turn runs, and is `Paged` again when it settles into one divider and the cut is
+gone. A cut by the bytes of the closed turns stays full, since a summary never
+shrinks.
+
+Two rules about words follow from the same review. The divider says
+`interrupted` for a turn in which a command was stopped on request (a tool
+result whose details say `cancelled` and not `timed_out`), as it does for an
+aborted response. A stop the provider could not confirm is worded for the
+reader, with no part of the harness named.
