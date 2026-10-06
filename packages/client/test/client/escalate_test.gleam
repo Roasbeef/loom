@@ -1806,7 +1806,7 @@ pub fn session_dialog_approval_resumes_native_write_and_remembers_the_exact_file
     assert seq == cell.seq
     assert Some(digest) == cell.record.action
     let assert Ok(change) =
-      permissions.remembering(harness.runtime, echoed, None)
+      permissions.remembering(harness.runtime, echoed, permissions.Unknown)
       as "the displayed grants are eligible for session persistence"
     let assert Ok(_) =
       api.approve_escalation_with_fact_at(
