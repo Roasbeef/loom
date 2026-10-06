@@ -634,7 +634,8 @@ into a want (`View.older`). The page then reads from the parent of the oldest
 closed turn's first record, on its own lane, through the lineage read
 (`session_channel.lineage`), and stops at the first page that holds ten whole
 turns, the strand's first record or the scan's bound. A press loads turns, not
-records. The lane has one request out at a time: when it is busy the demand
+records. Until the first cut has arrived the lane says it is loading, and it says
+the conversation begins only when a read of the strand found its first record. The lane has one request out at a time: when it is busy the demand
 stays `Wanted` and is offered again after every reduction until the lane takes
 it, and a second press while a read is out asks nothing. The page keeps
 following the session while the read is out, since the records it reads are kept
