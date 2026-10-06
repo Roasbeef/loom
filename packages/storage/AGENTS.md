@@ -177,6 +177,19 @@ with these forks: they define the same modules.
   register headers after an exclusive key cursor, before values are copied.
   Every page is a fresh coherent cut; a removed cursor still names the same
   key boundary, and pagination retains no transaction between calls.
+  `Reader.lineage(from, before_seq, limit, wait)` returns one entry's ancestry
+  as ascending descriptors: `from` and the entries below it down their parent
+  links, below the exclusive high-water `before_seq`, at most `limit` (never
+  over `page_limit`, 100) and at most `lineage_bytes_limit` (2 MiB) of payload
+  past the first record, which is always returned (protocol-change/072). It
+  costs the records it returns and not the distance between them: each step is
+  one primary-key probe of `entries` (`SnapshotEntryHead`, one query per step,
+  since sqlc cannot generate a self-referencing recursive query), so the writes
+  of other strands between a strand's records are never read. `snapshot.lineage`
+  owns the walk and its bounds, and each backend supplies only the step
+  (`snapshot_sqlite.lineage`, `snapshot_memory.lineage`). Every step asks for an
+  entry below the sequence of the one before, so a corrupt parent link ends the
+  walk instead of looping, and an entry the store lacks ends it as a root does.
 - `storage/sql` contains parrot/sqlc-generated catalogue and snapshot queries.
   `storage/sql_schema` embeds catalogue `sql/schema.sql`; `session_schema`
   embeds conversation `sql/session.sql`; `catalogue_names_schema` embeds the

@@ -123,17 +123,23 @@ for a host with no surfaces.
   looks at records without keeping them (protocol-change/071). `scan(state,
   leaf, before_seq, known, view)` starts it at the record `leaf`, seeded with
   the part of `known` and the window that is the leaf's ancestry below
-  `before_seq`; `scanned` gives what it holds as a `Branch`, `scan_older` asks
-  for the interval below it (a read the host's step sends through the same
-  `range`/`sent`/`accept` as the window's, the window's demand served first, a
-  reply going to whichever asked for it), `scan_readable(state, missing)` says
-  whether it can go on (a sequence is left, it has neither reached its
-  bound nor been cut, and the parent it is missing, `missing`, is not a record
-  over the presentation limit that it already holds as a descriptor: no read
-  below such a record proves it), and `scan_end` drops it. It is bounded at 4,096 records
-  and 32 MiB, private to the module, and a page that would take it past the
-  bound is cut at the oldest end, so it still ends at its leaf, and the scan is
-  unreadable afterwards. `Scanning.barren` counts reads in a row that added nothing, and `scan_floor` gives the sequence reached once there are eight, which the host takes as a reason to stop and resume below it (a strand sparse among the session's sequences). A `cancel` abandons it. The window is the same value after a scan as before it.
+  `before_seq`; `scanned` gives what it holds as a `Branch`. The scan reads the
+  strand's own parent links (protocol-change/072): `scan_older` owes a read
+  that starts at the parent the scan lacks (`Lineage`: `Idle | Owed(from) |
+  Out(from)`), `lineage` names the entry to read when the window has no demand
+  of its own to serve first, `sent_lineage` marks it out, and `accept_lineage`
+  takes the page that answers it, ignoring a reply to a read the scan did not
+  ask for. A page that adds no record the scan did not hold sets
+  `Floor` to `Bottomed`, so the same entry is never asked for twice.
+  `scan_readable(state, missing)` says whether it can go on (the last read added
+  records, it has neither reached its bound nor been cut, and the parent it is
+  missing, `missing`, is not a record over the presentation limit that it
+  already holds as a descriptor: no read below such a record proves it), and
+  `scan_end` drops it. It is bounded at 4,096 records and 32 MiB, private to the
+  module, and a page that would take it past the bound is cut at the oldest end,
+  so it still ends at its leaf, and the scan is unreadable afterwards. A
+  `cancel` abandons it. The window is the same value after a scan as before it,
+  and its own interval read (`range`, `sent`, `accept`) is the terminal's.
 - `protocol.Event`, `protocol.EntryRecord` and the board types, and
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live

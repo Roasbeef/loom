@@ -502,8 +502,9 @@ page keys and nonces, and the relay into the session's gateway.
   opened first, and both are cut to the folds `fit` grants.
   The page reads when it wants something, one read at a time (`View.purpose`:
   `Resting | ForOlder | ForLead | ForTail | ForSteps(fold)`), through the history
-  window's scan (`history_view.scan`), which keeps what it reads apart from the
-  window. `begun`, at the end of a projection, starts the first of: `ForTail`,
+  window's scan (`history_view.scan`), which walks the strand's own parent
+  links a page of at most a hundred records at a time (`history_lineage`,
+  protocol-change/072) and keeps what it reads apart from the window. `begun`, at the end of a projection, starts the first of: `ForTail`,
   the strand's newest turns, when the window holds none of the strand's records
   and no turn is closed (`unread_tail`). A gateway's cut is the newest records of
   the whole session, so another strand that wrote past a settled one (the advisor
@@ -511,10 +512,10 @@ page keys and nonces, and the relay into the session's gateway.
   strand: it reads from the leaf, as the turns below the window are read, once
   (a refusal sets `Completion` to `Spent`, and the page then offers Load older,
   whose press reads from the leaf again; a cut that names no leaf is the
-  beginning). A scan stops after eight reads in a row that add nothing
-  (`history_view.scan_floor`, a strand sparse among the session's sequences);
-  `paused` gives it up like a refusal and keeps the sequence it reached in
-  `View.resume`, which the next `ForTail` or `ForOlder` starts below. `ForLead`, the start
+  beginning). Another strand's records between the strand's own cost the walk
+  nothing, so a strand sparse among the session's sequences is read as a dense
+  one is; a read that finds nothing below what the scan holds ends it
+  (`Bottomed`). `ForLead`, the start
   of the turn the window began inside (a page opened on a settled session holds
   only the end of its newest turn, and draws nothing for it until the start is
   read, so the divider's figures are the turn's), `ForSteps`, the newest
@@ -1100,9 +1101,11 @@ page keys and nonces, and the relay into the session's gateway.
   one before is answered: the strand's notes (a first capture, to seed a
   todo board, which the todo panel draws), the session's context (a first
   capture, a configuration change and the end of each operation), the
-  advisor's pending nudges and the goal. Also the `history` read
-  (`session_channel.history`) for at most 100 sequences below the oldest
-  record the page holds. The summary labels' read is not sent.
+  advisor's pending nudges and the goal. Also the strand's lineage read
+  (`session_channel.lineage`, `history_lineage`) for at most 100 of the strand's
+  own records from the parent of the oldest one the page lacks, and, for the
+  history window's own demand, which this host does not make, the terminal's
+  `history` interval read. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in a strand's own view and in the live reasoning row, `<loom-fold>` around a settled
   turn's work, `<loom-expand>` around a step or reasoning row with a body, and `<loom-follow>` around the lane and `<loom-shell>` around the page. The stylesheet pins the
@@ -1185,12 +1188,13 @@ page keys and nonces, and the relay into the session's gateway.
   turn's key, and its lines' memos, as they were (`lane_memo_test`). The
   undrawn end of a turn whose input is older stays in the window so the
   next read goes below it, and counts as cut once it alone no longer fits.
-- **One read at a time.** The history read goes out only when the lane has
-  no request out (`session_channel.history` refuses a busy lane); until
-  then the demand stays `Wanted` and every reduction offers it again. While
-  a read is out the history window is frozen, and the reply, a refusal or
-  the lane's failure is what ends it. The button is offered only while
-  there are sequences below the window to read.
+- **One read at a time.** The lineage read goes out only when the lane has
+  no request out (`session_channel.lineage` refuses a busy lane); until
+  then the demand stays `Owed` and every reduction offers it again. The
+  reply, a refusal or the lane's failure is what ends it. The button is
+  offered only while the strand has turns below the ones the page holds. The
+  lane says it is loading until the first cut has arrived, and says the
+  conversation begins only when a read of the strand found it.
 - **One ordered effect.** The lane's outputs are performed in one
   `effect.from`, never split across `effect.batch`, which does not order.
 - **The page keeps no facts the step recorded for surfaces it lacks.** The

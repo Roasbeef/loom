@@ -887,7 +887,15 @@ catalogue without opening runtimes. Explicit admission invokes
   `Approve`, `Deny`, `Fork`, `Navigate`, `Compact`, `CreateStrand`,
   `ListModels` (wire name `models`), `SetConfig`, `ListSchedules` (wire name
   `schedules`), `CancelSchedule` (wire name `schedule_cancel`)) plus `UnknownCommand`,
-  which keeps an unrecognized name as data.
+  which keeps an unrecognized name as data. `HistoryLineage(from)` (wire name
+  `history_lineage`) is the strand-scoped history read (protocol-change/072): it
+  begins a bounded transfer (`transfer.Lineage`, step `ReadLineage`, checked by
+  `accept_lineage`) of the records on the path from one entry down its parent
+  links, at most 100 and 2 MiB, oldest first, from `snapshot_reader.lineage`. A
+  client names a strand by its leaf and pages by the parent of the oldest record
+  it holds, so the transfer has no cursor (`more_after` is null). It is
+  read-only, so an observer's attachment may issue it, and it is authorized per
+  frame as `history` is.
 - `client/protocol.{EventEnvelope, Event}` — the server→client envelope
   `{v, reply_to?, event, seq?, body}` and its events (`SnapshotEvent`,
   `EntryEvent`, `OpTransitionEvent`, `StreamDeltaEvent`, `UsageEvent`,
