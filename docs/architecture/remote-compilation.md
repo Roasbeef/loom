@@ -366,3 +366,34 @@ remote LSP and ordinary tool consumers. The native historical-context
 Missing/Conflict classification remains a separately pending correction. The final
 test must run the owner and executor on separate hosts with the workspace absent
 from the owner's disk, including cancellation, restart and lost replies.
+
+## Closed Launch custody
+
+The executor resource journal uses format 3 for closed Compile and Launch
+completion in the same bounded slot. It refuses formats 1 and 2 before reading
+new columns or bodies. Fresh provisioning is required; this component performs
+no migration of existing journal constraints.
+
+`launch_completion` records the complete original Launch key and a witnessed
+refusal before native dispatch or exact settled native identity, Prepared digest
+and canonical terminal bytes. Native enforcement derives from the terminal.
+Program outcome and complete report retention belong to the existing owner
+store; the 256-KiB completion slot cannot carry a 16-MiB cap frame.
+
+`fail_launch_preparation` requires the original live Claim and definite owner
+refusal continuation. Its atomic phase fence preserves Ready while excluding any
+retained native association. The native command service can dispatch only after
+that association commits and yields its opaque permit, so whichever commit wins
+excludes the other. Native readback already in progress must revalidate after
+refusal. Missing association alone, timeout and caller loss remain uncertainty.
+`commit_launch` instead requires exact actual native journal settlement. Neither
+completion variant establishes resource cleanup, transport consumption, scope
+retirement or owner report COMMIT, and neither can recreate a live channel.
+
+Launch native association reads one bounded Compile producer from the same
+resource connection and verifies its full original input, enrollment and retained
+successful completion. The existing `service_input.admit_launch` and
+`service_command.launch` constructors derive the SatelliteCommand using actual
+admitted wall time and original Launch Ready resources. Compile-specific APIs
+remain role guarded. The same canonical Prepared, UUID, policy and finite native
+authority checks apply; historical recovery grants no new native permit.
