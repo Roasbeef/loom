@@ -4988,7 +4988,9 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
   }
 }
 
-/// What the lane draws above the oldest row the page holds.
+/// What the lane draws above the oldest row the page holds: that the page is
+/// loading, until the first cut has arrived and while it reads turns below the
+/// ones it holds, and otherwise whether older turns exist.
 ///
 /// ## Examples
 ///
@@ -4996,12 +4998,19 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
 /// // component.top(model) == lane.Earlier
 /// ```
 pub fn top(model: Model(socket)) -> lane.Top {
-  case reading_older(model), model.view.earlier, model.view.paging {
-    True, _, _ -> lane.Loading
-    False, Reached, _ -> lane.Beginning
-    False, Unheld, Full -> lane.Full(held_rows)
-    False, Unheld, Crowded -> lane.Crowded
-    False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
+  case model.view.status {
+    // Until the first cut arrives the page knows nothing of the strand, and
+    // saying the conversation begins would be a statement about a session it
+    // has not read.
+    Connecting -> lane.Loading
+    Connected | Ended(_) ->
+      case reading_older(model), model.view.earlier, model.view.paging {
+        True, _, _ -> lane.Loading
+        False, Reached, _ -> lane.Beginning
+        False, Unheld, Full -> lane.Full(held_rows)
+        False, Unheld, Crowded -> lane.Crowded
+        False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
+      }
   }
 }
 

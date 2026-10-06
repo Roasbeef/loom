@@ -184,6 +184,25 @@ pub fn the_page_says_it_is_loading_until_the_turn_arrives_test() {
   assert component.top(page) == lane.Beginning
 }
 
+// Before the first cut arrives the page has read nothing of the strand, and
+// "Beginning of this conversation." would be a statement about a session it
+// has not seen: a reload said it for the moment before the first answer, over
+// a conversation that went on for hours. The lane says it is loading until the
+// first cut has arrived, and says the beginning only when a read of the strand
+// found it.
+pub fn the_lane_does_not_say_the_conversation_begins_before_it_has_read_it_test() {
+  let wire = process.new_subject()
+  let page = page_fixture.ready(wire, "operator")
+  assert component.top(component.new(page_fixture.start())) == lane.Loading
+  let #(archive, capture) = reviewed([[3]], 60)
+  let page = component.apply(page, [capture])
+  assert component.top(page) != lane.Beginning
+  let page =
+    page_fixture.run(page, component.update, [component.Ticked])
+    |> lane_fixture.serve(wire, archive, capture)
+  assert component.top(page) == lane.Beginning
+}
+
 // The advisor's strand receives one kind of message, the feed of what the
 // primary did, and answers each in a run of its own. A feed starts a turn as a
 // person's message does, so the page completes the newest review by reading back
