@@ -1,12 +1,13 @@
 # Current handoff
 
 This edition covers the shell-directory and code-mode work on
-`codex/working-directory-code-mode`, based on `153fc6b60`, on 2026-10-06.
+`codex/working-directory-code-mode`, rebased onto `cc9ec305d`, on 2026-10-06.
 The original checkout was left alone. The work lives in
 `.worktrees/working-directory-code-mode`; it has not been installed into the
-running daemon, pushed, or merged.
+running daemon or merged. PR #889 is open; its rebased head is being validated.
 
-The previous edition was baselined on `556e419af` on 2026-10-04. Its hosted
+The previous main edition documented the optimization integration based on
+`32846807b` and `34c0db0f` on 2026-10-05. Its hosted
 PR status and release claims were not refreshed in this work. Read the relevant
 issue or branch before continuing those lanes; do not treat the old snapshot
 as current status. Their design rulings remain in the architecture documents,
@@ -41,7 +42,8 @@ function surface retains its examples; the cached type surface does not.
 The full gate also exposed a warm-server restart caused by generated inventory
 key order. Gleam rewrote `packages.toml` with the same installed versions in a
 different order. `lsp/dependency_state` now hashes parsed inventory contents
-with recursively sorted table keys, preserving every value and sequence order.
+with recursively sorted table keys. Main already carries that fix and its
+regressions; this rebase preserves its bounded table/string vocabulary.
 Manifest and project configuration hashes remain byte-based. The deterministic
 inventory regression and the real preparation fixture pass.
 
@@ -71,13 +73,14 @@ cwd even if the strand's default later changes.
 
 ## Verification and next actions
 
-The complete final client gate passed 2,878 tests using a freshly rebuilt
+Before rebase, the complete client gate passed 2,878 tests using a freshly rebuilt
 server and the repository's fixture environment. Tools and cap passed 636 and
 175 tests; the generator suite passed six. The broader run and remaining
 package runs covered the other suites. Formatting, lint, doc-check, prelude
 freshness and client assets passed separately. Four defect mutations each
 failed their intended regression, then passed after restoration. The required
-independent review and bounded fix rechecks are complete.
+independent review and bounded fix rechecks were complete on that prior head.
+A fresh Astra adversarial review and new-head validation are in progress.
 
 The first broad run was red for shifted citations, the inventory-order defect,
 and two undeclared macOS `/proc` skips. The citations and defect were fixed;
@@ -91,7 +94,7 @@ Linux enforcement and `signoff/linux` have not been run. macOS live code-mode
 runs report the existing address-space, process-limit and process-lifecycle
 limitations. The `/proc` helper-kill checks and rust-analyzer fixture remain unverified on
 this host; no new skip waiver was added. Local test success is not Linux signoff. The owner must authorize
-installation, publication or merge separately.
+installation or merge separately. Rebase publication is authorized.
 
 Other work should begin by inspecting its current issue and branch. The prior
 handoff named terminal drives and follow-ups (#656, #763–#766), web workspace

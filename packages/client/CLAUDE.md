@@ -17,7 +17,8 @@ and checks every remaining source against it before acquisition or text reads.
 Explicit assertions remain exact, and mismatch errors name both owner pairs.
 Installed Gleam inventories compare parsed contents with recursively ordered
 table keys. A serializer-only reorder cannot evict a warm server; versions,
-Git commits, sequence order and every other value remain part of the stamp.
+Git commits and every supported string value remain part of the stamp.
+Unsupported values and excess table depth refuse reuse.
 Project configurations and manifests retain their byte hashes.
 
 ## LSP query handle ownership

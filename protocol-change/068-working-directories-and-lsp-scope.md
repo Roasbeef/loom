@@ -1,6 +1,6 @@
 # protocol-change/068: shell directories and inferred LSP scope
 
-**Status**: IMPLEMENTED LOCALLY 2026-10-06; Linux signoff and publication pending. The owner requested per-call and persistent
+**Status**: IMPLEMENTED LOCALLY 2026-10-06; PR #889 is open; rebased-head validation and Linux signoff pending. The owner requested per-call and persistent
 working directories, plus code-mode improvements grounded in a live session.
 
 ## Problem
@@ -47,8 +47,9 @@ remain the same. Returned metadata names the resolved owner.
 
 Installed Gleam inventory fingerprints compare parsed TOML contents with
 recursively sorted table keys. The compiler rewrites those keys in arbitrary
-order, so serializer order MUST NOT invalidate a warm server. Every value and
-sequence order remains significant. Manifest and project configuration hashes
+order, so serializer order MUST NOT invalidate a warm server. Every supported
+string value remains significant; unsupported values and excess depth refuse
+reuse. This is main's existing implementation, preserved by the rebase. Manifest and project configuration hashes
 remain byte-based. Existing metadata bounds and read-authority checks apply.
 
 On-demand `cap://` function documentation retains examples with their source
@@ -66,7 +67,7 @@ explicit-only preserves repeated guesses rather than using known ownership.
 
 ## Verification
 
-The final complete client gate passed all 2,878 tests with the repository's
+Before rebase onto `cc9ec305d`, the complete client gate passed 2,878 tests with the repository's
 shipped-server fixture environment. Tools passed 636 tests, cap passed 175, and
 the generated-reference renderer passed six. The broader run and remaining
 package gates covered the other suites; formatting, lint, doc-check, prelude
