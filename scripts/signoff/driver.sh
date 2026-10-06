@@ -18,6 +18,8 @@
 #   LOOM_POST     `yes` to post the verdict with the host's `gh`, else `no`
 #   LOOM_URL      the status's details link, or empty
 #   LOOM_PARALLEL optional; becomes SIGNOFF_PARALLEL in the container
+#   LOOM_CPUS     optional; a docker --cpus ceiling for the run
+#   LOOM_MEMORY   optional; a docker --memory ceiling, e.g. 16g
 set -euo pipefail
 if [ ! -d "$LOOM_DIR/.git" ]; then git clone --quiet "$LOOM_ORIGIN" "$LOOM_DIR"; fi
 cd "$LOOM_DIR"
@@ -38,6 +40,9 @@ mkdir -p "$logs"
 #      --cgroupns=host) and carves out a fresh, process-empty cgroup v2 base
 #      for loom-exec's pids/memory ceilings, the way scripts/signoff.sh's
 #      delegation does on bare metal, as root here, so no systemd handoff;
+#      When LOOM_MEMORY or LOOM_CPUS is set, the base gets the same
+#      ceiling as the container, because it sits beside the container's
+#      cgroup rather than under it and would otherwise escape that ceiling;
 #   3. runs signoff.sh with --dry-run, because posting happens after the
 #      container exits (see this script's header comment for why);
 #   4. copies the lanes' logs to /logs and gives them to the login account.
@@ -52,7 +57,7 @@ mkdir -p "$logs"
 cat >"$logs/entrypoint.sh" <<'ENTRYPOINT'
 #!/usr/bin/env bash
 set -euo pipefail
-short=$1 sha=$2 owner=$3
+short=$1 sha=$2 owner=$3 memory=${4:-} cpu_quota=${5:-}
 git config --global --add safe.directory /src
 git config --global --add safe.directory /src/.git
 git clone --quiet /src /work
@@ -61,6 +66,11 @@ mount -o remount,rw /sys/fs/cgroup
 base="/sys/fs/cgroup/loom-signoff-$short"
 mkdir -p "$base"
 echo "+pids +memory" >/sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+if [ -n "$memory" ]; then echo "$memory" >"$base/memory.max"; fi
+if [ -n "$cpu_quota" ]; then
+	echo "+cpu" >/sys/fs/cgroup/cgroup.subtree_control
+	echo "$cpu_quota 100000" >"$base/cpu.max"
+fi
 echo "+pids +memory" >"$base/cgroup.subtree_control"
 export LOOM_CGROUP_BASE="$base"
 cd /work
@@ -78,9 +88,25 @@ ENTRYPOINT
 echo "== building loom-signoff:$short (scripts/signoff/Dockerfile at $LOOM_SHA)"
 docker build --quiet -f scripts/signoff/Dockerfile -t "loom-signoff:$short" . >"$logs/image-build.log"
 
+# LOOM_CPUS and LOOM_MEMORY, when set, bound the run for a box that has
+# other work on it; unset, a run may use the whole machine, as it always
+# has. memory.max takes bytes and cpu.max a quota per 100ms period, where
+# docker takes a suffixed size and a fraction of CPUs, so the conversions
+# are made once, here.
+memory_bytes=""
+if [ -n "${LOOM_MEMORY:-}" ]; then
+	memory_bytes=$(numfmt --from=iec "${LOOM_MEMORY^^}")
+fi
+cpu_quota=""
+if [ -n "${LOOM_CPUS:-}" ]; then
+	cpu_quota=$(awk -v cpus="$LOOM_CPUS" 'BEGIN { printf "%d", cpus * 100000 }')
+fi
+
 started=$(date +%s)
 set +e
 docker run --rm \
+	${LOOM_CPUS:+--cpus "$LOOM_CPUS"} \
+	${LOOM_MEMORY:+--memory "$LOOM_MEMORY"} \
 	--cgroupns=host \
 	--cap-add SYS_ADMIN \
 	--security-opt seccomp=unconfined \
@@ -92,7 +118,7 @@ docker run --rm \
 	-v loom-signoff-go-mod-cache:/var/cache/loom-signoff/go/pkg/mod \
 	${LOOM_PARALLEL:+-e "SIGNOFF_PARALLEL=$LOOM_PARALLEL"} \
 	"loom-signoff:$short" \
-	bash /logs/entrypoint.sh "$short" "$LOOM_SHA" "$(id -u):$(id -g)" >"$logs/signoff.log" 2>&1
+	bash /logs/entrypoint.sh "$short" "$LOOM_SHA" "$(id -u):$(id -g)" "$memory_bytes" "$cpu_quota" >"$logs/signoff.log" 2>&1
 verdict=$?
 set -e
 elapsed=$(($(date +%s) - started))
