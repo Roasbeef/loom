@@ -1168,3 +1168,64 @@ uncertain transfer does not refund capacity. Each Launch owner admits at most
 four live channels, retaining unresolved entries; durable history capacity is
 not a live-channel allowance. Shared endpoint request credits MUST NOT be held
 for channel-long reads. No stream exhaustion can produce successful prefix output.
+
+## Addendum: exact original helper retirement for Launch
+
+**Decision: approved by the owner.** A validated LaunchService/SatelliteCommand
+uses one exact borrowed helper with a retiring execution disposition. Compile
+and ordinary native execution retain helper reuse. Each Launch pays for one
+helper restart; it never closes the shared session pool.
+
+The original pool MUST install one bounded completion observer on its exact
+Borrowed inventory entry before native dispatch. Registration MUST compare the
+original helper and pool, refuse missing, foreign, stale or already observed
+entries, and acknowledge the installed observer before dispatch can proceed.
+Retirement subsequently withdraws that same entry permanently from lending.
+Release, Abandon, relay loss, lost start replies and overlapping scope closure
+MUST preserve that disposition and observer. No intermediate checkin may make
+that helper Available. Existing Dispatch, Execution and ExecutorConfig records
+remain unchanged; alternate local constructors supply this additive custody seam.
+
+The pool publishes positive retirement only after its existing native retirement
+verdict, its Draining to RetiringActor transition and its original helper-owner
+monitor's normal exit. An absent row, terminal, completion, successful Query,
+foreign monitor or abnormal exit is never a positive witness. The acceptance
+grade remains the existing scoped native-retirement grade, including its platform
+limitations; no stronger cgroup or descendant-containment claim is introduced.
+
+The original native continuation binds this observation to its immutable native
+RequestKey and prepared digest. ConfirmRetirement COMMIT precedes advertising
+NativeRetired. A positive physical observation survives one bounded persistence
+retry window without redispatch, replacing the helper or refreshing effect
+authority. Failed or ambiguous persistence retains uncertainty. Historical
+inspection may read the original durable fact, never reconstruct it from terminal.
+
+Whole Launch resource release additionally requires its original preparation and
+transport joins, successful removal of its original directory and its existing
+continuation/report drain obligations. Those witnesses remain independent of
+native retirement. Unresolved custody retains original capacity and paths.
+
+The original native service Row also monitors its transient adapter. Actual
+adapter termination releases control custody independently of native proof. An
+adapter lost before its normal control completion sends only the original
+Launch owner's local cancellation door, so an observer whose publication sink
+was lost can join rather than wait for a terminal which it cannot retain.
+After actual report relay delivery, original transport join and resource release,
+that cancelled observation releases physical active capacity; retained historical
+completion remains uncertain and grants no new Launch permission.
+
+A Launch adapter is parked until the serialized native service has assembled its
+original Row, monitor and callbacks. Only that Row sends Begin. Existing managed
+actor startup kills the original child on a lost initialization acknowledgement;
+it cannot leave a parked dispatch owner behind.
+
+Positive proof persistence uses one managed task inside that original Row. The
+original effect deadline plus six seconds bounds observation; it grants no
+additional dispatch authority. There are at most two confirmation asks, with
+actual AllDelivered required before the second. A result alone is not a drain.
+Scope closure refuses while a confirmation is in flight or its drain is lost,
+before issuing another journal write. Unknown or late COMMIT remains uncertain.
+
+Scoped ConfirmRetirement retains the existing whole-scope proof only. It MUST NOT
+invoke a separate per-Launch callback. Original pool callbacks queued during
+close enter the same Row confirmation path with its unchanged bound and drain.
