@@ -120,6 +120,7 @@ import client/skill_tool
 import client/system_prompt
 import client/tool_holder
 import client/wiring
+import client/working_directory
 import client/worktree_diff
 import core/clock.{type Clock}
 import core/glance as diagnostic
@@ -3738,6 +3739,13 @@ fn assemble_in(
       _,
       observation_door,
     ))
+  let directory_facts = agency.fact_supplier(agency_config)
+  let shell_directory = working_directory.door(directory_facts)
+  let code_mode_host =
+    option.map(code_mode_host, working_directory.over_code_mode(
+      _,
+      directory_facts,
+    ))
   let code_mode_host =
     option.map(code_mode_host, with_code_mode_peers(_, peer_wiring))
   let code_mode =
@@ -3919,19 +3927,23 @@ fn assemble_in(
   })
   use tool_registry <- result.try(
     list.append(
-      contributions.built_in(
-        Some(agency_seam),
-        code_mode,
-        history_seam,
-        memory_seam,
-        schedule_seam,
-        Some(context_seam),
-        Some(jobtools.seam(jobs_door)),
-        // The language-server door, when a server is configured: it
-        // gives `fs_write` and `fs_edit` their settled-diagnostics block
-        // and supplies profile guidance to admitted code-mode offers.
-        lsp_door,
-        lsp_hints(lsp_wiring),
+      contributions.with_directory(
+        contributions.built_in(
+          Some(agency_seam),
+          code_mode,
+          history_seam,
+          memory_seam,
+          schedule_seam,
+          Some(context_seam),
+          Some(jobtools.seam(jobs_door)),
+          // The language-server door, when a server is configured: it
+          // gives `fs_write` and `fs_edit` their settled-diagnostics block
+          // and supplies profile guidance to admitted code-mode offers.
+          lsp_door,
+          lsp_hints(lsp_wiring),
+        ),
+        jobtools.seam(jobs_door),
+        shell_directory,
       ),
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is

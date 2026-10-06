@@ -173,6 +173,7 @@ pub type Door {
       String,
       OpId,
       String,
+      Option(String),
       Option(Int),
       Option(policy.SandboxPolicy),
       jobs.Audience,
@@ -221,6 +222,7 @@ pub fn door(wiring: Wiring) -> Door {
       strand,
       operation,
       command,
+      cwd,
       wall_ms,
       captured_policy,
       audience,
@@ -236,6 +238,7 @@ pub fn door(wiring: Wiring) -> Door {
         operation:,
         request: jobs.Request(
           command:,
+          cwd:,
           wall_ms:,
           captured_policy:,
           audience:,
@@ -282,7 +285,16 @@ pub fn door(wiring: Wiring) -> Door {
 pub fn none() -> Door {
   let absent = jobs.Unavailable(reason: "this session runs no background jobs")
   Door(
-    start: fn(_strand, _operation, _command, _wall, _policy, _audience, _wake) {
+    start: fn(
+      _strand,
+      _operation,
+      _command,
+      _cwd,
+      _wall,
+      _policy,
+      _audience,
+      _wake,
+    ) {
       Error(absent)
     },
     release: fn(_strand, _id) { Error(absent) },

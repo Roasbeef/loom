@@ -28,6 +28,7 @@ import broker/policy
 import broker/token
 import client/catalog
 import client/codemode
+import client/gateway_test
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
@@ -37,6 +38,7 @@ import client/schedule
 import client/scheduleseam
 import client/scratch
 import client/serve
+import client/working_directory
 import core/clock
 import core/ids
 import core/json
@@ -65,7 +67,9 @@ import tools/blob
 import tools/codemode as codemode_tool
 import tools/codemode_recipes
 import tools/directory_access
+import tools/fs
 import tools/tool
+import tools/working_directory as directory
 import weft/poll
 
 // What the jailed `/bin/echo` prints, and therefore what has to survive
@@ -161,6 +165,7 @@ fn run_live(ready: Ready) -> Nil {
   // Printed, so a degraded run is visible rather than silently green:
   // *which* layers held is a property of this kernel, not of the harness.
   io.println("code-mode tool e2e: " <> sandbox)
+  directory_case(rig)
   stop_rig(rig)
 }
 
@@ -3525,4 +3530,79 @@ fn run_schedule_cadence(ready: Ready) -> Nil {
     <> "        False -> report.failure(\"wrong granted cadence\")\n      }\n    }\n    _ -> report.failure(\"list refused\")\n  }\n}\n"
   let outcome = run_notes_program(config, rig, source, "typed-cadence")
   assert notes_program_value(outcome) == json.String("cadence channel proved")
+}
+
+fn directory_case(rig: Rig) -> Nil {
+  let selected = rig.workspace <> "/review"
+  let assert Ok(Nil) = simplifile.create_directory_all(selected)
+    as "create review directory"
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 641)).0
+  let harness = gateway_test.reserved_fixture(id)
+  let facts = api.fact_handle(harness.runtime)
+  let supplier = fn() { Ok(facts) }
+  let ctx =
+    tool.Ctx(
+      ..live_ctx(rig.workspace, rig.base_policy, wall_clock()),
+      filesystem: fs.real_filesystem(),
+    )
+  let remembered =
+    directory.tool(working_directory.door(supplier)).run(
+      ctx,
+      json.Object([#("path", json.String(selected))]),
+    )
+  assert !remembered.is_error
+  let assert Ok(canonical_selected) = working_directory.door(supplier).read(ctx)
+    as "remembered directory is canonical"
+  let assert Ok(canonical_workspace) =
+    directory.select(
+      directory.workspace_only(),
+      ctx,
+      option.Some(rig.workspace),
+    )
+    as "workspace is canonical"
+  let config =
+    codemode.default_config(
+      rig.broker,
+      wall_clock(),
+      rig.workspace,
+      rig.toolchain,
+    )
+  let seam = codemode.seam(working_directory.over_code_mode(config, supplier))
+  let source =
+    "import cap/proc\nimport cap/report\nimport gleam/result\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  case paths() {\n    Ok(text) -> report.text(text)\n    Error(error) -> report.failure(string.inspect(error))\n  }\n}\n\nfn paths() {\n  use inherited <- result.try(proc.run(proc.command([\"/bin/pwd\"])))\n  use override <- result.try(proc.run(proc.command([\"/bin/pwd\"]) |> proc.in_dir(\"..\")))\n  Ok(string.trim(inherited.stdout) <> \"|\" <> string.trim(override.stdout))\n}\n"
+  let outcome =
+    codemode_tool.tool_for(seam).run(
+      ctx,
+      json.Object([
+        #("program", json.String(source)),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  let assert False = outcome.is_error as rendered_text(outcome)
+  assert string.contains(
+    rendered_text(outcome),
+    canonical_selected <> "|" <> canonical_workspace,
+  )
+  assert working_directory.door(supplier).read(ctx) == Ok(canonical_selected)
+  let assert Ok(Nil) = simplifile.delete_all([canonical_selected])
+    as "replace saved directory"
+  let assert Ok(Nil) =
+    simplifile.create_symlink(canonical_workspace, canonical_selected)
+    as "redirect saved directory within workspace"
+  let redirected_source =
+    "import cap/proc\nimport cap/report\nimport gleam/string\npub fn main() -> report.Outcome {\n  case proc.run(proc.command([\"/bin/pwd\"]) |> proc.in_dir(\".\")) {\n    Ok(_) -> report.text(\"unexpected execution\")\n    Error(error) -> report.failure(string.inspect(error))\n  }\n}\n"
+  let refused =
+    codemode_tool.tool_for(seam).run(
+      ctx,
+      json.Object([
+        #("program", json.String(redirected_source)),
+        #("within_ms", json.Int(600_000)),
+      ]),
+    )
+  assert refused.is_error
+  assert string.contains(
+    rendered_text(refused),
+    "remembered cwd changed its canonical target",
+  )
+  assert api.close(harness.runtime) == Ok(Nil)
 }

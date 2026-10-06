@@ -304,6 +304,8 @@ pub type Request {
   Request(
     /// The shell command, run exactly as `bash -lc` runs a foreground one.
     command: String,
+    /// Canonical execution directory captured at admission, or the workspace.
+    cwd: Option(String),
     /// The wall the caller asked for, in milliseconds, or `None` for the
     /// default. Clamped to the operator's ceiling, never widened; a
     /// `None` is additionally met with the session policy's own wall, so
@@ -1398,7 +1400,7 @@ fn admitted(
       started_by: operation,
       spec: jobstate.JobSpec(
         argv: argv(request.command),
-        cwd: state.wiring.workspace,
+        cwd: option.unwrap(request.cwd, state.wiring.workspace),
         requested_wall_ms: option.unwrap(request.wall_ms, default_wall_ms),
       ),
       started_at_ms: now,
