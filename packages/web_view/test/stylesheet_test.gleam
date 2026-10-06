@@ -83,3 +83,23 @@ pub fn a_rows_buttons_keep_their_columns_test() {
   assert string.contains(css, ".home-act{grid-column:2}")
   assert string.contains(css, ".home-act-delete{grid-column:3}")
 }
+
+// F155: a row that is not a button (the page's own, a saved row while another
+// resume is out) reserves the 7px a button's own padding gives the rows that are
+// buttons, so its activity word ends where theirs do: 30px of the column and 7px
+// of the button's padding.
+pub fn a_row_that_is_not_a_button_ends_where_the_others_do_test() {
+  let css = stylesheet()
+  assert string.contains(
+    css,
+    "li.session:not(:has(>.session-open)){padding-right:37px}",
+  )
+}
+
+// F156: the transcript ends in room for the "Jump to latest" button, so the
+// last row is not under it when the reader has scrolled to the end.
+pub fn the_transcript_ends_in_room_for_the_jump_button_test() {
+  let css = stylesheet()
+  assert string.contains(css, "scrollbar-width:thin;flex-direction:column")
+  assert string.contains(css, "padding-bottom:56px")
+}

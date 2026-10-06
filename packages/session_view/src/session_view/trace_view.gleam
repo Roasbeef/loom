@@ -333,6 +333,25 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Trace {
   )
 }
 
+/// Joins the trace of an earlier stretch of a session to the trace of a later
+/// one, within the same bound. A host that keeps a summary of each settled turn
+/// folds each turn's programs once and joins them when it draws the page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert trace_view.append(trace_view.empty(), trace_view.empty())
+///   == trace_view.empty()
+/// ```
+pub fn append(earlier: Trace, later: Trace) -> Trace {
+  let programs = list.append(earlier.programs, later.programs)
+  let left_out = int.max(0, list.length(programs) - max_programs)
+  Trace(
+    programs: list.drop(programs, left_out),
+    omitted: earlier.omitted + later.omitted + left_out,
+  )
+}
+
 /// One strand's newest program, whatever order the records arrive in, or
 /// nothing when the strand has run none. The records may belong to several
 /// strands, as a terminal holds them, and only `strand`'s are read.

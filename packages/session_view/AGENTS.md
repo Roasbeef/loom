@@ -117,7 +117,21 @@ for a host with no surfaces.
   a live window with no read owed, for a host that draws only the newest
   rows (the web view). A `capture` into a window that joins it keeps the
   lower `before_seq` an earlier `accept` reached, so a read that found none
-  of the strand's records is not asked again.
+  of the strand's records is not asked again. The state also holds a `Scan`
+  (`Unscanned | Scanning | Abandoned`), a transient read of one stretch of the
+  strand's ancestry beside the window, for a host that draws summaries and
+  looks at records without keeping them (protocol-change/071). `scan(state,
+  leaf, before_seq, known, view)` starts it at the record `leaf`, seeded with
+  the part of `known` and the window that is the leaf's ancestry below
+  `before_seq`; `scanned` gives what it holds as a `Branch`, `scan_older` asks
+  for the interval below it (a read the host's step sends through the same
+  `range`/`sent`/`accept` as the window's, the window's demand served first, a
+  reply going to whichever asked for it), `scan_readable` says
+  whether it can go on (a sequence is left, and it has neither reached its
+  bound nor been cut), and `scan_end` drops it. It is bounded at 4,096 records
+  and 32 MiB, private to the module, and a page that would take it past the
+  bound is cut at the oldest end, so it still ends at its leaf, and the scan is
+  unreadable afterwards. A `cancel` abandons it. The window is the same value after a scan as before it.
 - `protocol.Event`, `protocol.EntryRecord` and the board types, and
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
@@ -169,6 +183,10 @@ for a host with no surfaces.
 - `transcript_lines.Presentation`: everything the line builders read of a
   client's state. A host fills it; the terminal does so in
   `tui_model.presentation`.
+- `transcript_lines.assistant_terminal_lines` draws an aborted response as
+  `Stopped`, with its diagnostic beneath it as dim detail unless it says only
+  that the provider's request was cancelled, which is what a Stop or a steer
+  does and which the records do not tell apart (F153, protocol-change/071).
 - `transcript_lines.collapse_repeats` folds a run of identical consecutive
   items into the newest of them with `×N` on its first row, in compact
   history only. Two predicates say what may fold: `repeated_call` (a call
@@ -552,13 +570,42 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   viewers is the host's choice: the web page shows them on an operator's page
   only.
 
+`turn_ledger` keeps a closed turn as what a page draws of it instead of its
+records (protocol-change/071). `seal_all(groups, after, records, strands)`
+closes the turns a host holds whole into `Sealed`: the pieces with the fold
+closed, the `fold_budget.Weight` (the fold's rows capped at `fold_rows`), the
+first record's sequence and parent, the last record (`end`, an `Anchor` of
+identity and sequence, which is the next turn's first record's parent, or the
+newest record when no open turn follows, so `after` names the turns that stay
+open) and the `changes_view`, `trace_view` and newest tool result the turn's
+records carried, and `bytes`, about how many bytes of text the summary holds
+(`fold_budget.sealed_bytes`, 16 MiB, is the budget a host holds closed turns to
+beside its rows). A lead's divider is keyed `work:<first seq>.0`, not by the
+window's start. A turn is sealed once nothing more will be added, which the
+records cannot always say (an operation can lag the record that opens its turn,
+and a turn can go on with no new input); records that arrive after a sealed turn
+with no input of their own are read as the end of a turn whose start the host
+does not hold and the whole turn is sealed again in place of the partial one
+(module doc, "When a turn is sealed"). `older`, `completed` and `steps` take what a scan has read so
+far and a `Source` (`Readable | Exhausted`) and say whether it is enough:
+`older` for ten whole turns below the host's oldest, `completed` for the turn a
+window began inside (`Whole(sealed)`, or `Partial` when the scan ended before the
+turn's input, which closes nothing), `steps` for the newest `fold_rows` rows of one turn's
+steps (`Steps(items, unread)`; `unread` is the cut's and, when the read stopped
+before the turn's input, the divider's count less the steps shown). `lead_end`
+is where the blocks before a window's first input end, which a read of the rest
+of that turn starts from. `changes_view.append` and `trace_view.append` join the
+boards of two stretches so a host can fold each turn once. `turns.Reading` is a
+fold the reader opened whose steps are not here yet.
+
 `fold_budget` decides how many rows a host that retains what it draws spends on
 turns: `weigh` costs one turn's blocks (its closed rows, and the rows its fold
 would add), `fit` takes the weights newest first with the open folds and the
 limit and says how many turns fit and which open fold must draw fewer steps, and
 `draw` empties a closed fold's items and cuts an open one's to the newest that
 fit. It is pure and portable, and the web view's `component.held` is its one
-caller (protocol-change/070).
+caller (protocol-change/070); `newest` and `item_rows` are public so a host that
+reads a fold's steps keeps no more than a page draws.
 
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and

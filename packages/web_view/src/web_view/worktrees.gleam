@@ -36,9 +36,6 @@
 //// board the daemon has stopped vouching for. Every string in a board is the
 //// repository's own text, drawn only as a text node.
 
-import core/entry
-import core/message
-import session_view/protocol
 import session_view/worktree_view
 
 /// The shortest time between two reads, in milliseconds. A burst of tool calls
@@ -88,31 +85,4 @@ pub type Asking {
 
   /// A read is out, and its answer arrives as a message.
   Out
-}
-
-/// The sequence number of the newest tool result in `records`, newest first as
-/// a branch holds them, or 0 when there is none. It changes exactly when a tool
-/// call finishes, which is the moment the tree may have changed.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert worktrees.latest_result([]) == 0
-/// ```
-pub fn latest_result(records: List(protocol.EntryRecord)) -> Int {
-  case records {
-    [] -> 0
-    [
-      protocol.EntryRecord(
-        entry: entry.MessageEntry(
-          message: message.ToolResultMessage(..),
-          seq:,
-          ..,
-        ),
-        ..,
-      ),
-      ..
-    ] -> seq
-    [_, ..rest] -> latest_result(rest)
-  }
 }

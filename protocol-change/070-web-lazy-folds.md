@@ -5,6 +5,9 @@ observer's accepted events) and the lane's markup · **Raised by**: the web UI
 critique of r6b and r6c (F123, F139) · **Implemented**: web view, session view,
 client daemon page socket
 
+Amended by [071](071-web-turn-summaries.md): a press now reads that turn's
+steps and the page no longer holds the records of a closed turn.
+
 ## Problem
 
 The page holds a limited number of transcript rows because Lustre's server

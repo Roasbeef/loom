@@ -121,10 +121,11 @@ pub fn a_press_sends_one_history_read_test() {
   assert component.top(page) == lane.Loading
 }
 
-// Captures that land while the read is out do not move the rows the page
-// holds; once the page arrives the page follows the session again, from the
-// newest capture, with the older rows above.
-pub fn the_newest_capture_is_drawn_once_the_page_arrives_test() {
+// The page keeps following the session while a read is out: a capture that
+// lands is drawn at once, since the read is the page's own and the records it
+// brings are kept apart from the live ones, and the older turns the page reads
+// are drawn above them when they arrive.
+pub fn the_newest_capture_is_drawn_while_the_read_is_out_test() {
   let wire = process.new_subject()
   let page =
     page_fixture.ready(wire, "operator")
@@ -133,7 +134,8 @@ pub fn the_newest_capture_is_drawn_once_the_page_arrives_test() {
   let assert [read] = reads(wire) as "one history read"
   let held = component.rows(page)
   let page = component.apply(page, [lane_fixture.conversation(301, 453)])
-  assert component.rows(page) == held
+  assert list.length(component.rows(page)) == list.length(held) + 3
+  assert component.top(page) == lane.Loading
 
   let page = answer(page, read, lane_fixture.older_page(201, 300), 301)
   assert first_text(page) == "question 68"
@@ -159,6 +161,7 @@ pub fn a_full_page_loads_no_more_test() {
   let assert [read] = reads(wire) as "the first read"
   let page = answer(page, read, lane_fixture.older_page(201, 300), 301)
   assert list.length(component.rows(page)) == 249
+  assert component.top(page) == lane.Earlier
   let assert [refresh] = catch_ups(wire) as "the lane refreshes"
 
   let page = press(page)
@@ -173,11 +176,11 @@ pub fn a_full_page_loads_no_more_test() {
       )),
     ])
   let assert [read] = reads(wire) as "the second read, once the lane is free"
-  assert string.contains(read, "\"after_seq\":100,\"before_seq\":201")
+  assert string.contains(read, "\"after_seq\":101,\"before_seq\":202")
 
   let page =
     component.apply(page, [lane_fixture.conversation(301, 453)])
-    |> answer(read, lane_fixture.older_page(101, 200), 201)
+    |> answer(read, lane_fixture.older_page(102, 201), 202)
   assert list.length(component.rows(page)) == component.held_rows
   assert first_text(page) == "question 52"
   assert component.top(page) == lane.Full(component.held_rows)
@@ -289,6 +292,9 @@ pub fn an_observers_press_sends_only_a_history_read_test() {
 // read goes out on the tick after the capture, so the next tick sends it and
 // its refusal frees the lane. Then `update`, the capture a real refresh would
 // have carried, is put back, so the lane is free for the next read.
+//
+// The page's own read of the next interval is not refused: it is left on the
+// wire for the test to answer, since the page asks for it without a press.
 fn settle(page, wire: page_fixture.Wire, update) {
   let assert [refresh] = catch_ups(wire) as "the lane refreshes"
   page_fixture.run(page, component.update, [
@@ -298,16 +304,47 @@ fn settle(page, wire: page_fixture.Wire, update) {
     )),
     component.Ticked,
   ])
-  |> page_fixture.refuse_reads(component.update, wire, component.Arrived)
+  |> refuse_others(wire)
   |> component.apply([update])
+}
+
+// Refuses the reads on the wire that are not history reads, and the reads
+// those free, and leaves the history reads on the wire.
+fn refuse_others(page, wire: page_fixture.Wire) {
+  let frames = page_fixture.sent(wire)
+  let #(history, others) =
+    list.partition(frames, fn(frame) {
+      string.contains(frame, "\"cmd\":\"history\"")
+    })
+  let others =
+    list.filter(others, fn(frame) {
+      !string.contains(frame, "\"cmd\":\"snapshot")
+      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+    })
+  case others {
+    [] -> {
+      list.each(history, fn(frame) { process.send(wire, frame) })
+      page
+    }
+    [_, ..] -> {
+      list.each(history, fn(frame) { process.send(wire, frame) })
+      page_fixture.run(page, component.update, [
+        component.Arrived(
+          list.map(others, fn(frame) {
+            page_fixture.refusal(page_fixture.request_id(frame))
+          }),
+        ),
+      ])
+      |> refuse_others(wire)
+    }
+  }
 }
 
 // A turn whose input is more than one read below the page's oldest input
 // arrives over several reads. The end of it that a read brings is not
-// drawn, since the page starts at an input, but it stays in the history
-// window, so the next read asks for the sequences below it rather than
-// the same interval again, and the turn is drawn whole once its input
-// arrives.
+// drawn, since the page draws a turn only once it is whole, but the next read
+// asks for the sequences below it without another press, rather than the same
+// interval again, and the turn is drawn, as a divider, once its input arrives.
 pub fn a_turn_longer_than_one_read_is_loaded_whole_test() {
   let wire = process.new_subject()
   let live = lane_fixture.long_turn(142, 291)
@@ -320,14 +357,14 @@ pub fn a_turn_longer_than_one_read_is_loaded_whole_test() {
 
   let page = answer(page, read, lane_fixture.long_turn_page(42, 141), 142)
   assert list.length(component.rows(page)) == 150
-  assert component.top(page) == lane.Earlier
+  assert component.top(page) == lane.Loading
 
-  let page = settle(page, wire, live) |> press
+  let page = settle(page, wire, live)
   let assert [read] = reads(wire) as "the second read goes further down"
   assert string.contains(read, "\"after_seq\":0,\"before_seq\":42")
 
   let page = answer(page, read, lane_fixture.long_turn_page(1, 41), 42)
-  assert list.length(component.rows(page)) == 291
+  assert list.length(component.rows(page)) == 153
   assert first_text(page) == "question 0"
   assert component.top(page) == lane.Beginning
 }
@@ -347,9 +384,9 @@ pub fn a_read_that_finds_only_other_strands_moves_on_test() {
 
   let page = answer(page, read, lane_fixture.gapped_page(53, 152), 153)
   assert list.length(component.rows(page)) == 150
-  assert component.top(page) == lane.Earlier
+  assert component.top(page) == lane.Loading
 
-  let page = settle(page, wire, live) |> press
+  let page = settle(page, wire, live)
   let assert [read] = reads(wire) as "the second read is below the first"
   assert string.contains(read, "\"after_seq\":0,\"before_seq\":53")
 

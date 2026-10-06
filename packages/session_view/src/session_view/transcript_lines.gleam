@@ -3402,19 +3402,48 @@ pub const stopped_words = "Stopped"
 /// across a restart. The provider may still be generating in all three, so the
 /// text stays visible at both extents. It is dim detail rather than the failure
 /// style because it describes the provider, not a failed turn.
+///
+/// A stop the provider confirmed (`provider request was cancelled`) is what a
+/// Stop or a steer does to a response that is being written, and the records do
+/// not say which of them asked, so it is the one word `Stopped` and nothing
+/// beneath it, whatever part of the harness the diagnostic names (`(runtime:
+/// explicit stop)`). Every other diagnostic is shown as it was written.
 @internal
 pub fn assistant_terminal_lines(
   reason: message.StopReason,
   diagnostic: Option(String),
 ) -> List(Line) {
   case reason, diagnostic {
-    message.Aborted, Some(text) -> [
-      Line(System, stopped_words),
-      Line(ToolDetail, text),
-    ]
+    message.Aborted, Some(text) ->
+      case stop_detail(text) {
+        Some(plain) -> [Line(System, stopped_words), Line(ToolDetail, plain)]
+        None -> [Line(System, stopped_words)]
+      }
     message.Aborted, None -> [Line(System, stopped_words)]
     _, Some(text) -> [Line(Failure, text)]
     _, None -> []
+  }
+}
+
+// The diagnostic of a stop, or nothing when it says only that the provider's
+// request was cancelled and the part of the harness that asked, which
+// `Stopped` already says. Every other diagnostic is kept as it was written.
+fn stop_detail(text: String) -> Option(String) {
+  let confirmed = "provider request was cancelled"
+  case string.split_once(text, " (") {
+    Ok(#(head, cause)) if head == confirmed ->
+      case
+        string.ends_with(cause, ")")
+        && list.any(
+          ["attempt: ", "gateway: ", "relay: ", "runtime: "],
+          fn(source) { string.starts_with(cause, source) },
+        )
+      {
+        True -> None
+        False -> Some(text)
+      }
+    _ if text == confirmed -> None
+    _ -> Some(text)
   }
 }
 

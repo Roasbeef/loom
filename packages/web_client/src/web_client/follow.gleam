@@ -67,7 +67,12 @@
 //// marker, as it does the "Load older" button. Either way it takes the press
 //// as the reader's own move: it becomes `Reading`, the growth that follows
 //// scrolls nothing, and the reader's next scroll to the bottom resumes
-//// following.
+//// following. A press on a divider also holds the divider and where its top
+//// edge was in the viewport, and each time the lane changes size afterwards the
+//// transcript is scrolled by however far the divider moved
+//// (`follow_rule.holding`), so the button the reader pressed is under the
+//// pointer when the steps are drawn, whatever the layout did to the page. The
+//// reader's next touch of the transcript lets it go.
 ////
 //// A message the reader sends from the composer is the one event after which
 //// the transcript always returns to the tail. The composer is in the dock,
@@ -168,6 +173,19 @@ pub type Anchor {
   )
 }
 
+/// The divider the reader pressed, and where its top edge was in the viewport
+/// when they pressed it. Only the button's box is read.
+pub type Divider {
+  Divider(
+    /// The scroller the divider is in, which is scrolled to put it back.
+    host: ffi_dom.Element,
+    /// The pressed button.
+    button: ffi_dom.Element,
+    /// The button's top edge in the viewport, in pixels, when it was pressed.
+    top: Float,
+  )
+}
+
 /// What the element knows: where the reader is, how far the bottom of the
 /// transcript was from the bottom of its view when last measured, how far
 /// the transcript was scrolled and how big it was when a scroll was last
@@ -179,6 +197,7 @@ pub type Model {
     reader: Reader,
     watching: Option(Watching),
     anchor: Option(Anchor),
+    divider: Option(Divider),
     key: Option(Int),
     memory: Memory,
   )
@@ -215,6 +234,13 @@ pub type Msg {
   /// A fold in the lane opened or closed at the reader's hand.
   Folded
 
+  /// The reader pressed the divider of a settled turn, the button this is.
+  Divided(button: ffi_dom.Element)
+
+  /// The pressed divider and where it is on screen, held while the steps it
+  /// opens are drawn, or nothing when it left the page.
+  Placed(divider: Option(Divider))
+
   /// The reader pressed the lane's "Load older" button.
   Paged
 
@@ -242,6 +268,15 @@ pub type Msg {
 fn marked(name: String, message: Msg) -> decode.Decoder(Msg) {
   use _ <- decode.subfield(["target", "dataset", name], decode.string)
   decode.success(message)
+}
+
+// A click on a settled turn's divider: the button carries the fixed marker, and
+// the element is held to keep it where it was. The button is the event's own
+// target, and nothing else of the event is read.
+fn divided() -> decode.Decoder(Msg) {
+  use _ <- decode.subfield(["target", "dataset", "loomFold"], decode.string)
+  use target <- decode.field("target", decode.dynamic)
+  decode.success(Divided(ffi_dom.as_element(target)))
 }
 
 /// Registers the element with the browser.
@@ -272,6 +307,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       reader: follow_rule.start(),
       watching: None,
       anchor: None,
+      divider: None,
       key: None,
       memory: follow_rule.forgotten(),
     ),
@@ -302,8 +338,15 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       ),
       effect.none(),
     )
+
+    // The reader's own touch ends the hold on a divider: from here the
+    // transcript goes where they take it.
     Touched(at:) -> #(
-      Model(..model, reader: follow_rule.touched(model.reader, at)),
+      Model(
+        ..model,
+        reader: follow_rule.touched(model.reader, at),
+        divider: None,
+      ),
       effect.none(),
     )
     Disconnected -> #(Model(..model, watching: None), stop(model.watching))
@@ -337,7 +380,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           to_bottom(model.watching),
         )
         Reading, Some(anchor) -> #(model, keep(model.watching, anchor))
-        Reading, None -> #(model, measure(model.watching))
+        Reading, None ->
+          case model.divider {
+            Some(divider) -> #(model, restore(model.watching, divider))
+            None -> #(model, measure(model.watching))
+          }
       }
     Measured(gap:) -> #(
       Model(..model, reader: follow_rule.measured(model.reader, gap)),
@@ -351,6 +398,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, reader: follow_rule.folded(model.reader)),
       effect.none(),
     )
+
+    // The press on a divider is the reader's own move, as the toggle of a
+    // fold is, and the divider is held before the lane moves: the click
+    // reaches the slot before the server has the press, and the steps come
+    // back a round trip later.
+    Divided(button:) -> #(
+      Model(..model, reader: follow_rule.folded(model.reader)),
+      place(model.watching, button),
+    )
+    Placed(divider:) -> #(Model(..model, divider:), effect.none())
 
     // Pressing the button is the reader's own move, as opening a fold is,
     // so the rows that land do not carry the transcript to its end. The
@@ -373,7 +430,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case follow_rule.keyed(model.key, model.memory, model.reader, key) {
         follow_rule.Unchanged -> #(model, effect.none())
         follow_rule.Changed(key:, memory:, reader:, arrival:) -> #(
-          Model(..model, reader:, anchor: None, key: Some(key), memory:),
+          Model(
+            ..model,
+            reader:,
+            anchor: None,
+            divider: None,
+            key: Some(key),
+            memory:,
+          ),
           arrive(model.watching, arrival),
         )
       }
@@ -381,7 +445,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // The button is the way back to the tail without a scroll: it follows
     // again from here, and nothing stays held.
     Jumped -> #(
-      Model(..model, reader: follow_rule.jumped(model.reader), anchor: None),
+      Model(
+        ..model,
+        reader: follow_rule.jumped(model.reader),
+        anchor: None,
+        divider: None,
+      ),
       to_bottom(model.watching),
     )
 
@@ -390,7 +459,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // the answer after it, so the transcript follows the tail again from the
     // press, and the rows that land scroll it down as they do any follower.
     Sent -> #(
-      Model(..model, reader: follow_rule.jumped(model.reader), anchor: None),
+      Model(
+        ..model,
+        reader: follow_rule.jumped(model.reader),
+        anchor: None,
+        divider: None,
+      ),
       to_bottom(model.watching),
     )
   }
@@ -566,6 +640,43 @@ fn hold(watching: Option(Watching)) -> Effect(Msg) {
   }
 }
 
+// Holds the divider that was pressed and the viewport position of its top
+// edge, when the element is watching a transcript.
+fn place(watching: Option(Watching), button: ffi_dom.Element) -> Effect(Msg) {
+  case watching {
+    None -> effect.none()
+    Some(Watching(host:, ..)) -> {
+      use dispatch <- effect.from
+      dispatch(
+        Placed(Some(Divider(host:, button:, top: ffi_dom.bounding_top(button)))),
+      )
+    }
+  }
+}
+
+// Puts a held divider back where it was in the viewport, and measures the gap
+// either way. A divider that left the page is let go. Scrolling by nothing is
+// not a scroll, so a lane that grew below the divider moves nothing.
+fn restore(watching: Option(Watching), divider: Divider) -> Effect(Msg) {
+  use dispatch <- effect.from
+  case ffi_dom.is_connected(divider.button) {
+    False -> dispatch(Placed(None))
+    True -> {
+      let by =
+        follow_rule.holding(divider.top, ffi_dom.bounding_top(divider.button))
+      case by == 0.0 {
+        True -> Nil
+        False -> ffi_dom.scroll_by(divider.host, by)
+      }
+    }
+  }
+
+  case watching {
+    None -> Nil
+    Some(Watching(host:, ..)) -> dispatch(Measured(gap_of(host)))
+  }
+}
+
 // The same row, measured again after the reader scrolled.
 fn remeasure(anchor: Option(Anchor)) -> Effect(Msg) {
   case anchor {
@@ -637,7 +748,7 @@ fn view(model: Model) -> Element(Msg) {
         event.on(fold.toggled_event, decode.success(Folded)),
         event.on(
           "click",
-          decode.one_of(marked("loomOlder", Paged), [marked("loomFold", Folded)]),
+          decode.one_of(marked("loomOlder", Paged), [divided()]),
         ),
       ],
       [],

@@ -643,3 +643,44 @@ pub fn program_text_is_one_line_per_row_test() {
   assert !list.any(rows, string.contains(_, "\u{001B}"))
     as "a control sequence in the program never reaches a host"
 }
+
+// Joining the traces of two stretches is the trace of both, oldest program
+// first, within the same bound, with the programs left out counted.
+pub fn joining_two_stretches_is_tracing_them_together_test() {
+  let first =
+    trace_view.fold(
+      window([exchange(0, program("// one\npub fn main() { 1 }", None), None)]),
+    )
+  let second =
+    trace_view.fold(
+      window([exchange(0, program("// two\npub fn main() { 2 }", None), None)]),
+    )
+  let joined = trace_view.append(first, second)
+  assert list.map(joined.programs, fn(program) { program.label })
+    == ["one", "two"]
+  assert joined.omitted == 0
+  assert trace_view.append(trace_view.empty(), first) == first
+  assert trace_view.append(first, trace_view.empty()) == first
+}
+
+pub fn a_joined_trace_keeps_the_newest_programs_test() {
+  let stretch = fn(from: Int, count: Int) {
+    int.range(from: from + count - 1, to: from - 1, with: [], run: fn(all, n) {
+      [n, ..all]
+    })
+    |> list.map(fn(index) {
+      exchange(
+        index,
+        program("// p" <> int.to_string(index) <> "\npub fn main() {}", None),
+        None,
+      )
+    })
+    |> window
+    |> trace_view.fold
+  }
+  let joined = trace_view.append(stretch(0, 10), stretch(10, 10))
+  assert list.length(joined.programs) == trace_view.max_programs
+  assert joined.omitted == 8
+  let assert Ok(newest) = list.last(joined.programs)
+  assert newest.label == "p19"
+}

@@ -200,29 +200,39 @@ pub fn a_fold_larger_than_the_limit_draws_its_newest_steps_test() {
 // Opening a fold that does not fit beside the ones already open closes the
 // one opened longest ago, and keeps the new one.
 pub fn opening_a_fold_closes_the_older_ones_when_they_do_not_fit_test() {
-  let model = page(lane_fixture.weighty(1, [150, 150, 3]))
-  let assert [first_fold, second_fold, _] = folds(model)
+  // Forty-nine turns fill 147 of the 150 rows, so the folds share the reserve
+  // beside them, which holds one fold of a hundred rows and not two.
+  let model =
+    page(lane_fixture.weighty(1, list.append(list.repeat(1, 46), [150, 150, 3])))
+  let assert [first_fold, second_fold] =
+    folds(model) |> list.drop(46) |> list.take(2)
   let one = toggled(model, first_fold)
-  assert drawn_folds(one) == [#(150, 0)]
+  assert drawn_folds(one) == [#(100, 50)]
 
   let two = toggled(one, second_fold)
-  assert drawn_folds(two) == [#(150, 0)]
-  let assert [turns.Work(folding: turns.Folded, ..), ..] =
-    list.filter(component.pieces(two), fn(piece) {
-      case piece {
-        turns.Work(..) -> True
-        turns.Plain(..)
-        | turns.Prompt(..)
-        | turns.Spawned(..)
-        | turns.Returned(..)
-        | turns.Nudged(..)
-        | turns.Peer(..)
-        | turns.Sibling(..)
-        | turns.Missed(..)
-        | turns.Decided(..)
-        | turns.Commentary(..) -> False
-      }
-    })
+  assert drawn_folds(two) == [#(100, 50)]
+  assert is_closed(two, first_fold)
+  assert !is_closed(two, second_fold)
+}
+
+// Whether the work with this number is drawn closed.
+fn is_closed(model, fold: Int) -> Bool {
+  list.any(component.pieces(model), fn(piece) {
+    case piece {
+      turns.Work(id: Some(id), folding: turns.Folded, ..) -> id == fold
+      turns.Work(..)
+      | turns.Plain(..)
+      | turns.Prompt(..)
+      | turns.Spawned(..)
+      | turns.Returned(..)
+      | turns.Nudged(..)
+      | turns.Peer(..)
+      | turns.Sibling(..)
+      | turns.Missed(..)
+      | turns.Decided(..)
+      | turns.Commentary(..) -> False
+    }
+  })
 }
 
 // Folds that fit together stay open together.
@@ -287,17 +297,16 @@ fn received(lines: process.Subject(Nil)) -> Int {
 pub fn a_huge_fold_never_fills_a_paged_page_test() {
   let model = page(lane_fixture.weighty(6, [3, 3, 3, 400]))
   let assert [_, _, huge] = folds(model)
-  let #(paged, _) = component.older(model)
-  assert component.paging(paged) == component.Paged
-  let turns_held = list.length(folds(paged))
-
-  let open = toggled(paged, huge)
+  let open = toggled(model, huge)
   let assert [#(_, hidden)] = drawn_folds(open)
   assert hidden > 0
-  assert component.paging(open) == component.Paged
-  assert list.length(folds(open)) == turns_held
+  let turns_held = list.length(folds(open))
 
-  let closed = toggled(open, huge)
+  let #(paged, _) = component.older(open)
+  assert component.paging(paged) == component.Paged
+  assert list.length(folds(paged)) == turns_held
+
+  let closed = toggled(paged, huge)
   assert component.paging(closed) == component.Paged
   assert list.length(folds(closed)) == turns_held
 }

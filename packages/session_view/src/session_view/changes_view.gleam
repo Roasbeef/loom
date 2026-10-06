@@ -235,6 +235,70 @@ pub fn fold(records: List(protocol.EntryRecord)) -> Board {
   )
 }
 
+/// Joins the board of an earlier stretch of a session to the board of a later
+/// one, as folding both stretches' records together would have, within the
+/// same bounds.
+///
+/// A host that keeps a summary of each settled turn instead of its records
+/// folds each turn's board once, when the turn is closed, and joins them when
+/// it draws the page, so the Changes tab still shows the edits of turns whose
+/// records the page no longer holds. A path both boards name is one file, with
+/// the later rows after the earlier ones. The count of files the later board
+/// held and did not list is carried as it was, and so is the earlier one's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert changes_view.append(changes_view.empty(), changes_view.empty())
+///   == changes_view.empty()
+/// ```
+pub fn append(earlier: Board, later: Board) -> Board {
+  let #(files, fresh) =
+    list.fold(later.files, #(earlier.files, 0), fn(joined, next) {
+      let #(files, fresh) = joined
+      case list.any(files, fn(file) { file.path == next.path }) {
+        True -> #(
+          list.map(files, fn(file) {
+            case file.path == next.path {
+              True -> combined(file, next)
+              False -> file
+            }
+          }),
+          fresh,
+        )
+        False -> #(list.append(files, [next]), fresh + 1)
+      }
+    })
+
+  Board(
+    files: bound_rows(list.take(files, max_files), max_rows),
+    file_count: earlier.file_count
+      + fresh
+      + int.max(0, later.file_count - list.length(later.files)),
+    added: earlier.added + later.added,
+    removed: earlier.removed + later.removed,
+  )
+}
+
+// One file's two stretches as one: the counts add, the later rows follow the
+// earlier ones within the file's own bound, and what the bound drops is
+// counted with what each stretch had already dropped.
+fn combined(earlier: File, later: File) -> File {
+  let rows = list.append(earlier.rows, later.rows)
+  let held = list.take(rows, max_file_rows)
+  File(
+    path: earlier.path,
+    origin: case earlier.origin, later.origin {
+      Written, Written -> Written
+      Written, Edited | Edited, Written | Edited, Edited -> Edited
+    },
+    added: earlier.added + later.added,
+    removed: earlier.removed + later.removed,
+    rows: held,
+    cut: earlier.cut + later.cut + list.length(rows) - list.length(held),
+  )
+}
+
 // One change a call made: its path, the diff lines it stands for and how it
 // was made. Only a successful `fs_edit` or `fs_write` is one.
 type Change {

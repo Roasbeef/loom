@@ -478,3 +478,61 @@ pub fn a_write_in_a_message_with_text_is_a_file_test() {
   let assert [file] = changes_view.fold(records).files as "the written file"
   assert file.origin == changes_view.Written
 }
+
+// A host that closes each settled turn folds the turn's records once and joins
+// the boards when it draws, and the board it draws is the one a fold of every
+// record would give: files in the order they were first edited, a path both
+// stretches name as one file with the later rows after the earlier ones, and
+// the counts added.
+pub fn joining_two_stretches_is_folding_them_together_test() {
+  let first = [
+    #("a.gleam", edit_details("a.gleam", "@@ -1 +1 @@\n-a\n+b"), False),
+    #("b.gleam", edit_details("b.gleam", "@@ -1 +1,2 @@\n-x\n+y\n+z"), False),
+  ]
+  let second = [
+    #("b.gleam", edit_details("b.gleam", "@@ -4 +4 @@\n-p\n+q"), False),
+    #("c.gleam", edit_details("c.gleam", "@@ -1 +0,0 @@\n-gone"), False),
+  ]
+  let joined =
+    changes_view.append(
+      changes_view.fold(records(first)),
+      changes_view.fold(records(second)),
+    )
+  assert joined == changes_view.fold(records(list.append(first, second)))
+  assert joined.file_count == 3
+  assert joined.added == 4
+  assert joined.removed == 4
+}
+
+// Joining with nothing changes nothing, whichever side holds it.
+pub fn joining_with_an_empty_board_changes_nothing_test() {
+  let board =
+    changes_view.fold(
+      records([
+        #("a.gleam", edit_details("a.gleam", "@@ -1 +1 @@\n-a\n+b"), False),
+      ]),
+    )
+  assert changes_view.append(changes_view.empty(), board) == board
+  assert changes_view.append(board, changes_view.empty()) == board
+}
+
+// The joined board holds no more than a folded one does, and says how much it
+// left out: a file past the bound is counted and not listed.
+pub fn a_joined_board_keeps_the_bounds_test() {
+  let many = fn(from: Int, count: Int) {
+    int.range(from: from + count - 1, to: from - 1, with: [], run: fn(all, n) {
+      [n, ..all]
+    })
+    |> list.map(fn(index) {
+      let path = "f" <> int.to_string(index) <> ".gleam"
+      #(path, edit_details(path, "@@ -1 +1 @@\n-a\n+b"), False)
+    })
+  }
+  let joined =
+    changes_view.append(
+      changes_view.fold(records(many(0, 20))),
+      changes_view.fold(records(many(20, 20))),
+    )
+  assert list.length(joined.files) == changes_view.max_files
+  assert joined.file_count == 40
+}

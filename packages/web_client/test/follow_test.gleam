@@ -514,3 +514,23 @@ pub fn a_send_returns_a_reader_to_the_tail_test() {
   assert follow_rule.jumped(reading_at(90.0)).position == Following
   assert follow_rule.sent_event == "loom-composer-sent"
 }
+
+// A pressed divider is put back where it was in the viewport. An opened fold
+// grows the lane, and a layout that carried the divider with it (it moved from
+// 592 pixels to 331 in a real page) is undone by scrolling the transcript by
+// the distance the divider moved. A divider that moved by less than a pixel is
+// where it was, and nothing is scrolled.
+pub fn a_pressed_divider_is_put_back_where_it_was_test() {
+  assert follow_rule.holding(592.0, 331.0) == -261.0
+  assert follow_rule.holding(331.0, 592.0) == 261.0
+  assert follow_rule.holding(592.0, 592.4) == 0.0
+  assert follow_rule.holding(592.0, 591.6) == 0.0
+  assert follow_rule.holding(592.0, 592.0) == 0.0
+}
+
+// A press on a divider is the reader's own move, as a fold of the todo board
+// is: the transcript stops following, so the lane's growth scrolls nothing.
+pub fn pressing_a_divider_leaves_the_tail_test() {
+  let reader = feed(at_the_bottom(), [Fold, Resize])
+  assert reader.position == Reading
+}

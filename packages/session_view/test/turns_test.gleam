@@ -264,6 +264,7 @@ fn shape(piece: turns.Piece) -> String {
       }
     turns.Work(folding: turns.Folded, ..) -> "work:folded"
     turns.Work(folding: turns.Unfolded(_), ..) -> "work:unfolded"
+    turns.Work(folding: turns.Reading, ..) -> "work:reading"
     turns.Work(folding: turns.Open, ..) -> "work:open"
     turns.Spawned(child:, ..) -> "spawn:" <> option.unwrap(child, "?")
     turns.Returned(child:, ..) -> "returned:" <> child
