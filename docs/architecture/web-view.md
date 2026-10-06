@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3984`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3991`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -586,14 +586,19 @@ rendered, to diff the next render against, and a row of rendered Markdown
 retains several times what a plain row does: 600 Markdown rows held 6.7
 MB where the same rows as plain text held 2.5 MB (#587).
 
-**The window.** The page holds the newest `component.live_rows` (150) rows
-of `main`. The rows are cut between turns (`turns.grouped`), so the oldest
+**The window.** The page holds the newest turns of `main` whose drawn rows
+fit `component.live_rows` (150). A settled turn is drawn as its prompt, its
+answer and one divider, and its steps are drawn only while the reader has its
+fold open (protocol-change/068), so a turn of 170 calls costs the page what a
+turn of two does. The turns are cut between turns (`turns.grouped`), so the oldest
 row the page holds is a turn's input. A turn keyed by its input keeps its
 key when rows are added above it or the oldest turn leaves, and its lines'
 memos are reused (`lane_memo_test`). When a new capture brings rows, the
 oldest turns leave the page. The one exception to the turn boundary is a
 single turn longer than the limit, which the page holds from its newest
-blocks back. Once rows are cut, the history window is trimmed to the
+blocks back, and only while it runs: its whole record stays in the history
+window, so once it settles the page holds it as one divider with its prompt.
+Once rows are cut, the history window is trimmed to the
 oldest record the page draws (`history_view.retain_from`), so each capture
 projects only what the page draws and the records the capture adds. The
 end of a turn whose input is older than the window is not drawn but stays
@@ -621,10 +626,26 @@ capture that lands meanwhile cannot move the endpoint the reply is placed
 against; the reply, or a refusal, resumes it and folds in the newest
 capture.
 
+**Folds.** The divider of a settled turn is a button, and pressing it opens or
+closes the fold on the server. The click's message carries the fold's number,
+the sequence of the first record the work holds (`turns.Work.id`), fixed when
+the tree is drawn, and the page applies it only while it is reading a session
+and only for a fold of a turn it holds. `session_view/fold_budget` decides what
+is drawn: `weigh` costs a turn, `fit` says how many turns fit with the folds
+that are open, and `draw` empties a closed fold and cuts an open one to the
+newest steps it has room for. Opening a fold adds its steps to the count; if the
+page then does not fit, the folds opened before it close, oldest first, and a
+fold that alone is larger than the limit shows its newest steps and a line
+saying how many earlier ones are not shown. The observer's socket admits the
+click at the divider's exact path (`component.fold_click`) and nothing else at
+that row. The alternative, a fold the browser opens by itself, left every step
+in the server's retained tree; the cost of this one is a round trip on a press,
+and steps that find-in-page cannot see until the fold is open.
+
 **The cap.** Loading older rows raises the page's limit to
 `component.held_rows` (300). The page still holds the newest rows, so new
 rows keep arriving at the bottom. When the page, paged, has to cut a whole
-turn to stay within 300 rows, it is `Full`: it keeps its newest 300 rows
+turn to stay within 300 drawn rows, it is `Full`: it keeps its newest 300 rows
 and loads no more, and the lane says so. The page refuses rather than
 dropping its newest rows because dropping them would stop it following the
 session and need a second mode to return to the tail, which the terminal
@@ -635,7 +656,8 @@ everything they are reading down by the height of what arrived. The
 stylesheet turns the browser's scroll anchoring off for the transcript, so
 the page keeps the reader's place itself. `<loom-follow>` hears the click on
 the button (it carries a fixed `data-loom-older` marker) as it hears a
-fold's toggle: it becomes `Reading`, so the growth that follows does not
+fold's toggle, and a click on a settled turn's divider (`data-loom-fold`) the
+same way: it becomes `Reading`, so the growth that follows does not
 scroll to the tail, and it holds the lane's first row and its position on
 screen. When that row stops being the lane's first, the older rows have
 arrived, and it scrolls the transcript by however far the row moved. This
@@ -1353,7 +1375,7 @@ keeps a page from acting.
 | `Origin` on upgrade | A page on another origin, including another loopback port, opening the socket. It must equal `http://` and the request's `Host`. | `ui_http.origin_matches` |
 | Credential and membership | A page outliving its authority. Every page request re-authenticates the minting credential and its membership, and the gateway re-checks at every frame. | `page_grant`, `ui_relay.while_open` |
 | Role ceiling | An operator's power by default. A page is an observer's unless minted with `--operate`, and never above Operator. | `ui_relay.capped` |
-| Component type | An observer's page sending a command. Its `Msg` has no command and its view one handler, the "Load older" read; the socket admits only that click at its fixed path and drops every other frame. | `web_view/component`, `ui_socket.observer_accepts` |
+| Component type | An observer's page sending a command. Its `Msg` has no command and its view three kinds of handler, the "Load older" read, a chip's focus and a settled turn's divider (draw or drop steps of records the page holds); the socket admits only those clicks at their fixed paths and drops every other frame. | `web_view/component`, `ui_socket.observer_accepts` |
 | Approval card rules | Tricking the person into approving (below). | `web_view/operator_page` |
 | Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is hidden text that `<loom-link>` validates in the browser before it draws an anchor. | `web_view/view/lane`, `web_view/view/strip`, `web_view/view/todo_panel`, `web_view/markdown_view`, `web_view/operator_page` |
 | Response headers | Inline script and style, framing, `Referer` leaks of the ticket and key, caching. | `ui_http.secured`, `page.content_security_policy` |

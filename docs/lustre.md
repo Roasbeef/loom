@@ -336,9 +336,11 @@ check first **(source)** ([`runtime.gleam`][src-rt-client],
   key, and in 5.7.1 the server's decoder has no arm for it at all.
 
 Loom's observer component registers no attribute, no property and no
-context, and its view attaches one handler, the lane's "Load older" click,
-whose message is a read (051, the addendum on history paging), so every one
-of these is dropped and `ui_socket` forwards only that click. That is the "by type" layer of 051's read-only enforcement. The
+context, and its view attaches handlers whose messages are reads or changes of
+what the page draws from records it already holds: the lane's "Load older"
+click (051, the addendum on history paging), a chip's focus and a settled
+turn's divider (068), so every one of these is dropped and `ui_socket`
+forwards only those clicks, each at its fixed path. That is the "by type" layer of 051's read-only enforcement. The
 operator's component, `web_view/operator_page`, attaches exactly two
 kinds of handler, a click on an approval button and the composer form's
 submit, and `ui_socket` forwards nothing else to it.
@@ -499,8 +501,10 @@ tree it last rendered, and only if that handler's decoder succeeds
 - **Every handler in the tree is callable by anyone who holds the socket,
   at any time.** Hiding a button with CSS does not remove its handler. A
   handler exists only when the role allows the action it sends. An
-  observer's view attaches one, the "Load older" read (051, the addendum
-  on history paging).
+  observer's view attaches only reads and changes of what the page draws:
+  the "Load older" read (051, the addendum on history paging), a chip's
+  focus, and a settled turn's divider, which draws or drops the steps of
+  records the page holds (068).
 - **The message a handler sends is fixed when the tree is rendered, and
   can arrive after the model moved on.** `update` must still check the
   message against the current state, and the engine must carry what it was
@@ -1241,8 +1245,9 @@ All apply to 5.7.1. Re-check each when the pin moves.
       an engine identity; no key contains tab, CR or LF.
 - [ ] Every handler in the tree is one the page's role may send; an
       observer's view has only the "Load older" click, at
-      `component.older_path`, which `ui_socket.observer_accepts` admits and
-      `page_events_test` pins. `update` re-checks each command against the
+      `component.older_path`, the chips' clicks and the dividers' clicks at
+      `component.fold_click`'s exact path, which `ui_socket.observer_accepts`
+      admits and `page_events_test` pins. `update` re-checks each command against the
       current state.
 - [ ] Session content appears only as text nodes; no attribute name,
       `href`/`src`/`action`, property, style, class string or key is built
