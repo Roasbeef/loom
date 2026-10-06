@@ -12,6 +12,7 @@ import codemode/codemode
 import codemode/compile
 import codemode/enforcement
 import codemode/identity
+import codemode/run_channel
 import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/clock
@@ -43,7 +44,7 @@ fn fresh_dir(name: String) -> String {
 fn exec_config(
   dir: String,
   build: compile.Builder,
-  launch: satellite.Launcher,
+  launch: run_channel.Launcher,
 ) {
   let assert Ok(broker) =
     broker.start(
@@ -68,16 +69,13 @@ fn exec_config(
       step_id: "step-1",
       budget: budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000),
     ),
-    satellite: satellite.SatelliteConfig(
+    satellite: satellite.RunConfig(
       base_policy: policy.workspace_default("/work"),
       demand: exec.BestEffort,
       env: [#("PATH", "/usr/bin")],
       cwd: "/work",
-      cap_socket_path: dir <> "/sock",
       entropy: token.production_entropy(),
       clock: clock.fixed(at: t),
-      write_token_file: satellite.private_token_writer(dir),
-      unlink_token_file: satellite.unlink_token_file,
       precheck: satellite.no_precheck,
       router: satellite.default_router,
       ceilings: [],
@@ -110,8 +108,8 @@ fn node_report() -> enforcement.Report {
 }
 
 // A peer launcher standing in for one whose node's helper reported.
-fn reporting_peer() -> satellite.Launcher {
-  satellite_peer.reporting_launcher(finish_peer, node_report())
+fn reporting_peer() -> run_channel.Launcher {
+  satellite_peer.foreground_reporting_launcher(finish_peer, node_report())
 }
 
 fn finish_peer(ctx: PeerCtx) -> Nil {
@@ -121,13 +119,19 @@ fn finish_peer(ctx: PeerCtx) -> Nil {
 pub fn vetting_rejection_short_circuits_test() {
   let dir = fresh_dir("reject")
   let config =
-    exec_config(dir, ok_builder, satellite_peer.launcher(finish_peer))
+    exec_config(
+      dir,
+      ok_builder,
+      satellite_peer.foreground_launcher(finish_peer),
+    )
+
   // An `@external` never reaches compile or the satellite.
   let source =
     "@external(erlang, \"os\", \"cmd\")\npub fn run(c: String) -> String\n"
   let execution = codemode.execute(source, config)
   let assert codemode.VetRejected(rejections) = execution.outcome
   assert rejections != []
+
   // Nothing ran, and both stages say so in their own words rather than by
   // being absent from a list.
   let assert enforcement.Unreported(build) = execution.enforcement.build
@@ -149,6 +153,7 @@ pub fn compile_failure_short_circuits_test() {
   let execution = codemode.execute(source, config)
   let assert codemode.CompileFailed(compile.BuildRejected(_)) =
     execution.outcome
+
   // The build ran, so its report is carried; the node never did, and the
   // reason says which — not the same thing as an absent report.
   assert execution.enforcement.build == build_report()
@@ -163,6 +168,7 @@ pub fn full_pipeline_returns_ran_with_persistable_seam_test() {
   let execution = codemode.execute(source, config)
   let assert codemode.Ran(source: returned, artifact:, outcome:) =
     execution.outcome
+
   // The source and artifact hash come back for the runtime to persist as a
   // durable entry — the seam `execute` exposes rather than reaching into
   // storage itself.
@@ -170,6 +176,7 @@ pub fn full_pipeline_returns_ran_with_persistable_seam_test() {
   assert compile.artifact_hash(artifact) == "beef"
   assert outcome
     == satellite.Completed(value: msgpack.StringValue("orchestrated"))
+
   // The point of issue #5: a *healthy* run carries both stages' reports.
   // The node's used to arrive after the outcome had already been reported,
   // so the happy path — the one anyone actually runs — said nothing about
@@ -184,7 +191,11 @@ pub fn a_peer_that_ran_no_node_is_never_read_as_confined_test() {
   // `Unreported`, never a layer list it did not apply.
   let dir = fresh_dir("unjailed")
   let config =
-    exec_config(dir, ok_builder, satellite_peer.launcher(finish_peer))
+    exec_config(
+      dir,
+      ok_builder,
+      satellite_peer.foreground_launcher(finish_peer),
+    )
   let source = "import cap/fs\npub fn main() { fs.read(\"x\") }\n"
   let execution = codemode.execute(source, config)
   let assert codemode.Ran(..) = execution.outcome
