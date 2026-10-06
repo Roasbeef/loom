@@ -11,6 +11,7 @@ import client/daemon/shareable
 import client/internal/instance_owner as custody
 import core/clock
 import core/ids
+import core/workspace
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
@@ -34,7 +35,7 @@ fn private(store: catalogue.Catalogue, seed: Int) -> catalogue.Registration {
     catalogue.Registration(
       id:,
       path: "/unopened-shareable-test/" <> id <> ".db",
-      workspace: "/workspace/project",
+      workspace: workspace.LocalBinding("/workspace/project"),
       name: "session " <> int.to_string(seed),
       configuration: "",
       created_at: 1_700_000_000_000,
@@ -48,9 +49,13 @@ fn private(store: catalogue.Catalogue, seed: Int) -> catalogue.Registration {
     as "the fixture represents initialized metadata"
   let selected =
     domain.Domain(
-      domain.key(domain.WorkspacePrivate, record.workspace, record.id),
+      domain.key(
+        domain.WorkspacePrivate,
+        workspace.binding_key(record.workspace),
+        record.id,
+      ),
       domain.WorkspacePrivate,
-      record.workspace,
+      workspace.binding_key(record.workspace),
       "",
       "/owner/aggregate/memory.db",
       "/owner/aggregate/search.db",

@@ -2768,6 +2768,7 @@ pub fn registered_managed_boot_never_enters_the_local_resolver_test() {
       request_key: "remote-creation",
       state: catalogue.Reserved,
       profile: None,
+      subtitle: option.None,
     )
   let selected =
     domain.Domain(

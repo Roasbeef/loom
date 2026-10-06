@@ -4,6 +4,13 @@
 //// canonical workspace policy, epoch fencing, and lifecycle admission belong
 //// to the server and its serialized manager. Conversation frames use a separate
 //// codec; a control connection cannot retarget itself into a session stream.
+////
+//// ## Flow
+////
+//// `decode` bounds the envelope and passes command fields to `decode_fields`.
+//// `accepted_features` bounds decoder claims; `workspace_selection` preserves
+//// typed creation intent. `decode_claim` handles enrollment separately, and
+//// `event` encodes control replies without granting session-stream authority.
 
 import client/peer_mail
 import core/ids

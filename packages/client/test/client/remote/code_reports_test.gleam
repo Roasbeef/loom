@@ -148,6 +148,7 @@ fn mode(value: mp.MsgPackValue) -> shell.CodeMode {
         ),
         shell.NothingRefused,
         call_record.empty(),
+        [],
       )
     },
     background: None,
