@@ -1,5 +1,19 @@
 # Current handoff
 
+PR #824 is being rebased onto `origin/main` at
+`552e44033d615675ae670aea784b399105476c60`. The previous PR head,
+`1d2accd0c0dfdef3d18c05ec6e499637646bba7c`, passed local checks, both hosted
+platform gates and independent Linux signoff before this rebase. Those results
+remain historical evidence; the rebased head needs its own verification.
+
+The merge retains main's escalation controls, queued-input and session
+lifecycle changes, web lazy folds, and measured closure/render optimizations.
+Both current Etui pins remain `7365d4773a3aeba3f394e3d5fd06a77fa7e26fe2`.
+The original evolution head is retained under
+`backup/self-extension-before-main-20261005`. The prior upstream performance
+handoff is superseded here; its measurements and limits remain in
+[the investigation](review/beam-cpu-2026-10-05.md).
+
 The active follow-on is state-preserving component upgrades under
 [protocol 069](../protocol-change/069-state-preserving-component-upgrades.md).
 Weft's actor and state-machine migration primitive is merged in
@@ -117,28 +131,21 @@ Use [the PR's checks](https://github.com/Roasbeef/loom/pull/824/checks) for curr
 hosted and exact-head platform verdicts. A local macOS pass cannot establish
 Linux kernel enforcement or measured model quality.
 
-## Current validation blockers
+## Current validation boundary
 
-Hosted run `37257455225` on `c95200351f2b` passed every component job and the
-Linux aggregate gate. The macOS aggregate rejected two undeclared helper-test
-skips whose evidence readers were Linux-only. The portable correction observes
-Darwin process metadata and the original helper port, then tests conservative
-retirement refusal and retained pool custody. Linux keeps its descendant-death
-and timestamp assertions. The corrected broker gate passes all 400 tests
-locally without skips. At `0185cba3954c`, hosted Linux and macOS aggregate
-gates both passed, including the corrected broker coverage. The new native
-upgrade work requires new exact-head verdicts.
+The complete hosted run `37281752001` passed on the previous head
+`1d2accd0c0df`, including both platform aggregate gates. Independent Linux
+signoff also passed all six lanes, release-update verification and the strict
+skip census. The bundled/slim update test completed in 33 seconds, retiring
+both old fixture daemons and accepting new epochs. The earlier full-disk
+installer failure is resolved for that head; no retained evidence was deleted
+and no deadline was increased.
 
-Independent Linux signoff on `c95200351f2b` passed all six test lanes and the
-strict skip census. Its shipped `update-release-smoke` check timed out while
-the native installer copied the staged server release. The test host's home
-filesystem was full, making disk pressure the leading explanation; the cause
-is not proven until the fixture is rerun with free space. `signoff/linux` is
-therefore red for that old head. A fresh read-only check now finds 206 GB and
-ample inodes free; the previous cleanup request is no longer needed and no
-directories were deleted by this task. Run independent signoff on the new
-pushed head. Do not waive the release check or raise its deadline to obtain a
-green verdict.
+The rebase requires fresh package and production-fixture verification,
+independent review of the conflict resolutions, and exact-pushed-head hosted
+and Linux signoff. Keep those verdicts separate from the earlier green run.
+The owner has authorized this rebase and the Weft merge, not a Loom merge or
+installation into a running user daemon.
 
 The evolution architecture now includes the ownership map, activation sequence,
 operator payload examples, failure responses and acceptance fixtures. Ten
