@@ -3,7 +3,7 @@
 -module(executor_beam_endpoint_test_ffi).
 -export([credits/1, capture/1, head/1, inject_idle/2, inject_active/2,
          capture_release/1, inject_release/2, retire_idle/1, retire_busy/1,
-         answer_waiting/1, joined_waiting/1]).
+         answer_waiting/1, joined_waiting/1, launch_snapshot/1]).
 
 credits(Server) ->
     {state, _, Records, _} = sys:get_state(Server),
@@ -103,3 +103,28 @@ custody_matches(Server, Predicate) ->
                       Predicate(sys:get_state(Pid));
                  (_) -> false
               end, Records).
+
+%% Only phase, join and resource classifications enter this diagnostic receipt.
+%% Original keys, configuration, callback handles and private tokens stay local.
+launch_snapshot(Pid) ->
+    try
+        {state, _, _, _, Active, Metadata, _, _, Gate} = sys:get_state(Pid),
+        Entries = [{tag(element(4, A)), element(9, A),
+            result_tag(element(8, A)), closed_tag(element(12, A))}
+            || {_, A} <- maps:to_list(Active)],
+        Controls = [{tag(element(2, M)), element(7, M),
+            result_tag(element(6, M))} || {_, M} <- maps:to_list(Metadata)],
+        unicode:characters_to_binary(io_lib:format(
+            "gate=~p active=~p controls=~p", [tag(Gate), Entries, Controls]))
+    catch _:_ -> <<"snapshot unavailable">> end.
+
+tag(Term) when is_tuple(Term) -> element(1, Term);
+tag(Term) when is_atom(Term) -> Term.
+
+result_tag(none) -> none;
+result_tag({some, {ok, _}}) -> completed;
+result_tag({some, {error, Reason}}) -> {failed, tag(Reason)}.
+
+closed_tag(none) -> none;
+closed_tag({some, {close_result, _Node, Transport, Resources}}) ->
+    {tag(Transport), tag(Resources)}.
