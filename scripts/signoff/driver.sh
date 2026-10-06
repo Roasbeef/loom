@@ -85,8 +85,18 @@ fi
 exit "$st"
 ENTRYPOINT
 
-echo "== building loom-signoff:$short (scripts/signoff/Dockerfile at $LOOM_SHA)"
-docker build --quiet -f scripts/signoff/Dockerfile -t "loom-signoff:$short" . >"$logs/image-build.log"
+# One image tag, moved by every build, rather than one per commit: a tag
+# per commit is an image nobody ever removes, and by 2026-10-06 the box
+# held 289 of them, 76 GB of toolchain images for commits long since
+# merged. The run uses the image's ID, so a later build moving the tag
+# cannot change what this run is running, and once it is over the images
+# the tag has moved off are pruned. The label confines that prune to the
+# images a signoff built; a running container's image is never pruned, so
+# a run still going elsewhere keeps its own.
+echo "== building loom-signoff:current (scripts/signoff/Dockerfile at $LOOM_SHA)"
+docker build --quiet --label loom-signoff -f scripts/signoff/Dockerfile \
+	-t loom-signoff:current --iidfile "$logs/image-id" . >"$logs/image-build.log"
+image=$(<"$logs/image-id")
 
 # LOOM_CPUS and LOOM_MEMORY, when set, bound the run for a box that has
 # other work on it; unset, a run may use the whole machine, as it always
@@ -117,11 +127,19 @@ docker run --rm \
 	-v loom-signoff-hex-cache:/root/.cache/gleam \
 	-v loom-signoff-go-mod-cache:/var/cache/loom-signoff/go/pkg/mod \
 	${LOOM_PARALLEL:+-e "SIGNOFF_PARALLEL=$LOOM_PARALLEL"} \
-	"loom-signoff:$short" \
+	"$image" \
 	bash /logs/entrypoint.sh "$short" "$LOOM_SHA" "$(id -u):$(id -g)" "$memory_bytes" "$cpu_quota" >"$logs/signoff.log" 2>&1
 verdict=$?
 set -e
 elapsed=$(($(date +%s) - started))
+docker image prune --force --filter label=loom-signoff >/dev/null || true
+
+# The logs are the one thing a run keeps on the host; the newest fifty
+# runs' worth is kept and the rest go, so they cannot grow without bound
+# either.
+ls -1t "$HOME/loom-signoff-container/logs" | tail -n +51 | while read -r old; do
+	rm -rf "$HOME/loom-signoff-container/logs/$old"
+done
 cat "$logs/signoff.log"
 echo "== containerised signoff/linux: $([ "$verdict" -eq 0 ] && echo GREEN || echo RED) in ${elapsed}s"
 echo "== logs: $logs on $(hostname)"
