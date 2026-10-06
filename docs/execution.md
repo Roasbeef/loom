@@ -419,6 +419,21 @@ necessary. The container runs `signoff.sh --dry-run` and posts the
 verdict itself afterward from the host's own `gh`, which is the
 arrangement that keeps a GitHub token out of the image.
 
+A key handed to agents should not be able to run whatever it sends, and
+the driver protocol is exactly that: `scripts/signoff/driver.sh` is
+streamed to `bash -s`. `LOOM_SIGNOFF_GATE=1 make signoff-remote` instead
+sends only `signoff <sha> [--dry-run] [--parallel N]`, to a host whose
+key is pinned in `authorized_keys` to `scripts/signoff/gate.sh`. The gate
+reads the request as data, refuses a commit on none of origin's branches,
+and runs an installed copy of the same driver as root through one sudo
+rule, from a root-owned state directory holding the checkout and a token
+that may write commit statuses and nothing else; the key's account holds
+nothing and is not in the docker group. Optional `LOOM_CPUS` and
+`LOOM_MEMORY` ceilings keep a gated run from crowding out whatever else
+the box does. The gate's header has the installation, and what it does
+not bound: the commit under test still runs as root in a container that
+is not a sandbox, so the commit, not the key, is the trust boundary.
+
 ### Landing a `gh stack`, and a busy `main`
 
 `gh stack merge` merges a stack atomically, but it requires

@@ -2,11 +2,11 @@
 # driver.sh — the remote half of a containerised signoff, run on the box
 # that hosts it.
 #
-# scripts/signoff_remote.sh streams this file to `bash -s` over ssh. It
-# was a heredoc inside that script; it is a file of its own so that it can
-# be read, tested and installed as one, and signoff_remote.sh's header
-# still says why the container flags, the entrypoint and the posting
-# stanza are what they are.
+# scripts/signoff_remote.sh streams this file to `bash -s` over ssh, and
+# scripts/signoff/gate.sh runs an installed copy of it for a key that may
+# not send a script at all; either way it is the one place the container
+# flags, the entrypoint and the posting stanza live, and
+# signoff_remote.sh's header says why each of them is what it is.
 #
 # Everything it needs arrives in the environment, never spliced into its
 # text, so a path or URL with a shell-special character in it cannot

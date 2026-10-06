@@ -462,7 +462,7 @@ signoff: ## Run this platform's gate in parallel and post signoff/<platform> (SI
 	@bash scripts/signoff.sh $(SIGNOFF_ARGS)
 
 .PHONY: signoff-remote
-signoff-remote: ## Run the gate for HEAD in a fresh container on LOOM_SIGNOFF_HOST and post its signoff
+signoff-remote: ## Run the gate for HEAD in a fresh container on LOOM_SIGNOFF_HOST and post its signoff (LOOM_SIGNOFF_GATE=1 for a gated host)
 	@bash scripts/signoff_remote.sh $(SIGNOFF_ARGS)
 
 # ------------------------------------------------------------ the simulator

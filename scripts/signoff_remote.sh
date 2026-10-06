@@ -2,6 +2,7 @@
 # signoff_remote.sh — run scripts/signoff.sh for HEAD on another machine.
 #
 # Usage: LOOM_SIGNOFF_HOST=<ssh destination> scripts/signoff_remote.sh [signoff.sh args]
+#        LOOM_SIGNOFF_GATE=1 LOOM_SIGNOFF_HOST=<ssh destination> scripts/signoff_remote.sh [--dry-run]
 #
 # The host comes only from the environment. Which box runs a developer's
 # Linux lane is that developer's business, not the repository's, so
@@ -141,6 +142,16 @@
 # posting stanza rather than extending signoff.sh to skip it
 # conditionally, which would mean touching the lanes file this change was
 # scoped to leave alone.
+#
+# --- A gated host ---
+#
+# Sending the driver means the ssh key that runs a signoff can run
+# anything at all on the box, which is right for a developer's own login
+# and wrong for a key handed to agents. With LOOM_SIGNOFF_GATE set, this
+# script sends only `signoff <sha> [--dry-run] [--parallel N]` to a host
+# whose key is pinned to scripts/signoff/gate.sh, which reads that request
+# as data and runs an installed copy of the same driver. gate.sh says what
+# such a key does and does not bound.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -173,6 +184,21 @@ while [ "$i" -lt "${#args[@]}" ]; do
 	esac
 	i=$((i + 1))
 done
+
+# A gated host (scripts/signoff/gate.sh) takes no script, only a request
+# it can read as data, so in that mode this side sends the commit and the
+# two knobs the gate accepts and nothing else. The gate takes no details
+# link, so asking for one is refused here rather than dropped on the way.
+if [ -n "${LOOM_SIGNOFF_GATE:-}" ]; then
+	if [ -n "$url" ]; then
+		echo "signoff_remote: a gated host takes no --url" >&2
+		exit 2
+	fi
+	request="signoff $sha"
+	if [ "$post" = no ]; then request="$request --dry-run"; fi
+	if [ -n "${SIGNOFF_PARALLEL:-}" ]; then request="$request --parallel $SIGNOFF_PARALLEL"; fi
+	exec ssh "$host" "$request" </dev/null
+fi
 
 # The driver (scripts/signoff/driver.sh) is sent as it is in this
 # checkout and read by `bash -s`, so nothing in it is touched by this
