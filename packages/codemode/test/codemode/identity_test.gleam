@@ -42,6 +42,7 @@ import codemode/codemode
 import codemode/compile
 import codemode/enforcement
 import codemode/identity.{type ExecIdentity}
+import codemode/run_channel
 import codemode/satellite
 import codemode/vet/policy as vet_policy
 import core/clock
@@ -74,6 +75,7 @@ fn shared() -> ExecIdentity {
 
 pub fn a_plain_execution_opens_exactly_one_ledger_test() {
   let id = shared()
+
   // Both phases resolve to the execution's own key, so build, node and
   // every capability call share one ledger and one wall deadline — the
   // pooling `docs/adr/005-budget-pooling-granularity.md` fixes.
@@ -84,6 +86,7 @@ pub fn a_plain_execution_opens_exactly_one_ledger_test() {
 
 pub fn a_separately_accounted_build_opens_exactly_two_test() {
   let id = identity.with_own_build_ledger(shared())
+
   // The build's step is *derived* — the same operation, the `-build`
   // sub-step — so `broker.abort` still reaches both, and the second key is
   // not something a caller wrote.
@@ -102,6 +105,7 @@ pub fn the_phases_are_named_in_the_type_test() {
 
 pub fn every_phase_draws_on_the_one_parent_budget_test() {
   let id = identity.with_own_build_ledger(shared())
+
   // Even the separately accounted build reserves against the execution's
   // own budget: separate ledger, same ceiling — never a second budget the
   // caller could raise on one phase alone.
@@ -113,6 +117,7 @@ pub fn re_budgeting_cannot_add_a_ledger_test() {
   let id = shared()
   let short = budget.Budget(max_outstanding: 2, deadline_ms: t + 500)
   let tightened = identity.under_budget(id, budget: short)
+
   // The one derivation that changes a phase's budget leaves the keys
   // alone, so it can tighten a deadline and never widen the ledger count.
   assert identity.ledger_keys(tightened) == identity.ledger_keys(id)
@@ -130,6 +135,7 @@ pub fn re_budgeting_cannot_add_a_ledger_test() {
 pub fn one_execution_clears_only_under_its_derived_keys_test() {
   let observed = observe_execution(shared())
   assert observed == identity.ledger_keys(shared())
+
   // Not vacuous: all three seams ran, so this is three observations
   // collapsing onto one key rather than one seam being missed.
   assert list.length(observed) == 1
@@ -172,16 +178,13 @@ fn observe_execution(id: ExecIdentity) -> List(#(OpId, String)) {
       )),
       broker: started,
       identity: id,
-      satellite: satellite.SatelliteConfig(
+      satellite: satellite.RunConfig(
         base_policy: policy.workspace_default("/work"),
         demand: exec.BestEffort,
         env: [#("PATH", "/usr/bin")],
         cwd: "/work",
-        cap_socket_path: dir <> "/sock",
         entropy: token.production_entropy(),
         clock: clock.fixed(at: t),
-        write_token_file: satellite.private_token_writer(dir),
-        unlink_token_file: satellite.unlink_token_file,
         precheck: satellite.no_precheck,
         router: recording_router(seen),
         ceilings: [],
@@ -210,10 +213,12 @@ fn recording_builder(seen: Subject(#(OpId, String))) -> compile.Builder {
   }
 }
 
-fn recording_launcher(seen: Subject(#(OpId, String))) -> satellite.Launcher {
-  fn(spec: satellite.LaunchSpec) {
-    process.send(seen, identity.ledger_key(spec.identity))
-    satellite_peer.launcher(calling_peer)(spec)
+fn recording_launcher(seen: Subject(#(OpId, String))) -> run_channel.Launcher {
+  fn(request) {
+    let #(_artifact, phase, _base, _demand, _env, _cwd) =
+      run_channel.execution(request)
+    process.send(seen, identity.ledger_key(phase))
+    satellite_peer.foreground_launcher(calling_peer)(request)
   }
 }
 

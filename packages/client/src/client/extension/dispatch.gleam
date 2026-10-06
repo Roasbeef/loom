@@ -479,6 +479,8 @@ fn start_text(error: satellite.RunError) -> String {
       "its capability token file could not be written: " <> reason
     satellite.HostUnavailable(reason:) -> reason
     satellite.LaunchRejected(reason:) -> "the node was not launched: " <> reason
+    satellite.LaunchOutcomeUnknown(reason:) ->
+      "the node may have launched; original custody is unresolved: " <> reason
     satellite.DeadlineExceeded -> "the launch outran its own deadline"
     satellite.SatelliteGone(reason:) -> "the node exited at once: " <> reason
     satellite.ChannelFaulted(reason:) ->
