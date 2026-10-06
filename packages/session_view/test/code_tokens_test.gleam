@@ -105,3 +105,52 @@ pub fn a_diff_line_is_classified_whole_test() {
   assert code_tokens.line(Some("diff"), " context")
     == [CodePart(" context", CodePlain)]
 }
+
+pub fn python_has_keywords_both_quotes_numbers_and_hash_comments_test() {
+  assert code_tokens.line(Some("python"), "def f(x): return 'a' + \"b\" # 2")
+    == [
+      CodePart("def", CodeKeyword),
+      CodePart(" ", CodePlain),
+      CodePart("f", CodePlain),
+      CodePart("(", CodePunctuation),
+      CodePart("x", CodePlain),
+      CodePart(")", CodePunctuation),
+      CodePart(":", CodePunctuation),
+      CodePart(" ", CodePlain),
+      CodePart("return", CodeKeyword),
+      CodePart(" ", CodePlain),
+      CodePart("'a'", CodeString),
+      CodePart(" ", CodePlain),
+      CodePart("+", CodePunctuation),
+      CodePart(" ", CodePlain),
+      CodePart("\"b\"", CodeString),
+      CodePart(" ", CodePlain),
+      CodePart("# 2", CodeComment),
+    ]
+  assert code_tokens.line(Some("py"), "n = 10")
+    == code_tokens.python_line("n = 10")
+}
+
+// A `#` or `//` is a comment only in the language that says so, and an
+// apostrophe opens a string only in Python.
+pub fn each_language_keeps_its_own_comment_and_quote_test() {
+  assert code_tokens.gleam_line("# x")
+    == [
+      CodePart("#", CodePunctuation),
+      CodePart(" ", CodePlain),
+      CodePart("x", CodePlain),
+    ]
+  assert code_tokens.python_line("// x")
+    == [
+      CodePart("/", CodePunctuation),
+      CodePart("/", CodePunctuation),
+      CodePart(" ", CodePlain),
+      CodePart("x", CodePlain),
+    ]
+  assert code_tokens.gleam_line("'") == [CodePart("'", CodePunctuation)]
+}
+
+pub fn python_tokens_join_back_to_the_line_test() {
+  let text = "class A: x = 'unterminated # not a comment"
+  assert joined(code_tokens.python_line(text)) == text
+}

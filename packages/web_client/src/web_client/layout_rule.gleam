@@ -1,6 +1,6 @@
 //// What `<loom-shell>` keeps in the browser's storage between page loads:
-//// the two side columns' open state and the panel's active tab, per
-//// workspace, and the page's theme, per browser.
+//// the two side columns' open state per workspace, and the panel's active tab
+//// and the page's theme per browser.
 ////
 //// The storage itself is two calls in `web_client/internal/ffi_dom`, one that
 //// reads an item and one that writes an item, which answer a `Result`
@@ -43,6 +43,13 @@ import web_client/shell_rule.{
 /// The item the theme lives in. The theme is the reader's preference for the
 /// browser and is the same for every workspace, so the item has no digest.
 pub const theme_key = "loom.theme.v1"
+
+/// The item the panel's active tab lives in. The tab is the reader's habit and
+/// not a fact about a workspace, so it is kept per browser, like the theme: a
+/// reader who works in Changes finds Changes on the next session's page too.
+/// The layout's own `tab` field is still written, and is what a page uses
+/// when this item is missing.
+pub const tab_key = "loom.panel.tab.v1"
 
 /// Which workspace a page belongs to, as far as storage is concerned.
 pub type Workspace {
@@ -125,6 +132,32 @@ pub fn encode(layout: Layout) -> String {
     #("tab", json.string(tab_word(layout.tab))),
   ])
   |> json.to_string
+}
+
+/// The word stored under `tab_key` for a tab.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.encode_tab(shell_rule.Changes) == "changes"
+/// ```
+pub fn encode_tab(tab: Tab) -> String {
+  tab_word(tab)
+}
+
+/// The tab the browser's saved item names, or nothing when the item is
+/// missing, blocked or holds a word this release does not know, so the
+/// workspace's layout decides.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert layout_rule.restored_tab(Ok("changes")) == Some(shell_rule.Changes)
+/// assert layout_rule.restored_tab(Ok("sepia")) == None
+/// assert layout_rule.restored_tab(Error(Nil)) == None
+/// ```
+pub fn restored_tab(stored: Result(String, Nil)) -> Option(Tab) {
+  stored |> result.try(tab_of) |> option.from_result
 }
 
 /// The layout a page starts with, given what the storage answered for its

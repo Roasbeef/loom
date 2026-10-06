@@ -232,8 +232,14 @@ pub type Msg {
   /// The storage has been read for the page's workspace. `saved` is the
   /// layout to show, or `None` for a page that has no workspace, which keeps
   /// the layout it has. `theme` is the browser's saved theme, which does not
-  /// depend on the workspace.
-  Restored(workspace: Workspace, saved: Option(Layout), theme: Theme)
+  /// depend on the workspace. `tab` is the browser's saved panel tab, which
+  /// does not either, and replaces the layout's tab when there is one.
+  Restored(
+    workspace: Workspace,
+    saved: Option(Layout),
+    theme: Theme,
+    tab: Option(Tab),
+  )
 
   /// The frame that drew the restored layout has been painted, so later
   /// changes of layout may animate.
@@ -416,21 +422,19 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // The frame is still while the restored layout is drawn, so the width
     // transition does not run for it, and the settle that follows the paint
     // turns motion on for the reader's own changes.
-    Restored(workspace:, saved:, theme:) ->
-      case saved {
-        None -> #(
-          Model(..model, workspace:, theme:),
-          effect.batch([apply_theme(theme), settle()]),
-        )
-        Some(layout) -> #(
-          Model(..model, workspace:, layout:, theme:),
-          effect.batch([
-            tab_changed(model.layout.tab, layout.tab),
-            apply_theme(theme),
-            settle(),
-          ]),
-        )
-      }
+    Restored(workspace:, saved:, theme:, tab:) -> {
+      let layout = option.unwrap(saved, model.layout)
+      let layout =
+        shell_rule.Layout(..layout, tab: option.unwrap(tab, layout.tab))
+      #(
+        Model(..model, workspace:, layout:, theme:),
+        effect.batch([
+          tab_changed(model.layout.tab, layout.tab),
+          apply_theme(theme),
+          settle(),
+        ]),
+      )
+    }
 
     Settled -> #(Model(..model, motion: shell_rule.Animated), effect.none())
 
@@ -534,15 +538,21 @@ fn changed(
   )
 }
 
-// Writes the layout under the workspace's item. A page with no workspace
-// writes nothing. A refused write, from blocked or full storage, is dropped:
+// Writes the layout under the workspace's item, and the tab under the
+// browser's. A page with no workspace writes no layout, but its tab is still
+// the reader's. A refused write, from blocked or full storage, is dropped:
 // the layout on screen is right, the next load starts from the default, and
 // there is nothing the reader could do about it.
 fn save(workspace: Workspace, layout: Layout) -> Effect(Msg) {
+  use _ <- effect.from
+  let _ =
+    ffi_dom.storage_write(
+      layout_rule.tab_key,
+      layout_rule.encode_tab(layout.tab),
+    )
   case layout_rule.layout_key(workspace) {
-    None -> effect.none()
+    None -> Nil
     Some(key) -> {
-      use _ <- effect.from
       let _ = ffi_dom.storage_write(key, layout_rule.encode(layout))
       Nil
     }
@@ -566,7 +576,8 @@ fn restore() -> Effect(Msg) {
     layout_rule.layout_key(workspace)
     |> option.map(fn(key) { layout_rule.restore(ffi_dom.storage_read(key)) })
   let theme = layout_rule.theme(ffi_dom.storage_read(layout_rule.theme_key))
-  dispatch(Restored(workspace:, saved:, theme:))
+  let tab = layout_rule.restored_tab(ffi_dom.storage_read(layout_rule.tab_key))
+  dispatch(Restored(workspace:, saved:, theme:, tab:))
 }
 
 // The custom states for a change of tab: the old one out and the new one in

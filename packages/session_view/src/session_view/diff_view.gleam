@@ -90,13 +90,14 @@ pub type Diff {
 /// assert diff_view.parse("@@ -1 +1 @@\n-a\n+b").cut == 0
 /// ```
 pub fn parse(diff: String) -> Diff {
-  let all = string.split(diff, "\n")
+  let all = without_final_blank(string.split(diff, "\n"))
   let kept = list.take(all, max_lines)
   Diff(lines: of_lines(kept), cut: int.max(0, list.length(all) - max_lines))
 }
 
 /// Reads diff lines already split, as a host that bounds them itself holds
-/// them. Every line is read; nothing is cut.
+/// them. Every line is read; nothing is cut, except the empty string a
+/// trailing newline leaves at the end, which is not a line.
 ///
 /// ## Examples
 ///
@@ -109,12 +110,23 @@ pub fn parse(diff: String) -> Diff {
 ///   ]
 /// ```
 pub fn of_lines(lines: List(String)) -> List(Line) {
-  list.fold(lines, #([], Before), fn(acc, raw) {
+  list.fold(without_final_blank(lines), #([], Before), fn(acc, raw) {
     let #(out, place) = acc
     let #(line, next) = read(strip_return(raw), place)
     #([line, ..out], next)
   })
   |> fn(done) { list.reverse(done.0) }
+}
+
+// A diff that ends in a newline splits into a final empty string, which is
+// the end of the text and not a line of it: a context line is never empty in
+// git's format, it is a single space. Left in, it would draw as an empty
+// context row with line numbers.
+fn without_final_blank(lines: List(String)) -> List(String) {
+  case list.reverse(lines) {
+    ["", ..rest] -> list.reverse(rest)
+    _ -> lines
+  }
 }
 
 // Where the reader is in the diff: before any hunk, or inside one with the

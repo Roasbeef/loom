@@ -4362,6 +4362,7 @@ pub fn panel(
         Unheld -> changes.Partial
       },
       model.view.worktree,
+      option.map(model.view.label, fn(label) { label.workspace }),
     ),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),

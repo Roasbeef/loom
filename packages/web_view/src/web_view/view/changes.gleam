@@ -46,6 +46,7 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -72,20 +73,24 @@ pub type Window {
 /// have read the workspace and could not, one sentence says why the tab lists
 /// only the agent's edits.
 ///
-/// It is memoized on all three, so a page whose edits and workspace did not
+/// `workspace` is the session's workspace path, which each edit's path is
+/// shown relative to when it lies beneath it.
+///
+/// It is memoized on all four, so a page whose edits and workspace did not
 /// change diffs nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // changes.view(component.changes(model), changes.Whole, worktrees.Withheld)
+/// // changes.view(component.changes(model), changes.Whole, worktrees.Withheld, None)
 /// ```
 pub fn view(
   board: Board,
   window: Window,
   read: worktrees.Read,
+  workspace: Option(String),
 ) -> Element(message) {
-  use <- element.memo([element.ref(#(board, window, read))])
+  use <- element.memo([element.ref(#(board, window, read, workspace))])
   case read {
     worktrees.Seen(observed) ->
       case observed.repository {
@@ -94,9 +99,10 @@ pub fn view(
           edits(
             board,
             window,
+            workspace,
             Some(
-              "This workspace is not a git checkout, so the tab lists only "
-              <> "the edits the agent made.",
+              "Not a git checkout, so this lists only edits made with the "
+              <> "edit and write tools; shell changes are not shown.",
             ),
           )
       }
@@ -104,22 +110,24 @@ pub fn view(
       edits(
         board,
         window,
+        workspace,
         Some(
-          "This page may not read the workspace, so the tab lists only the "
-          <> "edits the agent made.",
+          "This page may not read the workspace, so this lists only edits "
+          <> "made with the edit and write tools.",
         ),
       )
     worktrees.Unreadable ->
       edits(
         board,
         window,
+        workspace,
         Some(
-          "The workspace could not be read just now, so the tab lists only "
-          <> "the edits the agent made.",
+          "The workspace could not be read just now, so this lists only "
+          <> "edits made with the edit and write tools.",
         ),
       )
     worktrees.Withheld | worktrees.Unread | worktrees.Throttled ->
-      edits(board, window, None)
+      edits(board, window, workspace, None)
   }
 }
 
@@ -128,6 +136,7 @@ pub fn view(
 fn edits(
   board: Board,
   window: Window,
+  workspace: Option(String),
   reason: Option(String),
 ) -> Element(message) {
   let why = case reason {
@@ -153,18 +162,7 @@ fn edits(
             ),
           ],
           why,
-          [
-            #("empty", empty_line(window)),
-            #(
-              "scope",
-              html.p([attribute.class("pane-empty")], [
-                html.text(
-                  "This tab lists edits made through the edit and write tools. "
-                  <> "Changes made through shell commands or editors are not shown.",
-                ),
-              ]),
-            ),
-          ],
+          [#("empty", empty_line(window)), ..scope(reason)],
         ])
       [first, ..rest] ->
         list.flatten([
@@ -189,13 +187,38 @@ fn edits(
                 html.text(changes_view.label()),
               ]),
             ),
-            #(file_key(first), file(first, [attribute.attribute("open", "")])),
+            #(
+              file_key(first),
+              file(first, workspace, [attribute.attribute("open", "")]),
+            ),
           ],
-          list.map(rest, fn(next) { #(file_key(next), file(next, [])) }),
+          list.map(rest, fn(next) {
+            #(file_key(next), file(next, workspace, []))
+          }),
           [#("omitted", omitted_files(board))],
         ])
     },
   )
+}
+
+// The line saying which edits the tab lists, for an empty board whose reason
+// does not already say so: a reason is one sentence that carries the same
+// scope, so the two are never drawn together.
+fn scope(reason: Option(String)) -> List(#(String, Element(message))) {
+  case reason {
+    Some(_) -> []
+    None -> [
+      #(
+        "scope",
+        html.p([attribute.class("pane-empty")], [
+          html.text(
+            "This tab lists edits made through the edit and write tools. "
+            <> "Changes made through shell commands or editors are not shown.",
+          ),
+        ]),
+      ),
+    ]
+  }
 }
 
 // The line an empty board draws, which says whether the whole session was
@@ -203,7 +226,7 @@ fn edits(
 fn empty_line(window: Window) -> Element(message) {
   html.p([attribute.class("pane-empty")], [
     case window {
-      Whole -> html.text("No edits in this session yet.")
+      Whole -> html.text("No edits yet.")
       Partial ->
         html.text(
           "No edits in the loaded part of this session. "
@@ -227,17 +250,39 @@ fn file_key(file: File) -> String {
 // is the details' own attributes, which only the first file's `open` fills.
 fn file(
   file: File,
+  workspace: Option(String),
   opened: List(attribute.Attribute(message)),
 ) -> Element(message) {
   html.details([attribute.class("changes-file"), ..opened], [
     html.summary([attribute.class("changes-file-line")], [
-      html.span([attribute.class("changes-path")], [html.text(file.path)]),
+      html.span([attribute.class("changes-path")], [
+        html.text(relative(file.path, workspace)),
+      ]),
       html.span([attribute.class("changes-counts")], [
         html.text(" " <> changes_view.counts_words(file)),
       ]),
     ]),
     diff.view(diff_view.of_lines(diff_lines(file)), file.cut),
   ])
+}
+
+// A path as the page shows it: relative to the workspace when it lies beneath
+// it, and otherwise as the edit named it. Only the display changes; the file's
+// key stays the whole path, so two files never share one.
+fn relative(path: String, workspace: Option(String)) -> String {
+  case workspace {
+    Some(root) -> {
+      let prefix = case string.ends_with(root, "/") {
+        True -> root
+        False -> root <> "/"
+      }
+      case string.starts_with(path, prefix) {
+        True -> string.drop_start(path, string.length(prefix))
+        False -> path
+      }
+    }
+    None -> path
+  }
 }
 
 // The lines the shared diff reader is given. An edit's rows are headerless
