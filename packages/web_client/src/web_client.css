@@ -813,8 +813,14 @@
   /* The "Jump to latest" button, drawn inside the client component while
      the reader is away from the bottom. Its wrapper has no height and
      sticks to the bottom edge of the scroller, so the button floats over
-     the last rows and the content's size does not change when it appears. */
-  .jump-anchor{position:sticky;bottom:0;z-index:1;flex:0 0 0;height:0;align-self:stretch;display:flex;justify-content:center;}
+     the rows and the content's size does not change when it appears. A
+     button over the middle of the 780px column covers a line of whatever
+     the reader stopped at, a code block's included, so the wrapper spans the
+     scroller (not the column) and the button sits at its right edge: in the
+     gutter where the scroller is wider than the column, and over the end of a
+     line, where there is least to read, where it is not. */
+  .jump-anchor{position:sticky;bottom:0;z-index:1;flex:0 0 0;height:0;display:flex;justify-content:flex-end;padding-right:16px;}
+  loom-follow.follow > .jump-anchor{align-self:stretch;max-width:none;}
   .jump-latest{position:absolute;bottom:12px;padding:5px 14px;border:1px solid var(--color-divider);border-radius:999px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-float);}
   /* The line above the lane's oldest row: the "Load older" button, or
      words saying why there is none. Each fits the same minimum height, so
