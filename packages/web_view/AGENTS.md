@@ -64,6 +64,15 @@ page keys and nonces, and the relay into the session's gateway.
   `sessions`, `resume` and `rename` run in the component's process; those
   three start a task and answer as a message, so the runtime never waits on
   the registry for them.
+- **Context breakdown** (protocol-change/075). The `ctx ~41%` figure is a native
+  `<details>` whose body is `view/context_breakdown.panel(state, Actions(refresh,
+  compact))`: headline, basis words, stacked bar (`split`: system prompt, tools,
+  messages, what the provider counted beyond them, reserve, free), the tokens until
+  auto-compact and a closed, bounded item list (`tools`, `kinds`). Everything is a
+  text node over `context_view.State`. Refresh is `component.ContextRefreshRequested`
+  at `component.context_refresh_path`, which the observer's socket admits;
+  Compact now is `component.CompactStrand` (a `Control`, `/compact` through the
+  shared step) and only the operator's page draws it.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
@@ -597,7 +606,7 @@ page keys and nonces, and the relay into the session's gateway.
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
   types or plain values. `heading.view(session_id, home, name,
-  workspace, status, tone, context, cost, notice)` draws the top bar (the brand,
+  workspace, status, tone, context, breakdown, cost, notice)` draws the top bar (the brand,
   `home`, the workspace's path with the home directory as `~` and then the name as two
   spans, the status as a `.pill` whose class follows the `Tone`
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
@@ -605,7 +614,7 @@ page keys and nonces, and the relay into the session's gateway.
   were spent and none priced, each as a word and a `span.num`; a figure with no
   value is not drawn, so no `est` for an unpriced model and no `ctx` on the
   primary strand before its first turn), with the ended
-  page's notice as its last child; `component.heading(model, going_home)` reads those
+  page's notice as its last child; `component.heading(model, going_home, context_actions)` reads those
   values from the model, draws `heading.home_link(going_home)` as `home`
   when the transport has the capability, and stays the entry point both pages
   call.

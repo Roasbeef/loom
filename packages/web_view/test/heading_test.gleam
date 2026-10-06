@@ -25,6 +25,7 @@ fn drawn(
     status: "connected",
     tone:,
     context: "ctx ~2%",
+    breakdown: element.none(),
     cost:,
     notice: element.none(),
   )
@@ -95,7 +96,7 @@ pub fn the_figures_emphasise_the_number_test() {
 
   assert string.contains(
     bar,
-    "title=\"Estimated context use of the strand shown\"",
+    "title=\"Estimated context use of the strand shown. Open for the breakdown.\"",
   )
 }
 
@@ -120,6 +121,7 @@ pub fn a_figure_with_no_value_is_not_drawn_test() {
       status: "connected",
       tone: heading.Live,
       context: "",
+      breakdown: element.none(),
       cost: "est —",
       notice: element.none(),
     )

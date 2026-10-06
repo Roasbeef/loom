@@ -204,6 +204,7 @@ import web_view/shareables
 import web_view/view/archiving
 import web_view/view/changes
 import web_view/view/commentary
+import web_view/view/context_breakdown
 import web_view/view/crumb
 import web_view/view/ended
 import web_view/view/expansion
@@ -357,6 +358,19 @@ pub const remembered_path = "0\t3\t2\t5"
 /// (`client/daemon/ui_socket.home_ticket_for`). `page_events_test` fails if
 /// the view moves the button.
 pub const home_path = "0\t0\t1"
+
+/// The Lustre event path of the Refresh button in the context breakdown, on
+/// both pages: the top bar's figures are its sixth child, the context figure
+/// is the figures' first child (a `<details>`), its panel (`view/context_breakdown`)
+/// the figure's second child, the panel's row of buttons the panel's first
+/// child, and Refresh the row's first. The observer's socket admits a `click` at
+/// exactly this path (`client/daemon/ui_socket.observer_accepts`), since the
+/// button asks only for a fresh read of the board the page already draws, the
+/// read its own lane makes at the end of every turn. The Compact now button is
+/// the row's second child and is drawn only on the operator's page, where the
+/// socket admits it like any click. `page_events_test` fails if the view moves
+/// the button.
+pub const context_refresh_path = "0\t0\t5\t0\t1\t0\t0"
 
 /// The Lustre event path of the operator's session controls, the goal's
 /// buttons and the Fork form: the fourth child of the Session pane, after the
@@ -735,6 +749,9 @@ pub type Control {
 
   /// `/fork <name>`, with the name as the operator typed it.
   Fork(name: String)
+
+  /// `/compact`, from the context breakdown's Compact now button.
+  CompactStrand
 }
 
 /// How much of the strand's history the page holds. It only moves forward:
@@ -1115,6 +1132,12 @@ pub type Msg(socket) {
   /// carry it (protocol-change/051, the addendum on strand focus).
   FocusRequested(strand: String)
 
+  /// The context breakdown's Refresh button was pressed: read the board again.
+  /// It carries nothing and sends no command, only the read the page makes at
+  /// the end of every turn, so an observer's page may carry it
+  /// (protocol-change/075).
+  ContextRefreshRequested
+
   /// The "Home" button was pressed. It carries nothing: the daemon mints a
   /// ticket for this page's own principal, so the press cannot name a place
   /// to go. It is the second message a browser can send an observer's page,
@@ -1450,6 +1473,8 @@ pub fn update(
       |> reobserved(at)
 
     OlderRequested -> older_at(model, at)
+
+    ContextRefreshRequested -> context_refresh_at(model, at)
 
     FoldToggled(fold:) -> folded_at(model, fold, at)
 
@@ -4039,6 +4064,7 @@ pub fn control(
     PauseGoal -> commanded(model, msg.Control(command: command.GoalPause))
     ResumeGoal -> commanded(model, msg.Control(command: command.GoalResume))
     ClearGoal -> commanded(model, msg.Control(command: command.GoalClear))
+    CompactStrand -> commanded(model, msg.Control(command: command.Compact))
     Fork(name:) -> written(model, "/fork ", name, forking)
   }
 }
@@ -5162,6 +5188,31 @@ fn older_at(
   }
 }
 
+// The press is a want for a fresh board. The state is marked stale, which a
+// read already out coalesces into one more, and the tick that follows is the
+// shared step's own, where the read is sent when the lane is free. A page that
+// is not following a session has no lane to ask.
+fn context_refresh_at(
+  model: Model(socket),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.status {
+    Connected ->
+      stepping(
+        Model(
+          ..model,
+          shared: Shared(
+            ..model.shared,
+            context: context_view.invalidate(model.shared.context),
+          ),
+        ),
+        [tick_at(at)],
+        at,
+      )
+    Connecting | Ended(_) -> #(model, effect.none())
+  }
+}
+
 /// Whether a Lustre event path is a settled turn's divider: the button that
 /// opens and closes a fold of work. The lane's rows are keyed, and a keyed
 /// child's path segment is its key, so a divider is at the lane's list (the
@@ -5956,7 +6007,11 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Observer,
-    heading(model, GoingHome),
+    heading(
+      model,
+      GoingHome,
+      context_breakdown.Actions(refresh: ContextRefreshRequested, compact: None),
+    ),
     shell.Unlisted,
     [
       crumb(model),
@@ -6279,6 +6334,10 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// the words as plain values, because it cannot import the types this module
 /// defines.
 ///
+/// `context_actions` are the two messages the context breakdown's buttons
+/// send (`view/context_breakdown`): the observer's page offers Refresh alone,
+/// and the operator's page adds Compact now, since only it may run `/compact`.
+///
 /// `going_home` is the message the bar's "Home" button sends, which the page's
 /// own message type wraps. The button is drawn only when the transport has the
 /// capability to go home, and otherwise the bar's second child is an empty
@@ -6287,9 +6346,13 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.heading(model, GoingHome)
+/// // component.heading(model, GoingHome, context_breakdown.Actions(Refresh, None))
 /// ```
-pub fn heading(model: Model(socket), going_home: message) -> Element(message) {
+pub fn heading(
+  model: Model(socket),
+  going_home: message,
+  context_actions: context_breakdown.Actions(message),
+) -> Element(message) {
   heading.view(
     session_id: model.shared.session,
     home: case model.view.transport.home {
@@ -6301,6 +6364,7 @@ pub fn heading(model: Model(socket), going_home: message) -> Element(message) {
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
     context: context_figure(model),
+    breakdown: context_breakdown.panel(model.shared.context, context_actions),
     cost: cost_text(model),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )

@@ -403,7 +403,9 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   (`component.Start.workspace_digest`, the lower-case SHA-256 in hex) that
   the browser keys the reader's saved layout by, so a path is never an
   attribute or a storage key. An observer's
-  socket forwards only the "Load older" click at `component.older_path`
+  socket forwards only the "Load older" click at `component.older_path`, the
+  context breakdown's Refresh click at `component.context_refresh_path`
+  (protocol-change/075), the chips, the Home button and a fold's divider
   and drops every other browser message (`observer_accepts`,
   protocol-change/051, the addendum on history paging); an operator's
   forwards only the

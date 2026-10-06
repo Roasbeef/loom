@@ -256,6 +256,32 @@ pub fn an_observer_socket_accepts_the_home_click_at_its_exact_path_test() {
   )
 }
 
+// Protocol-change/075: an observer's socket admits a click at the context
+// breakdown's Refresh button and not at its sibling, Compact now, which only
+// the operator's page draws, nor beneath the figure, nor another event.
+pub fn an_observer_socket_accepts_the_context_refresh_click_only_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let refresh = component.context_refresh_path
+  assert ui_socket.observer_accepts(click_at(refresh, "click"))
+  list.each(
+    [
+      click_at(refresh, "submit"),
+      click_at(refresh <> "\t0", "click"),
+      click_at(string.drop_end(refresh, 1) <> "1", "click"),
+      click_at("0\t0\t5\t0", "click"),
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
 // Only a page opened from a home is handed the capability to go home: a page
 // a link for one session opened is not, so it draws no button and cannot call.
 pub fn only_a_workspace_page_is_handed_the_way_home_test() {

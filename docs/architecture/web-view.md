@@ -558,8 +558,10 @@ shared step and so does what the step does, including reads for surfaces
 it does not draw. After a first capture it reads the strand's notes, to
 seed a todo board, which the todo panel draws, and then the session's context, the
 advisor's pending nudges and the goal, each when the one before is
-answered; it reads the context again when an operation ends and when the
-configuration changes. Ten seconds after it opens, and then on a tick at most every ten seconds, it also reads the followed
+answered; it reads the context again when an operation ends, when the
+configuration changes, and, while the followed strand runs, when a provider
+usage row lands, at most once every `surfaces.usage_refresh_interval_ms` (30 s;
+protocol-change/075). Ten seconds after it opens, and then on a tick at most every ten seconds, it also reads the followed
 strand's live jobs for the Session pane (the lane also asks for them whenever a run's completion changes; the delay keeps the startup reads the same as the terminal's):
 `live_jobs` is one of the gateway's read-only commands, every role may send
 it, and its answer is a snapshot the lane folds like the others, so it adds
@@ -1340,6 +1342,38 @@ is refused binds nothing and leaves the claim open. A lost reply cannot be
 replayed, since the login drawn for it is gone: the owner rotates, which voids the
 login with the rest.
 
+## The context breakdown (protocol-change/075)
+
+The top bar's `ctx ~41%` is the summary of a native `<details>`
+(`heading.view`), and its body is `view/context_breakdown`: the headline
+`Context window ~U / W (N%)`, the basis in words, a stacked bar, rows for the
+pinned prompt, the tools, the messages, what the provider counted beyond them,
+the compaction reserve and free space, the tokens left until the session
+compacts itself, and a closed list of the tools by name and the messages by
+kind, bounded at eight rows each. It is drawn from the board the shared record
+already holds (`context_view.State`), the one the figure reads, so it adds no
+read and no wire field. The browser opens and closes it, so the server renders
+nothing for that, and the stylesheet places the panel under the bar at the
+right edge (`.ctx-panel`, fixed, hairline border, no shadow). A tool name or a
+message kind is a text node; each bar segment's `style` holds an integer
+percentage the module computed.
+
+The panel has two buttons in its first child, so their paths do not depend on
+whether a board has arrived. Refresh (`component.ContextRefreshRequested`,
+`component.context_refresh_path`) marks the board stale and ticks the shared
+step, which sends the read, as the terminal's `r` does. The observer's socket
+admits a click at that exact path and nowhere new in the bar, since the button
+asks only for a read of a board the page draws. Compact now
+(`component.CompactStrand`, the next sibling) runs `/compact` through the
+shared step's control arm, the path a typed `/compact` takes, and only the
+operator's page draws it (`context_breakdown.Actions.compact`).
+
+The figure itself follows the board, which `surfaces.sync_context` keeps
+fresh. While the active strand runs, a usage row landing in the cache ledger
+(`cache_watch.Ledger.seen`) starts a read when the last automatic read is 30
+seconds old, so a long turn's figure follows it at about two reads a minute at
+most. A tool result admits no row and starts none.
+
 ## Expanding a row
 
 The terminal's `Ctrl+g` expands every row at once; the page lets the reader
@@ -1565,7 +1599,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/component.gleam` | The observer's application: the shared step's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the clock read once per message, `submit` and `decide` wrapping the operator's inputs as the step's commands, the history read `older`, `refreshed` deriving the row window (`live_rows`, `held_rows`, `Paging`) and the strip from the record, and `view`, which lays out the regions below. |
 | `packages/web_view/src/web_view/ending.gleam` | `Ending`, the closed reason a page has no session, with its fixed headline and advice, its reason string (the relay's hop to the component) and its close code (`Final` or `Retry`). |
 | `packages/web_view/src/web_view/view/ended.gleam` | The notice a page draws from an `Ending`, inside the heading. |
-| `packages/web_view/src/web_view/view/heading.gleam` | The top bar: the brand, the session's workspace and name, the connection's status and the context and cost estimates, drawn from plain values the component hands it. |
+| `packages/web_view/src/web_view/view/heading.gleam` | The top bar: the brand, the session's workspace and name, the connection's status and the context and cost estimates, drawn from plain values the component hands it. The context figure opens `context_breakdown`. |
+| `packages/web_view/src/web_view/view/context_breakdown.gleam` | The panel the context figure opens: headline, stacked bar, rows, tokens until compaction and a bounded item list, drawn from `context_view.State`, with Refresh and, on the operator's page, Compact now. |
 | `packages/web_view/src/web_view/view/switch.gleam` | The hidden `<loom-switch>` both pages draw as their centre's last child, carrying a ticket's address only once the daemon has minted one. |
 | `packages/web_view/src/web_view/view/shell.gleam` | The page's frame, `<loom-shell>`, and the order of its four children: the top bar, the sidebar, the centre column and the strand panel. The `sidebar` attribute is written from the `Sidebar` type, and `workspace` carries the digest the daemon computed, for the browser's saved layout. |
 | `packages/web_view/src/web_view/view/panel.gleam` | The strand panel, the right column and the frame's last child: four panes, always all drawn, the Strands pane (a title and the strip's cards), the Changes pane, the Session pane and the Trace pane. `<loom-shell>` draws the tabs and shows one pane; the panel carries no decision control. |

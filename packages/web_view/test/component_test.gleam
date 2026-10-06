@@ -19,6 +19,7 @@ import session_view/connection_event
 import session_view/session_channel
 import web_view/component
 import web_view/ending
+import web_view/view/context_breakdown
 
 fn simulation() {
   simulate.application(
@@ -295,6 +296,10 @@ pub fn the_heading_names_the_session_and_its_workspace_test() {
     element.to_string(component.heading(
       component.new(start),
       component.GoingHome,
+      context_breakdown.Actions(
+        refresh: component.ContextRefreshRequested,
+        compact: None,
+      ),
     ))
   assert string.contains(
     html,
@@ -323,6 +328,10 @@ pub fn a_session_without_a_name_is_named_by_its_short_identity_test() {
       element.to_string(component.heading(
         component.new(start),
         component.GoingHome,
+        context_breakdown.Actions(
+          refresh: component.ContextRefreshRequested,
+          compact: None,
+        ),
       ))
     assert string.contains(html, ">Session 0f8e2a41</h1>")
     assert string.contains(html, "title=\"" <> id <> "\"")
