@@ -19,6 +19,7 @@ import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_logins_schema
 import storage/catalogue_names_schema
+import storage/catalogue_recent_folders_schema
 import storage/catalogue_subtitles_schema
 import storage/sql
 import storage/sql_schema
@@ -48,6 +49,9 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(logins) = simplifile.read("sql/catalogue_logins.sql")
     as "login migration is checked in"
   assert catalogue_logins_schema.schema == logins
+  let assert Ok(folders) = simplifile.read("sql/catalogue_recent_folders.sql")
+    as "recent folders migration is checked in"
+  assert catalogue_recent_folders_schema.schema == folders
 }
 
 pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() {
@@ -76,7 +80,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
+      "DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
       on: old,
     )
     == Ok(Nil)
@@ -106,7 +110,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([7])
+    == Ok([8])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -137,6 +141,11 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.session_archive("").0,
     sql.archive_session("").0,
     sql.restore_session("").0,
+    sql.recent_folders().0,
+    sql.insert_recent_folder("").0,
+    sql.delete_recent_folder("").0,
+    sql.forget_recent_folder(0).0,
+    sql.trim_recent_folders(0).0,
   ]
   assert normalize_queries(source)
     == normalize_queries(string.join(generated, "\n"))
@@ -199,7 +208,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -571,7 +580,7 @@ pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      "DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
       on: old,
     )
     == Ok(Nil)
@@ -634,7 +643,7 @@ pub fn version_four_catalogue_migrates_subtitles_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      "DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
       on: old,
     )
     == Ok(Nil)
@@ -656,7 +665,7 @@ pub fn version_four_catalogue_migrates_subtitles_without_losing_names_test() {
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([7])
+    == Ok([8])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -856,7 +865,7 @@ pub fn version_five_catalogue_migrates_every_credential_to_bearer_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=5",
+      "DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=5",
       on: old,
     )
     == Ok(Nil)
@@ -903,7 +912,7 @@ pub fn version_six_catalogue_gains_the_login_columns_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; PRAGMA user_version=6",
+      "DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; PRAGMA user_version=6",
       on: old,
     )
     == Ok(Nil)
@@ -971,7 +980,7 @@ pub fn version_four_catalogue_migrates_through_subtitles_and_kinds_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      "DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
       on: old,
     )
     == Ok(Nil)
@@ -988,6 +997,91 @@ pub fn version_four_catalogue_migrates_through_subtitles_and_kinds_test() {
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([7])
+    == Ok([8])
   assert sqlight.close(check) == Ok(Nil)
+}
+
+fn paths(recent: List(catalogue.Recent)) -> List(String) {
+  list.map(recent, fn(entry) { entry.workspace })
+}
+
+pub fn recent_folders_are_newest_first_deduplicated_and_bounded_test() {
+  let path = fresh_path("recent-folders")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  assert catalogue.recent_folders(store) == Ok([])
+
+  // Remembering a folder again moves it to the front instead of listing it
+  // twice.
+  assert catalogue.remember_folder(store, "/home/o/a") == Ok(Nil)
+  assert catalogue.remember_folder(store, "/home/o/b") == Ok(Nil)
+  assert catalogue.remember_folder(store, "/home/o/a") == Ok(Nil)
+  let assert Ok(listed) = catalogue.recent_folders(store) as "the list reads"
+  assert paths(listed) == ["/home/o/a", "/home/o/b"]
+
+  // The list never holds more than the bound, and it is the oldest that goes.
+  let many =
+    int.range(
+      from: 0,
+      to: catalogue.recent_folder_limit + 3,
+      with: [],
+      run: fn(all, n) { ["/home/o/n" <> int.to_string(n), ..all] },
+    )
+    |> list.reverse
+  assert list.try_each(many, catalogue.remember_folder(store, _)) == Ok(Nil)
+  let assert Ok(kept) = catalogue.recent_folders(store)
+    as "the bounded list reads"
+  assert list.length(kept) == catalogue.recent_folder_limit
+  assert list.first(paths(kept)) == Ok("/home/o/n12")
+  assert !list.contains(paths(kept), "/home/o/a")
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn recent_folders_survive_a_restart_and_forget_one_test() {
+  let path = fresh_path("recent-folders-restart")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  assert catalogue.remember_folder(store, "/home/o/a") == Ok(Nil)
+  assert catalogue.remember_folder(store, "/home/o/b") == Ok(Nil)
+  assert catalogue.close(store) == Ok(Nil)
+
+  let assert Ok(store) = catalogue.open(path) as "the catalogue reopens"
+  let assert Ok([newest, oldest]) = catalogue.recent_folders(store)
+    as "both folders survive"
+  assert newest.workspace == "/home/o/b"
+  assert oldest.workspace == "/home/o/a"
+  assert newest.id != oldest.id
+  assert catalogue.forget_folder(store, newest.id) == Ok(Nil)
+  assert catalogue.forget_folder(store, 9999) == Ok(Nil)
+  let assert Ok(left) = catalogue.recent_folders(store) as "one is left"
+  assert left == [oldest]
+  assert catalogue.close(store) == Ok(Nil)
+
+  let assert Ok(store) = catalogue.open(path) as "a forgotten folder stays gone"
+  assert catalogue.recent_folders(store) == Ok([oldest])
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A folder remembered again is a new entry: the identity a page held for the old
+// one reaches nothing, so a stale press cannot forget the refreshed entry.
+pub fn remembering_again_retires_the_old_identity_test() {
+  let path = fresh_path("recent-folders-identity")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  assert catalogue.remember_folder(store, "/home/o/a") == Ok(Nil)
+  let assert Ok([first]) = catalogue.recent_folders(store) as "one entry"
+  assert catalogue.remember_folder(store, "/home/o/a") == Ok(Nil)
+  let assert Ok([second]) = catalogue.recent_folders(store) as "still one"
+  assert second.id != first.id
+  assert catalogue.forget_folder(store, first.id) == Ok(Nil)
+  assert catalogue.recent_folders(store) == Ok([second])
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn an_empty_or_oversize_folder_is_not_remembered_test() {
+  let path = fresh_path("recent-folders-invalid")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  assert catalogue.remember_folder(store, "")
+    == Error(catalogue.Invalid("recent folder is empty or too long"))
+  assert catalogue.remember_folder(store, string.repeat("a", 4097))
+    == Error(catalogue.Invalid("recent folder is empty or too long"))
+  assert catalogue.recent_folders(store) == Ok([])
+  assert catalogue.close(store) == Ok(Nil)
 }

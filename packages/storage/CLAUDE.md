@@ -19,15 +19,24 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 7. Each later version has its own embedded
+- The catalogue is at `user_version` 8. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
-  `catalogue_credential_kinds_schema`, `catalogue_logins_schema`), and
+  `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
+  `catalogue_recent_folders_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
   catalogue runs the same list after `sql_schema`. A version it does not know
   is refused, so a downgrade needs the pre-upgrade catalogue restored.
+- `catalogue.remember_folder`, `recent_folders` and `forget_folder` keep the
+  owner's recent folders (protocol-change/074): a table of workspace paths keyed
+  by an autoincrement sequence, so recency is an order and not a clock. A
+  `Recent` carries that sequence as its `id`, which a page keys its list by and
+  a forget names, and which a repeated remember retires. A
+  remember deletes, inserts and trims to `recent_folder_limit` (10) in one
+  transaction, so a folder appears once, newest first, and the list stays
+  bounded. The table belongs to no session and survives every deletion.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived
