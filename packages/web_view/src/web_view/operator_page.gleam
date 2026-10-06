@@ -636,12 +636,21 @@ fn draft(model: component.Model(socket)) -> Element(Msg(socket)) {
 // each numbered by a `data-n`. The element's shadow root has no such slot,
 // so the browser never draws them; they are only read. They come after the
 // textarea, so the textarea keeps its place in the tree.
+//
+// `refused` is how many submits were refused with the draft kept
+// (`component.refusals`), the page's own refusals and the lane's. The element
+// shows a sent draft as a pending line until the server takes it, which
+// replaces the element, or refuses it, which the rising count says; it then
+// puts the draft back (`web_client/pending_rule`). A notice that keeps the
+// draft without refusing it, the lane holding a send until a read answers, is
+// not counted, so the line stays until the send.
 fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
   element.element(
     "loom-composer",
     [
       attribute.attribute("commands", completion.table()),
       attribute.attribute("returned", int.to_string(component.returns(model))),
+      attribute.attribute("refused", int.to_string(component.refusals(model))),
     ],
     [
       html.textarea(

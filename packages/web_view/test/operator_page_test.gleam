@@ -281,6 +281,61 @@ pub fn an_empty_or_oversized_draft_is_refused_before_the_lane_test() {
   assert page_fixture.commands(page_fixture.sent(wire)) == []
 }
 
+// The composer's element shows a pressed draft as a pending line until the
+// server takes it, which replaces the editor, or refuses it, which the
+// `refused` attribute says (`web_client/pending_rule`). The count rises for
+// a refusal the page makes itself and for one the lane's admission check
+// makes, both of which keep the draft, and not for a draft the lane takes.
+pub fn the_refused_count_rises_only_when_the_draft_is_kept_test() {
+  let #(model, wire) = page("operator", [])
+  assert component.refusals(model) == 0
+  assert string.contains(
+    element.to_string(operator_page.view(model)),
+    "refused=\"0\"",
+  )
+
+  // The page's own refusal, before the lane.
+  let model = send(model, [operator_page.Submitted("   ", operator.Prompt, [])])
+  assert component.refusals(model) == 1
+
+  // A draft the lane takes.
+  let model = send(model, [operator_page.Submitted("hi", operator.Prompt, [])])
+  assert component.refusals(model) == 1
+  assert component.drafts(model) == 1
+  let _ = page_fixture.sent(wire)
+
+  // A refusal that is not the composer's leaves the count alone: a stale
+  // approval card and a reply to a message no longer on the page are told
+  // in the notice, and a steer the lane holds must stay in flight.
+  let other =
+    send(model, [
+      operator_page.Decided("esc-gone", 1, component.Deny),
+      operator_page.Replying("no-such-key"),
+    ])
+  assert component.refusals(other) == 1
+  assert component.notice(other)
+    == component.Warned(
+      "That message is no longer on the page, so no reply was started.",
+    )
+
+  // The lane's admission check: a mutation on a closed connection keeps the
+  // draft, and the count says so.
+  let closed =
+    send(other, [
+      operator_page.Observed(
+        component.Arrived([connection_event.Closed("access was revoked")]),
+      ),
+      operator_page.Observed(component.Ticked),
+      operator_page.Submitted("again", operator.Prompt, []),
+    ])
+  assert component.refusals(closed) == 2
+  assert component.drafts(closed) == 1
+  assert string.contains(
+    element.to_string(operator_page.view(closed)),
+    "refused=\"2\"",
+  )
+}
+
 // The notice states the outcome of the latest command. A refusal the page
 // made itself is replaced by the next command that is sent, and that
 // "sent" by the daemon's acknowledgement of it.

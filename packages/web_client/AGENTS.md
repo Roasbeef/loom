@@ -49,16 +49,30 @@ renders again just for it:
   to the bottom or pressing the button resumes it. When the reader presses the lane's
   "Load older" button, it keeps the row they were looking at in place while
   the older rows arrive above it.
-- `<loom-composer commands="<json>" returned="<n>">` wraps the operator's
-  editor, the server's uncontrolled textarea, which is its default slot.
-  It lists the slash commands as the draft grows, sends the draft on
+- `<loom-composer commands="<json>" returned="<n>" refused="<n>">` wraps the
+  operator's editor, the server's uncontrolled textarea, which is its default
+  slot. It lists the slash commands as the draft grows, sends the draft on
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here. It also disables the form's
   submit buttons while the editor is empty and holds no image
   (`composer_rule.gate`, `Open | Shut`); `<loom-attach>` reports images in the
   composer's `attached` attribute (`yes | no`), because an image alone is a
-  message the daemon accepts.
+  message the daemon accepts. It also shows a pressed message at once: on
+  the form's `submit` it draws the draft as a pending line above the editor
+  in its own shadow root, marked `sending`, or `queued` for the Queue
+  button (`pending_rule`), and clears the editor after the paint. The line
+  is the person's own text as a text node and never a row of the lane. It
+  leaves when the server takes the draft, which replaces the element (the
+  server keys the editor by the drafts sent), or when the server refuses,
+  which the `refused` attribute says: it counts the submits refused with the
+  draft kept (`component.refusals`, the page's own refusals and the lane's
+  admission check), and a count that rises while a line is shown puts the
+  text back in the editor; a notice that is not a refusal, the lane holding
+  a send until a read answers, leaves the line until the send. No nonce
+  travels with the submit, so a message held by the daemon (a Steer folded
+  in at the next boundary, a Queue run after the turn) is shown only until
+  the server accepts it.
 - `<loom-attach name="images" limits="<json>">` is the operator composer's
   image attachments (protocol-change/051, the addendum on images): an Attach
   image button for the file picker, a paste into the composer's form, a chip
@@ -366,9 +380,11 @@ time builds anything.
   `next_theme`, `data_theme` (the root's attribute, or nothing for `System`),
   `label` and `word` for the button, and `theme_key`. It imports neither Lustre
   nor the DOM binding, and `layout_test` covers it on Node.
-- `composer.Model(entries, draft, selected, palette, returns)` and
-  `composer.Msg` (`Configured`, `Returned`, `Typed`, `Moved`, `Accepted`,
-  `Picked`, `Dismissed`, `Sent`, `Ignored`): `commands` is the table the
+- `composer.Model(entries, draft, selected, palette, returns, attachments,
+  pending, refusals, submitting)` and
+  `composer.Msg` (`Configured`, `Returned`, `Holding`, `Typed`, `Moved`,
+  `Accepted`, `Picked`, `Dismissed`, `Sent`, `Ignored`, `Refused`, `Pressed`,
+  `Connected`, `Disconnected`, `Listening`): `commands` is the table the
   server built from the terminal's suggestions (`composer_rule.entries` decodes
   it, and decodes to no table if it is not one); `composer_rule.matching(entries,
   draft)` is `command.suggestions`' rule over that table, one-word commands
@@ -388,9 +404,21 @@ time builds anything.
   `composer_rule.joined` puts each in the draft (an empty editor takes it as its
   draft; a typed one keeps its text and takes it after a blank line).
   `composer_rule.revealed` says where the list scrolls to keep the highlighted
-  row in view. The shadow root holds the
+  row in view. The shadow root holds the pending line, then the
   list, above one default slot; the list is `role="listbox"` and its rows
   `role="option"`.
+- `pending_rule.State` (`Clear` | `Shown(Pending(text, delivery))`),
+  `Delivery` (`Sending` | `Queueing`), `Refusals` (`Unheard` | `Heard(count)`)
+  and `Outcome` (`Keep` | `Restore(text)`), with `delivery` (the submit
+  button's class: `queue` queues, anything else sends), `mark` (`sending` or
+  `queued`), `pressed` (a draft with a word in it is shown; a second press
+  replaces the line) and `refused` (the first count is the baseline; one that
+  rises while a line is shown clears it and restores the text; one with no
+  line, or one that does not rise, only advances what was heard). The element
+  hears the form's `submit` through a listener it adds on `Connected` and
+  removes on `Disconnected` (`Submitting`), reads the draft and the submitter
+  from it, and acts after the paint, so the server's own handler has read the
+  form first.
 - `internal/ffi_dom` and `internal/dom.mjs`: the package's only browser
   API and its only JavaScript. Every function is one DOM call or property
   access: `host`, `as_element`, `same`, `is_connected`, `first_element_child`,
@@ -423,7 +451,8 @@ files, the drag state, when the drop state shows), `follow_rule` (the scroll rul
 `keeping`), `expand_rule` (the two states and the chevron), `shell_rule`
 (which columns are open, the buttons' words, what a closed column lets the
 keyboard reach), `composer_rule` (the table, `matching`, `intent`, `hear`, `taken`,
-`joined`, `revealed`) and `duration`. `follow`, `composer` and `elapsed` are
+`joined`, `revealed`), `pending_rule` (the pending line: `pressed`, `refused`,
+`mark`) and `duration`. `follow`, `composer` and `elapsed` are
 the elements over them. The split is enforced, not just conventional: Lustre's
 client runtime declares `class LustreEvent extends CustomEvent` at load, Node
 18 (the signoff container's) has no global `CustomEvent`, and a test that

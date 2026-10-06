@@ -900,6 +900,76 @@ fn capture_leaves(
   session_channel.Captured(cut, view, session_channel.Refreshed)
 }
 
+/// `update`, a capture, with the daemon's host queue listing `inputs`
+/// (`snapshot_view.View.pending_inputs`), as a modern cut carries it. The
+/// cut's metadata is changed with the queue, since the shared step treats two
+/// cuts with one cursor and one metadata as the same cut.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.holding(lane_fixture.captured(10, None), [lane_fixture.steer("1", "go left")])
+/// ```
+pub fn holding(
+  update: session_channel.Update,
+  inputs: List(snapshot_view.PendingInput),
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, mode) ->
+      session_channel.Captured(
+        snapshot.Captured(
+          ..cut,
+          metadata: json.String(
+            string.inspect(#(cut.metadata, list.map(inputs, fn(i) { i.id }))),
+          ),
+        ),
+        snapshot_view.View(..view, pending_inputs: Some(inputs)),
+        mode,
+      )
+    other -> other
+  }
+}
+
+/// A steer the daemon holds for `main`, with `id` and the person's `text`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.steer("h1", "go left")
+/// ```
+pub fn steer(id: String, text: String) -> snapshot_view.PendingInput {
+  snapshot_view.PendingInput(
+    id,
+    "main",
+    snapshot_view.Steer,
+    text,
+    0,
+    snapshot_view.ReadOnly,
+  )
+}
+
+/// A prompt the daemon holds for `strand` behind its turn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.queued("h2", "main", "then the tests")
+/// ```
+pub fn queued(
+  id: String,
+  strand: String,
+  text: String,
+) -> snapshot_view.PendingInput {
+  snapshot_view.PendingInput(
+    id,
+    strand,
+    snapshot_view.Queue,
+    text,
+    0,
+    snapshot_view.ReadOnly,
+  )
+}
+
 // The register cell of an operation that is running and has just started,
 // in the wire form `machine/codec.encode_state` writes, so an agent row reads
 // it as work in progress.

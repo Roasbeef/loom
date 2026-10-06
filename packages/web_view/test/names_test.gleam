@@ -45,7 +45,7 @@ fn start(
     name: "Alice",
     ceiling: home.OperatorCeiling,
     refresh_ms: 5,
-    sessions: fn() { home.Listed(listing()) },
+    sessions: fn(deliver) { deliver(home.Listed(listing())) },
     open: fn(_) { sessions.Declined(sessions.NotHeld) },
     resume: fn(_, _) { Nil },
     now: fn() { 7_400_000 },
@@ -53,14 +53,14 @@ fn start(
     rename: None,
     manage: None,
     create: None,
-    signins: fn() { signins.Listed([]) },
+    signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
     sign_out: fn(_) { signins.Declined(signins.NotFound) },
     sign_out_all: fn() { signins.Revoked },
     device: None,
     admin: None,
-    who: fn() { None },
+    who: fn(deliver) { deliver(None) },
     rename_self:,
   )
 }
@@ -259,7 +259,9 @@ pub fn each_list_also_reads_the_name_test() {
   let ask = fn(_name, _deliver) { Nil }
   let model =
     opened(
-      home.Start(..start(Some(ask)), who: fn() { Some("From the daemon") }),
+      home.Start(..start(Some(ask)), who: fn(deliver) {
+        deliver(Some("From the daemon"))
+      }),
     )
   assert string.contains(drawn(model), "From the daemon")
 }

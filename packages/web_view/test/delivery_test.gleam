@@ -70,7 +70,7 @@ fn started() -> Page {
       transmit: fn(wire, frame) { process.send(wire, frame) },
       shut: fn(_) { Nil },
       now:,
-      sessions: fn() { [] },
+      sessions: fn(deliver) { deliver([]) },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       resume: fn(_, _) { Nil },
       invite: None,

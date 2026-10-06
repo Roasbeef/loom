@@ -64,7 +64,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     name: "Alice",
     ceiling: home.OperatorCeiling,
     refresh_ms: 5,
-    sessions: fn() { home.Listed([entry("A")]) },
+    sessions: fn(deliver) { deliver(home.Listed([entry("A")])) },
     open: fn(_) { sessions.Declined(sessions.NotHeld) },
     resume: fn(_, _) { Nil },
     now: fn() { now },
@@ -72,14 +72,14 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     rename: None,
     manage: None,
     create: None,
-    signins: read,
+    signins: fn(deliver) { deliver(read()) },
     login: None,
     bookmark: None,
     sign_out: fn(_) { signins.Declined(signins.NotFound) },
     sign_out_all: fn() { signins.Revoked },
     device: None,
     admin: None,
-    who: fn() { None },
+    who: fn(deliver) { deliver(None) },
     rename_self: None,
   )
 }
@@ -300,7 +300,11 @@ pub fn an_ended_page_signs_nothing_out_test() {
         },
       ),
     )
-  let ended = run(model, home.Answered(home.Closed(ending.AccessRevoked)))
+  let ended =
+    run(
+      model,
+      home.Answered(home.reads(model), home.Closed(ending.AccessRevoked)),
+    )
   let ended = run(ended, home.SigningOut("1111111111111111"))
   let _ = run(ended, home.SigningOutAll)
   assert process.receive(asked, 0) == Error(Nil)

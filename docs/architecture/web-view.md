@@ -485,8 +485,12 @@ draws what the terminal draws for that interval, from the same state: the
 shared record's `streams` for the followed strand
 (`transcript_lines.display_streams`, which also seeds a stream from the
 capture's sampled preview when the page attached mid-answer), the
-summarizer's `summaries` for the request's headline (protocol 050), and the
-generation clock. No read and no socket event is added. `component.live`
+summarizer's `summaries` for the request's headline (protocol 050), the
+generation clock, and the inputs the daemon holds for the strand (the
+capture's `pending_inputs`, filtered by `transcript_lines.held_inputs` and
+worded by `held_words`, the terminal's own rule), so a steer or a queued
+prompt the daemon took is on the page until the capture that no longer lists
+it. No read and no socket event is added. `component.live`
 turns them into `live.Row`s and `view/live` draws them as the last entry of
 the lane's keyed list, keyed `live`:
 
@@ -654,8 +658,12 @@ to the strand on screen. The socket admits an observer's click beneath
 **The sidebar.** `ui_socket` gives the component `Transport.sessions`, the
 authorized catalogue read the terminal's session picker uses
 (`manager.authorized_page`) made with the page's credential digest, so a
-member sees only their own sessions and a revoked credential none. The
-component reads it when the page opens and at most every 30 seconds on a
+member sees only their own sessions and a revoked credential none. The read
+runs in a weft task of the daemon's (`ui_socket.listed_task`) and answers
+as the component's `SessionsListed`, so the page's runtime, which once made
+the registry call itself and could wait up to five seconds on a busy
+registry with every click and patch held behind it, never waits for it. The
+component starts it when the page opens and at most every 30 seconds on a
 tick (an observer's page is given an empty list and draws no sidebar, so a
 stolen observer link does not disclose the principal's other sessions),
 groups it by workspace (`web_view/sessions`), and `view/sidebar`

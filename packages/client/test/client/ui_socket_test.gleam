@@ -41,7 +41,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: fn() { 0 },
-      sessions: fn() { [] },
+      sessions: fn(deliver) { deliver([]) },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       resume: fn(_, _) { Nil },
       invite: None,
@@ -513,6 +513,41 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
   assert process.receive(asked, 0) == Error(Nil)
   assert ui_socket.listed_for(ui_socket.Operating, read) == [entry]
   assert process.receive(asked, 0) == Ok(Nil)
+}
+
+// The sidebar's read runs off the page's runtime: `listed_task` returns
+// before the read has answered, and the answer arrives through `deliver`
+// from the task once the read does. A read that blocks as a registry call
+// at its timeout would, here a read that sleeps for a while, holds the
+// task and nothing else. An observer's page is answered at once, with no
+// read made and no task started.
+pub fn the_sidebar_read_runs_off_the_runtime_test() {
+  let delivered = process.new_subject()
+  let entry =
+    sessions.Entry(
+      id: "a",
+      name: "web ui",
+      workspace: "/src/loom",
+      created_at: 1,
+      residency: sessions.Live,
+      subtitle: option.None,
+      role: option.None,
+    )
+  let read = fn() {
+    process.sleep(300)
+    [entry]
+  }
+  let deliver = fn(entries) { process.send(delivered, entries) }
+
+  // The call returns while the read is still waiting, and the answer lands
+  // once the read does.
+  ui_socket.listed_task(ui_socket.Operating, read, deliver)
+  assert process.receive(delivered, 100) == Error(Nil)
+  assert process.receive(delivered, 6000) == Ok([entry])
+
+  // An observer's page: the empty list, now, and the read never runs.
+  ui_socket.listed_task(ui_socket.Observing, read, deliver)
+  assert process.receive(delivered, 0) == Ok([])
 }
 
 // Protocol-change/051, the addendum on switching sessions: the sessions

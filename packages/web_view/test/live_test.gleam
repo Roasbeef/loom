@@ -648,3 +648,75 @@ pub fn a_capture_that_leaves_and_returns_to_assistant_restarts_the_clock_test() 
     assert string.contains(region(view), "offset=\"1000\"")
   })
 }
+
+// The inputs the daemon holds for the strand are drawn after the streams,
+// as the terminal draws them: the person's words, then how the daemon will
+// run them, both as text nodes. A steer and a queued prompt have their own
+// words, another strand's input is not drawn, and the row leaves with the
+// first capture that no longer lists it.
+pub fn held_inputs_are_drawn_after_the_streams_and_leave_when_run_test() {
+  let generation = lane_fixture.generation(2)
+  let holding =
+    page([
+      lane_fixture.holding(running(), [
+        lane_fixture.steer("h1", "go <b>left</b>"),
+        lane_fixture.queued("h2", "main", "then the tests"),
+        lane_fixture.queued("h3", lane_fixture.child, "not on screen"),
+      ]),
+      lane_fixture.fragment(generation, "text", "so far"),
+    ])
+  list.each(pages(holding), fn(view) {
+    let drawn = region(view)
+    let assert Ok(#(before, after)) =
+      string.split_once(drawn, "go &lt;b&gt;left&lt;/b&gt;")
+      as "the steer's words are drawn as text"
+    assert string.contains(before, "so far")
+    assert !string.contains(drawn, "<b>")
+    assert string.contains(after, "steer · runs next")
+    let assert Ok(#(_, queued)) = string.split_once(after, "then the tests")
+      as "the queued prompt follows the steer"
+    assert string.contains(queued, "queued · after this turn")
+    assert !string.contains(drawn, "not on screen")
+  })
+
+  // The daemon ran the steer: the next capture no longer lists it, and its
+  // row goes with it while the queued prompt stays.
+  let ran =
+    component.apply(holding, [
+      lane_fixture.holding(running(), [
+        lane_fixture.queued("h2", "main", "then the tests"),
+      ]),
+    ])
+  list.each(pages(ran), fn(view) {
+    let drawn = region(view)
+    assert !string.contains(drawn, "go &lt;b&gt;left&lt;/b&gt;")
+    assert string.contains(drawn, "then the tests")
+  })
+
+  // The queued prompt ran too: the next capture lists nothing, and the
+  // region holds the stream alone.
+  let settled = component.apply(ran, [lane_fixture.holding(running(), [])])
+  list.each(pages(settled), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, "so far")
+    assert !string.contains(drawn, "then the tests")
+    assert !string.contains(drawn, "class=\"held\"")
+  })
+}
+
+// A held input alone is a region: a queued prompt on a strand whose answer
+// has not started streaming is still on the page.
+pub fn a_held_input_is_drawn_without_a_stream_test() {
+  let model =
+    page([
+      lane_fixture.holding(lane_fixture.captured(10, None), [
+        lane_fixture.queued("h2", "main", "then the tests"),
+      ]),
+    ])
+  list.each(pages(model), fn(view) {
+    let drawn = region(view)
+    assert string.contains(drawn, "<div class=\"held\">")
+    assert string.contains(drawn, "then the tests")
+    assert string.contains(drawn, "queued · after this turn")
+  })
+}
