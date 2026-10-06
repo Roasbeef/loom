@@ -89,7 +89,7 @@ but no longer add a path through the complete startup `Settings` record.
 ## Provider observation capture
 
 `wiring.request_image_classifier` projects the session before constructing
-the callback used by `serve.summary_tap`. The dispatcher and the block summary
+the callback used by `serve.summary_tap_reloading`. The dispatcher and the block summary
 observer still classify the current context and immutable admitted prompt
 batch with one implementation. The observer carries no tool registry or
 executable tool callbacks. Its flat copy cost must stay unchanged when an
@@ -118,6 +118,45 @@ a crash. The holder is published to custody as `instance_owner.ToolConfig`
 before `api.open_published` and retires directly after `Runtime`, because
 tools run until the runtime drains. `build_effects(config)` keeps the capturing
 closure for tests, the scripted demo and extension hooks.
+
+## Explicit configuration reload
+
+`config_reload.Holder(ModelRevision)` owns the current provider projections and
+an operation-keyed snapshot table. Its `Current`, `Capture`, `Poll` and `Stop`
+messages carry publication reads, first-operation capture, file observation and
+retirement. The first operation-scoped fetch pins routing, admission, threshold,
+overflow preparation and context together; collection consults durable
+`session.op_state`, never the earlier `run_end` callback. A missing holder
+refuses dispatch. It is a fatal resident root, and custody's `ToolConfig` part
+stops it after runtime drain and before the executable tool holder.
+
+`serve.configuration_source` resolves only an explicitly selected file to its
+real path once, reads the boot bytes through the same bounded reader used by
+polling, and stores that path for both watching and sandbox protection.
+Retargeting an original file or parent symlink cannot select another trusted
+source. Environment-only startup watches nothing. Regular files are limited to
+1 MiB; preflight refuses FIFOs before open, and weft bounds each read or complete
+validator at one second. Two equal 500 ms observations coalesce saves, including
+atomic replacements. Invalid, missing, oversized or unreadable files leave the
+last valid revision intact. Diagnostics log fixed event names and restart
+section names without source bytes or parser error text.
+
+`wiring.with_model_reloads` wraps the production prepared-provider surface and
+operation-scoped hooks. `ModelRevision` projects provider configuration and
+compaction hooks, carries the catalogue, and remembers provider names whose
+service descriptor has changed. Stored assistant messages lack endpoint history,
+so those names cannot authorize settled summaries under the boot summarizer,
+even after a revert. Live summaries use the operation's own catalogue and the
+actual boot summarize descriptor. Deferred polls and generated compaction
+summaries remain unsupported by production dispatch; adding them requires an
+operation identity on the resolution hook.
+
+The hub's catalogue reader and Agency's child choice callbacks read the same
+publication. Durable model/thinking selections are not rewritten. Existing
+model names and identifiers must survive a live edit; additions are accepted.
+All other tables, executable tools, secrets, daemon limits and background service
+graphs stay boot-owned and are reported through `restart_required`. See
+[model configuration](../../docs/architecture/models.md#live-file-edits).
 
 ## Code-mode alternatives on direct tools
 

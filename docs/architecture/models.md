@@ -55,6 +55,64 @@ subagent = ["baseten-oss"]
 summarize = ["anthropic-opus"]
 ```
 
+## Live file edits
+
+A resident session watches the file explicitly selected with `--config`.
+Selection resolves its real path once; the watcher and sandbox protection use
+that same path, so retargeting an original symlink does not change authority.
+Startup without `--config` uses the environment catalogue and watches nothing.
+An implicitly discovered workspace `loom.toml` never becomes trusted input.
+
+The watcher reads a regular UTF-8 file of at most 1 MiB every 500 ms. Two equal
+observations coalesce editor saves and follow atomic replacement of the selected
+real path. Reads and validation each have a one-second weft deadline. A missing,
+unreadable, oversized or invalid document retains the last valid configuration.
+A malformed save logs `config.reload_invalid`; an unavailable source logs
+`config.reload_unreadable` once until a readable observation. Neither event
+includes file contents or parser text. Startup diagnostics still include the
+selected path and the parse reason for the operator.
+
+A valid edit publishes one `wiring.ModelRevision`. The first operation-scoped
+hook or provider preparation captures it; every generation, retry, admission,
+threshold, overflow preparation and context read for that operation uses the
+same snapshot. The next operation sees the latest publication. Capture can
+precede `run_start`, and collection waits for durable operation completion.
+The holder's death is a fatal session-root failure, not permission to fall back
+to a different revision. It retires after the runtime has drained.
+
+| Configuration | Running-session behavior |
+|---|---|
+| Existing model endpoint, dialect, credential variable name, price, window, output and image limits | Subsequent operations use the published facts and routing. Resolved secret values remain boot-owned. |
+| Model additions | The existing hub lists and selects them; new child choices use the publication. |
+| Role chains | Subsequent dispatch and new-child resolution use the publication. Role-follows-identity still applies. |
+| Default thinking | Applies to later explicit selections and new-child seeds; a strand's durable thinking selection stays authoritative. |
+| Model removal, rename or `model_id` change | The entire previous model revision stays live; `models` is reported as requiring restart. Persisted selections may need explicit reselection after restart. |
+| Tools, workspace, MCP/LSP, rules, schedules, jobs, retry, memory, secrets, advisor and daemon tables | Retained by their boot owners; changed section names are reported as requiring restart. |
+| Background model consumers | Summarization, glance, maintenance and advisor service graphs remain boot-owned; model or role edits report `background-models`. |
+
+Every accepted save emits `config.reloaded` with a comma-separated
+`restart_required` field. An empty field means no boot-owned section differs.
+Comparison uses parsed table values, so comments and table ordering do not
+produce a restart notice. CLI overrides and environment defaults retain their
+existing startup precedence.
+
+Model reload does not silently replace a strand's durable identity. A main role
+edit which no longer has that identity at its head dispatches it directly under
+the existing role-follows-identity rule. The hub's listing and by-name selection
+read the same publication; already accepted work keeps its captured revision.
+New children capture their own operations independently. Tool schemas remain
+boot-owned, including the model-name enum advertised by `agent_spawn`; additions
+appear in the hub immediately and can serve new-child role routing, while
+refreshing that advertised enum requires restart.
+
+The summarize actor retains its actual boot endpoint. Live observation checks
+admission against the operation snapshot and refuses a changed summarize entry.
+Settled assistant messages record a provider name without its historical
+endpoint, so a name whose URL, dialect or credential variable changes is denied
+for settled and on-demand summaries until restart, including after a revert.
+This conservative refusal prevents old text from being reassigned to a new
+service by a later catalogue. Stored labels remain readable.
+
 The entry fields:
 
 - `dialect` is `"anthropic"`, `"openai"`, `"gemini"`, or
@@ -302,13 +360,15 @@ chain?
    This covers a strand switched to an entry no role heads, and a
    catalogue whose routes have moved since the session was written.
 
-Both answers are a pure function of durable state and boot configuration,
-which makes the rule safe across a crash. Recovery does not re-dispatch a
+Both answers are a pure function of durable state and the operation's captured
+model revision. Recovery does not re-dispatch a
 request that is still in flight. It orphans the request, settles it
 synthetically, and re-attempts from the checkpoint. What has to agree
 across that gap is the routing *decision*, not the socket, and the decision
-reads only the strand's captured identity and a registry fixed before the
-session opened.
+reads the strand's captured identity and its operation revision. The holder
+survives strand and service restarts, so those retries retain their pin. Pins
+are resident-lifetime state; reopening a session boots from the current explicit
+file under the existing checkpoint recovery contract.
 
 Off route, the model facts come from the identity's own catalogue entry
 (`wiring.Config.facts`, built by `client/serve` from the catalogue). A
@@ -331,7 +391,7 @@ that walked a chain would fetch a continuation nobody issued.
 flowchart TB
     TOML["loom.toml — model entries and role routes"]
 
-    subgraph GW["provider gateway, built at boot"]
+    subgraph GW["provider gateway, captured per operation"]
         REG["registry: one endpoint per entry<br/>name · dialect · base_url · api_key_env"]
         RT["routes: role → ordered chain of names"]
     end
@@ -633,8 +693,8 @@ since a catalogue always exists, built from the environment if not from a
 file.
 
 Neither switch reaches the provider gateway's registry. A switch rewrites
-durable strand configuration; the registry built at boot is unchanged, and
-the next dispatch resolves against it exactly as before.
+durable strand configuration; the next dispatch resolves against its captured
+revision. A file edit publishes a provider registry independently of a switch.
 
 ## Known limits
 

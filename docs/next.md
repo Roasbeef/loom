@@ -1,111 +1,103 @@
 # Current handoff
 
-This edition covers the shell-directory and code-mode work on
-`codex/working-directory-code-mode`, rebased onto `cc9ec305d`, on 2026-10-06.
-The original checkout was left alone. The work lives in
-`.worktrees/working-directory-code-mode`; it has not been installed into the
-running daemon or merged. PR #889 is open; its rebased head is being validated.
+This edition covers explicit configuration hot reload on
+`codex/config-hot-reload`, based on main `cc9ec305d`, on October 6, 2026
+(America/Los_Angeles). The source commits are `453551935`, `a4f09ef29` and `887a2877c`.
+The original checkout and its unrelated untracked files were preserved.
+No branch was pushed, PR opened, merge performed or installed process changed.
 
-The previous main edition documented the optimization integration based on
-`32846807b` and `34c0db0f` on 2026-10-05. Its hosted
-PR status and release claims were not refreshed in this work. Read the relevant
-issue or branch before continuing those lanes; do not treat the old snapshot
-as current status. Their design rulings remain in the architecture documents,
-protocol changes, and design notes named below.
+The preceding edition described the October 5 CPU integration and PR #873.
+Its measurements remain in [the investigation](review/beam-cpu-2026-10-05.md).
+Its PR, CI and installation status were not reverified for this feature and
+must not be read as current signoff for this branch.
 
-## Where this work stands
+## Where the tree is
 
-The owner requested both per-call and persistent shell directories, then
-supplied a live session showing repeated code-mode LSP failures. The session
-passed `gopls` as its server assertion, although `go` was the configured key.
-It then guessed roots and API argument shapes. A later temporary-file write
-guessed `/Users/roasbeef/.codemode/tmp`, outside the actual workspace.
+A session with an explicitly selected configuration watches the selected real
+path. Environment-only startup watches nothing. Initial selection, regular-file
+reads and validation are bounded; malformed, missing and oversized saves retain
+the last valid publication. Atomic replacement is supported. Original symlinks
+cannot retarget the trusted source after selection. The sandbox protects the
+same resolved path the watcher reads.
 
-`bash.cwd` now selects one call's directory. `working_directory` reads or sets
-a reserved, durable default for the authenticated calling strand. Foreground,
-background and auto jobs capture it before launch. The production host gives
-`cap/proc` the same default; `proc.in_dir` overrides one process. Native file,
-search and LSP paths continue to resolve against the session workspace.
+`client/config_reload` owns publication and operation pins. The first
+operation-scoped fetch captures a `wiring.ModelRevision`, including routing,
+model facts and operation hooks. Provider generations, retries, admission,
+compaction and context use that pin until durable completion. Hub listings and
+by-name selection read publication; new children independently select their
+current model choices. Existing strand identities and thinking selections stay
+durable rather than being silently rewritten by file edits.
 
-`working_directory` also reports the actual invocation `TMPDIR`. Loom's
-cross-call temporary directory is `<workspace>/.codemode/tmp`. The execution's
-private `/tmp` is not the place for files another invocation must reopen.
-Guessing a path under the user's home does not grant access to it.
+Model additions and supported facts reload live. Removals, renames and model-id
+changes retain the entire preceding model revision and report `models` as
+restart-required. Tools, credentials, daemon limits and background service graphs
+remain boot-owned. Every accepted save reports changed boot-owned sections in
+`config.reloaded.restart_required`; model/role edits report `background-models`.
+[Model configuration](architecture/models.md#live-file-edits) gives the behavior
+of each setting.
 
-`lsp_sql.plan(outlines, targets)` infers the configured server and project root
-from explicit files. All sources must share that owner before a server is
-acquired. Explicit `Plan` assertions still receive exact checks. Errors name
-the offending file, its actual owner and the requested pair. The SQL docs name
-`path` columns and the quoted `"references"` table. The on-demand `cap://`
-function surface retains its examples; the cached type surface does not.
+The summarize actor keeps its boot endpoint. Live observation uses the
+operation's catalogue and actual summarize descriptor. Stored assistant messages
+lack endpoint history, so provider names whose service descriptor changed cannot
+admit settled or on-demand summaries until restart, including after a revert.
+The configuration holder is a fatal root and retires after runtime drain, before
+the tool holder, through the existing custody part.
 
-The full gate also exposed a warm-server restart caused by generated inventory
-key order. Gleam rewrote `packages.toml` with the same installed versions in a
-different order. `lsp/dependency_state` now hashes parsed inventory contents
-with recursively sorted table keys. Main already carries that fix and its
-regressions; this rebase preserves its bounded table/string vocabulary.
-Manifest and project configuration hashes remain byte-based. The deterministic
-inventory regression and the real preparation fixture pass.
+## Validation
 
-The contract and alternatives are in
-[protocol-change/068](../protocol-change/068-working-directories-and-lsp-scope.md).
-The production seams are `client/serve`, `client/working_directory`,
-`tools/working_directory`, `tools/bash`, and `client/lsp/manager`.
+The real HTTP/helper regression in `client/serve_test` passes on `a4f09ef29`:
+an active operation makes its later generations and context read under the old
+revision, the next operation uses the new endpoint and output ceiling, and
+malformed saves, atomic replacement, deletion, restart notices and retirement
+are observed through production assembly. Four `config_reload_test` regressions
+pass, including validator timeout, operation pins, alias retargeting and a FIFO
+with no writer. The live-catalogue selection and summary-history regressions
+are included in the client suite.
 
-## Rulings for the next reader
+A fresh independent advisor review found a mutable-alias trust problem and an
+unbounded startup read. Both were corrected, independently rechecked and covered
+by the focused regressions. The review approved the source subject to execution
+of the final gates. Client lint has zero errors. Documentation coverage, mirrors
+and citations pass after refreshing source-line citations displaced by this
+change; existing warnings remain visible.
 
-A directory selection grants no filesystem authority. Keep the workspace and
-policy roots immutable; do not call a VM-wide `chdir`. Relative shell paths
-resolve against the strand default, while native paths remain workspace-relative.
-Fresh strands begin in the workspace rather than inheriting another strand's
-shell state. Updates compare the reserved fact's sequence. A storage failure,
-corrupt fact, missing target or redirected saved target is a refusal.
+Three mutation controls each fail exactly one intended regression while the
+other three watcher tests pass: extending the worker deadline, discarding
+operation pins and retaining the unresolved source alias. Restoring the source
+returns all four tests to green.
 
-Validate a remembered directory before appending a relative process override.
-The independent review found that validating only omitted cwd let
-`proc.in_dir(".")` follow a replacement symlink. Omitted and relative cwd now
-share that check. Absolute overrides bypass a broken saved default so callers
-can recover. The live jailed test covers the redirected relative override.
+The final full `make check` returned its own exit 0 on `887a2877c`: 2,952
+client tests, 1,241 TUI tests, 97 conformance tests and every other package,
+static and Go gate pass. Final lint has zero errors and 2,176 warnings.
+`make doc-check` separately returns 0 with zero errors and 195 warnings before
+this evidence commit; the post-commit check must verify this edition as well.
 
-The setter uses `Never` replay: replaying a relative selection after its first
-commit could select a different directory. Running jobs retain their admitted
-cwd even if the strand's default later changes.
+The initial attempt hit the existing 20-second script-test deadline. A later
+run exposed two shared-domain diagnostic assertions; the path compatibility
+fix is included in the final source. Existing tests and deadlines are preserved.
+The Darwin full gate retains its declared prerequisite skips, including the
+shipped-server fixtures and unavailable Linux enforcement observations. Hosted
+CI and Linux signoff have not run for this unpublished branch.
 
-## Verification and next actions
+## Rulings and limits
 
-Before rebase, the complete client gate passed 2,878 tests using a freshly rebuilt
-server and the repository's fixture environment. Tools and cap passed 636 and
-175 tests; the generator suite passed six. The broader run and remaining
-package runs covered the other suites. Formatting, lint, doc-check, prelude
-freshness and client assets passed separately. Four defect mutations each
-failed their intended regression, then passed after restoration. The required
-independent review and bounded fix rechecks were complete on that prior head.
-A fresh Astra adversarial review and new-head validation are in progress.
+Read the explicit file once for both initial bytes and source selection; never
+assemble from one read and pretend a second read was the same initial revision.
+Do not infer operator authority from an implicitly discovered workspace file.
+Collect pins from durable `op_state` absence, never from `run_end`, which can
+precede the durable completion transaction. A vanished holder refuses dispatch
+and shares failure with the session rather than selecting a newer configuration.
 
-The first broad run was red for shifted citations, the inventory-order defect,
-and two undeclared macOS `/proc` skips. The citations and defect were fixed;
-the final client and static gates passed. A manual client run also supplied
-the wrong provider fixture key. That setup failure was corrected, the shipped
-fixtures passed, and the complete client gate was run again to exit zero.
-The correct key is `loom-provider-fixture-key`, as supplied by
-`scripts/check_affected.sh`. No tests or skip waivers were removed.
+Production dispatch still refuses deferred polls and machine-generated
+compaction summaries. The resolution hook has no operation identity; supporting
+those paths requires extending that boundary before routing them dynamically.
+Background actors and executable tools are intentionally not rebuilt in place.
+A role edit still obeys role-follows-identity; choosing another main model is an
+explicit durable selection, not an implicit rewrite.
 
-Linux enforcement and `signoff/linux` have not been run. macOS live code-mode
-runs report the existing address-space, process-limit and process-lifecycle
-limitations. The `/proc` helper-kill checks and rust-analyzer fixture remain unverified on
-this host; no new skip waiver was added. Local test success is not Linux signoff. The owner must authorize
-installation or merge separately. Rebase publication is authorized.
+## What to do next
 
-Other work should begin by inspecting its current issue and branch. The prior
-handoff named terminal drives and follow-ups (#656, #763–#766), web workspace
-mode (`design-notes/web-workspace-mode.md` and protocol-change/065), remote
-access (#654 and protocol-change/052), executor follow-ups (#703 and #283),
-and matched installed memory measurements (#454). Their current status was
-outside this work. Terminal decisions live in `design-notes/terminal-design.md`;
-workspace mode decisions live in its design note and protocol change, rather
-than in this status snapshot.
-
-Use the pinned Gleam 1.19.0 toolchain. Build code-mode seeds after capability
-changes. Keep verification worktrees outside `/tmp`, where the jail replaces
-the socket directory. `docs/execution.md` describes gate selection, required
-prerequisites and the skip census; `docs/updating.md` describes installation.
+The local implementation, regressions, mutation controls and independent review
+are complete. Review this isolated branch and its documentation. Publication,
+hosted CI, Linux signoff, merging and installation require their respective
+subsequent steps and authorization. Preserve the original checkout throughout.
