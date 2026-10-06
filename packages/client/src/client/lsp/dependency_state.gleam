@@ -39,17 +39,21 @@ pub fn fingerprint(
   use configs <- result.try(
     walk(workspace, protected, authorized, [root], [], []),
   )
-  use manifest <- result.try(generated(
-    workspace,
-    protected,
-    authorized,
-    root <> "/manifest.toml",
-  ))
+  use manifest <- result.try(
+    generated(
+      workspace,
+      protected,
+      authorized,
+      root <> "/manifest.toml",
+      fn(text) { text },
+    ),
+  )
   use inventory <- result.try(generated(
     workspace,
     protected,
     authorized,
     root <> "/build/packages/packages.toml",
+    entries,
   ))
   Ok(claim.digest(string.join([manifest, inventory, ..configs], "\n")))
 }
@@ -125,20 +129,33 @@ fn dependencies(section: Result(tom.Toml, Nil), root: String) -> List(String) {
   }
 }
 
+// Gleam serializes the package inventory from a hash map, so two writes of
+// the same installation can list its packages in different orders. Setup
+// writes one order and the server's own first compile may rewrite another,
+// after the manager has already stamped the start. Comparing raw bytes
+// would read that rewrite as a changed dependency and restart a healthy
+// server, so the inventory is digested as its sorted lines: the set of
+// installed packages, not the order Gleam happened to print them.
+fn entries(text: String) -> String {
+  text |> string.split("\n") |> list.sort(string.compare) |> string.join("\n")
+}
+
 // A worktree starts without generated metadata. Absence is an input state,
 // while an existing unreadable or protected file is an actionable failure.
+// The file's text passes through `normalize` before it is digested.
 fn generated(
   workspace: String,
   protected: List(String),
   authorized: List(String),
   path: String,
+  normalize: fn(String) -> String,
 ) -> Result(String, String) {
   use admitted <- result.try(admit(workspace, protected, authorized, path))
   case simplifile.is_file(admitted) {
     Ok(False) -> Ok(path <> ":missing")
     Ok(True) ->
       metadata(admitted)
-      |> result.map(fn(text) { path <> ":" <> claim.digest(text) })
+      |> result.map(fn(text) { path <> ":" <> claim.digest(normalize(text)) })
     Error(error) -> Error(path <> ": " <> simplifile.describe_error(error))
   }
 }
