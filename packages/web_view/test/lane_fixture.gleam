@@ -1748,6 +1748,30 @@ pub fn opened(model: component.Model(socket)) -> component.Model(socket) {
 /// lane_fixture.reading([3, 110])
 /// ```
 pub fn reading(steps: List(Int)) -> List(snapshot.Item) {
+  worked_turns(steps, fn(_) { [] })
+}
+
+/// `reading`, with a long reasoning block (`thought`, of the response's
+/// sequence) opening each step's response, so every step has one block the
+/// summarizer labels, at content index 0.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.thinking([3, 110])
+/// ```
+pub fn thinking(steps: List(Int)) -> List(snapshot.Item) {
+  worked_turns(steps, fn(at) {
+    [message.AssistantThinking(thought(at), None, False)]
+  })
+}
+
+// The turns of `reading`, each response opening with the blocks `opening`
+// gives for its sequence.
+fn worked_turns(
+  steps: List(Int),
+  opening: fn(Int) -> List(message.AssistantBlock),
+) -> List(snapshot.Item) {
   let #(_, _, items) =
     list.fold(steps, #(1, 1, []), fn(acc, count) {
       let #(turn, seq, items) = acc
@@ -1760,15 +1784,17 @@ pub fn reading(steps: List(Int)) -> List(snapshot.Item) {
             item(
               at,
               10_000 + at * 10,
-              assistant([
-                call(
-                  name,
-                  "fs_read",
-                  json.Object([
-                    #("path", json.String("notes/" <> name <> ".txt")),
-                  ]),
-                ),
-              ]),
+              assistant(
+                list.append(opening(at), [
+                  call(
+                    name,
+                    "fs_read",
+                    json.Object([
+                      #("path", json.String("notes/" <> name <> ".txt")),
+                    ]),
+                  ),
+                ]),
+              ),
             ),
             item(
               at + 1,
@@ -2086,7 +2112,28 @@ pub fn served(
   restore: session_channel.Update,
   role: String,
 ) -> #(component.Model(page_fixture.Wire), List(String)) {
-  serving(page, wire, archive, restore, role, 400, [])
+  served_labelled(page, wire, archive, restore, role, [])
+}
+
+/// `served`, with the summarizer's stored labels `labels` (an entry's text,
+/// a content index and the label), which a `block_summaries` read is
+/// answered from: each block it names that the list holds, and nothing for
+/// the others, as the daemon answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.served_labelled(page, wire, archive, capture, "operator", [#(lane_fixture.entry_text(2), 0, "Reads.")])
+/// ```
+pub fn served_labelled(
+  page: component.Model(page_fixture.Wire),
+  wire: page_fixture.Wire,
+  archive: List(snapshot.Item),
+  restore: session_channel.Update,
+  role: String,
+  labels: List(#(String, Int, String)),
+) -> #(component.Model(page_fixture.Wire), List(String)) {
+  serving(page, wire, archive, restore, role, labels, 400, [])
 }
 
 fn serving(
@@ -2095,6 +2142,7 @@ fn serving(
   archive: List(snapshot.Item),
   restore: session_channel.Update,
   role: String,
+  labels: List(#(String, Int, String)),
   rounds: Int,
   written: List(String),
 ) -> #(component.Model(page_fixture.Wire), List(String)) {
@@ -2109,7 +2157,9 @@ fn serving(
       let answered =
         page_fixture.run(page, component.update, [
           component.Arrived(
-            list.flat_map(frames, fn(frame) { answer(frame, archive, role) }),
+            list.flat_map(frames, fn(frame) {
+              answer(frame, archive, role, labels)
+            }),
           ),
         ])
       let page = case
@@ -2126,6 +2176,7 @@ fn serving(
         archive,
         restore,
         role,
+        labels,
         rounds - 1,
         list.append(written, frames),
       )
@@ -2139,8 +2190,40 @@ fn answer(
   frame: String,
   archive: List(snapshot.Item),
   role: String,
+  labels: List(#(String, Int, String)),
 ) -> List(connection_event.Message) {
   let id = page_fixture.request_id(frame)
+  case string.contains(frame, "\"cmd\":\"block_summaries\"") {
+    True -> [page_fixture.block_summaries(id, named(frame, labels))]
+    False -> answered_from(frame, archive, role, id)
+  }
+}
+
+// The labels among `labels` that a `block_summaries` frame names.
+fn named(
+  frame: String,
+  labels: List(#(String, Int, String)),
+) -> List(#(String, Int, String)) {
+  let assert Ok(json.Object(fields)) = json.parse(frame)
+  let assert Ok(json.Object(body)) = list.key_find(fields, "body")
+  let assert Ok(json.Array(blocks)) = list.key_find(body, "blocks")
+  list.filter(labels, fn(label) {
+    list.any(blocks, fn(block) {
+      block
+      == json.Object([
+        #("entry", json.String(label.0)),
+        #("block", json.Int(label.1)),
+      ])
+    })
+  })
+}
+
+fn answered_from(
+  frame: String,
+  archive: List(snapshot.Item),
+  role: String,
+  id: Int,
+) -> List(connection_event.Message) {
   case
     string.contains(frame, "\"cmd\":\"history_lineage\""),
     string.contains(frame, "\"cmd\":\"history\""),
@@ -2332,4 +2415,99 @@ pub fn heavy(turns: Int, size: Int) -> session_channel.Update {
     [],
     [],
   )
+}
+
+/// The reasoning a long block holds: well over the 512 bytes the summarizer
+/// labels, opening with a first line that names `seq`, so a test can tell the
+/// raw row from a labelled one and one block from another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.thought(2)
+/// ```
+pub fn thought(seq: Int) -> String {
+  "Thought "
+  <> int.to_string(seq)
+  <> ": weigh the locking order against the retry path.\n"
+  <> string.repeat("Then compare it with what the second reader sees. ", 14)
+}
+
+/// A capture of `main` whose turns each think before every step. A complete
+/// turn is a question (`question t`), then for each of its `steps` a response
+/// whose first content block is a long reasoning block (`thought`, of the
+/// response's sequence) beside an `fs_read` call, and the call's result, then
+/// an answer (`answer t`); a turn of `n` steps is `2n + 2` records. With
+/// `running` given, a last turn (`question running`) follows the complete ones
+/// with the same steps and no answer, and `main` runs under that operation.
+/// The response of step `s` in the turn that starts at sequence `first` is
+/// `first + 2s - 1`, and its reasoning is content block 0.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.reasoned(2, 1, None)
+/// ```
+pub fn reasoned(
+  complete: Int,
+  steps: Int,
+  running: Option(String),
+) -> session_channel.Update {
+  let per_turn = 2 * steps + 2
+  let done =
+    list.flat_map(counted(complete), fn(turn) {
+      let label = int.to_string(turn)
+      reasoned_turn(label, { turn - 1 } * per_turn + 1, steps, [
+        assistant([message.AssistantText("answer " <> label, None)]),
+      ])
+    })
+  let live = case running {
+    Some(_) -> reasoned_turn("running", complete * per_turn + 1, steps, [])
+    None -> []
+  }
+  capture_of(list.append(done, live), running, [], [])
+}
+
+// One turn: its question, its thinking steps and then `ending`, which is the
+// answer for a complete turn and nothing for the turn still running.
+fn reasoned_turn(
+  label: String,
+  first: Int,
+  steps: Int,
+  ending: List(message.AgentMessage),
+) -> List(snapshot.Item) {
+  let worked =
+    list.flat_map(counted(steps), fn(step) {
+      let seq = first + 2 * step - 1
+      let call_id = "r" <> int.to_string(seq)
+      [
+        item(
+          seq,
+          10_000 + seq,
+          assistant([
+            message.AssistantThinking(thought(seq), None, False),
+            call(
+              call_id,
+              "fs_read",
+              json.Object([#("path", json.String("a.gleam"))]),
+            ),
+          ]),
+        ),
+        item(
+          seq + 1,
+          10_000 + seq + 1,
+          result(call_id, "fs_read", json.Object([]), 10_000 + seq + 1),
+        ),
+      ]
+    })
+  let closing =
+    list.index_map(ending, fn(body, index) {
+      let seq = first + 2 * steps + 1 + index
+      item(seq, 10_000 + seq, body)
+    })
+  list.flatten([
+    [item(first, 10_000 + first, said("question " <> label, None))],
+    worked,
+    closing,
+  ])
 }
