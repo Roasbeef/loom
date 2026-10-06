@@ -6,8 +6,9 @@
 //// monotonic deadline remain live independently of TLS readers and writers.
 //// Output persistence executes on the native relay, through a bounded ask;
 //// this actor's cancellation channel never waits for a TLS send or a payload
-//// commit. Native exit releases transient pool lending but proves no retirement.
-//// Only broker/executor.close's witnessed scoped pool drain supplies that proof.
+//// commit. Raw and Compile settlement preserve helper reuse. Launch installs an
+//// exact original pool observer before dispatch; its callback belongs to the
+//// durable service row and survives this transient adapter's exit.
 ////
 //// Terminal encoding is a closed array of native verdict fields, using the
 //// existing broker framing for results/output and explicit failure variants.
@@ -34,7 +35,7 @@ import weft/actor
 /// A local control door, owned separately from any transport writer.
 pub opaque type Running {
   /// The private bounded request/reply control actor.
-  Running(subject: process.Subject(Message))
+  Running(subject: process.Subject(Message), pid: process.Pid)
 }
 
 type State {
@@ -43,7 +44,15 @@ type State {
     subject: process.Subject(Message),
     execution: Option(dispatch.Execution),
     publisher: Publisher,
+    disposition: Disposition,
   )
+}
+
+// The service row owns retirement persistence independently of this adapter.
+// The pool retains its send-only callback before any Launch dispatch occurs.
+type Disposition {
+  Reuse
+  RetireLaunch(notify: fn(Result(Nil, exec.RetirementFailure)) -> Nil)
 }
 
 /// Already-admitted exact request and persistence callbacks.
@@ -95,24 +104,72 @@ type Message {
 /// native.start(config) // -> Ok(running); cleanup stays independent of TLS.
 /// ```
 pub fn start(config: Config) -> Result(Running, Nil) {
-  actor.new_with_initialiser(1000, fn(subject) {
-    // Resource creation runs in this actor, so linked persistence children
-    // cannot outlive a failed startup or a later native-control crash.
-    use publisher <- result.try(
-      config.publisher()
-      |> result.replace_error("remote publication startup failed"),
-    )
-    Ok(
-      actor.initialised(State(config, subject, None, publisher))
-      |> actor.returning(subject)
-      |> actor.continuing(Begin),
-    )
-  })
-  |> actor.on_message(handle)
-  |> actor.unlinked
+  start_native(config, Reuse)
+}
+
+/// Installs the original exact helper observer before Launch dispatch.
+/// Its send-only callback reaches the original service row even after adapter
+/// settlement or loss. That row owns durable confirmation and bounded retry.
+///
+/// ## Examples
+///
+/// `start_launch(config, confirm_original)` keeps terminal and retirement separate.
+pub fn start_launch(
+  config: Config,
+  notify: fn(Result(Nil, exec.RetirementFailure)) -> Nil,
+) -> Result(Running, Nil) {
+  start_native(config, RetireLaunch(notify))
+}
+
+fn start_native(
+  config: Config,
+  disposition: Disposition,
+) -> Result(Running, Nil) {
+  let builder =
+    actor.new_with_initialiser(1000, fn(subject) {
+      // Resource creation runs in this actor, so linked persistence children
+      // cannot outlive a failed startup or a later native-control crash.
+      use publisher <- result.try(
+        config.publisher()
+        |> result.replace_error("remote publication startup failed"),
+      )
+      let initialised =
+        actor.initialised(State(config, subject, None, publisher, disposition))
+        |> actor.returning(subject)
+      Ok(case disposition {
+        Reuse -> actor.continuing(initialised, Begin)
+        RetireLaunch(_) -> initialised
+      })
+    })
+    |> actor.on_message(handle)
+    |> actor.unlinked
+  builder
   |> actor.start
-  |> result.map(fn(started) { Running(started.data) })
+  |> result.map(fn(started) { Running(started.data, started.pid) })
   |> result.map_error(fn(_) { Nil })
+}
+
+/// Begins the parked original Launch after its service Row and monitor exist.
+/// Weft startup kills its original child on a lost startup acknowledgement; the
+/// parked adapter has no helper borrow or dispatch effect before this door.
+///
+/// ## Examples
+///
+/// `begin_launch(running)` follows installation in the serialized service loop.
+@internal
+pub fn begin_launch(running: Running) -> Nil {
+  process.send(running.subject, Begin)
+}
+
+/// Projects the original adapter identity for its service-row monitor.
+/// The monitor observes control termination independently of retirement proof.
+///
+/// ## Examples
+///
+/// `process.monitor(native.pid(running))` retains the original control identity.
+@internal
+pub fn pid(running: Running) -> process.Pid {
+  running.pid
 }
 
 /// Cancels through local native control with no network-writer dependency.
@@ -167,53 +224,11 @@ fn ask(running: Running, make: fn(process.Subject(Nil)) -> Message) -> Nil {
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
-    Begin -> {
-      let config = state.config
-      let self = process.self()
-      let subject = state.subject
-      let output = state.publisher.output
-      let terminal_callback = state.publisher.terminal
-
-      // Settlement crosses back only after terminal persistence returns. The
-      // relay may block there; native cancel is a separate local service ask.
-      let request =
-        dispatch.Dispatch(
-          context: dispatch.CallContext(
-            config.operation,
-            config.prepared.step,
-            None,
-          ),
-          request: config.prepared.request,
-          seq: config.sequence,
-          deadline_ms: config.deadline_ms,
-          clock: clock.from_function(config.now),
-          caller: Some(self),
-          deliver: fn(chunk) {
-            case output(chunk) {
-              Ok(Nil) -> Nil
-              Error(Nil) -> process.send(subject, Cancel(process.new_subject()))
-            }
-          },
-          settle: fn(terminal) {
-            terminal_callback(terminal)
-            process.send(subject, Settled)
-          },
-        )
-      case
-        local.dispatcher_with_native_deadline(config.service).start(request)
-      {
-        Ok(execution) -> {
-          actor.continue(State(..state, execution: Some(execution)))
-        }
-        Error(_) -> {
-          terminal_callback(
-            dispatch.Failed(exec.ExecutionLost(exec.ExecutorClosing)),
-          )
-          config.control_done()
-          actor.stop()
-        }
+    Begin ->
+      case state.execution {
+        Some(_) -> actor.continue(state)
+        None -> begin_native(state)
       }
-    }
     Cancel(reply) -> {
       case state.execution {
         Some(execution) -> execution.cancel()
@@ -236,6 +251,61 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         None -> Nil
       }
       state.config.control_done()
+      actor.stop()
+    }
+  }
+}
+
+// The original startup door is consumed once; settlement owns subsequent exit.
+fn begin_native(state: State) -> actor.Next(State, Message) {
+  let config = state.config
+  let self = process.self()
+  let subject = state.subject
+  let output = state.publisher.output
+  let terminal_callback = state.publisher.terminal
+
+  // Settlement crosses back only after terminal persistence returns. The
+  // relay may block there; native cancel is a separate local service ask.
+  let request =
+    dispatch.Dispatch(
+      context: dispatch.CallContext(
+        config.operation,
+        config.prepared.step,
+        None,
+      ),
+      request: config.prepared.request,
+      seq: config.sequence,
+      deadline_ms: config.deadline_ms,
+      clock: clock.from_function(config.now),
+      caller: Some(self),
+      deliver: fn(chunk) {
+        case output(chunk) {
+          Ok(Nil) -> Nil
+          Error(Nil) -> process.send(subject, Cancel(process.new_subject()))
+        }
+      },
+      settle: fn(terminal) {
+        terminal_callback(terminal)
+        process.send(subject, Settled)
+      },
+    )
+  let dispatcher = case state.disposition {
+    Reuse -> local.dispatcher_with_native_deadline(config.service)
+    RetireLaunch(notify) ->
+      local.dispatcher_retiring_with_native_deadline(
+        config.service,
+        fn(_id, outcome) { notify(outcome) },
+      )
+  }
+  case dispatcher.start(request) {
+    Ok(execution) -> {
+      actor.continue(State(..state, execution: Some(execution)))
+    }
+    Error(_) -> {
+      terminal_callback(
+        dispatch.Failed(exec.ExecutionLost(exec.ExecutorClosing)),
+      )
+      config.control_done()
       actor.stop()
     }
   }

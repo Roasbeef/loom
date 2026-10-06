@@ -24,8 +24,9 @@
 //// Stdin is ordered/idempotent, 8 KiB/item, 128 items/1 MiB lifetime, checked
 //// before forwarding to helper's 16 MiB FIFO. No pending unbounded stdin queue.
 //// Receipts name exact terminal payload digest and follow owner durable commit.
-//// Exit alone stays NativeUnconfirmed; close permanently fences the epoch and
-//// only a witnessed scoped pool drain confirms native retirement.
+//// Exit alone stays NativeUnconfirmed. Launch retirement requires its exact
+//// original helper witness and durable confirmation; scoped close additionally
+//// fences the epoch and confirms the original pool drain.
 ////
 //// The command door retains either the original Claim with its original Compile
 //// elapsed deadline or historical Input data. Native authorization clamps to that
@@ -37,6 +38,8 @@
 //// transaction prevents a permit; cancellation afterward may race OS startup.
 //// Command controls and duplicate Submit readback require the exact retained
 //// ref/key/digest. Recovery never recreates a Claim, ticket or native launch.
+////
+//// `finish_confirmation` promotes only a fully drained original confirmation.
 ////
 //// ## Flow
 ////
@@ -59,7 +62,7 @@
 //// 4. `first_submit` persists request, authority and admission before intent.
 //// 5. `launch` consumes only a live committed authorization into native custody.
 //// 6. `publish_output` and `publish_terminal` ask the separate durable sink.
-//// 7. `close_scope` confirms retirement only from scoped witnessed native drain.
+//// 7. `persist_retirements` commits exact Launch proof; `close_scope` drains scope.
 
 import broker/dispatch
 import broker/exec
@@ -87,6 +90,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor as otp_actor
 import gleam/otp/supervision
 import gleam/result
+import weft
 import weft/actor
 
 /// Trusted administrative assembly; remote requests cannot replace these facts.
@@ -148,6 +152,9 @@ pub opaque type CommandContext {
     ref: command.CommandRef,
     /// Historical readback cannot become first-Submit permission.
     permission: CommandPermission,
+    control_lost: Option(fn() -> Nil),
+    associated: Option(fn() -> Nil),
+    retired: Option(fn() -> Nil),
   )
 }
 
@@ -207,7 +214,46 @@ type Row {
     native: native.Running,
     stdin: List(InputDelivery),
     stdin_bytes: Int,
+    retirement: ExecutionRetirement,
+    control: ControlCustody,
+    monitor: Option(process.Monitor),
+    control_lost: Option(fn() -> Nil),
+    confirmation: Confirmation,
   )
+}
+
+// These facts belong to the original native row, independently of its
+// killable adapter. Positive proof survives only the fixed persistence window.
+type ExecutionRetirement {
+  ReuseNative
+  AwaitingNative(retired: Option(fn() -> Nil))
+  PositiveNative(retired: Option(fn() -> Nil))
+  ConfirmedNative
+  UncertainNative
+}
+
+// At most one bounded confirmation task belongs to each original native Row.
+type ConfirmationAttempt {
+  FirstConfirmation
+  FinalConfirmation
+}
+
+type Confirmation {
+  ConfirmationReady(attempt: ConfirmationAttempt)
+  Confirming(
+    reports: process.Subject(weft.Pulled(Nil, journal.Error)),
+    cancel: weft.Cancel,
+    outcome: Option(Result(Nil, journal.Error)),
+    attempt: ConfirmationAttempt,
+    relay: process.Pid,
+  )
+  ConfirmationSpent
+  ConfirmationLost
+}
+
+type ControlCustody {
+  RunningControl
+  FinishedControl
 }
 
 type AdmissionGate {
@@ -245,7 +291,19 @@ type State {
 type Message {
   Quiesce(reply: process.Subject(Nil))
   Shutdown(reply: process.Subject(Result(Nil, Error)))
+  AdapterDown(process.Down)
   ControlDone(key: identity.RequestKey, digest: identity.Digest)
+  OriginalNativeRetired(
+    key: identity.RequestKey,
+    digest: identity.Digest,
+    result: Result(Nil, exec.RetirementFailure),
+  )
+  PersistRetirements
+  ConfirmationReport(
+    key: identity.RequestKey,
+    digest: identity.Digest,
+    report: weft.Pulled(Nil, journal.Error),
+  )
   Exchange(
     envelope: wire.Envelope,
     reply: process.Subject(Result(wire.Body, Error)),
@@ -398,11 +456,18 @@ fn builder(
         Accepting,
         NativeOpen,
       ))
+      |> actor.selecting(
+        process.new_selector()
+        |> process.select(subject)
+        |> process.select_monitors(AdapterDown),
+      )
       |> actor.returning(subject),
     )
   })
   |> actor.on_message(handle)
   |> actor.trapping_exits(True)
+  |> actor.periodic(every: 25, sending: PersistRetirements)
+  |> actor.on_shutdown(stop_confirmations)
 }
 
 /// Executes one already decoded authenticated envelope via bounded admission ask.
@@ -471,7 +536,52 @@ pub fn live_command_context(
     original,
     ref,
   ))
-  Ok(CommandContext(resources, original, ref, Live(claim, compile_deadline_ms)))
+  Ok(CommandContext(
+    resources,
+    original,
+    ref,
+    Live(claim, compile_deadline_ms),
+    None,
+    None,
+    None,
+  ))
+}
+
+/// Binds the original Launch owner to durable exact-helper retirement.
+/// Only a validated LaunchService/SatelliteCommand can register this callback;
+/// its send-only notification does not grant native execution authority.
+///
+/// ## Examples
+///
+/// `live_launch_command_context(service, claim, ref, deadline, lost, associated, retired)` preserves the original door.
+@internal
+pub fn live_launch_command_context(
+  service: Service,
+  claim: resource_journal.Claim,
+  ref: command.CommandRef,
+  deadline_ms: Int,
+  control_lost: fn() -> Nil,
+  associated: fn() -> Nil,
+  retired: fn() -> Nil,
+) -> Result(CommandContext, Error) {
+  use context <- result.try(live_command_context(
+    service,
+    claim,
+    ref,
+    deadline_ms,
+  ))
+  case command.service_role(context.original.key) {
+    command.LaunchService ->
+      Ok(
+        CommandContext(
+          ..context,
+          control_lost: Some(control_lost),
+          associated: Some(associated),
+          retired: Some(retired),
+        ),
+      )
+    command.CompileService -> Error(Invalid)
+  }
 }
 
 /// Reads exact bounded original data without reconstructing preparation custody.
@@ -517,7 +627,7 @@ pub fn command_context(
     original,
     ref,
   ))
-  Ok(CommandContext(resources, original, ref, Historical))
+  Ok(CommandContext(resources, original, ref, Historical, None, None, None))
 }
 
 fn validate_command(
@@ -637,13 +747,45 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
       }
     }
+    AdapterDown(down) -> {
+      let rows =
+        list.fold(dict.to_list(state.rows), state.rows, fn(rows, pair) {
+          let #(key, row) = pair
+          case row.monitor == Some(down.monitor) {
+            True -> {
+              option.map(row.control_lost, fn(notify) { notify() })
+              finish_control(rows, key, row)
+            }
+            False -> rows
+          }
+        })
+      continue_retirements(State(..state, rows:))
+    }
     ControlDone(key, digest) -> {
       let rows = case dict.get(state.rows, key) {
-        Ok(row) if row.digest == digest -> dict.delete(state.rows, key)
+        Ok(row) if row.digest == digest -> finish_control(state.rows, key, row)
         _ -> state.rows
       }
-      actor.continue(State(..state, rows:))
+      continue_retirements(State(..state, rows:))
     }
+    OriginalNativeRetired(key, digest, outcome) -> {
+      let rows = case dict.get(state.rows, key) {
+        Ok(Row(retirement: AwaitingNative(retired), ..) as row)
+          if row.digest == digest
+        -> {
+          let retirement = case outcome {
+            Ok(Nil) -> PositiveNative(retired)
+            Error(_) -> UncertainNative
+          }
+          dict.insert(state.rows, key, Row(..row, retirement:))
+        }
+        _ -> state.rows
+      }
+      continue_retirements(State(..state, rows:))
+    }
+    PersistRetirements -> continue_retirements(state)
+    ConfirmationReport(key, digest, report) ->
+      continue_retirements(confirmation_report(state, key, digest, report))
     Exchange(envelope, reply) -> handle_exchange(state, Native, envelope, reply)
     CommandExchange(context, envelope, reply) ->
       handle_command_exchange(state, context, envelope, reply)
@@ -1075,7 +1217,7 @@ fn first_submit(
   // Actual native admission precedes the separate resource COMMIT. A lost permit
   // reply leaves retained admission, never launch intent or replay eligibility.
   use Nil <- result.try(associate_command(route, key, digest))
-  case launch(next, key, digest, prepared, deadline) {
+  case launch(next, key, digest, prepared, deadline, route) {
     Ok(answer) -> Ok(answer)
     Error(Expired) | Error(Invalid) -> refuse_admitted(next, key, digest)
     Error(error) -> Error(error)
@@ -1102,7 +1244,10 @@ fn associate_command(
         resource_journal.native_launch_binding(permit)
         == #(context.resources, context.ref, key, digest)
       {
-        True -> Ok(Nil)
+        True -> {
+          option.map(context.associated, fn(notify) { notify() })
+          Ok(Nil)
+        }
         False -> Error(Invalid)
       }
     }
@@ -1190,6 +1335,7 @@ fn launch(
   digest: identity.Digest,
   prepared: wire.Prepared,
   deadline: Int,
+  route: Route,
 ) -> Result(#(State, wire.Body), Error) {
   let config = state.config
   use Nil <- result.try(verify(config, key, digest, prepared))
@@ -1228,31 +1374,81 @@ fn launch(
       let service_subject = state.subject
       let journal = config.journal
       let stream = prepared.stream
-      use running <- result.try(
-        native.start(
-          native.Config(
-            config.native,
-            operation,
-            prepared,
-            state.sequence,
-            deadline,
-            config.now,
-            fn() {
-              use sink <- result.map(
-                output_sink(journal, key, digest, stream)
-                |> result.replace_error(Nil),
-              )
-              native.Publisher(
-                fn(chunk) { publish_output(sink, chunk) },
-                fn(terminal) { publish_terminal(sink, terminal) },
-              )
-            },
-            fn() { process.send(service_subject, ControlDone(key, digest)) },
-          ),
+      let native_config =
+        native.Config(
+          config.native,
+          operation,
+          prepared,
+          state.sequence,
+          deadline,
+          config.now,
+          fn() {
+            use sink <- result.map(
+              output_sink(journal, key, digest, stream)
+              |> result.replace_error(Nil),
+            )
+            native.Publisher(
+              fn(chunk) { publish_output(sink, chunk) },
+              fn(terminal) { publish_terminal(sink, terminal) },
+            )
+          },
+          fn() { process.send(service_subject, ControlDone(key, digest)) },
         )
+      use running <- result.try(
+        case route {
+          Native -> native.start(native_config)
+          Command(context) ->
+            case command.service_role(context.original.key) {
+              command.CompileService -> native.start(native_config)
+              command.LaunchService ->
+                native.start_launch(native_config, fn(outcome) {
+                  process.send(
+                    service_subject,
+                    OriginalNativeRetired(key, digest, outcome),
+                  )
+                })
+            }
+        }
         |> result.map_error(fn(_) { Uncertain }),
       )
-      let row = Row(digest, deadline, running, [], 0)
+      let retirement = case route {
+        Native -> ReuseNative
+        Command(context) ->
+          case command.service_role(context.original.key) {
+            command.CompileService -> ReuseNative
+            command.LaunchService -> AwaitingNative(context.retired)
+          }
+      }
+      let monitor = case retirement {
+        ReuseNative -> None
+        AwaitingNative(_) -> Some(process.monitor(native.pid(running)))
+        PositiveNative(_) | ConfirmedNative | UncertainNative -> None
+      }
+      let control_lost = case route {
+        Native -> None
+        Command(context) -> context.control_lost
+      }
+      let row =
+        Row(
+          digest,
+          deadline,
+          running,
+          [],
+          0,
+          retirement,
+          RunningControl,
+          monitor,
+          control_lost,
+          ConfirmationReady(FirstConfirmation),
+        )
+
+      // This actor cannot consume callback messages before returning this Row.
+      // Launch startup is parked, so a lost startup ACK cannot dispatch first.
+      case retirement {
+        AwaitingNative(_) -> native.begin_launch(running)
+        ReuseNative | PositiveNative(_) | ConfirmedNative | UncertainNative ->
+          Nil
+      }
       Ok(#(
         State(
           ..state,
@@ -1418,10 +1614,218 @@ fn feed(
   }
 }
 
+// Only the original pool callback creates PositiveNative. A journal failure
+// retains that exact proof and callback, while retries consume observation grace.
+// Actual control termination releases admission only after durable retirement.
+// A killed adapter cannot send ControlDone, so the original row owns its monitor.
+fn finish_control(
+  rows: dict.Dict(identity.RequestKey, Row),
+  key: identity.RequestKey,
+  row: Row,
+) -> dict.Dict(identity.RequestKey, Row) {
+  option.map(row.monitor, process.demonitor_process)
+  case row.retirement {
+    ReuseNative | ConfirmedNative -> dict.delete(rows, key)
+    AwaitingNative(_) | PositiveNative(_) | UncertainNative ->
+      dict.insert(
+        rows,
+        key,
+        Row(..row, control: FinishedControl, monitor: None),
+      )
+  }
+}
+
+fn persist_retirements(state: State) -> State {
+  let now = state.config.now()
+  list.fold(dict.to_list(state.rows), state, fn(state, pair) {
+    let #(key, row) = pair
+    case row.retirement, row.confirmation {
+      PositiveNative(_), ConfirmationReady(attempt)
+        if now < row.deadline + 6000
+      -> {
+        let reports = process.new_subject()
+        let cancel = weft.cancel_signal()
+        let book = state.config.journal
+        let digest = row.digest
+        let relay =
+          weft.new_prepared([
+            weft.managed(fn(_ledger) {
+              journal.apply(book, key, digest, admission.ConfirmRetirement)
+              |> result.replace(Nil)
+            }),
+          ])
+          |> weft.deadline(row.deadline + 6000 - now)
+          |> weft.cancel_grace(1000)
+          |> weft.cancel_with(cancel)
+          |> weft.cancel_when_exits(process.self())
+          |> weft.start_relayed(to: reports)
+        let row =
+          Row(
+            ..row,
+            confirmation: Confirming(reports, cancel, None, attempt, relay),
+          )
+        State(..state, rows: dict.insert(state.rows, key, row))
+      }
+      _, _ -> state
+    }
+  })
+}
+
+// Reports retain the exact original proof through an uncertain acknowledgement.
+// Only actual AllDelivered permits another ask, under the same fixed deadline.
+fn confirmation_report(
+  state: State,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  report: weft.Pulled(Nil, journal.Error),
+) -> State {
+  case dict.get(state.rows, key) {
+    Ok(
+      Row(
+        confirmation: Confirming(reports, cancel, outcome, attempt, relay),
+        ..,
+      ) as row,
+    )
+      if row.digest == digest
+    -> {
+      case report {
+        weft.NotYet -> state
+        weft.PulledOutcome(result) -> {
+          let outcome = case result {
+            weft.Completed(_, Nil) -> Ok(Nil)
+            weft.Failed(_, error) -> Error(error)
+            _ -> Error(journal.Uncertain)
+          }
+          let row =
+            Row(
+              ..row,
+              confirmation: Confirming(
+                reports,
+                cancel,
+                Some(outcome),
+                attempt,
+                relay,
+              ),
+            )
+          State(..state, rows: dict.insert(state.rows, key, row))
+        }
+        weft.AllDelivered -> {
+          weft.cancel(cancel)
+          finish_confirmation(state, key, row, outcome, attempt)
+        }
+        weft.RunLost(_) -> {
+          weft.cancel(cancel)
+          State(
+            ..state,
+            rows: dict.insert(
+              state.rows,
+              key,
+              Row(..row, confirmation: ConfirmationLost),
+            ),
+          )
+        }
+      }
+    }
+    _ -> state
+  }
+}
+
+// Actual relay drain is the only entry to promotion or another bounded ask.
+fn finish_confirmation(
+  state: State,
+  key: identity.RequestKey,
+  row: Row,
+  outcome: Option(Result(Nil, journal.Error)),
+  attempt: ConfirmationAttempt,
+) -> State {
+  let now = state.config.now()
+  case outcome, row.retirement {
+    Some(Ok(Nil)), PositiveNative(retired) if now < row.deadline + 6000 -> {
+      option.map(retired, fn(notify) { notify() })
+      let rows = case row.control {
+        FinishedControl -> dict.delete(state.rows, key)
+        RunningControl ->
+          dict.insert(
+            state.rows,
+            key,
+            Row(
+              ..row,
+              retirement: ConfirmedNative,
+              confirmation: ConfirmationSpent,
+            ),
+          )
+      }
+      State(..state, rows:)
+    }
+    _, _ -> {
+      let confirmation = case attempt {
+        FirstConfirmation -> ConfirmationReady(FinalConfirmation)
+        FinalConfirmation -> ConfirmationSpent
+      }
+      State(
+        ..state,
+        rows: dict.insert(state.rows, key, Row(..row, confirmation:)),
+      )
+    }
+  }
+}
+
+fn continue_retirements(state: State) -> actor.Next(State, Message) {
+  let state = persist_retirements(state)
+  let selector =
+    list.fold(
+      dict.to_list(state.rows),
+      process.new_selector()
+        |> process.select(state.subject)
+        |> process.select_monitors(AdapterDown),
+      fn(selector, pair) {
+        let #(key, row) = pair
+        case row.confirmation {
+          Confirming(reports, _, _, _, _) ->
+            process.select_map(selector, reports, ConfirmationReport(
+              key,
+              row.digest,
+              _,
+            ))
+          ConfirmationReady(_) | ConfirmationSpent | ConfirmationLost ->
+            selector
+        }
+      },
+    )
+  actor.continue(state) |> actor.with_selector(selector)
+}
+
+fn stop_confirmations(state: State, _reason: process.ExitReason) -> Nil {
+  dict.values(state.rows)
+  |> list.each(fn(row) {
+    case row.confirmation {
+      Confirming(_, cancel, _, _, _) -> weft.cancel(cancel)
+      ConfirmationReady(_) | ConfirmationSpent | ConfirmationLost -> Nil
+    }
+  })
+}
+
 fn close_scope(state: State) -> #(State, Result(wire.Body, Error)) {
   // Quiescence and the original native disposition survive every outward error.
   // Covered identities cannot grow after this point; retries only confirm them.
   let state = State(..state, gate: Quiesced, tickets: [])
+
+  // A confirmation result is not its relay drain. Scope closure cannot issue
+  // another journal write while an original continuation still owns that writer.
+  case
+    list.any(dict.values(state.rows), fn(row) {
+      case row.confirmation {
+        Confirming(..) | ConfirmationLost -> True
+        ConfirmationReady(_) | ConfirmationSpent -> False
+      }
+    })
+  {
+    True -> #(state, Error(Uncertain))
+    False -> close_drained_scope(state)
+  }
+}
+
+fn close_drained_scope(state: State) -> #(State, Result(wire.Body, Error)) {
   let fenced = journal.close_epoch(state.config.journal)
   let disposition = case state.native_close {
     NativeOpen ->
@@ -1432,6 +1836,10 @@ fn close_scope(state: State) -> #(State, Result(wire.Body, Error)) {
     NativeRetired | NativeUncertain -> state.native_close
   }
   let state = State(..state, native_close: disposition)
+
+  // Scoped confirmation supplies only the inherited scope proof. Original pool
+  // callbacks queued during close still enter the sole per-Launch managed path;
+  // this synchronous scope lane cannot bypass its deadline or report drain.
 
   // Native success alone never advertises complete scope retirement. The exact
   // original journal and covered-key confirmations must also succeed.
@@ -1451,7 +1859,6 @@ fn close_scope(state: State) -> #(State, Result(wire.Body, Error)) {
           admission.ConfirmRetirement,
         )
         |> durable
-        |> result.replace(Nil)
       }),
     )
     Ok(wire.ScopeRetirement)
@@ -1501,9 +1908,10 @@ fn publish_output(sink: Sink, chunk: dispatch.Chunk) -> Result(Nil, Nil) {
 }
 
 fn publish_terminal(sink: Sink, terminal: dispatch.Terminal) -> Nil {
-  let reply = process.new_subject()
-  process.send(sink.subject, End(terminal, reply))
-  let _ = process.receive(reply, 30_000)
+  // The original adapter owns this sink. Its death must release the executor
+  // writer's settlement ask, rather than wait thirty seconds on a dead subject.
+  let _ =
+    call.try_call(sink.subject, waiting: 30_000, sending: End(terminal, _))
   Nil
 }
 
