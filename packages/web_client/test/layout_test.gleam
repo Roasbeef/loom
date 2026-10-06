@@ -195,3 +195,20 @@ pub fn the_button_says_what_the_page_shows_and_what_pressing_does_test() {
   assert layout_rule.label(layout_rule.Dark)
     == "Theme: dark. Switch to following the system."
 }
+
+// The panel's tab is the reader's habit, so it has an item of its own for the
+// browser and does not depend on the workspace's layout item.
+pub fn the_tab_has_its_own_item_per_browser_test() {
+  assert layout_rule.tab_key == "loom.panel.tab.v1"
+  assert layout_rule.encode_tab(Changes) == "changes"
+  list.each(shell_rule.tabs(), fn(tab) {
+    assert layout_rule.restored_tab(Ok(layout_rule.encode_tab(tab)))
+      == Some(tab)
+  })
+}
+
+pub fn a_missing_or_unknown_saved_tab_is_no_choice_test() {
+  assert layout_rule.restored_tab(Error(Nil)) == None
+  assert layout_rule.restored_tab(Ok("jobs")) == None
+  assert layout_rule.restored_tab(Ok("Changes")) == None
+}

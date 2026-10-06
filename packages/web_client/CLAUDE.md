@@ -406,7 +406,10 @@ time builds anything.
   the digest, or nothing), `encode` (a JSON object of three words) and
   `restore` (total: any stored text, or a missing or blocked item, answers a
   `shell_rule.Layout`; the default for malformed text, and the default of one
-  field that is missing or names an unknown word), and the theme:
+  field that is missing or names an unknown word), the panel's tab per browser
+  (`tab_key` `loom.panel.tab.v1`, `encode_tab`, `restored_tab`, which replaces
+  the workspace layout's tab on restore so the tab follows the reader across
+  sessions and workspaces), and the theme:
   `Theme` (`System` | `Light` | `Dark`), `theme` (a total decoder of the stored
   word: anything but `light` and `dark` follows the system), `encode_theme`,
   `next_theme`, `data_theme` (the root's attribute, or nothing for `System`),

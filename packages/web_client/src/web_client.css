@@ -1329,8 +1329,9 @@
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
     /* Only the Strands pane is a row of cards sized for 132px. The Changes,
        Session and Trace panes hold prose and tables, so they take up to
-       45vh and scroll inside it. */
-    loom-shell:not(:state(tab-strands)) aside.panel{max-height:45vh;}
+       30vh and scroll inside it, which leaves the conversation most of the
+       screen under a diff that is open. */
+    loom-shell:not(:state(tab-strands)) aside.panel{max-height:30vh;}
     aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}
     nav.agent-strip{overflow-x:auto;scrollbar-width:thin;}
