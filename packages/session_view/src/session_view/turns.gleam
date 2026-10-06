@@ -1564,11 +1564,14 @@ fn worked(turn: Turn) -> Worked {
   Worked(duration_ms:, steps:, files:, failed:, ending:)
 }
 
-// Whether a folded response was aborted: its rows lead with the words an
-// aborted response draws (`transcript_lines.assistant_terminal_lines`).
+// Whether a response of the turn was aborted: its rows lead with the words an
+// aborted response draws (`transcript_lines.assistant_terminal_lines`). A
+// response that spoke before it was stopped is an `Answer`, not a `Doing`, so
+// both are read; otherwise the divider of a turn whose aborted response had
+// prose would not say `interrupted`.
 fn stopped(item: Classified) -> Bool {
   case item {
-    Doing(item: Narrated(block:, ..), ..) ->
+    Doing(item: Narrated(block:, ..), ..) | Answer(block:, ..) ->
       list.any(block.rows, fn(row) {
         row.1
         == transcript_line.Line(
@@ -1576,7 +1579,7 @@ fn stopped(item: Classified) -> Bool {
           transcript_lines.stopped_words,
         )
       })
-    Doing(..) | Answer(..) | Input(..) | Outside(..) -> False
+    Doing(..) | Input(..) | Outside(..) -> False
   }
 }
 
