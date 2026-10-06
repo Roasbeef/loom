@@ -683,12 +683,24 @@ fn draft(model: component.Model(socket)) -> Element(Msg(socket)) {
 // draft without refusing it, the lane holding a send until a read answers, is
 // not counted, so the line stays until the send.
 fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
+  let returns = component.returns(model)
+  let returned = component.returned(model)
+  let refusals = component.refusals(model)
+
+  // Provider fragments do not change the editor. Keep its command table and
+  // returned drafts until an editor input changes, and capture only those
+  // inputs rather than the page's session and transport in the memo.
+  use <- element.memo([
+    element.ref(returns),
+    element.ref(returned),
+    element.ref(refusals),
+  ])
   element.element(
     "loom-composer",
     [
       attribute.attribute("commands", completion.table()),
-      attribute.attribute("returned", int.to_string(component.returns(model))),
-      attribute.attribute("refused", int.to_string(component.refusals(model))),
+      attribute.attribute("returned", int.to_string(returns)),
+      attribute.attribute("refused", int.to_string(refusals)),
     ],
     [
       html.textarea(
@@ -700,7 +712,7 @@ fn editor(model: component.Model(socket)) -> Element(Msg(socket)) {
         ],
         "",
       ),
-      ..list.map(component.returned(model), fn(returned) {
+      ..list.map(returned, fn(returned) {
         html.span(
           [
             attribute.attribute("slot", "returned"),

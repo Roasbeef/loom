@@ -44,6 +44,13 @@ never installs it. `agency.holds` returns `ToolNotHeld` only for a tool
 absent from a readable list and lets `AgencyUnavailable` and `PlaneFailed`
 flow through.
 
+`async_codemode.launch` likewise projects the preceding router before
+constructing the execution's wrapper. Its admitted work closure retains the
+prepared configuration once; the wrapper adds no path to the original host
+configuration. The regression observes the actual `async_runs.Launch` message
+after a process copy, grows an unrelated entropy payload, and requires exactly
+one payload's growth while preserving the execution identity and deadline.
+
 ## Gateway membership and restart captures
 
 The gateway projects `Options.registry` into a private name-keyed dictionary
@@ -5649,7 +5656,12 @@ server the same private HOME and XDG cache for cross-platform Gleam cache lookup
 `lsp/dependency_state.fingerprint` gates workspace-local real paths against
 protected entries and the session’s existing readable or writable roots,
 follows at most 64 package configurations, and retains
-128 KiB at most per metadata file. The query caller sends only a digest in
+128 KiB at most per metadata file. The generated package inventory hashes
+canonical table/string values, preserving package membership, versions and git
+commits while ignoring the key order Gleam rewrites from maps. Unsupported
+inventory values or more than three table levels refuse reuse. Manifest and
+project configuration changes still use their complete source digests.
+The query caller sends only a digest in
 `manager.Acquire`; the actor compares it with the successful keeper start's
 `Started.stamp`. A change uses the existing eviction path, reruns setup, and
 reopens held documents. This snapshot tracks dependency preparation inputs,

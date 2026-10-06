@@ -1417,16 +1417,13 @@ pub fn join_soft_break(head: span.Line, next: span.Line) -> span.Line {
         True, True ->
           list.reverse(before)
           |> list.append([
-            span.Span(
-              ..last,
-              content: string.trim_end(last.content) <> " " <> first.content,
-            ),
+            span.Span(..last, content: last.content <> " " <> first.content),
             ..after
           ])
         True, False ->
           list.reverse(before)
           |> list.append([
-            span.Span(..last, content: string.trim_end(last.content) <> " "),
+            span.Span(..last, content: last.content <> " "),
             ..next.spans
           ])
         False, True ->

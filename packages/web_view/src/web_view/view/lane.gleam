@@ -604,7 +604,7 @@ fn piece_element(
           tag(agent_roster.short_name(child), position(marks, child)),
           html.text(" " <> step_words.returned(outcome)),
         ]),
-        ..result_report(report)
+        result_report(report),
       ])
 
     turns.Nudged(frame:, body:, ..) ->
@@ -742,6 +742,13 @@ fn open_button(
 // it is unchanged, as a transcript line is (`rows`).
 fn card_body(body: String) -> Element(message) {
   use <- element.memo([element.ref(body)])
+  parsed_card_body(body)
+}
+
+// A report keeps its preview and body in one leaf memo. Drawing the body
+// directly there avoids nesting another memo whose entry Lustre would drop
+// when the enclosing report's dependencies are unchanged.
+fn parsed_card_body(body: String) -> Element(message) {
   html.div(
     [attribute.class("card-body"), attribute.class("markdown")],
     markdown_view.blocks(markdown.parse(body)),
@@ -957,18 +964,22 @@ fn more_of(text: String) -> List(Line) {
 // in the body, and a report whose breaks arrived as the characters `\n` is
 // read with real ones first (`step_words.spoken_breaks`), so no backslash is
 // drawn and the second line is behind the chevron.
-fn result_report(report: String) -> List(Element(message)) {
+// Settled reports are unchanged while provider fragments arrive. Their
+// preview and body must both be built inside the memo, so those fragments
+// do not parse the report before Lustre can reuse it.
+fn result_report(report: String) -> Element(message) {
+  use <- element.memo([element.ref(report)])
   let report = step_words.spoken_breaks(report)
   let line = markdown_view.line(report, step_words.result_limit)
   let trimmed = string.trim(report)
   let longer =
     string.contains(trimmed, "\n")
     || string.length(trimmed) > step_words.result_limit
-  case trimmed, longer {
+  element.fragment(case trimmed, longer {
     "", _ -> []
     _, False -> [html.p([attribute.class("result-line")], line)]
-    _, True -> [fold_row.reading(line, [card_body(report)])]
-  }
+    _, True -> [fold_row.reading(line, [parsed_card_body(report)])]
+  })
 }
 
 // The pictures of a row's images, or nothing: a strip of thumbnails after the

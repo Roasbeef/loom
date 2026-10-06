@@ -2645,6 +2645,70 @@ pub fn a_reordered_package_inventory_is_the_same_installation_test() {
   Nil
 }
 
+// Gleam emits these tables from maps, so textual order is not installation
+// identity. Package membership, versions and nested git commits still are.
+pub fn dependency_inventory_order_preserves_identity_but_values_invalidate_test() {
+  let workspace = scratch("inventory-order")
+  let root = project(workspace, "app")
+  let inventory = root <> "/build/packages/packages.toml"
+  write(
+    inventory,
+    "[packages]\nsibling = \"1.0.0\"\ngleam_stdlib = \"1.0.5\"\n[git.sibling]\ncommit = \"abc\"\n",
+  )
+  let assert Ok(first) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "the compiler inventory can be fingerprinted"
+  write(
+    inventory,
+    "# Rewritten by the language server.\n[git.sibling]\ncommit = \"abc\"\n[packages]\ngleam_stdlib = \"1.0.5\"\nsibling = \"1.0.0\"\n",
+  )
+  let assert Ok(reordered) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "reordering keeps the same installation"
+  assert reordered == first
+
+  // Every supported inventory value contributes, including git metadata
+  // below the package table. Removing a package is also a real change.
+  list.each(
+    [
+      "[packages]\nsibling = \"1.0.1\"\ngleam_stdlib = \"1.0.5\"\n[git.sibling]\ncommit = \"abc\"\n",
+      "[packages]\nsibling = \"1.0.0\"\ngleam_stdlib = \"1.0.5\"\n[git.sibling]\ncommit = \"def\"\n",
+      "[packages]\ngleam_stdlib = \"1.0.5\"\n[git.sibling]\ncommit = \"abc\"\n",
+    ],
+    fn(changed) {
+      write(inventory, changed)
+      let assert Ok(next) =
+        dependency_state.fingerprint(workspace, [], [workspace], root)
+        as "changed inventory remains valid"
+      assert next != first
+    },
+  )
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
+pub fn unsupported_dependency_inventory_refuses_reuse_test() {
+  let workspace = scratch("inventory-invalid")
+  let root = project(workspace, "app")
+  list.each(
+    [
+      "[packages]\nsibling = 1\n",
+      "[packages]\nsibling = [\"1.0.0\"]\n",
+      "[git.sibling.extra]\ncommit = \"abc\"\n",
+      "[packages\n",
+    ],
+    fn(inventory) {
+      write(root <> "/build/packages/packages.toml", inventory)
+      let assert Error(reason) =
+        dependency_state.fingerprint(workspace, [], [workspace], root)
+        as "unsupported metadata cannot bless a stale installation"
+      assert string.contains(reason, "package inventory")
+    },
+  )
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 pub fn a_dependency_config_fifo_is_refused_before_a_blocking_read_test() {
   let workspace = scratch("dependency-fifo")
   let root = project(workspace, "app")

@@ -97,13 +97,18 @@ fn launch(
     codemode.Both(spawn_ceiling:, ..) ->
       codemode.Both(spawn_ceiling:, agency: execution_agency)
   }
+
+  // Admission copies the worker into the service, then into its managed task.
+  // The wrapper needs only its predecessor; retaining the original Config
+  // here would duplicate every unrelated launch input at both boundaries.
+  let wrap_router = config.wrap_router
   let config =
     codemode.Config(
       ..config,
       surface:,
       fixed_deadline: Some(record.deadline_ms),
       wrap_router: fn(bound, router) {
-        let router = config.wrap_router(bound, router)
+        let router = wrap_router(bound, router)
         let router = workflows.router(agents, custody, request, router)
         input_router(service, request.strand, id, router)
       },

@@ -368,6 +368,8 @@ pub fn a_long_paragraph_joins_at_its_checkpoint_test() {
   checkpointed(lines <> "a hard break  \nfollows and\nmore words", 40, 40, 0)
   checkpointed(lines <> "an entity &amp;\nat the end\nand more", 40, 40, 0)
   checkpointed(lines <> "   indented lazy line\nnext line\nmore", 40, 40, 0)
+  checkpointed(lines <> "a single trailing space \nnext line\nmore", 40, 40, 0)
+  checkpointed(lines <> "and café e\u{301} 漢字\nnext line\nmore", 40, 40, 0)
 }
 
 // Feeds a long paragraph and requires that a checkpoint was placed in it
