@@ -1792,7 +1792,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1155`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1231`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1854,7 +1854,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6181`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6189`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -2339,6 +2339,51 @@ SHOULD stop asking for the rest of the attachment. See
 [protocol 050](../protocol-change/050-reasoning-summaries.md) and
 section 5.19.
 
+#### 4.9.29 `permissions` and `permission_forget`
+
+What a session remembers for its operator: the filesystem and network
+permissions, and the exact-action consents, that an approval for the session
+(`approve` with `scope: "session"`) left behind, each with who approved it.
+Neither command is a read an observer may make. The listing names principals
+and credentials, and forgetting is a mutation, so an observer attachment is
+refused both with `forbidden`, and neither runs while the session is draining.
+See [protocol 073](../protocol-change/073-web-session-grants.md).
+
+```json
+{"v":2,"id":62,"cmd":"permissions","body":{}}
+{"v":2,"reply_to":62,"event":"snapshot","body":{"mode":"permissions","board":{"seq":9,"grants":[{"grant":{"type":"readable_root","path":"/repo"},"provenance":{"by":{"principal":"alice","name":"Alice"},"via":{"kind":"login","fingerprint":"9c1e0f2ab3d4e5f6"},"at_ms":1790000000000}}],"actions":[]}}}
+```
+
+The board's `seq` is the sequence of the general fact, or `null` while the
+session remembers none. `grants` holds each permission in the grant
+vocabulary of section 5.10, with its `provenance`, which is `null` for a
+permission remembered before approvals were attributed. A provenance's `via.kind`
+is `login` (a browser sign-in), `device` (a bearer credential, the terminal's)
+or `none`, and the fingerprint is the first sixteen digits of the credential's
+digest. `actions` holds each exact-action consent as `{id, seq, tool, strand,
+preview, provenance}`, where `id` names the consent to a forget, `seq` is the
+sequence it was read at, and `tool`, `strand` and `preview` are `null` for a
+consent that predates them. Each list holds at most 100 rows.
+
+```json
+{"v":2,"id":63,"cmd":"permission_forget","body":{"target":{"kind":"grant","grant":{"type":"readable_root","path":"/repo"}},"expected_seq":9}}
+```
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `target.kind` | string | required | `grant`, `action` or `all`. |
+| `target.grant` | object | for `grant` | One permission, as the listing carried it. |
+| `target.id` | string | for `action` | A consent's `id`, lower-case hexadecimal. |
+| `expected_seq` | integer | for `grant` and `all` when the fact exists; always for `action` | The sequence the listing carried: the general fact's for `grant` and `all`, the consent's own for `action`. |
+
+The edit is one transaction through the session's writer, guarded by the
+sequences the operator saw. A cell that moved since, or a target already gone,
+is `conflict` and nothing is written; the client reads again. A malformed
+target, including a consent id that is not hexadecimal, is `bad_request`. On
+success the reply is the `permissions` snapshot that remains, so one round
+trip both acts and redraws. A forget does not reach a call that is already
+running with the authority it captured.
+
 ## 5. Events
 
 ### 5.1 Which events reach which client
@@ -2348,7 +2393,7 @@ Over the authenticated session transport a client sees:
 - transfer frames: `snapshot_begin`, `snapshot_chunk`, `snapshot_end`;
 - mutation replies: `mutation_outcome`;
 - auxiliary replies: `snapshot` with mode `models`, `skills`, `schedules`, `notes`,
-  `queued_input`, `live_jobs`, `block_summaries`, or pending `worktree_diff` /
+  `permissions`, `queued_input`, `live_jobs`, `block_summaries`, or pending `worktree_diff` /
   `context`;
 - pushed frames: `committed`, `stream_delta`, `tool_output`, `block_summary`, `goal_changed`,
   `presence`, `snapshot` with mode `config` or final `worktree_diff` /

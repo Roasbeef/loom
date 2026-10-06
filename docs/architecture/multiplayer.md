@@ -322,7 +322,7 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:5433`) is called from
+`drain_idle_strands` (`client/gateway.gleam:5441`) is called from
 `pull_and_broadcast` (`client/gateway.gleam:2909`) after `state.live` has
 been refreshed from the registers and before any frame leaves.
 
@@ -403,9 +403,9 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`session_view/session_channel.gleam:1681`) starts the catch-up at the
+`send_queued` (`session_view/session_channel.gleam:1687`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
-`tick` (`session_view/session_channel.gleam:1322`) would have started it. The mark is a
+`tick` (`session_view/session_channel.gleam:1328`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 

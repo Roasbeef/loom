@@ -292,9 +292,11 @@ session's agent wrote. The card sits in its own region directly above the
 composer, in the dock pinned to the bottom of the viewport, drawn from the
 record alone. Its buttons refuse clicks for 600 ms after it appears, so a
 click aimed elsewhere cannot land on Allow. It offers *deny* first and *allow once*
-second, each naming the tool, and never *allow for session*, because a
-remembered grant would outlive the page that gave it. Nothing on the page
-takes focus when a card appears, and Enter in the composer never decides.
+second, each naming the tool, then *allow for this session* where the
+record can be remembered, which is the terminal's rule
+(`approval.rememberable`, [protocol-change/073](../../protocol-change/073-web-session-grants.md)).
+Nothing on the page takes focus when a card appears, and Enter in the
+composer never decides.
 A decision names the escalation ID and the sequence the card was drawn at,
 and `session_view/operator` encodes it only while that exact record is
 still pending. An observer's page draws no cards.
@@ -378,6 +380,25 @@ The remembered grants apply to later calls, not to the call being
 approved; that call resumes with its consumed grants like any once-only
 approval. Running executions and background jobs keep the authority they
 captured when they started.
+
+Each remembered grant also records who approved it
+([protocol-change/073](../../protocol-change/073-web-session-grants.md)).
+The fact keeps `grants`, the only thing dispatch reads, and adds `version: 2`
+and a `remembered` row per grant: the authenticated principal, the kind and
+fingerprint of the credential the approval arrived on (a browser login or the
+terminal's bearer, taken from the connection's binding and never from the
+client), and the commit time. The record is advisory: a missing or damaged row
+reads as `Unknown`, and a fact written before provenance existed is read with
+every grant `Unknown` and every grant still honoured.
+
+`permissions` lists what the session remembers and `permission_forget` removes
+it. Both are refused to an observer, as every mutation is, and a forget is one
+transaction through the session's writer (`api.edit_reserved_facts`) guarded by
+the sequences the listing carried: a grant added or removed since the operator
+looked loses the whole edit as `conflict`, and nothing is written. The general
+fact is rewritten and never deleted, so its sequence keeps guarding the next
+approval. A forget does not reach a call that is already running with the
+authority it captured.
 
 A separate session choice admits only a singleton wall-zero grant.
 `permissions.remembering_action` keys `client/action_grants/<digest>` by
@@ -516,13 +537,13 @@ is `packages/client/src/client/escalate.gleam`.
 | `broker/escalation.gleam` | The pure lifecycle: `Denial`, `Status`, the single-consume state machine, and the rule that an approval may grant only from the wanted diff. |
 | `broker/policy.gleam` | `Grant`, `compose`, `Narrowing`, and `wanted_grants`, which produce the diff a denial carries. |
 | `runtime/escalation.gleam` | The durable record: `CallScope`, `Action`, the `claimed` transition, `asked`, and the total decoder. |
-| `runtime/api.gleam` | The escalation surface: `claim_escalation`, `escalation_cell`, `approve_escalation_at`, `approve_escalation_with_fact_at`, `deny_escalation_at`, `consume_escalation_at`. |
+| `runtime/api.gleam` | The escalation surface: `claim_escalation`, `escalation_cell`, `approve_escalation_at`, `approve_escalation_with_fact_at`, `deny_escalation_at`, `consume_escalation_at`, and `edit_reserved_facts`, the guarded transaction a forget uses. |
 | `runtime/strand_runtime.gleam` | The driver's clearance, which consumes approvals scoped to the call being cleared. |
 | `client/escalate.gleam` | Raising, claiming, parking and spending; `record_id`, `action_digest`, `action_preview`, and the defaults in `default_config`. |
 | `client/wiring.gleam` | `escalating_runner`, the `raise_refusal` seam, and `run_tool`'s capture of standing authority. |
 | `client/grants.gleam` | Decoding and encoding grants between the runtime's opaque JSON and typed `Grant` values. |
 | `client/gateway.gleam` | `approve` and `deny`: the role check, the seq and echo checks, the commit, `stale_approval`; `attached`; the `add_directory` door. |
-| `client/permissions.gleam` | The remembered-permissions fact: eligibility, validation, and the guarded union. |
+| `client/permissions.gleam` | The remembered-permissions fact: eligibility, validation, the guarded union, the provenance of each grant, and the listing and guarded forget of what is remembered. |
 | `client/directories.gleam` | The directory-additions fact and the operator's add door. |
 | `client/hookdecisions.gleam`, `client/hookserve.gleam` | Reading a `PreToolUse` hook as a verdict, and applying it after the harness's clearance. |
 | `tools/tool.gleam` | `authorize_policy`, `RaisedRefusal`, `Escalated`, and `Ctx`'s `grants`, `directory_access` and `raise_refusal` fields. |
