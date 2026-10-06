@@ -26,7 +26,8 @@
 //// ## Flow
 ////
 //// - `line` picks the scanner for a fence's language tag.
-//// - `gleam_line` walks a line's graphemes, handing quotes to `quoted_text`,
+//// - `gleam_line` and `python_line` give `scanned_parts` the language's
+////   `Rules`; it walks a line's graphemes, handing quotes to `quoted_text`,
 ////   runs of spaces to `take_code_characters`, words to
 ////   `take_identifier_characters` and `word_kind`, and digits to
 ////   `take_number_characters`.
@@ -92,8 +93,9 @@ type CodeCharacter {
 
 /// The tokens of one line of a fence tagged `language`.
 ///
-/// A `gleam` tag is scanned as Gleam and a `diff` tag classifies the whole
-/// line by its first characters. Any other tag, or none, is one plain run:
+/// A `gleam` tag is scanned as Gleam, a `python` (or `py`) tag as Python, and
+/// a `diff` tag classifies the whole line by its first characters. Any other
+/// tag, or none, is one plain run:
 /// the scanner does not guess at a language it has no rules for, and a
 /// guess wrong in colour is worse than none. The tag is compared without
 /// case and without surrounding space, and is never used for anything but
@@ -120,6 +122,7 @@ pub fn line(language: Option(String), text: String) -> List(CodePart) {
     Some(name) ->
       case string.lowercase(string.trim(name)) {
         "gleam" -> gleam_line(text)
+        "python" | "py" -> python_line(text)
         "diff" -> [CodePart(text, diff_kind(text))]
         _ -> [CodePart(text, CodePlain)]
       }
@@ -148,9 +151,64 @@ pub fn line(language: Option(String), text: String) -> List(CodePart) {
 /// assert code_tokens.gleam_line("") == []
 /// ```
 pub fn gleam_line(text: String) -> List(CodePart) {
+  scan(text, gleam_rules)
+}
+
+/// The tokens of one line of Python: keywords, single and double quoted
+/// strings, `#` comments and numbers. It is the same scan as Gleam's with
+/// Python's words, and it is as shallow: a triple-quoted string that spans
+/// lines is read a line at a time.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert code_tokens.python_line("x = 'a' # note")
+///   == [
+///     code_tokens.CodePart("x", code_tokens.CodePlain),
+///     code_tokens.CodePart(" ", code_tokens.CodePlain),
+///     code_tokens.CodePart("=", code_tokens.CodePunctuation),
+///     code_tokens.CodePart(" ", code_tokens.CodePlain),
+///     code_tokens.CodePart("'a'", code_tokens.CodeString),
+///     code_tokens.CodePart(" ", code_tokens.CodePlain),
+///     code_tokens.CodePart("# note", code_tokens.CodeComment),
+///   ]
+/// ```
+pub fn python_line(text: String) -> List(CodePart) {
+  scan(text, python_rules)
+}
+
+// What differs between the languages the scanner reads: the characters that
+// begin a comment, the characters that open a string, and the reserved words.
+type Rules {
+  Rules(comment: List(String), quotes: List(String), keywords: List(String))
+}
+
+const gleam_rules =
+  Rules(
+    comment: ["/", "/"],
+    quotes: ["\""],
+    keywords: [
+      "as", "assert", "case", "const", "echo", "fn", "if", "import", "let",
+      "opaque", "panic", "pub", "todo", "type", "use",
+    ],
+  )
+
+const python_rules =
+  Rules(
+    comment: ["#"],
+    quotes: ["\"", "'"],
+    keywords: [
+      "False", "None", "True", "and", "as", "assert", "async", "await", "break",
+      "class", "continue", "def", "del", "elif", "else", "except", "finally",
+      "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+      "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    ],
+  )
+
+fn scan(text: String, rules: Rules) -> List(CodePart) {
   text
   |> string.to_graphemes
-  |> gleam_parts([])
+  |> scanned_parts(rules, [])
 }
 
 /// The class of a whole line of a `diff` fence: file and hunk headers, added
@@ -173,52 +231,75 @@ pub fn diff_kind(line: String) -> CodeKind {
   }
 }
 
-fn gleam_parts(
+fn scanned_parts(
   characters: List(String),
+  rules: Rules,
   accumulated: List(CodePart),
 ) -> List(CodePart) {
   case characters {
     [] -> list.reverse(accumulated)
 
-    // A comment takes the rest of the line, so nothing after `//` is
+    // A comment takes the rest of the line, so nothing after its marker is
     // classified as code.
-    ["/", "/", ..rest] ->
-      list.reverse([
-        CodePart("//" <> string.concat(rest), CodeComment),
+    [character, ..rest] ->
+      case list.take(characters, list.length(rules.comment)) == rules.comment {
+        True ->
+          list.reverse([
+            CodePart(string.concat(characters), CodeComment),
+            ..accumulated
+          ])
+        False -> scanned_character(character, rest, rules, accumulated)
+      }
+  }
+}
+
+// One run that begins with `character`, followed by the scan of what is left.
+// The rules decide which characters open a string; every other class is the
+// same in both languages.
+fn scanned_character(
+  character: String,
+  rest: List(String),
+  rules: Rules,
+  accumulated: List(CodePart),
+) -> List(CodePart) {
+  let class = case list.contains(rules.quotes, character) {
+    True -> QuoteCharacter
+    False -> code_character(character)
+  }
+  case class {
+    QuoteCharacter -> {
+      let #(text, remaining) = quoted_text(rest, character, [character], False)
+      scanned_parts(remaining, rules, [
+        CodePart(text, CodeString),
         ..accumulated
       ])
-
-    [character, ..rest] ->
-      case code_character(character) {
-        QuoteCharacter -> {
-          let #(text, remaining) = quoted_text(rest, [character], False)
-          gleam_parts(remaining, [CodePart(text, CodeString), ..accumulated])
-        }
-        SpaceCharacter -> {
-          let #(tail, remaining) =
-            take_code_characters(rest, SpaceCharacter, [])
-          let text = string.concat([character, ..tail])
-          gleam_parts(remaining, [CodePart(text, CodePlain), ..accumulated])
-        }
-        IdentifierCharacter -> {
-          let #(tail, remaining) = take_identifier_characters(rest, [])
-          let text = string.concat([character, ..tail])
-          gleam_parts(remaining, [
-            CodePart(text, word_kind(text)),
-            ..accumulated
-          ])
-        }
-        NumberCharacter -> {
-          let #(tail, remaining) = take_number_characters(rest, [])
-          let text = string.concat([character, ..tail])
-          gleam_parts(remaining, [CodePart(text, CodeNumber), ..accumulated])
-        }
-        PunctuationCharacter ->
-          gleam_parts(rest, [
-            CodePart(character, CodePunctuation),
-            ..accumulated
-          ])
-      }
+    }
+    SpaceCharacter -> {
+      let #(tail, remaining) = take_code_characters(rest, SpaceCharacter, [])
+      let text = string.concat([character, ..tail])
+      scanned_parts(remaining, rules, [CodePart(text, CodePlain), ..accumulated])
+    }
+    IdentifierCharacter -> {
+      let #(tail, remaining) = take_identifier_characters(rest, [])
+      let text = string.concat([character, ..tail])
+      scanned_parts(remaining, rules, [
+        CodePart(text, word_kind(text, rules)),
+        ..accumulated
+      ])
+    }
+    NumberCharacter -> {
+      let #(tail, remaining) = take_number_characters(rest, [])
+      let text = string.concat([character, ..tail])
+      scanned_parts(remaining, rules, [
+        CodePart(text, CodeNumber),
+        ..accumulated
+      ])
+    }
+    PunctuationCharacter ->
+      scanned_parts(rest, rules, [
+        CodePart(character, CodePunctuation),
+        ..accumulated
+      ])
   }
 }
 
@@ -306,35 +387,29 @@ fn take_number_characters(
 // an unterminated string still returns a run and the scanner never fails.
 fn quoted_text(
   characters: List(String),
+  quote: String,
   accumulated: List(String),
   escaped: Bool,
 ) -> #(String, List(String)) {
   case characters, escaped {
     [], _ -> #(string.concat(list.reverse(accumulated)), [])
     [character, ..rest], True ->
-      quoted_text(rest, [character, ..accumulated], False)
-    ["\\", ..rest], False -> quoted_text(rest, ["\\", ..accumulated], True)
-    ["\"", ..rest], False -> #(
-      string.concat(list.reverse(["\"", ..accumulated])),
+      quoted_text(rest, quote, [character, ..accumulated], False)
+    ["\\", ..rest], False ->
+      quoted_text(rest, quote, ["\\", ..accumulated], True)
+    [character, ..rest], False if character == quote -> #(
+      string.concat(list.reverse([character, ..accumulated])),
       rest,
     )
     [character, ..rest], False ->
-      quoted_text(rest, [character, ..accumulated], False)
+      quoted_text(rest, quote, [character, ..accumulated], False)
   }
 }
 
 // A reserved word is a keyword, a word that opens with a capital is a type
 // or a constructor, and any other word is plain.
-fn word_kind(word: String) -> CodeKind {
-  case
-    list.contains(
-      [
-        "as", "assert", "case", "const", "echo", "fn", "if", "import", "let",
-        "opaque", "panic", "pub", "todo", "type", "use",
-      ],
-      word,
-    )
-  {
+fn word_kind(word: String, rules: Rules) -> CodeKind {
+  case list.contains(rules.keywords, word) {
     True -> CodeKeyword
     False ->
       case string.to_graphemes(word) {

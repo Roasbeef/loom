@@ -123,6 +123,7 @@
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -156,6 +157,7 @@ import session_view/inbox
 import session_view/lane_fold
 import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg
+import session_view/notice_words
 import session_view/operator
 import session_view/outbound
 import session_view/pasted_image
@@ -178,6 +180,7 @@ import session_view/transcript_line.{
 import session_view/transcript_lines
 import session_view/turns
 import session_view/worktree_view
+import web_view/actions
 import web_view/creations
 import web_view/ending.{type Ending}
 import web_view/grants
@@ -186,6 +189,7 @@ import web_view/invites
 import web_view/renames
 import web_view/sessions
 import web_view/shareables
+import web_view/view/archiving
 import web_view/view/changes
 import web_view/view/commentary
 import web_view/view/crumb
@@ -344,6 +348,17 @@ pub const session_controls_path = "0\t3\t2\t3"
 /// once in this long. The read is made on a timer message the lane already
 /// raises (`Ticked`), not on a timer of its own.
 pub const sessions_refresh_ms = 30_000
+
+/// How long the sidebar's activity words stand before the page reads them
+/// again, in milliseconds of the transport's clock. The list changes rarely,
+/// but a running session's state (working, idle, waiting on its owner) changes
+/// within a turn, so the page asks for the activity of the rows it lists on
+/// its own, faster cadence, and no more often than this. Like the list's read
+/// it is made on a `Ticked` the lane already raises, so the interval is a
+/// lower bound, and it runs in the daemon's own task and is bounded by
+/// `sessions.activity_limit`. The page on screen needs none of it: its own row
+/// is read from its lane (`session_activity`).
+pub const activity_refresh_ms = 5000
 
 /// How long a page waits between asks for the strand's live jobs, on the
 /// transport's clock. An ask is made only when the page ticks, so the
@@ -567,6 +582,16 @@ pub type Transport(socket) {
     /// standing again each time it is called, so a page whose grant was
     /// revoked is answered `Declined`.
     worktree: Option(fn(fn(worktrees.Read) -> Nil) -> Nil),
+    /// Asks the daemon to stop, archive or stop-and-archive a session the
+    /// sidebar lists, for an owner's page that confirmed the question the
+    /// sidebar asked (protocol-change/065, the addendum on archiving from the
+    /// sidebar). It is the home's capability (`Start.manage` there): `Some` only
+    /// on an owner's operating page that a fresh `loom ui` exchange opened and
+    /// that was minted for the whole workspace, and the daemon checks all of
+    /// that again when it runs. It must return at once: the daemon runs the
+    /// request in a task of its own, which calls the function it is given with
+    /// the answer, and that call is dispatched as `ManageAnswered`.
+    manage: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
   )
 }
 
@@ -801,9 +826,13 @@ type View(socket) {
     groups: List(sessions.Group),
     listed_at: Option(Int),
     /// What the sidebar's running sessions were last said to be doing, by
-    /// identity. It is asked for after each read of the list, so it runs on the
-    /// list's cadence, and a session with no answer says "running".
+    /// identity. It is asked for after each read of the list and again every
+    /// `activity_refresh_ms`, and a session with no answer says "running".
+    /// The page's own session is never read from here (`session_activity`).
     activity: dict.Dict(String, sessions.Activity),
+    /// When the activity was last asked for on the transport's clock, so the
+    /// next ask on a `Ticked` waits `activity_refresh_ms`.
+    activity_asked_at: Option(Int),
     /// The ticket exchange the daemon minted for the session the operator
     /// chose, which `<loom-switch>` navigates to. It stays until the next
     /// switch replaces it: the ticket is single use and lives 60 seconds, so
@@ -820,6 +849,9 @@ type View(socket) {
     /// What the control that makes a private session shareable is doing. The
     /// question it asks before it starts lives here and nowhere else.
     moving: shareables.Move,
+    /// Where the sidebar's archive action stands: the one row that is asking
+    /// or waiting on the daemon (`view/archiving`).
+    archiving: actions.Stage,
     /// What the rename control is doing, and how many renames have succeeded,
     /// which keys the control's form so a successful one is replaced by an empty
     /// form.
@@ -992,6 +1024,12 @@ pub type Msg(socket) {
   /// page that the daemon did not observe. The read is `Seen`, `Declined` or
   /// `Unreadable`.
   Worktreed(read: worktrees.Read)
+
+  /// The daemon answered a request to archive a sidebar row. It is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot send one and cannot make the page believe
+  /// a session was archived when the daemon did not say so.
+  ManageAnswered(answer: actions.Answer)
 }
 
 /// The Lustre application for one session's observer page.
@@ -1059,6 +1097,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       status: Connecting,
       groups: [],
       listed_at: None,
+      activity_asked_at: None,
       activity: dict.new(),
       departure: None,
       resuming: None,
@@ -1081,6 +1120,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
         Some(_), Some(creations.Shareable) | Some(_), None | None, _ ->
           shareables.Withheld
       },
+      archiving: actions.Calm,
       renaming: case start.transport.rename {
         Some(_) -> renames.Ready
         None -> renames.Withheld
@@ -1238,7 +1278,9 @@ pub fn update(
 
     // The lane's due reading passed: its tick acts.
     Ticked ->
-      stepping(jobs_wanted(model, at), [tick_at(at)], at) |> relisted(at)
+      stepping(jobs_wanted(model, at), [tick_at(at)], at)
+      |> relisted(at)
+      |> reobserved(at)
 
     OlderRequested -> older_at(model, at)
 
@@ -1247,15 +1289,16 @@ pub fn update(
     GoingHome -> going_home(model)
 
     // The sidebar's list is the catalogue's own order and the page groups it,
-    // at most `listed_limit` sessions. Nothing about the lane moved.
+    // at most `listed_limit` sessions. Nothing about the lane moved. The read
+    // that follows counts as the activity's latest ask, so the next `Ticked`
+    // does not ask a second time.
     SessionsListed(entries:) -> {
-      let groups =
-        sessions.grouped(
-          list.take(entries, sessions.listed_limit),
-          model.shared.session,
-        )
+      let groups = sessions.grouped(list.take(entries, sessions.listed_limit))
       #(
-        Model(..model, view: View(..model.view, groups:)),
+        Model(
+          ..model,
+          view: View(..model.view, groups:, activity_asked_at: Some(at)),
+        ),
         observing(model.view.transport, groups),
       )
     }
@@ -1290,6 +1333,8 @@ pub fn update(
     Renamed(answer:) -> #(renamed(model, answer), effect.none())
 
     MadeShareable(answer:) -> #(made_shareable(model, answer), effect.none())
+
+    ManageAnswered(answer:) -> archive_answered(model, answer)
 
     // The observation is the page's own state and changes nothing the lane
     // holds. The next read waits for a newer tool result, so this asks for
@@ -1377,6 +1422,29 @@ fn relisted(
       Model(..model, view: View(..model.view, listed_at: Some(at))),
       effect.batch([effects, listing(model.view.transport)]),
     )
+  }
+}
+
+// Asks for the activity of the sidebar's running sessions again when the last
+// ask was `activity_refresh_ms` or more ago, so a row's word follows its
+// session within seconds and not on the list's thirty. A page that has no
+// list asks nothing. Only `Ticked` comes here, and the answer arrives as
+// `ActivityObserved` from the daemon's task, so the runtime waits on nothing.
+fn reobserved(
+  done: #(Model(socket), Effect(Msg(socket))),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(model, effects) = done
+  let due = case model.view.activity_asked_at {
+    Some(before) -> at - before >= activity_refresh_ms
+    None -> True
+  }
+  case due, model.view.groups {
+    True, [_, ..] -> #(
+      Model(..model, view: View(..model.view, activity_asked_at: Some(at))),
+      effect.batch([effects, observing(model.view.transport, model.view.groups)]),
+    )
+    True, [] | False, _ -> done
   }
 }
 
@@ -3076,6 +3144,185 @@ fn made_shareable(
   }
 }
 
+/// A sidebar row's archive button: the page opens that row's question and
+/// sends nothing (protocol-change/065, the addendum on archiving from the
+/// sidebar). Which action the question is for is read from the row's residency
+/// in the page's own list, so the message names nothing but the session.
+///
+/// A press asks nothing, and opens no question, when the page has no
+/// capability, is not connected, names the session on screen (stopping it would
+/// end the page that asked), names a session the list does not show, or while a
+/// request is out.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.ask_archive(model, "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a71")
+/// ```
+pub fn ask_archive(model: Model(socket), target: String) -> Model(socket) {
+  case archivable(model, target), model.view.archiving {
+    Ok(action), actions.Calm | Ok(action), actions.Confirming(..) ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          archiving: actions.Confirming(target, action),
+          refusal: None,
+        ),
+      )
+    Ok(_), actions.Working(..) | Error(Nil), _ -> model
+  }
+}
+
+// The action a press on `target` means, when this page may ask it at all.
+fn archivable(
+  model: Model(socket),
+  target: String,
+) -> Result(actions.Action, Nil) {
+  use _ <- result.try(option.to_result(model.view.transport.manage, Nil))
+  use _ <- result.try(case model.view.status {
+    Connected -> Ok(Nil)
+    Connecting | Ended(_) -> Error(Nil)
+  })
+  use <- bool.guard(target == model.shared.session, Error(Nil))
+  list.find_map(model.view.groups, fn(group) {
+    list.find(group.entries, fn(entry) { entry.id == target })
+  })
+  |> result.map(archiving.action)
+}
+
+/// The sidebar question's confirm button: the page asks the daemon, and only
+/// for the row that is asking and the action its question was opened for. Any
+/// other press asks nothing, which is what makes a stale or forged
+/// confirmation harmless. The request is the daemon's task, so this returns at
+/// once and the answer arrives as `ManageAnswered`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.confirm_archive(model, "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a71")
+/// ```
+pub fn confirm_archive(
+  model: Model(socket),
+  target: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case
+    archiving.confirmed(model.view.archiving, target),
+    model.view.transport.manage,
+    model.view.status
+  {
+    Ok(action), Some(ask), Connected -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          archiving: actions.Working(target, action),
+          refusal: None,
+          outcome: working_words(action),
+        ),
+      ),
+      managing(ask, action, target),
+    )
+    Ok(_), _, _ | Error(Nil), _, _ -> #(model, effect.none())
+  }
+}
+
+// What the notice says while the request is out: a running row is stopped
+// first, so only that action says so.
+fn working_words(action: actions.Action) -> String {
+  case action {
+    actions.StopArchive -> "Working on it. A running session is stopped first."
+    actions.Archive | actions.Stop | actions.Delete -> "Working on it."
+  }
+}
+
+/// The sidebar question's Cancel: the row is as it was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.cancel_archive(model)
+/// ```
+pub fn cancel_archive(model: Model(socket)) -> Model(socket) {
+  case model.view.archiving {
+    actions.Confirming(..) ->
+      Model(..model, view: View(..model.view, archiving: actions.Calm))
+    actions.Calm | actions.Working(..) -> model
+  }
+}
+
+// Starts the daemon's task and returns at once. The answer arrives later as
+// `ManageAnswered`, dispatched from the task's own process.
+fn managing(
+  ask: fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil,
+  action: actions.Action,
+  target: String,
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  ask(action, target, fn(answer) { dispatch(ManageAnswered(answer)) })
+}
+
+// The daemon's answer ends the request, says what happened in the composer's
+// notice in fixed words, and reads the list again, so the row is gone or
+// changed in what the page draws. An answer that arrives when no request is
+// out was not asked for and is dropped.
+fn archive_answered(
+  model: Model(socket),
+  answer: actions.Answer,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let relist = listing(model.view.transport)
+  case model.view.archiving, answer {
+    actions.Working(..), actions.Done(action:) -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          archiving: actions.Calm,
+          refusal: None,
+          outcome: actions.done_words(action),
+        ),
+      ),
+      relist,
+    )
+    actions.Working(..), actions.Declined(reason:) -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          archiving: actions.Calm,
+          refusal: Some(actions.reason_words(reason)),
+          outcome: "",
+        ),
+      ),
+      relist,
+    )
+    actions.Calm, _ | actions.Confirming(..), _ -> #(model, effect.none())
+  }
+}
+
+/// Where the sidebar's archive action stands, for the operator's view to draw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.archive_stage(model) == actions.Calm
+/// ```
+pub fn archive_stage(model: Model(socket)) -> actions.Stage {
+  model.view.archiving
+}
+
+/// Whether the daemon handed this page the capability to archive, which is the
+/// whole of whether its sidebar draws the action.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.may_archive(model) == False
+/// ```
+pub fn may_archive(model: Model(socket)) -> Bool {
+  option.is_some(model.view.transport.manage)
+}
+
 /// What the make-shareable control is doing, for the operator's view to draw.
 ///
 /// ## Examples
@@ -3623,17 +3870,55 @@ pub fn session_groups(model: Model(socket)) -> List(sessions.Group) {
   model.view.groups
 }
 
-/// What the sidebar's running sessions were last said to be doing, by identity.
+/// What the sidebar's running sessions are doing, by identity. The other
+/// rows carry what the daemon's activity read last said, a few seconds old at
+/// most. The page's own session is the exception: the page is its lane, so the
+/// row is read from the strands' statuses it already holds (`live_activity`)
+/// and never lags the Strands panel beside it. Before the first capture the
+/// page knows nothing of its own session and the read's answer stands.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(groups, id, bars, component.session_activity(model), Opening, resume)
+/// // sidebar.view(groups, id, component.session_activity(model), Opening, resume)
 /// ```
 pub fn session_activity(
   model: Model(socket),
 ) -> dict.Dict(String, sessions.Activity) {
-  model.view.activity
+  case live_activity(model) {
+    Some(own) -> dict.insert(model.view.activity, model.shared.session, own)
+    None -> model.view.activity
+  }
+}
+
+// What the page's own session is doing, from the strip it draws. The rule is
+// the daemon's activity read's, so the page's row and the home's row for the
+// same session say the same word: a strand waiting on a decision, or a main
+// strand whose last run failed with nothing else running, needs the person;
+// otherwise a strand with an operation (working, or waiting on a provider
+// retry) is working; otherwise idle. A page whose strip lists no strand has
+// no capture yet and says nothing.
+fn live_activity(model: Model(socket)) -> Option(sessions.Activity) {
+  let listed = chips(model.view.strip)
+  let statuses = list.map(listed, fn(chip) { chip.line.status })
+  let working =
+    list.any(statuses, fn(status) {
+      status == agent_view.Working || status == agent_view.Waiting
+    })
+  let main_failed = case model.view.strip.chips {
+    [main, ..] -> main.line.status == agent_view.Failed
+    [] -> False
+  }
+  case listed {
+    [] -> None
+    [_, ..] ->
+      case needing(model) > 0, working, main_failed {
+        True, _, _ -> Some(sessions.NeedsYou)
+        False, True, _ -> Some(sessions.Working)
+        False, False, True -> Some(sessions.NeedsYou)
+        False, False, False -> Some(sessions.Idle)
+      }
+  }
 }
 
 /// The agent strip as the page draws it.
@@ -3769,8 +4054,19 @@ pub fn notice(model: Model(socket)) -> Notice {
   case model.view.refusal, model.shared.answer, model.view.outcome {
     Some(text), _, _ -> Warned(text)
     None, "", "" -> Quiet
-    None, "", text -> Said(text)
-    None, text, _ -> Said(text)
+    None, "", text -> said(text)
+    None, text, _ -> said(text)
+  }
+}
+
+// The words of an outcome as a notice. An outcome that only says the daemon
+// holds the input is left out: the lane draws the held row with how it will
+// run, and a footer word beside it repeated that and outlived the row once
+// it settled.
+fn said(text: String) -> Notice {
+  case notice_words.holds(text) {
+    True -> Quiet
+    False -> Said(text)
   }
 }
 
@@ -4078,6 +4374,7 @@ pub fn panel(
         Unheld -> changes.Partial
       },
       model.view.worktree,
+      option.map(model.view.label, fn(label) { label.workspace }),
     ),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),

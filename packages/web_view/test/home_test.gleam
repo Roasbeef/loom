@@ -220,14 +220,14 @@ fn lists(model: home.Model, session: String) -> Bool {
 }
 
 // The first read answers when the timer exists, the sessions are grouped by
-// workspace with the newest workspace first, and the sessions of a workspace
-// run newest first.
+// workspace in alphabetical order, and the sessions of a workspace run newest
+// first.
 pub fn the_page_lists_the_sessions_grouped_by_workspace_test() {
   let #(model, _) = opened(start())
   assert home.status(model) == home.Connected
   assert list.map(home.groups(model), fn(group) { group.workspace })
-    == ["/src/weft", "/src/notes", "/src/loom"]
-  let assert [_, _, loom] = home.groups(model)
+    == ["/src/loom", "/src/notes", "/src/weft"]
+  let assert [loom, _, _] = home.groups(model)
   assert list.map(loom.entries, fn(entry) { entry.id }) == ["B", "A"]
 }
 
@@ -1622,7 +1622,7 @@ pub fn the_owners_fresh_home_draws_the_actions_that_fit_each_row_test() {
 
   // Two running rows and two saved ones.
   assert list.length(string.split(html, ">Stop<")) == 3
-  assert list.length(string.split(html, ">Archive<")) == 3
+  assert list.length(string.split(html, ">Archive<")) == 5
   assert list.length(string.split(html, ">Delete<")) == 3
   assert string.contains(html, "actionable")
   assert !string.contains(html, "Delete this session? This cannot be undone.")
@@ -1630,7 +1630,7 @@ pub fn the_owners_fresh_home_draws_the_actions_that_fit_each_row_test() {
   let #(plain, _) = opened(start())
   let with = handlers(home.view(owner))
   let without = handlers(home.view(plain))
-  assert list.length(with) == list.length(without) + 6
+  assert list.length(with) == list.length(without) + 10
   assert list.all(with, beneath_the_two_regions)
   assert list.all(without, fn(key) { list.contains(with, key) })
 
@@ -1765,7 +1765,7 @@ pub fn a_blocked_row_draws_archive_and_delete_test() {
   assert string.contains(html, "needs attention")
   assert string.contains(html, "title=\"This session was never finished")
   assert !string.contains(html, ">Stop<")
-  assert list.length(string.split(html, ">Archive<")) == 2
+  assert list.length(string.split(html, ">Archive<")) == 3
   assert list.length(string.split(html, ">Delete<")) == 2
 
   let #(plain, _) = opened(home.Start(..start(), sessions: listed))

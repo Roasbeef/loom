@@ -79,6 +79,7 @@ fn started() -> Page {
       rename: None,
       shareable: None,
       worktree: None,
+      manage: None,
     )
   let start =
     component.Start(

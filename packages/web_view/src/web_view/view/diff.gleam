@@ -2,7 +2,10 @@
 //// through: the opened edit step in the transcript and the Changes tab.
 ////
 //// `session_view/diff_view` reads the diff into lines and decides each one's
-//// kind; this module draws a line as its own element, a gutter of the old and
+//// kind; a whole diff's file header lines (`diff --git`, `index`, `---`,
+//// `+++`) are not drawn, since the file row above a diff already names the
+//// file and the change and the object ids are noise to a reader. This module
+//// draws a line as its own element, a gutter of the old and
 //// new line numbers and the sign, and the text. An added line is tinted green
 //// with a green `+`, a removed line red with a red `−`, a hunk header sits in
 //// a quiet band, and a context line is plain. The box scrolls sideways, so a
@@ -35,7 +38,7 @@ import session_view/diff_view.{type Kind, type Line}
 pub fn view(lines: List(Line), cut: Int) -> Element(message) {
   html.div(
     [attribute.class("diff")],
-    list.append(list.map(lines, row), note(cut)),
+    list.append(list.filter_map(lines, row), note(cut)),
   )
 }
 
@@ -51,28 +54,33 @@ pub fn of_text(text: String) -> Element(message) {
   view(lines, cut)
 }
 
-// One line. A hunk header, a file header and the no-newline note are their
-// text alone; the others carry the two numbers and the sign before it, in one
+// One line, or nothing for a file header. A hunk header and the no-newline
+// note are their text alone; the others carry the two numbers and the sign before it, in one
 // gutter cell. The gutter is the part of a row that stays at the box's left
 // edge while a long line scrolls (`position:sticky`), so it is one element
 // and not three that would each need an offset to stack against.
-fn row(line: Line) -> Element(message) {
+fn row(line: Line) -> Result(Element(message), Nil) {
   case line.kind {
+    diff_view.FileHeader -> Error(Nil)
     diff_view.Added | diff_view.Removed | diff_view.Context ->
-      html.div([attribute.class("diff-row"), kind_class(line.kind)], [
-        html.span([attribute.class("diff-gutter")], [
-          number(line.old),
-          number(line.new),
-          html.span([attribute.class("diff-sign")], [
-            html.text(sign(line.kind)),
+      Ok(
+        html.div([attribute.class("diff-row"), kind_class(line.kind)], [
+          html.span([attribute.class("diff-gutter")], [
+            number(line.old),
+            number(line.new),
+            html.span([attribute.class("diff-sign")], [
+              html.text(sign(line.kind)),
+            ]),
           ]),
+          html.span([attribute.class("diff-text")], [html.text(line.text)]),
         ]),
-        html.span([attribute.class("diff-text")], [html.text(line.text)]),
-      ])
-    diff_view.Hunk | diff_view.FileHeader | diff_view.NoNewline ->
-      html.div([attribute.class("diff-row"), kind_class(line.kind)], [
-        html.span([attribute.class("diff-text")], [html.text(line.text)]),
-      ])
+      )
+    diff_view.Hunk | diff_view.NoNewline ->
+      Ok(
+        html.div([attribute.class("diff-row"), kind_class(line.kind)], [
+          html.span([attribute.class("diff-text")], [html.text(line.text)]),
+        ]),
+      )
   }
 }
 

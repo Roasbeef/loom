@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3936`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3984`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -693,9 +693,14 @@ worktree's name, whose `title` is the whole path. The sidebar lists running sess
 and keeps the saved ones behind a quiet "N saved" line: they stay in the
 document, so the session switcher still lists them, and `<loom-saved>` shows
 them in place in the browser and remembers the choice in local storage. The row of the session
-on screen also carries one thin bar per live strand in the strand's hue, drawn
-from the strip the page already has and pulsing while the strand works; the
-bars are decoration with no handler and no focus. An empty `nav` child sits
+on screen says what it is doing from the page's own lane (a strand
+waiting on a decision, or main's failed last run, needs the person; a strand
+with an operation is working; otherwise idle), so it never lags the Strands
+panel; the other rows say what the daemon's activity read last answered, which
+the component repeats every `activity_refresh_ms` (5 s) on a tick, apart from
+the list's 30 s. Projects are listed alphabetically by directory name, so
+selecting another session never reorders them, and an idle dot is the same quiet
+colour on the home and in the sidebar. An empty `nav` child sits
 above the first group for the app's navigation. The entry carries
 name, workspace, creation time and residency, and nothing of the registration's
 path, key or configuration.
@@ -1130,6 +1135,20 @@ refuse a session a process still holds (`Running`, in the words "That session is
 still running. Stop it first."). `HomeAttachment.sessions_directory` is the
 daemon's own directory a delete removes from. `ui_route_test` drives each action
 against a real registry and every refusal.
+
+The sidebar offers the owner the same actions on its own rows (protocol-change/065,
+the addendum on archiving from the sidebar). `view/archiving` draws a quiet button
+after each row's own button, `Archive` on a saved or blocked row and `Stop and
+archive` on a running one, which the stylesheet shows on hover and on keyboard
+focus and never removes from the tab order. A press opens the row's question and
+asks nothing; the question names both steps for a running row and the session as a
+text node. The confirm asks for `actions.StopArchive` or `actions.Archive`, chosen
+by the server from the row's residency, as one `manage_task`: the daemon stops the
+session, waits for it to be saved, and archives it. The home and the session page
+are handed the same capability by `home_manage_capability` (the session page's is
+`Transport.manage`, dispatched as `ManageAnswered`), so a bookmark's page, a member's
+page, a read-only link and a page of one session draw nothing. The session on screen
+has no button, with the reason in its `title`. `sidebar_archive_test` reads it.
 
 ### The browser login and the home's sign-ins
 

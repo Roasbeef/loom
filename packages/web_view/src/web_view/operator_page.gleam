@@ -61,6 +61,7 @@ import web_view/component
 import web_view/image
 import web_view/invites
 import web_view/sessions
+import web_view/view/archiving
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/resume
@@ -141,6 +142,19 @@ pub type Msg(socket) {
   /// from the question (`component.make_shareable`), and the daemon decides again
   /// whether the page's principal is the owner.
   MakingShareable
+
+  /// A sidebar row's archive button: the page opens that row's question and
+  /// sends nothing. The identity is the catalogue's, and which action the
+  /// question is for is the row's residency in the page's list, never the
+  /// message (protocol-change/065, the addendum on archiving from the sidebar).
+  AskingArchive(session: String)
+
+  /// The sidebar question's confirm: the page asks the daemon, only for the row
+  /// and the action that question was opened for.
+  ConfirmingArchive(session: String)
+
+  /// The sidebar question's Cancel.
+  CancellingArchive
 }
 
 /// The Lustre application for one session's operator page.
@@ -192,6 +206,12 @@ pub fn update(
     CancellingShareable -> #(component.disarm_shareable(model), effect.none())
     MakingShareable -> component.make_shareable(model)
     Renaming(name:) -> component.renaming(model, name)
+    AskingArchive(session:) -> #(
+      component.ask_archive(model, session),
+      effect.none(),
+    )
+    ConfirmingArchive(session:) -> component.confirm_archive(model, session)
+    CancellingArchive -> #(component.cancel_archive(model), effect.none())
   }
 
   // A notice that changed is a new element, which fades from the start. One
@@ -312,11 +332,28 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
       shell.Listed(sidebar.view(
         groups,
         component.session_id(model),
-        sidebar.bars(component.strip(model)),
         component.session_activity(model),
         Opening,
         resume.Offered(Resuming, component.resuming_session(model)),
+        archive_offer(model),
       ))
+  }
+}
+
+// What the sidebar offers for archiving a row: the quiet button and its
+// question on a page the daemon handed the capability, and nothing otherwise.
+fn archive_offer(
+  model: component.Model(socket),
+) -> archiving.Archiving(Msg(socket)) {
+  case component.may_archive(model) {
+    True ->
+      archiving.Offered(
+        ask: AskingArchive,
+        confirm: ConfirmingArchive,
+        cancel: CancellingArchive,
+        stage: component.archive_stage(model),
+      )
+    False -> archiving.Never
   }
 }
 

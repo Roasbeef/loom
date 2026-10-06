@@ -13,7 +13,7 @@
 
 import gleam/erlang/process
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import lane_fixture
 import lustre/element
@@ -56,7 +56,12 @@ fn board(
 }
 
 fn drawn(read: worktrees.Read) -> String {
-  element.to_string(changes.view(changes_view.empty(), changes.Whole, read))
+  element.to_string(changes.view(
+    changes_view.empty(),
+    changes.Whole,
+    read,
+    None,
+  ))
 }
 
 // A workspace of a Git checkout draws the daemon's observation: the heading
@@ -84,7 +89,7 @@ pub fn an_observed_checkout_draws_the_diff_against_head_test() {
     "<details data-lustre-key=\"file:src/a.gleam\" class=\"changes-file\" open>",
   )
   assert string.contains(html, "2 commits since session start")
-  assert !string.contains(html, "No edits in this session yet.")
+  assert !string.contains(html, "No edits yet.")
 }
 
 // A repository before its first commit says so in the label, and a clean
@@ -139,8 +144,8 @@ pub fn the_commits_since_the_start_are_a_section_test() {
 // that says why. A page that was never given the read draws no sentence.
 pub fn a_read_that_gave_no_board_falls_back_with_a_reason_test() {
   let not_checkout = drawn(worktrees.Seen(board("not_repository", [], 0)))
-  assert string.contains(not_checkout, "not a git checkout")
-  assert string.contains(not_checkout, "No edits in this session yet.")
+  assert string.contains(not_checkout, "Not a git checkout")
+  assert string.contains(not_checkout, "No edits yet.")
   assert !string.contains(not_checkout, "against HEAD")
 
   assert string.contains(
@@ -154,9 +159,9 @@ pub fn a_read_that_gave_no_board_falls_back_with_a_reason_test() {
 
   list.each([worktrees.Withheld, worktrees.Unread], fn(read) {
     let html = drawn(read)
-    assert string.contains(html, "No edits in this session yet.")
+    assert string.contains(html, "No edits yet.")
     assert !string.contains(html, "may not read")
-    assert !string.contains(html, "not a git checkout")
+    assert !string.contains(html, "Not a git checkout")
   })
 }
 
@@ -383,4 +388,32 @@ pub fn the_answer_is_drawn_on_both_pages_and_a_refusal_replaces_it_test() {
   assert !string.contains(html, "shell.txt")
   assert string.contains(html, "a.gleam")
   assert string.contains(html, "This page may not read the workspace")
+}
+
+// A workspace that is not a checkout draws one sentence that already says
+// shell changes are not shown, and not the scope line a second time: the empty
+// pane is that sentence and "No edits yet.", so the two never contradict.
+pub fn a_non_checkout_says_its_scope_once_test() {
+  let html = drawn(worktrees.Seen(board("not_repository", [], 0)))
+
+  assert string.contains(html, "shell changes are not shown")
+  assert !string.contains(html, "This tab lists edits")
+  assert !string.contains(html, "No edits in this session")
+}
+
+// The file lines of a whole git diff are not drawn: the row above the diff
+// names the file, and the object ids are noise. The hunk header and the lines
+// stay, and the empty string a final newline leaves is not a row.
+pub fn a_git_diff_draws_no_preamble_and_no_trailing_row_test() {
+  let html =
+    drawn(worktrees.Seen(board("head", [text_file("f", edit <> "\n")], 0)))
+
+  assert string.contains(html, "diff-row diff-hunk")
+  assert string.contains(html, "diff-row diff-added")
+  assert !string.contains(html, "diff --git")
+  assert !string.contains(html, "index 1..2")
+  assert !string.contains(html, "--- a/f")
+  assert !string.contains(html, "+++ b/f")
+  assert !string.contains(html, "diff-file")
+  assert list.length(string.split(html, "diff-row")) == 4
 }

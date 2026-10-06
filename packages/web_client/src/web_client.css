@@ -430,12 +430,6 @@
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}
-  /* The strand bars on the current row: one thin bar per live strand in its
-     hue, pulsing while the strand works. They are decoration and take no
-     pointer or focus. */
-  .dots{flex:0 0 auto;display:flex;gap:2px;align-items:center;align-self:center;margin-left:auto;pointer-events:none;}
-  .bar{display:block;width:4px;height:14px;border-radius:2px;background:var(--hue);opacity:.5;}
-  .bar.w{opacity:1;animation:pulse 1.4s infinite;}
   @keyframes pulse{50%{opacity:.35;}}
   /* A row that opens its session is a button filling the row, drawn like the
      row's text until it is hovered or focused. */
@@ -443,6 +437,30 @@
   .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
   .session-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  /* The archive action of a row (web_view/view/archiving): a quiet button laid
+     over the right end of the row, so the row's own button keeps its place. It
+     is drawn on hover and on keyboard focus and stays in the tab order when
+     hidden, so the keyboard reaches it; while hidden it takes no pointer, so the
+     row's own button gets every click. Touch has no hover, so there it sits in
+     the row. Its question replaces the row, on a tinted background with a tinted
+     hairline, and neither draws a shadow or an edge bar. */
+  li.session{position:relative;}
+  .session-archive{position:absolute;top:50%;right:4px;transform:translateY(-50%);margin:0;padding:1px 8px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);white-space:nowrap;cursor:pointer;opacity:0;pointer-events:none;}
+  li.session:hover>.session-archive,li.session:focus-within>.session-archive,.session-archive:focus-visible{opacity:1;pointer-events:auto;}
+  .session-archive:hover:not(:disabled){background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));color:var(--color-fg);}
+  .session-archive:disabled{opacity:.6;pointer-events:none;cursor:default;}
+  .session-archive:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  @media (hover:none){
+    .session-archive{position:static;transform:none;align-self:center;margin:0 4px 0 0;opacity:1;pointer-events:auto;}
+  }
+  li.session.confirming{display:block;padding:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
+  .session-confirm-lead{margin:0;font:500 12px/1.4 var(--font-sans);}
+  .session-confirm-name{margin:2px 0 8px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .session-confirm-actions{display:flex;flex-wrap:wrap;gap:6px;}
+  .session-confirm-actions button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .session-confirm-actions button:hover{background:var(--color-bg-raised);}
+  .session-confirm-actions .session-confirm-go{border-color:color-mix(in srgb,var(--color-current) 55%,transparent);background:color-mix(in srgb,var(--color-current) 14%,transparent);}
+  .session-confirm-actions button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   /* The home page (web_view/home, protocol-change/065): the same frame with
      no strand panel. The frame's element draws the panel's column and its
      button around an empty slot, so the host's `loom-home` class leaves both
@@ -497,7 +515,8 @@
   .home-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .home-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .home-glyph{flex:0 0 auto;width:1em;text-align:center;color:var(--color-fg-quiet);}
-  .home-row.live .home-glyph,.home-row.idle .home-glyph,.home-row.working .home-glyph,.home-row.opening .home-glyph{color:var(--color-current);}
+  .home-row.live .home-glyph,.home-row.working .home-glyph,.home-row.opening .home-glyph{color:var(--color-current);}
+  .home-row.idle .home-glyph{color:var(--color-fg-quiet);}
   .home-row.working .home-glyph{animation:loom-pulse 1.4s ease-in-out infinite;}
   .home-row.needs-you .home-glyph{color:var(--color-signal-text);}
   .home-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
@@ -511,10 +530,10 @@
      the group by its count (`acts-N`). Below 640px the group moves under the
      row's words instead of over them. */
   li.home-row.actionable{position:relative;}
-  li.home-row.acts-1 .home-text{padding-right:84px;}
-  li.home-row.acts-2 .home-text{padding-right:150px;}
-  li.home-row.acts-3 .home-text{padding-right:220px;}
-  .home-acts{position:absolute;top:50%;right:34px;transform:translateY(-50%);display:flex;gap:6px;}
+  li.home-row.acts-1 .home-text{padding-right:96px;}
+  li.home-row.acts-2 .home-text{padding-right:162px;}
+  li.home-row.acts-3 .home-text{padding-right:232px;}
+  .home-acts{position:absolute;top:50%;right:46px;transform:translateY(-50%);display:flex;gap:6px;}
   .home-rename,.home-act{margin:0;padding:2px 8px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
   .home-rename:hover,.home-act:hover:not(:disabled){background:var(--color-bg-raised);color:var(--color-fg);}
   .home-act-delete:hover:not(:disabled){border-color:color-mix(in srgb,var(--color-danger) 45%,transparent);background:color-mix(in srgb,var(--color-danger) 10%,var(--color-bg-raised));color:var(--color-danger-text);}
@@ -934,6 +953,9 @@
   /* A reasoning row's one-line preview (view/fold_row.reasoning): the first
      line of what the model wrote, quieter than the heading it follows. */
   .thought .row-head .preview{flex:1 1 0;opacity:.75;}
+  /* An open reasoning row shows the whole text beneath its line, which begins
+     with the same sentence, so the line drops its preview. */
+  loom-expand.thought:state(open) .row-head .preview{display:none;}
   .row-head .change{display:inline-flex;flex:0 0 auto;gap:6px;font:12px/1.5 var(--font-mono);}
   .change .added{color:var(--color-added-text);}
   .change .removed{color:var(--color-danger-text);}
@@ -1329,8 +1351,9 @@
     aside.panel{width:auto;height:auto;max-height:132px;padding:8px 16px;}
     /* Only the Strands pane is a row of cards sized for 132px. The Changes,
        Session and Trace panes hold prose and tables, so they take up to
-       45vh and scroll inside it. */
-    loom-shell:not(:state(tab-strands)) aside.panel{max-height:45vh;}
+       30vh and scroll inside it, which leaves the conversation most of the
+       screen under a diff that is open. */
+    loom-shell:not(:state(tab-strands)) aside.panel{max-height:30vh;}
     aside.panel > section.nudges{display:none;}
     .pane-strands .panel-title,.pane-strands > section.commentary{display:none;}
     nav.agent-strip{overflow-x:auto;scrollbar-width:thin;}

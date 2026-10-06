@@ -539,7 +539,14 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `rename_task` does. `HomeAttachment.sessions_directory` is what a delete
   removes from. No admission is added: the buttons' clicks are beneath
   `home.table_path`. `admin.Start.ends_at` is read once in `admit_admin` from
-  `open()` (the table's monotonic clock) and carried to the wall clock.
+  `open()` (the table's monotonic clock) and carried to the wall clock. The
+  sidebar's archive action (protocol-change/065, the addendum on archiving from
+  the sidebar) adds `actions.StopArchive`, which `manage_for` runs as `stop_for`
+  then `archive_for` in the one task, and hands the session page the same
+  capability (`Transport.manage`, made in `upgrade` by `home_manage_capability`
+  over `page_standing`), so a bookmark's page, a member's and a page of one session
+  (`OneSession` reach) have none. `server.Attachment` gains `sessions_directory`
+  for it.
 - **A session's subtitle.** The hub reports the first accepted human prompt on
   the main strand through `Options.first_prompt` (`gateway.with_first_prompt`,
   filled from `serve.Settings.first_prompt`, which `daemon/main` sets):

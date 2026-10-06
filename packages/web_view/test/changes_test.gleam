@@ -11,7 +11,7 @@
 
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import lane_fixture
 import lustre/element
@@ -23,7 +23,7 @@ import web_view/view/changes
 import web_view/worktrees
 
 fn drawn(board: changes_view.Board) -> String {
-  element.to_string(changes.view(board, changes.Whole, worktrees.Withheld))
+  element.to_string(changes.view(board, changes.Whole, worktrees.Withheld, None))
 }
 
 fn row(kind: changes_view.Kind, text: String) -> changes_view.Row {
@@ -78,7 +78,7 @@ pub fn no_edits_draw_the_heading_and_a_line_saying_so_test() {
 
   assert string.contains(html, "pane pane-changes")
   assert string.contains(html, "Changes</h2>")
-  assert string.contains(html, "No edits in this session yet.")
+  assert string.contains(html, "No edits yet.")
   assert !string.contains(html, "changes-file")
 }
 
@@ -91,22 +91,24 @@ pub fn an_empty_board_says_how_much_it_searched_test() {
       changes_view.empty(),
       changes.Whole,
       worktrees.Withheld,
+      None,
     ))
   let partial =
     element.to_string(changes.view(
       changes_view.empty(),
       changes.Partial,
       worktrees.Withheld,
+      None,
     ))
 
-  assert string.contains(whole, "No edits in this session yet.")
+  assert string.contains(whole, "No edits yet.")
   assert !string.contains(whole, "Load older")
   assert string.contains(
     partial,
     "No edits in the loaded part of this session.",
   )
   assert string.contains(partial, "Load older")
-  assert !string.contains(partial, "No edits in this session yet.")
+  assert !string.contains(partial, "No edits yet.")
 
   list.each([whole, partial], fn(html) {
     assert string.contains(html, "edits made through the edit and write tools")
@@ -240,7 +242,7 @@ fn observer(model) -> String {
 pub fn a_page_with_no_edit_draws_the_empty_pane_test() {
   let model = page([lane_fixture.captured(10, None)])
   list.each([operator(model), observer(model)], fn(html) {
-    assert string.contains(html, "No edits in this session yet.")
+    assert string.contains(html, "No edits yet.")
     assert !string.contains(html, "changes-file")
   })
 }
@@ -333,4 +335,29 @@ fn in_order(haystack: String, needles: List(String)) -> Bool {
         Error(Nil) -> False
       }
   }
+}
+
+// A path under the workspace is drawn relative to it, so the line is not the
+// full absolute path wrapped over two rows. A path elsewhere, or one that only
+// shares the workspace's leading characters, is drawn as the edit named it.
+pub fn a_path_under_the_workspace_is_drawn_relative_to_it_test() {
+  let html =
+    element.to_string(changes.view(
+      board([
+        file("/work/ws/src/m.py", []),
+        file("/work/ws2/n.py", []),
+        file("/etc/hosts", []),
+      ]),
+      changes.Whole,
+      worktrees.Withheld,
+      Some("/work/ws"),
+    ))
+
+  assert string.contains(html, ">src/m.py</span>")
+  assert string.contains(html, ">/work/ws2/n.py</span>")
+  assert string.contains(html, ">/etc/hosts</span>")
+  assert !string.contains(html, ">/work/ws/src/m.py</span>")
+
+  // The key stays the whole path, so display never merges two files.
+  assert string.contains(html, "data-lustre-key=\"file:/work/ws/src/m.py\"")
 }

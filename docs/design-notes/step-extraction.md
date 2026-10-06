@@ -478,7 +478,7 @@ becomes two shared calls in one Lustre message, `Arrived` then
 wakes on arrival and still one render per burst. `rearm` stays as it is,
 reading the lane's `next_due`.
 `operator_page` keeps its `Observed` and `effect.map` layering over the
-component (`web_view/operator_page.gleam:156` (`update`)); its
+component (`web_view/operator_page.gleam:172` (`update`)); its
 `Submitted` and `Decided` become `Acted(Submit(..))` and
 `Acted(Decide(..))` after the page's own checks on the draft's length and
 emptiness, which are the page socket's limits and not the session's.

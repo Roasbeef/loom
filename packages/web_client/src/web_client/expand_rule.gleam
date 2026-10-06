@@ -50,6 +50,11 @@ pub fn kind(value: String) -> Kind {
   }
 }
 
+/// The custom state the element holds while its body is shown, which the
+/// stylesheet reads: a reasoning row's one-line preview repeats the first
+/// line of the body, so it is hidden once the body is open.
+pub const open_state = "open"
+
 /// How long after a live row leaves the page a settled row that arrives
 /// still takes its open state, in milliseconds. The two are one patch apart,
 /// in either order.

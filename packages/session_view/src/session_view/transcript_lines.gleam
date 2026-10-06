@@ -3251,9 +3251,9 @@ fn advisor_heading(value: AdvisorMessage) -> String {
     Nudges(body:) ->
       "Advisor · nudges delivered (" <> int.to_string(nudge_count(body)) <> ")"
 
-    Feed(..) -> "advisor feed"
+    Feed(..) -> "Recent work sent to the advisor for review"
 
-    GoalFeed(..) -> "advisor goal feed"
+    GoalFeed(..) -> "Goal evidence sent to the advisor for review"
 
     Continuation(..) -> "goal continuation"
   }
@@ -3264,10 +3264,13 @@ fn advisor_heading(value: AdvisorMessage) -> String {
 // heading.
 fn advisor_preview(value: AdvisorMessage) -> String {
   case value {
-    Advice(body:) | Feed(body:) | GoalFeed(body:) | Continuation(body:) ->
+    Advice(body:) | Continuation(body:) ->
       ": " <> compact(opening_line(body), advisor_preview_limit)
 
-    Nudges(..) -> ""
+    // A feed's body opens on the speaker label of the first message it
+    // carries (`user:`), which is the engine's word and says nothing to a
+    // reader, so the heading stands alone and the body is behind it.
+    Feed(..) | GoalFeed(..) | Nudges(..) -> ""
   }
 }
 

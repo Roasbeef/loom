@@ -86,3 +86,16 @@ pub fn a_long_diff_is_cut_and_the_rest_counted_test() {
   assert diff.cut == 26
   assert string.contains(int.to_string(diff.cut), "26")
 }
+
+// A diff's text ends in a newline, which splits into one empty string at the
+// end. That is the end of the text and not a context row.
+pub fn a_final_newline_is_not_a_line_test() {
+  let diff = diff_view.parse("@@ -1 +1 @@\n-a\n+b\n")
+  assert list.length(diff.lines) == 3
+  assert diff.cut == 0
+  assert list.length(diff_view.of_lines(["@@ -1 +1 @@", "-a", "+b", ""])) == 3
+
+  // A context line that is empty in the file is a single space in the diff,
+  // and stays a line.
+  assert list.length(diff_view.parse("@@ -1,2 +1,2 @@\n \n-a\n+b").lines) == 4
+}

@@ -47,11 +47,11 @@
 //// identity's first eight characters, as the heading names it. The classes
 //// are complete literals, so Tailwind finds them.
 ////
-//// The session on screen also carries one thin bar per live strand, in the
-//// strand's hue, pulsing while the strand works. The bars are decoration
-//// drawn from the strip the page already has (`bars`): no handler, no focus,
-//// hidden from assistive technology, and drawn on the current row only, so a
-//// page draws nothing about another session's strands.
+//// The session on screen draws the same activity word and dot as every other
+//// running row, but its state comes from the page's own lane (strand statuses
+//// and pending approvals) and not from the periodic activity read, so it never
+//// lags the session it names (`component.session_activity`). The strands'
+//// own state is the Strands panel's to draw, not this column's.
 ////
 //// Above the first group sits a `nav` slot for the app's navigation. A
 //// session page leaves it `element.none()`, which still holds its place, so
@@ -62,8 +62,15 @@
 //// for every session. No row is the current one on the home, so each running
 //// session's row is a button that sends the caller's message and each saved
 //// session's is text. The column, the groups and the row's words are written
-//// once, and the two pages differ only in the nav entry, the strand bars and
-//// which session is current.
+//// once, and the two pages differ only in the nav entry and which
+//// session is current.
+////
+//// A row can also carry a quiet archive button, which `view/archiving` draws
+//// beside the row's own button and the stylesheet shows on hover and on focus.
+//// A press replaces the row with one question and sends nothing until it is
+//// confirmed, and the session on screen explains in a `title` why it has none.
+//// The page decides whether the action exists by what it passes, so a page
+//// without the capability draws none of it.
 ////
 //// The module takes `sessions.Group`s and the current identity, and imports
 //// nothing from `web_view/component`, which imports it.
@@ -78,14 +85,12 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/element/svg
 import lustre/event
-import session_view/agent_view
-import session_view/turns
 import web_view/sessions.{
   type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
   Working,
 }
+import web_view/view/archiving.{type Archiving}
 import web_view/view/resume.{type Resume}
-import web_view/view/strip
 
 /// What a running session's row says after its glyph.
 type Suffix {
@@ -101,69 +106,18 @@ type Suffix {
   Known(Dict(String, Activity))
 }
 
-/// One live strand's bar on the current row: its hue and whether it is
-/// working. It is reduced from the strip's chip, so the sidebar's memo is
-/// keyed on what the sidebar draws and not on a ticking elapsed time.
-pub type Bar {
-  Bar(
-    /// The strand's hue, from its position among the captured strands.
-    hue: turns.Hue,
-    /// Whether the bar pulses.
-    pulse: Pulse,
-  )
-}
-
-/// Whether a bar pulses.
-pub type Pulse {
-  /// The strand is working.
-  Pulsing
-
-  /// The strand is waiting, idle or has stopped: the bar is dim and still.
-  Still
-}
-
-/// The bars for a strip: one per listed strand, then the advisor's, pulsing
-/// for each strand that is working.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // sidebar.view(groups, current, sidebar.bars(component.strip(model)), activity, Opening, resume)
-/// ```
-pub fn bars(strip: strip.Strip) -> List(Bar) {
-  let chips = case strip.advisor {
-    Some(advisor) -> list.append(strip.chips, [advisor])
-    None -> strip.chips
-  }
-
-  list.map(chips, fn(chip) {
-    Bar(hue: chip.hue, pulse: pulse(chip.line.status))
-  })
-}
-
-fn pulse(status: agent_view.Status) -> Pulse {
-  case status {
-    agent_view.Working -> Pulsing
-    agent_view.Waiting
-    | agent_view.NeedsInput
-    | agent_view.Finished
-    | agent_view.Failed
-    | agent_view.Halted
-    | agent_view.Idle
-    | agent_view.Unavailable -> Still
-  }
-}
-
 /// The sidebar for `groups`, with the session named `current` marked, the
-/// current session's strand `bars`, `activity` what the daemon last said each
+/// `activity` what the daemon last said each
 /// running session is doing (the home's read, asked from a task; a session it
 /// has not named says "running"), `open` the message a press of another
 /// live session's row sends, given that session's identity, and `resume` what
-/// the page offers for a saved session's row.
+/// the page offers for a saved session's row, and `archiving` what it offers
+/// for archiving a row (`view/archiving`).
 ///
 /// With no group it is `element.none()`, so a page whose daemon listed
 /// nothing, or could not, draws no empty column. The result is memoized on
-/// the groups, the identity, the bars and the activity, so a page that re-read an unchanged
+/// the groups, the identity, the activity and where the archive action
+/// stands, so a page that re-read an unchanged
 /// list diffs nothing. `open` and the resume's `press` are not part of the
 /// memo's key, so a caller passes the same functions every time, as a
 /// constructor is; the session whose resume is out is, so its row changes when
@@ -172,24 +126,32 @@ fn pulse(status: agent_view.Status) -> Pulse {
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(component.session_groups(model), component.session_id(model), [], dict.new(), Opening, resume.Never)
+/// // sidebar.view(component.session_groups(model), component.session_id(model), [], dict.new(), Opening, resume.Never, archiving.Never)
 /// ```
 pub fn view(
   groups: List(Group),
   current: String,
-  bars: List(Bar),
   activity: Dict(String, Activity),
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
     element.ref(current),
-    element.ref(bars),
     element.ref(activity),
     element.ref(resume.pending(resume)),
+    element.ref(archiving.stage(archiving)),
   ])
-  column(groups, element.none(), current, bars, Known(activity), open, resume)
+  column(
+    groups,
+    element.none(),
+    current,
+    Known(activity),
+    open,
+    resume,
+    archiving,
+  )
 }
 
 /// The sidebar the home page draws (protocol-change/065): the same groups, with
@@ -206,23 +168,26 @@ pub fn view(
 /// row says "saved", as it always did.
 ///
 /// With no group it is `element.none()`, as `view` is. `open` and the
-/// resume's `press` are not part of the memo's key, as in `view`.
+/// resume's `press` are not part of the memo's key, as in `view`; `archiving`'s
+/// stage is.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.home(home.groups(model), dict.new(), Opening, resume.Never)
+/// // sidebar.home(home.groups(model), dict.new(), Opening, resume.Never, archiving.Never)
 /// ```
 pub fn home(
   groups: List(Group),
   activity: Dict(String, Activity),
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
     element.ref(activity),
     element.ref(resume.pending(resume)),
+    element.ref(archiving.stage(archiving)),
   ])
   let lead =
     html.p(
@@ -232,7 +197,7 @@ pub fn home(
       ],
       [house(), html.text("Home")],
     )
-  column(groups, lead, "", [], Doing(activity), open, resume)
+  column(groups, lead, "", Doing(activity), open, resume, archiving)
 }
 
 // The house glyph of the "Home" entry: a fixed outline, decoration only, drawn
@@ -264,10 +229,10 @@ fn column(
   groups: List(Group),
   nav: Element(message),
   current: String,
-  bars: List(Bar),
   suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   case groups {
     [] -> element.none()
@@ -276,7 +241,7 @@ fn column(
       // project reads the same above the fold and below it.
       let titles = sessions.titles(groups)
       let #(running, saved) = partition(groups, current)
-      let draw = group(_, titles, current, bars, suffix, open, resume)
+      let draw = group(_, titles, current, suffix, open, resume, archiving)
       html.aside(
         [
           attribute.class("sidebar"),
@@ -371,10 +336,10 @@ fn group(
   group: Group,
   titles: Dict(String, String),
   current: String,
-  bars: List(Bar),
   suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   let title = result.unwrap(dict.get(titles, group.project), group.project)
 
@@ -387,7 +352,7 @@ fn group(
     ]),
     html.ul(
       [attribute.class("sessions")],
-      list.map(group.entries, entry(_, current, bars, suffix, open, resume)),
+      list.map(group.entries, entry(_, current, suffix, open, resume, archiving)),
     ),
   ])
 }
@@ -397,19 +362,21 @@ fn group(
 // session is what `view/resume` says: a button on a page that may ask the
 // daemon to resume it, the words "opening" while its resume is out, and text
 // otherwise, including for a session the daemon will not resume from a page.
-// Only the session on screen draws strand bars, between its name and its
-// residency. A session with a subtitle draws it in a quiet line under its name
+// A session with a subtitle draws it in a quiet line under its name
 // (protocol-change/067), as a text node: the subtitle is a person's own prompt,
 // so it is never an attribute, a class or a title. A session in a git worktree
 // leads that line with the worktree's name. A row with neither is the two words
-// it always was.
+// it always was. A page that offers archiving adds a quiet button after the
+// row's own button, which `view/archiving` draws, and a row that is asking
+// whether to archive is that question and nothing else; the session on screen
+// has no button, so it gives its reason as a `title`.
 fn entry(
   entry: Entry,
   current: String,
-  bars: List(Bar),
   suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   let kind = resume.kind(resume, entry)
   let residency = case entry.residency, kind {
@@ -460,17 +427,30 @@ fn entry(
     )
   let words = [lead, residency]
 
-  case entry.id == current, entry.residency {
-    True, _ ->
+  case
+    archiving.question(archiving, entry),
+    entry.id == current,
+    entry.residency
+  {
+    // The row is asking whether to archive, so its words give way to the
+    // question. The session on screen never asks: it has no archive action.
+    Some(question), False, _ ->
+      html.li([attribute.class("session"), attribute.class("confirming")], [
+        question,
+      ])
+
+    _, True, _ ->
       html.li(
         [
           attribute.class("session"),
           attribute.class("current"),
           attribute.attribute("aria-current", "true"),
+          ..archiving.current_title(archiving)
         ],
-        [lead, ..list.append(dots(bars), [residency])],
+        [lead, residency],
       )
-    False, Live ->
+
+    _, False, Live ->
       html.li([attribute.class("session")], [
         html.button(
           [
@@ -481,8 +461,10 @@ fn entry(
           ],
           words,
         ),
+        ..archiving.button(archiving, entry)
       ])
-    False, Saved | False, Blocked ->
+
+    _, False, Saved | _, False, Blocked ->
       case kind {
         resume.Button(press:) ->
           html.li([attribute.class("session")], [
@@ -495,9 +477,13 @@ fn entry(
               ],
               words,
             ),
+            ..archiving.button(archiving, entry)
           ])
         resume.Text | resume.Opening ->
-          html.li([attribute.class("session")], words)
+          html.li(
+            [attribute.class("session")],
+            list.append(words, archiving.button(archiving, entry)),
+          )
       }
   }
 }
@@ -532,31 +518,4 @@ fn activity_class(doing: Activity) -> String {
     Working -> "working"
     Idle -> "idle"
   }
-}
-
-// The bars' span, or nothing when no strand is listed. It is decoration:
-// hidden from assistive technology, with no handler, so it cannot take focus
-// or move a path.
-fn dots(bars: List(Bar)) -> List(Element(message)) {
-  case bars {
-    [] -> []
-    [_, ..] -> [
-      html.span(
-        [attribute.class("dots"), attribute.aria_hidden(True)],
-        list.map(bars, bar),
-      ),
-    ]
-  }
-}
-
-fn bar(bar: Bar) -> Element(message) {
-  let classes = case bar.pulse {
-    Pulsing -> [
-      attribute.class("bar"),
-      strip.hue_class(bar.hue),
-      attribute.class("w"),
-    ]
-    Still -> [attribute.class("bar"), strip.hue_class(bar.hue)]
-  }
-  html.span(classes, [])
 }

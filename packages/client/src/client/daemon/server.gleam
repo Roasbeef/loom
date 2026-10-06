@@ -283,6 +283,11 @@ pub type Attachment(instance) {
     /// isolates it under (`client/daemon/shareable`). It is the daemon's value
     /// and never a page's.
     state_root: String,
+    /// The daemon's own sessions directory, which the sidebar's session actions
+    /// pass to `ui_socket.manage_for` as the home does. Only the owner's fresh
+    /// page may reach it, and only Delete, which a session page never offers,
+    /// removes anything from it.
+    sessions_directory: String,
     /// The session's catalogue registration, read while the route resolved
     /// the session. The web view's heading takes its name and workspace
     /// from here, so a page needs no second read of the catalogue.
@@ -1558,6 +1563,7 @@ fn resident_upgrade(
                 permit:,
                 registry: state.registry,
                 state_root: state.state_root,
+                sessions_directory: state.sessions_directory,
                 registration:,
                 activity: home_activity(config, state.registry, digest),
               ),
