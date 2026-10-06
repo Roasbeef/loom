@@ -22,6 +22,7 @@ import codemode/identity as phase
 import codemode/run_channel
 import codemode/satellite
 import codemode/service_input as input
+import codemode/service_resources
 import codemode/unused_imports
 import codemode/vet
 import codemode/vet/policy as vet_policy
@@ -103,18 +104,23 @@ fn native_executor(
   let assert Ok(pool) = exec.start_pool(1, fn() { exec.prepare_helper(spawn) })
     as "Real helper pool."
   let assert Ok(native) =
-    local.start(local.ExecutorConfig(
-      fn() {
-        before_checkout()
-        exec.checkout(pool, waiting: 3000)
+    local.start_with_retirement(
+      local.ExecutorConfig(
+        fn() {
+          before_checkout()
+          exec.checkout(pool, waiting: 3000)
+        },
+        fn(helper) { exec.checkin(pool, helper) },
+        fn() { exec.pool_custody(pool, waiting: 1000) },
+        fn(ms) { exec.close_pool(pool, waiting: ms) },
+        23,
+        log.discard(),
+      ),
+      fn(helper, completed) {
+        exec.prepare_borrowed_retirement(pool, helper, completed)
       },
-      fn(helper) { exec.checkin(pool, helper) },
-      fn() { exec.pool_custody(pool, waiting: 1000) },
-      fn(ms) { exec.close_pool(pool, waiting: ms) },
-      23,
-      log.discard(),
-    ))
-    as "Existing scoped native executor."
+    )
+    as "The original shared pool supplies exact Launch helper retirement."
   native
 }
 
@@ -593,8 +599,8 @@ pub fn live_control(control: Int) -> Nil {
   assert exit == 0
   assert string.contains(output, "LAUNCH_OWNER_COMPLETE")
 
-  // Original journals and custody paths remain available after unresolved
-  // associated retirement; successful observations are not deletion witnesses.
+  // Original journals remain available after the finite fixture. Exact normal
+  // Launch cleanup removes only its witnessed directory, socket and token.
   assert simplifile.write(root <> "/fixture.control.done", "observed")
     == Ok(Nil)
 }
@@ -1020,8 +1026,7 @@ fn joined_owner(
           0 | 9 -> {
             assert run.outcome
               == Ok(satellite.Completed(mp.StringValue("original-response")))
-            let assert satellite.LaunchResourcesUnresolved(_) = run.custody
-              as "Actual Final and native settlement do not prove helper retirement."
+            assert run.custody == satellite.LaunchResourcesReleased
             let origin =
               remote_tool.tool_child(parent, remote_tool.Launch) |> required
             let recovered = launch_client.recover(launch, origin) |> required
@@ -1040,6 +1045,36 @@ fn joined_owner(
               == Ok(actual.terminal)
             assert launch_client.recover(launch, origin) == Ok(recovered)
             assert custodian.command_child(pinned, ref) == Ok(retained_native)
+            let row = custodian.child(pinned, origin) |> required
+            let outbound =
+              launch_protocol.decode_input(enrolled, row.1) |> required
+            let body =
+              launch_protocol.encode_input(enrolled, outbound) |> required
+            let #(metadata, bytes) =
+              transport.launch_exchange(endpoint, launch_protocol.Query, body)
+              |> required
+            let assert launch_protocol.Observed(
+              resources.Released(option.Some(service_resources.LaunchReady(
+                ready,
+              ))),
+              launch_protocol.Retained(_, _, _, _),
+            ) =
+              launch_protocol.decode_reply(enrolled, outbound, metadata, bytes)
+              |> required
+              as "The exact original resource-owner cleanup is durable after actual close."
+            let facts =
+              input.decode_launch(outbound.body)
+              |> required
+              |> input.launch_facts
+            assert service_resources.launch_keys(ready)
+              == #(key, facts.compiled_by)
+            let #(directory, socket, token_path) =
+              enrollment.launch_paths(enrolled, key) |> required
+            assert service_resources.launch_paths(ready)
+              == #(directory, socket, token_path)
+            assert simplifile.is_directory(directory) == Ok(False)
+            assert simplifile.is_file(socket) == Ok(False)
+            assert simplifile.is_file(token_path) == Ok(False)
           }
           2 | 3 | 4 -> {
             let assert Error(satellite.LaunchRejected(_)) = run.outcome

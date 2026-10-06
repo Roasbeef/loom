@@ -5,7 +5,8 @@
 //// settlement independently of cap traffic, and closes the original bridge when
 //// the invoking body dies. A native report never emits cap End or proves native
 //// retirement. Both observation tasks run through weft; their drain and their
-//// returned evidence remain separate.
+//// returned evidence remain separate. Authenticated original resource retirement
+//// crosses this boundary only after both observers have actually drained.
 
 import broker/broker
 import codemode/enforcement
@@ -172,7 +173,8 @@ pub fn start(
 }
 
 /// Closes the original bridge and observes the native task independently.
-/// Associated native resource retirement remains unresolved even after settlement.
+/// Resource retirement requires authenticated close evidence and both observer
+/// joins; native settlement alone cannot release original resources.
 ///
 /// ## Examples
 /// `close(original_execution)` returns the original observations.
@@ -222,7 +224,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 
   // A lost run is terminal observer uncertainty, not a join witness. Once both
-  // observers terminate, local retirement leaves original external custody held.
+  // observers terminate, authenticated close evidence still requires both joins.
   case message, next.transport_drain, next.native_drain {
     Expire, Some(_), Some(_) -> actor.stop()
     _, _, _ -> finish(next)
@@ -246,9 +248,13 @@ fn finish(next: State) -> actor.Next(State, Message) {
             Some(Lost) | None ->
               channel.TransportUnresolved("original transport observer lost")
           },
-          resources: channel.ResourcesUnresolved(
-            "original native retirement not observed",
-          ),
+          resources: case next.transport_drain, next.native_drain {
+            Some(Joined), Some(Joined) -> observed.resources
+            Some(Lost), _ | None, _ ->
+              channel.ResourcesUnresolved("original transport observer lost")
+            _, Some(Lost) | _, None ->
+              channel.ResourcesUnresolved("original native observer lost")
+          },
         ),
       )
       actor.continue(State(..next, close_reply: None))
