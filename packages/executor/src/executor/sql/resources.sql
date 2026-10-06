@@ -1,17 +1,17 @@
 -- Named preparation queries preserve evidence without granting live resource custody.
 -- name: InitializeResources :exec
 INSERT INTO resource_meta(id,format,mode,enrollment,row_limit,byte_limit)
-VALUES(1,2,0,?,?,?);
+VALUES(1,3,0,?,?,?);
 
 -- A format-only scalar guard is compatible with the previous column layout.
 -- name: ResourceFormat :many
-SELECT CAST(CASE WHEN typeof(format)='integer' AND format BETWEEN 1 AND 2
+SELECT CAST(CASE WHEN typeof(format)='integer' AND format BETWEEN 1 AND 3
                  THEN format ELSE NULL END AS INTEGER) AS format
 FROM resource_meta WHERE id=1 LIMIT 2;
 
 -- The enrollment is bounded before the driver materializes its full snapshot.
 -- name: ResourceMetadata :many
-SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=2
+SELECT CAST(CASE WHEN typeof(id)='integer' AND id=1 AND typeof(format)='integer' AND format=3
                  AND typeof(enrollment)='blob' AND length(enrollment) BETWEEN 1 AND 262144
                  THEN enrollment ELSE NULL END AS BLOB) AS enrollment,
        CAST(CASE WHEN typeof(mode)='integer' AND mode IN (0,1) THEN mode ELSE NULL END AS INTEGER) AS mode,
@@ -44,7 +44,7 @@ SELECT CAST(CASE WHEN typeof(id)='blob' AND length(id)=36 THEN id ELSE NULL END 
                  AND ((native_id IS NULL AND length(command_ref)=0 AND length(native_identity)=0 AND length(native_prepared)=0)
                    OR (native_id IS NOT NULL AND length(command_ref)>0 AND length(native_identity)=106 AND length(native_prepared)>0 AND ready_size>0))
                  AND ((length(completion)=0 AND length(completion_digest)=0 AND outer_receipt=0)
-                   OR (length(completion)>0 AND length(completion_digest)=32 AND (native_id IS NOT NULL OR (ready_size=0 AND phase IN (3,4)))))
+                   OR (length(completion)>0 AND length(completion_digest)=32 AND (native_id IS NOT NULL OR (phase IN (3,4) AND (ready_size=0 OR role=1)))))
                  THEN 1 ELSE 0 END AS INTEGER) AS valid
 FROM resource_call ORDER BY id LIMIT ?;
 
@@ -106,7 +106,8 @@ WHERE id=? AND native_id IS NOT NULL AND length(completion)=0 RETURNING completi
 
 -- name: FailResourcePreparation :many
 UPDATE resource_call SET phase=3,completion_digest=?,completion=?
-WHERE id=? AND phase=1 AND ready_size=0 AND native_id IS NULL AND length(completion)=0 RETURNING completion_digest;
+WHERE id=? AND native_id IS NULL AND length(completion)=0
+AND ((role=0 AND phase=1 AND ready_size=0) OR (role=1 AND phase IN (1,2))) RETURNING completion_digest;
 
 -- name: AcknowledgeResourceCompile :many
 UPDATE resource_call SET outer_receipt=1
