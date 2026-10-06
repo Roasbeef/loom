@@ -3,6 +3,7 @@
 
 import broker/broker
 import broker/budget
+import broker/dispatch
 import broker/enrollment
 import broker/exec
 import broker/executor as local
@@ -21,6 +22,7 @@ import codemode/identity as phase
 import codemode/run_channel
 import codemode/satellite
 import codemode/service_input as input
+import codemode/unused_imports
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import core/clock
@@ -678,6 +680,13 @@ fn joined_owner(
               Nil
             },
           )
+        let dispatched = process.new_subject()
+        let physical = dispatcher.dispatcher(configuration)
+        let observed =
+          dispatch.Dispatcher(start: fn(request) {
+            process.send(dispatched, #(request.context, request.deadline_ms))
+            physical.start(request)
+          })
         let entropy = token.production_entropy()
         let original_broker =
           broker.start_dispatching(
@@ -692,7 +701,7 @@ fn joined_owner(
               }
             },
             original_clock,
-            dispatcher.dispatcher(configuration),
+            observed,
           )
           |> required
         process.send(broker_witness, original_broker)
@@ -708,7 +717,12 @@ fn joined_owner(
             enrolled,
             original_broker,
             endpoint,
-            fn() { id(20) },
+            fn() {
+              case control {
+                9 -> fresh_id()
+                _ -> id(20)
+              }
+            },
             original_clock,
             poll.monotonic().now,
             client.Facts(
@@ -718,6 +732,7 @@ fn joined_owner(
               5000,
               [],
               owner_limits(),
+              vet_policy.workspace_effects(),
             ),
           )
           |> required
@@ -741,6 +756,10 @@ fn joined_owner(
           )
         let source =
           "import cap/fs\nimport cap/report\nimport gleam/result\npub fn main() -> report.Outcome { report.text(fs.read(\"witness\") |> result.unwrap(\"missing\")) }"
+        let source = case control {
+          9 -> "import gleam/int\n" <> source
+          _ -> source
+        }
         let assert vet.Passed(vetted) =
           vet.vet(source, vet_policy.workspace_effects())
           as "Actual trusted owner vetting before Compile."
@@ -748,11 +767,83 @@ fn joined_owner(
           == Ok(Nil)
         let compiled =
           client.service(compiler).compile(compile.CompileRequest(
+            compile.Original,
             vetted,
             compile.default_dependencies(),
             [],
             phase.build_phase(managed),
           ))
+        let compiled = case control {
+          9 -> {
+            let assert Error(compile.BuildRejected(diagnostics)) =
+              compiled.result
+              as "Real warnings-as-errors compiler rejects the unused import."
+            let rewrite =
+              unused_imports.rewrite(
+                source,
+                diagnostics,
+                "src/" <> compile.program_module <> ".gleam",
+              )
+              |> required
+            let assert vet.Passed(next) =
+              vet.vet(rewrite.source, vet_policy.workspace_effects())
+              as "The rewritten source passes the unchanged owner policy."
+            let phase = phase.build_phase(managed)
+            let rebuilt =
+              client.service(compiler).compile(compile.CompileRequest(
+                compile.UnusedImportRewrite,
+                next,
+                compile.default_dependencies(),
+                [],
+                phase,
+              ))
+            let original_origin =
+              remote_tool.tool_child(parent, remote_tool.Compile) |> required
+            let rewrite_origin =
+              remote_tool.tool_child(parent, remote_tool.CompileRewrite)
+              |> required
+            let assert client.Completed(original_key, _, _) =
+              client.recover(compiler, original_origin) |> required
+              as "Original failed completion remains durably recoverable."
+            let assert client.Completed(rewrite_key, recovered, _) =
+              client.recover(compiler, rewrite_origin) |> required
+              as "Rewrite success remains durably recoverable without another effect."
+            assert recovered == rebuilt
+            assert command.compile_predecessor(rewrite_key)
+              == option.Some(original_key)
+            assert command.coordinates(rewrite_key)
+              == command.coordinates(original_key)
+            assert command.parent(rewrite_key) == command.parent(original_key)
+            assert command.request_id(rewrite_key)
+              != command.request_id(original_key)
+            let original_ref =
+              command.command_ref(original_key, command.CompileCommand)
+              |> required
+            let rewrite_ref =
+              command.command_ref(rewrite_key, command.CompileCommand)
+              |> required
+            let old_native =
+              custodian.command_child(pinned, original_ref) |> required
+            let new_native =
+              custodian.command_child(pinned, rewrite_ref) |> required
+            assert old_native.0 != new_native.0
+            assert command.native_origin(original_ref)
+              != command.native_origin(rewrite_ref)
+            assert phase.grants(phase) == []
+            let first = process.receive(dispatched, 2000) |> required
+            let second = process.receive(dispatched, 2000) |> required
+            assert first.0.operation == second.0.operation
+            assert first.0.step == second.0.step
+            assert first.1 == second.1
+            assert first.1 == phase.pooled_budget(phase).deadline_ms
+            assert first.0.origin
+              == option.Some(command.native_origin(original_ref))
+            assert second.0.origin
+              == option.Some(command.native_origin(rewrite_ref))
+            rebuilt
+          }
+          _ -> compiled
+        }
         assert simplifile.write(path <> "/owner.compile.completed", "completed")
           == Ok(Nil)
         let assert Ok(artifact) = compiled.result
@@ -811,6 +902,50 @@ fn joined_owner(
               let submitted = case control {
                 2 | 3 | 4 -> changed_artifact(request, control)
                 _ -> request
+              }
+              case control {
+                9 -> {
+                  let original_origin =
+                    remote_tool.tool_child(parent, remote_tool.Compile)
+                    |> required
+                  let assert client.Completed(original_key, _, _) =
+                    client.recover(compiler, original_origin) |> required
+                    as "The actual failed Original producer remains retained."
+                  let #(produced, identity, seed, demand, env, cwd) =
+                    run_channel.execution(submitted)
+                  let assert compile.ExecutorArtifact(..) = produced
+                    as "The successful Rewrite artifact is executor-issued."
+                  let substituted =
+                    compile.ExecutorArtifact(
+                      ..produced,
+                      request_id: ids.entry_id_to_string(command.request_id(
+                        original_key,
+                      )),
+                    )
+                  let forged =
+                    run_channel.request(
+                      substituted,
+                      identity,
+                      seed,
+                      demand,
+                      env,
+                      cwd,
+                      run_channel.token(submitted),
+                      run_channel.host(submitted),
+                    )
+                    |> required
+                  let assert Error(run_channel.LaunchRefused(
+                    _,
+                    run_channel.ResourcesReleased,
+                  )) = launch_client.launcher(launch)(forged)
+                    as "Original identity cannot substitute for the successful Rewrite producer."
+                  let origin =
+                    remote_tool.tool_child(parent, remote_tool.Launch)
+                    |> required
+                  assert custodian.child(pinned, origin)
+                    == Error(custody.Missing)
+                }
+                _ -> Nil
               }
               let connection = launch_client.launcher(launch)(submitted)
               case control {
@@ -882,7 +1017,7 @@ fn joined_owner(
         assert simplifile.write(path <> "/owner.run.returned", "returned")
           == Ok(Nil)
         case control {
-          0 -> {
+          0 | 9 -> {
             assert run.outcome
               == Ok(satellite.Completed(mp.StringValue("original-response")))
             let assert satellite.LaunchResourcesUnresolved(_) = run.custody
@@ -1014,7 +1149,7 @@ fn joined_owner(
     _ -> Nil
   }
   let assert Ok(_) = case control {
-    0 -> process.receive(cap_witness, 2000) |> result.replace(Nil)
+    0 | 9 -> process.receive(cap_witness, 2000) |> result.replace(Nil)
     _ -> Ok(Nil)
   }
     as "Authenticated actual satellite capability request reached its original owner."
@@ -1028,6 +1163,56 @@ fn joined_owner(
   let monitor = process.monitor(started.pid)
   assert custodian.stop(owner) == Ok(Nil)
   join(monitor)
+  case control {
+    9 -> {
+      let reopened = custodian.new(names, owner_config)
+      let restarted = custodian.start(reopened, owner_config) |> required
+      let compiler =
+        client.new(
+          reopened,
+          enrolled,
+          original_broker,
+          endpoint,
+          fn() {
+            panic as "Reopened Compile evidence cannot mint another attempt."
+          },
+          clock.fixed(0),
+          poll.monotonic().now,
+          client.Facts(
+            input.WorkspaceProgram,
+            base(path),
+            180_000,
+            5000,
+            [],
+            owner_limits(),
+            vet_policy.workspace_effects(),
+          ),
+        )
+        |> required
+      let original =
+        remote_tool.tool_child(parent, remote_tool.Compile) |> required
+      let rewritten =
+        remote_tool.tool_child(parent, remote_tool.CompileRewrite) |> required
+      let assert client.Completed(original_key, failed, _) =
+        client.recover(compiler, original) |> required
+        as "Reopened Original failure remains exact historical evidence."
+      let assert Error(compile.BuildRejected(_)) = failed.result
+        as "The persisted predecessor remains a definite compiler rejection."
+      let assert client.Completed(rewrite_key, succeeded, _) =
+        client.recover(compiler, rewritten) |> required
+        as "Reopened Rewrite retains the same successful attempt."
+      assert command.compile_predecessor(rewrite_key)
+        == option.Some(original_key)
+      let assert Ok(compile.ExecutorArtifact(request_id: producer, ..)) =
+        succeeded.result
+        as "The historical artifact still names the exact Rewrite producer."
+      assert producer == ids.entry_id_to_string(command.request_id(rewrite_key))
+      let watch = process.monitor(restarted.pid)
+      assert custodian.stop(reopened) == Ok(Nil)
+      join(watch)
+    }
+    _ -> Nil
+  }
   case control {
     1 -> {
       let reopened = custodian.new(names, owner_config)

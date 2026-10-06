@@ -41,11 +41,17 @@ pub type ChildRole {
   /// Physical preparation and compilation for this tool.
   Compile
 
+  /// The sole rewritten physical compilation beneath the original tool.
+  CompileRewrite
+
   /// Satellite or native launch for this tool.
   Launch
 
   /// The native build command beneath an outer Compile service request.
   CompileCommand
+
+  /// The native command of the sole unused-import rewrite attempt.
+  CompileRewriteCommand
 
   /// The native satellite command beneath an outer Launch service request.
   SatelliteCommand
@@ -222,8 +228,12 @@ pub fn tool_child(
   role: ChildRole,
 ) -> Result(ChildOrigin, String) {
   case role {
-    Compile | Launch | CompileCommand | SatelliteCommand ->
-      Ok(ToolChild(key:, role:))
+    Compile
+    | CompileRewrite
+    | Launch
+    | CompileCommand
+    | CompileRewriteCommand
+    | SatelliteCommand -> Ok(ToolChild(key:, role:))
     Capability(ordinal) | Workspace(ordinal) -> {
       use Nil <- result.try(bounded_ordinal(ordinal))
       Ok(ToolChild(key:, role:))
@@ -300,9 +310,13 @@ pub fn child_parent(origin: ChildOrigin) -> String {
 pub fn child_address(origin: ChildOrigin) -> String {
   let role = case origin {
     ToolChild(role: Compile, ..) -> json.Array([json.String("compile")])
+    ToolChild(role: CompileRewrite, ..) ->
+      json.Array([json.String("compile_unused_import_rewrite")])
     ToolChild(role: Launch, ..) -> json.Array([json.String("launch")])
     ToolChild(role: CompileCommand, ..) ->
       json.Array([json.String("compile_command")])
+    ToolChild(role: CompileRewriteCommand, ..) ->
+      json.Array([json.String("compile_unused_import_rewrite_command")])
     ToolChild(role: SatelliteCommand, ..) ->
       json.Array([json.String("satellite_command")])
     ToolChild(role: AdmittedCapability(name, ordinal, purpose), ..) -> {

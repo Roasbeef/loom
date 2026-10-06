@@ -96,6 +96,7 @@ for pkg in "${targets[@]}"; do
       cd packages/core
       python3 ../../scripts/with_timeout.py 120 -- gleam build --target javascript
       python3 ../../scripts/with_timeout.py 30 -- node test/report_value_finite_test.mjs
+      python3 ../../scripts/with_timeout.py 30 -- node test/command_rewrite_test.mjs
     )
   fi
   # This fixture checks the work removed by leaf memoisation and the provider

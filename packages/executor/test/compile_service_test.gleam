@@ -1242,3 +1242,80 @@ pub fn native_endpoint_accessor_preserves_exact_identity_across_same_scope_test(
     })
   })
 }
+
+const rewrite_failure_diagnostics =
+  "  Compiling loom_codemode_program
+warning: Unused imported module
+  ┌─ /b/src/loom_program.gleam:2:1
+  │
+2 │ import gleam/int
+  │ ^^^^^^^^^^^^^^^^ This imported module is never used
+
+Hint: You can safely remove it.
+
+error: 1 warning generated.
+
+Your project was compiled with the `--warnings-as-errors` flag.
+Fix the warnings and try again."
+
+/// Both direct resource custody and the actual Compile actor retain lineage checks.
+pub fn rewrite_executor_boundary_refuses_missing_failure_and_changed_source_test() {
+  fixture(fn(f) {
+    let source =
+      "import cap/fs\nimport gleam/int\npub fn main() { fs.read(\"x\") }\n"
+    let assert Ok(original_input) =
+      input.compile_input(
+        f.enrolled,
+        input.WorkspaceProgram,
+        source,
+        [],
+        compile.default_dependencies(),
+        base(f.path),
+        30_000,
+      )
+      as "Canonical Original source."
+    let old = original(f, 43, "rewrite:executor")
+    let #(scope, operation, step) = command.coordinates(old.key)
+    let #(_, registration, contract) = command.digests(old.key)
+    let body = input.encode_compile(original_input)
+    let hash = string.lowercase(bit_array.base16_encode(j.digest(body)))
+    let assert Ok(previous_key) =
+      command.service_key(
+        command.parent(old.key),
+        command.CompileService,
+        scope,
+        operation,
+        step,
+        id(43),
+        hash,
+        registration,
+        contract,
+      )
+      as "Exact Original bytes in its immutable key."
+    let previous = j.Input(previous_key, body)
+    let assert Ok(wrong_key) =
+      command.rewrite_service_key(previous_key, id(44), hash)
+      as "Changed source has a closed valid lineage key."
+    let wrong = j.Input(wrong_key, body)
+    assert j.reserve(f.resources, wrong) == Error(j.Conflict)
+    assert submit(f, wrong) == Error(whole.Invalid)
+    assert j.inspect(f.resources, wrong) == Error(j.Missing)
+    let assert Ok(j.FreshClaim(claim)) =
+      j.admit_preparation(f.resources, previous)
+      as "Original trusted no-native predecessor fixture."
+    let assert Ok(failed) =
+      completion.failed_before_native(
+        f.enrolled,
+        previous_key,
+        compile.BuildRejected(rewrite_failure_diagnostics),
+      )
+      as "Closed predecessor failure."
+    let assert Ok(_) = j.fail_preparation(claim, failed)
+      as "Actual resource COMMIT."
+    assert submit(f, wrong) == Error(whole.Invalid)
+    assert j.inspect(f.resources, wrong) == Error(j.Missing)
+    let assert Ok(root) = enrollment.compile_path(f.enrolled, wrong_key)
+      as "Canonical refused allocation path."
+    assert simplifile.is_directory(root) == Ok(False)
+  })
+}

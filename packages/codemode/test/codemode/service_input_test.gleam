@@ -973,3 +973,102 @@ pub fn changed_complete_parent_and_both_producer_epochs_refuse_test() {
     ))
   })
 }
+
+const rewrite_diagnostics =
+  "  Compiling loom_codemode_program
+warning: Unused imported module
+  ┌─ /b/src/loom_program.gleam:2:1
+  │
+2 │ import gleam/int
+  │ ^^^^^^^^^^^^^^^^ This imported module is never used
+
+Hint: You can safely remove it.
+
+error: 1 warning generated.
+
+Your project was compiled with the `--warnings-as-errors` flag.
+Fix the warnings and try again."
+
+/// Pure admission binds source and host facts to the exact retained failure.
+pub fn rewrite_admission_rejects_changed_source_policy_and_nonrewrite_failure_test() {
+  let previous = compile_key()
+  let assert Ok(id) = ids.parse_entry_id("00000000-0000-7000-8000-000000000009")
+    as "Distinct rewrite UUID."
+  let assert Ok(key) =
+    command.rewrite_service_key(previous, id, string.repeat("d", 64))
+    as "Closed lineage."
+  let original =
+    make_compile(
+      "import cap/fs\nimport gleam/int\npub fn main() { fs.read(\"x\") }\n",
+      [],
+      base(),
+    )
+  let rewritten =
+    make_compile(
+      "import cap/fs\npub fn main() { fs.read(\"x\") }\n",
+      [],
+      base(),
+    )
+  let trusted = contract(vet_policy.workspace_effects(), [])
+  let failed = compile.BuildRejected(rewrite_diagnostics)
+  assert input.admit_rewrite(
+      key,
+      trusted,
+      rewritten,
+      previous,
+      original,
+      failed,
+    )
+    |> result.is_ok
+  assert input.admit_rewrite(key, trusted, original, previous, original, failed)
+    == Error(input.AssociationMismatch)
+  assert input.admit_rewrite(
+      key,
+      trusted,
+      rewritten,
+      launch_key(),
+      original,
+      failed,
+    )
+    == Error(input.AssociationMismatch)
+  assert input.admit_rewrite(
+      key,
+      trusted,
+      rewritten,
+      previous,
+      original,
+      compile.BuildUnavailable("lost result"),
+    )
+    == Error(input.AssociationMismatch)
+  let changed =
+    make_compile(
+      input.compile_facts(rewritten).source,
+      [],
+      policy.SandboxPolicy(..base(), env_allow: ["CHANGED"]),
+    )
+  assert input.admit_rewrite(key, trusted, changed, previous, original, failed)
+    == Error(input.AssociationMismatch)
+  list.each(
+    [
+      "type error",
+      "warning: Unused imported module",
+      rewrite_diagnostics <> "\nerror: another failure",
+      string.replace(
+        rewrite_diagnostics,
+        "2 │ import gleam/int",
+        "2 │ import gleam/float",
+      ),
+    ],
+    fn(diagnostics) {
+      assert input.admit_rewrite(
+          key,
+          trusted,
+          rewritten,
+          previous,
+          original,
+          compile.BuildRejected(diagnostics),
+        )
+        == Error(input.AssociationMismatch)
+    },
+  )
+}

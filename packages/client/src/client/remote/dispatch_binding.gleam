@@ -217,8 +217,11 @@ fn cancel_with_commands(
 
 fn is_command_origin(origin: remote_tool.ChildOrigin) -> Bool {
   case remote_tool.child_role(origin) {
-    Ok(remote_tool.CompileCommand) | Ok(remote_tool.SatelliteCommand) -> True
+    Ok(remote_tool.CompileCommand)
+    | Ok(remote_tool.CompileRewriteCommand)
+    | Ok(remote_tool.SatelliteCommand) -> True
     Ok(remote_tool.Compile)
+    | Ok(remote_tool.CompileRewrite)
     | Ok(remote_tool.Launch)
     | Ok(remote_tool.AdmittedCapability(_, _, _))
     | Ok(remote_tool.Capability(_))

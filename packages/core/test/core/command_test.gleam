@@ -7,6 +7,7 @@ import core/json
 import core/remote_tool
 import core/workspace
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/string
 
@@ -166,4 +167,60 @@ pub fn malformed_identity_cannot_change_parent_operation_session_or_roles_test()
   assert command.digest(string.repeat("A", 64)) |> result.is_error
   assert command.digest(string.repeat("z", 64)) |> result.is_error
   assert command.digest(string.repeat("a", 63)) |> result.is_error
+}
+
+/// Only two addresses are available; a rewrite cannot become another predecessor.
+pub fn bounded_rewrite_keeps_original_coordinates_and_rejects_nesting_test() {
+  let original = make_service(command.CompileService, "a")
+  let #(rewrite_id, _) = ids.mint_entry(ids.generator(clock.fixed(3000), 34))
+  let assert Ok(rewrite) =
+    command.rewrite_service_key(original, rewrite_id, string.repeat("d", 64))
+    as "The sole rewritten attempt derives from the Original key."
+  assert command.parent(rewrite) == command.parent(original)
+  assert command.coordinates(rewrite) == command.coordinates(original)
+  assert command.compile_predecessor(rewrite) == option.Some(original)
+  assert command.decode_service(command.encode_service(rewrite)) == Ok(rewrite)
+  let assert Ok(original_ref) =
+    command.command_ref(original, command.CompileCommand)
+    as "Original native role."
+  let assert Ok(rewrite_ref) =
+    command.command_ref(rewrite, command.CompileCommand)
+    as "Rewrite native role."
+  assert command.native_origin(original_ref)
+    != command.native_origin(rewrite_ref)
+  assert command.service_origin(original) != command.service_origin(rewrite)
+  assert remote_tool.child_address(command.service_origin(rewrite))
+    == json.to_string(
+      json.Array([
+        json.String(remote_tool.address(command.parent(original))),
+        json.Array([json.String("compile_unused_import_rewrite")]),
+      ]),
+    )
+  assert command.rewrite_service_key(
+      rewrite,
+      command.request_id(original),
+      string.repeat("e", 64),
+    )
+    |> result.is_error
+  assert command.rewrite_service_key(
+      original,
+      command.request_id(original),
+      string.repeat("e", 64),
+    )
+    |> result.is_error
+  assert command.rewrite_service_key(
+      make_service(command.LaunchService, "a"),
+      rewrite_id,
+      string.repeat("e", 64),
+    )
+    |> result.is_error
+  assert command.decode_service(
+      json.Array([
+        json.Int(2),
+        command.encode_service(rewrite),
+        json.String(ids.entry_id_to_string(rewrite_id)),
+        json.String(string.repeat("e", 64)),
+      ]),
+    )
+    |> result.is_error
 }
