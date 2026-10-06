@@ -361,3 +361,22 @@ pub fn a_path_under_the_workspace_is_drawn_relative_to_it_test() {
   // The key stays the whole path, so display never merges two files.
   assert string.contains(html, "data-lustre-key=\"file:/work/ws/src/m.py\"")
 }
+
+// F143: a tab that says why it lists only the agent's edits does not also carry
+// the `from this session's edits` label, which would say the same thing again.
+// A tab with no reason keeps the label.
+pub fn a_reason_and_the_label_are_never_drawn_together_test() {
+  let edits = board([file("a.gleam", [row(changes_view.Added, "+x")])])
+  let reasoned =
+    element.to_string(changes.view(
+      edits,
+      changes.Whole,
+      worktrees.Declined,
+      None,
+    ))
+  assert string.contains(reasoned, "This page may not read the workspace")
+  assert !string.contains(reasoned, "from this session")
+
+  let plain = drawn(edits)
+  assert string.contains(plain, "from this session")
+}

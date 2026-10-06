@@ -13,7 +13,8 @@
 //// A press asks nothing of the daemon. It opens the row's question, which
 //// replaces the row's words with one sentence in fixed words, the session's
 //// name beneath it as a text node, a button that asks and a Cancel. For a
-//// running row the sentence names both steps. Which action a press means is
+//// running row the sentence names both steps, and says the turn is running when
+//// the activity read has the session working or waiting on its operator. Which action a press means is
 //// the server's: `action` reads it from the row's residency when the page asks,
 //// and the confirm message carries only the session, so a browser can never
 //// choose between Archive and Stop-and-archive, nor confirm a Delete the home's
@@ -57,6 +58,20 @@ pub type Archiving(message) {
     cancel: message,
     stage: Stage,
   )
+}
+
+/// Whether a running row's session is between turns or inside one, as the
+/// activity read last said. It decides only which sentence the question uses:
+/// stopping a session that is working, or waiting on its operator, cuts its
+/// turn short, and the sentence says so as the home's Stop does. A row the read
+/// has not named is `AtRest`, because the page then has no claim to make.
+pub type Turn {
+  /// A turn is running or waiting on its operator, and stopping ends it.
+  MidTurn
+
+  /// Nothing is known to be running, so stopping interrupts nothing the page
+  /// knows of.
+  AtRest
 }
 
 /// The action a press on `entry`'s button means: a running row is stopped and
@@ -125,8 +140,10 @@ pub fn stage(archiving: Archiving(message)) -> Stage {
   }
 }
 
-/// The quiet button of a row, or nothing. It reads "Stop and archive" on a
-/// running row and "Archive" otherwise, with a title that says what it does.
+/// The quiet button of a row, or nothing. It is a 24px square holding one
+/// glyph, so it can sit at the row's right edge and never lie over the name,
+/// the dot or the activity word. Its `aria-label` and `title` say what it does:
+/// "Stop and archive" on a running row and "Archive" otherwise.
 /// While a request for the row is out it is disabled, though the handler stays,
 /// because the page is the layer that ignores a second press.
 ///
@@ -164,10 +181,11 @@ pub fn button(
             attribute.type_("button"),
             attribute.class("session-archive"),
             attribute.title(title),
+            attribute.aria_label(label),
             event.on_click(ask(entry.id)),
             ..working
           ],
-          [html.text(label)],
+          [html.text("×")],
         ),
       ]
     }
@@ -175,23 +193,25 @@ pub fn button(
 }
 
 /// The question that replaces `entry`'s row while it is asking, or nothing when
-/// the page is not asking about it. A running row's sentence names both steps.
+/// the page is not asking about it. A running row's sentence names both steps,
+/// and says the turn is running when `turn` is `MidTurn`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // archiving.question(archiving, entry)
+/// // archiving.question(archiving, entry, archiving.AtRest)
 /// ```
 pub fn question(
   archiving: Archiving(message),
   entry: Entry,
+  turn: Turn,
 ) -> Option(Element(message)) {
   case archiving {
     Offered(confirm:, cancel:, stage: actions.Confirming(session:, action:), ..)
       if session == entry.id
     ->
       case confirms(action) {
-        True -> Some(asking(entry, action, confirm(entry.id), cancel))
+        True -> Some(asking(entry, action, turn, confirm(entry.id), cancel))
         False -> None
       }
     Offered(..) | Never -> None
@@ -222,13 +242,17 @@ pub fn current_title(
 fn asking(
   entry: Entry,
   action: Action,
+  turn: Turn,
   confirm: message,
   cancel: message,
 ) -> Element(message) {
   let #(label, lead, go) = case action {
     actions.StopArchive -> #(
       "Stop and archive this session",
-      "Stop this session, then archive it?",
+      case turn {
+        MidTurn -> "Stop this session mid-turn, then archive it?"
+        AtRest -> "Stop this session, then archive it?"
+      },
       "Stop and archive",
     )
 

@@ -148,8 +148,9 @@ pub fn the_homes_sidebar_draws_the_button_only_with_the_capability_test() {
   let owner = opened(home_start(Some(answering(asked))))
   let sidebar = sidebar_of(home_html(owner))
   assert list.length(string.split(sidebar, "class=\"session-archive\"")) == 5
-  assert list.length(string.split(sidebar, ">Stop and archive<")) == 3
-  assert list.length(string.split(sidebar, ">Archive<")) == 3
+  assert list.length(string.split(sidebar, "aria-label=\"Stop and archive\""))
+    == 3
+  assert list.length(string.split(sidebar, "aria-label=\"Archive\"")) == 3
   assert string.contains(
     sidebar,
     "title=\"Stop this session, then archive it: hide it and keep its history\"",
@@ -343,7 +344,8 @@ pub fn a_session_page_draws_the_button_only_with_the_capability_test() {
   let owner = session_page(Some(answering(asked)), [])
   let sidebar = sidebar_of(page_html(owner))
   assert list.length(string.split(sidebar, "class=\"session-archive\"")) == 4
-  assert list.length(string.split(sidebar, ">Stop and archive<")) == 2
+  assert list.length(string.split(sidebar, "aria-label=\"Stop and archive\""))
+    == 2
   assert string.contains(
     sidebar,
     "title=\"This session is on screen. Open the home page or another session to archive it.\"",
@@ -429,4 +431,49 @@ pub fn the_buttons_add_only_clicks_beneath_the_sidebar_test() {
     list.contains(without, key)
     || string.starts_with(key, component.sidebar_path <> "\t")
   })
+}
+
+// F140: the button is a glyph in a 24px square whose words are its label and
+// title, so it can sit at the row's right edge and cover nothing: it holds no
+// text of its own to overlap the dot or the activity word.
+pub fn the_button_is_one_glyph_with_its_words_in_the_label_test() {
+  let asked = process.new_subject()
+  let owner = opened(home_start(Some(answering(asked))))
+  let sidebar = sidebar_of(home_html(owner))
+  assert string.contains(sidebar, "class=\"session-archive\"")
+  assert string.contains(sidebar, ">×</button>")
+  assert !string.contains(sidebar, ">Stop and archive</button>")
+  assert !string.contains(sidebar, ">Archive</button>")
+}
+
+// F141: a running row whose activity is working or needs-you says the turn is
+// in flight and will be stopped, as the home's Stop does. An idle row, or one
+// the activity read has not named, keeps the plain sentence, and a saved row's
+// is the archive question.
+pub fn a_busy_rows_question_says_it_is_mid_turn_test() {
+  let asked = process.new_subject()
+  let busy =
+    run(
+      opened(home_start(Some(answering(asked)))),
+      home.Observed([#("B", sessions.Working)]),
+    )
+  let html = home_html(run(busy, home.SidebarArchiveAsked("B")))
+  assert string.contains(html, "Stop this session mid-turn, then archive it?")
+
+  let waiting =
+    run(
+      opened(home_start(Some(answering(asked)))),
+      home.Observed([#("B", sessions.NeedsYou)]),
+    )
+  let html = home_html(run(waiting, home.SidebarArchiveAsked("B")))
+  assert string.contains(html, "Stop this session mid-turn, then archive it?")
+
+  let idle =
+    run(
+      opened(home_start(Some(answering(asked)))),
+      home.Observed([#("B", sessions.Idle)]),
+    )
+  let html = home_html(run(idle, home.SidebarArchiveAsked("B")))
+  assert string.contains(html, "Stop this session, then archive it?")
+  assert !string.contains(html, "mid-turn")
 }

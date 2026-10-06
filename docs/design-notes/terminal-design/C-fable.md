@@ -463,12 +463,12 @@ The way back is `Enter` on `main`, the first row, or `/strand main`.
 |---|---|---|---|
 | sub:tests focused, 120×40 | [standard-focus](C-fable-standard-focus-dark.png) | [light](C-fable-standard-focus-light.png) | [txt](C-fable-standard-focus.txt) |
 
-The gutter's hue comes from `hue` (`session_view/turns.gleam:248`), which
+The gutter's hue comes from `hue` (`session_view/turns.gleam:265`), which
 colours a strand by its position among the captured strands and never by its
 name, with `hues` (`session_view/turns.gleam:85`) sub-agent hues before they
 repeat. The terminal's row projection would carry a hue beside each row the
 way it carries anchors (`refresh_render_cache`, `tui/projection.gleam:79`),
-derived from `pieces` (`session_view/turns.gleam:298`), which already decides
+derived from `pieces` (`session_view/turns.gleam:313`), which already decides
 which strand a spawn, result, nudge or peer row belongs to. `tui/theme.gleam`
 needs five strand hue constants beside `advisor` (`tui/theme.gleam:17`),
 `signal` (`tui/theme.gleam:29`) and `current` (`tui/theme.gleam:32`), with
@@ -506,7 +506,7 @@ error on a `└` line, and the row reads `7 calls · 1 failed`. That frame is
 labelled as needing the change, in the frame itself and in its name.
 
 **Data.** The program source and its name come from the invocation's
-arguments (`code_mode_program`, `session_view/transcript_lines.gleam:3519`).
+arguments (`code_mode_program`, `session_view/transcript_lines.gleam:3528`).
 The state and the result come from the result's `status`, `value`, `message`,
 `failure` and `rejections` fields (`execution_value`,
 `tools/codemode.gleam:1336`), and the sandbox's enforcement report
@@ -728,7 +728,7 @@ No single key sends a decision.
 | Region | Data | Exists | Where |
 |---|---|---|---|
 | Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:520` |
-| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:298`), `hue` (`session_view/turns.gleam:248`); new hue constants in `tui/theme.gleam` |
+| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:313`), `hue` (`session_view/turns.gleam:265`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2628`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
 | Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1369`) |
@@ -738,13 +738,13 @@ No single key sends a decision.
 | Strand detail: cache | the cache outlook words | yes | `outlook_label` (`session_view/cache_miss.gleam:435`), today in `cache_outlook` (`tui/model.gleam:472`) |
 | Nudge count on the advisor row | pending nudges | yes | `Board` (`session_view/advisor_pending.gleam:51`), `nudges` (`session_view/model.gleam:224`) |
 | Changes tab | worktree observation, navigator, patch | yes | `State` (`session_view/worktree_view.gleam:98`), `layout` (`tui/diff_panel.gleam:33`), with `fold` (`session_view/changes_view.gleam:210`) as the labelled fallback |
-| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3519`), `execution_value` (`tools/codemode.gleam:1498`) |
+| Trace tab, code-mode box | program, result, status | yes | `code_mode_program` (`session_view/transcript_lines.gleam:3528`), `execution_value` (`tools/codemode.gleam:1498`) |
 | Trace tab, code-mode box | the capability call list | no | protocol change (section 9.1, with #656) |
 | Session tab: goal | the goal board | yes | `row` (`session_view/goal_view.gleam:553`), `goal` (`session_view/model.gleam:236`) |
 | Session tab: jobs | the live jobs board | yes | `jobs` (`session_view/session_summary.gleam:99`), `lines` (`session_view/live_jobs.gleam:107`) |
 | Session tab: schedules | the schedule rows | partly | `append_schedules` (`session_view/event_fold.gleam:596`) turns the `SchedulesSnapshot` rows into transcript lines and keeps no board; a `Shared.schedules` fold of the same `ScheduleRow` (`session_view/protocol.gleam:83`) is a `session_view` change, no wire change |
 | Session tab: viewers | the presence roster | yes | `viewers` (`session_view/session_summary.gleam:122`) |
-| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:4384`), `footer` (`session_view/context_view.gleam:358`) |
+| Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:353`), `money` (`session_view/transcript_lines.gleam:4393`), `footer` (`session_view/context_view.gleam:358`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:514`) |
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
 | Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:342`), `render` (`tui/approval_panel.gleam:286`) |

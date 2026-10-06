@@ -142,6 +142,17 @@ pub type Frame {
   Nudges
 }
 
+/// How a turn's work ended, as the records say.
+pub type Ending {
+  /// No response of the turn was aborted.
+  Finished
+
+  /// A response of the turn was aborted. The records say the response was
+  /// stopped and not what stopped it, so a steer, a Stop and an abort all read
+  /// as this.
+  Interrupted
+}
+
 /// What one turn's divider says.
 pub type Worked {
   Worked(
@@ -154,6 +165,8 @@ pub type Worked {
     files: Int,
     /// How many of the tool calls returned an error.
     failed: Int,
+    /// Whether a response of the turn was aborted.
+    ending: Ending,
   )
 }
 
@@ -1544,23 +1557,51 @@ fn worked(turn: Turn) -> Worked {
         Doing(..) | Answer(..) | Input(..) | Outside(..) -> False
       }
     })
-  Worked(duration_ms:, steps:, files:, failed:)
+  let ending = case list.any(turn.rest, stopped) {
+    True -> Interrupted
+    False -> Finished
+  }
+  Worked(duration_ms:, steps:, files:, failed:, ending:)
+}
+
+// Whether a folded response was aborted: its rows lead with the words an
+// aborted response draws (`transcript_lines.assistant_terminal_lines`).
+fn stopped(item: Classified) -> Bool {
+  case item {
+    Doing(item: Narrated(block:, ..), ..) ->
+      list.any(block.rows, fn(row) {
+        row.1
+        == transcript_line.Line(
+          transcript_line.System,
+          transcript_lines.stopped_words,
+        )
+      })
+    Doing(..) | Answer(..) | Input(..) | Outside(..) -> False
+  }
 }
 
 /// The divider's words: `Worked 48s · 4 steps · 2 files · 1 failed`, leaving
-/// out a figure the records did not give or that is zero.
+/// out a figure the records did not give or that is zero, and ending with
+/// `interrupted` for a turn a response of which was aborted.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1))
+/// assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1, turns.Finished))
 ///   == "Worked 48s · 4 steps · 2 files · 1 failed"
+/// assert turns.divider(turns.Worked(Some(12_000), 0, 0, 0, turns.Interrupted))
+///   == "Worked 12s · interrupted"
 /// ```
 pub fn divider(worked: Worked) -> String {
-  step_words.worked_with_failures(
-    worked.duration_ms,
-    worked.steps,
-    worked.files,
-    worked.failed,
-  )
+  let words =
+    step_words.worked_with_failures(
+      worked.duration_ms,
+      worked.steps,
+      worked.files,
+      worked.failed,
+    )
+  case worked.ending {
+    Finished -> words
+    Interrupted -> words <> " · interrupted"
+  }
 }

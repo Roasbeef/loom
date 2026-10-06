@@ -180,13 +180,8 @@ fn edits(
             ),
           ],
           why,
+          label(reason),
           [
-            #(
-              "label",
-              html.p([attribute.class("changes-label")], [
-                html.text(changes_view.label()),
-              ]),
-            ),
             #(
               file_key(first),
               file(first, workspace, [attribute.attribute("open", "")]),
@@ -199,6 +194,23 @@ fn edits(
         ])
     },
   )
+}
+
+// The `from this session's edits` label, for a board whose reason does not
+// already say so: a reason is one sentence that carries the same scope, and the
+// label under it would say it twice.
+fn label(reason: Option(String)) -> List(#(String, Element(message))) {
+  case reason {
+    Some(_) -> []
+    None -> [
+      #(
+        "label",
+        html.p([attribute.class("changes-label")], [
+          html.text(changes_view.label()),
+        ]),
+      ),
+    ]
+  }
 }
 
 // The line saying which edits the tab lists, for an empty board whose reason

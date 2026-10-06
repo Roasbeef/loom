@@ -1042,6 +1042,15 @@ fn line_element(shown: Line) -> Element(message) {
     // A patch is a diff, drawn in colour a line at a time by `view/diff`.
     Literal if line.speaker == transcript_line.ToolPatch ->
       diff.of_text(line.text)
+
+    // A failed response's cause is labelled, so it reads as a status of the
+    // turn and not as the assistant's words. The label is fixed text and the
+    // cause is the engine's, each a text node.
+    Literal if line.speaker == transcript_line.Failure ->
+      html.pre([attribute.class("line"), speaker_class(line.speaker)], [
+        html.span([attribute.class("failure-label")], [html.text("Failed:")]),
+        html.text(" " <> line.text),
+      ])
     Literal ->
       html.pre([attribute.class("line"), speaker_class(line.speaker)], [
         html.text(line.text),

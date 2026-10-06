@@ -1622,7 +1622,7 @@ pub fn the_owners_fresh_home_draws_the_actions_that_fit_each_row_test() {
 
   // Two running rows and two saved ones.
   assert list.length(string.split(html, ">Stop<")) == 3
-  assert list.length(string.split(html, ">Archive<")) == 5
+  assert list.length(string.split(html, ">Archive<")) == 3
   assert list.length(string.split(html, ">Delete<")) == 3
   assert string.contains(html, "actionable")
   assert !string.contains(html, "Delete this session? This cannot be undone.")
@@ -1765,7 +1765,7 @@ pub fn a_blocked_row_draws_archive_and_delete_test() {
   assert string.contains(html, "needs attention")
   assert string.contains(html, "title=\"This session was never finished")
   assert !string.contains(html, ">Stop<")
-  assert list.length(string.split(html, ">Archive<")) == 3
+  assert list.length(string.split(html, ">Archive<")) == 2
   assert list.length(string.split(html, ">Delete<")) == 2
 
   let #(plain, _) = opened(home.Start(..start(), sessions: listed))
@@ -2048,4 +2048,26 @@ pub fn the_sidebar_dot_class_follows_the_activity_test() {
   assert !string.contains(html, "residency live needs-you")
   let model = run(model, home.Observed([#("A", sessions.NeedsYou)]))
   assert string.contains(drawn(model), "residency live needs-you")
+}
+
+// F142: the owner's home that a bookmark resumed has Rename and no capability to
+// manage, and says in one sentence why Admin, Stop, Archive and Delete are
+// missing. A fresh home, which has them, and a member's home, which never does,
+// say nothing of it.
+pub fn a_bookmarks_home_says_why_it_has_no_session_actions_test() {
+  let ask = fn(_session, _name, _deliver) { Nil }
+  let sentence = "This page was opened from a bookmark, so Admin, Stop, Archive"
+
+  let #(resumed, _) = opened(home.Start(..start(), rename: Some(ask)))
+  let html = drawn(resumed)
+  assert string.contains(html, sentence)
+  assert string.contains(html, "only on the home page that loom ui opens.")
+
+  let manage = fn(_action, _session, _deliver) { Nil }
+  let #(fresh, _) =
+    opened(home.Start(..start(), rename: Some(ask), manage: Some(manage)))
+  assert !string.contains(drawn(fresh), sentence)
+
+  let #(member, _) = opened(start())
+  assert !string.contains(drawn(member), sentence)
 }

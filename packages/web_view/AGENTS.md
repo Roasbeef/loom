@@ -356,7 +356,7 @@ page keys and nonces, and the relay into the session's gateway.
   action)`). `home.Start.manage` is `Some` only for the owner's fresh operating
   home (`ui_socket.home_manage_capability`); a page with `None` draws nothing and
   ignores `StopRequested`, `ArchiveRequested`, `DeleteRequested`,
-  `StopConfirmed`, `DeleteConfirmed`, `ConfirmCancelled` and `ActionAnswered`. `home_table.Manage`
+  `StopConfirmed`, `DeleteConfirmed`, `ConfirmCancelled` and `ActionAnswered`. `home_table.Manage` (`Unmanaged | Withheld | Managed`; `Withheld` is the owner's bookmark home, which has `Start.rename` and no `Start.manage`, and draws one `p.home-withheld` sentence after the lists saying Admin, Stop, Archive and Delete are only on the home `loom ui` opens; the home's row buttons sit in three fixed grid columns, Rename first)
   draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one (a
   blocked row says "needs attention", with a fixed title, not "saved") in
   a `home-acts` group after the row's own button (the paths beneath
@@ -372,11 +372,15 @@ page keys and nonces, and the relay into the session's gateway.
   from the sidebar). `view/archiving` (`Archiving(message)`: `Never | Offered(ask,
   confirm, cancel, stage)`) is what a page passes `sidebar.view` and `sidebar.home`
   as their last argument. `Offered` draws `button.session-archive` after each
-  other row's own button (`Archive` on a saved or blocked row, `Stop and archive`
-  on a running one; hover and focus reveal it in the stylesheet, and it stays in
+  other row's own button (a 24px square holding `×`, its `aria-label` and `title`
+  `Archive` on a saved or blocked row and `Stop and archive` on a running one; the
+  row reserves a right-padding column for it, so it never covers the name, dot or
+  activity word, hover and focus reveal it in the stylesheet, and it stays in
   the tab order) and, while the row is asking, `li.session.confirming` holding the
   question (`div.session-confirm`: a fixed sentence, the session's name as a text
-  node, a confirm and a Cancel). The session on screen has no button and a `title`
+  node, a confirm and a Cancel). A running row whose activity read is working or
+  needs-you asks `Stop this session mid-turn, then archive it?` (`archiving.Turn`,
+  `MidTurn | AtRest`, derived in `sidebar.turn`). The session on screen has no button and a `title`
   that says why. The memo key includes `archiving.stage`. `archiving.action(entry)`
   is the action a press means (`StopArchive` for `Live`, `Archive` otherwise) and
   is read from the page's own list, never from the message; `archiving.confirmed`
@@ -781,7 +785,7 @@ page keys and nonces, and the relay into the session's gateway.
   folds from the records of the window the page projects (`relaned` builds it
   with the transcript, so a message that moved neither costs no fold). Its
   heading is `Changes · 2 files · +14 -2` with `from this session's edits`
-  under it, then one `<details>` per file with the first open. Paths and diff
+  under it (omitted when a reason sentence already says it), then one `<details>` per file with the first open. Paths and diff
   rows are text nodes; a row's class is one of four literals chosen from the
   fold's `Kind`; a file the session only wrote reads `written · N lines` where
   an edit's counts go. It has no handler and is memoized on the board. With no edit

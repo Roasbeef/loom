@@ -61,6 +61,21 @@
 ////
 //// The module takes `sessions.Group`s and imports nothing from
 //// `web_view/home`, which imports it.
+////
+//// ## Flow
+////
+//// `view` → `landing` → `group` → `row` → `offered` → `acts` → `confirming`
+////
+//// 1. `view` is the memoized section: the heading, the page's note, a
+////    `group` for each workspace, and `withheld_line` after them.
+//// 2. `landing` decides where the page's last note is drawn, so it never moves
+////    the list.
+//// 3. `group` draws a workspace's heading and its rows, and `row` draws one
+////    session, from its `standing` and, for the row's words, `described`.
+//// 4. `offered` and `acts` choose the buttons a row carries from the page's
+////    `Manage`, and `act` draws each one.
+//// 5. `confirming` replaces a row for the second step of a Stop or a Delete,
+////    and `editing` replaces it for a rename.
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -114,8 +129,15 @@ pub type Open {
 /// What the table offers for stopping, archiving and deleting a session
 /// (protocol-change/065, the addendum on session actions).
 pub type Manage(message) {
-  /// No control is drawn: the page is not the owner's fresh operating home.
+  /// No control is drawn: the page is not an owner's operating home, so it has
+  /// none to explain.
   Unmanaged
+
+  /// No control is drawn, and one quiet sentence says why: the page is the
+  /// owner's home but a bookmark opened it, so Admin, Stop, Archive and Delete
+  /// are on the home that `loom ui` opens and not here. The sentence is the
+  /// section's last child, so no row's path moves for it.
+  Withheld
 
   /// Each running row has a Stop button, and each saved row an Archive and a
   /// Delete. `stop` and `archive` are the messages those two send given the
@@ -209,6 +231,7 @@ pub fn view(
     element.ref(resume.pending(resume)),
     element.ref(open_form(rename)),
     element.ref(stage(manage)),
+    element.ref(explains(manage)),
     element.ref(create.state(offer)),
     element.ref(opening),
     element.ref(note),
@@ -220,30 +243,50 @@ pub fn view(
       Some(Under(notice:)) -> notice.line(notice)
       Some(InRow(..)) | Some(InHeading(..)) | None -> element.none()
     },
-    ..case groups {
-      [] -> [
-        html.p([attribute.class("home-empty")], [
-          html.text(
-            "You hold no sessions yet. A session you start or are invited to appears here.",
-          ),
-        ]),
-      ]
-      [_, ..] ->
-        list.map(groups, group(
-          _,
-          sessions.titles(groups),
-          activity,
-          now,
-          open,
-          resume,
-          rename,
-          manage,
-          offer,
-          opening,
-          landing,
-        ))
-    }
+    ..list.append(
+      case groups {
+        [] -> [
+          html.p([attribute.class("home-empty")], [
+            html.text(
+              "You hold no sessions yet. A session you start or are invited to appears here.",
+            ),
+          ]),
+        ]
+        [_, ..] ->
+          list.map(groups, group(
+            _,
+            sessions.titles(groups),
+            activity,
+            now,
+            open,
+            resume,
+            rename,
+            manage,
+            offer,
+            opening,
+            landing,
+          ))
+      },
+      withheld_line(manage),
+    )
   ])
+}
+
+// The sentence that says why a bookmark's home has no Admin, Stop, Archive or
+// Delete, or nothing on a page that has no such question. It follows the lists,
+// so it moves no row's path.
+fn withheld_line(manage: Manage(message)) -> List(Element(message)) {
+  case manage {
+    Withheld -> [
+      html.p([attribute.class("home-withheld")], [
+        html.text(
+          "This page was opened from a bookmark, so Admin, Stop, Archive "
+          <> "and Delete are only on the home page that loom ui opens.",
+        ),
+      ]),
+    ]
+    Unmanaged | Managed(..) -> []
+  }
 }
 
 // One project: its heading and the list of its sessions. The heading is the
@@ -373,8 +416,17 @@ fn activity_class(activity: Activity) -> String {
 // Where the page stands in acting on a row, for the memo's key.
 fn stage(manage: Manage(message)) -> Stage {
   case manage {
-    Unmanaged -> actions.Calm
+    Unmanaged | Withheld -> actions.Calm
     Managed(stage:, ..) -> stage
+  }
+}
+
+// Whether the page draws the sentence that says why there are no controls, for
+// the memo's key: `stage` is calm for both of the pages that draw none.
+fn explains(manage: Manage(message)) -> Bool {
+  case manage {
+    Withheld -> True
+    Unmanaged | Managed(..) -> False
   }
 }
 
@@ -532,7 +584,7 @@ fn acts(
     _ -> []
   }
   let managing = case manage, entry.residency {
-    Unmanaged, _ -> []
+    Unmanaged, _ | Withheld, _ -> []
     Managed(stop:, ..), Live -> [
       act("home-act", "Stop this session", "Stop", stop(entry.id), working),
     ]
@@ -605,7 +657,7 @@ fn in_row(manage: Manage(message)) -> Manage(message) {
         True -> Managed(..managed, stage: actions.Calm)
         False -> manage
       }
-    Managed(..) | Unmanaged -> manage
+    Managed(..) | Unmanaged | Withheld -> manage
   }
 }
 

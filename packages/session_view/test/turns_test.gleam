@@ -289,7 +289,13 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
     ]
   let assert [_, turns.Work(worked:, items:, ..), ..] = laid
   assert worked
-    == turns.Worked(duration_ms: Some(48_000), steps: 3, files: 2, failed: 0)
+    == turns.Worked(
+      duration_ms: Some(48_000),
+      steps: 3,
+      files: 2,
+      failed: 0,
+      ending: turns.Finished,
+    )
   assert turns.divider(worked) == "Worked 48s · 3 steps · 2 files"
 
   // The response's reasoning and its two edits, each joined to its result,
@@ -308,9 +314,19 @@ pub fn a_settled_turn_folds_its_work_behind_one_divider_test() {
 // A failed call is counted on the divider, so a folded turn says it went
 // wrong before anyone opens it.
 pub fn the_divider_counts_failed_calls_test() {
-  assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1))
+  assert turns.divider(turns.Worked(Some(48_000), 4, 2, 1, turns.Finished))
     == "Worked 48s · 4 steps · 2 files · 1 failed"
-  assert turns.divider(turns.Worked(None, 2, 0, 0)) == "Worked · 2 steps"
+  assert turns.divider(turns.Worked(None, 2, 0, 0, turns.Finished))
+    == "Worked · 2 steps"
+}
+
+// A turn whose response was aborted says so on its divider, so a reader of the
+// folded turn can tell a stopped turn from one that finished.
+pub fn the_divider_says_a_turn_was_interrupted_test() {
+  assert turns.divider(turns.Worked(Some(12_000), 0, 0, 0, turns.Interrupted))
+    == "Worked 12s · interrupted"
+  assert turns.divider(turns.Worked(Some(12_000), 2, 1, 1, turns.Interrupted))
+    == "Worked 12s · 2 steps · 1 file · 1 failed · interrupted"
 }
 
 pub fn a_running_turn_is_drawn_open_test() {
@@ -1239,4 +1255,54 @@ pub fn results_whose_calls_are_cut_count_as_steps_test() {
   let assert [_, turns.Work(worked:, ..), _] = laid
   assert worked.steps == 2
   assert turns.divider(worked) == "Worked 7s · 2 steps"
+}
+
+fn stopped_response() -> message.AgentMessage {
+  message.AssistantMessage(
+    [],
+    "test",
+    "test",
+    "test",
+    None,
+    None,
+    None,
+    usage(),
+    message.Aborted,
+    None,
+    None,
+    None,
+    None,
+    0,
+  )
+}
+
+// A turn whose response was aborted, as a steer does, carries `Interrupted`
+// and its divider says so. A turn that finished says nothing of it.
+pub fn an_aborted_response_marks_its_turn_interrupted_test() {
+  let laid =
+    laid_out(
+      [
+        #(10_000, said("write an essay", Some(message.Origin("p", "Alice")))),
+        #(22_000, stopped_response()),
+        #(23_000, said("make it shorter", Some(message.Origin("p", "Alice")))),
+        #(30_000, assistant([message.AssistantText("Short.", None)])),
+      ],
+      whole(),
+    )
+  let assert [_, turns.Work(worked: cut_short, ..), _, _] = laid
+  assert cut_short.ending == turns.Interrupted
+  assert turns.divider(cut_short) == "Worked 12s · interrupted"
+
+  let finished =
+    laid_out(
+      [
+        #(10_000, said("run it", Some(message.Origin("p", "Alice")))),
+        #(14_000, assistant([read_call()])),
+        #(15_000, result("c1", "fs_read", json.Object([]), 15_000)),
+        #(17_000, assistant([message.AssistantText("Done.", None)])),
+      ],
+      whole(),
+    )
+  let assert [_, turns.Work(worked:, ..), _] = finished
+  assert worked.ending == turns.Finished
 }
