@@ -115,7 +115,14 @@ pub type Latest {
 /// Whether a turn's work is folded under its divider or drawn open.
 pub type Folding {
   /// A settled turn: collapsed under the divider until the reader opens it.
+  /// A host that draws a closed fold has no use for its steps, so
+  /// `fold_budget.draw` leaves none in the piece.
   Folded
+
+  /// A settled turn the reader opened: the divider and the newest of its
+  /// steps that the page's budget allows, with `hidden` earlier ones not
+  /// held. It is zero when every step is.
+  Unfolded(hidden: Int)
 
   /// The running turn: drawn open, with no divider to collapse it.
   Open
@@ -254,7 +261,16 @@ pub type Piece {
 
   /// The work of one turn, behind one divider. `key` names the turn by its
   /// input, or `work:window-start` for the turn the window opens inside.
-  Work(key: String, worked: Worked, items: List(Item), folding: Folding)
+  /// `id` is the sequence of the first record the work folds, which is the
+  /// number a host names the fold by when the reader opens it (a number the
+  /// daemon assigned, never session text); a work with no items has none.
+  Work(
+    key: String,
+    worked: Worked,
+    items: List(Item),
+    folding: Folding,
+    id: Option(Int),
+  )
 
   /// An `agent_spawn` call: the child it started, once its result names one,
   /// and the purpose it was started for.
@@ -534,16 +550,24 @@ fn start_seq(piece: Piece) -> Result(Int, Nil) {
   case piece {
     Plain(block:, ..) | Prompt(block:, ..) | Commentary(block:, ..) ->
       key_seq(block.key)
-    Work(items: [Narrated(block:, ..), ..], ..) -> key_seq(block.key)
-    Work(items: [Step(key:, ..), ..], ..)
-    | Work(items: [Memory(key:, ..), ..], ..) -> key_seq(key)
-    Work(items: [], ..) | Decided(..) -> Error(Nil)
+    Work(id: Some(seq), ..) -> Ok(seq)
+    Work(id: None, ..) | Decided(..) -> Error(Nil)
     Spawned(key:, ..)
     | Returned(key:, ..)
     | Nudged(key:, ..)
     | Peer(key:, ..)
     | Sibling(key:, ..)
     | Missed(key:, ..) -> key_seq(key)
+  }
+}
+
+// The sequence of the first record a fold holds, which names it.
+fn fold_id(items: List(Item)) -> Option(Int) {
+  case items {
+    [Narrated(block:, ..), ..] -> key_seq(block.key) |> option.from_result
+    [Step(key:, ..), ..] | [Memory(key:, ..), ..] ->
+      key_seq(key) |> option.from_result
+    [] -> None
   }
 }
 
@@ -1435,7 +1459,8 @@ fn lay_out(turn: Turn, folding: Folding) -> List(Piece) {
   case working {
     [] -> list.append(lead, list.filter_map(turn.rest, placed))
     [_, ..] -> {
-      let divider = Work(work_key(turn), worked(turn), working, folding)
+      let divider =
+        Work(work_key(turn), worked(turn), working, folding, fold_id(working))
       list.fold(indexed, #([], Undrawn), fn(acc, pair) {
         let #(out, drawn) = acc
         let #(item, index) = pair

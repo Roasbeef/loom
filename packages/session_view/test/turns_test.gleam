@@ -263,6 +263,7 @@ fn shape(piece: turns.Piece) -> String {
         [] -> "prompt:" <> name
       }
     turns.Work(folding: turns.Folded, ..) -> "work:folded"
+    turns.Work(folding: turns.Unfolded(_), ..) -> "work:unfolded"
     turns.Work(folding: turns.Open, ..) -> "work:open"
     turns.Spawned(child:, ..) -> "spawn:" <> option.unwrap(child, "?")
     turns.Returned(child:, ..) -> "returned:" <> child
@@ -1317,6 +1318,7 @@ pub fn an_aborted_response_that_spoke_marks_its_turn_interrupted_test() {
   let assert [_, turns.Work(worked: folded, ..), _] = earlier
   assert folded.ending == turns.Interrupted
 }
+
 // A turn whose response was aborted, as a steer does, carries `Interrupted`
 // and its divider says so. A turn that finished says nothing of it.
 pub fn an_aborted_response_marks_its_turn_interrupted_test() {
