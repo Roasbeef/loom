@@ -704,7 +704,7 @@ pub type Control {
 
 /// How much of the strand's history the page holds. It only moves forward:
 /// a page that has loaded older rows keeps the larger limit, and a page
-/// that reached it stays full.
+/// that reached it stays full, unless the running turn alone crowded it.
 pub type Paging {
   /// The newest `live_rows` rows; the reader has not asked for older ones.
   Tail
@@ -715,6 +715,11 @@ pub type Paging {
   /// The page held more than `held_rows` rows while paged, so it keeps the
   /// newest `held_rows` and loads no more.
   Full
+
+  /// The running turn, drawn open with every row, took the room that older
+  /// turns held, so the page keeps the newest `held_rows` and loads no more for
+  /// now. The turn settles into one divider, and the page is `Paged` again.
+  Crowded
 }
 
 // Whether rows older than the oldest one the page holds exist.
@@ -2268,12 +2273,17 @@ fn read(
 
 // Whether the scan can be asked for more: it can not once it holds the
 // strand's first record, and not once it can no longer be read
-// (`history_view.scan_readable`: no sequence left, or its bound reached).
+// (`history_view.scan_readable`: no sequence left, its bound reached, or the
+// parent it is missing is a record over the presentation limit, which it holds
+// as a descriptor and no read will load).
 fn source_of(
   scrollback: history_view.State,
   branch: snapshot_view.Branch,
 ) -> turn_ledger.Source {
-  case branch.unloaded, history_view.scan_readable(scrollback) {
+  case
+    branch.unloaded,
+    history_view.scan_readable(scrollback, branch.unloaded)
+  {
     Some(_), True -> turn_ledger.Readable
     None, _ | Some(_), False -> turn_ledger.Exhausted
   }
@@ -2500,6 +2510,28 @@ fn lead_of(
   }
 }
 
+// Whether the page still gives up on completing a lead after the window was
+// laid out.
+//
+// `Spent` records that a read for the lead of the window was refused or could not
+// reach the turn's input, so the lead is drawn as it stands and not asked for
+// again. That holds of one lead only. Once it has been closed, the frontier has
+// moved past it, and the next records that arrive with no input of their own (a
+// resume, an input that landed before its operation) are another lead, which has
+// not been tried. Keeping `Spent` would close each of them as a turn of its
+// own, and the turn would be drawn as two dividers where a reload draws one.
+fn completion_after(
+  standing: Lead,
+  completion: Completion,
+  fresh: List(turn_ledger.Sealed),
+) -> Completion {
+  case standing, completion, fresh {
+    Whole, Spent, [_, ..] -> Untried
+    Whole, Spent, [] | Whole, Untried, _ | NoLead, _, _ | Unfinished, _, _ ->
+      completion
+  }
+}
+
 // Whether a turn's first block was drawn from a record the closed turns do not
 // already cover. The window is trimmed to the records after them, so this holds
 // of every turn the window shows, and it is what keeps a turn from being closed
@@ -2607,6 +2639,7 @@ fn laid_out(
       view: View(
         ..model.view,
         sealed: list.append(list.reverse(fresh), model.view.sealed),
+        completion: completion_after(standing, model.view.completion, fresh),
       ),
     )
   let model = trimmed(model)
@@ -2815,18 +2848,15 @@ fn fitted_page(
       turns.Expand(expansion.capped),
     )
     |> fold_budget.draw(fitted.folds, fitted.allowance)
-  let cut =
-    fitted.kept < held + list.length(model.view.sealed)
-    || list.length(kept_sealed) < list.length(by_rows)
-
-  // A paged page that had to cut a whole turn to stay within its limit is
-  // full: loading more would only cut again. A running turn that alone is over
-  // the limit is not that: it settles into one divider, so the page is not full
-  // because of it.
-  let paging = case cut, model.view.paging {
-    True, Paged -> Full
-    True, Tail | True, Full | False, _ -> model.view.paging
+  let rows = case fitted.kept < held + list.length(model.view.sealed) {
+    True -> Beyond
+    False -> Within
   }
+  let bytes = case list.length(kept_sealed) < list.length(by_rows) {
+    True -> Beyond
+    False -> Within
+  }
+  let paging = paged(model.view.paging, rows, bytes, window.latest)
   Model(
     ..model,
     view: View(
@@ -2847,6 +2877,63 @@ fn fitted_page(
       trace: joined_trace(kept_sealed, window.records),
     ),
   )
+}
+
+/// Whether the turns the page held fit one of its limits.
+pub type Reach {
+  /// Everything the page held fit.
+  Within
+
+  /// A turn had to be cut to stay within the limit.
+  Beyond
+}
+
+/// How the page's paging stands once its limits were applied: `rows` says
+/// whether the turns fit the row limit, `bytes` whether the closed turns fit
+/// their budget of text, and `latest` whether the newest turn is still running.
+///
+/// A paged page that had to cut a whole turn to stay within its limit is full:
+/// loading more would only cut again. What cut it decides how long that holds.
+/// The bytes of the closed turns only grow, since a summary never shrinks, so a
+/// cut by bytes is `Full` for good. A cut by rows may be the running turn's own,
+/// which is drawn open with every row, and that turn settles into one divider: the
+/// page is then `Crowded` while the turn runs and `Paged` again when it
+/// settles, with the room its divider gave back. A rows cut that outlives the
+/// running turn is `Full` as before. The turns a cut dropped are gone from the
+/// page, so a page that found nothing to cut on a later capture could not tell
+/// the two apart, which is why the running turn's cut is a state of its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.paged(component.Crowded, component.Within, component.Within, turns.Settled)
+///   == component.Paged
+/// ```
+@internal
+pub fn paged(
+  paging: Paging,
+  rows: Reach,
+  bytes: Reach,
+  latest: turns.Latest,
+) -> Paging {
+  case bytes, rows {
+    Beyond, _ ->
+      case paging {
+        Paged | Crowded -> Full
+        Tail | Full -> paging
+      }
+    Within, Beyond ->
+      case paging, latest {
+        Paged, turns.Running | Crowded, turns.Running -> Crowded
+        Paged, turns.Settled | Crowded, turns.Settled -> Full
+        Tail, _ | Full, _ -> paging
+      }
+    Within, Within ->
+      case paging, latest {
+        Crowded, turns.Settled -> Paged
+        Crowded, turns.Running | Tail, _ | Paged, _ | Full, _ -> paging
+      }
+  }
 }
 
 // The newest closed turns, given newest first, whose summaries fit `budget`
@@ -3164,7 +3251,7 @@ fn below_origin(
 fn limit(paging: Paging) -> Int {
   case paging {
     Tail -> live_rows
-    Paged | Full -> held_rows
+    Paged | Full | Crowded -> held_rows
   }
 }
 
@@ -4811,7 +4898,7 @@ pub fn top(model: Model(socket)) -> lane.Top {
   case reading_older(model), model.view.earlier, model.view.paging {
     True, _, _ -> lane.Loading
     False, Reached, _ -> lane.Beginning
-    False, Unheld, Full -> lane.Full(held_rows)
+    False, Unheld, Full | False, Unheld, Crowded -> lane.Full(held_rows)
     False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
   }
 }

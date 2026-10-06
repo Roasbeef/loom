@@ -20,6 +20,7 @@ import lustre/element
 import page_fixture
 import session_view/connection_event
 import session_view/transcript
+import session_view/turns
 import web_view/component
 import web_view/operator_page
 import web_view/view/lane
@@ -408,6 +409,86 @@ pub fn no_button_when_there_is_nothing_to_read_test() {
     element.to_string(operator_page.view(page)),
     "load-older",
   )
+}
+
+// A paged page that cut a turn to stay within its limit is full, whether it
+// stays so depends on what cut it. A running turn is drawn open with every row
+// and settles into one divider, so a page it crowded is paged again when it
+// settles, and Load older returns. A cut that outlives the running turn, and a
+// cut by the bytes of the closed turns, which only grow, stay full.
+pub fn a_page_a_running_turn_crowded_is_paged_again_when_it_settles_test() {
+  // The running turn's rows cut a turn: the page is crowded, and stays so while
+  // the turn runs, cut or not, since the turns it dropped are already gone.
+  assert component.paged(
+      component.Paged,
+      component.Beyond,
+      component.Within,
+      turns.Running,
+    )
+    == component.Crowded
+  assert component.paged(
+      component.Crowded,
+      component.Within,
+      component.Within,
+      turns.Running,
+    )
+    == component.Crowded
+
+  // It settles with room to spare: Load older returns.
+  assert component.paged(
+      component.Crowded,
+      component.Within,
+      component.Within,
+      turns.Settled,
+    )
+    == component.Paged
+
+  // It settles and is still over the limit, or the cut was of bytes: full.
+  assert component.paged(
+      component.Crowded,
+      component.Beyond,
+      component.Within,
+      turns.Settled,
+    )
+    == component.Full
+  assert component.paged(
+      component.Paged,
+      component.Beyond,
+      component.Within,
+      turns.Settled,
+    )
+    == component.Full
+  assert component.paged(
+      component.Crowded,
+      component.Within,
+      component.Beyond,
+      turns.Running,
+    )
+    == component.Full
+  assert component.paged(
+      component.Full,
+      component.Within,
+      component.Within,
+      turns.Settled,
+    )
+    == component.Full
+
+  // A tail page cut to its live rows is not full, and a paged one with room
+  // stays paged.
+  assert component.paged(
+      component.Tail,
+      component.Beyond,
+      component.Beyond,
+      turns.Settled,
+    )
+    == component.Tail
+  assert component.paged(
+      component.Paged,
+      component.Within,
+      component.Within,
+      turns.Running,
+    )
+    == component.Paged
 }
 
 // A lane that fails with a read out never answers it, so the lane stops

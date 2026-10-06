@@ -424,23 +424,43 @@ pub fn scan_older(state: State, missing: Option(String)) -> State {
 }
 
 /// Whether the scan can be asked for more: a sequence is left to read below
-/// what it holds, and it has neither reached its bound nor had to cut. A host
-/// that finds it unreadable takes what it holds as all there will be.
+/// what it holds, it has neither reached its bound nor had to cut, and the
+/// parent it is missing (`missing`, the scan's `Branch.unloaded`) is a record it
+/// could ever read. A parent the scan already holds as a descriptor with no
+/// payload is a record over the presentation limit, which a read below returns
+/// as a descriptor again, so no interval is going to prove it and the scan would
+/// otherwise walk every sequence beneath it to the strand's first. A host that
+/// finds it unreadable takes what it holds as all there will be.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert !history_view.scan_readable(history_view.empty())
+/// assert !history_view.scan_readable(history_view.empty(), None)
 /// ```
 @internal
-pub fn scan_readable(state: State) -> Bool {
+pub fn scan_readable(state: State, missing: Option(String)) -> Bool {
   case state.scan {
     Scanning(window:, before_seq:, ..) ->
       before_seq > 1
       && window.evicted_through == None
       && list.length(window.items) + 101 <= scan_records
       && window.bytes < scan_bytes
+      && !held_unloaded(window, missing)
     Unscanned | Abandoned -> False
+  }
+}
+
+// Whether the window holds the record `missing` names with no payload.
+fn held_unloaded(window: snapshot.Window, missing: Option(String)) -> Bool {
+  case missing {
+    Some(parent) ->
+      list.any(window.items, fn(item) {
+        case item {
+          snapshot.Unloaded(id, ..) -> id == parent
+          snapshot.Loaded(..) -> False
+        }
+      })
+    None -> False
   }
 }
 

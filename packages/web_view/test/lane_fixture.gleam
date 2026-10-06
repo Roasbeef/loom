@@ -1859,6 +1859,126 @@ pub fn reading(steps: List(Int)) -> List(snapshot.Item) {
   items
 }
 
+/// The records of a conversation whose turns each make their calls in batches,
+/// as a model that issues parallel calls does, oldest first: turn `t` is its
+/// question, then for each size in its list one assistant message holding that
+/// many `fs_read` calls followed by that many results, then its answer. A batch
+/// of `n` calls is `n + 1` records and a read that stops among its results holds
+/// results whose call it did not reach.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.batched([[40, 40], [3]])
+/// ```
+pub fn batched(batches: List(List(Int))) -> List(snapshot.Item) {
+  let #(_, _, items) =
+    list.fold(batches, #(1, 1, []), fn(acc, sizes) {
+      let #(turn, seq, items) = acc
+      let label = int.to_string(turn)
+      let #(next, reads) =
+        list.fold(sizes, #(seq + 1, []), fn(acc, size) {
+          let #(at, held) = acc
+          let names =
+            list.map(counted(size), fn(index) {
+              "t"
+              <> label
+              <> "-"
+              <> int.to_string(at)
+              <> "-"
+              <> int.to_string(index)
+            })
+          let calls =
+            item(
+              at,
+              10_000 + at * 10,
+              assistant(
+                list.map(names, fn(name) {
+                  call(
+                    name,
+                    "fs_read",
+                    json.Object([
+                      #("path", json.String("notes/" <> name <> ".txt")),
+                    ]),
+                  )
+                }),
+              ),
+            )
+          let results =
+            list.index_map(names, fn(name, index) {
+              let place = at + 1 + index
+              item(
+                place,
+                10_000 + place * 10,
+                result(name, "fs_read", json.Object([]), 10_000 + place * 10),
+              )
+            })
+          #(at + 1 + size, list.append(held, [calls, ..results]))
+        })
+      let bodies = [
+        item(seq, 10_000 + seq * 10, said("question " <> label, None)),
+        ..list.append(reads, [
+          item(
+            next,
+            10_000 + next * 10,
+            assistant([message.AssistantText("answer " <> label, None)]),
+          ),
+        ])
+      ]
+      #(turn + 1, next + 1, list.append(items, bodies))
+    })
+  items
+}
+
+/// `items` (oldest first) and then what a strand does when it resumes the turn
+/// it was in with no new input: `steps` more calls, each with its result, and a
+/// last answer (`answer resumed`). The records continue the sequence, so the
+/// strand's ancestry is unbroken, and none of them is a person's message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.resumed(lane_fixture.reading([110]), 3)
+/// ```
+pub fn resumed(items: List(snapshot.Item), steps: Int) -> List(snapshot.Item) {
+  let next = list.length(items) + 1
+  let more =
+    list.flat_map(counted(steps), fn(index) {
+      let name = "resumed-" <> int.to_string(index)
+      let at = next + 2 * index - 2
+      [
+        item(
+          at,
+          10_000 + at * 10,
+          assistant([
+            call(
+              name,
+              "fs_read",
+              json.Object([#("path", json.String("notes/" <> name <> ".txt"))]),
+            ),
+          ]),
+        ),
+        item(
+          at + 1,
+          10_000 + { at + 1 } * 10,
+          result(name, "fs_read", json.Object([]), 10_000 + { at + 1 } * 10),
+        ),
+      ]
+    })
+  let last = next + 2 * steps
+  list.flatten([
+    items,
+    more,
+    [
+      item(
+        last,
+        10_000 + last * 10,
+        assistant([message.AssistantText("answer resumed", None)]),
+      ),
+    ],
+  ])
+}
+
 /// A capture of `main` holding the records of `items` (oldest first) from the
 /// sequence `from` on, with `main` running under `operation` when one is
 /// given: what a gateway's cut carries when it holds only the newest records

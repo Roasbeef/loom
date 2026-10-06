@@ -205,10 +205,10 @@ pub fn a_scan_at_the_first_sequence_reads_no_further_test() {
   let current = view(1200)
   let above =
     history_view.scan(live(all), leaf_text(1), 2, snapshot.empty(), current)
-  assert history_view.scan_readable(above)
+  assert history_view.scan_readable(above, Some(leaf_text(2)))
   let at =
     history_view.scan(live(all), leaf_text(1), 1, snapshot.empty(), current)
-  assert !history_view.scan_readable(at)
+  assert !history_view.scan_readable(at, Some(leaf_text(1)))
   assert history_view.scan_older(at, Some(leaf_text(1))) == at
 }
 
@@ -253,5 +253,58 @@ pub fn a_scan_past_its_bytes_keeps_its_newest_end_test() {
   assert list.length(read.records) == 8
   let assert Ok(newest) = list.first(read.records)
   assert newest.entry.seq == 500
-  assert !history_view.scan_readable(received)
+  assert !history_view.scan_readable(received, Some(leaf_text(500)))
+}
+
+// Reads the scan until it can read no further, and says how many reads it took.
+fn exhausted(
+  scan: history_view.State,
+  all: List(snapshot.Item),
+  current: snapshot_view.View,
+  reads: Int,
+) -> #(history_view.State, Int) {
+  let assert Some(branch) = history_view.scanned(scan, current)
+  let wanted = history_view.scan_older(scan, branch.unloaded)
+  case
+    history_view.scan_readable(scan, branch.unloaded),
+    history_view.range(wanted)
+  {
+    True, Some(#(after, before)) ->
+      exhausted(
+        history_view.accept(
+          history_view.sent(wanted, before),
+          between(all, after, before),
+          before,
+          after,
+          current,
+        ),
+        all,
+        current,
+        reads + 1,
+      )
+    True, None | False, _ -> #(scan, reads)
+  }
+}
+
+// A record over the presentation limit reaches the page as a descriptor with no
+// payload, and no read below it ever proves it, so a scan that runs into one
+// stops there. Reading on would walk every sequence beneath it to the strand's
+// first for nothing: with the oversize record near the top of a session of fifty
+// thousand records, that is about five hundred serial reads.
+pub fn a_scan_stops_at_a_record_over_the_presentation_limit_test() {
+  let all =
+    list.map(entries(1200), fn(item) {
+      case snapshot.sequence(item) {
+        300 -> snapshot.Unloaded(leaf_text(300), 300, 5 * 1024 * 1024)
+        _ -> item
+      }
+    })
+  let current = view(1200)
+  let started =
+    history_view.scan(live(all), leaf_text(500), 501, snapshot.empty(), current)
+  let #(done, reads) = exhausted(started, all, current, 0)
+  assert reads <= 4
+  let assert Some(branch) = history_view.scanned(done, current)
+  assert branch.unloaded == Some(leaf_text(300))
+  assert !history_view.scan_readable(done, branch.unloaded)
 }
