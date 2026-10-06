@@ -2129,7 +2129,10 @@ by that answer: a refresh that cleared it earlier would drop a `NotResumed`.
 **Two presses at once.** Both stop the session, and the second isolation is
 refused because the first one made the change. `shareable.make` re-reads the
 session's scope when isolation is refused and takes the success arm when it is
-already session-only, so neither press reports a failure to move.
+already session-only, so neither press reports a failure to move. The stop wait
+gives up on `Saved` the same way: a task that finds the session already isolated,
+before it stops it or while it waits, stops waiting, because the other task has
+resumed the session and it will not be saved again.
 
 **Authority.** Re-derived in the daemon, never read from a page.
 

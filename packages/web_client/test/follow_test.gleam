@@ -422,3 +422,88 @@ pub fn the_jump_button_is_withheld_within_a_row_of_the_bottom_test() {
   assert follow_rule.jump(Following, 600) == follow_rule.Withheld
   assert follow_rule.jump_gap > follow_rule.slack
 }
+
+// The reader's place in each strand they leave is kept under the strand's
+// numeric key, and put back when they return.
+
+fn reading_at(top: Float) -> follow_rule.Reader {
+  follow_rule.Reader(..at_the_bottom(), position: Reading, top: top, gap: 900)
+}
+
+pub fn a_strand_left_while_reading_resumes_at_its_offset_test() {
+  let memory =
+    follow_rule.leaving(follow_rule.forgotten(), 7, reading_at(420.0))
+  assert follow_rule.arriving(memory, 7) == follow_rule.Resume(top: 420.0)
+  let resumed = follow_rule.arrived(at_the_bottom(), follow_rule.Resume(420.0))
+  assert resumed.position == Reading
+  assert resumed.top == 420.0
+}
+
+pub fn a_strand_left_at_the_bottom_follows_the_tail_test() {
+  let memory = follow_rule.leaving(follow_rule.forgotten(), 7, at_the_bottom())
+  assert follow_rule.arriving(memory, 7) == follow_rule.Tail
+  let followed = follow_rule.arrived(reading_at(420.0), follow_rule.Tail)
+  assert followed.position == Following
+  assert followed.gap == 0
+}
+
+pub fn a_strand_never_left_follows_the_tail_test() {
+  let memory =
+    follow_rule.leaving(follow_rule.forgotten(), 7, reading_at(420.0))
+  assert follow_rule.arriving(memory, 8) == follow_rule.Tail
+}
+
+pub fn each_strand_keeps_its_own_place_and_the_latest_leaving_wins_test() {
+  let memory =
+    follow_rule.forgotten()
+    |> follow_rule.leaving(7, reading_at(420.0))
+    |> follow_rule.leaving(8, reading_at(90.0))
+    |> follow_rule.leaving(7, reading_at(610.0))
+  assert follow_rule.arriving(memory, 7) == follow_rule.Resume(top: 610.0)
+  assert follow_rule.arriving(memory, 8) == follow_rule.Resume(top: 90.0)
+}
+
+// The decision a change of key makes, which the element then performs.
+
+pub fn the_key_already_shown_changes_nothing_test() {
+  assert follow_rule.keyed(
+      Some(7),
+      follow_rule.forgotten(),
+      reading_at(420.0),
+      7,
+    )
+    == follow_rule.Unchanged
+}
+
+pub fn the_first_key_follows_the_tail_and_saves_nothing_test() {
+  let assert follow_rule.Changed(key:, memory:, reader:, arrival:) =
+    follow_rule.keyed(None, follow_rule.forgotten(), at_the_bottom(), 7)
+  assert key == 7
+  assert memory == follow_rule.forgotten()
+  assert reader.position == Following
+  assert arrival == follow_rule.Tail
+}
+
+pub fn leaving_is_saved_before_arriving_test() {
+  // Left while reading at 420, shown again: the place just saved is the one
+  // the arrival resumes, so the departure is recorded before the lookup.
+  let assert follow_rule.Changed(memory:, ..) =
+    follow_rule.keyed(Some(7), follow_rule.forgotten(), reading_at(420.0), 8)
+  assert follow_rule.arriving(memory, 7) == follow_rule.Resume(top: 420.0)
+
+  let assert follow_rule.Changed(key:, reader:, arrival:, ..) =
+    follow_rule.keyed(Some(8), memory, at_the_bottom(), 7)
+  assert key == 7
+  assert arrival == follow_rule.Resume(top: 420.0)
+  assert reader.position == Reading
+  assert reader.top == 420.0
+}
+
+pub fn a_strand_left_at_the_bottom_arrives_as_a_tail_test() {
+  let assert follow_rule.Changed(memory:, ..) =
+    follow_rule.keyed(Some(7), follow_rule.forgotten(), at_the_bottom(), 8)
+  let assert follow_rule.Changed(arrival:, reader:, ..) =
+    follow_rule.keyed(Some(8), memory, reading_at(90.0), 7)
+  assert arrival == follow_rule.Tail
+  assert reader.position == Following
+}

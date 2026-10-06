@@ -221,6 +221,12 @@ export function prevent_default(event) {
   event.preventDefault();
 }
 
+// The button that submitted a form (`SubmitEvent.submitter`), or `Error`
+// for a submit raised with none.
+export function submitter(event) {
+  return found(event.submitter);
+}
+
 // The browser's per-origin storage, one item at a time. Storage throws when
 // it is blocked and in some private windows, and even reading the property
 // can throw, so each call answers a Result and never lets the exception out.

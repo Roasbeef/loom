@@ -40,10 +40,10 @@ fn handlers(view: Element(message)) -> List(String)
 // A session that is what `start` names, `A`, and the ones listed beside it.
 fn listing() -> List(Entry) {
   [
-    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None),
-    Entry("A", "web ui", "/src/loom", 100, Live, None, None),
-    Entry("C", "hex release", "/src/weft", 900, Saved, None, None),
-    Entry("lint-census", "census", "/src/loom", 50, Live, None, None),
+    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None),
+    Entry("A", "web ui", "/src/loom", 100, Live, None, None, None),
+    Entry("C", "hex release", "/src/weft", 900, Saved, None, None, None),
+    Entry("lint-census", "census", "/src/loom", 50, Live, None, None, None),
   ]
 }
 
@@ -127,7 +127,7 @@ pub fn a_row_is_a_button_only_where_a_press_can_work_test() {
 
   // `B` and the peer `lint-census` are running and are not on screen, and
   // `C` is saved.
-  assert list.length(string.split(sidebar, "<button")) == 4
+  assert list.length(string.split(sidebar, "<button")) == 5
   assert string.contains(sidebar, "class=\"session-open\"")
   assert string.contains(sidebar, "title=\"Open this session\"")
   assert string.contains(sidebar, "title=\"Resume this session\"")
@@ -281,7 +281,16 @@ pub fn a_peer_message_offers_no_open_for_any_other_session_test() {
 pub fn the_open_button_escapes_the_catalogues_name_test() {
   let #(model, _) =
     page(operator_page_answer(), [
-      Entry("lint-census", "<b>census</b>", "/src/loom", 50, Live, None, None),
+      Entry(
+        "lint-census",
+        "<b>census</b>",
+        "/src/loom",
+        50,
+        Live,
+        None,
+        None,
+        None,
+      ),
     ])
   let html = drawn(model)
   assert string.contains(html, ">Open &lt;b&gt;census&lt;/b&gt;<")
@@ -503,9 +512,9 @@ pub fn a_blocked_row_is_text_test() {
     component.update(
       model,
       component.SessionsListed([
-        Entry("B", "vetting lint", "/src/loom", 300, Live, None, None),
-        Entry("A", "web ui", "/src/loom", 100, Live, None, None),
-        Entry("Z", "stuck", "/src/loom", 50, sessions.Blocked, None, None),
+        Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None),
+        Entry("A", "web ui", "/src/loom", 100, Live, None, None, None),
+        Entry("Z", "stuck", "/src/loom", 50, sessions.Blocked, None, None, None),
       ]),
     )
   assert list.length(sidebar_clicks(handlers(operator_page.view(model)))) == 1

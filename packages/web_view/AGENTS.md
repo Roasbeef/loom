@@ -42,8 +42,10 @@ page keys and nonces, and the relay into the session's gateway.
   `title`.
 - `component.Transport(socket)`: `connect(inbox, opened)`, which returns at
   once and answers on `opened`; `transmit(socket, frame)`; `shut(socket)`;
-  `now()`, `sessions()`, the sidebar's read of the principal's sessions
-  (the daemon's authorized catalogue read, `[]` on failure), and
+  `now()`, `sessions(deliver)`, which starts the sidebar's read of the
+  principal's sessions (the daemon's authorized catalogue read, `[]` on
+  failure) in the daemon's own task and returns at once, the list arriving
+  as `SessionsListed` through `deliver`, and
   `open(id)`, a request to open another session that answers a
   `sessions.Answer` (a ticket's exchange path, or a `Declined` reason; an
   observer's page is always declined), and `invite`, an `Option` of a request
@@ -58,8 +60,10 @@ page keys and nonces, and the relay into the session's gateway.
   `Confirming`. `home` is an `Option` of a request for a ticket to the
   principal's home (a `sessions.Answer` again, declined as `NoHome`); it is
   `Some` only on a page whose grant has `Workspace` reach, an observer's
-  included, and the page draws the "Home" button only then. All run in the
-  component's process.
+  included, and the page draws the "Home" button only then. All but
+  `sessions`, `resume` and `rename` run in the component's process; those
+  three start a task and answer as a message, so the runtime never waits on
+  the registry for them.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
@@ -105,8 +109,10 @@ page keys and nonces, and the relay into the session's gateway.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped
-  (`history_view.resume`) before its window parks, and paging starts again
-  at `Tail`. The strand must be listed, must not be the active one, and the
+  (`history_view.resume`) before its window parks, and the row limit
+  (`Paging`) parks beside the window in `View.parked_paging`, keyed by strand
+  name, so returning to a strand restores its depth; a strand not yet left
+  starts at `Tail`. The strand must be listed, must not be the active one, and the
   page must be `Connected`; otherwise nothing changes. Every derived input
   (`Projected.strand`, `Stripped.followed`) includes the active strand, so
   the projection and the strip are rebuilt by `refreshed`. `component.strand(model)`
@@ -117,14 +123,21 @@ page keys and nonces, and the relay into the session's gateway.
   strand it was held for when that is not the one on screen.
 - **The home page** (protocol-change/065). `web_view/home` is a server
   component bound to no session: `Start(name, ceiling, refresh_ms, sessions,
-  open, resume)` with `sessions: fn() -> Listing` (`Listed(entries) | Unread |
-  Closed(ending)`), read when the timer is wired and every `refresh_ms`
-  (`home.refresh_ms`, 30 s), in the component's process. `Closed` ends the page
+  open, resume)` with `sessions: fn(fn(Listing) -> Nil) -> Nil` (`Listed(entries) |
+  Unread | Closed(ending)`), started when the timer is wired and every
+  `refresh_ms` (`home.refresh_ms`, 30 s) and answered from the daemon's task
+  as `Refreshed` (after which `signins` and `who`, the same shape, are started
+  and the timer armed) or, after an action, `Answered`; the runtime waits on
+  none of them (`ui_socket.read_task`). Each read is numbered (`Model.reads`,
+  `home.reads`) and both answers carry their read's number, so a timer's read
+  still in flight when an action read again is dropped when it lands rather
+  than putting the removed row back, and a dropped `Refreshed` still arms the
+  timer. `Closed` ends the page
   (`Status`: `Connecting | Connected | Ended`) and stops the reads; `Unread`
   keeps the last list. The view is `shell.view(shell.Home, ...)`:
   `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
-  `view/home_table` (a list per workspace: a heading with the shortened path
-  and a count, and one item per session with a glyph, the name, and a quiet
+  `view/home_table` (a list per project: a heading with the project's directory name
+  (`sessions.titles`) and a count, and one item per session with a glyph, the name, and a quiet
   line of `working · created 2h ago` (`running` until the activity read answers; the
   word `resident` is not drawn) or `saved · 2h ago`; the UTC
   minute is the `time`'s `title`; `home_bar` draws the session bar's `pill`
@@ -277,9 +290,16 @@ page keys and nonces, and the relay into the session's gateway.
   `ending_test` and `grants_test` read all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved | Blocked`; `Blocked` is a saved row no page may resume),
-  `Group` and `grouped(entries, current)` (the current
-  session's workspace first, then by newest session, sessions newest first,
-  ties by identity and path). `view/resume` is the one rule for a saved row
+  `Group` and `grouped(entries, current)` (groups by project: `Entry.project`
+  is the repository root the daemon found for the workspace, `None` for one that is
+  no repository, and `project_of` falls back to the workspace; the current
+  session's project first, then by newest session, sessions newest first,
+  ties by identity and path). `Group.workspace` is where "New session" under the
+  heading creates (the project's own checkout when a session runs there, else the
+  newest session's workspace, always one the catalogue lists). `titles(groups)` is
+  each heading: the directory name, `parent/name` for two projects that share one,
+  the whole path if that still collides. `worktree(entry)` is the worktree's
+  directory name when a session's workspace is not its project. `view/resume` is the one rule for a saved row
   (`Never | Offered(press, pending)`, `kind` giving `Text | Button | Opening`),
   shared by the sidebar and the home's table. `view/sidebar.view(groups, current, bars, open, resume)`
   draws it as the frame's second child (`aside.sidebar`, the left column;
@@ -293,13 +313,30 @@ page keys and nonces, and the relay into the session's gateway.
   message is `open(id)`; a saved session is one whose message is the resume's
   `press(id)` on an operator page (`operator_page.Resuming`, which
   `component.resume` handles through `Transport.resume`); the current row is
-  text, and so is a saved row while another resume is out. A workspace is a
+  text, and so is a saved row while another resume is out. The sidebar lists
+  running sessions only: the saved ones (and `Blocked`) sit after the groups in
+  `div.saved-region`, behind a `<loom-saved>` that holds the quiet "N saved"
+  button (`data-saved="toggle"`, no handler), in a `div.saved-panel` the
+  stylesheet hides until the element publishes the custom state `shown`. They
+  stay in the document, so the switcher still reads their `.session-open`
+  buttons; a saved session that is the page on screen is listed above like any
+  current row. A project is a
   section whose label the stylesheet draws as a small uppercase eyebrow with
   the session count, and a hairline in the divider colour separates one
   section from the next (team feedback, 2026-09-29); the list's own heading
-  is kept for assistive technology and not drawn. The
-  component reads `Transport.sessions` on `Opened` and on a `Ticked` at
-  least `sessions_refresh_ms` (30 s) after the last read, keeps at most
+  is kept for assistive technology and not drawn. A running row's word and dot follow the home's activity
+  read: after each list arrives (`SessionsListed`) the component asks `Transport.activity(ids, deliver)` (an
+  async task, never in the page runtime; the daemon's `server.home_activity` with
+  the page's own credential, so a member hears only of sessions they hold) and
+  `ActivityObserved` sets `View.activity`, so the session page says `working`,
+  `idle` or `needs you` (classes `residency live working|idle|needs-you`, drawn
+  as accent pulse, quiet, signal hue), and `running` until a session is named.
+  The read cannot tell an approval from a failed run: `needs you` covers both. The
+  component starts `Transport.sessions` on `Opened` and on a `Ticked` at
+  least `sessions_refresh_ms` (30 s) after the last read (the read runs in
+  the daemon's task and lands as `SessionsListed`; a read that is slow or
+  never answers leaves the page working with an empty sidebar,
+  `sidebar_test`), keeps at most
   `sessions.listed_limit` entries, and `component.session_groups(model)` is
   what the operator's page draws. The observer's page draws no sidebar:
   `ui_socket.listed_for` gives it an empty list without making the read
@@ -312,7 +349,8 @@ page keys and nonces, and the relay into the session's gateway.
   home (`ui_socket.home_manage_capability`); a page with `None` draws nothing and
   ignores `StopRequested`, `ArchiveRequested`, `DeleteRequested`,
   `StopConfirmed`, `DeleteConfirmed`, `ConfirmCancelled` and `ActionAnswered`. `home_table.Manage`
-  draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one in
+  draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one (a
+  blocked row says "needs attention", with a fixed title, not "saved") in
   a `home-acts` group after the row's own button (the paths beneath
   `home.table_path` are unchanged; the rename button is the group's first child),
   and Delete's first press replaces the row with the fixed question and a Delete
@@ -456,11 +494,14 @@ page keys and nonces, and the relay into the session's gateway.
   `lane.view(pieces, live, top, load, replies, marks)` draws the transcript
   lane, memoized per line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
-  exist, and words otherwise.
+  exist, and words otherwise. The `<loom-follow>` around it carries
+  `data-strand-key`, `marks.key`, a small number the page assigns each strand
+  the first time it shows it (`View.strand_keys`, never the name), under which the element keeps the reader's
+  scroll place per strand (protocol-change/051, the addendum on the strand key).
 - **The timeline and the marker controls.** Each piece of the lane is a
   `div.tl-row` holding a `span.dot` (decoration, `aria-hidden`, in the hue of
   the strand the piece belongs to, on a line down the left edge) and the
-  piece. `lane.Marks(active, hue, positions)` is what the lane needs to place
+  piece. `lane.Marks(active, hue, positions, key)` is what the lane needs to place
   them, built by `component.marks` from `strip.positions`: a piece of the
   strand on screen has no marker; a spawn's and a result's dot and the strand's
   `button.tag` in their heads belong to the child; a nudge's belong to the
@@ -540,12 +581,28 @@ page keys and nonces, and the relay into the session's gateway.
   reviews`.
 - **The live region.** `component.live(model)` turns the shared record's
   streams for the followed strand (`transcript_lines.display_streams`),
-  `Shared.summaries` and the generation clock into `live.Row`s, and
+  `Shared.summaries`, the generation clock and the inputs the daemon holds
+  for the strand (the capture's `pending_inputs`, through
+  `transcript_lines.held_inputs`, the terminal's rule) into `live.Row`s, and
   `lane.view(pieces, live, top, load, replies)` draws them through `view/live` as the
-  lane's last keyed entry, keyed `live`. `live.Thinking(progress, elapsed_ms,
-  headline)` is the reasoning row: `Reasoning · <loom-elapsed offset>`, with the
-  line count as the row's `title` and the headline as text beneath it when one
-  has been pushed; the thinking is not drawn. `live.Opened(elapsed_ms)` is the
+  lane's last keyed entry, keyed `live`. `live.Thinking(progress, text,
+  elapsed_ms, headline)` is the reasoning row, drawn by `fold_row.live_reasoning`
+  as a `<loom-expand kind="live">`: `Reasoning · <loom-elapsed offset>` and a
+  one-line Markdown preview of the latest line, with the reasoning so far
+  behind the chevron. The body is drawn a paragraph at a time, cut at the last
+  blank line, so each render's `draw` memo holds for the earlier paragraphs and
+  only the one still being written is parsed. The line count is the row's
+  `title`, and the headline is text beneath it when one has been pushed. A
+  settled reasoning row is `kind="settled"` and carries `handoff="yes"` only
+  when it is the lane's newest settled reasoning row (`lane.newest_thought`),
+  `handoff="no"` otherwise; an open live row publishes
+  `data-reasoning-open-until` on the document element and the settled row that
+  arrives takes it and opens (`web_client/expand`). A settled reasoning block of
+  every speaker shape (`ReasoningDigest` with or without `thoughts`,
+  `Reasoning`, `SummarizedReasoning`) is drawn by `lane.reasoning_row`:
+  `step_words.reasoning_of` heading (`Reasoning (summarized)`, the line count
+  when there is more to open, the time), a one-line preview, and the text as
+  Markdown behind the chevron. `live.Opened(elapsed_ms)` is the
   row before anything streams: while the followed strand's phase is `assistant`
   or `streaming` and no stream is held, `component.live` returns it alone,
   `Thinking · <loom-elapsed offset>` (the browser counts the reading on, so no
@@ -565,7 +622,15 @@ page keys and nonces, and the relay into the session's gateway.
   are unchanged. `live_test` pins the rows, the hand-over and the patch
   size (107 to 268 bytes for a fragment on a page of 150 rows, the same
   within two bytes on a page of one; `delivery_test`: a burst is one patch
-  of 576 to 668 bytes on the real runtime).
+  of 576 to 668 bytes on the real runtime). `live.Held(text, words)` rows
+  follow the streams: one per input the daemon holds for the strand on
+  screen, a steer not yet folded in or a prompt queued behind the turn,
+  the daemon's excerpt of the person's words and beneath it
+  `transcript_lines.held_words` (`steer · runs next`, `queued · after this
+  turn`), both text nodes in a quiet `div.held`. A capture lists them, so a
+  message the daemon took but has not run is on the page from the capture
+  that first lists it until the one that no longer does; no read or socket
+  event is added (`live_test` pins the row's arrival and departure).
 - `nudges.view(board)` draws the advisor's pending nudges
   (`Shared.nudges`, the terminal's "Advisor · pending, not delivered"), every
   body received oldest first as a text node and a `+n more waiting` line for the
@@ -621,6 +686,14 @@ page keys and nonces, and the relay into the session's gateway.
   `turns.with_decisions`, called by `component.pieces`, places each by the
   register sequence that committed it. The lane draws
   `p.decided` with the author, the verb and the tool as text nodes.
+  A page opened after a decision never saw the request pending, so it reads
+  `escalations_decided` once (`View.decided`, `component.decisions_read`,
+  sent when the lane is idle after the capture's own reads and never queued)
+  and folds the answer into the ledger as an exact lookup would. The record's
+  own scope names the strand, so the row is the one a page that watched the
+  decision draws; the ledger is keyed by escalation id, so a decision seen
+  live and read again is one row. The read is `protocol-change/015`'s
+  decided-approvals addendum.
 - `lane.Replies(fn(key) -> message)` or `NoReplies`, the last argument of
   `lane.view`. A peer card draws a `Reply to
   this peer` button after its body when the lane has replies, and the button
@@ -660,7 +733,19 @@ page keys and nonces, and the relay into the session's gateway.
   text nodes, a state's class is one of three literals chosen from the closed
   `State`, there is no handler, and the pane is memoized on the trace. With
   no program it is the heading and one line saying so.
-- `changes.view(board)` draws the Changes pane, the panel's second, on both
+- The Changes pane reads the workspace for an owner's or an operator's page
+  (protocol-change/051, the addendum of 2026-10-05). `Transport.worktree` is
+  `None` on an observer's page and otherwise a capability that returns at once
+  and answers as `Worktreed`; `web_view/worktrees` holds `Read`, `Asking`,
+  `latest_result` and the timings. `component.observed`, run at the end of every
+  message, asks once when the page opens and again after a tool result the last
+  read did not see, at most once in `worktrees.refresh_ms`, never while one is
+  out unless it has been out `lost_ms`. `changes.view(board, window, read)`
+  draws `view/worktree` for a board of a checkout and otherwise the edit board
+  below, with one sentence when the read was refused, failed or found no
+  checkout. Everything in a board is a text node; a failure's text is never
+  forwarded.
+- `changes.view(board, window, read)` draws the edit board as the Changes pane, the panel's second, on both
   pages from `component.changes(model)`, the board `session_view/changes_view`
   folds from the records of the window the page projects (`relaned` builds it
   with the transcript, so a message that moved neither costs no fold). Its
@@ -925,13 +1010,18 @@ page keys and nonces, and the relay into the session's gateway.
   latest" button while they are not, and keeps the reader's place when a
   press of "Load older" brings rows in above them. They run in the browser
   and send the server nothing. The operator's editor is drawn inside
-  `<loom-composer commands returned>`, which lists the slash commands as
+  `<loom-composer commands returned refused>`, which lists the slash commands as
   the draft grows, sends the draft on Command or Control with Enter (by
-  submitting the composer form), and puts a returned prompt in the editor.
-  Its inputs are the `commands` table, the `returned` count and the
+  submitting the composer form), puts a returned prompt in the editor, and
+  shows a pressed draft as a pending line until the server takes it.
+  Its inputs are the `commands` table, the `returned` count, the
   returned prompts as text-node children in a `returned` slot, numbered by
-  `data-n`; the editor stays the uncontrolled textarea, and keeps its place
-  when a return arrives.
+  `data-n`, and the `refused` count (`component.refusals`: the submits the
+  page or the lane's admission check refused with the draft kept), which
+  tells the element a press was refused while the editor stayed; the editor stays the
+  uncontrolled textarea, and keeps its place when a return arrives. A taken
+  draft replaces the editor and the element with it, which is how the
+  pending line leaves.
 - An operator's page also receives Lustre's `EventFired` for its handlers:
   a click on an approval button, on one of the controls or on a peer card's
   Reply, and the submit of the composer form or of one of the two control

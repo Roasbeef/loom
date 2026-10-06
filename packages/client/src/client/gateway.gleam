@@ -2072,6 +2072,8 @@ fn network_command(
       begin_transfer(state, connection, id, transfer.History(after, before))
     protocol.EscalationsGet(ids) ->
       begin_transfer(state, connection, id, transfer.Escalations(ids))
+    protocol.EscalationsDecided ->
+      begin_transfer(state, connection, id, transfer.Decided)
 
     // Everything that is not a bounded transfer goes to the shared dispatch,
     // which is where the observer guard and the subscribe gate live. The
@@ -2193,6 +2195,18 @@ fn begin_transfer(
         [],
         0,
       )
+    transfer.Decided ->
+      snapshot.Plan(
+        list.map(["approved", "rejected", "consumed"], fn(status) {
+          snapshot.Selection(
+            register.FactCustom,
+            runtime_escalation.key_prefix,
+            snapshot.StringFieldEquals("status", status),
+          )
+        }),
+        [],
+        0,
+      )
     _ -> snapshot_plan(recent)
   }
 
@@ -2216,6 +2230,21 @@ fn captured_transfer(
 ) -> State {
   let snapshot_id =
     int.to_string(connection) <> ":" <> int.to_string(state.next_transfer)
+
+  // The decided read selects every decided escalation under the metadata
+  // budget and keeps the newest here, so the transfer's size does not grow
+  // with the session's approval history.
+  let cut = case window {
+    transfer.Decided ->
+      snapshot.Cut(
+        ..cut,
+        cells: transfer.newest(cut.cells, transfer.decided_limit),
+      )
+    transfer.Recent
+    | transfer.Reconcile(_)
+    | transfer.History(..)
+    | transfer.Escalations(_) -> cut
+  }
   let metadata =
     json.Object([
       #(
@@ -2314,6 +2343,7 @@ fn captured_transfer(
     transfer.Reconcile(_) -> "catch_up"
     transfer.History(..) -> "history"
     transfer.Escalations(_) -> "escalations"
+    transfer.Decided -> "decided"
   }
   reply(
     state,
@@ -2840,6 +2870,7 @@ fn read_only(command: Command) {
     | protocol.SnapshotNext(..)
     | protocol.History(..)
     | protocol.EscalationsGet(..)
+    | protocol.EscalationsDecided
     | protocol.ListModels
     | protocol.ListSkills(..)
     | protocol.WorktreeDiffGet
@@ -4562,6 +4593,7 @@ fn run_command(
     protocol.SnapshotNext(..), Subscribed
     | protocol.History(..), Subscribed
     | protocol.EscalationsGet(..), Subscribed
+    | protocol.EscalationsDecided, Subscribed
     -> {
       reply_error(
         state,

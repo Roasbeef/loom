@@ -42,6 +42,23 @@
 //// says why the memos have to be the leaves; `lane_memo_test` counts the
 //// lines a render draws, and a change here must leave its counts as they
 //// are.
+////
+//// ## Flow
+////
+//// `view` → `rows` → `piece_element` → `item_element` → `block_element`
+//// → `line_element`
+////
+//// 1. `view` draws the lane, and `rows` keys one timeline row per piece, with
+////    `live_entry` last while the provider is writing.
+//// 2. `piece_element` draws one piece: a prompt, a fold of work, a card, an
+////    answer.
+//// 3. `item_element` draws one item of a fold, a step, a memory row or a
+////    block of lines, and `work_items` keys them.
+//// 4. `block_element` draws a block's rows; a reasoning row of any speaker
+////    goes through `reasoning_row`, so every settled reasoning block closes
+////    to the same heading and preview.
+//// 5. `line_element` draws one transcript line inside its own memo, as
+////    Markdown or as it is (`body_of`).
 
 import gleam/dict.{type Dict}
 import gleam/int
@@ -145,6 +162,9 @@ pub type Marks {
     hue: turns.Hue,
     /// The position of each listed strand's card, by the strand's identity.
     positions: Dict(String, Int),
+    /// The page's number for that strand, assigned in the order the page first
+    /// showed strands and never reused, so two strands never share one.
+    key: Int,
   )
 }
 
@@ -157,7 +177,7 @@ pub type Marks {
 /// // lane.view(pieces, [], lane.Beginning, load, lane.NoReplies, lane.no_marks())
 /// ```
 pub fn no_marks() -> Marks {
-  Marks(active: "main", hue: turns.Primary, positions: dict.new())
+  Marks(active: "main", hue: turns.Primary, positions: dict.new(), key: 1)
 }
 
 /// Whether the lane offers a reply to a peer's message, and what pressing it
@@ -245,27 +265,78 @@ pub fn rows(
   marks: Marks,
   session: String,
 ) -> Element(message) {
-  element.element("loom-follow", [attribute.class("follow")], [
-    top,
-    keyed.div(
-      [attribute.class("transcript lane"), attribute.role("log")],
-      list.append(
-        list.filter_map(pieces, fn(piece) {
-          case piece {
-            // The advisor's reviews are the panel's, never a row of the lane.
-            turns.Commentary(..) -> Error(Nil)
-            _ ->
-              Ok(#(
-                piece_key(piece),
-                timeline_row(piece, draw, replies, marks, session),
-              ))
-          }
-        }),
-        live_entry(live, draw, marks),
+  let newest = newest_thought(pieces)
+  element.element(
+    "loom-follow",
+    [
+      attribute.class("follow"),
+      attribute.data(strand_key_marker, int.to_string(marks.key)),
+    ],
+    [
+      top,
+      keyed.div(
+        [attribute.class("transcript lane"), attribute.role("log")],
+        list.append(
+          list.filter_map(pieces, fn(piece) {
+            case piece {
+              // The advisor's reviews are the panel's, never a row of the lane.
+              turns.Commentary(..) -> Error(Nil)
+              _ ->
+                Ok(#(
+                  piece_key(piece),
+                  timeline_row(piece, draw, replies, marks, session, newest),
+                ))
+            }
+          }),
+          live_entry(live, draw, marks),
+        ),
       ),
-    ),
-  ])
+    ],
+  )
 }
+
+// The row key of the newest settled reasoning row in the lane, or nothing
+// when it holds none. Only that row may take an open live row's state when
+// the live block settles into it (`fold_row.Handoff`): a row that is older,
+// such as one Load older brings in, never is the block the live row became.
+// The key is the engine's identity for the row and is only compared here,
+// never drawn.
+fn newest_thought(pieces: List(turns.Piece)) -> String {
+  pieces
+  |> list.flat_map(fn(piece) {
+    case piece {
+      turns.Plain(block:, ..) -> thought_keys(block)
+      turns.Work(items:, ..) ->
+        list.flat_map(items, fn(item) {
+          case item {
+            turns.Narrated(block:, ..) -> thought_keys(block)
+            turns.Step(..) | turns.Memory(..) -> []
+          }
+        })
+      _ -> []
+    }
+  })
+  |> list.last
+  |> result.unwrap("")
+}
+
+fn thought_keys(block: transcript_lines.Block) -> List(String) {
+  list.filter_map(block.rows, fn(row) {
+    case row.1.speaker {
+      transcript_line.ReasoningDigest
+      | transcript_line.Reasoning
+      | transcript_line.SummarizedReasoning -> Ok(row.0)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// The suffix of the attribute `<loom-follow>` reads the strand's key from
+/// (`data-strand-key`). Its value is `Marks.key`, a small number the page
+/// assigned to the strand the first time it showed it, so the attribute
+/// carries none of the strand's name (protocol-change/051, the addendum on the
+/// strand key).
+pub const strand_key_marker = "strand-key"
 
 // The live region as the lane's last entry, or no entry while nothing is
 // streaming. Its key is a word, and a piece's key is a sequence, so the two
@@ -364,6 +435,7 @@ fn timeline_row(
   replies: Replies(message),
   marks: Marks,
   session: String,
+  newest: String,
 ) -> Element(message) {
   let #(hue, target) = belongs_to(piece, marks)
   html.div([attribute.class("tl-row"), strip.hue_class(hue)], [
@@ -372,7 +444,7 @@ fn timeline_row(
       [],
     ),
     html.div([attribute.class("tl-body")], [
-      piece_element(piece, draw, replies, marks, session),
+      piece_element(piece, draw, replies, marks, session, newest),
     ]),
   ])
 }
@@ -442,10 +514,11 @@ fn piece_element(
   replies: Replies(message),
   marks: Marks,
   session: String,
+  newest: String,
 ) -> Element(message) {
   case piece {
     turns.Plain(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, session)
+      block_element(block, thoughts, took, draw, session, newest)
 
     // A person's message: who sent it on a line of its own, and the words in
     // a bubble beneath. The sender's name is session text, a text node. The
@@ -460,7 +533,7 @@ fn piece_element(
           html.span([attribute.class("who-name")], [html.text(name)]),
           html.text(" · operator"),
         ]),
-        block_element(block, dict.new(), None, draw, session),
+        block_element(block, dict.new(), None, draw, session, newest),
       ])
 
     // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
@@ -481,7 +554,7 @@ fn piece_element(
         ),
         keyed.div(
           [attribute.class("work-items")],
-          work_items(items, draw, session),
+          work_items(items, draw, session, newest),
         ),
       ])
 
@@ -489,7 +562,7 @@ fn piece_element(
     turns.Work(items:, folding: turns.Open, ..) ->
       keyed.div(
         [attribute.class("work open")],
-        work_items(items, draw, session),
+        work_items(items, draw, session, newest),
       )
 
     // A spawn is a line of the strand that made it: the verb the step words
@@ -684,13 +757,14 @@ fn work_items(
   items: List(turns.Item),
   draw: fn(Line) -> Element(message),
   session: String,
+  newest: String,
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
     let key = case item {
       turns.Narrated(block:, ..) -> block.key
       turns.Step(key:, ..) | turns.Memory(key:, ..) -> key
     }
-    #(key, item_element(item, draw, session))
+    #(key, item_element(item, draw, session, newest))
   })
 }
 
@@ -702,10 +776,11 @@ fn item_element(
   item: turns.Item,
   draw: fn(Line) -> Element(message),
   session: String,
+  newest: String,
 ) -> Element(message) {
   case item {
     turns.Narrated(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, session)
+      block_element(block, thoughts, took, draw, session, newest)
     turns.Memory(lines:, full:, ..) ->
       fold_row.memory(
         step_words.memory(lines),
@@ -738,29 +813,45 @@ fn standing_text(standing: turns.Standing) -> String {
 
 // A block drawn as the transcript draws it, one line per row. The blank a
 // terminal places between tool groups is spacing here, so a spacer block
-// never reaches the lane. A reasoning row is a row of its own, `Reasoning ·
-// 4s` (the time is the response's, from the record before it to its own, not
-// the block's alone), opened to the full reasoning when the page holds it
-// (`thoughts`, by the row's key) and to its opening line when that is all
-// there is.
+// never reaches the lane. A reasoning row is a row of its own (`reasoning_row`;
+// the time is the response's, from the record before it to its own, not the
+// block's alone), opened to the full reasoning when the page holds it
+// (`thoughts`, by the row's key).
 fn block_element(
   block: transcript_lines.Block,
   thoughts: Dict(String, List(Line)),
   took: Option(Int),
   draw: fn(Line) -> Element(message),
   session: String,
+  newest: String,
 ) -> Element(message) {
   let rows =
     list.map(block.rows, fn(row) {
+      let heir = case row.0 == newest {
+        True -> fold_row.Takes
+        False -> fold_row.Declines
+      }
       case row.1.speaker {
-        transcript_line.ReasoningDigest ->
-          fold_row.reasoning(
+        transcript_line.ReasoningDigest -> {
+          let held = result.unwrap(dict.get(thoughts, row.0), [])
+          case held {
+            [first, ..] ->
+              reasoning_row(step_words.Raw, first.text, held, took, heir, draw)
+            [] ->
+              reasoning_row(step_words.Raw, row.1.text, [], took, heir, draw)
+          }
+        }
+        transcript_line.Reasoning ->
+          reasoning_row(
+            step_words.Raw,
+            row.1.text,
+            more_of(row.1.text),
             took,
-            list.map(
-              result.lazy_unwrap(dict.get(thoughts, row.0), fn() { [row.1] }),
-              fold_row.line_row(_, draw),
-            ),
+            heir,
+            draw,
           )
+        transcript_line.SummarizedReasoning ->
+          summary_row(row.1.text, took, heir, draw)
         _ -> fold_row.line_row(row.1, draw)
       }
     })
@@ -775,6 +866,88 @@ fn block_element(
       ),
     ),
   )
+}
+
+// Every settled reasoning block is drawn by this one function, whichever
+// speaker its row has: the digest the transcript keeps for a block (with the
+// whole text beside it when the page holds it), the whole text itself, or a
+// provider's summary. The row is the terminal's heading (`step_words`: the
+// verb, the line count when there is more to open, the time), then a one-line
+// Markdown preview of the text's first line, and behind the chevron the whole
+// text as Markdown. `body` is what opens: empty when the preview already says
+// everything, in which case the row has no chevron and no count. The text is
+// the model's or the provider's and is drawn only as text nodes.
+fn reasoning_row(
+  provenance: step_words.Provenance,
+  text: String,
+  body: List(Line),
+  took: Option(Int),
+  heir: fold_row.Handoff,
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
+  let count = case body {
+    [] -> None
+    [_, ..] -> Some(list.length(string.split(text, "\n")))
+  }
+  fold_row.reasoning(
+    step_words.reasoning_of(provenance, count, took),
+    preview(text),
+    list.map(body, fold_row.line_row(_, draw)),
+    heir,
+  )
+}
+
+// The one-line preview of a settled block, parsed once. A settled block's text
+// does not change, so the memo's one dependency is the text and a lane render
+// that finds it unchanged does no Markdown work for it. Only the preview is
+// memoized: the body's own line memos are leaves, and a memo around them
+// would drop their cache entries when it hit (see `rows`).
+fn preview(text: String) -> List(Element(message)) {
+  case string.trim(text) {
+    "" -> []
+    _ -> [
+      element.memo([element.ref(text)], fn() {
+        fold_row.preview_span(markdown_view.line(text, step_words.result_limit))
+      }),
+    ]
+  }
+}
+
+// A summarized block's row text is the terminal's header line and the summary
+// beneath it; the summary is the text, and the header's words are the
+// heading's.
+fn summary_row(
+  text: String,
+  took: Option(Int),
+  heir: fold_row.Handoff,
+  draw: fn(Line) -> Element(message),
+) -> Element(message) {
+  let summary = case string.split_once(text, "\n") {
+    Ok(#(_, summary)) -> summary
+    Error(Nil) -> text
+  }
+  reasoning_row(
+    step_words.Summarized,
+    summary,
+    more_of(summary),
+    took,
+    heir,
+    draw,
+  )
+}
+
+// The body of a block whose whole text is the row's text: the text itself
+// when it runs past the one line the preview shows, and nothing when it does
+// not, so a short block is not opened to what it already says.
+fn more_of(text: String) -> List(Line) {
+  let trimmed = string.trim(text)
+  case
+    string.contains(trimmed, "\n")
+    || string.length(trimmed) > step_words.result_limit
+  {
+    True -> [transcript_line.Line(transcript_line.Reasoning, text)]
+    False -> []
+  }
 }
 
 // A child's report under its who-line: nothing for an empty report, the text

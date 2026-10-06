@@ -20,9 +20,10 @@ import session_view/changes_view
 import web_view/component
 import web_view/operator_page
 import web_view/view/changes
+import web_view/worktrees
 
 fn drawn(board: changes_view.Board) -> String {
-  element.to_string(changes.view(board))
+  element.to_string(changes.view(board, changes.Whole, worktrees.Withheld))
 }
 
 fn row(kind: changes_view.Kind, text: String) -> changes_view.Row {
@@ -79,6 +80,38 @@ pub fn no_edits_draw_the_heading_and_a_line_saying_so_test() {
   assert string.contains(html, "Changes</h2>")
   assert string.contains(html, "No edits in this session yet.")
   assert !string.contains(html, "changes-file")
+}
+
+// An empty board over a whole session says so plainly, and over a partial one
+// says it looked only at what is loaded and where to load more. Both say which
+// edits the tab can list.
+pub fn an_empty_board_says_how_much_it_searched_test() {
+  let whole =
+    element.to_string(changes.view(
+      changes_view.empty(),
+      changes.Whole,
+      worktrees.Withheld,
+    ))
+  let partial =
+    element.to_string(changes.view(
+      changes_view.empty(),
+      changes.Partial,
+      worktrees.Withheld,
+    ))
+
+  assert string.contains(whole, "No edits in this session yet.")
+  assert !string.contains(whole, "Load older")
+  assert string.contains(
+    partial,
+    "No edits in the loaded part of this session.",
+  )
+  assert string.contains(partial, "Load older")
+  assert !string.contains(partial, "No edits in this session yet.")
+
+  list.each([whole, partial], fn(html) {
+    assert string.contains(html, "edits made through the edit and write tools")
+    assert string.contains(html, "shell commands or editors are not shown")
+  })
 }
 
 pub fn the_heading_names_the_files_and_the_totals_test() {

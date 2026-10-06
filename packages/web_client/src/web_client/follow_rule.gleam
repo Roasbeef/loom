@@ -8,6 +8,7 @@
 //// the browser's runtime (`docs/lustre.md`), and the rule that only a scroll
 //// the reader made leaves the tail has one home.
 
+import gleam/dict.{type Dict}
 import gleam/float
 import gleam/int
 import gleam/option.{type Option, None, Some}
@@ -344,4 +345,140 @@ pub fn paged(reader: Reader) -> Reader {
 /// bottom.
 pub fn jumped(reader: Reader) -> Reader {
   Reader(..reader, position: Following, gap: 0)
+}
+
+/// The attribute the server draws the strand's numeric key in.
+pub const key_attribute = "data-strand-key"
+
+/// Where the reader stood in a strand's transcript when they left it.
+pub type Saved {
+  /// They were at the bottom, so the strand is followed again when they
+  /// return, however many rows landed meanwhile.
+  AtBottom
+
+  /// They had scrolled up to read, `top` pixels down.
+  Offset(top: Float)
+}
+
+/// What the follower remembers of the strands the reader left, by the
+/// strand's numeric key (`data-strand-key`, a number the page assigned the
+/// strand, so the key carries none of its text). It lives as long as the element.
+pub type Memory =
+  Dict(Int, Saved)
+
+/// What a strand's arrival asks of the transcript.
+pub type Arrival {
+  /// Follow the tail: the strand was never left, or was left at the bottom.
+  Tail
+
+  /// Put the transcript back `top` pixels down, and leave it there while the
+  /// reader reads.
+  Resume(top: Float)
+}
+
+/// Nothing remembered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert follow_rule.forgotten() == dict.new()
+/// ```
+pub fn forgotten() -> Memory {
+  dict.new()
+}
+
+/// The memory once the reader leaves the strand `key`: where they stood, from
+/// the last scroll the element heard, which is the position before the new
+/// strand's rows replaced the old ones, since a scroll event is reported
+/// after the change that caused it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // follow_rule.leaving(follow_rule.forgotten(), 7, reader)
+/// ```
+pub fn leaving(memory: Memory, key: Int, reader: Reader) -> Memory {
+  let saved = case reader.position {
+    Following -> AtBottom
+    Reading -> Offset(top: reader.top)
+  }
+  dict.insert(memory, key, saved)
+}
+
+/// What the transcript is asked to do when the strand `key` is shown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert follow_rule.arriving(follow_rule.forgotten(), 7) == follow_rule.Tail
+/// ```
+pub fn arriving(memory: Memory, key: Int) -> Arrival {
+  case dict.get(memory, key) {
+    Ok(Offset(top:)) -> Resume(top:)
+    Ok(AtBottom) | Error(Nil) -> Tail
+  }
+}
+
+/// The reader once an arrival is applied: reading for a resumed offset, so
+/// the rows that land do not carry the transcript away from it, and
+/// following the tail otherwise.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert follow_rule.arrived(follow_rule.start(), follow_rule.Tail).position
+///   == follow_rule.Following
+/// ```
+pub fn arrived(reader: Reader, arrival: Arrival) -> Reader {
+  case arrival {
+    Tail -> Reader(..reader, position: Following, gap: 0)
+    Resume(top:) -> Reader(..reader, position: Reading, top:)
+  }
+}
+
+/// What a change of the strand key asks of the element.
+pub type Keying {
+  /// The key is the one already shown, so nothing changes. The attribute may
+  /// be written again with the same value.
+  Unchanged
+
+  /// Another strand is shown: the memory holds the departing strand's place,
+  /// the reader is set for the arrival, and the transcript is asked to follow
+  /// the tail or resume an offset.
+  Changed(key: Int, memory: Memory, reader: Reader, arrival: Arrival)
+}
+
+/// The decision for a strand key `new` arriving while `shown` is on screen.
+/// The departing strand is saved before the arriving one is looked up, so a
+/// strand that is left and returned to in a row finds the place it was just
+/// left at.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert follow_rule.keyed(Some(7), follow_rule.forgotten(), follow_rule.start(), 7)
+///   == follow_rule.Unchanged
+/// ```
+pub fn keyed(
+  shown: Option(Int),
+  memory: Memory,
+  reader: Reader,
+  new: Int,
+) -> Keying {
+  case shown == Some(new) {
+    True -> Unchanged
+    False -> {
+      let kept = case shown {
+        Some(left) -> leaving(memory, left, reader)
+        None -> memory
+      }
+      let arrival = arriving(kept, new)
+      Changed(
+        key: new,
+        memory: kept,
+        reader: arrived(reader, arrival),
+        arrival:,
+      )
+    }
+  }
 }

@@ -186,6 +186,20 @@ starts `daemon/ui_sessions` and passes `server.Ui(sessions, upgrade)` to
 is a 404, the control `hello` has no `ui` field and `ui.link` answers
 `unavailable`.
 
+- `daemon/ui_project`: derives each workspace's project for the web view's
+  lists, with no cache and no process. `locate(workspace)` reads
+  `<workspace>/.git` through one `file_info` (which follows symlinks): a
+  directory is a plain checkout (the workspace is its own project); a file of at
+  most 4 KiB is a worktree's `gitdir: <repo>/.git/worktrees/<name>` pointer,
+  followed to the main repository (a bare repository's common directory is its
+  own project) and accepted only when git's backlink
+  `<repo>/.git/worktrees/<name>/gitdir` (same size cap) names this workspace's
+  `.git`, so a hostile `.git` cannot claim someone else's repository. Anything
+  else is `None`. Plain Gleam and `simplifile`, no FFI. `ui_socket.with_projects`
+  maps it over the entries: inside the session page's list task
+  (`listed_task`), and, for now, beside `home_listing` in the home's `sessions`
+  closure, which moves into the home's read task with it. The field is in
+  process, not on a wire, so no protocol addendum.
 - `daemon/ui_sessions`: one `weft/actor` owning the ticket table (60 s,
   single use) and the UI-session table (8 h), both keyed by the SHA-256 of
   the secret. A `Grant` carries a `Scope` (`Session(id)`, `Home` or `Admin`,
@@ -589,7 +603,14 @@ catalogue without opening runtimes. Explicit admission invokes
   read-only worktree broker; restarts reuse the session/workspace-bound record.
   Existing prompts without a baseline and inherited records from another
   session remain unavailable. Store failures refuse boot; Git failures become
-  durable unavailable baselines. `worktree_diff.capture_since` adds a bounded
+  durable unavailable baselines. A web page's Changes tab reads the same
+  observation without the gateway: `serve.Instance.worktree` (projected to
+  `Resident`) is the closure the gateway runs, `ui_socket.worktree_capability`
+  hands it to an owner's or an operator's page only, and
+  `ui_socket.worktree_answer` re-runs the page's check, caps by the page's
+  ceiling and Operator, and runs it for Operator or Owner alone, inside
+  `worktree_task`, a weft run that returns at once (protocol-change/051, the
+  addendum of 2026-10-05). `worktree_diff.capture_since` adds a bounded
   commit patch stream, including first-parent merge resolutions, to the same
   owner-scoped observation and budget. Protocol 029 defines this optional field.
 

@@ -6,6 +6,7 @@
 //// `component.sidebar_path` (`session_switch_test` reads what pressing one
 //// does), and leaves the paths the observer's socket admits where they were.
 
+import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -40,6 +41,7 @@ fn entry(
     residency:,
     subtitle: None,
     role: None,
+    project: None,
   )
 }
 
@@ -114,9 +116,9 @@ pub fn a_page_reads_its_sessions_when_it_opens_test() {
   let start =
     component.Start(
       ..start,
-      transport: component.Transport(..start.transport, sessions: fn() {
+      transport: component.Transport(..start.transport, sessions: fn(deliver) {
         process.send(asked, Nil)
-        listing()
+        deliver(listing())
       }),
     )
   let #(_, effects) =
@@ -174,9 +176,9 @@ pub fn the_list_is_read_again_only_after_the_interval_test() {
   let start =
     component.Start(
       ..start,
-      transport: component.Transport(..start.transport, sessions: fn() {
+      transport: component.Transport(..start.transport, sessions: fn(deliver) {
         process.send(asked, Nil)
-        []
+        deliver([])
       }),
     )
   let model = component.new(start)
@@ -205,6 +207,52 @@ pub fn the_list_is_read_again_only_after_the_interval_test() {
   page_fixture.set(clock, component.sessions_refresh_ms)
   let _ = run(model, component.Ticked)
   assert process.receive(asked, 0) == Ok(Nil)
+}
+
+// The read never holds the page. A transport whose read answers late, or
+// never, leaves `Opened` and every message after it to return at once with
+// the sidebar empty, and the list lands as the page's own message when the
+// transport's task delivers it: the runtime waits on no registry call
+// (protocol-change/051, the runtime never blocks).
+pub fn a_slow_sessions_read_does_not_hold_the_page_test() {
+  let answered = process.new_subject()
+  let delivery = process.new_subject()
+  let start = page_fixture.start()
+  let start =
+    component.Start(
+      ..start,
+      transport: component.Transport(..start.transport, sessions: fn(deliver) {
+        process.send(delivery, deliver)
+      }),
+    )
+  let #(opened, effects) =
+    component.update(
+      component.new(start),
+      component.Opened(process.new_subject()),
+    )
+  effect.perform(
+    effects,
+    fn(message) { process.send(answered, message) },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+  )
+
+  // The effect started the read and returned without an answer; the page
+  // goes on handling messages with no list.
+  assert process.receive(answered, 0) == Error(Nil)
+  assert component.session_groups(opened) == []
+  let #(ticked, _) = component.update(opened, component.Ticked)
+  assert component.session_groups(ticked) == []
+
+  // The answer comes when the transport's task delivers it, as the message
+  // the effect dispatches.
+  let assert Ok(deliver) = process.receive(delivery, 0)
+  deliver(listing())
+  assert process.receive(answered, 0) == Ok(component.SessionsListed(listing()))
 }
 
 // A page holding a capture and a list, on `A`.
@@ -301,7 +349,7 @@ pub fn the_sidebar_adds_only_its_session_buttons_test() {
   assert !string.contains(sidebar, "<form")
   assert !string.contains(sidebar, "href")
   assert !string.contains(sidebar, "onclick")
-  assert list.length(string.split(sidebar, "<button")) == 5
+  assert list.length(string.split(sidebar, "<button")) == 6
 }
 
 // The markup of the sidebar alone: from its opening tag to the first closing
@@ -352,6 +400,7 @@ fn sidebar_with(bars: List(sidebar.Bar)) -> Element(Nil) {
     sessions.grouped(listing(), "A"),
     "A",
     bars,
+    dict.new(),
     fn(_) { Nil },
     resume.Never,
   )
@@ -459,4 +508,290 @@ pub fn a_subtitle_is_only_ever_a_text_node_test() {
   ]
   assert handlers(operator_page.view(listed_page(rows)))
     == handlers(operator_page.view(listed_page(plain)))
+}
+
+// A session of a project that lives in `workspace`, which may be a worktree.
+fn in_project(
+  id: String,
+  workspace: String,
+  project: String,
+  created_at: Int,
+  residency: sessions.Residency,
+) -> Entry {
+  Entry(
+    ..entry(id, "session " <> id, workspace, created_at, residency),
+    project: Some(project),
+  )
+}
+
+// The sessions of every worktree of one repository share a group, headed by
+// the repository's directory name and not by the worktree's. A repository's own
+// checkout, a worktree and a directory that is no repository are three
+// sessions in two groups, and the group's key is the repository's whole path.
+pub fn worktrees_group_under_their_repository_test() {
+  let rows = [
+    in_project("a", "/src/btcd", "/src/btcd", 100, Live),
+    in_project(
+      "b",
+      "/src/btcd/.claude/worktrees/hungry-euclid-d93364",
+      "/src/btcd",
+      200,
+      Live,
+    ),
+    entry("c", "notes", "/home/notes", 50, Live),
+  ]
+  let groups = sessions.grouped(rows, "none")
+  assert list.map(groups, fn(group) { group.project })
+    == ["/src/btcd", "/home/notes"]
+  let assert [btcd, _] = groups
+  assert names(btcd) == ["b", "a"]
+  assert dict.get(sessions.titles(groups), "/src/btcd") == Ok("btcd")
+  assert dict.get(sessions.titles(groups), "/home/notes") == Ok("notes")
+
+  // A new session under the heading goes to a workspace the catalogue lists:
+  // the repository's own checkout when a session is there.
+  assert btcd.workspace == "/src/btcd"
+}
+
+// When no session runs in the repository's own checkout, a new session under
+// its heading goes where the newest session is.
+pub fn a_group_with_no_checkout_session_creates_where_the_newest_runs_test() {
+  let rows = [
+    in_project("a", "/src/btcd/.claude/worktrees/one", "/src/btcd", 100, Live),
+    in_project("b", "/src/btcd/.claude/worktrees/two", "/src/btcd", 200, Live),
+  ]
+  let assert [group] = sessions.grouped(rows, "none")
+  assert group.workspace == "/src/btcd/.claude/worktrees/two"
+}
+
+// Two repositories that share a base name stay two groups, and their headings
+// say the parent directory so they can be told apart. A third whose parent is
+// also shared is told apart by its whole path.
+pub fn repositories_that_share_a_name_never_merge_test() {
+  let rows = [
+    in_project("a", "/work/api", "/work/api", 100, Live),
+    in_project("b", "/play/api", "/play/api", 200, Live),
+    in_project("c", "/src/loom", "/src/loom", 300, Live),
+  ]
+  let groups = sessions.grouped(rows, "none")
+  assert list.length(groups) == 3
+  let titles = sessions.titles(groups)
+  assert dict.get(titles, "/work/api") == Ok("work/api")
+  assert dict.get(titles, "/play/api") == Ok("play/api")
+  assert dict.get(titles, "/src/loom") == Ok("loom")
+
+  let same_parent = [
+    in_project("d", "/a/x/api", "/a/x/api", 100, Live),
+    in_project("e", "/b/x/api", "/b/x/api", 200, Live),
+  ]
+  let titles = sessions.titles(sessions.grouped(same_parent, "none"))
+  assert dict.get(titles, "/a/x/api") == Ok("/a/x/api")
+  assert dict.get(titles, "/b/x/api") == Ok("/b/x/api")
+}
+
+// A worktree row names its worktree in a quiet word with the whole path as its
+// title, in the sidebar; the repository's own checkout row says nothing extra,
+// and the heading is the repository's name.
+pub fn a_worktree_row_says_which_worktree_test() {
+  let tree = "/src/btcd/.claude/worktrees/hungry-euclid-d93364"
+  let rows = [
+    in_project("A", "/src/btcd", "/src/btcd", 100, Live),
+    in_project("B", tree, "/src/btcd", 200, Live),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  assert string.contains(drawn, ">btcd<")
+  assert string.contains(
+    drawn,
+    "<span class=\"session-text\"><span class=\"session-name\">session B</span>"
+      <> "<span class=\"session-subtitle\"><span class=\"session-tree\" title=\""
+      <> tree
+      <> "\">hungry-euclid-d93364</span></span></span>",
+  )
+  assert list.length(string.split(drawn, "session-tree")) == 2
+  assert list.length(string.split(drawn, "class=\"workspace\"")) == 2
+}
+
+// The sidebar lists the sessions a process runs, and the saved ones sit behind
+// a quiet "N saved" line, in the document but in a panel the stylesheet hides
+// until the element opens it. The line is one button beneath the element, with
+// the fixed mark the element reads and no handler of the page's.
+pub fn saved_sessions_sit_behind_a_toggle_test() {
+  let drawn = operator_html(listed_page(listing()))
+  let assert Ok(sidebar) = sidebar_of(drawn)
+  let assert Ok(#(running, saved)) =
+    string.split_once(sidebar, "class=\"saved-region\"")
+
+  // `B` runs and `A` is on screen; the three saved sessions are behind.
+  assert string.contains(running, "vetting lint")
+  assert string.contains(running, "web ui")
+  assert !string.contains(running, "hex release")
+  assert !string.contains(running, "older weft")
+  assert !string.contains(running, "Session D")
+  assert string.contains(saved, "hex release")
+  assert string.contains(saved, "older weft")
+  assert string.contains(saved, "Session D")
+
+  // The toggle is one button in the element, closed to begin with.
+  assert string.contains(
+    saved,
+    "<loom-saved><button aria-expanded=\"false\" class=\"saved-toggle\""
+      <> " data-saved=\"toggle\" title=\"Show or hide the saved sessions\""
+      <> " type=\"button\">3 saved</button></loom-saved>",
+  )
+  assert string.contains(saved, "<div class=\"saved-panel\">")
+}
+
+// The switcher reads the sidebar's `.session-open` buttons, so a saved session
+// must still be one while it is folded away: every session that can be pressed
+// is a button in the sidebar's markup whether or not it is showing.
+pub fn the_saved_sessions_stay_in_the_document_for_the_switcher_test() {
+  let drawn = operator_html(listed_page(listing()))
+  let assert Ok(sidebar) = sidebar_of(drawn)
+
+  // `B` plus the three saved ones.
+  assert list.length(string.split(sidebar, "class=\"session-open\"")) == 5
+  assert string.contains(sidebar, "title=\"Resume this session\"")
+}
+
+// The session on screen is always listed, though it is saved: the person sees
+// where they are. With nothing else saved there is no toggle at all.
+pub fn the_current_saved_session_still_shows_test() {
+  let rows = [
+    entry("A", "web ui", "/src/loom", 100, Saved),
+    entry("B", "vetting lint", "/src/loom", 300, Live),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  let assert Ok(sidebar) = sidebar_of(drawn)
+  assert string.contains(sidebar, "class=\"session current\"")
+  assert string.contains(sidebar, "web ui")
+  assert !string.contains(sidebar, "saved-region")
+  assert !string.contains(sidebar, "loom-saved")
+}
+
+// A project whose sessions are all saved has no section above the line, and a
+// session that is blocked is saved too.
+pub fn a_project_with_only_saved_sessions_is_behind_the_toggle_test() {
+  let rows = [
+    entry("A", "web ui", "/src/loom", 100, Live),
+    entry("Z", "stuck", "/src/weft", 50, sessions.Blocked),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  let assert Ok(sidebar) = sidebar_of(drawn)
+  let assert Ok(#(running, saved)) =
+    string.split_once(sidebar, "class=\"saved-region\"")
+  assert !string.contains(running, "weft")
+  assert string.contains(saved, "weft")
+  assert string.contains(saved, ">1 saved<")
+}
+
+// A worktree row that also has a subtitle leads the quiet line with the
+// worktree, then the subtitle as its own text after a dot, and the path is only
+// ever in the worktree word's title.
+pub fn a_worktree_row_with_a_subtitle_says_both_test() {
+  let tree = "/src/btcd/.claude/worktrees/calm-turing"
+  let rows = [
+    Entry(
+      ..in_project("B", tree, "/src/btcd", 200, Live),
+      subtitle: Some("Fix the retry"),
+    ),
+    in_project("A", "/src/btcd", "/src/btcd", 100, Live),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  assert string.contains(
+    drawn,
+    "<span class=\"session-subtitle\"><span class=\"session-tree\" title=\""
+      <> tree
+      <> "\">calm-turing</span> · Fix the retry</span>",
+  )
+}
+
+// A page whose transport answers the activity read with `rows`, after a list
+// of `entries`, as the page's own messages arrive: the list, then the answer.
+fn with_activity(
+  entries: List(Entry),
+  rows: List(#(String, sessions.Activity)),
+) {
+  let asked = process.new_subject()
+  let start = page_fixture.start()
+  let start =
+    component.Start(
+      ..start,
+      transport: component.Transport(
+        ..start.transport,
+        activity: fn(ids, deliver) {
+          process.send(asked, ids)
+          deliver(rows)
+        },
+      ),
+    )
+  let messages = process.new_subject()
+  let model =
+    component.new(start) |> component.apply([lane_fixture.captured(10, None)])
+  let #(model, effects) =
+    component.update(model, component.SessionsListed(entries))
+  effect.perform(
+    effects,
+    fn(message) { process.send(messages, message) },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+  )
+  let assert Ok(answer) = process.receive(messages, 0)
+  let #(model, _) = component.update(model, answer)
+  #(model, process.receive(asked, 0))
+}
+
+// The session page asks the daemon what its running sessions are doing, once
+// for each read of the list, naming only the running ones in the order the
+// sidebar draws them, and the answer sets each row's word and dot class: the
+// same three states the home draws.
+pub fn the_session_pages_sidebar_draws_each_sessions_activity_test() {
+  let #(model, asked) =
+    with_activity(listing(), [
+      #("B", sessions.Working),
+      #("A", sessions.NeedsYou),
+    ])
+  assert asked == Ok(["B", "A"])
+  let assert Ok(sidebar) = sidebar_of(operator_html(model))
+  assert string.contains(sidebar, "residency live working")
+  assert string.contains(sidebar, "residency live needs-you")
+  assert string.contains(sidebar, "</span>working</span>")
+  assert string.contains(sidebar, "</span>needs you</span>")
+
+  let #(idle, _) = with_activity(listing(), [#("B", sessions.Idle)])
+  let assert Ok(sidebar) = sidebar_of(operator_html(idle))
+  assert string.contains(sidebar, "residency live idle")
+  assert string.contains(sidebar, "</span>idle</span>")
+
+  // A session the read has not named yet says "running" as it always did.
+  assert string.contains(sidebar, "</span>running</span>")
+}
+
+// A page with nothing running asks nothing, and the daemon is never asked
+// about a saved session.
+pub fn a_list_with_nothing_running_asks_no_activity_test() {
+  let rows = [entry("C", "hex release", "/src/weft", 900, Saved)]
+  let start = page_fixture.start()
+  let start =
+    component.Start(
+      ..start,
+      transport: component.Transport(..start.transport, activity: fn(_, _) {
+        panic as "nothing runs, so nothing is asked"
+      }),
+    )
+  let #(_, effects) =
+    component.update(component.new(start), component.SessionsListed(rows))
+  effect.perform(
+    effects,
+    fn(_) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+    fn() { panic as "no dynamic value" },
+    fn(_, _) { Nil },
+    fn(_, _) { Nil },
+    fn(_) { Nil },
+  )
 }

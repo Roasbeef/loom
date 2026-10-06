@@ -250,7 +250,7 @@ pub fn the_memory_context_and_reasoning_are_rows_of_the_same_shape_test() {
   )
   assert string.contains(
     html,
-    "<span class=\"verb\">Reasoning</span><span class=\"figure\">· 4s</span>",
+    "<span class=\"verb\">Reasoning</span><span class=\"figure\">· 2 lines · 4s</span>",
   )
 
   // Each opens to its body from its own line; the reasoning's body is the
@@ -260,15 +260,157 @@ pub fn the_memory_context_and_reasoning_are_rows_of_the_same_shape_test() {
   assert !string.contains(html, "[Ctrl+G to expand]")
 }
 
-pub fn a_reasoning_row_with_no_time_and_no_full_form_opens_to_its_line_test() {
+pub fn a_reasoning_row_with_no_more_to_open_is_its_heading_and_its_line_test() {
   let thought =
     Block("2.0", FromSpacer, [
       #("2.0:0", Line(transcript_line.ReasoningDigest, "plan the edit")),
     ])
   let html = drawn([work([turns.Narrated(thought, dict.new(), None)])])
-  assert string.contains(html, "<span class=\"verb\">Reasoning</span></span>")
-  assert string.contains(html, "plan the edit")
-  assert count(html, "<loom-expand") == 1
+  assert string.contains(html, "<span class=\"verb\">Reasoning</span>")
+  assert string.contains(
+    html,
+    "<span class=\"subject preview\">plan the edit</span>",
+  )
+
+  // Nothing is behind the line, so it has no chevron and no line count.
+  assert count(html, "<loom-expand") == 0
+  assert !string.contains(html, "lines")
+}
+
+pub fn a_closed_reasoning_row_previews_the_first_line_cut_as_markdown_test() {
+  let thought =
+    Block("2.0", FromSpacer, [
+      #("2.0:0", Line(transcript_line.ReasoningDigest, "Check 7")),
+    ])
+  let full = [
+    Line(
+      transcript_line.Reasoning,
+      "\n**Check** `7` <b>now</b>\nthen 13\nthen done",
+    ),
+  ]
+  let html =
+    drawn([
+      work([
+        turns.Narrated(thought, dict.from_list([#("2.0:0", full)]), None),
+      ]),
+    ])
+
+  // The preview is the first non-empty line with its Markdown drawn, in the
+  // head slot, and the model's markup is escaped text.
+  assert string.contains(html, "<span class=\"subject preview\">")
+  assert string.contains(html, "<strong>Check</strong>")
+  assert string.contains(html, "&lt;b&gt;now&lt;/b&gt;")
+  assert !string.contains(html, "<b>")
+  assert string.contains(html, "· 4 lines</span>")
+
+  // The row that replaces a live one is marked, so an open live row is
+  // carried over to it in the browser.
+  assert string.contains(html, "kind=\"settled\"")
+}
+
+// Only the newest settled reasoning row of the lane may take an open live
+// row's state, so only it carries `handoff="yes"`; an older row, such as one
+// Load older brings in, says `no`. The mark is a fixed word, never model text.
+pub fn only_the_newest_reasoning_row_is_marked_to_take_the_handoff_test() {
+  let thought = fn(key, text) {
+    turns.Narrated(
+      Block(key, FromSpacer, [
+        #(key <> ":0", Line(transcript_line.ReasoningDigest, text)),
+      ]),
+      dict.new(),
+      None,
+    )
+  }
+  let html =
+    drawn([
+      work([thought("2.0", "older <b>idea</b>"), thought("3.0", "newest idea")]),
+    ])
+  assert count(html, "handoff=\"yes\"") == 1
+  assert count(html, "handoff=\"no\"") == 1
+
+  // The older row comes first in the lane, so its `no` precedes the `yes`.
+  let assert Ok(#(before, after)) = string.split_once(html, "handoff=\"yes\"")
+    as "one row is marked"
+  assert string.contains(before, "handoff=\"no\"")
+  assert !string.contains(after, "handoff=\"no\"")
+  assert !string.contains(html, "<b>")
+}
+
+pub fn every_speaker_shape_of_a_reasoning_block_closes_to_a_heading_and_a_preview_test() {
+  let one = fn(speaker, text) {
+    drawn([
+      work([
+        turns.Narrated(
+          Block("2.0", FromSpacer, [#("2.0:0", Line(speaker, text))]),
+          dict.new(),
+          Some(69_000),
+        ),
+      ]),
+    ])
+  }
+
+  // A digest alone has nothing to open: heading, time, preview, no chevron.
+  let digest =
+    one(transcript_line.ReasoningDigest, "The `int` import is unused")
+  assert string.contains(digest, "<span class=\"verb\">Reasoning</span>")
+  assert string.contains(digest, "· 1m 9s</span>")
+  assert string.contains(
+    digest,
+    "<span class=\"subject preview\">The <code class=\"md-code-span\">int</code> import is unused</span>",
+  )
+  assert count(digest, "<loom-expand") == 0
+
+  // The whole text on the row: the same heading and preview of its first
+  // line, a line count, and a chevron to the rest.
+  let raw = one(transcript_line.Reasoning, "First idea\nsecond idea")
+  assert string.contains(raw, "<span class=\"verb\">Reasoning</span>")
+  assert string.contains(raw, "· 2 lines · 1m 9s</span>")
+  assert string.contains(
+    raw,
+    "<span class=\"subject preview\">First idea</span>",
+  )
+  assert count(raw, "<loom-expand") == 1
+
+  // A provider's summary: the verb names it, the terminal's header line is
+  // not drawn, and the preview is the summary's first line.
+  let summary =
+    one(
+      transcript_line.SummarizedReasoning,
+      "  [Ctrl+G to expand]\nFound it.\nSecond line",
+    )
+  assert string.contains(
+    summary,
+    "<span class=\"verb\">Reasoning (summarized)</span>",
+  )
+  assert string.contains(summary, "· 2 lines · 1m 9s</span>")
+  assert string.contains(
+    summary,
+    "<span class=\"subject preview\">Found it.</span>",
+  )
+  assert !string.contains(summary, "Ctrl+G")
+  assert count(summary, "<loom-expand") == 1
+
+  // Each is marked as a settled reasoning row, whatever its speaker.
+  assert string.contains(digest, "kind=\"settled\"")
+  assert string.contains(raw, "kind=\"settled\"")
+  assert string.contains(summary, "kind=\"settled\"")
+}
+
+pub fn a_reasoning_row_opens_to_the_whole_text_as_markdown_test() {
+  let thought =
+    Block("2.0", FromSpacer, [
+      #("2.0:0", Line(transcript_line.ReasoningDigest, "Plan")),
+    ])
+  let full = [Line(transcript_line.Reasoning, "# Plan\n- one\n- two")]
+  let html =
+    drawn([
+      work([
+        turns.Narrated(thought, dict.from_list([#("2.0:0", full)]), None),
+      ]),
+    ])
+  assert string.contains(html, "slot=\"body\"")
+  assert string.contains(html, "md-heading")
+  assert string.contains(html, "md-list")
 }
 
 pub fn a_fold_is_one_collapsed_line_and_no_rule_test() {

@@ -252,6 +252,9 @@ type Intent {
   /// Only the selected decision identities may answer this read.
   Lookup(ids: List(String))
 
+  /// Only the decided-approvals transfer may answer this read.
+  Listing
+
   /// The independently validated page stays inside these sequence bounds.
   History(after_seq: Int, before_seq: Int)
 }
@@ -320,6 +323,7 @@ type Delivery {
 type Projection {
   Conversation
   Decisions(List(String))
+  Decided
   OlderPage(after_seq: Int, before_seq: Int)
 }
 
@@ -759,6 +763,7 @@ pub fn mutation_available(channel: Channel(socket, recorder)) -> Bool {
     | Receiving(..)
     | AwaitingReply(_, Read)
     | AwaitingReply(_, Lookup(_))
+    | AwaitingReply(_, Listing)
     | AwaitingReply(_, History(..)) -> synchronized(channel)
     AwaitingReply(_, Mutation) | Closed -> False
   }
@@ -1041,6 +1046,7 @@ fn apply_reply(
         )
         attempt.NoSelection
         | attempt.Decisions(_)
+        | attempt.DecidedList
         | attempt.HistoryRange(..)
         | attempt.Credit(..) ->
           fail(channel, "resumed marker answers a request that asked for none")
@@ -1086,6 +1092,23 @@ fn apply_reply(
       {
         Error(reason) -> fail(channel, reason)
         Ok(transfer) -> #(credit(channel, transfer, Decisions(ids)), [])
+      }
+    }
+    AwaitingReply(_, Listing), session_wire.Begin(body) -> {
+      let from_seq = case channel.cut {
+        Some(cut) -> cut.next_seq
+        None -> 0
+      }
+      case
+        snapshot.begin_decided(
+          body,
+          channel.expected,
+          channel.attachment,
+          from_seq,
+        )
+      {
+        Error(reason) -> fail(channel, reason)
+        Ok(transfer) -> #(credit(channel, transfer, Decided), [])
       }
     }
     AwaitingReply(_, History(after, before)), session_wire.Begin(body) -> {
@@ -1147,6 +1170,22 @@ fn apply_reply(
           send_queued(
             Channel(..channel, phase: Ready, refresh_at: now),
             [LookedUp(records, missing)],
+            now,
+          )
+      }
+    }
+    Receiving(transfer, Decided), session_wire.End(body) -> {
+      let resolved = {
+        use cut <- result.try(snapshot.finish(transfer, body))
+        use cells <- result.try(snapshot_view.decided(cut))
+        approval.records(cells)
+      }
+      case resolved {
+        Error(reason) -> fail(channel, reason)
+        Ok(records) ->
+          send_queued(
+            Channel(..channel, phase: Ready, refresh_at: now),
+            [LookedUp(records, [])],
             now,
           )
       }
@@ -1415,6 +1454,7 @@ fn fail(channel: Channel(socket, recorder), reason: String) {
     ]
     AwaitingReply(_, Read)
     | AwaitingReply(_, Lookup(_))
+    | AwaitingReply(_, Listing)
     | AwaitingReply(_, History(..))
     | AwaitingBegin
     | Receiving(..)
@@ -1509,6 +1549,7 @@ pub fn replay_issued(
           Error("recorded catch-up cursor does not match the adopted cut")
       }
     Ready, attempt.Decisions(ids) -> lookup(channel, ids, now)
+    Ready, attempt.DecidedList -> decided(channel, now)
     Ready, attempt.HistoryRange(after, before) ->
       history(channel, after, before, now)
     Ready, attempt.NoSelection ->
@@ -1561,6 +1602,37 @@ pub fn lookup(
     _, None -> Ok(Channel(..channel, queued: Some(outbound)))
     _, Some(_) -> Error("one read is already queued")
   }
+}
+
+/// Requests the session's newest decided approvals without moving the main
+/// cursor, so a page that opened after a decision can draw its row.
+///
+/// The read is sent only to a synchronized lane with nothing out and nothing
+/// queued, and is never queued itself: a queued read would hold the lane's
+/// one queue slot, and an operator's first command would be refused behind
+/// a read the operator never asked for. A busy lane returns the reason, and
+/// the caller asks again at its next opportunity.
+/// The answer arrives as `LookedUp(records, [])`, the update an exact lookup
+/// produces, and is folded the same way, so a decision the page also saw
+/// live is one record in the ledger, keyed by the escalation's identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_channel.decided(channel, now:)
+/// ```
+pub fn decided(
+  channel: Channel(socket, recorder),
+  now now: Int,
+) -> Result(Channel(socket, recorder), String) {
+  use <- bool.guard(
+    !ready_for_read(channel),
+    Error("conversation read lane is busy"),
+  )
+  use outbound <- result.try(
+    outbound(session_wire.command(1, "escalations_decided", [])),
+  )
+  Ok(send(channel, Outbound(..outbound, intent: Listing), now))
 }
 
 /// Reads at most one hundred older sequence positions on the existing lane.
@@ -1714,6 +1786,7 @@ fn send(channel: Channel(socket, recorder), outbound: Outbound, now: Int) {
     <> outbound.suffix
   let selection = case outbound.intent {
     Lookup(ids) -> attempt.Decisions(ids)
+    Listing -> attempt.DecidedList
     History(after, before) -> attempt.HistoryRange(after, before)
     Read | Mutation -> attempt.NoSelection
   }
