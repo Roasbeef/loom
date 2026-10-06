@@ -12,8 +12,9 @@
 //// 3. `licensed_bounds` refuses max_fires and expiry arguments that make
 ////    no sense beside the chosen timing, before the seam is asked.
 //// 4. The seam's create closure decides what is admitted; `created_outcome`
-////    reports what was granted, including a wake the operator's policy
-////    withheld.
+////    reports what was granted, and `wake_note` says when the schedule will
+////    not start a run on an idle strand: a wake the policy withheld, or one
+////    the model never asked for.
 //// 5. `run_list` shows the caller's own schedules, and `run_cancel` retires one
 ////    by name, both keyed on the owner.
 //// 6. Any seam `Refusal` becomes the model's answer through `refusal_outcome`,
@@ -462,10 +463,13 @@ fn create_tool(
       <> "will read it with none of this moment's context. It fires onto "
       <> "this strand unless you name a `target`, which may only be a "
       <> "strand you spawned — a heartbeat onto one of those steers its "
-      <> "open run and never starts a new one.",
+      <> "open run and never starts a new one. A heartbeat created "
+      <> "without `wake: true` does not wake an idle strand either: it "
+      <> "waits for the next prompt.",
     prompt_snippet: Some(
       "`schedule_create` has text injected back into your own context "
-      <> "later, on a timer.",
+      <> "later, on a timer; without wake: true it does not wake an idle "
+      <> "strand.",
     ),
     schema: tool.object_schema(
       [
@@ -583,9 +587,12 @@ fn create_tool(
           tool.boolean_property(
             "whether this schedule may start a fresh run when the strand is "
             <> "idle, rather than waiting for one to be open. Defaults to "
-            <> "false. The operator may have disabled waking, in which case "
-            <> "the schedule is still created and the result says it will "
-            <> "only steer",
+            <> "false, and without it a schedule fires only into a run that "
+            <> "is open: a check-back heartbeat (\"re-check CI in 15 "
+            <> "minutes\") after which you end your turn needs `wake: true`, "
+            <> "or it waits for the next prompt. The operator may have "
+            <> "disabled waking, in which case the schedule is still created "
+            <> "and the result says it will only steer",
           ),
         ),
         #(
@@ -783,21 +790,11 @@ fn created_outcome(
   ctx: Ctx,
   asked_for_wake wanted: Wake,
 ) -> ToolOutcome {
-  // The one case where what happened differs from what was asked, and
-  // it has two causes the model cannot tell apart from here: an operator
-  // policy that allows steering only, or a target that is a subagent and
-  // therefore never woken. Saying plainly that it will steer is what
-  // stops a retry expecting a different answer; which of the two reasons
-  // it was is the host's business and changes nothing the model can do.
-  let note = case wanted, created.wake {
-    WakesIdle, SteersOnly ->
-      " Waking was not granted for this schedule, so it will steer a run "
-      <> "that is already open and hold when the strand is idle. The operator "
-      <> "can permit waking with [schedules] model_created = \"wake\"; "
-      <> "schedules onto subagents always steer, even with that setting."
-
-    WakesIdle, WakesIdle | SteersOnly, WakesIdle | SteersOnly, SteersOnly -> ""
+  let landing = case created.target == ctx.strand {
+    True -> OwnStrand
+    False -> SpawnedStrand
   }
+  let note = wake_note(wanted, created.wake, landing)
 
   // Where it fires is named only when it is somewhere other than here.
   // The common heartbeat is onto the caller's own strand, and a
@@ -825,6 +822,55 @@ fn created_outcome(
       #("wake", json.Bool(wake_flag(created.wake))),
     ]),
   )
+}
+
+// Where a created schedule fires, as far as its confirmation's wording
+// cares: the caller's own strand, or one the caller spawned.
+type Landing {
+  OwnStrand
+  SpawnedStrand
+}
+
+// The sentence a confirmation adds about waking, or none. There are two
+// cases where the schedule will not start a run on an idle strand, and
+// they need different advice.
+//
+// The model asked for a wake and did not get one. That has two causes the
+// model cannot tell apart from here: an operator policy that allows
+// steering only, or a target that is a subagent and therefore never
+// woken. Saying plainly that it will steer is what stops a retry
+// expecting a different answer; which of the two reasons it was is the
+// host's business and changes nothing the model can do.
+//
+// The model did not ask for a wake, which is the default, and the target
+// is its own strand. This is the common check-back heartbeat ("look at CI
+// in 15 minutes") followed by the model ending its turn. The fire then
+// finds the strand idle and holds until the owner's next prompt, while
+// the model believes it set a wake-up. The tool cannot see the operator's
+// policy, so the advice has to be true under either: create it with
+// `wake: true`, and the result says whether that was granted. A target
+// that is a subagent says nothing, because no argument could change it.
+fn wake_note(wanted: Wake, granted: Wake, landing: Landing) -> String {
+  case wanted, granted, landing {
+    WakesIdle, SteersOnly, OwnStrand | WakesIdle, SteersOnly, SpawnedStrand ->
+      " Waking was not granted for this schedule, so it will steer a run "
+      <> "that is already open and hold when the strand is idle. The operator "
+      <> "can permit waking with [schedules] model_created = \"wake\"; "
+      <> "schedules onto subagents always steer, even with that setting."
+
+    SteersOnly, SteersOnly, OwnStrand ->
+      " It will not start a run: it fires only into a run that is open, so "
+      <> "if you end your turn before it fires, it waits for your next "
+      <> "prompt. To be woken while idle, create it with wake: true; the "
+      <> "result says whether waking was granted."
+
+    SteersOnly, SteersOnly, SpawnedStrand
+    | WakesIdle, WakesIdle, OwnStrand
+    | WakesIdle, WakesIdle, SpawnedStrand
+    | SteersOnly, WakesIdle, OwnStrand
+    | SteersOnly, WakesIdle, SpawnedStrand
+    -> ""
+  }
 }
 
 fn list_tool(list_schedules: fn(Ctx) -> Result(List(Listed), Refusal)) -> Tool {
@@ -882,7 +928,10 @@ fn wake_flag(wake: Wake) -> Bool {
 fn describe_listed(listed: Listed, ctx: Ctx) -> String {
   let waking = case listed.wake {
     WakesIdle -> ", wakes an idle strand"
-    SteersOnly -> ", steers an open run only"
+    SteersOnly ->
+      ", steers an open run only (never wakes an idle strand; an occurrence "
+      <> "with no open run is held, and is not counted as fired until it is "
+      <> "delivered)"
   }
 
   // Same rule as a creation's confirmation: name the target only when it

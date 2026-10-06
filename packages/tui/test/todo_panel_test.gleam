@@ -209,6 +209,26 @@ pub fn a_transcript_row_names_what_the_call_changed_test() {
   assert todo_board.result_summary(carrying(board())) == Some("3/6 done")
 }
 
+// The call GLM-5.3 sent in session 01a10e0f carried `phases` and no `op`,
+// and its row read `todo · ?`.
+pub fn a_call_with_no_op_reads_as_invalid_arguments_test() {
+  assert todo_board.call_summary(
+      json.Object([
+        #(
+          "phases",
+          json.Array([
+            json.Object([
+              #("name", json.String("Survey")),
+              #("items", json.Array([json.String("Read README.md")])),
+            ]),
+          ]),
+        ),
+      ]),
+    )
+    == "todo · invalid arguments"
+  assert todo_board.call_summary(json.Object([])) == "todo · invalid arguments"
+}
+
 fn notes(strand: String, rows: List(notes_view.Note)) -> notes_view.Board {
   notes_view.Board(strand:, as_of: 30, total: list.length(rows), notes: rows)
 }

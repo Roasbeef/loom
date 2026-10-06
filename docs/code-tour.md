@@ -732,7 +732,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1693`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:2013`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:2019`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -749,7 +749,7 @@ failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
 discipline.
 
-For `bash`, `call_spec` (`tools/bash.gleam:729`) builds a `CallSpec` naming the
+For `bash`, `call_spec` (`tools/bash.gleam:766`) builds a `CallSpec` naming the
 op and step ids, the session base policy, the tool's own
 policy-shaped requirements, the consumed grants, `RefuseNarrowed`, the
 argv, the constructed environment, and a pooled budget
@@ -810,7 +810,7 @@ may be newer.
 
 ### Into the jail
 
-`spawn_helper` (`broker/exec.gleam:2716`) is where the Erlang side meets
+`spawn_helper` (`broker/exec.gleam:2768`) is where the Erlang side meets
 the OS. The helper's base policy has to arrive on file descriptor 3, and
 Erlang ports cannot map arbitrary descriptors, so the broker writes the
 policy to a mode-0600 file inside a mode-0700 directory and starts the
@@ -1251,7 +1251,7 @@ its next prompt, or is dropped as something it has already been told.
 ## 15. Code mode
 
 The other branch off a tool batch is a model that submits a *program*
-rather than a call. `codemode.execute` (`codemode/codemode.gleam:127`)
+rather than a call. `codemode.execute` (`codemode/codemode.gleam:118`)
 threads its source through three trust stages, short-circuiting at the
 first refusal:
 

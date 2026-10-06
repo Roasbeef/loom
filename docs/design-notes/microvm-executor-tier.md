@@ -61,7 +61,7 @@ already names remote pools among its intended carriers
 frames is a helper, whatever it is running on.
 
 **The channel is already a seam with two implementations.**
-`Transport` (`packages/broker/src/broker/exec.gleam:404`) has exactly two
+`Transport` (`packages/broker/src/broker/exec.gleam:410`) has exactly two
 variants: `PortTransport`, a real OS port onto a spawned helper, and
 `ChannelTransport`, an in-process fake the tests drive the same actor
 with. A vsock or virtio-serial transport is a third variant of a type
@@ -70,7 +70,7 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:3106`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:3158`)
 takes a `spawn` closure and hands helpers out through `checkout`
 (`packages/broker/src/broker/exec.gleam:2550`) and `checkin`
 (`packages/broker/src/broker/exec.gleam:2562`). "One microVM per helper"
@@ -413,7 +413,7 @@ two tracks composed rather than two separate projects.
 **6. Snapshot-boot warm pools.** Track 3's own words, and the answer to
 the one cost lazy spawning still carries. The production pool is no
 longer a literal: it is the node's scheduler count clamped to `[4, 16]`
-(`pool_size_for`, `packages/broker/src/broker/exec.gleam:3052`), wired
+(`pool_size_for`, `packages/broker/src/broker/exec.gleam:3104`), wired
 through `LOOM_HELPER_POOL`
 (`packages/client/src/client/serve.gleam:848`) into `start_pool`
 (`packages/client/src/client/serve.gleam:411`), which means there are

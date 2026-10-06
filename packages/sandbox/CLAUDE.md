@@ -902,6 +902,21 @@ only Go module.
   caller would otherwise run model-influenced code with `network: off` in
   the policy and nothing enforcing it. This is now the Windows/unknown-target
   path; Darwin instead runs its live Seatbelt suite and advertises `seatbelt`.
+- **A helper run from inside a jail cannot nest, and says so.** The kernel
+  refuses a second Seatbelt profile (`sandbox_apply: Operation not
+  permitted`, exit 71), so inside a Loom session `--self-test`, the
+  real-helper suites in `broker`, `tools` and `conformance`, `make e2e`,
+  `make e2e-codemode` and `docker-smoke` cannot run, and neither can an
+  `exec` of a setuid binary (`/bin/ps`) or a pty through `/dev/ptmx`. Writes
+  land only in the workspace, the user temp directories and the per-call
+  scratch; `/private/tmp` and `/var/tmp` are unwritable by design. The
+  self-test's `probeRootGate` creates its probe root once up front and, on
+  a permission refusal, prints `NOT RUN every probe` and `RESULT: NOT RUN
+  (not a pass)` with a nonzero exit instead of eleven failures. The Gleam
+  suites key their skip on `LOOM_SCRATCH_DIR` being set
+  (`broker/exec.jailed_session_skip_reason`). The Go seatbelt tests still
+  fail noisily there; they skip only when `sandbox-exec` is missing. None of this widens a
+  policy; do not debug it, signoff and CI arbitrate.
 
 ## Deep Docs
 

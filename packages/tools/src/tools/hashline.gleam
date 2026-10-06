@@ -395,6 +395,44 @@ pub fn render_line(anchored: AnchoredLine) -> String {
   int.to_string(anchored.line) <> ":" <> anchored.anchor <> "|" <> anchored.text
 }
 
+/// The `line:anchor|` prefix `render_line` puts in front of a line's text,
+/// when `text` starts with one.
+///
+/// A model that copies a rendered line into an edit's replacement text
+/// pastes the display prefix along with the content, and the prefix lands in
+/// the file. This is the inverse of the prefix half of `render_line`, kept
+/// beside it so the two cannot drift: decimal digits, a colon, exactly
+/// eight lowercase hex digits (the anchor width), and a pipe. A bare
+/// eight-hex token is not a prefix, because real hex constants and test
+/// vectors begin lines too; only the whole shape counts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert hashline.display_prefix("154:af63f04c|  x := 1")
+///   == Ok("154:af63f04c|")
+/// assert hashline.display_prefix("af63f04c") == Error(Nil)
+/// ```
+///
+pub fn display_prefix(text: String) -> Result(String, Nil) {
+  use #(number, rest) <- result.try(string.split_once(text, ":"))
+  let anchor_text = string.slice(rest, at_index: 0, length: 8)
+  let is_prefix =
+    all_graphemes_in(number, "0123456789")
+    && all_graphemes_in(anchor_text, "0123456789abcdef")
+    && string.slice(rest, at_index: 8, length: 1) == "|"
+  case is_prefix {
+    True -> Ok(number <> ":" <> anchor_text <> "|")
+    False -> Error(Nil)
+  }
+}
+
+// Whether `text` is non-empty and made only of graphemes from `alphabet`.
+fn all_graphemes_in(text: String, alphabet: String) -> Bool {
+  text != ""
+  && list.all(string.to_graphemes(text), string.contains(alphabet, _))
+}
+
 // --- applying edit plans -------------------------------------------------
 
 // A hunk normalized for validation and splicing. For replaces/deletes

@@ -77,3 +77,18 @@ fn map_error(error: CallError) -> KvError {
     Denied(code:, message:) -> KvDenied(code:, message:)
   }
 }
+
+/// A one-line rendering of a `KvError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert kv.error_text(kv.KvUnavailable("no channel")) == "kv unavailable: no channel"
+/// ```
+///
+pub fn error_text(error: KvError) -> String {
+  case error {
+    KvDenied(code:, message:) -> code <> ": " <> message
+    KvUnavailable(reason:) -> "kv unavailable: " <> reason
+  }
+}

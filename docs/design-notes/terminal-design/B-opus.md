@@ -409,9 +409,9 @@ record would need a new control command.
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
-| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3421`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3664`; the call list has no data and needs a new wire record |
-| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2535` |
-| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1677`; not recognised by `session_view` today |
+| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3519`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3762`; the call list has no data and needs a new wire record |
+| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2633` |
+| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:1722`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
 Every row above is either drawn today or a change inside `session_view` or
@@ -451,10 +451,10 @@ receives.
   "needs protocol-change: call record".
 
 What the client receives: the program, from the call's `program` argument
-only (`code_mode_program` at `session_view/transcript_lines.gleam:3421`),
+only (`code_mode_program` at `session_view/transcript_lines.gleam:3519`),
 and the result's details, which carry the value or the error message and
 details, `status`, `manifest_hash` and `sandbox`
-(`code_mode_result_lines` at `session_view/transcript_lines.gleam:3664`
+(`code_mode_result_lines` at `session_view/transcript_lines.gleam:3762`
 draws them). There is no call data at all: no call list, no capability
 names, no per-call status. Capability calls are serviced inside the
 satellite and the broker, and no transcript entry is written per call. A
@@ -495,7 +495,7 @@ that heading.
 **Local strand messages are weaker.** A message from another strand in the
 same session arrives as a user turn with no origin. Its sender is written by
 the harness into a text frame, `[message from <strand>]` … `[end message. …]`
-(`frame_message` at `client/agency.gleam:1677`). Today `session_view` does not
+(`frame_message` at `client/agency.gleam:1722`). Today `session_view` does not
 recognise the frame, so these messages are drawn as `› User` turns, which is
 one of the pain points in the owner's recordings. Concept B recognises the
 frame by both its header and its footer, as advisor frames are recognised,

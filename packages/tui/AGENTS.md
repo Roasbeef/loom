@@ -1222,7 +1222,10 @@ boundaries and the split's measurements under Invariants.
   `session_view/code_tokens`, the scanner the web view also draws, and keeps
   only the style for each class (`code_span`).
 - `tui/markdown` walks `session_view/markdown`'s closed tree, the one the
-  web view also draws, and emits etui spans directly. The parser is linear
+  web view also draws, and emits etui spans directly. `render_detail` is
+  `render` for a tool's detail rows (`ToolDetail`): the harness's fences
+  name a language only so the source is highlighted, so the label row an
+  answer's code block opens with is dropped. The parser is linear
   in its input and bounds the tree's depth; mork, which this module walked
   before, took time exponential in a run of unclosed `[` and hung the
   terminal, since the live tail parses an answer again on every delta. `render(markdown, width)` takes the width the rows will
@@ -2708,22 +2711,24 @@ result and `joined_block_lines` for the response's blocks, since a program's
 block and its settled row differ in height. The separation fold passes over
 an empty block to the last block that drew a row.
 
-A code-mode program that settled is one `✓ code_mode · completed · result …`
-row. One the client has no result for yet, and one that failed,
+A code-mode program that is running, one that settled and one that failed
 are titled blocks drawn by `tui/program_rows`: a rule carrying the title, a
 box holding the body, and a rule carrying the foot, two cells in and one
-short of the pane's right edge, the border in `theme.current` while it waits
-and `theme.danger` when it failed. A running block shows `PROGRAM · N lines,
+short of the pane's right edge, the border in `theme.current` while it waits,
+`theme.added` when it settled and `theme.danger` when it failed. A running block shows `PROGRAM · N lines,
 M shown`, the program's first non-blank lines under their numbers, and
 `RESULT · none yet`; its foot names the `within_ms` budget the call asked
 for. A failure block shows the error; a compiler's diagnostic is cut to its
 heading with `· line N` and the source it quotes, and the foot says how
 many lines the whole error has. The key that expands a response is named
 once, on its heading; the feet carry only facts. Body rows holding a number
-and a `│` gutter are drawn as source on the raised ground. A result that
-carries the call record of protocol-change 060 adds to both: the settled row
+and a `│` gutter are drawn as source on the raised ground. A settled block keeps the
+running block's title and program rows, so they stay put when the result
+arrives, and it grows below them with a `RESULT · object · 3 keys` preview with a type or size
+hint per key in place of the value's JSON. A result that
+carries the call record of protocol-change 060 adds to both: the settled title
 says `4 calls` (or the record's whole summary when any call did not settle),
-and a failure block lists the calls under `CALLS · 7 calls · 1 failed`,
+and a settled or failure block lists the calls under `CALLS · 7 calls · 1 failed`,
 consecutive calls with one capability and ending grouped as `✓ fs.read ×3
 a.gleam · b.gleam`, and drawn in the success or danger colour by that
 leading glyph. The record is written on a result only, so a block still

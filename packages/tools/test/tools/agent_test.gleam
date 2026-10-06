@@ -1258,3 +1258,14 @@ pub fn wait_exposes_abort_causes_without_changing_the_wire_outcome_test() {
     },
   )
 }
+
+pub fn the_spawn_description_says_how_parent_and_child_talk_test() {
+  // The parent reads this when it decides what to put in `tools`, and when
+  // it wonders how a running child can be reached.
+  let registry = tool.registry(agent.tools(echoing_agency()))
+  let assert Ok(spawn) = tool.lookup(registry, "agent_spawn")
+  assert string.contains(spawn.description, "final message is its result")
+  assert string.contains(spawn.description, "agent_send")
+  assert string.contains(spawn.description, "agent_note")
+  assert !list.contains(agent.child_floor_tools, agent.spawn_tool_name)
+}

@@ -130,3 +130,20 @@ fn parse_log_line(line: String) -> Result(Commit, GitError) {
     Error(Nil) -> Error(ParseError("malformed log line: " <> line))
   }
 }
+
+/// A one-line rendering of a `GitError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert git.error_text(git.CommandFailed(128, "fatal: not a repository\n")) == "git exited 128: fatal: not a repository"
+/// ```
+///
+pub fn error_text(error: GitError) -> String {
+  case error {
+    CommandFailed(exit_code:, stderr:) ->
+      "git exited " <> int.to_string(exit_code) <> ": " <> string.trim(stderr)
+    ProcessError(error:) -> proc.error_text(error)
+    ParseError(message:) -> "could not parse git output: " <> message
+  }
+}

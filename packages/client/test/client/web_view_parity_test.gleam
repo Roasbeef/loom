@@ -249,6 +249,7 @@ fn visible_texts(line: Line) -> List(String) {
     | transcript_line.PeerMessage
     | transcript_line.ProgramRunning
     | transcript_line.ProgramFailure
+    | transcript_line.ProgramSettled
     | transcript_line.ImageRow(..) -> [line.text]
   }
 }

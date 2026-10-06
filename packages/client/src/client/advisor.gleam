@@ -3444,7 +3444,16 @@ fn pending(wiring: Wiring, operation: OpId) -> List(AgentMessage) {
   use <- bool.guard(when: !mine, return: [])
 
   case ask(wiring.name, pending_timeout_ms, TakePending(operation, _)) {
-    Ok([]) | Error(Nil) -> []
+    Ok([]) -> []
+
+    // A failed take hands this run no nudges: `ask` answers Error for an
+    // unregistered name, a callee that went down and a timeout alike, and
+    // the line is what tells an operator why a run began without advice the
+    // board listed.
+    Error(Nil) -> {
+      log.warn(wiring.logger, "advisor.pending_take_failed", [])
+      []
+    }
 
     Ok(nudges) -> [advisorslice.nudges_message(nudges, now(wiring))]
   }

@@ -611,6 +611,29 @@ tree and that it must not write anything.
   cross-module calls, which the inliner never attempts. A rebuild after a
   change to `tui.gleam` fell from 9.6–9.8 s to 1.4–1.7 s. The boundaries stay
   for the local steps that remain.
+- **A Loom session that runs the gates is already inside a jail, and some
+  suites can never pass there.** macOS refuses a second `sandbox_apply`
+  (`Operation not permitted`, exit 71), so a helper spawned from a jailed
+  process cannot confine anything: `make selftest`, the real-helper
+  broker, tools, conformance and `lsp_e2e` suites, `make e2e`,
+  `make e2e-codemode` and `docker-smoke` are out. Three more things fail
+  by design: `exec` of a setuid binary such as `/bin/ps` (Seatbelt refuses
+  it), ptys through `/dev/ptmx` (Python reports "out of pty devices"), and
+  any write outside the workspace, the user temp directories and the
+  per-call scratch. Most gates now say so rather than failing: the Gleam
+  suites print `SKIP ...: already inside a Loom/Seatbelt jail` (the marker
+  is deliberately not in `.github/declared-skips`, since CI is never
+  nested), `--self-test` prints `RESULT: NOT RUN` and exits nonzero, and
+  `host/endpoint_test` prints `SKIP endpoint identity`. Still failing noisily
+  inside a jail: the Go seatbelt tests (`make sandbox-test`, which skip only
+  when `sandbox-exec` is missing), the client shipped fixtures' enforcement
+  probe (`client/test/support/enforcement.gleam`), and the client tests that
+  call `endpoint.observe` directly (`tui_daemon_test`, `daemon_access_test`,
+  `daemon_shipped_identity_recovery_test`). One session lost
+  about thirty minutes proving these failures were environmental. Do not
+  debug them; signoff and CI arbitrate. Inside the jail, `cargo` finds no
+  toolchain because `HOME` is the tool home; the recipe is in
+  `scripts/toolchain/gleam/README.md`.
 
 ---
 

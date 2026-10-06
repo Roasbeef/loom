@@ -140,6 +140,27 @@ python3 scripts/toolchain/gleam/check_cache.py --runs 4
 python3 scripts/toolchain/gleam/check_native_git.py
 ```
 
+Inside a Loom session, `cargo` reports "no default toolchain" even though the
+operator has one. The jail sets `HOME` to the session's tool home
+(`<workspace>/.codemode/home`), the rustup proxy looks for `$HOME/.rustup`, and
+finds nothing. The operator's `~/.rustup` is readable under the default
+`HostReads` policy, so point rustup at it for the one command, and keep
+`CARGO_HOME` out of `~/.cargo`, which holds `credentials.toml`:
+
+```sh
+RUSTUP_HOME=/Users/you/.rustup CARGO_HOME="$TMPDIR/cargo-home" \
+  cargo build --manifest-path /path/to/gleam-source/Cargo.toml --release --package gleam --bin gleam
+```
+
+Use the operator's real home, not `$HOME`, which is the tool home there. The
+session cannot write `~/.rustup`, so a command that needs to install a
+toolchain or component fails with a permission error; run it from an unjailed
+shell. The server does not derive `RUSTUP_HOME`
+because it would have to become a server-owned environment name and join the
+base environment allowlist, a policy-surface change for a convenience. An operator who wants it standing
+can add `[tools.set]` with `RUSTUP_HOME = "/Users/you/.rustup"` to `loom.toml`;
+the catalogue refuses that table only for the five server-owned names.
+
 The native fixture builds a small Rebar dependency through a transitive Gleam
 wrapper, checks a clean rebuild, proves that an unchanged pin ignores a newer
 repository commit, and changes the pin without changing the version to catch

@@ -1,6 +1,7 @@
 //// Code-mode programs in the transcript, as whole frames.
 ////
-//// A program that completed is one row with its value. A program that
+//// A program that completed is a block in the success colour with the
+//// opening lines of the program and a preview of its value. A program that
 //// failed to compile is a block in the danger colour with the compiler's
 //// heading, the line it names and the source it quotes. A program the
 //// client has no result for yet is a block in the live colour with the
@@ -93,13 +94,27 @@ fn find(lines: List(String), needle: String) -> Result(#(Int, Int), Nil) {
   })
 }
 
-pub fn a_completed_program_is_one_row_with_its_value_test() {
+pub fn a_completed_program_is_a_success_block_with_its_value_test() {
   [#(120, 60), #(80, 60)]
   |> list.each(fn(size) {
-    let #(_, lines) = painted(size.0, size.1)
-    let assert Ok(_) =
-      find(lines, "✓ code_mode · completed · result {\"ok\":true}")
-      as "the settled row carries the value"
+    let #(shown, lines) = painted(size.0, size.1)
+    let assert Ok(#(top, x)) = find(lines, "╭─ ✓ code_mode · completed")
+      as "the settled block's title"
+    assert x == 3
+    assert buffer.get_cell(shown, Position(x, top)).style.fg == theme.added
+
+    // The block keeps the program lines its running form showed, and says
+    // what the value is instead of printing it cut at a column.
+    let below = list.drop(lines, top)
+    let assert Ok(#(count, _)) = find(below, "PROGRAM · 5 lines, 4 shown")
+      as "the program's size"
+    assert count == 1
+    let assert Ok(#(first, _)) = find(below, "1 │ import cap/fs") as "line one"
+    assert first == 2
+    let assert Ok(_) = find(below, "RESULT · object · 1 key")
+      as "the value's kind"
+    let assert Ok(_) = find(below, "ok: true") as "the key and its hint"
+    assert !list.any(lines, string.contains(_, "result {"))
 
     // The result is drawn by its call, so no result row of its own follows.
     assert !list.any(lines, string.contains(_, "└ code_mode"))
@@ -142,20 +157,24 @@ pub fn a_program_awaiting_its_result_shows_its_opening_lines_test() {
       find(lines, "╭─ ◐ code_mode · awaiting its result")
       as "the running block's title"
     assert buffer.get_cell(shown, Position(x, top)).style.fg == theme.current
-    let assert Ok(#(count, _)) = find(lines, "PROGRAM · 8 lines, 4 shown")
+
+    // The earlier programs in the scene have blocks of their own, so the
+    // rows are looked for below this block's title.
+    let below = list.drop(lines, top)
+    let assert Ok(#(count, _)) = find(below, "PROGRAM · 8 lines, 4 shown")
       as "the program's size"
-    assert count == top + 1
-    let assert Ok(#(first, _)) = find(lines, "1 │ import cap/fs") as "line one"
-    let assert Ok(#(fifth, _)) = find(lines, "5 │   let src = fs.read")
+    assert count == 1
+    let assert Ok(#(first, _)) = find(below, "1 │ import cap/fs") as "line one"
+    let assert Ok(#(fifth, _)) = find(below, "5 │   let src = fs.read")
       as "the blank line is skipped, the numbering is not"
     assert fifth == first + 3
     let assert Ok(#(result, _)) =
       find(
-        lines,
+        below,
         "RESULT · none yet · the result arrives when the program ends",
       )
       as "the result row"
-    let assert Ok(#(foot, _)) = find(lines, "budget 30s")
+    let assert Ok(#(foot, _)) = find(below, "budget 30s")
       as "the foot names the budget the call asked for"
     assert foot == result + 1
   })
