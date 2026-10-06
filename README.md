@@ -268,40 +268,17 @@ flowchart TB
     D <-->|Capability calls| F[Broker checks policy]
 ```
 
-Typed capability modules expose filesystem access, commands, shared state,
-artifact reporting, and child-agent coordination. The default server offers
-these modules in both program modes, so one program can inspect files and
-coordinate subagents. Configured MCP servers become generated modules in both
-modes. An explicit workspace-only host keeps an effect-only policy.
+A program imports typed capability modules for files, commands, child agents,
+language servers, MCP servers and durable session notes, and the import list is
+its permission set. With `"mode": "launch"`, a program keeps its actors alive
+across model turns and accepts typed input from later calls. Submitted source
+cannot declare foreign functions or import arbitrary modules, and it compiles
+and runs in disposable sandboxed processes outside the trusted harness VM.
 
-`fs_read` also accepts `cap://` to list the installed capability modules and
-`cap://<module>` to read their full Gleam declarations when an agent needs a
-signature or example. `job://` lists the caller's background jobs, and
-`job://<id>` polls one without consuming its result. These are capability
-views, not filesystem mounts; ordinary file and image reads keep their existing
-behavior. The [code-mode architecture](docs/architecture/code-mode.md)
-describes the routing and ownership rules.
-
-With `code_mode` in `launch` mode, a program can keep typed actors alive after
-the tool call returns. Programs register named typed input endpoints and
-publish intermediate progress. Later turns can check readiness, send data,
-inspect progress, wait for the result, or cancel the execution. The execution
-keeps its original grants and deadline.
-
-Background orchestration programs can use
-`cap/workflow.step` to start named children and recover the same child operations
-on a later launch. A restart preserves child identities and results, but loses
-the satellite process and its actor state; Loom reports that loss instead of
-replaying effects.
-The [collaboration guide](docs/async-collaboration.md) includes working examples.
-
-Submitted source cannot introduce foreign-function calls or import arbitrary
-modules. The compiler checks tool argument types, and the broker checks each
-effect against policy. Compilation and execution happen in disposable external
-processes, outside the trusted harness VM.
-
-The [code-mode guide](docs/architecture/code-mode.md) explains the capability
-sets, build cache, execution budgets, and cancellation model.
+[**Code mode at a glance**](docs/code-mode.md) is the one-page overview: what a
+program can import, notes and the blackboard, orchestration, launch mode, the
+safety model, and the distributed execution in development. The
+[architecture document](docs/architecture/code-mode.md) has the mechanics.
 
 ## Language servers
 
