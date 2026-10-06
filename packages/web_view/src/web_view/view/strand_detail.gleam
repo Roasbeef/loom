@@ -135,9 +135,16 @@ fn figure(
 // them. With none, the first line of its latest answer when it has given one,
 // and otherwise a line saying there is nothing yet.
 fn recent(chip: Chip) -> Element(message) {
+  let recent = chip.recent
+  let answer = chip.answer
+
+  // A provider fragment changes the live answer, not this captured preview.
+  // This leaf memo keeps the preview's Markdown and diff until its own inputs
+  // change, without retaining the rest of the strand's card.
+  use <- element.memo([element.ref(recent), element.ref(answer)])
   html.section([attribute.class("detail-recent")], [
     html.h3([attribute.class("panel-title")], [html.text("Recent")]),
-    case chip.recent, chip.answer {
+    case recent, answer {
       [], Some(answer) ->
         html.p(
           [attribute.class("detail-answer")],

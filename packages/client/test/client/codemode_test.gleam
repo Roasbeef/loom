@@ -26,6 +26,7 @@ import broker/framing
 import broker/policy
 import client/agency
 import client/async_codemode
+import client/async_runs
 import client/codemode
 import client/peer_mail
 import client/peers
@@ -2674,5 +2675,61 @@ pub fn peer_router_preserves_wrapping_order_and_caller_strand_test() {
     == Error(satellite.CapDenial("fixture", "fallback marker"))
   assert process.receive(order, 0) == Ok("original dispatch")
   assert process.receive(order, 0) == Ok("fallback")
+  let _ = broker.stop(broker_actor)
+}
+
+/// A detached worker copies its host configuration once at admission.
+pub fn async_worker_does_not_duplicate_unrelated_configuration_test() {
+  let broker_actor = idle_broker()
+  let base = config_for(broker_actor)
+  let light = config_with_entropy_payload(base, 1)
+  let heavy = config_with_entropy_payload(base, 4096)
+  let admitted = process.new_subject()
+  let name = addresses.new()
+  let assert Ok(service) =
+    actor.new(Nil)
+    |> actor.on_message(fn(state, message) {
+      case message {
+        async_runs.Launch(record:, work:, reply:) -> {
+          // Measure the actual admission message after its process copy. No
+          // compiler or satellite runs, and no private closure layout is read.
+          process.send(admitted, #(record, ffi_memory.flat_words(work)))
+          process.send(reply, Ok(json.Null))
+          actor.continue(state)
+        }
+        _ -> actor.stop_abnormal("unexpected async fixture message")
+      }
+    })
+    |> actor.addressed(name)
+    |> actor.start
+    as "the admission observer must start"
+  let agents = agency.default_config(addresses.new(), clock.fixed(at: 1000))
+  let request = request_for("detached-copy")
+
+  list.each([light, heavy], fn(config) {
+    let assert Some(background) =
+      async_codemode.seam(config, name, agents).background
+      as "the detached seam must be available"
+    assert background.launch(request) == Ok(json.Null)
+  })
+  let assert Ok(#(small_record, small_words)) = process.receive(admitted, 1000)
+    as "the light worker must reach admission"
+  let assert Ok(#(large_record, large_words)) = process.receive(admitted, 1000)
+    as "the heavy worker must reach admission"
+
+  // Unrelated entropy remains needed by the worker's configuration. Its
+  // router wrapper must not introduce a second copy of that same payload.
+  let payload_words =
+    ffi_memory.flat_words(heavy) - ffi_memory.flat_words(light)
+  assert payload_words > 8192
+  assert large_words - small_words == payload_words
+  assert small_record == large_record
+  assert small_record.deadline_ms == 61_000
+  assert small_record.operation == request.op_id
+  assert small_record.strand == request.strand
+  assert small_record.step == "async/" <> small_record.id
+
+  process.unlink(service.pid)
+  process.kill(service.pid)
   let _ = broker.stop(broker_actor)
 }

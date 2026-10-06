@@ -138,6 +138,12 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   first- versus last-occurrence precedence, so a document or frame
   carrying duplicates has no single meaning; rejecting is the only rule
   with one interpretation.
+- **JSON string runs preserve byte boundaries.** `json.clean_run` and
+  `json.escape_runs` advance four safe bytes together; each byte is checked
+  for quote, backslash and C0 controls. An exceptional chunk resumes the
+  single-byte step, and slices are still UTF-8 validated. Independent
+  codepoint-oracle and raw-input refusal tests cover every escape/control
+  byte at varied ASCII and multibyte offsets.
 - **msgpack encoding is canonical** — smallest encoding that fits — so
   equal values always produce identical bytes. The Go helper's strict
   decoder and the golden fixtures both depend on this.

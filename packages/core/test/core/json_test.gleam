@@ -309,6 +309,56 @@ pub fn a_raw_control_character_is_corruption_test() {
   let assert Error(_) = json.parse("\"\u{000a}\"")
 }
 
+// Escapes at every byte offset must agree with the independent codepoint
+// encoder, including when the preceding chunk ends inside a UTF-8 codepoint.
+pub fn string_escape_boundaries_match_the_codepoint_oracle_test() {
+  let escaped_codes = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+    0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x22, 0x5C,
+  ]
+  list.each([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], fn(offset) {
+    let prefix = string.repeat("x", offset)
+    list.each([prefix, prefix <> "é中🎉"], fn(prefix) {
+      list.each(escaped_codes, fn(code) {
+        let assert Ok(point) = string.utf_codepoint(code)
+          as "the fixture uses valid control and escape codepoints"
+        let text = prefix <> string.from_utf_codepoints([point]) <> "é中🎉 tail"
+        let encoded = json.to_string(json.String(text))
+        assert encoded
+          == string_tree.to_string(json.build_string_by_codepoint(text))
+        assert json.parse(encoded) == Ok(json.String(text))
+      })
+    })
+  })
+}
+
+// A chunk cannot skip a delimiter, unknown escape or raw C0 control. These
+// failures are decoder properties, independent of what the encoder emits.
+pub fn string_boundaries_preserve_decoder_refusals_test() {
+  let controls = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+    0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+  ]
+  list.each([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], fn(offset) {
+    let prefix = string.repeat("x", offset) <> "é中🎉"
+    assert json.parse("\"" <> prefix <> "\"") == Ok(json.String(prefix))
+    let assert Error(_) = json.parse("\"" <> prefix <> "\" trailing")
+      as "a closing quote ends the document before trailing data"
+    let assert Error(_) = json.parse("\"" <> prefix <> "\\q\"")
+      as "unknown escapes remain corrupt at every offset"
+    list.each(controls, fn(code) {
+      let assert Ok(point) = string.utf_codepoint(code)
+        as "the fixture uses a valid C0 codepoint"
+      let raw =
+        "\"" <> prefix <> string.from_utf_codepoints([point]) <> "tail\""
+      let assert Error(_) = json.parse(raw)
+        as "a raw control cannot be hidden inside a chunk"
+    })
+  })
+}
+
 // A long string with nothing to escape takes the fast path and comes back
 // byte for byte; one with a single escape in the middle takes the run path
 // and comes back the same.
