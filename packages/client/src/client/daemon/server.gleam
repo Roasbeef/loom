@@ -287,6 +287,12 @@ pub type Attachment(instance) {
     /// the session. The web view's heading takes its name and workspace
     /// from here, so a page needs no second read of the catalogue.
     registration: catalogue.Registration,
+    /// Asks the sessions what they are doing, for the page's sidebar: the same
+    /// read the home makes (`home_activity`), with the page's own credential,
+    /// so a member is told only about sessions they hold. It blocks for the
+    /// read's deadline, so the page runs it from a task
+    /// (`ui_socket.activity_task`).
+    activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
   )
 }
 
@@ -1553,6 +1559,7 @@ fn resident_upgrade(
                 registry: state.registry,
                 state_root: state.state_root,
                 registration:,
+                activity: home_activity(config, state.registry, digest),
               ),
             )
           root.release(config.daemon, permit)

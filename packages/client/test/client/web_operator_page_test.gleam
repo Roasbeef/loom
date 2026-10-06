@@ -94,13 +94,15 @@ fn start_page(
         transmit: ui_relay.transmit,
         shut: ui_relay.shut,
         now: bootstrap.monotonic_time_ms,
-        sessions: fn() { [] },
+        sessions: fn(deliver) { deliver([]) },
+        activity: fn(_, _) { Nil },
         open: fn(_) { sessions.Declined(sessions.NotHeld) },
         resume: fn(_, _) { Nil },
         invite: None,
         home: None,
         rename: None,
         shareable: None,
+        worktree: None,
       ),
     )
   let assert Ok(runtime) =

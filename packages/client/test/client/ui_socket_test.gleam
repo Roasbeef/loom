@@ -41,13 +41,15 @@ fn start() -> component.Start(ui_relay.Relay) {
       transmit: ui_relay.transmit,
       shut: ui_relay.shut,
       now: fn() { 0 },
-      sessions: fn() { [] },
+      sessions: fn(deliver) { deliver([]) },
+      activity: fn(_, _) { Nil },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       resume: fn(_, _) { Nil },
       invite: None,
       home: None,
       rename: None,
       shareable: None,
+      worktree: None,
     ),
   )
 }
@@ -461,6 +463,7 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
       residency: sessions.Saved,
       subtitle: option.None,
       role: option.None,
+      project: None,
     )
   assert !string.contains(string.inspect(entry), "secret.sqlite")
   assert !string.contains(string.inspect(entry), "request-key")
@@ -503,6 +506,7 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
       residency: sessions.Live,
       subtitle: option.None,
       role: option.None,
+      project: None,
     )
   let asked = process.new_subject()
   let read = fn() {
@@ -513,6 +517,42 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
   assert process.receive(asked, 0) == Error(Nil)
   assert ui_socket.listed_for(ui_socket.Operating, read) == [entry]
   assert process.receive(asked, 0) == Ok(Nil)
+}
+
+// The sidebar's read runs off the page's runtime: `listed_task` returns
+// before the read has answered, and the answer arrives through `deliver`
+// from the task once the read does. A read that blocks as a registry call
+// at its timeout would, here a read that sleeps for a while, holds the
+// task and nothing else. An observer's page is answered at once, with no
+// read made and no task started.
+pub fn the_sidebar_read_runs_off_the_runtime_test() {
+  let delivered = process.new_subject()
+  let entry =
+    sessions.Entry(
+      id: "a",
+      name: "web ui",
+      workspace: "/src/loom",
+      created_at: 1,
+      residency: sessions.Live,
+      subtitle: option.None,
+      role: option.None,
+      project: option.None,
+    )
+  let read = fn() {
+    process.sleep(300)
+    [entry]
+  }
+  let deliver = fn(entries) { process.send(delivered, entries) }
+
+  // The call returns while the read is still waiting, and the answer lands
+  // once the read does.
+  ui_socket.listed_task(ui_socket.Operating, read, deliver)
+  assert process.receive(delivered, 100) == Error(Nil)
+  assert process.receive(delivered, 6000) == Ok([entry])
+
+  // An observer's page: the empty list, now, and the read never runs.
+  ui_socket.listed_task(ui_socket.Observing, read, deliver)
+  assert process.receive(delivered, 0) == Ok([])
 }
 
 // Protocol-change/051, the addendum on switching sessions: the sessions
@@ -1323,4 +1363,21 @@ pub fn only_an_operating_home_may_rename_itself_test() {
   let assert Some(_) =
     ui_socket.home_rename_self_capability(access.Operator, ask)
   assert ui_socket.home_rename_self_capability(access.Observer, ask) == None
+}
+
+// The session page's sidebar asks the activity read only for a page that lists
+// sessions. An operator's page runs it, the answer arriving from the task, and
+// an observer's, which lists none, asks nothing, so a watcher's link learns
+// nothing of the principal's other sessions.
+pub fn the_sidebars_activity_read_is_an_operators_alone_test() {
+  let answers = process.new_subject()
+  let ask = fn(ids) { list.map(ids, fn(id) { #(id, sessions.Working) }) }
+  ui_socket.activity_for(ui_socket.Observing, ask, ["a"], fn(rows) {
+    process.send(answers, rows)
+  })
+  assert process.receive(answers, 200) == Error(Nil)
+  ui_socket.activity_for(ui_socket.Operating, ask, ["a"], fn(rows) {
+    process.send(answers, rows)
+  })
+  assert process.receive(answers, 2000) == Ok([#("a", sessions.Working)])
 }

@@ -7,6 +7,7 @@ import client/protocol
 import core/clock
 import core/ids
 import core/json
+import core/register
 import gleam/bit_array
 import gleam/list
 import gleam/option.{None}
@@ -232,4 +233,56 @@ pub fn oversized_metadata_is_refused_before_serialization_test() {
       0,
     )
     as "metadata has its own serialization ceiling"
+}
+
+pub fn decided_escalations_command_round_trips_and_takes_no_fields_test() {
+  let command = protocol.CommandEnvelope(1, protocol.EscalationsDecided)
+  assert protocol.decode_command(protocol.encode_command(command))
+    == Ok(command)
+  let named =
+    "{\"v\":2,\"id\":1,\"cmd\":\"escalations_decided\",\"body\":{\"ids\":[\"esc-1\"]}}"
+  assert result.is_error(protocol.decode_command(named))
+}
+
+fn decided_cell(key: String, seq: Int) {
+  snapshot.Cell(
+    register.FactCustom,
+    key,
+    storage.Register(register.value(json.Null), seq),
+  )
+}
+
+pub fn decided_read_keeps_the_newest_cells_oldest_first_test() {
+  let cells =
+    list.map(numbers(1, 20), fn(index) {
+      decided_cell("escalation/e" <> string.inspect(index), index * 3)
+    })
+  let kept = transfer.newest(cells, transfer.decided_limit)
+  assert list.length(kept) == transfer.decided_limit
+  assert list.map(kept, fn(cell) { cell.register.seq })
+    == list.map(numbers(5, 20), fn(index) { index * 3 })
+  assert transfer.newest([], transfer.decided_limit) == []
+}
+
+pub fn decided_window_carries_metadata_and_no_entries_test() {
+  let assert Ok(current) =
+    transfer.start(
+      cut([]),
+      json.Object([#("missing", json.Array([])), #("cells", json.Array([]))]),
+      "s:2",
+      transfer.Decided,
+      10,
+    )
+    as "a decided read starts like any metadata-only transfer"
+  let assert transfer.Emit(_, next) =
+    transfer.step(current, now: 10, until: 6000)
+    as "one credit carries the metadata"
+  let assert transfer.End(_) = transfer.step(next, now: 10, until: 6000)
+    as "no descriptors follow the metadata"
+}
+
+// The integers from `first` to `last`, inclusive.
+fn numbers(first: Int, last: Int) -> List(Int) {
+  list.repeat(0, last - first + 1)
+  |> list.index_map(fn(_, index) { first + index })
 }

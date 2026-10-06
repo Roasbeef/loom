@@ -153,8 +153,10 @@ type State {
 ///
 /// The ceiling caps and never grants, so an observer asking for an
 /// operator's page gets an observer's; and no page carries `Owner`, whose
-/// one power in a session beyond an operator's, the worktree bytes, a page
-/// never needs.
+/// one power in a session beyond an operator's is the gateway's worktree read.
+/// A page does not go through the gateway for it: the Changes tab is handed a
+/// daemon-run observation under an admission of its own
+/// (`ui_socket.worktree_answer`).
 ///
 /// ## Examples
 ///

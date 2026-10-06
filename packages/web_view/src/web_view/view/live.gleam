@@ -11,6 +11,12 @@
 //// opened and streamed nothing yet draws `Thinking · 0:03` in the reasoning
 //// row's place, so a model that sends no reasoning text still shows progress. The lane gives
 //// the region a timeline dot of its own and pulses it while the region exists.
+//// After them come the inputs the daemon holds for the strand, as the
+//// terminal draws them: a steer waiting for the generation's next boundary
+//// and the prompts queued behind the turn, each a quiet row of the person's
+//// own words with the engine's words for how it will run beneath, so a
+//// message that was taken but not yet run is on the page from the capture
+//// that first lists it until the one that no longer does.
 ////
 //// The rows are `component.live`'s, taken from the shared record's streams,
 //// and this module only draws them. It decides nothing about the session.
@@ -37,21 +43,27 @@
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
-import session_view/transcript_line.{type Line}
+import session_view/step_words
+import session_view/transcript_line.{type Line, Line}
+import web_view/markdown_view
+import web_view/view/fold_row
 
 /// One row of the live region.
 pub type Row {
-  /// A reasoning block still streaming. Its text is never drawn: the
-  /// opening words of a block that is still growing are rewritten under the
-  /// reader as fragments land, and a counter that climbs is easier to ignore
-  /// than that.
+  /// A reasoning block still streaming. Closed, the row is its words and a
+  /// one-line preview of the latest line the model wrote; opened, it is the
+  /// reasoning so far as Markdown.
   Thinking(
     /// How much has arrived, in the engine's words: `12 lines`. The row keeps
     /// it as its title and does not say it.
     progress: String,
+    /// The reasoning so far, as the provider's fragments joined.
+    text: String,
     /// How long the generation had run, in milliseconds, when the row was
     /// built, on the daemon host's clock; `None` before the clock started.
     /// The browser counts on from it.
@@ -74,6 +86,15 @@ pub type Row {
 
   /// The answer so far, as the transcript's line for an assistant answer.
   Answer(line: Line)
+
+  /// An input the daemon holds for the strand (`snapshot_view.PendingInput`):
+  /// a steer not yet folded in, or a prompt queued behind the turn.
+  Held(
+    /// The daemon's excerpt of the person's own words.
+    text: String,
+    /// How it will run, in the engine's words (`transcript_lines.held_words`).
+    words: String,
+  )
 }
 
 /// The region's rows in the order the provider sent them, in one block.
@@ -83,7 +104,7 @@ pub type Row {
 /// ## Examples
 ///
 /// ```gleam
-/// // live.view([live.Thinking("2 lines", Some(4500), None)], draw)
+/// // live.view([live.Thinking("2 lines", "a\nb", Some(4500), None)], draw)
 /// ```
 pub fn view(
   rows: List(Row),
@@ -104,6 +125,15 @@ fn row(row: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
   case row {
     Answer(line:) -> draw(line)
 
+    // The person's words and, beneath them, how the daemon will run them.
+    // Both are text nodes: the words are the daemon's excerpt of a message
+    // a person typed, and the mark is the engine's fixed phrase.
+    Held(text:, words:) ->
+      html.div([attribute.class("held")], [
+        html.p([attribute.class("held-text")], [html.text(text)]),
+        html.p([attribute.class("held-mark")], [html.text(words)]),
+      ])
+
     // The turn is open and nothing has streamed. The same row the reasoning
     // text will fill, headed `Thinking`, so that the hand-over changes a word
     // and not the row's place. The lane's own dot pulses beside it.
@@ -119,12 +149,16 @@ fn row(row: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
     // 7s`, with the summarizer's headline beneath it once one is pushed. The
     // count of lines that have arrived is a detail of the engine's, so it is
     // the row's title and not its words.
-    Thinking(progress:, elapsed_ms:, headline:) ->
+    Thinking(progress:, text:, elapsed_ms:, headline:) ->
       html.div([attribute.class("thinking"), attribute.title(progress)], [
-        html.p([attribute.class("who"), attribute.class("thinking-head")], [
-          html.text("Reasoning"),
-          ..elapsed(elapsed_ms)
-        ]),
+        fold_row.live_reasoning(
+          [
+            html.span([attribute.class("verb")], [html.text("Reasoning")]),
+            ..figure(elapsed_ms)
+          ],
+          markdown_view.line(latest_line(text), step_words.result_limit),
+          so_far(text, draw),
+        ),
         ..case headline {
           Some(headline) -> [
             html.p([attribute.class("thinking-headline")], [
@@ -137,14 +171,32 @@ fn row(row: Row, draw: fn(Line) -> Element(message)) -> Element(message) {
   }
 }
 
-// The clock after the row's word. The browser counts it from the reading
-// (`<loom-elapsed offset>`, in milliseconds), so a reading is drawn only once
-// the generation clock has started.
+// The clock after the row's word, as a figure like a settled row's time. The
+// browser counts it from the reading (`<loom-elapsed offset>`, in
+// milliseconds), so a reading is drawn only once the generation clock has
+// started.
 fn elapsed(elapsed_ms: Option(Int)) -> List(Element(message)) {
+  case clock(elapsed_ms) {
+    [] -> []
+    counting -> [html.text(" · "), ..counting]
+  }
+}
+
+// The same clock as a figure of a reasoning row, set after its verb as a
+// settled row's time is.
+fn figure(elapsed_ms: Option(Int)) -> List(Element(message)) {
+  case clock(elapsed_ms) {
+    [] -> []
+    counting -> [
+      html.span([attribute.class("figure")], [html.text("· "), ..counting]),
+    ]
+  }
+}
+
+fn clock(elapsed_ms: Option(Int)) -> List(Element(message)) {
   case elapsed_ms {
     None -> []
     Some(ms) -> [
-      html.text(" · "),
       element.element(
         "loom-elapsed",
         [
@@ -155,4 +207,32 @@ fn elapsed(elapsed_ms: Option(Int)) -> List(Element(message)) {
       ),
     ]
   }
+}
+
+// The last line the model has written, which is the one a reader glancing at
+// a row that is still growing wants: the earlier lines have not changed and
+// the preview moves as the block does.
+fn latest_line(text: String) -> String {
+  text
+  |> string.split("\n")
+  |> list.reverse
+  |> list.find(fn(line) { string.trim(line) != "" })
+  |> result.unwrap("")
+}
+
+// The reasoning so far, one Markdown line per paragraph, each in the lane's
+// memoized line row (`fold_row.line_row`, whose one dependency is the line).
+// Fragments only extend the text, so a paragraph that a blank line has closed
+// is the same `Line` on the next render and its memo holds; only the last
+// paragraph, still being written, changes and is parsed again.
+fn so_far(
+  text: String,
+  draw: fn(Line) -> Element(message),
+) -> List(Element(message)) {
+  text
+  |> string.split("\n\n")
+  |> list.filter(fn(paragraph) { string.trim(paragraph) != "" })
+  |> list.map(fn(paragraph) {
+    fold_row.line_row(Line(transcript_line.Reasoning, paragraph), draw)
+  })
 }

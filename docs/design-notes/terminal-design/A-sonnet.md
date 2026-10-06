@@ -228,7 +228,7 @@ the user background) or assistant prose (`◆`).
 
 Today a `code_mode` program is a fenced Gleam block with token styling
 (`docs/architecture/terminal.md:868`; `transcript_lines.code_mode_program`,
-`packages/session_view/src/session_view/transcript_lines.gleam:2371`). The
+`packages/session_view/src/session_view/transcript_lines.gleam:2397`). The
 client receives the program text and one result, and nothing about the calls
 the program made. A result's details carry only the value or message and
 details, the status, the manifest hash and the sandbox
@@ -332,7 +332,7 @@ produces the band, and that a `PeerOrigin` of `None` never does.
 
 Current facts: the terminal can attach images (`tui/image_drop`,
 `packages/tui/src/tui/image_drop.gleam:41`), and the line builders draw an
-image as the row `[image image/png]` (`transcript_lines.gleam:2274`). The
+image as the row `[image image/png]` (`transcript_lines.gleam:2300`). The
 bytes are reachable from `session_view/transcript_image`
 (`transcript_image.gleam:29` and `of_entry` at 49), which the web page uses
 (#661). The terminal cannot draw them: etui has braille graphics and OSC 8
@@ -637,7 +637,7 @@ checked before the keys are fixed (open question 3).
 | Strand filter counts | counts over `agent_view.Status` (`packages/session_view/src/session_view/agent_view.gleam:52`) | Yes | No |
 | Inline strand tree | the spawn, result and nudge rows the line builders emit (`transcript_lines`) | Rows yes; updating them in place needs a fold of the roster into the spawn row, which the web lane does | No |
 | Changes | `changes_view.fold` (`packages/session_view/src/session_view/changes_view.gleam:210`), `totals` (148), `label` (137); worktree observation (`worktree_view`) | Yes | No |
-| Trace | latest `code_mode` program, `transcript_lines.code_mode_program` (`packages/session_view/src/session_view/transcript_lines.gleam:3493`) | Program, state and result yes. The call list is not on the wire at all (`packages/tools/src/tools/codemode.gleam:1676`) | **Yes**: a call record, with timing in the same change (`protocol-change/NNN.md`) |
+| Trace | latest `code_mode` program, `transcript_lines.code_mode_program` (`packages/session_view/src/session_view/transcript_lines.gleam:3519`) | Program, state and result yes. The call list is not on the wire at all (`packages/tools/src/tools/codemode.gleam:1676`) | **Yes**: a call record, with timing in the same change (`protocol-change/NNN.md`) |
 | Session tab: jobs, viewers | `session_summary.jobs` (`packages/session_view/src/session_view/session_summary.gleam:99`), `viewers` (122), `live_jobs.lines` (`packages/session_view/src/session_view/live_jobs.gleam:107`) | Yes | No |
 | Session tab: context, cost | `context_view.footer` (`packages/session_view/src/session_view/context_view.gleam:358`), `Shared.usage` through `transcript_lines.money` (3058) | Yes | No |
 | Session tab: goal, queue, schedules | `goal_view`, the cut's pending inputs, the schedule events | Yes | No |

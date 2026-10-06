@@ -906,6 +906,10 @@ pub fn failed_cleanup_retains_capacity_and_does_not_release_storage_test() {
   let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
   let first = saved(store, 6)
   let second = saved(store, 7)
+  let assert Ok(admin) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest"
+  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", admin)
+    as "owner exists"
   let released = process.new_subject()
   let registry =
     start(store, 1, fn(record, owner) {
@@ -945,6 +949,25 @@ pub fn failed_cleanup_retains_capacity_and_does_not_release_storage_test() {
   assert manager.open(registry, second.id) == Error(manager.Capacity)
   assert manager.resolve(registry, first.id) == Error(manager.Unavailable)
   assert process.receive(released, 0) == Error(Nil)
+
+  // The holder of a blocked slot is still alive, so archive and delete stay
+  // refused: releasing the slot could let a second writer open the database.
+  assert manager.set_visibility(
+      registry,
+      admin,
+      "daemon-test",
+      first.id,
+      catalogue.Archived,
+    )
+    == Error(manager.AdminBusy)
+  assert manager.delete_session(
+      registry,
+      admin,
+      "daemon-test",
+      first.id,
+      "/unopened-daemon-manager-test",
+    )
+    == Error(manager.AdminBusy)
 
   // Shutdown must also preserve the blocked reservation. Its holder deliberately
   // survives until this test VM exits; there is no safe replacement verdict.
@@ -1568,6 +1591,58 @@ pub fn incomplete_reservation_lists_as_reserved_rather_than_saved_test() {
 
   // And the label tells the truth: the reservation is still not openable.
   assert manager.open(registry, pending.id) == Error(manager.NotInitialized)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// An unreconciled creation owns no registry slot, so the owner can archive or
+// delete it from a page (the home draws both on its "needs attention" row). The
+// archive keeps the row reserved and still unopenable, and a restore does not
+// open it; the delete removes the registration.
+pub fn an_unreconciled_creation_can_be_archived_and_deleted_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let archived = registration(933)
+  let doomed = registration(934)
+  assert catalogue.reserve(store, archived) == Ok(archived)
+  assert catalogue.reserve(store, doomed) == Ok(doomed)
+  let assert Ok(owner) = access.credential_digest(string.repeat("a", 64))
+    as "owner digest"
+  let assert Ok(_) = access.bootstrap_owner(store, "owner", "Owner", owner)
+    as "owner exists"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+
+  let assert Ok(view) =
+    manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      archived.id,
+      catalogue.Archived,
+    )
+    as "the owner archives a reservation"
+  assert view.status == manager.Reserved
+  assert manager.open(registry, archived.id) == Error(manager.NotInitialized)
+  let assert Ok(restored) =
+    manager.set_visibility(
+      registry,
+      owner,
+      "daemon-test",
+      archived.id,
+      catalogue.Active,
+    )
+    as "a restore does not open it"
+  assert restored.status == manager.Reserved
+
+  let assert Ok(_) =
+    manager.delete_session(
+      registry,
+      owner,
+      "daemon-test",
+      doomed.id,
+      "/unopened-daemon-manager-test",
+    )
+    as "the owner deletes a reservation"
+  assert catalogue.get(store, doomed.id) == Error(catalogue.Missing)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }

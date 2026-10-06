@@ -375,9 +375,9 @@ name and vetting is known only once a result says so; the program's elapsed
 time is on the input frame's top rule (`◐ code_mode · 1.2s`), which the
 activity already drives, rather than on the block, whose rows are cached. At 80 columns the fragment shrinks. The program text is
 `transcript_lines.code_mode_program`
-(`packages/session_view/src/session_view/transcript_lines.gleam:2371`)
+(`packages/session_view/src/session_view/transcript_lines.gleam:2397`)
 (`code_mode_program`) and the result is drawn by `code_mode_result_lines`
-(`packages/session_view/src/session_view/transcript_lines.gleam:2808`)
+(`packages/session_view/src/session_view/transcript_lines.gleam:2834`)
 (`code_mode_result_lines`).
 
 ![Code mode today, 120x40](terminal-design/terminal-design-codemode-today-120-dark.png)
@@ -421,7 +421,7 @@ not only when a person attached it. `transcript_image.of_entry`
 (`of_entry`) already yields the bytes for a user message or a tool result; the
 `Image` type is at `packages/session_view/src/session_view/transcript_image.gleam:29`
 (`Image`). Today the line builders draw a row of text, `[image image/png]`
-(`packages/session_view/src/session_view/transcript_lines.gleam:2274`)
+(`packages/session_view/src/session_view/transcript_lines.gleam:2300`)
 (`UserImage`). An assistant message carries no image block, so a model's own
 generated image is out of scope until the message type has one.
 
@@ -502,7 +502,7 @@ Grid: [txt](terminal-design/terminal-design-fixes-120.txt) ·
 |---|---|
 | About fifteen identical `✓ agent_wait · 2 subagents` rows | One counted row, `×15`, updated in place. A new rule in `tool_activity.project` (`packages/session_view/src/session_view/tool_activity.gleam:55`) (`project`). No wire change. |
 | Twenty identical `http 429` errors | One counted row: `! provider returned http 429 ×20`. A fold over the local lines in `session_view`. |
-| A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:2602`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:444`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
+| A `[loom] background job ... was lost` notice drawn as a `› User` turn | A dim `◇ loom` line with a second line saying it is a notice from Loom, not a message from you. **Data check first:** the line builders already route some harness-authored user messages (`harness_message_lines`, `packages/session_view/src/session_view/transcript_lines.gleam:2628`) (`harness_message_lines`), and `composer.harness_injection_summary` (`packages/session_view/src/session_view/composer.gleam:444`) (`harness_injection_summary`) recognises the `[loom] ` prefix to bound a turn. If the daemon sends this notice as a user entry with no marker, recognising the prefix is the same text-to-attribution step that 059 exists to avoid, and the notice needs a marker through its own protocol-change. |
 | Approvals as a small dialog | A full-width block with numbered choices (below). |
 
 The fixes frame draws more on the folded rows than a fold has: `· 7m 30s ·

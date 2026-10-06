@@ -401,11 +401,32 @@
   .session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .session-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;}
   .session-subtitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
+  /* A session in a git worktree leads its quiet line with the worktree's name. */
+  .session-tree{color:var(--color-fg-quiet);}
+  /* The saved sessions: a quiet "N saved" line ends the sidebar, and the saved
+     groups sit behind it until <loom-saved> publishes the custom state `shown`.
+     The groups stay in the document while folded, so the switcher still reads
+     their buttons. A hairline sets the region apart, as between groups. */
+  .saved-region{margin-top:12px;padding-top:8px;border-top:1px solid var(--color-divider);}
+  loom-saved{display:block;}
+  .saved-toggle{display:flex;align-items:baseline;gap:6px;width:100%;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  .saved-toggle::before{content:"›";display:inline-block;width:10px;font-size:14px;line-height:1;text-align:center;}
+  .saved-toggle[aria-expanded="true"]::before{transform:rotate(90deg);}
+  .saved-toggle:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);color:var(--color-fg);}
+  .saved-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .saved-panel{display:none;margin-top:8px;}
+  loom-saved:state(shown) + .saved-panel{display:block;}
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
   .residency.opening{color:var(--color-current);}
   .residency.needs-you,.residency.needs-you .glyph{color:var(--color-signal-text);}
+  /* A running session's dot follows what it is doing: working pulses in the
+     accent as the home's rows do, idle is quiet and still, and needs-you is the
+     signal hue with a slower pulse. The reduced-motion rule below stops both. */
+  .residency.working .glyph{animation:loom-pulse 1.4s ease-in-out infinite;}
+  .residency.idle .glyph{color:var(--color-fg-quiet);}
+  .residency.needs-you .glyph{animation:loom-pulse 2.6s ease-in-out infinite;}
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}
@@ -813,6 +834,12 @@
   .thinking{min-width:0;}
   .thinking-head{margin:0;}
   .thinking-headline{margin:2px 0 0 0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);overflow-wrap:anywhere;}
+  /* An input the daemon holds (web_view/view/live, the Held row): the
+     person's words, quiet, and beneath them how the daemon will run them,
+     the terminal's "steer · runs next" and "queued · after this turn". */
+  .held{min-width:0;margin-top:6px;}
+  .held-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);color:var(--color-fg-quiet);}
+  .held-mark{margin:2px 0 0 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   /* A row drawn from Markdown (web_view/markdown_view). Its text wraps as
      prose; only code keeps its whitespace. Every class is one the view
      spells from a closed type, never from the session's text. */
@@ -904,6 +931,9 @@
   .row-head .subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .row-head .mono{font:12px/1.5 var(--font-mono);}
   .row-head .figure{flex:0 0 auto;}
+  /* A reasoning row's one-line preview (view/fold_row.reasoning): the first
+     line of what the model wrote, quieter than the heading it follows. */
+  .thought .row-head .preview{flex:1 1 0;opacity:.75;}
   .row-head .change{display:inline-flex;flex:0 0 auto;gap:6px;font:12px/1.5 var(--font-mono);}
   .change .added{color:var(--color-added-text);}
   .change .removed{color:var(--color-danger-text);}
@@ -1023,6 +1053,7 @@
   .diff-removed .diff-sign,.diff-removed .diff-text{color:var(--color-danger-text);}
   .diff-cut{margin:0;padding:2px 8px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .changes-cut{margin:4px 0 0 0;color:var(--color-fg-quiet);}
+  .changes-committed{margin-top:12px;}
   /* The Trace pane (web_view/view/trace): the session's code_mode programs,
      the newest first with its result and a collapsed budget line. A state's
      chip takes its colour from a class the view chose from a closed type. */
@@ -1207,6 +1238,14 @@
   li.completion.current{background:color-mix(in srgb,var(--color-current) 14%,var(--color-bg-raised));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-current) 35%,transparent);}
   .completion-command{font:13px/1.4 var(--font-mono);color:var(--color-current);}
   .completion-hint{color:var(--color-fg-quiet);font-size:12px;}
+  /* The pending line (web_client/pending_rule): the draft a press put in
+     flight, shown above the editor in the composer's shadow root until the
+     server takes or refuses it, with the delivery's word in the quiet
+     style. The text is the person's own and may run long, so it is cut
+     after a few lines. */
+  .pending{display:flex;align-items:baseline;gap:10px;padding:6px 12px 0;}
+  .pending-text{flex:1 1 auto;min-width:0;margin:0;max-height:6em;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;font:14px/1.5 var(--font-sans);color:var(--color-fg-quiet);}
+  .pending-mark{flex:0 0 auto;font-size:12px;color:var(--color-fg-quiet);}
   /* The composer's image attachments (web_client/attach): a button that opens
      the file picker, a chip for each attached image with its own Remove
      button, and the notice for a file refused. The element is drawn under the

@@ -488,67 +488,80 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
         as "the fixture owns a workspace"
       let assert Ok(workspace) = bootstrap.canonical_directory(directory)
         as "the fixture policy uses absolute paths"
-
-      // Production boot creates the protected blob store before starting its
-      // effect plane. A read-only observation must find that mask mount point
-      // already present; bubblewrap cannot create it through a read-only root.
-      let assert Ok(Nil) =
-        bootstrap.ensure_private_directory(
-          workspace <> "/" <> codemode.blob_directory,
-        )
-        as "the fixture materializes the protected store as production boot does"
-
-      // Keep ancestor repositories outside this fixture's readable scope.
-      // Host reads would let the empty workspace discover the CI checkout.
-      let base = serve.base_policy_for(workspace, catalog.WorkspaceReads)
-
-      // Apple ships the real Git executable with Xcode; /usr/bin/git is a
-      // launcher whose discovery needs unrelated host preferences. Admit only
-      // the installed developer usr tree and put its real binary first.
-      let developer_usr = "/Applications/Xcode.app/Contents/Developer/usr"
-      let #(base, path) = case simplifile.is_directory(developer_usr) {
-        Ok(True) -> #(
-          policy.SandboxPolicy(..base, readable_roots: [
-            developer_usr,
-          ]),
-          developer_usr <> "/bin:/usr/bin:/bin:/usr/local/bin",
-        )
-        Ok(False) | Error(_) -> #(base, "/usr/local/bin:/usr/bin:/bin")
-      }
-      let clock = clock.from_function(bootstrap.system_time_ms)
-      let assert Ok(#(_pool, broker, service)) =
-        serve.start_effect_plane(
-          helper: repository <> "/bin/loom-exec",
-          base_policy: base,
-          tmp_dir: workspace <> "/.helper",
-          size: 1,
-          clock:,
-        )
-        as "the fixture starts the production broker and pool"
-      run(worktree_diff.Wiring(
-        workspace:,
-        broker:,
-        base_policy: base,
-        clock:,
-        demand: exec.PlatformEnforcement,
-        env: [
-          #("PATH", path),
-          #("HOME", "/nonexistent"),
-        ],
-        entropy: fn() { bootstrap.system_time_ms() },
-        git: host_git.program(),
-      ))
-
-      // The pool's original helper witnesses, not a stop request, prove drain.
-      broker.stop(broker)
-      assert executor.close(
-          service,
-          draining: executor.drain_ms,
-          helpers: executor.helpers_ms,
-        )
-        == Ok(Nil)
+      serve_workspace(repository, workspace, run)
     }
   }
+}
+
+// Starts the production broker and pool over `workspace` and runs the test
+// with the wiring a session would capture with. A linked worktree's metadata
+// directories are admitted as `serve.boot` admits them
+// (`serve.widening_linked_worktree`), so a workspace whose `.git` is a file
+// is observed as it is in production.
+fn serve_workspace(
+  repository: String,
+  workspace: String,
+  run: fn(worktree_diff.Wiring) -> Nil,
+) -> Nil {
+  // Production boot creates the protected blob store before starting its
+  // effect plane. A read-only observation must find that mask mount point
+  // already present; bubblewrap cannot create it through a read-only root.
+  let assert Ok(Nil) =
+    bootstrap.ensure_private_directory(
+      workspace <> "/" <> codemode.blob_directory,
+    )
+    as "the fixture materializes the protected store as production boot does"
+
+  // Keep ancestor repositories outside this fixture's readable scope.
+  // Host reads would let the empty workspace discover the CI checkout.
+  let base = serve.base_policy_for(workspace, catalog.WorkspaceReads)
+
+  // Apple ships the real Git executable with Xcode; /usr/bin/git is a
+  // launcher whose discovery needs unrelated host preferences. Admit only
+  // the installed developer usr tree and put its real binary first.
+  let developer_usr = "/Applications/Xcode.app/Contents/Developer/usr"
+  let #(base, path) = case simplifile.is_directory(developer_usr) {
+    Ok(True) -> #(
+      policy.SandboxPolicy(..base, readable_roots: [
+        developer_usr,
+      ]),
+      developer_usr <> "/bin:/usr/bin:/bin:/usr/local/bin",
+    )
+    Ok(False) | Error(_) -> #(base, "/usr/local/bin:/usr/bin:/bin")
+  }
+  let base = serve.widening_linked_worktree(base, workspace)
+  let clock = clock.from_function(bootstrap.system_time_ms)
+  let assert Ok(#(_pool, broker, service)) =
+    serve.start_effect_plane(
+      helper: repository <> "/bin/loom-exec",
+      base_policy: base,
+      tmp_dir: workspace <> "/.helper",
+      size: 1,
+      clock:,
+    )
+    as "the fixture starts the production broker and pool"
+  run(worktree_diff.Wiring(
+    workspace:,
+    broker:,
+    base_policy: base,
+    clock:,
+    demand: exec.PlatformEnforcement,
+    env: [
+      #("PATH", path),
+      #("HOME", "/nonexistent"),
+    ],
+    entropy: fn() { bootstrap.system_time_ms() },
+    git: host_git.program(),
+  ))
+
+  // The pool's original helper witnesses, not a stop request, prove drain.
+  broker.stop(broker)
+  assert executor.close(
+      service,
+      draining: executor.drain_ms,
+      helpers: executor.helpers_ms,
+    )
+    == Ok(Nil)
 }
 
 // Generated caches must not spend the worktree's file or byte budget. A user
@@ -588,4 +601,44 @@ pub fn untracked_runtime_caches_do_not_hide_tracked_changes_test() {
   assert board.omitted == 0
   assert string.contains(file(board, ".codemode/tracked.txt").patch, "+after")
   assert string.contains(file(board, "new-source.txt").patch, "+real source")
+}
+
+// A session whose workspace is a linked worktree under a hidden directory, as
+// Claude Code makes them (`<repo>/.claude/worktrees/<name>`), has a `.git`
+// that is a file naming metadata outside the workspace. The observation must
+// still be the workspace's own: its changes since the commit the worktree was
+// made at, through the same jailed Git, with the metadata directories admitted
+// the way the daemon admits them.
+pub fn a_linked_worktree_under_a_hidden_directory_is_observed_test() {
+  use main <- with_fixture("linked-main")
+  setup(main, ["init", "--quiet"])
+  write(main, "tracked.txt", "original\n")
+  setup(main, ["add", "--", "."])
+  setup(main, [
+    "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c",
+    "commit.gpgsign=false", "commit", "--quiet", "-m", "original",
+  ])
+  setup(main, ["worktree", "add", "--quiet", "--detach", ".claude/worktrees/x"])
+  let assert Ok(linked) =
+    bootstrap.canonical_directory(main.workspace <> "/.claude/worktrees/x")
+    as "the linked worktree exists"
+  let assert Ok(dot_git) = simplifile.read(linked <> "/.git")
+    as "a linked worktree's .git is a file"
+  assert string.starts_with(dot_git, "gitdir: ")
+
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner has a package working directory"
+  let assert Ok(repository) = bootstrap.canonical_directory(here <> "/../..")
+    as "the source repository locates the built helper"
+  serve_workspace(repository, linked, fn(wiring) {
+    write(wiring, "tracked.txt", "edited by a shell command\n")
+    write(wiring, "added.txt", "new\n")
+
+    let assert Ok(board) = worktree_diff.capture(wiring)
+      as "a linked worktree is observable"
+    assert board.repository == worktree_diff.Head
+    assert board.total == 2
+    assert string.contains(file(board, "tracked.txt").patch, "+edited by")
+    assert string.contains(file(board, "added.txt").patch, "+new")
+  })
 }

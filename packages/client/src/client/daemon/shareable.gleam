@@ -201,29 +201,33 @@ fn stopped(
   case view.status {
     manager.Saved -> Ok(Parked)
     manager.Stopping(_) -> at_rest(registry, id, Parked)
-    manager.Resident(_) -> {
-      use _ <- result.try(
-        manager.stop_session(registry, id) |> result.replace_error(NotStopped),
-      )
-      at_rest(registry, id, Running)
-    }
+    manager.Resident(_) ->
+      // A task that raced this one may have isolated and resumed the session
+      // since the scope was read. It is already shareable and running, so there
+      // is nothing to stop, and stopping it would only undo the other task.
+      case isolated(registry, id) {
+        Ok(Nil) -> Ok(Running)
+        Error(Nil) -> {
+          use _ <- result.try(
+            manager.stop_session(registry, id)
+            |> result.replace_error(NotStopped),
+          )
+          at_rest(registry, id, Running)
+        }
+      }
     manager.Reserved | manager.Opening(_) | manager.RecoveryBlocked(_) ->
       Error(Unavailable)
   }
 }
 
-// Reads the registry until the stop has drained. A drain that
+// Reads the registry until it holds nothing for the session, or until another
+// task has isolated it. That second exit matters: a task that raced this one
+// isolates the session and resumes it, so it is never saved again, and waiting
+// for `Saved` would run out the whole stop wait for a session nobody is
+// stopping. A drain that
 // outlasts the wait is not an error of the stop, which still completes, but the
 // session cannot be isolated while a process holds it, so the task ends here
 // and a second press finds it saved.
-//
-// The stop is in place before this runs (the registry marks the slot closing in
-// the turn that answers `stop_session`), so a session seen opening or resident
-// is a new incarnation that another task resumed after its own isolation. The
-// rest this task waited for has already come and gone, and waiting for
-// `Saved` would only expire. The task goes on to `manager.isolate`, which the
-// registry refuses for a session something holds, and `isolated` then reads
-// that refusal as the change another press made.
 fn at_rest(
   registry: manager.Manager(instance),
   id: String,
@@ -231,13 +235,14 @@ fn at_rest(
 ) -> Result(Found, Refusal) {
   let outcome =
     poll.until(within: stop_wait_ms, every: 100, attempt: fn() {
-      case manager.get(registry, id) {
-        Error(_) -> poll.Fail(NotStopped)
-        Ok(view) ->
+      case manager.get(registry, id), isolated(registry, id) {
+        Error(_), _ -> poll.Fail(NotStopped)
+        Ok(_), Ok(Nil) -> poll.Done(found)
+        Ok(view), Error(Nil) ->
           case view.status {
             manager.Saved -> poll.Done(found)
-            manager.Resident(_) | manager.Opening(_) -> poll.Done(found)
-            manager.Stopping(_) -> poll.Retry
+            manager.Stopping(_) | manager.Resident(_) | manager.Opening(_) ->
+              poll.Retry
             manager.Reserved | manager.RecoveryBlocked(_) ->
               poll.Fail(NotStopped)
           }

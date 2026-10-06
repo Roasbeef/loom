@@ -132,6 +132,38 @@ pub fn snapshot_view_lookup_requires_exact_complete_requested_keys_test() {
   )
 }
 
+pub fn snapshot_view_decided_accepts_only_escalation_cells_test() {
+  let decided = fn(cells, missing) {
+    cut(
+      json.Object([
+        #("cells", json.Array(cells)),
+        #("missing", json.Array(list.map(missing, json.String))),
+      ]),
+      snapshot.empty(),
+    )
+  }
+  let present = cell(register.FactCustom, "escalation/esc", json.Object([]))
+  let assert Ok(found) = snapshot_view.decided(decided([present], []))
+    as "decided escalation cells are the whole answer"
+  assert list.length(found) == 1
+  let assert Ok([]) = snapshot_view.decided(decided([], []))
+    as "a session with no decisions answers with no cells"
+  list.each(
+    [
+      decided(
+        [cell(register.StrandConfig, "escalation/esc", json.Object([]))],
+        [],
+      ),
+      decided([cell(register.FactCustom, "client/other", json.Object([]))], []),
+      decided([present], ["named"]),
+    ],
+    fn(captured) {
+      let assert Error(_) = snapshot_view.decided(captured)
+        as "another namespace, another prefix or a missing list fails closed"
+    },
+  )
+}
+
 fn config_cells(leaf, name, model) {
   [
     cell(

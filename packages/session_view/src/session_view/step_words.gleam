@@ -176,9 +176,57 @@ pub fn memory(lines: Int) -> Words {
 /// assert step_words.text(step_words.reasoning(Some(4000))) == "Reasoning · 4s"
 /// ```
 pub fn reasoning(took_ms: Option(Int)) -> Words {
-  case took_ms {
-    Some(ms) -> Words("Reasoning", Figure(duration(ms)), None)
-    None -> Words("Reasoning", Unnamed, None)
+  reasoning_of(Raw, None, took_ms)
+}
+
+/// Whose words a reasoning block holds.
+pub type Provenance {
+  /// The model's own reasoning text.
+  Raw
+
+  /// A summary the provider wrote of reasoning it did not send. The terminal
+  /// names it so a reader never takes it for the model's own words.
+  Summarized
+}
+
+/// The words of a reasoning block as the terminal says them: the verb names a
+/// summary (`Reasoning (summarized)`), and the figure is the line count, when
+/// there is more to open than the row shows, then the time, each left out when
+/// it is not known: `Reasoning (summarized) · 162 lines · 54s`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert step_words.text(step_words.reasoning_of(
+///     step_words.Summarized,
+///     Some(162),
+///     Some(54_000),
+///   ))
+///   == "Reasoning (summarized) · 162 lines · 54s"
+/// ```
+pub fn reasoning_of(
+  provenance: Provenance,
+  lines: Option(Int),
+  took_ms: Option(Int),
+) -> Words {
+  let verb = case provenance {
+    Raw -> "Reasoning"
+    Summarized -> "Reasoning (summarized)"
+  }
+  let figures =
+    list.append(
+      case lines {
+        Some(count) -> [counted(count, "line", "lines")]
+        None -> []
+      },
+      case took_ms {
+        Some(ms) -> [duration(ms)]
+        None -> []
+      },
+    )
+  case figures {
+    [] -> Words(verb, Unnamed, None)
+    [_, ..] -> Words(verb, Figure(string.join(figures, " · ")), None)
   }
 }
 
@@ -740,11 +788,15 @@ fn text_field(value: JsonValue, name: String) -> Option(String) {
 // A shell command as a summary keeps it: its first line, cut at a word
 // boundary so the result, ellipsis included, is at most `command_limit`
 // characters, with a following line marked by a
-// trailing ellipsis. The cut keeps the leading words, which name the program.
+// trailing ellipsis. The cut keeps the leading words, which name the program,
+// so a leading `cd <dir> &&` is dropped first (`without_cd`): an agent that
+// runs in a long worktree path starts nearly every command that way, and the
+// cut would otherwise end the summary right after `cd`.
 fn command(text: String) -> String {
-  let #(line, more) = case string.split_once(string.trim(text), "\n") {
+  let shown = without_cd(string.trim(text))
+  let #(line, more) = case string.split_once(shown, "\n") {
     Ok(#(first, _)) -> #(text_hygiene.single_line(first), True)
-    Error(Nil) -> #(text_hygiene.single_line(string.trim(text)), False)
+    Error(Nil) -> #(text_hygiene.single_line(shown), False)
   }
   case string.length(line) > command_limit {
     True ->
@@ -758,6 +810,60 @@ fn command(text: String) -> String {
         True -> line <> " …"
         False -> line
       }
+  }
+}
+
+// A command with its leading `cd <dir> &&` or `cd <dir> ;` removed, when a
+// command follows it. The directory is one word or one quoted string. A
+// command that is only a `cd`, or whose `cd` is joined by anything else (`||`,
+// a pipe), is returned whole: the summary then says what the text says.
+fn without_cd(text: String) -> String {
+  case string.starts_with(text, "cd ") {
+    False -> text
+    True -> {
+      let after = string.trim_start(string.drop_start(text, 3))
+      let rest = string.trim_start(directory_end(after))
+      let remainder = case
+        string.starts_with(rest, "&&"),
+        string.starts_with(rest, ";")
+      {
+        True, _ -> string.trim_start(string.drop_start(rest, 2))
+        False, True -> string.trim_start(string.drop_start(rest, 1))
+        False, False -> ""
+      }
+      case remainder {
+        "" -> text
+        _ -> remainder
+      }
+    }
+  }
+}
+
+// What follows the directory word of a `cd`: past a quoted string when the
+// word opens with a quote, and past the next space otherwise. A word holding
+// a shell operator, or an unclosed quote, leaves nothing, so the command stays
+// whole.
+fn directory_end(after: String) -> String {
+  case string.first(after) {
+    Ok("'") -> past_quote(after, "'")
+    Ok("\"") -> past_quote(after, "\"")
+    Ok(_) ->
+      case string.split_once(after, " ") {
+        Ok(#(word, rest)) ->
+          case string.contains(word, ";") || string.contains(word, "&") {
+            True -> ""
+            False -> rest
+          }
+        Error(Nil) -> ""
+      }
+    Error(Nil) -> ""
+  }
+}
+
+fn past_quote(after: String, quote: String) -> String {
+  case string.split_once(string.drop_start(after, 1), quote) {
+    Ok(#(_, rest)) -> rest
+    Error(Nil) -> ""
   }
 }
 

@@ -622,6 +622,18 @@ pub fn is_content_editable(node: Element) -> Result(Bool, Nil)
 @external(javascript, "./dom.mjs", "prevent_default")
 pub fn prevent_default(event: Dynamic) -> Nil
 
+/// The button that submitted a form (`SubmitEvent.submitter`): the one
+/// pressed, or the one `request_submit_with` named. `Error` for a submit
+/// raised with none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.submitter(event)
+/// ```
+@external(javascript, "./dom.mjs", "submitter")
+pub fn submitter(event: Dynamic) -> Result(Element, Nil)
+
 /// The files of a `FileList` (`Array.from`), such as the one a file input's
 /// `change` event carries as `target.files`.
 ///

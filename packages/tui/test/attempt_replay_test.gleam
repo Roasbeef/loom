@@ -329,6 +329,12 @@ pub fn attempt_recording_round_trips_bounded_selectors_and_refuses_mixed_formats
       attempt.Request(5, "escalations_get", attempt.Decisions(["a", "b"])),
     )
   assert attempt.decode(json.Object(attempt.encode(request))) == Ok(request)
+  let listing =
+    attempt.Issued(
+      attempt.Id(1),
+      attempt.Request(6, "escalations_decided", attempt.DecidedList),
+    )
+  assert attempt.decode(json.Object(attempt.encode(listing))) == Ok(listing)
 }
 
 pub fn attempt_replay_failed_selection_and_closed_live_lane_release_buffers_test() {

@@ -52,12 +52,25 @@
 //// keeps listing its words past the space. `matching` is that rule over the
 //// table. Choosing a row writes its command into the editor, followed by a
 //// space when the command takes an argument.
+////
+//// ## The pending line
+////
+//// The server draws a message's row only once a capture holds it, so a press
+//// that waits on the server would show nothing until then. The element
+//// listens for the form's `submit` and, in the same turn, shows the draft as
+//// a pending line above the editor in its own shadow root, marked `sending`
+//// or `queued` (`web_client/pending_rule`), and clears the editor after the
+//// paint so the submit has already read it. The line is never a row of the
+//// lane. It leaves when the server takes the draft, which replaces this
+//// element (the server keys the editor by the drafts sent), or when the
+//// server refuses, which it says by raising the count in the `refused`
+//// attribute: the line goes and the text is put back in the editor.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import lustre
@@ -74,6 +87,7 @@ import web_client/composer_rule.{
   Unattached, Unseen,
 }
 import web_client/internal/ffi_dom
+import web_client/pending_rule
 
 /// The element's tag.
 pub const name = "loom-composer"
@@ -98,7 +112,21 @@ pub type Model {
     /// element's `attached` attribute. With the draft it decides whether the
     /// send buttons can be pressed (`composer_rule.gate`).
     attachments: Attachments,
+    /// The message a press put in flight, shown above the editor until the
+    /// server takes or refuses it.
+    pending: pending_rule.State,
+    /// The last refusal count the server stated, which says when a refusal
+    /// is new.
+    refusals: pending_rule.Refusals,
+    /// The submit listener on the composer's form, so leaving the page can
+    /// take it off again.
+    submitting: Option(Submitting),
   )
+}
+
+/// A running listener on the composer's form.
+pub type Submitting {
+  Submitting(form: ffi_dom.Element, listener: ffi_dom.Listener)
 }
 
 /// Everything the element can be told.
@@ -133,6 +161,21 @@ pub type Msg {
   /// A key the element consumed and does nothing more with: a chord held
   /// down after it already sent.
   Ignored
+
+  /// The server said how many submits it has refused with the draft kept.
+  Refused(count: Int)
+
+  /// The form was submitted with this draft, by a button of this delivery.
+  Pressed(text: String, delivery: pending_rule.Delivery)
+
+  /// The element joined the page.
+  Connected
+
+  /// The element left the page.
+  Disconnected
+
+  /// The submit listener is on the form.
+  Listening(submitting: Submitting)
 }
 
 /// Registers the element with the browser.
@@ -153,6 +196,11 @@ pub fn register() -> Result(Nil, lustre.Error) {
     component.on_attribute_change("attached", fn(value) {
       Ok(Holding(composer_rule.attachments(value)))
     }),
+    component.on_attribute_change("refused", fn(value) {
+      int.parse(value) |> result.map(Refused)
+    }),
+    component.on_connect(Connected),
+    component.on_disconnect(Disconnected),
   ])
   |> lustre.register(name)
 }
@@ -169,6 +217,9 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       palette: Listing,
       returns: Unseen,
       attachments: Unattached,
+      pending: pending_rule.Clear,
+      refusals: pending_rule.Unheard,
+      submitting: None,
     ),
     gating(Shut),
   )
@@ -256,7 +307,106 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Shut -> #(model, effect.none())
       }
     Ignored -> #(model, effect.none())
+
+    // A count that rises while a line is shown is the server's refusal of
+    // that press: the line goes and the draft comes back.
+    Refused(count:) -> {
+      let #(pending, refusals, outcome) =
+        pending_rule.refused(model.pending, model.refusals, count)
+      #(Model(..model, pending:, refusals:), case outcome {
+        pending_rule.Keep -> effect.none()
+        pending_rule.Restore(text:) -> restoring_draft(text)
+      })
+    }
+
+    // The press shows the draft at once. The editor is cleared after the
+    // paint, by which time the submit that read it has run.
+    Pressed(text:, delivery:) -> {
+      let pending = pending_rule.pressed(model.pending, text, delivery)
+      #(Model(..model, pending:), case pending {
+        pending_rule.Clear -> effect.none()
+        pending_rule.Shown(_) -> clearing()
+      })
+    }
+
+    Connected -> #(
+      model,
+      effect.batch([unlistening(model.submitting), listening()]),
+    )
+    Listening(submitting:) -> #(
+      Model(..model, submitting: Some(submitting)),
+      effect.none(),
+    )
+    Disconnected -> #(
+      Model(..model, submitting: None),
+      unlistening(model.submitting),
+    )
   }
+}
+
+// Listens for the form's submit, which is the one event a press raises, and
+// reads the draft and the pressed button from it. The listener is on the
+// form because the submit's target is the form, not the editor in the slot.
+// Reading is all it does here: the server's own handler reads the same form
+// in the same dispatch, so nothing is cleared until after the paint.
+fn listening() -> Effect(Msg) {
+  use dispatch, root <- effect.after_paint
+  let started = {
+    use form <- result.map(ffi_dom.closest(
+      ffi_dom.host(ffi_dom.as_element(root)),
+      "form",
+    ))
+    let listener =
+      ffi_dom.add_listener(form, "submit", fn(event) {
+        let delivery =
+          ffi_dom.submitter(event)
+          |> result.try(ffi_dom.attribute(_, "class"))
+          |> result.unwrap("")
+          |> pending_rule.delivery
+        let text =
+          ffi_dom.query_selector(form, "textarea")
+          |> result.map(ffi_dom.value)
+          |> result.unwrap("")
+        dispatch(Pressed(text:, delivery:))
+      })
+    dispatch(Listening(Submitting(form:, listener:)))
+  }
+  result.unwrap(started, or: Nil)
+}
+
+fn unlistening(submitting: Option(Submitting)) -> Effect(Msg) {
+  case submitting {
+    None -> effect.none()
+    Some(Submitting(form:, listener:)) -> {
+      use _ <- effect.from
+      ffi_dom.remove_listener(form, "submit", listener)
+    }
+  }
+}
+
+// Empties the editor once the press has been read, and tells the element so
+// the send buttons shut as they would after typing nothing.
+fn clearing() -> Effect(Msg) {
+  use dispatch, root <- effect.after_paint
+  let cleared = {
+    use area <- result.map(editor(root))
+    ffi_dom.set_value(area, "")
+    dispatch(Typed(""))
+  }
+  result.unwrap(cleared, or: Nil)
+}
+
+// Puts a refused draft back in the editor, after anything typed since, as a
+// returned prompt is joined, and tells the element what it wrote.
+fn restoring_draft(text: String) -> Effect(Msg) {
+  use dispatch, root <- effect.after_paint
+  let restored = {
+    use area <- result.map(editor(root))
+    let joined = composer_rule.joined(ffi_dom.value(area), text)
+    ffi_dom.set_value(area, joined)
+    dispatch(Typed(joined))
+  }
+  result.unwrap(restored, or: Nil)
 }
 
 // Takes row `index` of the list as the draft. A command that takes an
@@ -427,6 +577,7 @@ fn revealing() -> Effect(Msg) {
 fn view(model: Model) -> Element(Msg) {
   let rows = shown(model)
   element.fragment([
+    pending(model.pending),
     case rows {
       [] -> element.none()
       [_, ..] ->
@@ -449,6 +600,21 @@ fn view(model: Model) -> Element(Msg) {
       [],
     ),
   ])
+}
+
+// The pending line: the person's own text as a text node, and the fixed
+// word for how it is delivered, in the quiet style.
+fn pending(state: pending_rule.State) -> Element(Msg) {
+  case state {
+    pending_rule.Clear -> element.none()
+    pending_rule.Shown(pending:) ->
+      html.div([attribute.class("pending"), attribute.role("status")], [
+        html.p([attribute.class("pending-text")], [html.text(pending.text)]),
+        html.span([attribute.class("pending-mark")], [
+          html.text(pending_rule.mark(pending.delivery)),
+        ]),
+      ])
+  }
 }
 
 fn completion(row: Entry, index: Int, selected: Int) -> Element(Msg) {
