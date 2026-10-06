@@ -84,6 +84,7 @@ import session_view/msg
 import session_view/notes_view
 import session_view/protocol
 import session_view/queue_request
+import session_view/remembered
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/snapshot
@@ -224,6 +225,12 @@ pub type Shared(socket, recorder, source, replay_source) {
     jobs_request: Option(Int),
     /// Missing observations are unavailable, never a zero-job assertion.
     jobs_notice: String,
+    /// What the session remembers for its operator and who approved it
+    /// (protocol-change/073), as the daemon last listed it. `None` is "not
+    /// read", never "nothing remembered".
+    remembered: Option(remembered.Board),
+    /// One remembered-permissions read waiting for a free command lane.
+    remembered_refresh: worktree_view.Refresh,
     /// The advisor's undelivered nudge queue, observed while the primary is
     /// idle. `None` is "nothing observed", never "the queue is empty".
     nudges: Option(advisor_pending.Board),

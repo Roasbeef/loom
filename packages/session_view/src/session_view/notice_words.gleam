@@ -45,6 +45,7 @@ pub fn sent(command: String) -> String {
     "deny" -> "Denying"
     "approve" -> "Allowing"
     "abort" -> "Stopping"
+    "permission_forget" -> "Forgetting"
     _ -> "Sent"
   }
 }
@@ -124,6 +125,7 @@ pub fn done(command: String) -> String {
     "create_strand" -> "Strand created"
     "set_config" -> "Setting saved"
     "schedule_cancel" -> "Schedule cancelled"
+    "permission_forget" -> "Forgotten"
     "edit_queued_input" -> "Queued input updated"
     _ -> "Done"
   }

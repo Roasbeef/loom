@@ -48,6 +48,7 @@ import session_view/goal_view
 import session_view/live_jobs
 import session_view/notes_view
 import session_view/queued_input
+import session_view/remembered
 import session_view/skills
 import session_view/worktree_view
 
@@ -186,6 +187,11 @@ pub type Event {
 
   /// A durable goal write invalidates the last auxiliary observation.
   GoalChanged
+
+  /// What the session remembers for its operator: the reply to a
+  /// `permissions` read and to a successful `permission_forget` alike
+  /// (protocol-change/073).
+  PermissionsSnapshot(board: remembered.Board)
 
   /// An authoritative replacement for the schedule listing — the reply
   /// to `/schedules` and to a successful cancel alike.
@@ -489,6 +495,49 @@ pub fn schedule_cancel(id: Int, target: String, name: String) -> String {
   ])
 }
 
+/// Encodes a read of what the session remembers (protocol-change/073).
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.permissions(12)
+/// ```
+pub fn permissions(id: Int) -> String {
+  command(id, "permissions", [])
+}
+
+/// Encodes a request to forget remembered permissions, echoing the sequence
+/// the board carried so that a list that has moved is refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.permission_forget(13, remembered.ForgetEverything(None))
+/// ```
+pub fn permission_forget(id: Int, forget: remembered.Forget) -> String {
+  let #(target, seq) = case forget {
+    remembered.ForgetPermission(wire:, seq:) -> #(
+      json.Object([#("kind", json.String("grant")), #("grant", wire)]),
+      seq,
+    )
+    remembered.ForgetConsent(id: consent, seq:) -> #(
+      json.Object([
+        #("kind", json.String("action")),
+        #("id", json.String(consent)),
+      ]),
+      Some(seq),
+    )
+    remembered.ForgetEverything(seq:) -> #(
+      json.Object([#("kind", json.String("all"))]),
+      seq,
+    )
+  }
+  command(id, "permission_forget", case seq {
+    Some(seq) -> [#("target", target), #("expected_seq", json.Int(seq))]
+    None -> [#("target", target)]
+  })
+}
+
 /// Requests one strand's effective configuration without changing it.
 ///
 /// `set_config` with an empty object is the frozen protocol's readback form:
@@ -643,6 +692,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | BlockSummariesSnapshot(_)
     | GoalSnapshot(_)
     | SchedulesSnapshot(_)
+    | PermissionsSnapshot(_)
     | Resumed(_)
     | ServerError(..) -> Ok(event)
     FullSnapshot(..)
@@ -848,6 +898,10 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       queued_input.decode(board) |> result.map(QueuedInputSnapshot)
     }
     "schedules" -> result.map(decode_schedules(fields), SchedulesSnapshot)
+    "permissions" -> {
+      use board <- result.try(required_value(fields, "board"))
+      remembered.decode(board) |> result.map(PermissionsSnapshot)
+    }
     "config" -> {
       use config <- result.try(required_object(fields, "config"))
       use model_name <- result.try(optional_string(config, "model_name"))

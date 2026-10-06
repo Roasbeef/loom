@@ -356,6 +356,7 @@ pub fn act(
     msg.Interrupt -> interrupt_active(shared)
     msg.Stop(strand:) -> stop_strand(shared, strand)
     msg.Decide(review:, choice:) -> decide_review(shared, review, choice)
+    msg.Forget(forget:) -> surfaces.forget_remembered(shared, forget)
     msg.SelectModel(name:) -> select_model(shared, name)
     msg.Quit -> quit(shared)
   }

@@ -323,6 +323,8 @@ fn decode_selection(kind, fields) {
     | "goal_resume"
     | "schedules"
     | "schedule_cancel"
+    | "permissions"
+    | "permission_forget"
     | "prompt"
     | "prompt_content"
     | "steer"

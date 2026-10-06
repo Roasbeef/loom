@@ -1392,6 +1392,12 @@ fn apply_request_refused(
   // decisions it saw live and says nothing.
   use <- bool.lazy_guard(command == "escalations_decided", fn() { shared })
 
+  // The read of what the session remembers is the page's own as well. A
+  // daemon that does not know it leaves the page's list unread, which the
+  // page says in its own words, and a footer error every half minute would
+  // be the only other trace.
+  use <- bool.lazy_guard(command == "permissions", fn() { shared })
+
   // A notes read refused while no notes surface is open was the todo
   // panel's seed. An older daemon refuses it, and an error row would report
   // a read the operator never asked for.
@@ -1413,6 +1419,11 @@ fn apply_request_refused(
           )
         False -> shared
       }
+
+    // A forget that lost its guard changed nothing, and the list it was made
+    // from is out of date, so the page reads it again.
+    "permission_forget" ->
+      shared_set.remembered_refresh(shared, worktree_view.Requested)
     "live_jobs" ->
       case shared.jobs_request == Some(request_id) {
         True ->

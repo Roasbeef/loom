@@ -604,6 +604,8 @@ pub fn new_model_with_clock(
       jobs_awaiting: None,
       jobs_request: None,
       jobs_notice: "Live jobs unavailable; /summary requests a current observation",
+      remembered: None,
+      remembered_refresh: worktree_view.Settled,
       nudges: None,
       nudges_refresh: worktree_view.Settled,
       nudges_awaiting: None,
