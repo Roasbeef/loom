@@ -444,7 +444,23 @@ fn seam_with_custody(
     roster: fn(caller) { roster(config, caller) },
     max_wait_ms: config.max_wait_ms,
     model_names: list.map(config.models, fn(entry) { entry.0.provider }),
+    holds: fn(caller, tool) { holds(config, caller.strand, tool) },
   )
+}
+
+// `Ok` when `strand`'s durable active tool list names `tool`, read at call
+// time from the same cell the tool registry's clearance reads. Only a tool
+// genuinely missing from a readable list is `ToolNotHeld`. A holder that is
+// down, an unreadable store and a strand with no configuration cell keep
+// their own refusals, so a transient fault reads as one rather than as
+// policy; every `Error` still means the caller proceeds no further.
+fn holds(config: Config, strand: String, tool: String) -> Result(Nil, Refusal) {
+  use runtime <- result.try(borrow(config))
+  use configuration <- result.try(read_configuration(runtime, strand))
+  case list.contains(configuration.active_tool_names, tool) {
+    True -> Ok(Nil)
+    False -> Error(agent.ToolNotHeld(tool:))
+  }
 }
 
 /// Wraps a hook record so a run's end reaps the undetached children that

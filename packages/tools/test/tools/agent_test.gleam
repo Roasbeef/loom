@@ -139,6 +139,7 @@ fn echoing_agency() -> agent.Agency {
     },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
 
@@ -243,6 +244,7 @@ fn refusing_agency(refusal: agent.Refusal) -> agent.Agency {
     roster: fn(_caller) { Error(refusal) },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
 

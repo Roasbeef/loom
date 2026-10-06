@@ -104,6 +104,7 @@ pub fn admitting(into: Subject(Seen), ready: fn(Handle) -> Waited) -> Agency {
     },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
 
@@ -120,6 +121,7 @@ pub fn refusing(refusal: Refusal) -> Agency {
     roster: fn(_caller) { Error(refusal) },
     max_wait_ms: 30_000,
     model_names: ["reviewer", "worker"],
+    holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
 
@@ -199,4 +201,15 @@ fn drain_loop(into: Subject(Seen), seen: List(Seen)) -> List(Seen) {
     Error(Nil) -> list.reverse(seen)
     Ok(one) -> drain_loop(into, [one, ..seen])
   }
+}
+
+/// The same Agency for a strand that holds exactly `tools`, so a test can
+/// withhold one `agent_*` tool and watch the matching capability refuse.
+pub fn holding(agency: Agency, tools: List(String)) -> Agency {
+  agent.Agency(..agency, holds: fn(_caller, tool) {
+    case list.contains(tools, tool) {
+      True -> Ok(Nil)
+      False -> Error(agent.ToolNotHeld(tool:))
+    }
+  })
 }
