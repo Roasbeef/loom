@@ -266,6 +266,19 @@ pub fn unused_imports_alone_are_removed_and_rebuilt_once_test() {
       seen,
     )
   let config = exec_config(fresh_dir("unused-ok"), builder, reporting_peer())
+  let attempts = process.new_subject()
+  let physical = config.compile
+  let config =
+    codemode.ExecConfig(
+      ..config,
+      compile: compile.CompileService(
+        ..physical,
+        compile: fn(request: compile.CompileRequest) {
+          process.send(attempts, #(request.attempt, request.identity))
+          physical.compile(request)
+        },
+      ),
+    )
   let execution = codemode.execute(unused_int_source, config)
 
   // What ran is the rewritten program: it is what the second build
@@ -277,6 +290,14 @@ pub fn unused_imports_alone_are_removed_and_rebuilt_once_test() {
   assert compile.artifact_hash(artifact) == "cafe"
   assert drain(seen) == [unused_int_source, rewritten]
   assert execution.edits == ["removed unused import gleam/int (line 2)"]
+  let assert Ok(#(compile.Original, first_phase)) =
+    process.receive(attempts, 1000)
+    as "The first request has Original provenance."
+  let assert Ok(#(compile.UnusedImportRewrite, second_phase)) =
+    process.receive(attempts, 1000)
+    as "Only the rewritten request has Rewrite provenance."
+  assert first_phase == second_phase
+  assert identity.grants(second_phase) == []
 }
 
 pub fn a_rebuild_that_still_fails_reports_the_second_diagnostics_test() {

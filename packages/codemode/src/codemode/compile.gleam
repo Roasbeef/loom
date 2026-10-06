@@ -286,6 +286,15 @@ pub type Compiled {
   Compiled(result: Result(Artifact, CompileError), enforcement: Report)
 }
 
+/// Exactly two physical attempts beneath one execution's unchanged Build phase.
+pub type CompileAttempt {
+  /// The initially vetted source, retaining the legacy Compile child address.
+  Original
+
+  /// The single re-vetted result of the complete unused-import diagnostic.
+  UnusedImportRewrite
+}
+
 /// The whole physical compile request, made only after owner vetting.
 /// It contains no owner-local pathname or Builder callback.
 ///
@@ -293,7 +302,7 @@ pub type Compiled {
 ///
 /// ```gleam
 /// let request = compile.CompileRequest(
-///   vetted: program, dependencies: compile.default_dependencies(),
+///   attempt: compile.Original, vetted: program, dependencies: compile.default_dependencies(),
 ///   generated: [], identity: identity.build_phase(execution_identity),
 /// )
 /// ```
@@ -301,6 +310,8 @@ pub type CompileRequest {
   /// Local services use the opaque Vetted; remote adapters serialize its
   /// source and re-vet at the executor under the negotiated contract.
   CompileRequest(
+    /// Bounded provenance; never a new ledger or renewed deadline.
+    attempt: CompileAttempt,
     /// Source admitted by the owner pipeline's selected capability seam.
     vetted: Vetted,
     /// Pinned dependency table; the service must compare its seed contract.

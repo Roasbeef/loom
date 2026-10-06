@@ -898,7 +898,7 @@ fn perform(
 ) -> Result(Reply, Error) {
   use decoded <- result.try(validate_input(config, original))
   use admitted <- result.try(
-    input.admit_compile(original.key, config.contract, decoded)
+    admit_attempt(config, original.key, decoded)
     |> result.replace_error(Invalid),
   )
   use Nil <- result.try(remaining(config, deadline))
@@ -1665,4 +1665,44 @@ fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
   // cannot promise any durable write. Temporary supervision never restarts work.
   let _ = journal.seal(state.config.resources)
   cancel_all(state)
+}
+
+// The executor reads its own committed predecessor evidence before preparation.
+// An owner assertion cannot replace the retained terminal or its native facts.
+fn admit_attempt(
+  config: Config,
+  key: command.ServiceKey,
+  decoded: input.CompileInput,
+) -> Result(input.AdmittedCompile, input.InputError) {
+  case command.compile_predecessor(key) {
+    None -> input.admit_compile(key, config.contract, decoded)
+    Some(previous) -> {
+      use original <- result.try(
+        journal.retained_input(config.resources, previous)
+        |> result.replace_error(input.AssociationMismatch),
+      )
+      use original_input <- result.try(input.decode_compile(original.body))
+      use retained <- result.try(
+        journal.inspect_compile(config.resources, original)
+        |> result.replace_error(input.AssociationMismatch),
+      )
+      use completed <- result.try(case retained {
+        journal.CompileRetained(value, _) ->
+          Ok(journal.retained_compile_value(value))
+        journal.CompilePending -> Error(input.AssociationMismatch)
+      })
+      use failure <- result.try(case completion.compiled(completed).result {
+        Error(error) -> Ok(error)
+        Ok(_) -> Error(input.AssociationMismatch)
+      })
+      input.admit_rewrite(
+        key,
+        config.contract,
+        decoded,
+        previous,
+        original_input,
+        failure,
+      )
+    }
+  }
 }

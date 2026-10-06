@@ -33,6 +33,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/result
 import gleam/string
 import gleam/time/timestamp
 import simplifile
@@ -253,7 +254,15 @@ fn consumer(
     )
     as "One genuine original Broker."
   let facts =
-    client.Facts(input.WorkspaceProgram, base(), 180_000, 5000, [], limits())
+    client.Facts(
+      input.WorkspaceProgram,
+      base(),
+      180_000,
+      5000,
+      [],
+      limits(),
+      vet_policy.workspace_effects(),
+    )
   let assert Ok(value) =
     client.new(
       fixture.owner,
@@ -448,6 +457,7 @@ fn for_invalid_phases(
     [first, ..rest] -> {
       let result =
         physical.compile(compile.CompileRequest(
+          compile.Original,
           source,
           compile.default_dependencies(),
           [],
@@ -667,4 +677,131 @@ pub fn exact_owner_receipt_survives_custodian_reopen_test() {
 
 pub fn completion_codec_ceiling_refuses_oversized_retained_bytes_test() {
   offline_control(6)
+}
+
+const rewrite_failure_diagnostics =
+  "  Compiling loom_codemode_program
+warning: Unused imported module
+  ┌─ /b/src/loom_program.gleam:2:1
+  │
+2 │ import gleam/int
+  │ ^^^^^^^^^^^^^^^^ This imported module is never used
+
+Hint: You can safely remove it.
+
+error: 1 warning generated.
+
+Your project was compiled with the `--warnings-as-errors` flag.
+Fix the warnings and try again."
+
+/// The actual owner writer checks retained evidence before creating a new row.
+pub fn rewrite_owner_boundary_refuses_unknown_forged_and_generic_admission_test() {
+  let f = new_fixture("rewrite-admission")
+  let source =
+    "import cap/fs\nimport gleam/int\npub fn main() { fs.read(\"x\") }\n"
+  let assert Ok(original_input) =
+    input.compile_input(
+      enrolled(),
+      input.WorkspaceProgram,
+      source,
+      [],
+      compile.default_dependencies(),
+      base(),
+      180_000,
+    )
+    as "Exact canonical original input."
+  let original_bytes = input.encode_compile(original_input)
+  let #(scope, operation, step) = command.coordinates(key(0))
+  let #(_, registration, contract_digest) = command.digests(key(0))
+  let assert Ok(previous) =
+    command.service_key(
+      parent(0),
+      command.CompileService,
+      scope,
+      operation,
+      step,
+      request_id(30),
+      hash(original_bytes),
+      registration,
+      contract_digest,
+    )
+    as "Original immutable key binds actual input bytes."
+  let assert Ok(next_input) =
+    input.compile_input(
+      enrolled(),
+      input.WorkspaceProgram,
+      "import cap/fs\npub fn main() { fs.read(\"x\") }\n",
+      [],
+      compile.default_dependencies(),
+      base(),
+      180_000,
+    )
+    as "Deterministic rewritten input."
+  let next_bytes = input.encode_compile(next_input)
+  let assert Ok(next) =
+    command.rewrite_service_key(previous, request_id(31), hash(next_bytes))
+    as "Single rewritten key."
+  let assert Ok(contract) =
+    input.trusted_contract(
+      enrolled(),
+      input.WorkspaceProgram,
+      vet_policy.workspace_effects(),
+      [],
+    )
+    as "Fixed local administrative contract."
+  assert custodian.reserve_service_child(f.owner, next, next_bytes)
+    |> result.is_error
+  assert custodian.reserve_compile_child(f.owner, next, next_bytes, contract)
+    |> result.is_error
+  assert custodian.child(f.owner, command.service_origin(next))
+    == Error(custody.Missing)
+  let assert Ok(_) =
+    custodian.reserve_service_child(f.owner, previous, original_bytes)
+    as "Original reservation."
+  assert custodian.reserve_compile_child(f.owner, next, next_bytes, contract)
+    |> result.is_error
+  assert custodian.child(f.owner, command.service_origin(next))
+    == Error(custody.Missing)
+  let assert Ok(failed) =
+    completion.failed_before_native(
+      enrolled(),
+      previous,
+      compile.BuildRejected(rewrite_failure_diagnostics),
+    )
+    as "Explicit closed predecessor fixture."
+  let assert Ok(failure_bytes) = completion.encode(failed)
+    as "Canonical retained failure."
+  assert custodian.receive_child(
+      f.owner,
+      command.service_origin(previous),
+      command.request_id(previous),
+      failure_bytes,
+    )
+    == Ok(Nil)
+  let assert Ok(wrong) =
+    command.rewrite_service_key(previous, request_id(31), hash(original_bytes))
+    as "A changed source reaches the same rewrite address."
+  assert custodian.reserve_compile_child(
+      f.owner,
+      wrong,
+      original_bytes,
+      contract,
+    )
+    |> result.is_error
+  assert custodian.child(f.owner, command.service_origin(next))
+    == Error(custody.Missing)
+  let assert Ok(retained) =
+    custodian.reserve_compile_child(f.owner, next, next_bytes, contract)
+    as "Only exact checked source is committed."
+  assert custodian.reserve_compile_child(f.owner, next, next_bytes, contract)
+    == Ok(retained)
+  assert custodian.reserve_service_child(f.owner, next, next_bytes)
+    |> result.is_error
+  stop(f)
+  let assert Ok(started) = custodian.start(f.owner, f.config)
+    as "Same journal reopens."
+  let f = Fixture(..f, pid: started.pid)
+  assert custodian.reserve_compile_child(f.owner, next, next_bytes, contract)
+    == Ok(retained)
+  stop(f)
 }

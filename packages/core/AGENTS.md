@@ -219,7 +219,7 @@ binary data, non-text or duplicate object keys, and excessive nesting on the
 msgpack-to-JSON path. The satellite report helpers and host note/orchestration
 routers share this pure conversion.
 
-## Remote tool identity (protocol 067)
+## Remote tool identity (protocols 067 and 071)
 
 `core/remote_tool.ToolKey` is opaque and contains the session, operation,
 step, source index, canonical effective-argument SHA-256 digest and reserved
@@ -227,7 +227,7 @@ result-entry identity. Its logical address excludes the digest and result ID
 so a changed immutable identity finds the existing fence and conflicts. The
 owner computes the hash with an existing effect-layer facility; this module
 adds no I/O, FFI or BEAM dependency. Names, digest spelling and indices are
-bounded before construction. `ChildOrigin` distinguishes compile, launch,
+bounded before construction. `ChildOrigin` distinguishes Original Compile, rewritten Compile, Launch,
 capability ordinal and explicit system service origins; connection generation
 is absent from both tool and child identity.
 
@@ -236,13 +236,14 @@ bound; explicit system service names retain their independent 128-byte bound.
 `remote_tool.operation` and `remote_tool.step` expose original parent coordinates
 for broker clearance without deriving them from physical child operation names.
 
-The Workspace ordinal is a separate ChildRole beside Compile, Launch and
-Capability. Its encoded address cannot alias those roles. `provenance` and
+The Workspace ordinal is a separate ChildRole beside Compile, CompileRewrite,
+Launch and Capability. Its encoded address cannot alias those roles. `provenance` and
 `child_role` expose validated identity to the owner binding without granting
 effect authority or deriving fresh operation coordinates.
 
-`CompileCommand` and `SatelliteCommand` distinguish concrete native command
-roles from the legacy Compile and Launch roles. `AdmittedCapability` carries
+The ChildRole variants `remote_tool.CompileCommand`, `CompileRewriteCommand` and
+`SatelliteCommand` distinguish concrete native origins from their Compile, CompileRewrite and Launch
+service origins. `AdmittedCapability` carries
 its trusted capability name, ordinal and `CapabilityPurpose` (SemanticWorkspace
 or NativeCommand); every field participates in the child address. The address
 encoding bounds and escapes each component so names and delimiters cannot
@@ -250,7 +251,7 @@ alias another role. This adds no dynamic admission authority and leaves the
 original 64-row ceiling unchanged.
 
 
-## Physical service and command identity (protocol 067)
+## Physical service and command identity (protocols 067 and 071)
 
 `core/command.ServiceKey` retains the original managed ToolKey, closed
 CompileService/LaunchService purpose, full registered scope, parent's operation,
@@ -259,6 +260,16 @@ contract digests. `CommandRef` pairs CompileService with CompileCommand or
 LaunchService with SatelliteCommand. Its deterministic address excludes content;
 changed input reaches the original fence rather than another row. The native
 origin remains disjoint from its outer service. No offer UUID is allocated.
+
+Original Compile retains the exact version-1 key encoding and addresses.
+`rewrite_service_key` creates the only second attempt from an exact Original
+predecessor and a distinct UUID; parent, operation, step, enrollment and contract
+remain unchanged. Version 2 embeds that complete version-1 predecessor, and its
+total decoder refuses recursive Rewrite lineage. `compile_predecessor` exposes
+the checked relation. The CommandRole purpose remains CompileCommand for both
+builds; the checked key selects the distinct ChildRole CompileRewriteCommand
+native origin. These constructors do not validate compiler diagnostics or
+grant clearance. See [remote Compile attempts](../../docs/architecture/remote-compile-attempts.md).
 
 Smart constructors reject different parent session/operation, invalid digest
 spelling and crossed role pairs. Closed versioned JSON decoders return bounded

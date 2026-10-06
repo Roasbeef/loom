@@ -628,6 +628,7 @@ pub fn the_build_lives_in_that_directory_and_the_socket_beside_it_test() {
     as "the root fixture must pass owner vetting"
   let _compiled =
     built.compile.compile(compile.CompileRequest(
+      compile.Original,
       vetted:,
       dependencies: built.compile.dependencies,
       generated: [],

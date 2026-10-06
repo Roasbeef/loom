@@ -39,3 +39,8 @@ pub fn canonical_channel_parent_is_portable_test() {
 pub fn lost_original_clearance_reply_stays_unknown_without_refusal_test_() {
   #(atom.create("timeout"), 35, fn() { launch_client_fixture.live_control(8) })
 }
+
+/// The real first compiler failure authorizes only one immutable rewritten build.
+pub fn real_unused_import_rewrite_compile_then_exact_launch_test_() {
+  #(atom.create("timeout"), 60, fn() { launch_client_fixture.live_control(9) })
+}

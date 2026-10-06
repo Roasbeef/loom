@@ -28,11 +28,14 @@
 
 import broker/internal/call
 import client/remote/outcome
+import codemode/service_input
 import core/command
 import core/ids
 import core/msgpack
 import core/remote_tool
 import core/report_value
+import executor/remote/compile_completion
+import executor/remote/compile_wire
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process
@@ -129,6 +132,7 @@ pub opaque type Message {
   /// Exact outer service reservation; no transport or preparation is performed.
   ReserveService(
     custody.ServiceRequest,
+    option.Option(service_input.CompilationContract),
     process.Subject(Result(Nil, custody.Error)),
   )
 
@@ -568,7 +572,29 @@ pub fn reserve_service_child(
 ) -> Result(custody.ServiceRequest, custody.Error) {
   use request <- result.try(custody.service_request(owner.limits, key, input))
   use Nil <- result.try(
-    ask(owner, fn(reply) { ReserveService(request, reply) }),
+    ask(owner, fn(reply) { ReserveService(request, option.None, reply) }),
+  )
+  Ok(request)
+}
+
+/// Reserves Compile only after checking immutable predecessor evidence locally.
+/// The contract is fixed administrative assembly, never decoded peer authority.
+///
+/// ## Examples
+///
+/// `reserve_compile_child(owner, key, bytes, contract)` checks rewrite lineage
+/// in the original owner actor before any new durable child admission.
+pub fn reserve_compile_child(
+  owner: Handle,
+  key: command.ServiceKey,
+  input: BitArray,
+  contract: service_input.CompilationContract,
+) -> Result(custody.ServiceRequest, custody.Error) {
+  use request <- result.try(custody.service_request(owner.limits, key, input))
+  use Nil <- result.try(
+    ask(owner, fn(reply) {
+      ReserveService(request, option.Some(contract), reply)
+    }),
   )
   Ok(request)
 }
@@ -921,8 +947,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       )
       resume(state)
     }
-    ReserveService(request, reply) -> {
-      process.send(reply, custody.admit_service_child(state.store, request))
+    ReserveService(request, contract, reply) -> {
+      let checked = {
+        use Nil <- result.try(check_compile_reservation(
+          state.store,
+          request,
+          contract,
+        ))
+        custody.admit_service_child(state.store, request)
+      }
+      process.send(reply, checked)
       resume(state)
     }
     ReadService(key, reply) -> {
@@ -1359,5 +1393,61 @@ fn input_bound(bytes: BitArray, maximum: Int) -> Result(Nil, custody.Error) {
   {
     True -> Ok(Nil)
     False -> Error(custody.Capacity)
+  }
+}
+
+// Immutable retained rows make validation stable until the following admission.
+// Neither transport input nor a caller's diagnostic can supply the predecessor.
+fn check_compile_reservation(
+  store: custody.Store,
+  request: custody.ServiceRequest,
+  contract: option.Option(service_input.CompilationContract),
+) -> Result(Nil, custody.Error) {
+  let key = custody.service_identity(request)
+  case command.compile_predecessor(key), contract {
+    option.None, _ -> Ok(Nil)
+    option.Some(_), option.None ->
+      Error(custody.Invalid("rewrite requires checked Compile reservation"))
+    option.Some(previous), option.Some(contract) -> {
+      let enrolled = service_input.contract_enrolled(contract)
+      use next <- result.try(
+        compile_wire.decode_input(enrolled, custody.service_content(request))
+        |> result.replace_error(custody.Conflict),
+      )
+      use retained <- result.try(custody.service_child(store, previous))
+      use original <- result.try(
+        compile_wire.decode_input(enrolled, custody.service_content(retained.0))
+        |> result.replace_error(custody.Conflict),
+      )
+      use bytes <- result.try(option.to_result(retained.1, custody.Conflict))
+      use completed <- result.try(
+        compile_completion.decode(enrolled, previous, custody.bytes(bytes))
+        |> result.replace_error(custody.Conflict),
+      )
+      use failed <- result.try(
+        case compile_completion.compiled(completed).result {
+          Error(error) -> Ok(error)
+          Ok(_) -> Error(custody.Conflict)
+        },
+      )
+      use next_input <- result.try(
+        service_input.decode_compile(next.body)
+        |> result.replace_error(custody.Conflict),
+      )
+      use original_input <- result.try(
+        service_input.decode_compile(original.body)
+        |> result.replace_error(custody.Conflict),
+      )
+      service_input.admit_rewrite(
+        key,
+        contract,
+        next_input,
+        previous,
+        original_input,
+        failed,
+      )
+      |> result.replace(Nil)
+      |> result.replace_error(custody.Conflict)
+    }
   }
 }
