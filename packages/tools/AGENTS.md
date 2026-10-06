@@ -1,3 +1,13 @@
+## Unknown foreground Launch outcomes
+
+`codemode.RunFailure.LaunchOutcomeUnknown(reason)` preserves a lost original
+Launch observation independently from witnessed `StartFailed`. The result is
+rendered with a distinct `launch_outcome_unknown` kind and instructs the caller
+to reconcile original custody. It does not request re-execution, fresh
+approval, or directory cleanup. Native enforcement and complete-report
+retention remain their existing separate evidence; tools define the model
+vocabulary while the client owns local deletion.
+
 # tools
 
 ## Semantic workspace contract
