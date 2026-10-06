@@ -693,9 +693,14 @@ worktree's name, whose `title` is the whole path. The sidebar lists running sess
 and keeps the saved ones behind a quiet "N saved" line: they stay in the
 document, so the session switcher still lists them, and `<loom-saved>` shows
 them in place in the browser and remembers the choice in local storage. The row of the session
-on screen also carries one thin bar per live strand in the strand's hue, drawn
-from the strip the page already has and pulsing while the strand works; the
-bars are decoration with no handler and no focus. An empty `nav` child sits
+on screen says what it is doing from the page's own lane (a strand
+waiting on a decision, or main's failed last run, needs the person; a strand
+with an operation is working; otherwise idle), so it never lags the Strands
+panel; the other rows say what the daemon's activity read last answered, which
+the component repeats every `activity_refresh_ms` (5 s) on a tick, apart from
+the list's 30 s. Projects are listed alphabetically by directory name, so
+selecting another session never reorders them, and an idle dot is the same quiet
+colour on the home and in the sidebar. An empty `nav` child sits
 above the first group for the app's navigation. The entry carries
 name, workspace, creation time and residency, and nothing of the registration's
 path, key or configuration.

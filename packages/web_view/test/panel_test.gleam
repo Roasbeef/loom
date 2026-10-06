@@ -9,15 +9,12 @@
 //// waiting on a decision is counted and says so in words; and the decision
 //// itself, the approval card, is in the dock and nowhere in the panel.
 
-import core/json
-import core/register
 import gleam/list
 import gleam/option.{None}
 import gleam/string
 import lane_fixture
 import lustre/element
 import page_fixture
-import session_view/snapshot_view
 import web_view/component
 import web_view/operator_page
 
@@ -27,27 +24,7 @@ const panel_start = "<aside aria-label=\"Strand panel\""
 // runs: the escalation's scope names the strand and the operation, which is
 // the evidence `agent_view` requires before it says a strand needs input.
 fn waiting_on(strand: String, op: String) {
-  let escalation =
-    snapshot_view.Cell(
-      register.FactCustom,
-      "escalation/esc-1",
-      7,
-      json.Object([
-        #("id", json.String("esc-1")),
-        #("status", json.String("pending")),
-        #("tool", json.String("fs_write")),
-        #("preview", json.String("write the file")),
-        #("action", json.String("captured-action")),
-        #("origin", json.Null),
-        #(
-          "scope",
-          json.Object([
-            #("strand", json.String(strand)),
-            #("operation", json.String(op)),
-          ]),
-        ),
-      ]),
-    )
+  let escalation = lane_fixture.pending_approval(strand, op)
   let #(main, others) = case strand {
     "main" -> #(option.Some(op), [])
     _ -> #(None, [#(strand, op)])

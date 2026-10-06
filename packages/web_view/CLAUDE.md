@@ -290,10 +290,11 @@ page keys and nonces, and the relay into the session's gateway.
   `ending_test` and `grants_test` read all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved | Blocked`; `Blocked` is a saved row no page may resume),
-  `Group` and `grouped(entries, current)` (groups by project: `Entry.project`
+  `Group` and `grouped(entries)` (groups by project: `Entry.project`
   is the repository root the daemon found for the workspace, `None` for one that is
-  no repository, and `project_of` falls back to the workspace; the current
-  session's project first, then by newest session, sessions newest first,
+  no repository, and `project_of` falls back to the workspace; the groups
+  alphabetical by directory name, ignoring case, never by the session on screen,
+  so selecting a session moves nothing; sessions newest first,
   ties by identity and path). `Group.workspace` is where "New session" under the
   heading creates (the project's own checkout when a session runs there, else the
   newest session's workspace, always one the catalogue lists). `titles(groups)` is
@@ -301,13 +302,11 @@ page keys and nonces, and the relay into the session's gateway.
   the whole path if that still collides. `worktree(entry)` is the worktree's
   directory name when a session's workspace is not its project. `view/resume` is the one rule for a saved row
   (`Never | Offered(press, pending)`, `kind` giving `Text | Button | Opening`),
-  shared by the sidebar and the home's table. `view/sidebar.view(groups, current, bars, open, resume)`
+  shared by the sidebar and the home's table. `view/sidebar.view(groups, current, activity, open, resume)`
   draws it as the frame's second child (`aside.sidebar`, the left column;
   `element.none()` where a page draws none), memoized on the groups, the
-  identity and the bars. `bars` is `sidebar.bars(component.strip(model))`: one
-  `Bar(hue, pulse)` per listed strand and the advisor, drawn only on the
-  current row as `span.dots > span.bar.hue-N[.w]` (decoration, `aria-hidden`,
-  no handler). A `nav()` child, `element.none()` today, sits before the first
+  identity and the activity. The sidebar draws no strand bars (the Strands panel
+  owns strand state). A `nav()` child, `element.none()` today, sits before the first
   group for the app's navigation. A row for a running
   session other than the one on screen is a `button.session-open` whose
   message is `open(id)`; a saved session is one whose message is the resume's
@@ -331,7 +330,16 @@ page keys and nonces, and the relay into the session's gateway.
   `ActivityObserved` sets `View.activity`, so the session page says `working`,
   `idle` or `needs you` (classes `residency live working|idle|needs-you`, drawn
   as accent pulse, quiet, signal hue), and `running` until a session is named.
-  The read cannot tell an approval from a failed run: `needs you` covers both. The
+  The read cannot tell an approval from a failed run: `needs you` covers both.
+  The read repeats on a `Ticked` every `activity_refresh_ms` (5 s,
+  `View.activity_asked_at`), apart from the list's 30 s, and asks nothing while
+  the page holds no list. The page's own row never takes the read's answer:
+  `component.session_activity` replaces it with `live_activity`, the strip's
+  strand statuses (`needing() > 0`, or main failed with nothing running, is
+  `NeedsYou`; a working or waiting strand is `Working`; otherwise `Idle`), so
+  the row never lags the Strands panel; before a first capture the read's
+  answer stands. The page cannot see whether its tab is visible, so the 5 s
+  read runs whether or not it is. The
   component starts `Transport.sessions` on `Opened` and on a `Ticked` at
   least `sessions_refresh_ms` (30 s) after the last read (the read runs in
   the daemon's task and lands as `SessionsListed`; a read that is slow or

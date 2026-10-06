@@ -1561,7 +1561,7 @@ fn answered(model: Model, listing: Listing) -> Model {
     Listed(entries:) ->
       Model(
         ..model,
-        groups: sessions.grouped(list.take(entries, sessions.listed_limit), ""),
+        groups: sessions.grouped(list.take(entries, sessions.listed_limit)),
         now: model.start.now(),
         status: Connected,
       )

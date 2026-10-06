@@ -345,6 +345,17 @@ pub const session_controls_path = "0\t3\t2\t3"
 /// raises (`Ticked`), not on a timer of its own.
 pub const sessions_refresh_ms = 30_000
 
+/// How long the sidebar's activity words stand before the page reads them
+/// again, in milliseconds of the transport's clock. The list changes rarely,
+/// but a running session's state (working, idle, waiting on its owner) changes
+/// within a turn, so the page asks for the activity of the rows it lists on
+/// its own, faster cadence, and no more often than this. Like the list's read
+/// it is made on a `Ticked` the lane already raises, so the interval is a
+/// lower bound, and it runs in the daemon's own task and is bounded by
+/// `sessions.activity_limit`. The page on screen needs none of it: its own row
+/// is read from its lane (`session_activity`).
+pub const activity_refresh_ms = 5000
+
 /// How long a page waits between asks for the strand's live jobs, on the
 /// transport's clock. An ask is made only when the page ticks, so the
 /// interval is a lower bound and an idle page's ticks (five seconds apart)
@@ -801,9 +812,13 @@ type View(socket) {
     groups: List(sessions.Group),
     listed_at: Option(Int),
     /// What the sidebar's running sessions were last said to be doing, by
-    /// identity. It is asked for after each read of the list, so it runs on the
-    /// list's cadence, and a session with no answer says "running".
+    /// identity. It is asked for after each read of the list and again every
+    /// `activity_refresh_ms`, and a session with no answer says "running".
+    /// The page's own session is never read from here (`session_activity`).
     activity: dict.Dict(String, sessions.Activity),
+    /// When the activity was last asked for on the transport's clock, so the
+    /// next ask on a `Ticked` waits `activity_refresh_ms`.
+    activity_asked_at: Option(Int),
     /// The ticket exchange the daemon minted for the session the operator
     /// chose, which `<loom-switch>` navigates to. It stays until the next
     /// switch replaces it: the ticket is single use and lives 60 seconds, so
@@ -1059,6 +1074,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       status: Connecting,
       groups: [],
       listed_at: None,
+      activity_asked_at: None,
       activity: dict.new(),
       departure: None,
       resuming: None,
@@ -1238,7 +1254,9 @@ pub fn update(
 
     // The lane's due reading passed: its tick acts.
     Ticked ->
-      stepping(jobs_wanted(model, at), [tick_at(at)], at) |> relisted(at)
+      stepping(jobs_wanted(model, at), [tick_at(at)], at)
+      |> relisted(at)
+      |> reobserved(at)
 
     OlderRequested -> older_at(model, at)
 
@@ -1247,15 +1265,16 @@ pub fn update(
     GoingHome -> going_home(model)
 
     // The sidebar's list is the catalogue's own order and the page groups it,
-    // at most `listed_limit` sessions. Nothing about the lane moved.
+    // at most `listed_limit` sessions. Nothing about the lane moved. The read
+    // that follows counts as the activity's latest ask, so the next `Ticked`
+    // does not ask a second time.
     SessionsListed(entries:) -> {
-      let groups =
-        sessions.grouped(
-          list.take(entries, sessions.listed_limit),
-          model.shared.session,
-        )
+      let groups = sessions.grouped(list.take(entries, sessions.listed_limit))
       #(
-        Model(..model, view: View(..model.view, groups:)),
+        Model(
+          ..model,
+          view: View(..model.view, groups:, activity_asked_at: Some(at)),
+        ),
         observing(model.view.transport, groups),
       )
     }
@@ -1377,6 +1396,29 @@ fn relisted(
       Model(..model, view: View(..model.view, listed_at: Some(at))),
       effect.batch([effects, listing(model.view.transport)]),
     )
+  }
+}
+
+// Asks for the activity of the sidebar's running sessions again when the last
+// ask was `activity_refresh_ms` or more ago, so a row's word follows its
+// session within seconds and not on the list's thirty. A page that has no
+// list asks nothing. Only `Ticked` comes here, and the answer arrives as
+// `ActivityObserved` from the daemon's task, so the runtime waits on nothing.
+fn reobserved(
+  done: #(Model(socket), Effect(Msg(socket))),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(model, effects) = done
+  let due = case model.view.activity_asked_at {
+    Some(before) -> at - before >= activity_refresh_ms
+    None -> True
+  }
+  case due, model.view.groups {
+    True, [_, ..] -> #(
+      Model(..model, view: View(..model.view, activity_asked_at: Some(at))),
+      effect.batch([effects, observing(model.view.transport, model.view.groups)]),
+    )
+    True, [] | False, _ -> done
   }
 }
 
@@ -3623,17 +3665,55 @@ pub fn session_groups(model: Model(socket)) -> List(sessions.Group) {
   model.view.groups
 }
 
-/// What the sidebar's running sessions were last said to be doing, by identity.
+/// What the sidebar's running sessions are doing, by identity. The other
+/// rows carry what the daemon's activity read last said, a few seconds old at
+/// most. The page's own session is the exception: the page is its lane, so the
+/// row is read from the strands' statuses it already holds (`live_activity`)
+/// and never lags the Strands panel beside it. Before the first capture the
+/// page knows nothing of its own session and the read's answer stands.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(groups, id, bars, component.session_activity(model), Opening, resume)
+/// // sidebar.view(groups, id, component.session_activity(model), Opening, resume)
 /// ```
 pub fn session_activity(
   model: Model(socket),
 ) -> dict.Dict(String, sessions.Activity) {
-  model.view.activity
+  case live_activity(model) {
+    Some(own) -> dict.insert(model.view.activity, model.shared.session, own)
+    None -> model.view.activity
+  }
+}
+
+// What the page's own session is doing, from the strip it draws. The rule is
+// the daemon's activity read's, so the page's row and the home's row for the
+// same session say the same word: a strand waiting on a decision, or a main
+// strand whose last run failed with nothing else running, needs the person;
+// otherwise a strand with an operation (working, or waiting on a provider
+// retry) is working; otherwise idle. A page whose strip lists no strand has
+// no capture yet and says nothing.
+fn live_activity(model: Model(socket)) -> Option(sessions.Activity) {
+  let listed = chips(model.view.strip)
+  let statuses = list.map(listed, fn(chip) { chip.line.status })
+  let working =
+    list.any(statuses, fn(status) {
+      status == agent_view.Working || status == agent_view.Waiting
+    })
+  let main_failed = case model.view.strip.chips {
+    [main, ..] -> main.line.status == agent_view.Failed
+    [] -> False
+  }
+  case listed {
+    [] -> None
+    [_, ..] ->
+      case needing(model) > 0, working, main_failed {
+        True, _, _ -> Some(sessions.NeedsYou)
+        False, True, _ -> Some(sessions.Working)
+        False, False, True -> Some(sessions.NeedsYou)
+        False, False, False -> Some(sessions.Idle)
+      }
+  }
 }
 
 /// The agent strip as the page draws it.
