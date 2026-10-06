@@ -1,5 +1,25 @@
 # client
 
+## Per-strand shell directories
+
+`client/working_directory` stores canonical shell defaults under reserved
+`client/working_directory/<strand>` facts, using the projected fact supplier
+from `agency.fact_supplier`. Missing state means workspace; corruption,
+unavailable storage, a deleted directory or a redirected canonical target is
+an explicit error. An absolute setter path allows recovery. Writes compare the
+previous sequence. `serve` installs the native tool and wraps the existing
+code-mode router so `proc.run` shares the default and `proc.in_dir` overrides
+one call. File/search/LSP paths remain workspace-relative. `jobs.Request.cwd`
+passes through `jobseam.Door.start` into durable `JobSpec.cwd` before launch.
+
+Finite LSP observation inference selects the first source's configured owner
+and checks every remaining source against it before acquisition or text reads.
+Explicit assertions remain exact, and mismatch errors name both owner pairs.
+Installed Gleam inventories compare parsed contents with recursively ordered
+table keys. A serializer-only reorder cannot evict a warm server; versions,
+Git commits, sequence order and every other value remain part of the stamp.
+Project configurations and manifests retain their byte hashes.
+
 ## LSP query handle ownership
 
 `lsp/manager.Manager` retains reachability, workspace/server identity,

@@ -1,6 +1,6 @@
 # protocol-change/068: shell directories and inferred LSP scope
 
-**Status**: IMPLEMENTING 2026-10-06. The owner requested per-call and persistent
+**Status**: IMPLEMENTED LOCALLY 2026-10-06; Linux signoff and publication pending. The owner requested per-call and persistent
 working directories, plus code-mode improvements grounded in a live session.
 
 ## Problem
@@ -45,6 +45,12 @@ the offending file, its actual configured server/root and the requested pair.
 Capture bounds, deadlines, protected paths and complete-or-refused publication
 remain the same. Returned metadata names the resolved owner.
 
+Installed Gleam inventory fingerprints compare parsed TOML contents with
+recursively sorted table keys. The compiler rewrites those keys in arbitrary
+order, so serializer order MUST NOT invalidate a warm server. Every value and
+sequence order remains significant. Manifest and project configuration hashes
+remain byte-based. Existing metadata bounds and read-authority checks apply.
+
 On-demand `cap://` function documentation retains examples with their source
 indentation. The cached type-only description excludes those examples. This
 keeps runnable syntax near the functions without growing every request's
@@ -60,8 +66,24 @@ explicit-only preserves repeated guesses rather than using known ownership.
 
 ## Verification
 
-Implementation remains in progress. The regression suite must cover all bash
-modes, strand independence, rebuilt-store readback, invalid directory recovery,
-process overrides, inferred nested-worktree LSP roots, and explicit mismatch
-refusal before server startup. Generated prelude and code-mode seed must be
-rebuilt before jailed end-to-end validation.
+The final complete client gate passed all 2,878 tests with the repository's
+shipped-server fixture environment. Tools passed 636 tests, cap passed 175, and
+the generated-reference renderer passed six. The broader run and remaining
+package gates covered the other suites; formatting, lint, doc-check, prelude
+freshness and client assets passed separately with their own exit codes.
+
+Regressions cover shell modes, durable strand separation, SQLite reopen,
+invalid-state recovery, captured job cwd, nested-worktree ownership and real
+jailed process overrides. Four mutations restored the underlying job-cwd,
+inferred-owner, relative-process redirection and inventory-order defects;
+each intended regression failed, then passed after source restoration.
+
+The independent review found the relative-process redirection gap, which was
+fixed and checked again. It found no issue in the bounded inventory fix.
+
+The original broad run exposed the inventory-order failure and shifted doc
+citations; both were fixed. A manual rerun also used the wrong provider fixture
+key; the final complete run used `loom-provider-fixture-key` and passed.
+The macOS skip census still refuses two helper-kill checks requiring `/proc`.
+Rust-analyzer is unavailable here. No skip waiver was added, and Linux signoff
+has not been run. These local results do not authorize merge or deployment.

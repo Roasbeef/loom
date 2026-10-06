@@ -1,5 +1,16 @@
 # cap
 
+## Inferred LSP plans and caller examples
+
+`lsp_sql.plan(outlines, targets)` asks the host to infer the configured server
+and root from explicit workspace-relative sources. All sources must agree;
+`Plan` retains explicit owner assertions. The SQL schema is carried in query
+documentation, including `path` columns and the quoted `references` table.
+Function examples remain in on-demand capability documentation. `report.list`
+accepts structured values, so strings are mapped through `report.string`.
+Production `proc.run` inherits the calling strand's shell directory, and
+`proc.in_dir` overrides one command through the host wrapper.
+
 ## Purpose
 
 The capability prelude: the language a code-mode program is written
