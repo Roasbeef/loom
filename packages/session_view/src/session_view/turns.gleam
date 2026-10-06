@@ -124,6 +124,13 @@ pub type Folding {
   /// held. It is zero when every step is.
   Unfolded(hidden: Int)
 
+  /// A settled turn the reader opened whose steps the host has not read yet:
+  /// the divider, open, and no steps. The host that closes a turn into a
+  /// summary (`turn_ledger`) holds its steps only while the fold is open, and
+  /// reads them when it is opened, so there is a time when it is open and they
+  /// are not here.
+  Reading
+
   /// The running turn: drawn open, with no divider to collapse it.
   Open
 }

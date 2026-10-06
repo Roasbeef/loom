@@ -269,6 +269,7 @@ pub fn draw(
         turns.Work(key:, worked:, items: kept, folding:, id:)
       }
       turns.Work(folding: turns.Unfolded(_), ..)
+      | turns.Work(folding: turns.Reading, ..)
       | turns.Work(folding: turns.Open, ..)
       | turns.Plain(..)
       | turns.Prompt(..)
@@ -296,9 +297,16 @@ fn wanted(id: Option(Int), open: List(Int)) -> Option(Int) {
   }
 }
 
-// The newest items of a fold, in order, whose rows fit `allowed`, and how
-// many earlier ones were left out.
-fn newest(items: List(Item), allowed: Int) -> #(List(Item), Int) {
+/// The newest items of a fold, in order, whose rows fit `allowed`, and how
+/// many earlier ones were left out. A host that reads a fold's steps keeps
+/// no more than the page can draw, and cuts what it read with this.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fold_budget.newest([], 10) == #([], 0)
+/// ```
+pub fn newest(items: List(Item), allowed: Int) -> #(List(Item), Int) {
   let #(kept, _) =
     list.fold(list.reverse(items), #([], allowed), fn(acc, item) {
       let #(kept, room) = acc
@@ -311,7 +319,14 @@ fn newest(items: List(Item), allowed: Int) -> #(List(Item), Int) {
   #(kept, list.length(items) - list.length(kept))
 }
 
-fn item_rows(items: List(Item)) -> Int {
+/// The rows a fold's steps draw when it is open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert fold_budget.item_rows([]) == 0
+/// ```
+pub fn item_rows(items: List(Item)) -> Int {
   list.fold(items, 0, fn(sum, item) { sum + item_size(item) })
 }
 

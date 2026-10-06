@@ -611,6 +611,22 @@ fn piece_element(
         ),
       ])
 
+    // A fold the reader has opened whose steps the page is still reading: the
+    // divider, open, and one line that says so. The steps arrive in the next
+    // render, and the divider stays where it was.
+    turns.Work(worked:, folding: turns.Reading, id:, ..) ->
+      html.div([attribute.class("work")], [
+        divider(worked, id, folds, Opened),
+        keyed.div([attribute.class("work-items")], [
+          #(
+            "reading",
+            html.p([attribute.class("work-hidden")], [
+              html.text("Reading the steps…"),
+            ]),
+          ),
+        ]),
+      ])
+
     // The turn still running is drawn open, with no divider to fold it.
     turns.Work(items:, folding: turns.Open, ..) ->
       keyed.div(
