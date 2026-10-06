@@ -128,6 +128,37 @@ The model submits it through the `code_mode` tool:
 {"program": "import cap/fs\n...", "seam": "workspace"}
 ```
 
+### Saving a program and running it again
+
+A program is an ordinary `.gleam` file, so it can live in the repository
+next to the code it works on. Instead of inline `program`, pass
+`program_path`:
+
+```json
+{"program_path": "scripts/agent/line_counts.gleam", "seam": "workspace"}
+```
+
+The path can be workspace-relative or absolute. Loom reads it with the same
+`fs_read` authority and approval rules as any other file read, then vets,
+compiles and runs it exactly as if the source had been inline. A few rules
+follow from that:
+
+- **Each run reads the file again**, so an edit takes effect on the next
+  call. A retry inside one call, after an approval, keeps the text it
+  already loaded.
+- **Saving a program saves source only.** It carries no grants, no compiled
+  binary and no captured LSP facts; each run is vetted, compiled and
+  authorized fresh, and reads its inputs again.
+- **Launch mode accepts it too.** A saved program can be started as a
+  background execution with `"mode": "launch"`.
+
+A program that proved useful once can therefore be committed and rerun by
+any agent in any later session. The programs in
+[`docs/examples/`](examples/) are saved programs of this kind, and tests
+run them verbatim.
+[Protocol 063](../protocol-change/063-saved-code-mode-programs.md) has the
+input contract.
+
 ## What a program can import
 
 A program may import the capability modules below and a fixed, pure subset
