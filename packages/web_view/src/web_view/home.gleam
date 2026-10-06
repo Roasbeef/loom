@@ -1762,7 +1762,14 @@ fn rename_offer(model: Model) -> home_table.Rename(Msg) {
 // handed it the capability, and nothing otherwise.
 fn manage_offer(model: Model) -> home_table.Manage(Msg) {
   case model.start.manage {
-    None -> home_table.Unmanaged
+    None ->
+      case model.start.rename {
+        // The owner's operating page always has rename, and a fresh one also has
+        // manage, so this is the owner's home that a bookmark resumed. A
+        // member's home and a read-only link have no rename and say nothing.
+        Some(_) -> home_table.Withheld
+        None -> home_table.Unmanaged
+      }
     Some(_) ->
       home_table.Managed(
         stop: StopRequested,
