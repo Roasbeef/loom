@@ -2,9 +2,17 @@
 //// each edit reported, drawn as the Changes tab of the strand panel on both
 //// pages.
 ////
-//// The board is `session_view/changes_view`, folded from the records the page
-//// already holds, so nothing here reads the worktree and nothing is sent. It
-//// is labelled `from this session's edits` because it shows what the agent
+//// This module chooses between two sources. When the page holds the daemon's
+//// observation of a Git checkout (`web_view/worktrees`) the pane is
+//// `view/worktree`: the workspace's diff, which includes what a shell command
+//// or an editor changed. Otherwise it is the board below, and when the page
+//// may have read the workspace and could not (the workspace is not a checkout,
+//// the daemon refused, the read failed) one sentence says why the tab lists
+//// only the agent's edits. An observer's page is never given the read.
+////
+//// The edit board is `session_view/changes_view`, folded from the records the
+//// page already holds, so nothing here reads the worktree and nothing is sent.
+//// It is labelled `from this session's edits` because it shows what the agent
 //// wrote and not what is in the tree (`changes_view` says what that omits).
 //// The pane is one of the panel's three (`view/panel`), and the shell shows it
 //// while its tab is chosen; the pane is drawn whether or not it shows, and the
@@ -37,6 +45,7 @@
 
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -44,6 +53,8 @@ import lustre/element/keyed
 import session_view/changes_view.{type Board, type File}
 import session_view/diff_view
 import web_view/view/diff
+import web_view/view/worktree
+import web_view/worktrees
 
 /// How much of the session the board was folded from.
 pub type Window {
@@ -55,18 +66,76 @@ pub type Window {
   Partial
 }
 
-/// The Changes pane for `board`, folded from `window` of the session.
+/// The Changes pane: the daemon's observation of the workspace when the page
+/// holds one of a Git checkout (`view/worktree`), and otherwise `board`, the
+/// agent's own edits, folded from `window` of the session. When the page may
+/// have read the workspace and could not, one sentence says why the tab lists
+/// only the agent's edits.
 ///
-/// It is memoized on the board and the window, so a page whose edits did not
+/// It is memoized on all three, so a page whose edits and workspace did not
 /// change diffs nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // changes.view(component.changes(model), changes.Whole)
+/// // changes.view(component.changes(model), changes.Whole, worktrees.Withheld)
 /// ```
-pub fn view(board: Board, window: Window) -> Element(message) {
-  use <- element.memo([element.ref(#(board, window))])
+pub fn view(
+  board: Board,
+  window: Window,
+  read: worktrees.Read,
+) -> Element(message) {
+  use <- element.memo([element.ref(#(board, window, read))])
+  case read {
+    worktrees.Seen(observed) ->
+      case observed.repository {
+        "head" | "unborn" -> worktree.view(observed)
+        _ ->
+          edits(
+            board,
+            window,
+            Some(
+              "This workspace is not a git checkout, so the tab lists only "
+              <> "the edits the agent made.",
+            ),
+          )
+      }
+    worktrees.Declined ->
+      edits(
+        board,
+        window,
+        Some(
+          "This page may not read the workspace, so the tab lists only the "
+          <> "edits the agent made.",
+        ),
+      )
+    worktrees.Unreadable ->
+      edits(
+        board,
+        window,
+        Some(
+          "The workspace could not be read just now, so the tab lists only "
+          <> "the edits the agent made.",
+        ),
+      )
+    worktrees.Withheld | worktrees.Unread | worktrees.Throttled ->
+      edits(board, window, None)
+  }
+}
+
+// The pane of the agent's own edit records, with `reason` under the heading
+// when the workspace's changes were looked for and are not shown.
+fn edits(
+  board: Board,
+  window: Window,
+  reason: Option(String),
+) -> Element(message) {
+  let why = case reason {
+    Some(words) -> [
+      #("reason", html.p([attribute.class("pane-empty")], [html.text(words)])),
+    ]
+    None -> []
+  }
   keyed.element(
     "section",
     [
@@ -75,46 +144,56 @@ pub fn view(board: Board, window: Window) -> Element(message) {
       attribute.aria_label("Changes"),
     ],
     case board.files {
-      [] -> [
-        #(
-          "title",
-          html.h2([attribute.class("panel-title")], [html.text("Changes")]),
-        ),
-        #("empty", empty_line(window)),
-        #(
-          "scope",
-          html.p([attribute.class("pane-empty")], [
-            html.text(
-              "This tab lists edits made through the edit and write tools. "
-              <> "Changes made through shell commands or editors are not shown.",
+      [] ->
+        list.flatten([
+          [
+            #(
+              "title",
+              html.h2([attribute.class("panel-title")], [html.text("Changes")]),
             ),
-          ]),
-        ),
-      ]
-      [first, ..rest] -> [
-        #(
-          "title",
-          html.h2([attribute.class("panel-title")], [
-            html.span([attribute.class("changes-title")], [
-              html.text("Changes"),
-            ]),
-            html.span([attribute.class("changes-total")], [
-              html.text(" · " <> changes_view.totals(board)),
-            ]),
-          ]),
-        ),
-        #(
-          "label",
-          html.p([attribute.class("changes-label")], [
-            html.text(changes_view.label()),
-          ]),
-        ),
-        #(file_key(first), file(first, [attribute.attribute("open", "")])),
-        ..list.append(
+          ],
+          why,
+          [
+            #("empty", empty_line(window)),
+            #(
+              "scope",
+              html.p([attribute.class("pane-empty")], [
+                html.text(
+                  "This tab lists edits made through the edit and write tools. "
+                  <> "Changes made through shell commands or editors are not shown.",
+                ),
+              ]),
+            ),
+          ],
+        ])
+      [first, ..rest] ->
+        list.flatten([
+          [
+            #(
+              "title",
+              html.h2([attribute.class("panel-title")], [
+                html.span([attribute.class("changes-title")], [
+                  html.text("Changes"),
+                ]),
+                html.span([attribute.class("changes-total")], [
+                  html.text(" · " <> changes_view.totals(board)),
+                ]),
+              ]),
+            ),
+          ],
+          why,
+          [
+            #(
+              "label",
+              html.p([attribute.class("changes-label")], [
+                html.text(changes_view.label()),
+              ]),
+            ),
+            #(file_key(first), file(first, [attribute.attribute("open", "")])),
+          ],
           list.map(rest, fn(next) { #(file_key(next), file(next, [])) }),
           [#("omitted", omitted_files(board))],
-        )
-      ]
+        ])
     },
   )
 }

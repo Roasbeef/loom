@@ -489,7 +489,9 @@ The role an operator's page acts with is the smallest of three things:
   a grant. An observer who asks for an operator page gets an observer page.
 - **Operator, always.** No page ever carries `Owner`. The gateway gives an
   owner one thing an operator lacks within a session, the worktree bytes,
-  and a page never needs them.
+  and a page never needs them. (Amended by the addendum of 2026-10-05: an
+  owner's page and an operator's page are now handed a daemon-run read of the
+  worktree for the Changes tab, which does not go through the gateway.)
 
 So without `--operate`, even an owner or operator gets an observer page.
 With it, an operator or owner gets an operator page, and an observer still
@@ -4163,3 +4165,131 @@ grows by one entry for each distinct strand name the page shows.
 
 `focus_test` pins that the lane draws the counter's number, never the name, and gives two strands two numbers; `follow_test`
 pins the save and restore rule, including a strand left at the bottom.
+
+## Addendum: the Changes tab reads the worktree (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/changes-worktree branch ·
+**Raised by**: an owner report (a session in a `.claude/worktrees/` workspace
+showed an empty Changes tab although its agent had changed files) and the
+owner's ruling that followed
+
+This addendum reverses a ruling. The decision of 2026-09-29 (issue #569) was
+that a page is never shown worktree bytes, so the Changes tab folded only the
+agent's own `fs_edit` and `fs_write` records and said it left out shell and
+editor changes. The owner has ruled that the tab shows the session workspace's
+Git diff, so that those changes appear. The earlier text above that says "a
+page never needs them" and that a page's relay is capped at Operator stays true
+of the attachment and of the gateway. What changes is that a page is now
+handed one daemon-run read that the gateway never admitted to it. It adds no
+event to the socket's accepted list, no handler, no wire command and no field
+on the wire, and it touches no frozen interface.
+
+### What changed
+
+- **A page reads the workspace through a capability, not the gateway.** The
+  gateway's `worktree_diff` read stays an `Owner` binding's, and `worktree_owner`
+  and the read-only classification are untouched, so the terminal's behaviour
+  and every other client's are unchanged. The daemon instance keeps the same
+  closure it gives the gateway (`serve.Instance.worktree`, projected onto
+  `serve.Resident`), and `ui_socket.upgrade` hands the page a
+  `Transport.worktree` capability made from it.
+- **The gate.** The capability exists only on an owner's page and on an
+  operator's page (`ui_socket.worktree_capability`: not `Observing`). Each time
+  it is called, `ui_socket.worktree_answer` runs the attachment's own check
+  again (the UI session is still open, the credential still authenticates, the
+  membership record still stands), caps the answer by the page's ceiling and by
+  Operator (`ui_relay.capped`), and runs the observation only for Operator. An
+  observer, an operator whose page was minted with an observer's ceiling, and a
+  page whose grant was revoked or whose UI session ended are answered
+  `Declined`, and the observation does not run. No page carries `Owner`, and
+  this does not give one.
+- **Nothing the page sends reaches the read.** The capability takes no
+  argument. The workspace, its repository, the session's recorded starting
+  commit and every bound are the instance's own, set when the session booted.
+- **The read is the existing bounded observation**
+  (`client/worktree_diff.capture_since`), the one the terminal's `/diff` reads:
+  every Git call is jailed through the session's broker with filesystem grants
+  demoted to reads, at most twenty-four files, a patch cut at sixteen
+  kilobytes, an encoded board under forty, one shared deadline, and a census
+  that counts the files that did not fit. Untracked files are diffed against
+  empty and a binary file is reported as binary with no patch. The page decodes
+  it with the terminal's total decoder (`session_view/worktree_view.decode`)
+  and refuses a board that exceeds the same bounds, so it does not rely on the
+  daemon's. The base is HEAD for the files, and the commits since the session's
+  recorded starting commit are a separate section whose heading is the daemon's
+  own words when no starting commit was recorded.
+- **It runs as a task and never blocks the page.** `ui_socket.worktree_task`
+  starts a weft run linked to the page's runtime, with a deadline of its own,
+  and returns at once, as `activity_task` does; the answer arrives as the
+  component's own `Worktreed` message, which no handler carries. A run that is
+  cancelled delivers nothing and the page treats a read out for thirty seconds
+  as lost.
+- **When the page asks.** Once when it opens, and again after the transcript
+  shows a tool result it has not read since, at most once in four seconds
+  (`web_view/worktrees`). Nothing is read while nothing happens. The server
+  component cannot tell which tab is showing without a new event, and this
+  proposal admits none, so there is no tab-open read, and a hidden tab costs
+  nothing beyond the reads a tool result causes.
+- **What the tab draws.** The files that differ from HEAD, each a `details`
+  with the shared red and green diff drawer, a label that says "against HEAD",
+  files left out counted and not named, a cut patch marked, and the commits
+  since the session started. A workspace that is not a checkout, a refused
+  read and a failed read fall back to the agent's own edit board with one fixed
+  sentence that says why. An observer's page never asks and draws the edit
+  board as before. The path and every diff line are text nodes. What the pane
+  says of a file's status and kind is chosen from closed sets, and no text the
+  daemon's failure carried is forwarded.
+
+### What was considered
+
+- **Widen `worktree_owner` for pages.** The gateway cannot tell a page's
+  attachment from a terminal's operator binding, so the widening would admit
+  every operator terminal and every other client. It is the shared admission the
+  owner asked to leave alone.
+- **A new gateway command for pages.** It would add a frozen-interface entry and
+  a second admission path in the gateway for one reader. A capability the
+  daemon hands to the page, in the shape of the rename and resume capabilities,
+  needs neither.
+- **A whole-session fold of the agent's edit results.** It would fix the case of
+  an edit older than the loaded window, and not the case of a shell or editor
+  change, which is the report. It remains a possible follow-up.
+- **Name the files left out of a large diff.** The daemon's census keeps their
+  number and not their names. A `git diff --numstat` call would list them with
+  counts, at the cost of one more jailed call inside the shared deadline.
+  Deferred.
+
+### Cost
+
+- A page of an owner or of an invited operator now shows repository bytes the
+  agent may never have displayed, including the contents of untracked files
+  that Git does not ignore. An operator can already ask the agent to read any
+  file in the workspace, so this widens what the page shows without when it
+  does, and the gate above is the whole of the protection. A secret in a
+  tracked or unignored file is shown to those two kinds of page.
+- Each read costs up to twenty-four jailed Git calls inside an eight-second
+  deadline. Reads are coalesced to one in four seconds per page, so a session
+  with several operator pages runs several.
+- Reads are counted per credential and not per page
+  (`ui_sessions.reserve_worktree_read`, two in four seconds, the rolling
+  allowance invitations use), so many sockets cannot spend the session's helper
+  pool, which the agent's own tools share. A refused read is `Unreadable` and
+  the page tries again after its next tool result.
+- Unlike a tool read, this read leaves no transcript record the owner can
+  audit.
+- The resident instance holds one more closure over the workspace path and the
+  broker handle.
+- The tab lags a shell change until the next tool result or page open, and does
+  not show a change made while the agent is idle.
+
+### Verification
+
+`worktree_page_test` (client) pins who is handed the capability, that an owner
+and an operator are answered, that an observer, an observer's ceiling and a
+revoked page are refused without running the observation, that a failure's
+text is not forwarded, that a board past the page's own bounds is refused, that
+a workspace that is not a checkout is a board, that a hidden-directory path
+with markup survives as data, and that asking returns before the observation
+finishes. `worktree_diff_test` observes a real linked worktree under
+`.claude/worktrees/` whose `.git` is a file. `worktree_read_test` (web_view)
+pins the pane, its bounds, its fallbacks, the escaping of a hostile path and
+line, and when the page asks.

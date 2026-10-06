@@ -432,6 +432,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       home: None,
       rename: None,
       shareable: None,
+      worktree: None,
     ),
   )
 }

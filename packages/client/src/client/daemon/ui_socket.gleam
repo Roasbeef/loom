@@ -170,6 +170,7 @@ import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/gateway
 import core/ids
+import core/json as wire
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -187,6 +188,7 @@ import lustre/server_component
 import mist
 import session_view/snapshot
 import session_view/transcript_image
+import session_view/worktree_view
 import storage/access
 import storage/catalogue
 import storage/domain
@@ -208,6 +210,7 @@ import web_view/page
 import web_view/renames
 import web_view/sessions
 import web_view/signins
+import web_view/worktrees
 import weft
 import weft/poll
 
@@ -427,6 +430,7 @@ pub fn upgrade(
   request: Request(mist.Connection),
   attachment: server.Attachment(instance),
   hub: gateway.Gateway,
+  observe: fn() -> Result(wire.JsonValue, String),
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
   register: fn(ui_sessions.Images) -> Nil,
@@ -512,6 +516,22 @@ pub fn upgrade(
     shareable_capability(role, origin, fn(deliver) {
       shareable_task(attachment, origin, open, deliver)
     })
+
+  // The capability to read the workspace is an owner's or an operator's, and
+  // the daemon asks `attach.check` again each time it is called, so a page whose
+  // grant was revoked or whose UI session ended is refused at its next read.
+  // It is made from the instance's own observation of its own workspace, and
+  // nothing the page sends reaches it.
+  let worktree =
+    worktree_capability(role, fn(deliver) {
+      worktree_task(
+        attach.check,
+        attach.ceiling,
+        fn() { ui_sessions.reserve_worktree_read(tickets, attachment.digest) },
+        observe,
+        deliver,
+      )
+    })
   websocket(request, limit, settled, fn(signals) {
     admit(
       daemon,
@@ -523,6 +543,7 @@ pub fn upgrade(
       invite,
       rename,
       shareable,
+      worktree,
       seen,
       expected,
       signals,
@@ -1250,6 +1271,7 @@ fn admit(
   invite: Option(fn(invites.Role) -> invites.Answer),
   rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
   shareable: Option(fn(fn(grants.Answer) -> Nil) -> Nil),
+  worktree: Option(fn(fn(worktrees.Read) -> Nil) -> Nil),
   seen: server.PageGrant,
   expected: snapshot.Expected,
   signals: process.Subject(Signal),
@@ -1290,6 +1312,7 @@ fn admit(
       }),
       rename:,
       shareable:,
+      worktree:,
     )
 
   // The start takes its standing as an argument because reading it can wait on
@@ -2542,6 +2565,130 @@ pub fn read_task(deliver: fn(answer) -> Nil, read: fn() -> answer) -> Nil {
     ])
     |> weft.start_witnessed
   Nil
+}
+
+/// The capability a page of `role` is handed to read the workspace's Git
+/// tree: `start` for an owner's or an operator's page and none for an observer's,
+/// which is the whole of who may draw the worktree's changes
+/// (protocol-change/051, the addendum on the worktree read). The daemon checks
+/// the page again when `start` is called (`worktree_answer`), so holding the
+/// capability grants nothing once the page's standing has changed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.worktree_capability(ui_socket.Observing, start) == None
+/// ```
+@internal
+pub fn worktree_capability(
+  role: Role,
+  start: fn(fn(worktrees.Read) -> Nil) -> Nil,
+) -> Option(fn(fn(worktrees.Read) -> Nil) -> Nil) {
+  case role {
+    Observing -> None
+    Operating | Owning -> Some(start)
+  }
+}
+
+/// Starts the page's read of the workspace in a run of its own and returns at
+/// once, so the page's runtime never waits for the observation; `deliver` is
+/// called, from that run, with what `worktree_answer` returned.
+///
+/// The run is linked to the calling process, which is the page's runtime, so a
+/// page that goes away cancels the read, and it has a deadline of its own that
+/// covers the observation's execution deadline and the broker's cleanup grace.
+/// A run that is cancelled or crashes delivers nothing; the page treats a read
+/// that never answers as lost (`worktrees.lost_ms`) and asks again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.worktree_task(check, access.Operator, reserve, observe, deliver)
+/// ```
+@internal
+pub fn worktree_task(
+  check: fn() -> Result(#(access.Principal, access.Authority), String),
+  ceiling: access.Role,
+  reserve: fn() -> Result(Nil, Nil),
+  observe: fn() -> Result(wire.JsonValue, String),
+  deliver: fn(worktrees.Read) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(worktree_answer(check, ceiling, reserve, observe))
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(14_000)
+    |> weft.start_witnessed
+  Nil
+}
+
+/// What a page is told of its session's workspace.
+///
+/// The page's standing is read afresh here, with the same check the page's
+/// attachment runs at every frame (`check`: its UI session still open, its
+/// credential and membership still authenticating), capped by the page's
+/// ceiling and by Operator (`ui_relay.capped`). Only an owner's or an operator's
+/// page is shown the observation; an observer's, and any page whose check now
+/// fails, is `Declined` and the observation does not run. The observation is
+/// the instance's own, over its own workspace and base commit, and takes
+/// nothing from the page. A credential's reads are counted together across its
+/// pages (`ui_sessions.reserve_worktree_read`), so many sockets cannot spend
+/// the session's helper pool on Git calls; a refused read is `Throttled`, which
+/// tells the page nothing about the workspace or its standing, and the
+/// observation does not run. Its failure text is never forwarded: it can carry a
+/// repository's own words, so the page is told only `Unreadable`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.worktree_answer(check, access.Operator, reserve, observe)
+/// ```
+@internal
+pub fn worktree_answer(
+  check: fn() -> Result(#(access.Principal, access.Authority), String),
+  ceiling: access.Role,
+  reserve: fn() -> Result(Nil, Nil),
+  observe: fn() -> Result(wire.JsonValue, String),
+) -> worktrees.Read {
+  case check() {
+    Error(_) -> worktrees.Declined
+    Ok(#(_, authority)) ->
+      case ui_relay.capped(authority, ceiling) {
+        access.Owner | access.Participant(access.Operator) ->
+          case reserve() {
+            Ok(Nil) -> worktree_read(observe())
+            Error(Nil) -> worktrees.Throttled
+          }
+        access.Participant(access.Observer) -> worktrees.Declined
+      }
+  }
+}
+
+// The observation as the page holds it: the gateway's own envelope around the
+// board, so `worktree_view.decode` validates it as it validates the terminal's,
+// and anything it refuses is `Unreadable`.
+fn worktree_read(observed: Result(wire.JsonValue, String)) -> worktrees.Read {
+  case observed {
+    Ok(wire.Object(fields)) ->
+      case
+        worktree_view.decode(
+          wire.Object([
+            #("status", wire.String("ready")),
+            #("request_id", wire.Int(0)),
+            ..fields
+          ]),
+        )
+      {
+        Ok(worktree_view.Ready(board)) -> worktrees.Seen(board)
+        Ok(worktree_view.Pending(_))
+        | Ok(worktree_view.Failed(..))
+        | Error(_) -> worktrees.Unreadable
+      }
+    Ok(_) | Error(_) -> worktrees.Unreadable
+  }
 }
 
 /// The daemon's answer to an owner's page asking to invite a person to the

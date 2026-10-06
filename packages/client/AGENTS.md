@@ -603,7 +603,14 @@ catalogue without opening runtimes. Explicit admission invokes
   read-only worktree broker; restarts reuse the session/workspace-bound record.
   Existing prompts without a baseline and inherited records from another
   session remain unavailable. Store failures refuse boot; Git failures become
-  durable unavailable baselines. `worktree_diff.capture_since` adds a bounded
+  durable unavailable baselines. A web page's Changes tab reads the same
+  observation without the gateway: `serve.Instance.worktree` (projected to
+  `Resident`) is the closure the gateway runs, `ui_socket.worktree_capability`
+  hands it to an owner's or an operator's page only, and
+  `ui_socket.worktree_answer` re-runs the page's check, caps by the page's
+  ceiling and Operator, and runs it for Operator or Owner alone, inside
+  `worktree_task`, a weft run that returns at once (protocol-change/051, the
+  addendum of 2026-10-05). `worktree_diff.capture_since` adds a bounded
   commit patch stream, including first-parent merge resolutions, to the same
   owner-scoped observation and budget. Protocol 029 defines this optional field.
 

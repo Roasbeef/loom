@@ -102,6 +102,7 @@ fn start_page(
         home: None,
         rename: None,
         shareable: None,
+        worktree: None,
       ),
     )
   let assert Ok(runtime) =

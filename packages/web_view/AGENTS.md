@@ -732,7 +732,19 @@ page keys and nonces, and the relay into the session's gateway.
   text nodes, a state's class is one of three literals chosen from the closed
   `State`, there is no handler, and the pane is memoized on the trace. With
   no program it is the heading and one line saying so.
-- `changes.view(board)` draws the Changes pane, the panel's second, on both
+- The Changes pane reads the workspace for an owner's or an operator's page
+  (protocol-change/051, the addendum of 2026-10-05). `Transport.worktree` is
+  `None` on an observer's page and otherwise a capability that returns at once
+  and answers as `Worktreed`; `web_view/worktrees` holds `Read`, `Asking`,
+  `latest_result` and the timings. `component.observed`, run at the end of every
+  message, asks once when the page opens and again after a tool result the last
+  read did not see, at most once in `worktrees.refresh_ms`, never while one is
+  out unless it has been out `lost_ms`. `changes.view(board, window, read)`
+  draws `view/worktree` for a board of a checkout and otherwise the edit board
+  below, with one sentence when the read was refused, failed or found no
+  checkout. Everything in a board is a text node; a failure's text is never
+  forwarded.
+- `changes.view(board, window, read)` draws the edit board as the Changes pane, the panel's second, on both
   pages from `component.changes(model)`, the board `session_view/changes_view`
   folds from the records of the window the page projects (`relaned` builds it
   with the transcript, so a message that moved neither costs no fold). Its

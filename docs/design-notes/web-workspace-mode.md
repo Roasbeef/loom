@@ -83,7 +83,7 @@ check anywhere.
 
 ### 1.1 What exists
 
-A UI session is a `Grant` (`ui_sessions.gleam:296`) of one session, one
+A UI session is a `Grant` (`ui_sessions.gleam:310`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
 only by `UiLink` (`client/daemon/server.gleam:2068`) over the principal's own
@@ -99,7 +99,7 @@ the socket, then the cookie under the key. The cookie's `Path` is the key's
 (`set_cookie` (`ui_http.gleam:487`)), so it reaches no other page and no other
 loopback port. A UI session lives eight hours (`session_ms`
 (`ui_sessions.gleam:79`)); a chain of switches ends with the page it began
-from (`mint_before` (`ui_sessions.gleam:555`)).
+from (`mint_before` (`ui_sessions.gleam:572`)).
 
 The operator page already lists the principal's sessions in a sidebar,
 read with the page's credential digest (`listed_for`
@@ -522,7 +522,7 @@ their bearer, since a login is not a claim.
 | `POST /ui/claim` | host, `Sec-Fetch-Site`, body at most 1 KiB, claim redeems | the enter page, with the login cookie and nonce (section 5.3) |
 
 A `Home` ticket presented at a session's exchange, or a session ticket at
-the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:375`)
+the home's, is spent and refused, as `OtherScope` (`ui_sessions.gleam:389`)
 spends one presented against the wrong session today. The scope is part of
 the redemption, in the same actor message, so the property 053 wanted from a
 separate admin ticket table (a session ticket never redeems at the admin
@@ -697,7 +697,7 @@ the registry's capacity and `max_pages`, and prompt them at operator role.
 That is a new agent in a workspace the owner already runs agents in, at
 the sandbox policy that workspace's registrations carry. It can fill the
 catalogue with sessions; a count per credential per hour, as
-`reserve_invite` (`ui_sessions.gleam:629`) keeps for invitations, bounds it
+`reserve_invite` (`ui_sessions.gleam:650`) keeps for invitations, bounds it
 (065 proposes ten an hour). The daemon logs no line for a creation today;
 065 adds one, `daemon.session_created` with the principal's ID, so a run of
 creations from a stolen page is visible in `daemon.log`.

@@ -20,9 +20,10 @@ import session_view/changes_view
 import web_view/component
 import web_view/operator_page
 import web_view/view/changes
+import web_view/worktrees
 
 fn drawn(board: changes_view.Board) -> String {
-  element.to_string(changes.view(board, changes.Whole))
+  element.to_string(changes.view(board, changes.Whole, worktrees.Withheld))
 }
 
 fn row(kind: changes_view.Kind, text: String) -> changes_view.Row {
@@ -86,9 +87,17 @@ pub fn no_edits_draw_the_heading_and_a_line_saying_so_test() {
 // edits the tab can list.
 pub fn an_empty_board_says_how_much_it_searched_test() {
   let whole =
-    element.to_string(changes.view(changes_view.empty(), changes.Whole))
+    element.to_string(changes.view(
+      changes_view.empty(),
+      changes.Whole,
+      worktrees.Withheld,
+    ))
   let partial =
-    element.to_string(changes.view(changes_view.empty(), changes.Partial))
+    element.to_string(changes.view(
+      changes_view.empty(),
+      changes.Partial,
+      worktrees.Withheld,
+    ))
 
   assert string.contains(whole, "No edits in this session yet.")
   assert !string.contains(whole, "Load older")

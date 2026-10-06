@@ -1053,6 +1053,7 @@
   .diff-removed .diff-sign,.diff-removed .diff-text{color:var(--color-danger-text);}
   .diff-cut{margin:0;padding:2px 8px;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .changes-cut{margin:4px 0 0 0;color:var(--color-fg-quiet);}
+  .changes-committed{margin-top:12px;}
   /* The Trace pane (web_view/view/trace): the session's code_mode programs,
      the newest first with its result and a collapsed budget line. A state's
      chip takes its colour from a class the view chose from a closed type. */

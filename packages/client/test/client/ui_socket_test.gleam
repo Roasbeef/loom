@@ -49,6 +49,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       home: None,
       rename: None,
       shareable: None,
+      worktree: None,
     ),
   )
 }
