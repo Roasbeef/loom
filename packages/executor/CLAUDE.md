@@ -913,3 +913,18 @@ Each active original owns one cancellation lane independent of metadata credits.
 Closed local channel observations expire after six seconds; historical journal
 queries never recreate those callbacks or sockets. BEAM control/stream binding,
 owner client wiring and default daemon assembly are separate integration work.
+
+## Finite Launch stream installation
+
+`beam_endpoint.bind_launch(Config, launch_beam.Offer)` reserves route five on the
+same four-Data, two-Control table and returns a checked `launch_beam.Acceptance`.
+Only bounded canonical bytes and unnamed doors cross nodes. The same registered
+Launch owner receives the original host installation; the fixed credit actor
+waits only for bounded local Installed, while socket acceptance and live stream
+work remain in `launch_beam`. Its transport task retains the exact acceptance
+through ACK, then requires AllDelivered before restoring capacity. Definite
+pre-install Invalid can release after retirement; uncertain installation retains
+the original assignment permanently. A lost transport answer after known Installed
+can release the finite credit after actual network retirement, while the caller
+remains Uncertain and original stream resources remain retained. There is no automatic bind retry or acceptance cache.
+`inspect_drain` observes finite metadata credits, never live-stream drain.
