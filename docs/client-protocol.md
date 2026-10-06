@@ -1552,7 +1552,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2057`).
+`wrong_session`. Source: (`client/gateway.gleam:2141`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated

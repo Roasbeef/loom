@@ -1,13 +1,13 @@
 //// What a stalled SQLite actor costs, and what it must not.
 ////
-//// Both tests here run real instance custody against a real backend and stop
+//// Both tests here run real instance custody against a real backend and stall
 //// that backend mid-flight; they differ only in who was waiting on it. A
 //// capture is the server's own question, funded with the reader's whole
-//// budget, so exhausting it fences the gateway and stops the exact
-//// incarnation. A snapshot continuation is funded from what is left of a
-//// client's retention window and of that client's own request, so exhausting
-//// one is the caller's wait running out: it must cost that caller its
-//// transfer and cost nobody else anything at all.
+//// budget, and a snapshot continuation is funded from what is left of a
+//// client's retention window. Exhausting either is a deadline, not proof the
+//// actor died, so each costs the one request that waited and nobody else
+//// anything at all. Only a dead actor fences the gateway, which
+//// `gateway_capture_test` covers with a scripted reader.
 
 import client/daemon/domain as domain_service
 import client/daemon/lifetime
@@ -183,52 +183,46 @@ fn opened(event: protocol.Event) -> String {
   id
 }
 
-pub fn sqlite_read_timeout_poison_stops_original_incarnation_without_self_wait_test() {
+// A capture is the server's own question and gets the reader's whole budget,
+// but exhausting it says only that the SQLite actor was busy: the exchange
+// proves death by monitoring, and nothing here killed the actor. So the one
+// request that waited is refused in band, nobody is disconnected, the
+// incarnation is not stopped, and the client's retry is served once the actor
+// is running again. The capture the stall left queued is answered to a run
+// that has already exited, not to the gateway.
+pub fn a_stalled_sqlite_capture_refuses_one_request_and_keeps_the_session_test() {
   process.trap_exits(True)
   let resident = resident("reader-failure")
   let attachment = attach(resident, "reader-connection", "reader-failure")
-
-  // The inventory is taken before the stall: it walks the instance's own
-  // record, but a fixture must not depend on that while the backend is down.
+  let bystander = attach(resident, "bystander", "reader-failure")
   let storage = storage_of(resident)
   let assert True = suspend_process(storage)
     as "stall the original SQLite actor"
 
-  // The one capture remains queued after timeout. The callback returns only
-  // Stopping, so it cannot deadlock waiting for its own gateway to retire.
-  let first =
-    request(attachment, 1, protocol.Subscribe(resident.session_id, None))
-  let admitted_stop = process.receive(attachment.stopped, within: 1000)
-  let queued_before = snapshot_requests(storage)
-  let second = request(attachment, 2, protocol.CatchUp(0))
-  let queued_after = snapshot_requests(storage)
-  let resolved = manager.resolve(resident.registry, resident.session_id)
-  let reopened = manager.open(resident.registry, resident.session_id)
+  let refusal =
+    answer(request(attachment, 1, protocol.Subscribe(resident.session_id, None)))
+  let queued = snapshot_requests(storage)
+  let attached_during = gateway.attached(resident.instance.gateway)
   let assert True = resume_process(storage)
     as "release the original backend before asserting"
 
-  assert result.is_error(first)
-  let assert Ok(Ok(manager.Stopping(found))) = admitted_stop
-    as "the stop callback acknowledges admission without waiting for itself"
-  assert found == resident.incarnation
-  assert queued_before == 1
-  assert queued_after == queued_before
-  assert result.is_error(second)
-  assert result.is_error(resolved)
-  assert result.is_error(reopened)
-  assert process.receive(attachment.stopped, within: 50) == Error(Nil)
+  let assert protocol.ErrorEvent(code:, ..) = refusal
+    as "the capture is refused in band, not by a closed socket"
+  assert code == "snapshot_failed"
 
-  let assert poll.Answered(Nil) =
-    poll.until(within: 10_000, every: 5, attempt: fn() {
-      case manager.get(resident.registry, resident.session_id) {
-        Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
-        Ok(manager.View(status: manager.RecoveryBlocked(reason), ..)) ->
-          poll.Fail(reason)
-        Ok(_) -> poll.Retry
-        Error(_) -> poll.Fail("registry disappeared")
-      }
-    })
-    as "normal original custody drain releases the reservation"
+  // The stalled capture stays queued, because a timeout cancels nothing in the
+  // actor, and nothing about the session was retired.
+  assert queued == 1
+  assert attached_during == 2
+  assert process.receive(attachment.closed, within: 50) == Error(Nil)
+  assert process.receive(bystander.closed, within: 50) == Error(Nil)
+  assert process.receive(attachment.stopped, within: 50) == Error(Nil)
+  assert result.is_ok(manager.resolve(resident.registry, resident.session_id))
+
+  // The retry is the client's own, and the same gateway serves it.
+  let assert protocol.SnapshotBegin(_) =
+    answer(request(attachment, 2, protocol.Subscribe(resident.session_id, None)))
+    as "the retried subscribe opens a transfer"
   retire(resident)
 }
 

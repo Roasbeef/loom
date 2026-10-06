@@ -177,7 +177,7 @@ gateway also pushes four things:
   refresh.
 
 Two pieces of wiring in `client/serve` make the pushes reach the shipped
-binary. It starts one `commit_forwarder` (`client/gateway.gleam:1400`) per
+binary. It starts one `commit_forwarder` (`client/gateway.gleam:1452`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
 `tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:4134`), so
@@ -288,7 +288,7 @@ prompt opens the run. The gateway holds the second in a per-strand queue,
 answers it `mutation_outcome {status: "queued"}`, and submits it under its
 own submitter's origin when the run settles (`hold_prompt`,
 `client/gateway.gleam:5042`). The queue is gateway memory and holds four
-prompts per strand (`held_per_strand`, `client/gateway.gleam:976`). A
+prompts per strand (`held_per_strand`, `client/gateway.gleam:1031`). A
 fifth prompt receives the `conflict` reply that every second prompt used
 to receive.
 

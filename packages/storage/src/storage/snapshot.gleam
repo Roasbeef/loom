@@ -7,13 +7,13 @@
 //// This reader does not assign entries to strands or interpret machine state.
 ////
 //// Every call accepts its remaining wait budget, capped at five seconds.
-//// ReadTimedOut does not cancel the queued or running read, so a caller may
-//// never retry the same request against the same reader. Whether the timeout
-//// says anything about the reader depends on whose budget expired: a reader
-//// that was given its whole budget and did not answer is wedged, and session
-//// custody must then drain the original store or retain RecoveryBlocked
-//// before reopening it; a caller that chose a shorter wait has learned only
-//// that its own deadline passed and must refuse that one request.
+//// ReadTimedOut does not cancel the queued or running read, and says only that
+//// the caller's deadline passed: the actor may be behind a long write or a
+//// stalled disk. Each call owns its reply subject, so repeating a read cannot
+//// be answered by an earlier one, and a caller that asks from a short-lived
+//// process drops the late reply when that process exits. Only
+//// ReaderUnavailable proves the actor dead, and then session custody must
+//// drain the original store or retain RecoveryBlocked before reopening it.
 ////
 //// Register plans are declarative. Reference expansion follows a named JSON
 //// field in already bounded source cells, so storage need not import machine
@@ -190,7 +190,9 @@ pub type Cut {
 /// Refusals preserve the distinction between resource limits and corruption.
 @internal
 pub type Error {
-  /// The wait expired; the read may still be queued or running. Never retry.
+  /// The wait expired; the read may still be queued or running. This is a
+  /// deadline and not evidence about the actor, so the caller refuses its own
+  /// request and may ask again.
   ReadTimedOut
 
   /// The actor was absent or died before replying. Session custody still owns it.

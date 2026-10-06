@@ -1,14 +1,28 @@
-//// One finite exchange with the existing storage actor, without a worker.
+//// One finite exchange with the existing storage actor, made by its caller.
 ////
 //// The broker's internal/call module provides the in-tree precedent, but
 //// storage cannot depend on the effect plane. Neither gleam_erlang nor Weft
 //// exposes a total bounded call here. Keep this exchange local rather than
 //// adding a dependency or changing the frozen Storage behavior.
 ////
-//// A timeout ends only the caller's wait. The request may remain queued or
-//// running, and one late reply may enter the caller's mailbox. The caller
-//// must fail its original gateway/session and admit no further reads. Only
-//// session custody can prove the original store drained before reopening it.
+//// The exchange spawns no worker of its own, so the process that calls it
+//// owns the reply subject, and what happens to a late reply depends on who
+//// that process is. A timeout ends only the caller's wait. The request may
+//// remain queued or running, and one late reply enters the mailbox of the
+//// process that made the call. A caller that is a long-lived actor therefore
+//// receives a message it never selected, which is how a slow capture once
+//// left stray replies in the client gateway. Such a caller must not make the
+//// exchange itself: it asks from a short-lived process, a weft run, which
+//// exits when the exchange does, and the late reply is dropped with it. The
+//// gateway's transfer capture does exactly that. The remaining synchronous
+//// callers are small exact-key reads that still take the late reply.
+////
+//// A timeout is a deadline and nothing more: only the monitor proves the
+//// storage actor dead, and that is reported as ReaderUnavailable instead.
+//// Because every exchange uses its own reply subject, repeating a read after
+//// a timeout cannot be satisfied by an earlier read's late answer. Whether the
+//// original store has drained before it is reopened is still a question only
+//// session custody can answer.
 
 import gleam/bool
 import gleam/erlang/process.{type Subject}
@@ -23,7 +37,8 @@ pub const maximum_wait_ms = 5000
 ///
 /// A nonpositive budget refuses before sending. A unique reply subject keeps
 /// a late response from satisfying another exchange. Releasing the monitor
-/// flushes a racing DOWN, but does not remove the request or its late reply.
+/// flushes a racing DOWN, but does not remove the request or its late reply,
+/// which is delivered to the calling process and dies with it.
 ///
 /// ## Examples
 ///

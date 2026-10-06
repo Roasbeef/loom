@@ -101,10 +101,11 @@ pub fn timed_out_reads_remain_queued_and_late_replies_are_isolated_test() {
     let assert True = resume_process(fixture.pid)
       as "release the original actor"
 
-    // Reading again is deliberately test-only: it demonstrates that timeout
-    // did not cancel actor work. Production must retire this gateway instead.
-    // This page's reply differs from the queued capture and missing fragment,
-    // so a late reply cannot silently satisfy the new exchange.
+    // Reading again demonstrates that timeout did not cancel actor work, and
+    // that it did not make the reader unusable. This page's reply differs
+    // from the queued capture and missing fragment, so a late reply cannot
+    // silently satisfy the new exchange. A caller that does not want the late
+    // replies in its own mailbox asks from a process that exits first.
     let later = fixture.reader.page(0, 2, 1, 1000)
     let late_replies = mailbox_length(process.self())
     let closed = fixture.close()
@@ -1050,6 +1051,48 @@ pub fn sqlite_key_pages_use_an_indexed_bounded_window_test() {
     assert list.any(plan, string.contains(_, "key>? AND key<?"))
     assert !list.any(plan, string.contains(_, "TEMP B-TREE FOR ORDER BY"))
   })
+  assert sqlight.close(conn) == Ok(Nil)
+}
+
+// A capture reads its statistics from the maintained session row and its
+// recent window from one index search, so its cost does not grow with the
+// length of the history. Measured on a real 28 MB session of 4,727 messages
+// and 35,840 sequence numbers it took 1.5 to 11 ms, which means a capture that
+// exceeds its five-second wait was queued behind other work in the actor, not
+// slow in itself. These plans are what keeps that true.
+pub fn capture_cost_does_not_grow_with_history_test() {
+  let assert Ok(conn) = sqlight.open(path("capture-plan"))
+    as "query-plan fixture opens"
+  assert sqlight.exec(session_schema.schema, on: conn) == Ok(Nil)
+  let explain = fn(statement: String, params) {
+    let assert Ok(plan) =
+      sqlight.query(
+        "EXPLAIN QUERY PLAN " <> statement,
+        on: conn,
+        with: params,
+        expecting: decode.at([3], decode.string),
+      )
+      as "SQLite explains the capture query"
+    plan
+  }
+
+  // The statistics are one stored row. Nothing in them aggregates entries.
+  let summary = explain(sql.snapshot_session().0, [])
+  assert list.any(summary, string.contains(_, "SCAN session"))
+  assert !list.any(summary, string.contains(_, "entries"))
+  assert !list.any(summary, string.contains(_, "usage_ledger"))
+
+  // The recent window is a descending range over the sequence index, with no
+  // sort and no scan of the entry table.
+  let recent =
+    explain(sql.snapshot_recent_entries(Some(1), 1).0, [
+      sqlight.int(1),
+      sqlight.int(1),
+    ])
+  assert list.any(recent, string.contains(_, "SEARCH entries"))
+  assert list.any(recent, string.contains(_, "ix_entry_seq"))
+  assert !list.any(recent, string.contains(_, "SCAN entries"))
+  assert !list.any(recent, string.contains(_, "TEMP B-TREE"))
   assert sqlight.close(conn) == Ok(Nil)
 }
 
