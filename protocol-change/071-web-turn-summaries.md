@@ -5,6 +5,12 @@
 the web view uses the lane's `history` read · **Raised by**: the web UI
 critique of r6e (F150, F151, F152) · **Implemented**: session view, web view
 
+Amended by [072](072-strand-history-read.md): the scan below reads the strand's
+ancestry through its own parent links (`history_lineage`) and no longer through
+intervals of the session's sequence. What 071 and its addenda say of a scan's
+intervals, its barren reads (`scan_floor`) and the sequence a press resumes from
+(`View.resume`) is superseded; the rest stands.
+
 ## Problem
 
 [070](070-web-lazy-folds.md) made a settled turn draw only its prompt, its
