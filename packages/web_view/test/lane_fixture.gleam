@@ -1553,6 +1553,51 @@ pub fn unrun(
   }
 }
 
+/// `update`, when it is a capture, with `main`'s last run recorded as failed
+/// (a provider refused the key). Nothing is pending and `main` is not running
+/// in a capture that did not run it, so the session waits on nobody.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.failed_main(lane_fixture.captured_with(10, None, []))
+/// ```
+pub fn failed_main(update: session_channel.Update) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(
+        cut,
+        snapshot_view.View(..view, cells: [
+          snapshot_view.Cell(
+            register.StrandLastResult,
+            "main",
+            2,
+            json.Object([
+              #("kind", json.String("run")),
+              #("operationId", json.String(op(9))),
+              #("leafId", json.Null),
+              #("outcome", json.String("failed")),
+              #(
+                "error",
+                json.Object([
+                  #("code", json.String("provider_refused")),
+                  #("message", json.String("the key was refused")),
+                ]),
+              ),
+            ]),
+          ),
+          ..list.filter(view.cells, fn(cell) {
+            !{
+              cell.namespace == register.StrandLastResult && cell.key == "main"
+            }
+          })
+        ]),
+        refresh,
+      )
+    other -> other
+  }
+}
+
 /// `update`, when it is a capture, as the page of a reader attached in `role`:
 /// the cut's own attachment carries it, and the presence rows are left as
 /// they were. Any other update is returned as it is.

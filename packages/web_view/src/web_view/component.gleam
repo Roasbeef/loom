@@ -3893,10 +3893,11 @@ pub fn session_activity(
 
 // What the page's own session is doing, from the strip it draws. The rule is
 // the daemon's activity read's, so the page's row and the home's row for the
-// same session say the same word: a strand waiting on a decision, or a main
-// strand whose last run failed with nothing else running, needs the person;
-// otherwise a strand with an operation (working, or waiting on a provider
-// retry) is working; otherwise idle. A page whose strip lists no strand has
+// same session say the same word: a strand waiting on a decision needs the
+// person; otherwise a strand with an operation (working, or waiting on a
+// provider retry) is working; otherwise a main strand whose last run failed
+// with nothing else running has failed, and nothing waits on the operator;
+// otherwise idle. A page whose strip lists no strand has
 // no capture yet and says nothing.
 fn live_activity(model: Model(socket)) -> Option(sessions.Activity) {
   let listed = chips(model.view.strip)
@@ -3915,7 +3916,7 @@ fn live_activity(model: Model(socket)) -> Option(sessions.Activity) {
       case needing(model) > 0, working, main_failed {
         True, _, _ -> Some(sessions.NeedsYou)
         False, True, _ -> Some(sessions.Working)
-        False, False, True -> Some(sessions.NeedsYou)
+        False, False, True -> Some(sessions.Failed)
         False, False, False -> Some(sessions.Idle)
       }
   }

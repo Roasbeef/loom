@@ -521,7 +521,8 @@ fn running(entry: Entry, suffix: Suffix) -> #(List(String), String, String) {
 
 // The classes, glyph and word of a running session whose activity is known. The
 // class names the dot's colour and motion in the stylesheet: working pulses in
-// the accent, idle is quiet and still, and needs-you is the signal hue.
+// the accent, idle is quiet and still, needs-you is the signal hue, and
+// failed is the danger hue and still, since nothing waits on the operator.
 fn doing_row(doing: Activity) -> #(List(String), String, String) {
   #(["live", activity_class(doing)], "●", sessions.activity_words(doing))
 }
@@ -529,6 +530,7 @@ fn doing_row(doing: Activity) -> #(List(String), String, String) {
 fn activity_class(doing: Activity) -> String {
   case doing {
     NeedsYou -> "needs-you"
+    sessions.Failed -> "failed"
     Working -> "working"
     Idle -> "idle"
   }

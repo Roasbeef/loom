@@ -158,9 +158,13 @@ pub fn label(entry: Entry) -> String {
 /// reaches the home page; a state the page does not know is no activity, and
 /// the row says nothing about it.
 pub type Activity {
-  /// An escalation is pending, or the main strand's last run failed and it
-  /// has nothing running: the session waits for its operator.
+  /// An escalation is pending: the session waits for its operator to decide.
   NeedsYou
+
+  /// The main strand's last run failed and nothing is running or pending.
+  /// Nothing waits on the operator, whose only move is to fix the cause and
+  /// send again, so the row says `failed` and not that it needs them.
+  Failed
 
   /// A strand has a current operation.
   Working
@@ -187,6 +191,26 @@ pub fn activity_of(state: String) -> Result(Activity, Nil) {
   }
 }
 
+/// The activity a row of the daemon's `sessions.activity` reply names, from its
+/// state word and its count of pending approvals. The daemon reports a failed
+/// main run with nothing running as `needs_you`, as it does an escalation
+/// waiting for a decision (protocol-change/050), and the count tells them
+/// apart: no approval is pending, so nothing waits on the operator and the row
+/// is `Failed`. A word this page does not know is no activity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.activity_from("needs_you", 0) == Ok(sessions.Failed)
+/// assert sessions.activity_from("needs_you", 2) == Ok(sessions.NeedsYou)
+/// ```
+pub fn activity_from(state: String, approvals: Int) -> Result(Activity, Nil) {
+  case activity_of(state), approvals {
+    Ok(NeedsYou), 0 -> Ok(Failed)
+    other, _ -> other
+  }
+}
+
 /// The words a row shows for an activity.
 ///
 /// ## Examples
@@ -197,6 +221,7 @@ pub fn activity_of(state: String) -> Result(Activity, Nil) {
 pub fn activity_words(activity: Activity) -> String {
   case activity {
     NeedsYou -> "needs you"
+    Failed -> "failed"
     Working -> "working"
     Idle -> "idle"
   }
