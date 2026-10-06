@@ -107,7 +107,10 @@ fn counting_clock(from: Int, by: Int) -> Clock {
 }
 
 fn tools_of_main() -> List(String) {
-  ["agent_note", "agent_send", "agent_spawn", "agent_wait", "bash", "fs_read"]
+  [
+    "agent_note", "agent_send", "agent_spawn", "agent_wait", "bash", "fs_read",
+    "peer_send",
+  ]
 }
 
 fn configuration() -> machine_strand.StrandConfiguration {
@@ -785,7 +788,14 @@ pub fn a_default_spawn_set_is_unchanged_by_the_floor_test() {
     harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("plain"))
     as "a default spawn must be accepted"
   assert spawned.tools
-    == ["agent_note", "agent_send", "agent_wait", "bash", "fs_read"]
+    == [
+      "agent_note",
+      "agent_send",
+      "agent_wait",
+      "bash",
+      "fs_read",
+      "peer_send",
+    ]
   close(harness)
 }
 
@@ -855,8 +865,8 @@ pub fn the_agency_reports_which_tools_a_strand_holds_test() {
     )
     as "narrowing must be accepted"
   assert harness.seam.holds(caller, "agent_spawn") == Ok(Nil)
-  assert harness.seam.holds(caller, "peer_send")
-    == Error(agent.ToolNotHeld(tool: "peer_send"))
+  assert harness.seam.holds(caller, "job_kill")
+    == Error(agent.ToolNotHeld(tool: "job_kill"))
     as "a tool the parent was never given is not held"
   let child = caller_on(spawned.strand, "turn-1:holds", 1)
   assert harness.seam.holds(child, "fs_read") == Ok(Nil)
