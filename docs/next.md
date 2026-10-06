@@ -19,18 +19,25 @@ local cumulative allocation savings from installed resident-memory claims.
 | Etui ASCII width and left alignment | Separate etui branch at `7365d47`, including the second-pass four-byte scan; 1,002 Erlang and 948 JavaScript tests passed. |
 | Detached code-mode worker | `9adddf030` projects the preceding router before retaining it. The actual admission regression halves unrelated payload growth in flattened words; all 81 code-mode tests passed. |
 | Warm Gleam language server | `d219796fc` hashes canonical inventory values, eliminating restarts from key-order rewrites. All 46 manager tests and five additional real downloader/warm-server runs passed. |
-| Reproduction | Existing terminal driver plus new `scripts/web_view_perf.sh`. Matched comparisons used Gleam 1.19.0 and OTP 29. |
+| JSON string codec | `1d0f8d05c` scans four safe bytes together and avoids the encoder's slice wrapper. All 140 Erlang core tests passed; both new boundary tests pass on JavaScript, whose nine baseline failures remain. |
+| Reproduction | Existing terminal driver plus `scripts/web_view_perf.sh` and `scripts/json_perf.sh`. Matched comparisons used Gleam 1.19.0 and OTP 29. |
 | Dependency integration | Both source pins and generated manifests select `7365d47`. Local resolution used a command-scoped Git URL rewrite to the sibling repository; the committed public URLs are unchanged. The commit remains unpublished pending approval. |
-| Full Loom gate | Integrated `make check` at `d219796fc` exited 0: 2,874 client, 1,231 terminal and 657 web-view tests, conformance, Go checks and zero lint errors. Earlier failed logs remain available. |
-| Independent review | One fresh report-only pass for each body of work found no actionable issue. The second pass independently ran the worker admission and ASCII chunk boundary regressions; the LSP pass traced fingerprint and keeper reuse invariants. Fable/Opus were unavailable; fresh inherited-model contexts were used. |
+| Full Loom gate | Earlier `d219796fc` exited 0. The new JSON candidate at `c9ff4bba3` remains pending: full runs failed broker cancellation grace and web patch count, while a separate task ran 26 CPU-load workers. The failed and isolated logs are retained; assertions and deadlines are unchanged. |
+| Independent review | One fresh report-only pass for each body of work found no actionable issue. The second pass ran worker admission and ASCII boundary regressions; the LSP pass traced fingerprint/keeper invariants, and the JSON pass checked byte boundaries, generated JavaScript and binary ownership. Fable/Opus were unavailable; fresh inherited-model contexts were used. |
+| Pickglass follow-up | Owner-requested [issue #6](https://github.com/Roasbeef/pickglass/issues/6) proposes bounded CLI allocation counters, coverage/units, export and teardown tests. |
 | Public review | New branches and draft PR publication require explicit owner approval after automatic approval review rejected the export. No existing PR or remote branch was altered. |
 
 The repeated local comparison removed 83.3% of reductions and 78.8% of
 allocated words for 100 unchanged operator views. At 2,048 streamed frames,
-the combined terminal changes removed 63.6% of reductions and 53.0% of
+the combined terminal changes removed 64.2% of reductions and 53.0% of
 allocated words per frame. The six-agent 120x40 styled-cell/cursor witness
 matched byte for byte through forty scroll frames. These are fixture results,
 not a percentage claim about the installed daemon or terminal.
+
+The JSON codec fixture removed 68.2%/37.5% of plain-string encoding/decoding
+reductions and 24.6%/18.3% for escaped strings. Allocation was nearly flat.
+Its contribution to the terminal fixture was another 1.5% reduction in work,
+so the isolated codec percentages must not be applied to the whole app.
 
 The live code-mode configuration measures 480,696 flattened bytes, against
 1,024 for the predecessor router its wrapper requires. Narrowing the wrapper
@@ -40,12 +47,13 @@ binary sharing, and live RSS savings remain separate measurement questions.
 
 ## What to do next
 
-1. Preserve the integrated green candidate: `make check` exited 0 at
-   `d219796fc`, with the exact etui `7365d47` pin resolved locally. The
-   order-only LSP restart is fixed; the listing and terminal fixtures also
-   passed unchanged inside that full run. After approved publication,
-   verify normal remote dependency resolution. No local path dependency
-   is committed.
+1. Finish the fourth-pass integrated gate after the separate CPU-load task
+   finishes or the owner authorizes stopping its 26 `yes` workers. Do not
+   kill another task's load, change deadlines or present the new candidate
+   as fully green. `make check` previously exited 0 at `d219796fc`, with
+   etui `7365d47`; the JSON change has 140 passing core tests and a clean
+   independent review. After approved publication, verify normal remote
+   dependency resolution. No local path dependency is committed.
 2. Obtain the owner's explicit publication approval before pushing either
    topic branch or opening the two draft PRs. The automatic rejection was
    about exporting unpublished code/performance results to public GitHub,
@@ -93,6 +101,11 @@ real package, version or git-commit changes invalidate the lease. Manifest and
 project configuration hashes remain complete source digests. Keep the existing
 path admission, missing-file identity and metadata read bounds.
 
+JSON chunks check every byte for quote, backslash and C0 controls, then resume
+the single-byte path on any exception. Flushes still end at ASCII boundaries
+and validate UTF-8. Keep the existing parser's string ownership; a direct
+returned subbinary shortcut could retain a much larger backing input.
+
 Keep the buffer experiments out of the candidate. Cell equality checks cost
 more reductions; repeated-cell and row reuse did not offer a consistent CPU
 and allocation improvement. Their private measurements are in the report.
@@ -110,7 +123,7 @@ in [execution](execution.md). This edition does not reopen those decisions.
 
 ## Verification boundaries
 
-The integrated candidate full-gate log is
+The previous integrated candidate full-gate log is
 `/private/tmp/loom-cpu-20261005/check-full-round3.log`. `make check` returned
 exit 0 at source revision `d219796fc`, with etui `7365d47`. It passed all
 package gates, including 2,874 client, 1,231 terminal and 657 web-view tests,
@@ -118,6 +131,17 @@ conformance and Go checks. House lint reported zero errors and 2,109 census
 warnings. Doc-check passed separately with zero errors and 190 historical
 citation/staleness warnings. Earlier failed full logs and isolated cases remain
 beside the green log; their failures were not hidden or assertions relaxed.
+
+The JSON candidate at `c9ff4bba3` has not passed the integrated gate.
+`check-full-round4.log` exited 2 at broker cancellation grace; that case passed
+unchanged in isolation. `check-full-round4-rerun.log` exited 2 at web delivery
+patch count, and its first isolated run instead timed out at actor startup.
+A baseline-JSON control and a second unchanged candidate run passed. The
+report records these distinct outcomes and the concurrent separate load task:
+26 `yes` workers using about 1,206%
+aggregate CPU. Do not infer a proven cause from that coincidence or replace
+the current gate result with the older green log. Doc-check passed for this
+body with zero errors and 188 historical warnings.
 
 `make check` is the full local gate; capture its own exit status. It does not
 include `make doc-check`. Run format, lint and doc checks before publication.

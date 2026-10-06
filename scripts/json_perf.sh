@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Measure JSON encode/decode work in an isolated one-scheduler fixture VM.
-# Usage: bash scripts/json_perf.sh <built-checkout> <label>
+# Pass a built checkout and comparison label as the two arguments.
 # Build packages/core with the same compiler in each checkout first.
 set -euo pipefail
 checkout="$(cd "${1:?a built checkout is required}" && pwd)"
