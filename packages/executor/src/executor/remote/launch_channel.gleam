@@ -57,7 +57,9 @@ type Phase {
 
 type NativeCustody {
   Unresolved
+  AwaitingOriginalRetirement
   ExcludedBeforeDispatch
+  NativeRetired
 }
 
 type PreparationCustody {
@@ -93,6 +95,8 @@ type ChannelEvent {
   WriterReady
   WriterConsumed(run_channel.FrameRef)
   NativeObserved(enforcement.Report)
+  OriginalRetirementExpected
+  OriginalNativeRetired
   Excluded(enforcement.Report)
   FencedBeforeNative
   PreparerJoined
@@ -283,6 +287,28 @@ pub fn settled(owner: Owner, report: enforcement.Report) -> Nil {
   process.send(owner.commands, NativeObserved(report))
 }
 
+/// Retains close custody after actual original native association COMMIT.
+/// This expectation is not retirement proof and expires with existing cleanup.
+///
+/// ## Examples
+///
+/// `retirement_expected(original)` never authorizes directory removal.
+@internal
+pub fn retirement_expected(original: Owner) -> Nil {
+  process.send(original.commands, OriginalRetirementExpected)
+}
+
+/// Accepts the original validated association's durable exact-helper witness.
+/// Terminal and ordinary Query never construct this local custody event.
+///
+/// ## Examples
+///
+/// `native_retired(original)` can complete cleanup after the original I/O joins.
+@internal
+pub fn native_retired(original: Owner) -> Nil {
+  process.send(original.commands, OriginalNativeRetired)
+}
+
 /// Independently closes original I/O without consuming a metadata credit.
 ///
 /// ## Examples
@@ -459,6 +485,21 @@ fn step(
     | Installed, ReleaseClosed
     | Closing, ReleaseClosed
     -> sm.keep(owned)
+    _, OriginalRetirementExpected -> {
+      case owned.native_custody {
+        Unresolved ->
+          sm.keep(Owned(..owned, native_custody: AwaitingOriginalRetirement))
+        AwaitingOriginalRetirement | ExcludedBeforeDispatch | NativeRetired ->
+          sm.keep(owned)
+      }
+    }
+    Closing, OriginalNativeRetired | Closed(_), OriginalNativeRetired ->
+      finish_close(Owned(..owned, native_custody: NativeRetired))
+    Unprepared, OriginalNativeRetired
+    | Prepared, OriginalNativeRetired
+    | Refused, OriginalNativeRetired
+    | Installed, OriginalNativeRetired
+    -> sm.keep(Owned(..owned, native_custody: NativeRetired))
     _, NativeObserved(node) -> sm.keep(Owned(..owned, node:))
     _, Prepare(_, reply) -> {
       process.send(reply, Error("original preparation was already consumed"))
@@ -729,8 +770,8 @@ fn begin_close(
   option.map(owned.reader, fn(reader) { process.send(reader, ReadStop) })
   option.map(owned.writer, fn(writer) { process.send(writer, WriteStop) })
   case owned.native_custody {
-    Unresolved -> owned.cancel()
-    ExcludedBeforeDispatch -> Nil
+    Unresolved | AwaitingOriginalRetirement -> owned.cancel()
+    ExcludedBeforeDispatch | NativeRetired -> Nil
   }
   finish_close(
     Owned(
@@ -765,8 +806,16 @@ fn finish_close(owned: Owned) -> sm.Next(Phase, Owned, ChannelEvent) {
     Attempted, _, _, _ -> sm.keep(owned)
     NotAttempted,
       Some(run_channel.TransportJoined),
-      ExcludedBeforeDispatch,
+      custody,
       AwaitingPreparation
+      if custody == ExcludedBeforeDispatch || custody == NativeRetired
+    -> sm.transition(to: Closing, data: owned)
+
+    // Actual transport join cannot outrun the original retirement observer.
+    NotAttempted,
+      Some(run_channel.TransportJoined),
+      AwaitingOriginalRetirement,
+      _
     -> sm.transition(to: Closing, data: owned)
     NotAttempted, Some(_), _, _ -> publish_close(owned)
     NotAttempted, None, _, _ -> sm.transition(to: Closing, data: owned)
@@ -801,20 +850,19 @@ fn publish_close(owned: Owned) -> sm.Next(Phase, Owned, ChannelEvent) {
     owned.preparation,
     owned.directory
   {
-    ExcludedBeforeDispatch,
+    custody,
       Some(run_channel.TransportJoined),
       PreparationJoined,
       OriginalDirectory
+      if custody == ExcludedBeforeDispatch || custody == NativeRetired
     ->
       case simplifile.delete(owned.paths.0) {
         Ok(Nil) -> run_channel.ResourcesReleased
         Error(_) ->
           run_channel.ResourcesUnresolved("original directory removal failed")
       }
-    ExcludedBeforeDispatch,
-      Some(run_channel.TransportJoined),
-      PreparationJoined,
-      NoDirectory
+    custody, Some(run_channel.TransportJoined), PreparationJoined, NoDirectory
+      if custody == ExcludedBeforeDispatch || custody == NativeRetired
     -> run_channel.ResourcesReleased
     _, _, _, _ -> closed.resources
   }
@@ -830,7 +878,8 @@ fn publish_close(owned: Owned) -> sm.Next(Phase, Owned, ChannelEvent) {
   owned.on_closed(closed)
   option.map(owned.close_reply, fn(reply) { process.send(reply, closed) })
   let cleanup = case owned.native_custody, owned.joined, owned.preparation {
-    ExcludedBeforeDispatch, Some(run_channel.TransportJoined), PreparationJoined
+    custody, Some(run_channel.TransportJoined), PreparationJoined
+      if custody == ExcludedBeforeDispatch || custody == NativeRetired
     -> Attempted
     _, _, _ -> NotAttempted
   }

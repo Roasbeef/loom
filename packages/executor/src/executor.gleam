@@ -254,17 +254,22 @@ fn start_plane(config: Config) -> Result(Standalone, String) {
   )
   let incarnation = mint_incarnation()
   use started <- result.try(
-    service.start(service.ExecutorConfig(
-      checkout: fn() { exec.checkout(pool, waiting: 15_000) },
-      checkin: fn(helper) { exec.checkin(pool, helper) },
-      custody: fn() { exec.pool_custody(pool, waiting: 1000) },
-      close_helpers: fn(waiting) { exec.close_pool(pool, waiting:) },
-      incarnation:,
-      // The entrypoint's stdout is the census line, and a global log
-      // handler would interleave with it. A deployed executor (#697)
-      // installs its own handler and passes its logger here.
-      log: log.discard(),
-    ))
+    service.start_with_retirement(
+      service.ExecutorConfig(
+        checkout: fn() { exec.checkout(pool, waiting: 15_000) },
+        checkin: fn(helper) { exec.checkin(pool, helper) },
+        custody: fn() { exec.pool_custody(pool, waiting: 1000) },
+        close_helpers: fn(waiting) { exec.close_pool(pool, waiting:) },
+        incarnation:,
+        // The entrypoint's stdout is the census line, and a global log
+        // handler would interleave with it. A deployed executor (#697)
+        // installs its own handler and passes its logger here.
+        log: log.discard(),
+      ),
+      fn(helper, completed) {
+        exec.prepare_borrowed_retirement(pool, helper, completed)
+      },
+    )
     |> result.map_error(fn(error) {
       "the executor service did not start: " <> string.inspect(error)
     }),
