@@ -75,8 +75,8 @@ the original stream with actual satellite capability traffic and retained
 native/outer receipts. It passes the independent complete client gate and
 original-journal reopen controls. Native retirement remains unresolved; the
 [exact-helper proposal](distributed-launch-native-retirement.md) and
-[bounded Compile rewrite identity](distributed-compile-rewrite.md) await owner
-decisions. Registered Compile/Launch, remote LSP and daemon configuration remain
+[bounded Compile rewrite identity](distributed-compile-rewrite.md) were approved
+on October 6 and are being implemented. Registered Compile/Launch, remote LSP and daemon configuration remain
 required. Acceptance must drive ordinary tools and code
 mode with the owner and executor on separate hosts and no checkout on the
 owner's disk.

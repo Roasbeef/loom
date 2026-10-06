@@ -1,8 +1,9 @@
 # Per-Launch native retirement design review
 
-Status: proposed; awaiting the owner’s API decision. This document authorizes
-no interface or protocol change. The recommendation was reviewed against the
-source revisions named below.
+Status: approved by the owner on October 6, 2026; implementation in progress.
+The approval covers the recommended exact-helper retirement and bounded Compile
+attempt designs. The source revisions below describe the reviewed baseline,
+not completed implementation evidence.
 
 Recommend a **Launch-only disposition on the existing executor row that retires its exact borrowed helper through the existing pool inventory**. Reuse the current native-retirement acceptance grade. Keep the session-scoped executor and pool alive; Compile and raw-native dispatch retain their current helper-reuse behavior.
 

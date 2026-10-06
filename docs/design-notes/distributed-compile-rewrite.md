@@ -1,8 +1,9 @@
 # Remote Compile: preserve the one unused-import rewrite
 
-Status: proposed; awaiting the owner’s API decision. This document authorizes
-no interface or protocol change. The recommendation was reviewed against the
-source revisions named below.
+Status: approved by the owner on October 6, 2026; implementation in progress.
+The approval covers the recommended exact-helper retirement and bounded Compile
+attempt designs. The source revisions below describe the reviewed baseline,
+not completed implementation evidence.
 
 Source inspection against the requested integration tree at `052b8d50c`. This is a design recommendation, not an implemented or tested change. No build or Git operation was performed.
 
