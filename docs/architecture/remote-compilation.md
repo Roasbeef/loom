@@ -434,5 +434,35 @@ terminal evidence currently retains unresolved resource retirement. Active slots
 remain held until the original continuation and cleanup witnesses all settle.
 A historical replay owns no Claim or channel; its completed observation-only
 entry releases admission capacity after its actual managed task drains.
-BEAM routing, stream binding, owner client integration and default assembly remain
-separate integration work; this local owner alone is not distributed E2E acceptance.
+The finite BEAM routes and live stream are described below. Owner client
+integration and default assembly remain separate integration work; this local
+owner alone is not distributed E2E acceptance.
+
+
+## Original Launch stream over BEAM
+
+`launch_beam` connects the original owner host to the executor-local paused
+connection. `beam_endpoint.bind_launch` uses route five and one finite Control
+credit to install the checked original offer once. The service row, peer, door,
+scope, generation and full Launch identity must agree. The installation reply
+does not wait for socket acceptance. Socket handoff, activation and stream
+lifetime belong to the separate bridge actor. A known installation or definite
+refusal can return its credit after the actual network task drains; an uncertain
+installation retains its assignment. A lost reply never permits a fresh bind.
+
+Each direction owns one original frame reservation. Frames carry at most 16 MiB
+of payload plus their four-byte prefix, transported in chunks no larger than
+64 KiB. The 64 MiB lifetime allowance includes every prefix and is never
+refunded. Chunk acknowledgement advances the byte cursor; only the original
+frame consumer returns frame capacity. Peer-door identity, direction and
+sequence must match before a message can change that state.
+
+The executor's original reader produces End and terminates on Final. The bridge
+retains an authenticated close result even when it arrives before the local
+caller asks to close, then joins its original collectors. TransportJoined and
+ResourcesReleased remain separate observations. A native terminal, process exit
+or closed socket cannot invent resource release. Raw token placement uses its
+existing separate operation; neither the binding nor stream packets carry it.
+
+The [stream review](../review/distributed-launch-stream.md) records the real TLS
+and Unix controls, independent gate and current integration limits.

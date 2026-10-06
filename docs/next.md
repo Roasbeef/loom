@@ -1,15 +1,14 @@
 # Current handoff
 
-This edition records the distributed runtime integration through `5458e2be4`
+This edition records the distributed runtime integration through `5559b4c3`
 on October 6, 2026, checked against source, command receipts and live PR state.
 Rewrite it when the next integration milestone changes those facts. The branch
 includes `origin/main` at `552e44033`; no merge into main is authorized.
 
-The previous edition left the whole Launch owner and finite controls in
+The previous edition left the live bridge and finite stream binding in
 implementation worktrees. Both are now committed after independent review and
-an assembled executor gate. The live bridge, finite stream binding and owner
-consumer remain under implementation. This does not complete the distributed
-runtime acceptance criteria.
+a combined executor gate. The owner consumer is still under implementation.
+This does not complete the distributed runtime acceptance criteria.
 
 ## Where the tree is
 
@@ -31,7 +30,7 @@ this is evidence for the base, not for the integration candidate.
 | Generated sources | Storage SQL and the capability prelude were regenerated during rebase. The Launch resource SQL was regenerated from its source after the format-3 change. |
 | Executor resource custody | Closed Launch completions, role-specific native association and the atomic refusal fence are committed. Resource format 3 rejects old formats before interpreting their rows. Compile retains its separate completion contract. |
 | Launch model | The bounded P model and source correspondence are committed. Root replay and independent review do not claim implementation refinement or unbounded liveness. |
-| Remote Launch | The whole owner and finite TLS BEAM controls are committed. The duplex bridge, finite stream binding and owner consumer remain in isolated worktrees. Associated-native retirement and default assembly are pending. |
+| Remote Launch | The whole owner, finite TLS BEAM controls, duplex bridge and finite stream binding are committed. The owner consumer remains in its isolated worktree. Associated-native retirement and default assembly are pending. |
 | Preserved work | The unrelated client owner-binding runner and main checkout files remain outside this change. |
 
 ## Verification and its limits
@@ -64,6 +63,14 @@ Refused-phase termination and a cancellation message that erased the original
 close reply. The [owner review](review/distributed-launch-owner.md) records
 those paths, deterministic controls, mutation evidence and the known missing
 associated-native retirement witness.
+
+The final live stream and finite binding passed the independent combined
+executor gate with 364 tests, followed by executor lint and documentation checks.
+Nine compiling mutations were killed across these two slices. The Final check
+monitors the original executor reader before cancellation, closing a blind spot
+where the owner reducer could hide an incorrectly continuing reader. Independent
+review found no correctness blocker. The
+[stream review](review/distributed-launch-stream.md) records the exact limits.
 
 The full repository gate, registered remote default path, separate-host tests
 and hosted CI have not run on this candidate. Passing component tests do not
