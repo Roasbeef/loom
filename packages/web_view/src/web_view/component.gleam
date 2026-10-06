@@ -168,6 +168,7 @@ import session_view/operator
 import session_view/outbound
 import session_view/pasted_image
 import session_view/protocol
+import session_view/remembered as kept
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/session_summary
@@ -194,6 +195,7 @@ import web_view/ending.{type Ending}
 import web_view/grants
 import web_view/image as web_image
 import web_view/invites
+import web_view/remembered as holding
 import web_view/renames
 import web_view/sessions
 import web_view/shareables
@@ -329,6 +331,17 @@ pub const invite_path = "0\t3\t2\t2"
 /// (`client/daemon/ui_socket.rename_for`). `rename_test` fails if the view
 /// moves the control or a handler leaves the region.
 pub const rename_path = "0\t3\t2\t4"
+
+/// The Lustre event path of the operator's list of remembered permissions: the
+/// sixth and last child of the Session pane (`view/session_tab`), after the
+/// rename control (`rename_path`), so that placing it there moved no path the
+/// socket admits. Every handler beneath it is one of the list's Forget buttons
+/// or its question's two (`view/remembered`, protocol-change/073). The
+/// operator's socket admits them like any click that is not an owner's control,
+/// and an observer's socket admits none, the page drawing nothing there and
+/// the daemon refusing a forget from an observer's attachment on its own.
+/// `page_events_test` fails if the view moves the list.
+pub const remembered_path = "0\t3\t2\t5"
 
 /// The Lustre event path of the "Home" button, on both pages: it is the
 /// second child of the top bar (`view/heading`), after the brand, and the top
@@ -605,6 +618,17 @@ pub type Transport(socket) {
     /// request in a task of its own, which calls the function it is given with
     /// the answer, and that call is dispatched as `ManageAnswered`.
     manage: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
+    /// Asks the daemon which of the browser sign-ins a remembered permission
+    /// was allowed from have ended, for an operator's page that lists what the
+    /// session remembers (protocol-change/073). It returns at once: the daemon
+    /// asks the registry in a task of its own, which calls the function it is
+    /// given with the logins that have ended, and that call is dispatched as
+    /// `LoginsJudged`. A login the daemon could not judge, because the page's
+    /// principal may not ask about another's or the registry did not answer, is
+    /// not among them. It is `None` for an observer's page, which draws no list.
+    logins: Option(
+      fn(List(holding.Login), fn(List(holding.Login)) -> Nil) -> Nil,
+    ),
   )
 }
 
@@ -667,12 +691,21 @@ pub type Activity {
   Busy
 }
 
-/// An operator's answer that the page offers. Remembering a grant for the
-/// session is not offered from a page (protocol-change/051, the operator
-/// addendum), so it is not a value this type can hold.
+/// An operator's answer that the page offers.
+///
+/// Remembering a grant for the session was left out of the first operator page
+/// (protocol-change/051, the operator addendum) because a remembered grant
+/// outlives the page that gave it. protocol-change/073 offers it, with the
+/// list of what is remembered and who allowed it beside it, so an owner can
+/// see and forget what a page left behind.
 pub type Answer {
   /// Grant the displayed authority for this one request.
   AllowOnce
+
+  /// Grant it and remember it for the session. The card offers it only where
+  /// the whole request is eligible (`approval.rememberable`), and `decide`
+  /// asks again at the click.
+  AllowForSession
 
   /// Refuse the request.
   Deny
@@ -975,6 +1008,10 @@ type View(socket) {
     /// the decisions once its first cut is adopted and seeds the approval
     /// ledger the transcript's decision rows come from.
     decided: Decided,
+    /// What the page holds about the list of remembered permissions beyond the
+    /// board itself: when it last wanted it, the question that is open and the
+    /// sign-ins the daemon said have ended (`web_view/remembered`).
+    holding: holding.State,
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
     /// How many composer submits were refused with the draft kept, by the
@@ -1099,6 +1136,12 @@ pub type Msg(socket) {
   /// effect's own message, dispatched from the daemon's task, and no handler
   /// carries it.
   ActivityObserved(rows: List(#(String, sessions.Activity)))
+
+  /// The daemon judged which browser sign-ins a remembered permission came
+  /// from have ended. It is the effect's own message, dispatched from the
+  /// daemon's task, and no handler carries it, so a browser cannot send one
+  /// and cannot mark a sign-in ended or standing.
+  LoginsJudged(ended: List(holding.Login))
 
   /// The daemon asks for one of the images the page draws, to answer a
   /// request for its address (protocol-change/051, the addendum on images).
@@ -1256,6 +1299,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       renamed: 0,
       jobs_asked_at: None,
       decided: Owed,
+      holding: holding.new(),
       refusal: None,
       refusals: 0,
       outcome: "",
@@ -1437,6 +1481,20 @@ pub fn update(
     // draws a word and a dot from it and nothing else moves.
     ActivityObserved(rows:) -> #(
       Model(..model, view: View(..model.view, activity: dict.from_list(rows))),
+      effect.none(),
+    )
+
+    // Which sign-ins have ended is the page's own state, drawn as a note under
+    // the permissions that came from them, and it changes nothing the lane
+    // holds.
+    LoginsJudged(ended:) -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          holding: holding.judged(model.view.holding, ended),
+        ),
+      ),
       effect.none(),
     )
 
@@ -3740,10 +3798,190 @@ pub fn decide(
     Ok(record) -> {
       let choice = case answer {
         AllowOnce -> operator.AllowOnce
+        AllowForSession -> operator.AllowForSession
         Deny -> operator.Deny
       }
-      commanded(model, msg.Decide(review: record, choice:))
+      let #(model, effects) =
+        commanded(model, msg.Decide(review: record, choice:))
+
+      // An approval that remembers something changes the list, so the page
+      // reads it again once the lane has answered the approval.
+      #(owing_permissions(model, answer), effects)
     }
+  }
+}
+
+// The list is owed a fresh read after an approval for the session. A refused
+// approval changed nothing, and the read it earns is harmless.
+fn owing_permissions(model: Model(socket), answer: Answer) -> Model(socket) {
+  case answer {
+    AllowForSession ->
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          remembered_refresh: worktree_view.Requested,
+        ),
+      )
+    AllowOnce | Deny -> model
+  }
+}
+
+/// Marks the list of remembered permissions as wanted when the page has never
+/// read it, or last wanted it `holding.refresh_ms` or more ago.
+///
+/// The operator's page calls this after every message it takes. It is the
+/// operator's page alone that does, because the gateway admits the read to an
+/// attachment that may approve and refuses it to an observer's; the observer's
+/// component never calls it. The shared step sends the read once the lane is
+/// ready for it (`surfaces.service_remembered_read`), so this only says that
+/// one is owed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.want_permissions(model)
+/// ```
+pub fn want_permissions(model: Model(socket)) -> Model(socket) {
+  let at = model.view.transport.now()
+  case holding.due(model.view.holding, at), model.shared.remembered_refresh {
+    True, worktree_view.Settled ->
+      Model(
+        shared: Shared(
+          ..model.shared,
+          remembered_refresh: worktree_view.Requested,
+        ),
+        view: View(
+          ..model.view,
+          holding: holding.wanted(model.view.holding, at),
+        ),
+      )
+    True, worktree_view.Requested | False, _ -> model
+  }
+}
+
+/// The list of remembered permissions as the daemon last gave it, or `None`
+/// while the page has not read it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.permissions_kept(model)
+/// ```
+pub fn permissions_kept(model: Model(socket)) -> Option(kept.Board) {
+  model.shared.remembered
+}
+
+/// What the page holds about the list: the open question and the sign-ins the
+/// daemon said have ended.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.permissions_state(model)
+/// ```
+pub fn permissions_state(model: Model(socket)) -> holding.State {
+  model.view.holding
+}
+
+/// Asks the daemon which sign-ins the list's permissions came from have ended,
+/// when the list changed from `before` and names any, and keeps the answer the
+/// last one gave until then.
+///
+/// The ask is the daemon's task and its answer arrives as `LoginsJudged`, so
+/// the page's runtime never waits for the registry. An observer's page has no
+/// capability and asks nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.judge_logins(before, after)
+/// ```
+pub fn judge_logins(
+  before: Model(socket),
+  after: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case
+    after.shared.remembered == before.shared.remembered,
+    after.view.transport.logins,
+    after.shared.remembered
+  {
+    True, _, _ | False, None, _ | False, _, None -> #(after, effect.none())
+    False, Some(ask), Some(board) ->
+      case holding.logins(board) {
+        [] -> #(
+          Model(
+            ..after,
+            view: View(
+              ..after.view,
+              holding: holding.judged(after.view.holding, []),
+            ),
+          ),
+          effect.none(),
+        )
+        logins -> #(after, judging(ask, logins))
+      }
+  }
+}
+
+fn judging(
+  ask: fn(List(holding.Login), fn(List(holding.Login)) -> Nil) -> Nil,
+  logins: List(holding.Login),
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  ask(logins, fn(ended) { dispatch(LoginsJudged(ended)) })
+}
+
+/// Opens the question for one forget, which sends nothing. Only one question
+/// is open at a time, so asking another replaces it.
+///
+/// The question is the request as the list looked when its button was drawn,
+/// with the sequence that list carried. Confirming sends that and nothing the
+/// browser chose, and a list that moved in between makes the daemon refuse it
+/// rather than forget what the operator never saw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.ask_forget(model, armed)
+/// ```
+pub fn ask_forget(model: Model(socket), armed: holding.Armed) -> Model(socket) {
+  Model(
+    ..model,
+    view: View(..model.view, holding: holding.arm(model.view.holding, armed)),
+  )
+}
+
+/// Closes the question without sending anything.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.cancel_forget(model)
+/// ```
+pub fn cancel_forget(model: Model(socket)) -> Model(socket) {
+  Model(
+    ..model,
+    view: View(..model.view, holding: holding.disarm(model.view.holding)),
+  )
+}
+
+/// Sends the forget the open question armed, through the shared step like any
+/// other command, and closes the question. With no question open it does
+/// nothing, so a confirm the page did not draw changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.confirm_forget(model)
+/// ```
+pub fn confirm_forget(
+  model: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.holding.armed {
+    None -> #(model, effect.none())
+    Some(open) ->
+      commanded(cancel_forget(model), msg.Forget(forget: open.forget))
   }
 }
 
@@ -5722,6 +5960,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       element.none(),
       element.none(),
       element.none(),
+      element.none(),
     ),
     needing(model),
     workspace_digest(model),
@@ -5778,12 +6017,13 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// the operator page passes an owner's control (`view/share`), and every other
 /// page passes `element.none()`. `controls` is the operator's goal buttons and
 /// fork form, and `rename` the owner's rename control (`rename_form`), which
-/// every other page passes as `element.none()`.
+/// every other page passes as `element.none()`, and `remembered` the operator's
+/// list of remembered permissions (`view/remembered`), likewise.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none())
+/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -5792,6 +6032,7 @@ pub fn panel(
   share: Element(message),
   controls: Element(message),
   rename: Element(message),
+  remembered: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -5815,6 +6056,7 @@ pub fn panel(
       share,
       controls,
       rename,
+      remembered,
     ),
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),

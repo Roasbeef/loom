@@ -34,6 +34,7 @@ import session_view/markdown
 import session_view/model as session_model
 import session_view/msg
 import session_view/operator
+import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
 import session_view/snapshot_view
@@ -171,6 +172,7 @@ fn start() -> component.Start(process.Subject(String)) {
       rename: None,
       shareable: None,
       worktree: None,
+      logins: None,
       manage: None,
     ),
   )
@@ -579,28 +581,33 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
   // session's context, the advisor's pending nudges and the goal, one after
   // the other, each sent when the one before is answered. The script answers
   // them by refusal, so the lane is free for the prompt. The page then asks
-  // for the session's decided approvals, request eight, which the terminal
-  // does not (`mirror_decided_read`); the script answers it as well.
+  // for what the session remembers, request eight, and for the session's
+  // decided approvals, request nine, neither of which the terminal does
+  // (`mirror_page_reads`); the script answers them as well.
   let script =
     list.flatten([
       list.map(transfer(), Frame),
       [Tick],
-      list.map([4, 5, 6, 7, 8], fn(id) { Frame(refusal(id)) }),
+      list.map([4, 5, 6, 7, 8, 9], fn(id) { Frame(refusal(id)) }),
       [Prompt("inspect the tree"), Deny("esc-1"), Tick],
     ])
   let #(terminal, page, _) =
-    list.fold(script, #(terminal(), page.0, Owed), fn(hosts, step) {
-      let #(terminal, asked) =
-        mirror_decided_read(on_terminal(hosts.0, step), hosts.2)
-      let page = on_page(hosts.1, step)
-      let assert Some(web_lane) = component.lane(page)
-        as "the page holds a lane"
-      let assert Some(terminal_lane) = terminal.shared.channel
-        as "the terminal holds a lane"
-      assert session_channel.state(web_lane)
-        == session_channel.state(terminal_lane)
-      #(terminal, page, asked)
-    })
+    list.fold(
+      script,
+      #(terminal(), page.0, Mirrored(Owed, Owed)),
+      fn(hosts, step) {
+        let #(terminal, asked) =
+          mirror_page_reads(on_terminal(hosts.0, step), hosts.2)
+        let page = on_page(hosts.1, step)
+        let assert Some(web_lane) = component.lane(page)
+          as "the page holds a lane"
+        let assert Some(terminal_lane) = terminal.shared.channel
+          as "the terminal holds a lane"
+        assert session_channel.state(web_lane)
+          == session_channel.state(terminal_lane)
+        #(terminal, page, asked)
+      },
+    )
 
   // The two hosts offer the same approvals and draw the same lines.
   assert pending(component.pending(page)) != []
@@ -620,34 +627,59 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
   assert string.contains(prompt, "\"cmd\":\"prompt\"")
 }
 
-// Whether the terminal has made the read the page makes for the decided
-// approvals.
+// Whether the terminal has made a read the page makes.
 type Decided {
   Owed
   Asked
 }
 
-// The page reads the session's decided approvals once its lane idles after the
-// first capture, as the terminal does not. So that the two lanes stay
-// comparable, the terminal makes the same read at the same moment: when its
-// lane can send it after a step, and once.
-fn mirror_decided_read(
+// The two reads the page makes that the terminal does not: what the session
+// remembers and the session's decided approvals, in the order the page sends
+// them.
+type Mirrored {
+  Mirrored(permissions: Decided, decided: Decided)
+}
+
+// The page reads what the session remembers (protocol-change/073) and then the
+// session's decided approvals, once its lane idles after the first capture, as
+// the terminal does not. So that the two lanes stay comparable, the terminal
+// makes the same reads at the same moments: when its lane can send one after
+// a step, once each, the permissions first, and not both in one step because
+// the first leaves the lane busy.
+fn mirror_page_reads(
   model: tui_model.Model,
-  asked: Decided,
-) -> #(tui_model.Model, Decided) {
+  asked: Mirrored,
+) -> #(tui_model.Model, Mirrored) {
   case asked, model.shared.channel {
-    Owed, Some(lane) ->
+    Mirrored(Owed, decided), Some(lane) -> {
+      let now = model.shared.stamp.transport_ms
+      case session_channel.ready_for_read(lane) {
+        True -> {
+          let #(lane, _) =
+            session_channel.submit(lane, protocol.permissions(1), now:)
+          #(
+            tui_model.Model(
+              ..model,
+              shared: session_model.hold_channel(model.shared, lane),
+            ),
+            Mirrored(Asked, decided),
+          )
+        }
+        False -> #(model, asked)
+      }
+    }
+    Mirrored(Asked, Owed), Some(lane) ->
       case session_channel.decided(lane, now: model.shared.stamp.transport_ms) {
         Ok(lane) -> #(
           tui_model.Model(
             ..model,
             shared: session_model.hold_channel(model.shared, lane),
           ),
-          Asked,
+          Mirrored(Asked, Asked),
         )
-        Error(_) -> #(model, Owed)
+        Error(_) -> #(model, asked)
       }
-    Owed, None | Asked, _ -> #(model, asked)
+    Mirrored(_, _), None | Mirrored(Asked, Asked), Some(_) -> #(model, asked)
   }
 }
 

@@ -100,8 +100,9 @@ pub fn every_pane_is_drawn_in_a_fixed_order_on_both_pages_test() {
   })
 
   // The operator's Session pane also holds its controls, a section of their
-  // own after the invitation control's place.
-  assert count(panel_of(operator(quiet())), "<section") == 5
+  // own after the invitation control's place, and the list of what the session
+  // remembers (protocol-change/073), the pane's last child.
+  assert count(panel_of(operator(quiet())), "<section") == 6
   assert count(panel_of(observer(quiet())), "<section") == 4
 }
 

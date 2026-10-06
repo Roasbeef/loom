@@ -1174,6 +1174,17 @@
   .session-workspace{color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   ul.session-jobs,ul.session-viewers{list-style:none;padding:0;}
   .session-quiet{color:var(--color-fg-quiet);}
+  /* The operator's list of remembered permissions, the Session pane's last
+     child (web_view/view/remembered). It is placed after the Cost group; its
+     question is the make-shareable question's tinted block, so only the rows
+     are styled here. */
+  .pane-session > section.remembered{order:10;margin:14px 0 0 0;padding:0;border-top:0;font-size:13px;}
+  ul.remembered-list{list-style:none;margin:0 0 8px 0;padding:0;}
+  li.remembered-row{margin:0 0 10px 0;}
+  li.remembered-row p{margin:0;}
+  .remembered-what{font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  .remembered-ended{color:var(--color-danger-text);}
+  button.remembered-forget{font-size:12px;}
   /* The owner's invitation control at the foot of the Session pane
      (web_view/view/share). The command and the claim token are drawn by
      <loom-copy>, whose shadow root adopts this sheet, so its code box and
