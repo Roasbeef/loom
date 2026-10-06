@@ -11,11 +11,12 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/approval
-import session_view/model as session_model
+import session_view/shared_set
 import tui/approval_panel
 import tui/frame
 import tui/layout
 import tui/model as tui_model
+import tui/view_set
 
 fn review() -> approval.Review {
   approval.Review(
@@ -43,10 +44,7 @@ fn deciding(panel: approval_panel.State) -> tui_model.Model {
     ])
   tui_model.Model(
     ..base,
-    view: tui_model.View(
-      ..base.view,
-      overlay: tui_model.ApprovalInspector(panel),
-    ),
+    view: view_set.overlay(base.view, tui_model.ApprovalInspector(panel)),
   )
 }
 
@@ -102,7 +100,7 @@ pub fn the_heading_names_the_asker_and_counts_the_queue_test() {
   let model =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, approvals: [asked, other]),
+      shared: shared_set.approvals(base.shared, [asked, other]),
     )
   list.each([#(120, 40), #(80, 24)], fn(size) {
     let lines =
@@ -157,7 +155,9 @@ pub fn the_rail_steps_aside_while_an_approval_is_open_test() {
   let sized =
     tui_model.Model(
       ..open,
-      view: tui_model.View(..open.view, width: 200, height: 50),
+      view: open.view
+        |> view_set.width(200)
+        |> view_set.height(50),
     )
   assert layout.rail_columns(sized) == 57
     as "the rail's columns stay reserved so the transcript keeps its width"
@@ -170,7 +170,7 @@ pub fn the_rail_steps_aside_while_an_approval_is_open_test() {
   let closed =
     tui_model.Model(
       ..sized,
-      view: tui_model.View(..sized.view, overlay: tui_model.NoOverlay),
+      view: view_set.overlay(sized.view, tui_model.NoOverlay),
     )
   assert layout.rail_columns(closed) == 57
 }

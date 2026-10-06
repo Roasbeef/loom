@@ -20,6 +20,7 @@ import tui
 import tui/frame
 import tui/herdr
 import tui/model as tui_model
+import tui/view_set
 
 // The opening of a PNG whose header says `width` by `height`.
 fn png(width: Int, height: Int) -> String {
@@ -86,7 +87,7 @@ pub fn inside_herdr_the_row_says_why_test() {
   let model =
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, herdr_reporter: Some(reporter)),
+      view: view_set.herdr_reporter(base.view, Some(reporter)),
     )
   let lines = frame_scene.screen(model, 80, 24) |> frame.buffer_to_lines
   assert list.any(lines, string.contains(

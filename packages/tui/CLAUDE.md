@@ -404,6 +404,9 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   (`attachment`, `connection`, `herdr`, `image_shown`, `job`, `recording`)
   and nothing that imports the model. `DrawImages(commands)` and
   `WakeLoop` are the image effects.
+- `tui/view_set`: one setter per `View` field that three or more sites set,
+  and `toggle_repaint`. It exists so that the record is expanded once per
+  field rather than once per call site; see the compile-time invariant below.
 - `tui/model`: the `Model` record, `Model(shared: TerminalShared, view:
   View)`. `TerminalShared` binds `Shared`'s four parameters to
   `connection.Connection`, `recording.Recorder`,
@@ -1979,6 +1982,22 @@ untouched.
   for `tui/inbound`, 0.87 s for `tui/render`, 0.44 s for
   `session_view/transcript_lines` and 2.39 s for `tui/interaction`. These are
   measurements, not budgets.
+- **A one-field update of `View` or `Shared` goes through a setter.**
+  `View` has about eighty fields and `Shared` about ninety, and Gleam compiles
+  `View(..view, f: x)` to a tuple with one `element/2` read per untouched
+  field. Each such expression cost erlc roughly 10 ms, and the terminal's
+  handlers and tests held about 800 of them: `tui/interaction` took 1.67 s of
+  erlc CPU, spread over every key handler (stubbing the ten largest functions
+  removed 0.1 to 0.6 s each), and the test modules were more than half of a dev
+  build. `tui/view_set` and `session_view/shared_set` hold one setter per field
+  that three or more sites set; a handler pipes the record through them
+  (`model.view |> view_set.input(x) |> view_set.history_index(0)`) and keeps a
+  record update only for a rarer field. Erlc CPU summed over a clean build,
+  measured by compiling each module's abstract format in one VM: `tui` sources
+  5.9 s to 3.2 s, `tui` test modules 8.6 s to 3.9 s, `session_view` 3.1 s to
+  2.5 s. A new field that a handler sets from three places wants a setter;
+  `tui/model` cannot import `view_set` (it would be a cycle), so its own
+  `View` updates stay record updates.
 - **Presentation uses one caller-owned clock, read once per event.**
   `new_model` supplies the host's monotonic clock; `new_model_with_clock`
   lets a test supply its own. `tui.update` calls `runtime.message`, which

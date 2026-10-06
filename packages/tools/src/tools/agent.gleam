@@ -618,6 +618,11 @@ pub type Refusal {
   /// wrong answer that reads like a right one is the worse outcome.
   NameAlreadyMinted(strand: String)
 
+  /// The caller's strand does not hold the tool that authorizes this
+  /// operation in its active tool list. Distinct from every other refusal
+  /// because it is policy a parent set, not a transient fault.
+  ToolNotHeld(tool: String)
+
   /// The durable plane refused or failed — a commit, a read, a decode.
   PlaneFailed(reason: String)
 }
@@ -659,6 +664,17 @@ pub type Agency {
     max_wait_ms: Int,
     /// Configured catalogue names accepted by an explicit spawn selection.
     model_names: List(String),
+    /// `Ok` when the caller's strand holds the named tool in its active set
+    /// *now*. Read from the strand's durable configuration on every call,
+    /// so a `set_config` that withdraws a tool takes effect on the next
+    /// question. `ToolNotHeld` means the tool is genuinely absent; a holder
+    /// that is down or a store that cannot be read answers
+    /// `AgencyUnavailable` or `PlaneFailed`, which a caller must treat as
+    /// "try again" and still not proceed. A model's own `agent_*` call is
+    /// already cleared against this set by the tool registry; the question
+    /// exists for the callers that do not pass through the registry, namely
+    /// the code-mode orchestration seam.
+    holds: fn(Caller, String) -> Result(Nil, Refusal),
   )
 }
 
@@ -1385,6 +1401,7 @@ pub fn describe(refusal: Refusal) -> String {
       <> strand
       <> "` was minted by a different call and is already busy with it; "
       <> "nothing was started. Ask for this with a different purpose"
+    ToolNotHeld(tool:) -> "this strand does not hold the tool `" <> tool <> "`"
     PlaneFailed(reason:) -> "the messaging plane failed: " <> reason
   }
 }

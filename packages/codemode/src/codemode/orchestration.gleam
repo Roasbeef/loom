@@ -25,6 +25,11 @@
 //// invented. A router that constructs none cannot. The door that issue
 //// #22 left open is untouched by this seam rather than widened by it.
 ////
+//// Whether the calling strand may use a capability at all is not decided
+//// here: `codemode/tool_gate` holds the one table from capability to the
+//// tool that authorizes it, and the host asks it in the serving worker
+//// before this router's plan runs.
+////
 //// # The one coordinate this module derives, and why
 ////
 //// A child strand's name is minted by the Agency from the purpose it was
@@ -937,6 +942,12 @@ pub fn refusal_code(refusal: Refusal) -> String {
     agent.UnknownTool(..) -> "unknown_tool"
     agent.InvalidArgument(..) -> "invalid_argument"
     agent.NameAlreadyMinted(..) -> "name_already_minted"
+
+    // `cap/strand.map_error` has no variant for this code and decodes it to
+    // `StrandRefused` with the code verbatim, which is the vocabulary's
+    // provision for a name it has not learned. A program that wants to
+    // branch on it matches the code; one that only reports reads the message.
+    agent.ToolNotHeld(..) -> "tool_not_held"
     agent.ParentRunEnded(..) -> "parent_run_ended"
     agent.ResultSchemaUnmet(..) -> "result_schema_unmet"
     agent.PlaneFailed(..) -> "plane_failed"

@@ -10,8 +10,8 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import session_view/model as session_model
 import session_view/protocol
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
@@ -65,14 +65,12 @@ fn model(role, peers) {
     )
   tui_model.Model(
     ..base,
-    shared: session_model.Shared(
-      ..base.shared,
-      captured: Some(#(cut, view)),
-      transcript: [],
-      records: [
+    shared: base.shared
+      |> shared_set.captured(Some(#(cut, view)))
+      |> shared_set.transcript([])
+      |> shared_set.records([
         record(owner(), "my prompt"),
-      ],
-    ),
+      ]),
   )
 }
 
@@ -112,7 +110,7 @@ pub fn owner_attribution_solo_owner_hides_only_current_local_identity_test() {
       let historical =
         tui_model.Model(
           ..solo,
-          shared: session_model.Shared(..solo.shared, records: [
+          shared: shared_set.records(solo.shared, [
             record(author, "historical prompt"),
           ]),
         )
@@ -150,10 +148,7 @@ pub fn owner_attribution_multiplayer_and_uncertain_presence_keep_labels_test() {
   let solo = model(snapshot.Owner, [local_peer()])
   assert string.contains(
     paint(
-      tui_model.Model(
-        ..solo,
-        shared: session_model.Shared(..solo.shared, captured: None),
-      ),
+      tui_model.Model(..solo, shared: shared_set.captured(solo.shared, None)),
     ),
     "Owner:",
   )
@@ -175,23 +170,19 @@ pub fn owner_attribution_presence_change_rebuilds_cached_rows_test() {
   let joined =
     tui_model.Model(
       ..cached,
-      shared: session_model.Shared(
-        ..cached.shared,
-        captured: multiplayer.shared.captured,
-        record_cache_valid: False,
-        render_revision: cached.shared.render_revision + 1,
-      ),
+      shared: cached.shared
+        |> shared_set.captured(multiplayer.shared.captured)
+        |> shared_set.record_cache_valid(False)
+        |> shared_set.render_revision(cached.shared.render_revision + 1),
     )
   assert string.contains(paint(joined), "Owner:")
   let left =
     tui_model.Model(
       ..joined,
-      shared: session_model.Shared(
-        ..joined.shared,
-        captured: solo.shared.captured,
-        record_cache_valid: False,
-        render_revision: joined.shared.render_revision + 1,
-      ),
+      shared: joined.shared
+        |> shared_set.captured(solo.shared.captured)
+        |> shared_set.record_cache_valid(False)
+        |> shared_set.render_revision(joined.shared.render_revision + 1),
     )
   assert !string.contains(paint(left), "Owner:")
 }

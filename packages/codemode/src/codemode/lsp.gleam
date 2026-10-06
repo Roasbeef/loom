@@ -591,8 +591,11 @@ pub fn refusal(error: QueryError) -> CapOutcome {
     query.Unavailable(reason:) ->
       framing.CapErr(code: unavailable_code, message: reason)
 
-    query.NotFound(query: asked) ->
-      unresolved("not_found", [#("symbol", msgpack.StringValue(asked.symbol))])
+    query.NotFound(query: asked, searched:) ->
+      unresolved("not_found", [
+        #("symbol", msgpack.StringValue(asked.symbol)),
+        ..searched_field(searched)
+      ])
 
     query.Ambiguous(candidates:) ->
       unresolved("ambiguous", [
@@ -610,6 +613,16 @@ pub fn refusal(error: QueryError) -> CapOutcome {
         #("server", msgpack.StringValue(server)),
         #("request", msgpack.StringValue(request)),
       ])
+  }
+}
+
+// The root a bare-name search covered, as the one extra key a `not_found`
+// answer carries. An absent root adds no key, so an answer about a named
+// file keeps the shape it has always had.
+fn searched_field(searched: Option(String)) -> List(#(String, MsgPackValue)) {
+  case searched {
+    Some(root) -> [#("searched", msgpack.StringValue(root))]
+    None -> []
   }
 }
 

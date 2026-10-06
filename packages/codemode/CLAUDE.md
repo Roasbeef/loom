@@ -164,9 +164,31 @@ session and sends it many invocations.
   so the module's one effectful function was advertised and refused).
   It builds **no `broker.CallSpec`**: every plan it returns is
   `satellite.ServedHere`, so it cannot state coordinates at all.
+  It does not decide whether the strand may use a capability at all:
+  `codemode/tool_gate` does (see its entry below).
   `strand.spawn` carries an optional catalogue-name `model` unchanged into
   `SpawnRequest`; absent or nil preserves default routing, and a non-string
   is refused before the Agency is called. The result remains a handle.
+- `codemode/tool_gate.{required_tool, open_caps, decided, precheck}` — the
+  strand's tool list applied to its programs. `required_tool` is the one
+  table from capability to authorizing tool (`strand.*` to `agent_*`,
+  `proc.run` and `job.start` to `bash`, `job.poll`/`job.list` to
+  `job_poll`, `job.send` and `job.kill` to their tools, `fs.write`,
+  `fs.edit` and `lsp.rename` to `fs_write`/`fs_edit`, `schedule.*` to
+  `schedule_*`, `notes.put` to `agent_note`, `notes.get/list/read` to
+  `agent_notes`, `workflow.step` to `agent_spawn`, `peer.send` to
+  `peer_send`). `open_caps` lists what stays open on purpose (reads, `kv.*`,
+  `report.emit`, the `peer.*` reads, the `execution.*` channel, `mcp.*`),
+  and `decided` is true for exactly those plus the table, which is what
+  the classification tests ask of every router's `serviced_caps`.
+  `precheck(holds, strand, source_index)` builds the `satellite.Precheck`
+  the host runs in each call's worker, via `SatelliteConfig.precheck`,
+  before the plan is served or cleared. `holds` is `Agency.holds`, asked
+  on every call; only a genuinely absent tool is `tool_not_held`, and any
+  other refusal keeps its own code and still stops the call.
+  `satellite.no_precheck` admits everything and is for configurations that
+  need no gate. The long-lived extension host has no precheck at all: it
+  serves no strand and asks no tool question.
 - `codemode/workspace.{Workspace, DirEntry, FsRefusal, KvRefusal,
   ScheduleRequest, ScheduleCreated, ScheduleRow, ScheduleWake,
   ScheduleRefusal, JobDoor, no_jobs, routing,
@@ -265,7 +287,8 @@ session and sends it many invocations.
   `cap/lsp` decodes. Sentence-only `QueryError`s are refusals under
   `no_server`, `server_refused`, `server_unavailable`; `NotFound`,
   `Ambiguous` and `Unsupported` carry structure and travel as a `CapOk`
-  tagged `unresolved`. A rename `preview` is computed here from
+  tagged `unresolved`; a `NotFound` from a path-less search also carries
+  `searched`, the root that search covered. A rename `preview` is computed here from
   `prepare_rename`'s base and edited text and writes nothing; `apply` only
   calls the seam's closure. Every `Site` gains its line's
   `hashline.anchor`, because `lsp` cannot depend on `tools`. Lists are

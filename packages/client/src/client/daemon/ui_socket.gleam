@@ -3349,6 +3349,13 @@ fn stop_for(
 }
 
 // Looks at the session until the registry holds nothing for it.
+//
+// `stop_session` marks the slot closing in the turn that answers it, and a
+// closing slot never reopens, so a session seen opening or resident here is a
+// new incarnation somebody resumed after the drain. The stop that was asked
+// for has completed and is reported done; waiting on would only run out the
+// clock. The resumed session is another person's change, and an archive or
+// delete of it meets the registry's own busy check.
 fn drained(
   registry: manager.Manager(instance),
   target: String,
@@ -3359,8 +3366,8 @@ fn drained(
       Ok(view) ->
         case view.status {
           manager.Saved | manager.Reserved -> poll.Done(Nil)
-          manager.Stopping(_) | manager.Resident(_) | manager.Opening(_) ->
-            poll.Retry
+          manager.Resident(_) | manager.Opening(_) -> poll.Done(Nil)
+          manager.Stopping(_) -> poll.Retry
           manager.RecoveryBlocked(_) -> poll.Fail(actions.Unavailable)
         }
     }

@@ -18,7 +18,8 @@ import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap as host_bootstrap
 import session_view/agent_view
-import session_view/model.{Shared} as _
+import session_view/model as _
+import session_view/shared_set
 import simplifile
 import tui
 import tui/agent_strip
@@ -32,6 +33,7 @@ import tui/queue_editor
 import tui/rail
 import tui/rail_tabs
 import tui/submit
+import tui/view_set
 import tui_test/stepping
 
 // -------------------------------------------------------------- the scenes
@@ -126,7 +128,7 @@ fn agent(id: String, status: agent_view.Status, activity: String) {
 fn with_agents(model: Model) -> Model {
   Model(
     ..model,
-    shared: Shared(..model.shared, agent_rows: [
+    shared: shared_set.agent_rows(model.shared, [
       agent("main", agent_view.Working, "Waiting for a reviewer"),
       agent(
         "sub:main/tests-0a0b0c0d0e0f1011",
@@ -527,8 +529,7 @@ pub fn escape_closes_the_sheet_instead_of_interrupting_test() {
 
 pub fn a_click_on_the_sheets_bottom_row_does_not_scroll_the_transcript_test() {
   let sheet = command(at(ended(), 80, 12), "/trace")
-  let reading =
-    Model(..sheet, view: tui_model.View(..sheet.view, scroll_offset: 3))
+  let reading = Model(..sheet, view: view_set.scroll_offset(sheet.view, 3))
   let rows = layout.transcript_viewport_height(reading)
   let clicked =
     tui.update(backend.MousePress(2, rows, backend.MouseLeft), reading)

@@ -90,6 +90,7 @@ import session_view/outbound
 import session_view/protocol
 import session_view/queue_request
 import session_view/session_channel
+import session_view/shared_set
 import session_view/transcript_lines
 import session_view/worktree_view
 
@@ -141,7 +142,7 @@ pub fn service_todo_seed(
       case dict.has_key(shared.todo_boards, strand) {
         // Another read or a fresh result already brought the board, so the
         // seed has nothing left to find.
-        True -> Shared(..shared, todo_seed: None)
+        True -> shared_set.todo_seed(shared, None)
         False -> send_seed_when_free(shared, strand)
       }
   }
@@ -168,7 +169,7 @@ fn send_todo_seed(
   strand: String,
 ) -> Shared(socket, recorder, source, replay_source) {
   outbound.send_frame(
-    Shared(..shared, todo_seed: None),
+    shared_set.todo_seed(shared, None),
     protocol.notes(shared.next_id, strand),
   )
 }
@@ -195,14 +196,14 @@ pub fn service_notes_read(
         False -> shared
         True ->
           outbound.send_frame(
-            Shared(..shared, notes_requested: None),
+            shared_set.notes_requested(shared, None),
             protocol.notes(shared.next_id, target),
           )
       }
     }
     Some(target), None ->
       outbound.send_frame(
-        Shared(..shared, notes_requested: None),
+        shared_set.notes_requested(shared, None),
         protocol.notes(shared.next_id, target),
       )
   }
@@ -231,9 +232,9 @@ pub fn service_queue_read(
           case session_model.queue_owner(shared) == fetch.owner {
             True ->
               outbound.send_frame(
-                Shared(
-                  ..shared,
-                  queue_request: queue_request.State(
+                shared_set.queue_request(
+                  shared,
+                  queue_request.State(
                     ..shared.queue_request,
                     fetch: None,
                     awaiting: Some(fetch),
@@ -264,10 +265,12 @@ fn drop_queue_read(
   shared: Shared(socket, recorder, source, replay_source),
   message: String,
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(
-    ..shared,
-    queue_request: queue_request.State(..shared.queue_request, fetch: None),
-    queue_notices: list.append(shared.queue_notices, [
+  shared
+  |> shared_set.queue_request(
+    queue_request.State(..shared.queue_request, fetch: None),
+  )
+  |> shared_set.queue_notices(
+    list.append(shared.queue_notices, [
       queue_request.Dropped(message),
     ]),
   )
@@ -321,24 +324,23 @@ pub fn service_jobs_read(
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
-            Shared(
-              ..shared,
-              jobs_refresh: worktree_view.Settled,
-              jobs_awaiting: Some(#(
-                session_model.queue_owner(shared),
-                shared.active_strand,
-              )),
-              jobs_notice: "Refreshing live jobs; previous observation may be stale",
-            ),
+            shared
+              |> shared_set.jobs_refresh(worktree_view.Settled)
+              |> shared_set.jobs_awaiting(
+                Some(#(session_model.queue_owner(shared), shared.active_strand)),
+              )
+              |> shared_set.jobs_notice(
+                "Refreshing live jobs; previous observation may be stale",
+              ),
             protocol.live_jobs(shared.next_id, shared.active_strand),
           )
         False -> shared
       }
     _, worktree_view.Requested, _ ->
-      Shared(
-        ..shared,
-        jobs_refresh: worktree_view.Settled,
-        jobs_notice: "Live jobs unavailable without a live conversation attachment",
+      shared
+      |> shared_set.jobs_refresh(worktree_view.Settled)
+      |> shared_set.jobs_notice(
+        "Live jobs unavailable without a live conversation attachment",
       )
     _, worktree_view.Settled, _ -> shared
   }
@@ -412,26 +414,22 @@ pub fn sync_advisor_nudges(
     HoldNudges -> after
 
     DropNudges ->
-      Shared(
-        ..after,
-        nudges: None,
-        nudges_refresh: worktree_view.Settled,
-        nudges_awaiting: None,
-        nudges_request: None,
-      )
+      after
+      |> shared_set.nudges(None)
+      |> shared_set.nudges_refresh(worktree_view.Settled)
+      |> shared_set.nudges_awaiting(None)
+      |> shared_set.nudges_request(None)
 
     ReadNudges -> {
       let started =
         !session_model.strand_running(before, advisor_pending.primary_strand)
         && session_model.strand_running(after, advisor_pending.primary_strand)
-      Shared(
-        ..after,
-        nudges: case started {
-          True -> None
-          False -> after.nudges
-        },
-        nudges_refresh: worktree_view.Requested,
-      )
+      after
+      |> shared_set.nudges(case started {
+        True -> None
+        False -> after.nudges
+      })
+      |> shared_set.nudges_refresh(worktree_view.Requested)
     }
   }
 }
@@ -456,11 +454,11 @@ pub fn service_advisor_nudges_read(
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
-            Shared(
-              ..shared,
-              nudges_refresh: worktree_view.Settled,
-              nudges_awaiting: Some(session_model.queue_owner(shared)),
-            ),
+            shared
+              |> shared_set.nudges_refresh(worktree_view.Settled)
+              |> shared_set.nudges_awaiting(
+                Some(session_model.queue_owner(shared)),
+              ),
             protocol.advisor_pending(shared.next_id),
           )
         False -> shared
@@ -469,7 +467,7 @@ pub fn service_advisor_nudges_read(
     // A request that cannot be sent is dropped rather than left standing:
     // the next attachment reaches an idle primary and raises it again.
     _, worktree_view.Requested, _ ->
-      Shared(..shared, nudges_refresh: worktree_view.Settled)
+      shared_set.nudges_refresh(shared, worktree_view.Settled)
 
     _, worktree_view.Settled, _ -> shared
   }
@@ -588,12 +586,10 @@ fn drains_queue(record: protocol.EntryRecord) -> Bool {
 fn retire_board(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(
-    ..shared,
-    nudges: None,
-    nudges_refresh: worktree_view.Requested,
-    nudges_awaiting: None,
-  )
+  shared
+  |> shared_set.nudges(None)
+  |> shared_set.nudges_refresh(worktree_view.Requested)
+  |> shared_set.nudges_awaiting(None)
   |> session_model.invalidate_transcript
   |> session_model.invalidate_frame
 }
@@ -629,7 +625,7 @@ pub fn service_block_summaries(
             None -> shared
             Some(#(keys, summaries)) ->
               outbound.send_frame(
-                Shared(..shared, summaries:),
+                shared_set.summaries(shared, summaries),
                 protocol.block_summaries(shared.next_id, keys),
               )
           }
@@ -660,12 +656,10 @@ pub fn receive_advisor_nudges(
     Some(owner) ->
       case owner == current {
         True ->
-          Shared(
-            ..shared,
-            nudges: Some(board),
-            nudges_awaiting: None,
-            nudges_request: None,
-          )
+          shared
+          |> shared_set.nudges(Some(board))
+          |> shared_set.nudges_awaiting(None)
+          |> shared_set.nudges_request(None)
           |> session_model.invalidate_transcript
           |> session_model.invalidate_frame
 
@@ -732,7 +726,7 @@ pub fn sync_goal(
 ) -> Shared(socket, recorder, source, replay_source) {
   case goal_action(before, after) {
     HoldGoal -> after
-    ReadGoal -> Shared(..after, goal_refresh: worktree_view.Requested)
+    ReadGoal -> shared_set.goal_refresh(after, worktree_view.Requested)
   }
 }
 
@@ -752,7 +746,7 @@ pub fn confirming(
   shared: Shared(socket, recorder, source, replay_source),
   line: String,
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(..shared, goal_report: ConfirmGoal(line:, request: None))
+  shared_set.goal_report(shared, ConfirmGoal(line:, request: None))
 }
 
 /// Slash commands and inspector keys enter one gate. The pending-submission
@@ -778,7 +772,7 @@ pub fn submit_goal_action(
     None -> {
       let prepared = case shared.pending_submission {
         Some(_) -> shared
-        None -> Shared(..shared, pending_submission: Some(OverlaySubmission))
+        None -> shared_set.pending_submission(shared, Some(OverlaySubmission))
       }
       case action {
         command.GoalPause ->
@@ -817,7 +811,7 @@ pub fn service_goal_read(
       case session_channel.ready_for_read(channel) {
         True ->
           outbound.send_frame(
-            Shared(..shared, goal_refresh: worktree_view.Settled),
+            shared_set.goal_refresh(shared, worktree_view.Settled),
             protocol.goal_get(shared.next_id),
           )
         False -> shared
@@ -839,10 +833,10 @@ fn unreachable_goal(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
   let settled =
-    Shared(
-      ..shared,
-      goal_refresh: worktree_view.Settled,
-      goal_observations: list.append(shared.goal_observations, [
+    shared
+    |> shared_set.goal_refresh(worktree_view.Settled)
+    |> shared_set.goal_observations(
+      list.append(shared.goal_observations, [
         GoalUnavailable("no conversation is attached"),
       ]),
     )
@@ -851,7 +845,7 @@ fn unreachable_goal(
 
     ReportGoal | ConfirmGoal(..) ->
       session_model.append_error(
-        Shared(..settled, goal_report: HoldGoalReport),
+        shared_set.goal_report(settled, HoldGoalReport),
         "the session goal cannot be read: no conversation is attached",
       )
   }
@@ -883,12 +877,12 @@ pub fn receive_goal(
 
     True -> {
       let observed =
-        Shared(
-          ..shared,
-          goal: Some(board),
-          goal_awaiting: None,
-          goal_request: None,
-          goal_observations: list.append(shared.goal_observations, [
+        shared
+        |> shared_set.goal(Some(board))
+        |> shared_set.goal_awaiting(None)
+        |> shared_set.goal_request(None)
+        |> shared_set.goal_observations(
+          list.append(shared.goal_observations, [
             GoalObserved(board),
           ]),
         )
@@ -932,14 +926,14 @@ fn report_goal(
     // fresh board is already in the model, so the row beside the composer
     // carries the new state and a second block would repeat it.
     ConfirmGoal(line:, ..) ->
-      Shared(..shared, goal_report: HoldGoalReport)
+      shared_set.goal_report(shared, HoldGoalReport)
       |> session_model.append_system(line)
       |> session_model.invalidate_frame
 
     ReportGoal ->
       goal_view.lines(board)
       |> list.fold(
-        Shared(..shared, goal_report: HoldGoalReport),
+        shared_set.goal_report(shared, HoldGoalReport),
         session_model.append_system,
       )
       |> session_model.invalidate_frame
@@ -971,16 +965,16 @@ pub fn refuse_goal(
   // request ID must match before clearing the shared board or notifying a host.
   use <- bool.guard(shared.goal_request != Some(request_id), shared)
   let cleared =
-    Shared(
-      ..shared,
-      goal: None,
-      goal_request: None,
-      goal_awaiting: None,
-      goal_report: case owns_goal_report(shared) {
-        True -> HoldGoalReport
-        False -> shared.goal_report
-      },
-      goal_observations: list.append(shared.goal_observations, [
+    shared
+    |> shared_set.goal(None)
+    |> shared_set.goal_request(None)
+    |> shared_set.goal_awaiting(None)
+    |> shared_set.goal_report(case owns_goal_report(shared) {
+      True -> HoldGoalReport
+      False -> shared.goal_report
+    })
+    |> shared_set.goal_observations(
+      list.append(shared.goal_observations, [
         GoalUnavailable(goal_view.refusal(code, message)),
       ]),
     )
@@ -1017,12 +1011,16 @@ pub fn receive_jobs(
       case owner == session_model.queue_owner(shared) {
         True ->
           Shared(
-            ..shared,
-            jobs: Some(board),
+            ..{
+              shared
+              |> shared_set.jobs(Some(board))
+              |> shared_set.jobs_awaiting(None)
+              |> shared_set.jobs_request(None)
+              |> shared_set.jobs_notice(
+                "Live jobs observed separately from operation completion",
+              )
+            },
             jobs_observed_ms: Some(shared.stamp.now_ms),
-            jobs_awaiting: None,
-            jobs_request: None,
-            jobs_notice: "Live jobs observed separately from operation completion",
           )
           |> session_model.invalidate_transcript
         False -> shared
@@ -1073,7 +1071,7 @@ pub fn sync_context(
         notice: "Context observation requires a live connection",
       )
   }
-  Shared(..after, context:)
+  shared_set.context(after, context)
 }
 
 /// Whether this model transition is worth another automatic context read.

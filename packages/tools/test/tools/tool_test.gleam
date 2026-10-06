@@ -297,6 +297,7 @@ fn unused_agency() -> agent.Agency {
     roster: fn(_caller) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 1000,
     model_names: [],
+    holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
 

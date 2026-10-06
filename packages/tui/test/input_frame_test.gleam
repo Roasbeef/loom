@@ -9,11 +9,12 @@ import frame_scene
 import gleam/list
 import gleam/option
 import gleam/string
-import session_view/model as session_model
+import session_view/shared_set
 import tui/frame
 import tui/input_frame
 import tui/layout_memory
 import tui/model as tui_model
+import tui/view_set
 
 fn attached() {
   frame_scene.attach(frame_scene.model(), "fix readme badge", [
@@ -103,11 +104,8 @@ pub fn a_long_recipient_does_not_cost_the_frame_its_status_test() {
   let long = "sub:main/review-48f3a1b2"
   let model =
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, active_strand: long),
-      view: tui_model.View(
-        ..base.view,
-        rail: option.Some(layout_memory.RailShown),
-      ),
+      shared: shared_set.active_strand(base.shared, long),
+      view: view_set.rail(base.view, option.Some(layout_memory.RailShown)),
     )
   let shown = lines(model, 120, 40)
   let top = row_starting(shown, "╭─ To ")

@@ -19,6 +19,7 @@ import tui/model as tui_model
 import tui/runtime
 import tui/session_control
 import tui/session_selector
+import tui/view_set
 import tui/workspace
 import weft
 
@@ -222,11 +223,13 @@ pub fn a_drained_answer_marks_the_open_picker_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
-        activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
-      ),
+      view: model.view
+        |> view_set.overlay(
+          tui_model.DaemonSelector(session_selector.new(page(), "busy")),
+        )
+        |> view_set.activity_poll(
+          tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
+        ),
     )
     |> runtime.hold(job.ActivityArrived(
       key,
@@ -257,9 +260,9 @@ pub fn a_closed_picker_ignores_a_late_answer_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
+      view: view_set.activity_poll(
+        model.view,
+        tui_model.ActivityAsking(job.awaiting(key), ["busy"]),
       ),
     )
     |> runtime.hold(job.ActivityArrived(
@@ -273,11 +276,11 @@ pub fn a_closed_picker_ignores_a_late_answer_test() {
   let idle =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        overlay: tui_model.DaemonSelector(session_selector.new(page(), "busy")),
-        activity_poll: tui_model.ActivityDue,
-      ),
+      view: model.view
+        |> view_set.overlay(
+          tui_model.DaemonSelector(session_selector.new(page(), "busy")),
+        )
+        |> view_set.activity_poll(tui_model.ActivityDue),
     )
   assert session_control.service_activity(idle).view.activity_poll
     == tui_model.ActivityDue

@@ -27,7 +27,8 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import image_fixture
 import session_view/image_header
-import session_view/model.{Shared} as _
+import session_view/model as _
+import session_view/shared_set
 import simplifile
 import tui/appearance
 import tui/demo_image
@@ -41,6 +42,7 @@ import tui/model.{type Model, Model, View} as tui_model
 import tui/queue_editor
 import tui/render
 import tui/submit
+import tui/view_set
 import tui_test/stepping
 
 fn kitty_support() -> image_support.Support {
@@ -565,7 +567,7 @@ pub fn an_image_that_will_not_decode_is_reported_once_test() {
   )
 
   // It is not tried again on the next tick or the next frame.
-  let quiet = Model(..model, shared: Shared(..model.shared, notice: ""))
+  let quiet = Model(..model, shared: shared_set.notice(model.shared, ""))
   let #(after, effects) = stepping.step(backend.Tick, quiet)
   assert image_commands(effects) == []
   assert after.shared.notice == ""
@@ -870,7 +872,7 @@ pub fn a_surface_over_the_box_keeps_the_picture_off_it_test() {
     tui_model.invalidate_frame(
       Model(
         ..shown,
-        view: View(..shown.view, summary_surface: queue_editor.Inspector),
+        view: view_set.summary_surface(shown.view, queue_editor.Inspector),
       ),
     )
   }
@@ -908,7 +910,7 @@ pub fn quitting_deletes_the_uploaded_images_test() {
   let model = scene(kitty_support(), [#("image/png", image_fixture.chart())])
   let #(shown, effects) = stepping.step(backend.Resize(120, 50), model)
   let assert [image_shown.Upload(id, ..)] = image_commands(effects)
-  let leaving = Model(..shown, shared: Shared(..shown.shared, quit: True))
+  let leaving = Model(..shown, shared: shared_set.quit(shown.shared, True))
   let #(left, effects) = stepping.step(backend.Tick, leaving)
   assert image_commands(effects) == [image_shown.Remove(id)]
   assert left.view.images.uploaded == []

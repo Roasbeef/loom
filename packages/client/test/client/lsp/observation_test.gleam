@@ -239,6 +239,48 @@ pub fn invalid_scope_does_not_start_or_query_the_server_test() {
   finish(manager, root)
 }
 
+pub fn a_source_outside_the_workspace_is_refused_by_name_before_any_request_test() {
+  let root = scratch()
+  let foreign = scratch()
+  let #(manager, fake) = rig(root, fn(_, _) { fake_lsp.Answer(json.Null) })
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: foreign, from: root <> "/linked")
+    as "the fixture directory link must be made"
+  let door = manager.observation_door(manager)
+
+  // An outline, a reference seed, and the foreign tree named as the root
+  // itself: each spelling of the sibling clone is refused as a missing
+  // server, with the path and the workspace root in the reason.
+  let outside = [
+    foreign <> "/a.gleam",
+    "../" <> last_segment(foreign) <> "/a.gleam",
+    "linked/a.gleam",
+  ]
+  list.each(outside, fn(path) {
+    let seed = query.SymbolQuery("greet", Some(path), Some(1))
+    let outlined = observation.Request("fake", root, [path], [])
+    let targeted = observation.Request("fake", root, [], [seed])
+    let rooted = observation.Request("fake", foreign, [path], [])
+    list.each([outlined, targeted, rooted], fn(asked) {
+      let assert Error(observation.QueryFailed(query.NoServer(reason))) =
+        door.collect(asked, control(5000))
+        as { "a source outside the workspace must be refused: " <> path }
+      assert string.contains(reason, path)
+      assert string.contains(reason, root)
+    })
+  })
+  assert fake_lsp.methods(fake) == []
+  finish(manager, root)
+  let assert Ok(Nil) = simplifile.delete_all([foreign]) as "remove the foreign"
+  Nil
+}
+
+fn last_segment(path: String) -> String {
+  let assert Ok(last) = list.last(string.split(path, "/"))
+    as "a path has a last segment"
+  last
+}
+
 pub fn fixed_deadline_cancels_the_pending_request_without_stopping_the_server_test() {
   let root = scratch()
   let #(manager, fake) =

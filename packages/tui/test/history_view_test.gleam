@@ -14,9 +14,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/history_view
-import session_view/model as session_model
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
@@ -25,6 +25,7 @@ import tui/inbound
 import tui/layout
 import tui/model as tui_model
 import tui/transcript_anchor
+import tui/view_set
 import tui/workspace
 import tui_test/ffi_term
 
@@ -406,9 +407,9 @@ pub fn history_pages_and_live_cuts_preserve_the_visible_message_in_the_tui_test(
   let pending =
     tui_model.Model(
       ..reading,
-      shared: session_model.Shared(
-        ..reading.shared,
-        scrollback: history_view.sent(reading.shared.scrollback, 131),
+      shared: shared_set.scrollback(
+        reading.shared,
+        history_view.sent(reading.shared.scrollback, 131),
       ),
     )
   let page =
@@ -649,13 +650,12 @@ pub fn cached_anchors_match_fresh_anchors_after_layout_changes_test() {
         // reflow, a detail toggle, or a surface with no durable provenance.
         let fresh =
           tui_model.Model(
-            shared: session_model.Shared(
-              ..changed.shared,
-              record_cache_valid: False,
-            ),
+            shared: shared_set.record_cache_valid(changed.shared, False),
             view: tui_model.View(
-              ..changed.view,
-              rendered_revision: -1,
+              ..{
+                changed.view
+                |> view_set.rendered_revision(-1)
+              },
               rendered_anchors: [],
             ),
           )
@@ -737,9 +737,9 @@ pub fn unrelated_history_pages_continue_until_visible_ancestry_arrives_test() {
       let pending =
         tui_model.Model(
           ..model,
-          shared: session_model.Shared(
-            ..model.shared,
-            scrollback: history_view.sent(model.shared.scrollback, before),
+          shared: shared_set.scrollback(
+            model.shared,
+            history_view.sent(model.shared.scrollback, before),
           ),
         )
       let page =
@@ -839,9 +839,9 @@ fn deliver_page(model: tui_model.Model, all) {
     )
   tui_model.Model(
     ..model,
-    shared: session_model.Shared(
-      ..model.shared,
-      scrollback: history_view.sent(model.shared.scrollback, before),
+    shared: shared_set.scrollback(
+      model.shared,
+      history_view.sent(model.shared.scrollback, before),
     ),
   )
   |> inbound.apply_channel_update(session_channel.HistoryPage(

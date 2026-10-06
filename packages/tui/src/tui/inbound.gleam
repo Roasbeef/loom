@@ -55,6 +55,7 @@ import session_view/notes_view
 import session_view/operator
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui/agent_message_panel
@@ -78,6 +79,7 @@ import tui/queue_panel
 import tui/render
 import tui/side_surfaces
 import tui/summary_panel
+import tui/view_set
 
 // What `reconnect_decision` produced: the work to do, or the reason there is
 // none. The reason is carried rather than dropped so the caller can say why
@@ -146,13 +148,13 @@ fn begin_reconnect(model: Model) -> Model {
       // spec carries the launch options and nothing else of the model.
       let #(model, key) = tui_model.start_job(model, job.Reconnect(options))
       Model(
-        shared: Shared(
-          ..model.shared,
-          notice: "reconnecting to session " <> session,
+        shared: shared_set.notice(
+          model.shared,
+          "reconnecting to session " <> session,
         ),
-        view: View(
-          ..model.view,
-          reconnect: ReconnectAttempting(job.awaiting(key)),
+        view: view_set.reconnect(
+          model.view,
+          ReconnectAttempting(job.awaiting(key)),
         ),
       )
       |> tui_model.invalidate_frame
@@ -300,15 +302,15 @@ fn present_pending_approval(model: Model) -> Model {
         })
       case unseen {
         Error(Nil) ->
-          Model(..model, view: View(..model.view, prompted_approvals: seen))
+          Model(..model, view: view_set.prompted_approvals(model.view, seen))
         Ok(record) ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              prompted_approvals: [#(record.id, record.seq), ..seen],
-              overlay: ApprovalInspector(captured_approval_panel(model, record)),
-            ),
+            view: model.view
+              |> view_set.prompted_approvals([#(record.id, record.seq), ..seen])
+              |> view_set.overlay(
+                ApprovalInspector(captured_approval_panel(model, record)),
+              ),
           )
       }
     }
@@ -322,24 +324,24 @@ fn inspect_looked_up(model: Model, records, missing) {
   // until that dialog closes, including its selection and scroll position.
   case model.view.overlay, model.view.inspecting_approval {
     ApprovalInspector(_), _ ->
-      Model(..model, view: View(..model.view, inspecting_approval: None))
+      Model(..model, view: view_set.inspecting_approval(model.view, None))
     _, Some(id) ->
       case list.find(records, fn(record: approval.Review) { record.id == id }) {
         Ok(record) ->
           Model(
             ..model,
-            view: View(
-              ..model.view,
-              overlay: ApprovalInspector(captured_approval_panel(model, record)),
-              inspecting_approval: None,
-            ),
+            view: model.view
+              |> view_set.overlay(
+                ApprovalInspector(captured_approval_panel(model, record)),
+              )
+              |> view_set.inspecting_approval(None),
           )
         Error(Nil) ->
           case list.contains(missing, id) {
             True ->
               Model(
                 ..model,
-                view: View(..model.view, inspecting_approval: None),
+                view: view_set.inspecting_approval(model.view, None),
               )
             False -> model
           }
@@ -404,7 +406,13 @@ pub fn drain_connection(model: Model, remaining: Int) -> Model {
   case drained.shared.connection_backlog == connection_backlog {
     True -> drained
     False ->
-      Model(..drained, shared: Shared(..drained.shared, connection_backlog:))
+      Model(
+        ..drained,
+        shared: shared_set.connection_backlog(
+          drained.shared,
+          connection_backlog,
+        ),
+      )
   }
 }
 
@@ -414,7 +422,7 @@ fn take_connection(
   model: Model,
 ) -> #(Model, Result(connection_event.Message, Nil)) {
   let #(inbox, next) = buffered.take(model.shared.inbox)
-  #(Model(..model, shared: Shared(..model.shared, inbox:)), next)
+  #(Model(..model, shared: shared_set.inbox(model.shared, inbox)), next)
 }
 
 /// Applies an already selected socket message through the shipped reducer.
@@ -497,7 +505,7 @@ pub fn settle_surfaces(before: Model, held: Model) -> Model {
     facts ->
       list.fold(
         facts,
-        Model(..held, shared: Shared(..held.shared, surface_facts: [])),
+        Model(..held, shared: shared_set.surface_facts(held.shared, [])),
         fn(model, fact) { show_surface(before, model, fact) },
       )
   }
@@ -541,7 +549,9 @@ fn show_surface(
     session_model.SessionSynchronized ->
       Model(
         ..model,
-        view: View(..model.view, record_gutters: [], scroll_offset: 0),
+        view: model.view
+          |> view_set.record_gutters([])
+          |> view_set.scroll_offset(0),
       )
 
     // An open model selector lists what the daemon just named.
@@ -557,11 +567,11 @@ fn show_surface(
         AccessManager(state) -> AccessManager(state)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
       }
-      Model(..model, view: View(..model.view, overlay:))
+      Model(..model, view: view_set.overlay(model.view, overlay))
     }
 
     session_model.OutlookCleared ->
-      Model(..model, view: View(..model.view, cache_outlook: ""))
+      Model(..model, view: view_set.cache_outlook(model.view, ""))
 
     session_model.NotesArrived(board:) -> show_notes(model, board)
 
@@ -570,9 +580,9 @@ fn show_surface(
     session_model.JobsReplaced(previous:, board:) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          summary_job_selected: summary_panel.follow_selected_job(
+        view: view_set.summary_job_selected(
+          model.view,
+          summary_panel.follow_selected_job(
             model.view.summary_job_selected,
             previous,
             board,
@@ -586,7 +596,7 @@ fn show_surface(
     // The fold has written the line; the dialog closes before the next
     // unseen question is presented.
     session_model.ApprovalSettled ->
-      Model(..model, view: View(..model.view, overlay: NoOverlay))
+      Model(..model, view: view_set.overlay(model.view, NoOverlay))
     session_model.ApprovalsPresented -> present_pending_approval(model)
 
     session_model.QueueRowsCaptured(previous:, rows:) ->
@@ -597,9 +607,9 @@ fn show_surface(
     session_model.HistoryReleased(session:, strands:) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          strand_workspaces: prune_workspace_history(
+        view: view_set.strand_workspaces(
+          model.view,
+          prune_workspace_history(
             model.view.strand_workspaces,
             session,
             strands,
@@ -612,7 +622,7 @@ fn show_surface(
     session_model.GoalReleased ->
       Model(
         ..model,
-        view: View(..model.view, overlay: case model.view.overlay {
+        view: view_set.overlay(model.view, case model.view.overlay {
           GoalInspector(_) -> NoOverlay
           other -> other
         }),
@@ -622,11 +632,11 @@ fn show_surface(
     // Input typed after an interrupt is released with the held input, never
     // steered into the stopping turn.
     session_model.InterruptRequested ->
-      Model(..model, view: View(..model.view, submission_mode: PromptNext))
+      Model(..model, view: view_set.submission_mode(model.view, PromptNext))
 
     // The decision is on its way, so the question leaves the screen.
     session_model.ReviewAnswered ->
-      Model(..model, view: View(..model.view, overlay: NoOverlay))
+      Model(..model, view: view_set.overlay(model.view, NoOverlay))
 
     // The dispatch consumed the draft. Its text goes into the input
     // history either way; a prompt also returns the composer to prompting,
@@ -638,35 +648,33 @@ fn show_surface(
         session_model.TakenAsPrompt ->
           Model(
             ..cleared,
-            view: View(..cleared.view, submission_mode: PromptNext),
+            view: view_set.submission_mode(cleared.view, PromptNext),
           )
       }
     }
 
     // The rows the gutters were drawn beside are gone.
     session_model.TranscriptCleared ->
-      Model(..model, view: View(..model.view, record_gutters: []))
+      Model(..model, view: view_set.record_gutters(model.view, []))
 
     // The dialog opens on this record when the lookup answers
     // (`LookupAnswered`).
     session_model.LookupRequested(id:) ->
-      Model(..model, view: View(..model.view, inspecting_approval: Some(id)))
+      Model(..model, view: view_set.inspecting_approval(model.view, Some(id)))
 
     // A replay's adoption leaves nothing of the previous capture's prompts or
     // note selection, and a new session starts its transcript at the tail.
     session_model.ReplayAdopted(session:) ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          note_selected: None,
-          prompted_approvals: [],
-          inspecting_approval: None,
-          scroll_offset: case session {
+        view: model.view
+          |> view_set.note_selected(None)
+          |> view_set.prompted_approvals([])
+          |> view_set.inspecting_approval(None)
+          |> view_set.scroll_offset(case session {
             session_model.SameSession -> model.view.scroll_offset
             session_model.NewSession -> 0
-          },
-        ),
+          }),
       )
   }
 }
@@ -688,7 +696,7 @@ fn show_notes(model: Model, board: notes_view.Board) -> Model {
       }
       let selected =
         render.selected_note(
-          Model(..model, view: View(..model.view, note_selected: previous)),
+          Model(..model, view: view_set.note_selected(model.view, previous)),
           board,
         )
       let scroll = case
@@ -699,8 +707,8 @@ fn show_notes(model: Model, board: notes_view.Board) -> Model {
           int.min(
             model.view.note_scroll,
             note_max_scroll(Model(
-              shared: Shared(..model.shared, note_board: Some(board)),
-              view: View(..model.view, note_selected: selected),
+              shared: shared_set.note_board(model.shared, Some(board)),
+              view: view_set.note_selected(model.view, selected),
             )),
           )
         None, True | Some(_), True | None, False | Some(_), False -> 0
@@ -716,7 +724,9 @@ fn show_notes(model: Model, board: notes_view.Board) -> Model {
             False -> model.shared.notice
           },
         ),
-        view: View(..model.view, note_selected: selected, note_scroll: scroll),
+        view: model.view
+          |> view_set.note_selected(selected)
+          |> view_set.note_scroll(scroll),
       ))
     }
   }
@@ -740,7 +750,7 @@ fn restore_returned_drafts(model: Model) -> Model {
       case
         session == model.shared.session && strand == model.shared.active_strand
       {
-        True -> View(..view, input: append_returned_text(view.input, text))
+        True -> view_set.input(view, append_returned_text(view.input, text))
         False -> {
           let owner = #(session, strand)
           let saved =
@@ -751,9 +761,9 @@ fn restore_returned_drafts(model: Model) -> Model {
               ..saved,
               input: append_returned_text(saved.input, text),
             )
-          View(
-            ..view,
-            strand_workspaces: dict.insert(view.strand_workspaces, owner, saved),
+          view_set.strand_workspaces(
+            view,
+            dict.insert(view.strand_workspaces, owner, saved),
           )
         }
       }
@@ -832,9 +842,9 @@ pub fn reconcile_agent_message_selection(model: Model) -> Model {
     AgentInspector(inspector) if inspector.detail == agents.Messages ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          overlay: AgentInspector(select_inspector_message(
+        view: view_set.overlay(
+          model.view,
+          AgentInspector(select_inspector_message(
             inspector,
             model.shared.agent_messages,
           )),
@@ -1014,7 +1024,7 @@ fn switch_editor(
     False ->
       Model(
         shared: event_fold.leave_session(before.shared),
-        view: View(..before.view, overlay:),
+        view: view_set.overlay(before.view, overlay),
       )
   }
   let parked =
@@ -1038,24 +1048,26 @@ fn switch_editor(
   let saved = dict.get(parked, arriving) |> option.from_result
   let restored = option.unwrap(saved, empty_workspace())
   Model(
-    shared: Shared(..model.shared, attachments: restored.attachments),
+    shared: shared_set.attachments(model.shared, restored.attachments),
     view: View(
-      ..model.view,
-      overlay:,
-      strand_workspaces: dict.delete(parked, arriving),
-      restored_workspace: saved,
-      input: restored.input,
-      history: restored.history,
-      history_index: restored.history_index,
-      history_draft: restored.history_draft,
-      command_selected: 0,
-      submission_mode: restored.submission_mode,
-      reading_lines: restored.reading_lines,
-      scroll_offset: restored.offset,
-      strip_focus: case same_session {
-        True -> model.view.strip_focus
-        False -> agent_strip.Composing
+      ..{
+        model.view
+        |> view_set.overlay(overlay)
+        |> view_set.strand_workspaces(dict.delete(parked, arriving))
+        |> view_set.input(restored.input)
+        |> view_set.history(restored.history)
+        |> view_set.history_index(restored.history_index)
+        |> view_set.history_draft(restored.history_draft)
+        |> view_set.command_selected(0)
+        |> view_set.submission_mode(restored.submission_mode)
+        |> view_set.scroll_offset(restored.offset)
+        |> view_set.strip_focus(case same_session {
+          True -> model.view.strip_focus
+          False -> agent_strip.Composing
+        })
       },
+      restored_workspace: saved,
+      reading_lines: restored.reading_lines,
     ),
   )
 }
@@ -1132,12 +1144,9 @@ fn follow_queue_selection(
               layout.queue_preview_area_for(
                 Model(
                   shared: before.shared,
-                  view: View(
-                    ..model.view,
-                    queue_editor: queue_editor.State(
-                      ..model.view.queue_editor,
-                      selected:,
-                    ),
+                  view: view_set.queue_editor(
+                    model.view,
+                    queue_editor.State(..model.view.queue_editor, selected:),
                   ),
                 ),
                 rows,
@@ -1150,13 +1159,9 @@ fn follow_queue_selection(
   }
   Model(
     ..model,
-    view: View(
-      ..model.view,
-      queue_editor: queue_editor.State(
-        ..model.view.queue_editor,
-        selected:,
-        preview_scroll:,
-      ),
+    view: view_set.queue_editor(
+      model.view,
+      queue_editor.State(..model.view.queue_editor, selected:, preview_scroll:),
     ),
   )
 }
@@ -1182,7 +1187,8 @@ pub fn tick_strip(model: Model) -> Model {
     True -> {
       let #(roster, repaint) =
         agent_roster.tick(model.shared.roster, model.shared.stamp.now_ms)
-      let model = Model(..model, shared: Shared(..model.shared, roster:))
+      let model =
+        Model(..model, shared: shared_set.roster(model.shared, roster))
       case repaint {
         agent_roster.Changed -> tui_model.invalidate_frame(model)
         agent_roster.Unchanged -> model

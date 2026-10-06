@@ -22,8 +22,9 @@ import session_view/attempt_replay
 import session_view/cache_miss
 import session_view/cache_watch
 import session_view/lane_fold
-import session_view/model.{Shared} as session_model
+import session_view/model as session_model
 import session_view/session_channel
+import session_view/shared_set
 import session_view/step as session_step
 import session_view/surfaces
 import tui/attachment
@@ -39,6 +40,7 @@ import tui/model.{type Model, Caches, FrameCache, Model, View} as tui_model
 import tui/pacing
 import tui/render
 import tui/session_control
+import tui/view_set
 
 /// Starts the Herdr pane reporter when the launch environment carries a
 /// pane. Started here rather than in `main` so the launchers that are not
@@ -63,7 +65,7 @@ pub fn start_herdr_reporter(model: Model) -> Model {
         Ok(reporter) ->
           Model(
             ..model,
-            view: View(..model.view, herdr_reporter: Some(reporter)),
+            view: view_set.herdr_reporter(model.view, Some(reporter)),
           )
         Error(_) -> model
       }
@@ -181,9 +183,9 @@ fn settle_tick(model: Model, drained: Model) -> Model {
       drained.shared.activity_revision != model.shared.activity_revision,
     )
   Model(
-    shared: Shared(
-      ..drained.shared,
-      connection_backlog: adopted_backlog(model, drained),
+    shared: shared_set.connection_backlog(
+      drained.shared,
+      adopted_backlog(model, drained),
     ),
     view: View(..drained.view, quiet_for_ms:),
   )
@@ -307,7 +309,7 @@ fn advance_cache_outlook(model: Model) -> Model {
     True -> model
     False ->
       tui_model.invalidate_frame(
-        Model(..model, view: View(..model.view, cache_outlook: label)),
+        Model(..model, view: view_set.cache_outlook(model.view, label)),
       )
   }
 }
@@ -352,7 +354,10 @@ pub fn refresh_frame_cache(
   {
     pacing.KeepCachedFrame -> model
     pacing.DeferFrame ->
-      Model(..model, view: View(..model.view, frame_debt: pacing.FrameDeferred))
+      Model(
+        ..model,
+        view: view_set.frame_debt(model.view, pacing.FrameDeferred),
+      )
     pacing.RenderFrame -> {
       // The step is taken before the frame is built, so the frame that is
       // cached and the position it was built from are the same moment.
@@ -360,18 +365,24 @@ pub fn refresh_frame_cache(
       Model(
         ..paced,
         view: View(
-          ..paced.view,
-          frame_debt: pacing.FrameSettled,
+          ..{
+            paced.view
+            |> view_set.frame_debt(pacing.FrameSettled)
+            |> view_set.caches(
+              Caches(
+                ..paced.view.caches,
+                frame_cache: Some(FrameCache(
+                  screen:,
+                  revision: paced.shared.frame_revision,
+                  rendered: render.render_frame(paced, screen),
+                  selection_gutters: interaction.selection_gutters_on_display(
+                    paced,
+                  ),
+                )),
+              ),
+            )
+          },
           last_frame_ms: now,
-          caches: Caches(
-            ..paced.view.caches,
-            frame_cache: Some(FrameCache(
-              screen:,
-              revision: paced.shared.frame_revision,
-              rendered: render.render_frame(paced, screen),
-              selection_gutters: interaction.selection_gutters_on_display(paced),
-            )),
-          ),
         ),
       )
     }
@@ -423,14 +434,14 @@ fn advance_viewport(model: Model) -> Model {
     False ->
       Model(
         ..model,
-        view: View(..model.view, revealed_rows: model.view.rendered_row_count),
+        view: view_set.revealed_rows(model.view, model.view.rendered_row_count),
       )
     True ->
       Model(
         ..model,
-        view: View(
-          ..model.view,
-          revealed_rows: pacing.pace(
+        view: view_set.revealed_rows(
+          model.view,
+          pacing.pace(
             model.view.revealed_rows,
             model.view.rendered_row_count,
             pace_policy(model),

@@ -18,6 +18,7 @@ import gleam/string
 import session_view/attempt
 import session_view/model as session_model
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/transcript_line
 import tui
@@ -34,6 +35,7 @@ import tui/model as tui_model
 import tui/runtime
 import tui/session_control
 import tui/session_selector
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -81,9 +83,9 @@ pub fn a_reply_for_another_key_is_not_admitted_test() {
   let waiting =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        control_request: Some(tui_model.ControlRequest(
+      view: view_set.control_request(
+        model.view,
+        Some(tui_model.ControlRequest(
           job.awaiting(current),
           Some(Error("still waiting")),
         )),
@@ -157,11 +159,11 @@ pub fn a_cancelled_job_never_delivers_a_reply_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        running:,
-        activity_poll: tui_model.ActivityAsking(job.awaiting(key), ["a"]),
-      ),
+      view: model.view
+        |> view_set.running(running)
+        |> view_set.activity_poll(
+          tui_model.ActivityAsking(job.awaiting(key), ["a"]),
+        ),
     )
 
   let quit = tui.update(backend.KeyPress("ctrl+c"), model)
@@ -223,16 +225,12 @@ fn spent_terminal() -> #(tui_model.Model, Int) {
     )
   let model =
     tui_model.Model(
-      shared: session_model.Shared(
-        ..model.shared,
-        session: "s",
-        peer: session_model.Disconnected,
-      ),
-      view: tui_model.View(
-        ..model.view,
-        running:,
-        reconnect: tui_model.ReconnectSpent,
-      ),
+      shared: model.shared
+        |> shared_set.session("s")
+        |> shared_set.peer(session_model.Disconnected),
+      view: model.view
+        |> view_set.running(running)
+        |> view_set.reconnect(tui_model.ReconnectSpent),
     )
   let spent = tick_until_idle(model, 50)
   #(spent, probe(process.self()).message_queue_len)
@@ -249,7 +247,7 @@ pub fn a_dropped_relaunch_outcome_closes_its_control_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(..model.view, reconnect: tui_model.ReconnectIdle),
+      view: view_set.reconnect(model.view, tui_model.ReconnectIdle),
     )
 
   let held =
@@ -277,15 +275,17 @@ pub fn a_tick_drains_the_jobs_in_their_fixed_order_test() {
   let #(model, relaunch) = tui_model.allocate_job(model)
   let model =
     tui_model.Model(
-      shared: session_model.Shared(..model.shared, transcript: []),
-      view: tui_model.View(
-        ..model.view,
-        control_request: Some(tui_model.ControlRequest(
-          job.awaiting(control),
-          Some(Error("control failed first")),
-        )),
-        reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
-      ),
+      shared: shared_set.transcript(model.shared, []),
+      view: model.view
+        |> view_set.control_request(
+          Some(tui_model.ControlRequest(
+            job.awaiting(control),
+            Some(Error("control failed first")),
+          )),
+        )
+        |> view_set.reconnect(
+          tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+        ),
     )
     |> runtime.hold(job.ControlArrived(control, weft.AllDelivered))
     |> runtime.hold(job.ReconnectArrived(
@@ -423,16 +423,17 @@ fn answered_keypress() -> #(tui_model.Model, Int) {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        running:,
-        control_request: Some(tui_model.ControlRequest(
-          job.awaiting(control),
-          None,
-        )),
-        reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
-        activity_poll: tui_model.ActivityAsking(job.awaiting(activity), ["a"]),
-      ),
+      view: model.view
+        |> view_set.running(running)
+        |> view_set.control_request(
+          Some(tui_model.ControlRequest(job.awaiting(control), None)),
+        )
+        |> view_set.reconnect(
+          tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+        )
+        |> view_set.activity_poll(
+          tui_model.ActivityAsking(job.awaiting(activity), ["a"]),
+        ),
     )
 
   // Each one-task relay sends its outcome and then `AllDelivered`.
@@ -458,15 +459,12 @@ fn replayed_keypress(
     )
   let model =
     tui_model.Model(
-      shared: session_model.Shared(..model.shared, peer:),
-      view: tui_model.View(
-        ..model.view,
-        running:,
-        control_request: Some(tui_model.ControlRequest(
-          job.awaiting(control),
-          None,
-        )),
-      ),
+      shared: shared_set.peer(model.shared, peer),
+      view: model.view
+        |> view_set.running(running)
+        |> view_set.control_request(
+          Some(tui_model.ControlRequest(job.awaiting(control), None)),
+        ),
     )
   process.send(
     buffered.sender(model.shared.replay_inbox),
@@ -564,9 +562,9 @@ pub fn an_adoption_cancels_a_relaunch_still_in_flight_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        reconnect: tui_model.ReconnectAttempting(job.awaiting(key)),
+      view: view_set.reconnect(
+        model.view,
+        tui_model.ReconnectAttempting(job.awaiting(key)),
       ),
     )
   let #(replacement, cut, view) = captured_replacement()
@@ -605,9 +603,9 @@ pub fn an_adoption_releases_a_relaunch_outcome_it_clears_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        reconnect: tui_model.ReconnectAttempting(job.awaiting(key)),
+      view: view_set.reconnect(
+        model.view,
+        tui_model.ReconnectAttempting(job.awaiting(key)),
       ),
     )
     |> runtime.hold(job.ReconnectArrived(

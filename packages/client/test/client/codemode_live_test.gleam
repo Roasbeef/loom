@@ -2086,6 +2086,7 @@ fn unreachable_agency() -> agent.Agency {
     roster: fn(_caller) { Error(agent.AgencyUnavailable) },
     max_wait_ms: 30_000,
     model_names: [],
+    holds: fn(_caller, _tool) { Ok(Nil) },
   )
 }
 

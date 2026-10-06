@@ -35,6 +35,7 @@ import session_view/notice_words
 import session_view/protocol.{type Strand, Strand}
 import session_view/reviewer_status
 import session_view/session_channel
+import session_view/shared_set
 import session_view/surfaces
 import session_view/transcript_line
 import session_view/transcript_lines
@@ -47,6 +48,7 @@ import tui/inbound
 import tui/model as tui_model
 import tui/render
 import tui/submit
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 
@@ -70,10 +72,7 @@ fn roster(main: Option(String), advisor: Option(String)) -> List(Strand) {
 fn with_roster(strands: List(Strand)) -> tui_model.Model {
   {
     let base = model()
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(..base.shared, strands:),
-    )
+    tui_model.Model(..base, shared: shared_set.strands(base.shared, strands))
   }
 }
 
@@ -398,10 +397,7 @@ pub fn the_palette_enter_path_opens_bare_goal_and_keeps_subcommands_test() {
   let board = pinned(goal_view.Paused(by: goal_view.ByOperator))
   let base = {
     let base = model()
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(..base.shared, goal: Some(board)),
-    )
+    tui_model.Model(..base, shared: shared_set.goal(base.shared, Some(board)))
   }
   let typed =
     ["/", "g", "o", "a", "l"]
@@ -791,10 +787,7 @@ pub fn a_pinned_goal_is_drawn_beside_the_composer_test() {
     let base = with_roster(roster(None, None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        goal: Some(pinned(goal_view.Active)),
-      ),
+      shared: shared_set.goal(base.shared, Some(pinned(goal_view.Active))),
     )
   }
   let text = painted(observed)
@@ -942,10 +935,10 @@ pub fn the_real_small_layout_starts_with_status_and_objective_test() {
   let opened = {
     let base = model()
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, goal: Some(board)),
-      view: tui_model.View(
-        ..base.view,
-        overlay: tui_model.GoalInspector(focused_goal_panel.new(
+      shared: shared_set.goal(base.shared, Some(board)),
+      view: view_set.overlay(
+        base.view,
+        tui_model.GoalInspector(focused_goal_panel.new(
           Some(board),
           "Illustrative observation",
         )),
@@ -970,19 +963,17 @@ pub fn the_busy_small_layout_keeps_goal_content_and_editor_test() {
   let opened = {
     let base = model()
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        goal: Some(board),
-        reviewer_rows: reviewers,
-      ),
-      view: tui_model.View(
-        ..base.view,
-        input: text_area.state_from_string("draft remains editable"),
-        overlay: tui_model.GoalInspector(focused_goal_panel.new(
-          Some(board),
-          "Illustrative observation",
-        )),
-      ),
+      shared: base.shared
+        |> shared_set.goal(Some(board))
+        |> shared_set.reviewer_rows(reviewers),
+      view: base.view
+        |> view_set.input(text_area.state_from_string("draft remains editable"))
+        |> view_set.overlay(
+          tui_model.GoalInspector(focused_goal_panel.new(
+            Some(board),
+            "Illustrative observation",
+          )),
+        ),
     )
   }
   let resized = tui.update(backend.Resize(40, 12), opened)
@@ -1008,14 +999,8 @@ pub fn pausing_from_the_goal_card_retains_the_composer_draft_test() {
     )
   let opened =
     tui_model.Model(
-      shared: session_model.Shared(
-        ..drafted.shared,
-        goal: Some(pinned(goal_view.Active)),
-      ),
-      view: tui_model.View(
-        ..drafted.view,
-        overlay: tui_model.GoalInspector(panel),
-      ),
+      shared: shared_set.goal(drafted.shared, Some(pinned(goal_view.Active))),
+      view: view_set.overlay(drafted.view, tui_model.GoalInspector(panel)),
     )
   let sent = tui.update(backend.KeyPress("p"), opened)
   assert text_area.value(sent.view.input) == "draft"
@@ -1049,7 +1034,7 @@ pub fn the_goal_reads_on_the_nudge_edges_and_on_a_run_start_test() {
   let other =
     tui_model.Model(
       ..running,
-      shared: session_model.Shared(..running.shared, session: "other session"),
+      shared: shared_set.session(running.shared, "other session"),
     )
   assert surfaces.goal_action(running.shared, other.shared) == surfaces.ReadGoal
 }
@@ -1062,7 +1047,7 @@ pub fn an_automatic_goal_read_preserves_the_footer_notice_test() {
   let prior =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, notice: "copied 2 lines"),
+      shared: shared_set.notice(base.shared, "copied 2 lines"),
     )
   let automatic =
     inbound.apply_channel_update(
@@ -1075,10 +1060,7 @@ pub fn an_automatic_goal_read_preserves_the_footer_notice_test() {
     inbound.apply_channel_update(
       tui_model.Model(
         ..prior,
-        shared: session_model.Shared(
-          ..prior.shared,
-          goal_report: session_model.ReportGoal,
-        ),
+        shared: shared_set.goal_report(prior.shared, session_model.ReportGoal),
       ),
       session_channel.Submission(session_channel.Sent("goal_get", 501)),
     )
@@ -1161,13 +1143,11 @@ fn outstanding(frame: String, name: String) -> #(tui_model.Model, Int) {
   #(
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(
-        ..model.shared,
-        channel: Some(channel),
-        goal_awaiting: Some(""),
-        goal_request: Some(id),
-        goal_report: session_model.ReportGoal,
-      ),
+      shared: model.shared
+        |> shared_set.channel(Some(channel))
+        |> shared_set.goal_awaiting(Some(""))
+        |> shared_set.goal_request(Some(id))
+        |> shared_set.goal_report(session_model.ReportGoal),
     ),
     id,
   )
@@ -1190,9 +1170,9 @@ pub fn the_operators_question_is_answered_in_the_transcript_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        overlay: tui_model.GoalInspector(focused_goal_panel.new(
+      view: view_set.overlay(
+        model.view,
+        tui_model.GoalInspector(focused_goal_panel.new(
           None,
           "Reading current goal",
         )),
@@ -1248,9 +1228,9 @@ pub fn a_mutation_is_confirmed_only_once_it_commits_test() {
   let waiting =
     tui_model.Model(
       ..sent,
-      shared: session_model.Shared(
-        ..sent.shared,
-        goal_report: session_model.ConfirmGoal(
+      shared: shared_set.goal_report(
+        sent.shared,
+        session_model.ConfirmGoal(
           line: "the session goal is cleared",
           request: Some(id),
         ),
@@ -1272,9 +1252,9 @@ pub fn a_refused_mutation_is_not_confirmed_test() {
   let waiting =
     tui_model.Model(
       ..sent,
-      shared: session_model.Shared(
-        ..sent.shared,
-        goal_report: session_model.ConfirmGoal(
+      shared: shared_set.goal_report(
+        sent.shared,
+        session_model.ConfirmGoal(
           line: "the session goal is held",
           request: Some(id),
         ),
@@ -1308,11 +1288,9 @@ pub fn an_automatic_refresh_refused_draws_nothing_test() {
   let automatic =
     tui_model.Model(
       ..asked,
-      shared: session_model.Shared(
-        ..asked.shared,
-        goal: Some(pinned(goal_view.Active)),
-        goal_report: session_model.HoldGoalReport,
-      ),
+      shared: asked.shared
+        |> shared_set.goal(Some(pinned(goal_view.Active)))
+        |> shared_set.goal_report(session_model.HoldGoalReport),
     )
   let refused =
     deliver(
@@ -1519,13 +1497,10 @@ pub fn a_refused_goal_invalidation_marks_the_retained_board_stale_test() {
     let #(asked, id) = outstanding(protocol.goal_get(99), "goal_get")
     let asked =
       tui_model.Model(
-        shared: session_model.Shared(
-          ..asked.shared,
-          peer: session_model.Attached,
-        ),
-        view: tui_model.View(
-          ..asked.view,
-          overlay: tui_model.GoalInspector(focused_goal_panel.new(
+        shared: shared_set.peer(asked.shared, session_model.Attached),
+        view: view_set.overlay(
+          asked.view,
+          tui_model.GoalInspector(focused_goal_panel.new(
             None,
             "Reading current goal",
           )),
@@ -1706,11 +1681,9 @@ fn older_goal_read(source: OlderGoalRead) -> #(tui_model.Model, Int) {
   #(
     tui_model.Model(
       ..older,
-      shared: session_model.Shared(
-        ..older.shared,
-        peer: session_model.Attached,
-        strands: roster(None, None),
-      ),
+      shared: older.shared
+        |> shared_set.peer(session_model.Attached)
+        |> shared_set.strands(roster(None, None)),
     ),
     id,
   )
@@ -1736,9 +1709,9 @@ pub fn every_goal_mutation_owns_only_its_issued_reply_test() {
           submit.submit(
             tui_model.Model(
               ..older,
-              view: tui_model.View(
-                ..older.view,
-                input: text_area.state_from_string(mutation.0),
+              view: view_set.input(
+                older.view,
+                text_area.state_from_string(mutation.0),
               ),
             ),
           )

@@ -25,6 +25,7 @@ import session_view/model as session_model
 import session_view/pasted_image
 import session_view/protocol.{ModelInfo, Strand}
 import session_view/session_channel
+import session_view/shared_set
 import session_view/text_hygiene
 import session_view/transcript_line
 import session_view/transcript_lines
@@ -51,6 +52,7 @@ import tui/render
 import tui/selection
 import tui/submit
 import tui/theme
+import tui/view_set
 import tui/virtual_backend
 import tui/workspace
 import tui_test/ffi_term
@@ -823,7 +825,7 @@ pub fn enter_queues_a_prompt_while_tab_steers_the_live_turn_test() {
       backend.KeyPress("enter"),
       tui_model.Model(
         ..live,
-        view: tui_model.View(..live.view, submission_mode: tui_model.SteerNow),
+        view: view_set.submission_mode(live.view, tui_model.SteerNow),
       ),
     )
   assert string.contains(steered.shared.notice, "steered")
@@ -884,11 +886,11 @@ pub fn a_steer_does_not_retire_the_prompt_queued_behind_it_test() {
       backend.KeyPress("enter"),
       tui_model.Model(
         ..submitted,
-        view: tui_model.View(
-          ..submitted.view,
-          submission_mode: tui_model.SteerNow,
-          input: text_area.state_from_string("actually try the other file"),
-        ),
+        view: submitted.view
+          |> view_set.submission_mode(tui_model.SteerNow)
+          |> view_set.input(text_area.state_from_string(
+            "actually try the other file",
+          )),
       ),
     )
   assert steered.shared.queued
@@ -941,11 +943,11 @@ pub fn an_abort_retires_the_steer_it_cancelled_test() {
       backend.KeyPress("enter"),
       tui_model.Model(
         ..submitted,
-        view: tui_model.View(
-          ..submitted.view,
-          submission_mode: tui_model.SteerNow,
-          input: text_area.state_from_string("actually try the other file"),
-        ),
+        view: submitted.view
+          |> view_set.submission_mode(tui_model.SteerNow)
+          |> view_set.input(text_area.state_from_string(
+            "actually try the other file",
+          )),
       ),
     )
   assert steered.shared.queued
@@ -989,11 +991,11 @@ pub fn a_snapshot_clears_the_echoes_drawn_over_the_old_transcript_test() {
     let base = live_model("")
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        queued: [transcript_line.HeldPrompt("look at this too")],
-        awaiting_outcome: Some(transcript_line.HeldPrompt("and one more thing")),
-      ),
+      shared: base.shared
+        |> shared_set.queued([transcript_line.HeldPrompt("look at this too")])
+        |> shared_set.awaiting_outcome(
+          Some(transcript_line.HeldPrompt("and one more thing")),
+        ),
     )
   }
   let synchronized =
@@ -1020,9 +1022,9 @@ pub fn a_refused_prompt_retires_its_own_echo_test() {
     let base = live_model("")
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        awaiting_outcome: Some(transcript_line.HeldPrompt("a fifth one")),
+      shared: shared_set.awaiting_outcome(
+        base.shared,
+        Some(transcript_line.HeldPrompt("a fifth one")),
       ),
     )
   }
@@ -1088,10 +1090,7 @@ pub fn a_queued_echo_renders_below_the_live_transcript_test() {
         let base = quiet_model(inbox)
         tui_model.Model(
           ..base,
-          shared: session_model.Shared(
-            ..base.shared,
-            peer: session_model.Replaying,
-          ),
+          shared: shared_set.peer(base.shared, session_model.Replaying),
         )
       },
       script,
@@ -1138,16 +1137,13 @@ fn live_model(draft: String) -> tui_model.Model {
   {
     let base = quiet_model(connection.new_inbox())
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Replaying,
-        active_strand: "main",
-        strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
-      ),
-      view: tui_model.View(
-        ..base.view,
-        input: text_area.state_from_string(draft),
-      ),
+      shared: base.shared
+        |> shared_set.peer(session_model.Replaying)
+        |> shared_set.active_strand("main")
+        |> shared_set.strands([
+          Strand(id: "main", name: None, live_phase: Some("assistant")),
+        ]),
+      view: view_set.input(base.view, text_area.state_from_string(draft)),
     )
   }
 }
@@ -1498,16 +1494,18 @@ pub fn an_image_prompt_is_submitted_while_the_strand_is_live_test() {
   let live = {
     let base = quiet_model(connection.new_inbox())
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Replaying,
-        active_strand: "main",
-        strands: [Strand(id: "main", name: None, live_phase: Some("assistant"))],
-        attachments: [composer.ImageAttachment(test_image("shot.png", 12))],
-      ),
-      view: tui_model.View(
-        ..base.view,
-        input: text_area.state_from_string("what is wrong with this screen"),
+      shared: base.shared
+        |> shared_set.peer(session_model.Replaying)
+        |> shared_set.active_strand("main")
+        |> shared_set.strands([
+          Strand(id: "main", name: None, live_phase: Some("assistant")),
+        ])
+        |> shared_set.attachments([
+          composer.ImageAttachment(test_image("shot.png", 12)),
+        ]),
+      view: view_set.input(
+        base.view,
+        text_area.state_from_string("what is wrong with this screen"),
       ),
     )
   }
@@ -1761,12 +1759,10 @@ fn quiet_model(
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        transcript: [],
-        strands: [],
-        notice: "ready",
-      ),
+      shared: base.shared
+        |> shared_set.transcript([])
+        |> shared_set.strands([])
+        |> shared_set.notice("ready"),
     )
   }
 }
@@ -1856,7 +1852,7 @@ pub fn a_drag_over_the_transcript_copies_what_it_highlighted_test() {
     let base = quiet_model(inbox)
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, transcript: [
+      shared: shared_set.transcript(base.shared, [
         transcript_line.Line(transcript_line.System, "alpha beta"),
         transcript_line.Line(transcript_line.System, "gamma delta"),
       ]),
@@ -2037,7 +2033,7 @@ fn assistant_copy_model(
     let base = quiet_model(inbox)
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, transcript: [
+      shared: shared_set.transcript(base.shared, [
         transcript_line.Line(
           transcript_line.Assistant,
           "opening paragraph\n\nsecond paragraph\n\n```gleam\n  let answer = 1\n```",
@@ -2053,7 +2049,7 @@ pub fn a_resize_drops_a_settled_selection_test() {
     let base = quiet_model(inbox)
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, transcript: [
+      shared: shared_set.transcript(base.shared, [
         transcript_line.Line(transcript_line.System, "alpha beta"),
       ]),
     )
@@ -2079,7 +2075,7 @@ pub fn escape_clears_a_selection_without_interrupting_test() {
     let base = quiet_model(inbox)
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, transcript: [
+      shared: shared_set.transcript(base.shared, [
         transcript_line.Line(transcript_line.System, "alpha beta"),
       ]),
     )
@@ -2111,7 +2107,7 @@ pub fn a_click_dismisses_a_settled_selection_test() {
     let base = quiet_model(inbox)
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, transcript: [
+      shared: shared_set.transcript(base.shared, [
         transcript_line.Line(transcript_line.System, "alpha beta"),
       ]),
     )
@@ -2138,7 +2134,9 @@ pub fn a_press_outside_every_panel_selects_across_the_screen_test() {
     let base = quiet_model(inbox)
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, width: 60, height: 12),
+      view: base.view
+        |> view_set.width(60)
+        |> view_set.height(12),
     )
   }
   let screen = geometry.rect_new(0, 0, 60, 12)
@@ -2226,7 +2224,7 @@ pub fn usage_footer_snapshot_with_a_rate_test() {
     let base = quiet_model(inbox)
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, output_rate_tps: Some(87)),
+      shared: shared_set.output_rate_tps(base.shared, Some(87)),
     )
   }
   snapshot_test.assert_snapshot(
@@ -2445,7 +2443,7 @@ pub fn a_selection_keeps_its_original_cells_during_incoming_output_test() {
     let base = quiet_model(inbox)
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, transcript: [
+      shared: shared_set.transcript(base.shared, [
         transcript_line.Line(transcript_line.System, "alpha beta"),
         transcript_line.Line(transcript_line.System, "gamma delta"),
       ]),
@@ -2527,16 +2525,15 @@ pub fn image_preview_renders_fourth_image_and_keeps_prompt_visible_test() {
   let model = {
     let base = quiet_model(connection.new_inbox())
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        attachments: list.map(
-          ["one.png", "two.png", "three.png", "four.png"],
-          fn(name) { composer.ImageAttachment(test_image(name, 10)) },
-        ),
+      shared: shared_set.attachments(
+        base.shared,
+        list.map(["one.png", "two.png", "three.png", "four.png"], fn(name) {
+          composer.ImageAttachment(test_image(name, 10))
+        }),
       ),
-      view: tui_model.View(
-        ..base.view,
-        input: text_area.state_from_string("review these screenshots"),
+      view: view_set.input(
+        base.view,
+        text_area.state_from_string("review these screenshots"),
       ),
     )
   }

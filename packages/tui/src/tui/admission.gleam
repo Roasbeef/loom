@@ -53,9 +53,10 @@ import tui/attachment
 import tui/job
 import tui/model.{
   type Model, ActivityAsking, ActivityDue, ActivityResting, ControlRequest,
-  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent, View,
+  Model, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
 } as tui_model
 import tui/msg.{type Arrival}
+import tui/view_set
 
 /// Files each arrival, oldest first, into the buffer or slot that waits for
 /// it.
@@ -96,7 +97,8 @@ fn admit_attempt_frame(
   message: connection_event.Message,
 ) -> Model {
   case attachment.push_frame(model.view.candidate, source, message) {
-    Ok(candidate) -> Model(..model, view: View(..model.view, candidate:))
+    Ok(candidate) ->
+      Model(..model, view: view_set.candidate(model.view, candidate))
     Error(Nil) -> model
   }
 }
@@ -116,7 +118,7 @@ fn admit_reply(model: Model, arrival: job.Arrival(job.Daemon)) -> Model {
     job.AttachArrived(key:, reply:) ->
       attachment.admit(model.view.candidate, key, reply)
       |> result.map(fn(candidate) {
-        Model(..model, view: View(..model.view, candidate:))
+        Model(..model, view: view_set.candidate(model.view, candidate))
       })
   }
   case admitted {
@@ -137,9 +139,9 @@ fn admit_control(
       |> result.map(fn(awaiting) {
         Model(
           ..model,
-          view: View(
-            ..model.view,
-            control_request: Some(ControlRequest(..run, job: awaiting)),
+          view: view_set.control_request(
+            model.view,
+            Some(ControlRequest(..run, job: awaiting)),
           ),
         )
       })
@@ -158,7 +160,7 @@ fn admit_reconnect(
       |> result.map(fn(awaiting) {
         Model(
           ..model,
-          view: View(..model.view, reconnect: ReconnectAttempting(awaiting)),
+          view: view_set.reconnect(model.view, ReconnectAttempting(awaiting)),
         )
       })
   }
@@ -176,9 +178,9 @@ fn admit_activity(
       |> result.map(fn(awaiting) {
         Model(
           ..model,
-          view: View(
-            ..model.view,
-            activity_poll: ActivityAsking(awaiting, asked),
+          view: view_set.activity_poll(
+            model.view,
+            ActivityAsking(awaiting, asked),
           ),
         )
       })
@@ -195,7 +197,7 @@ fn admit_image(
     Some(awaiting) ->
       job.admit(awaiting, key, reply)
       |> result.map(fn(awaiting) {
-        Model(..model, view: View(..model.view, opening_image: Some(awaiting)))
+        Model(..model, view: view_set.opening_image(model.view, Some(awaiting)))
       })
   }
 }
@@ -210,7 +212,7 @@ fn admit_configuration(
     Some(awaiting) ->
       job.admit(awaiting, key, reply)
       |> result.map(fn(awaiting) {
-        Model(..model, view: View(..model.view, configuring: Some(awaiting)))
+        Model(..model, view: view_set.configuring(model.view, Some(awaiting)))
       })
   }
 }

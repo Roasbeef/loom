@@ -54,6 +54,7 @@ import session_view/msg
 import session_view/operator
 import session_view/queue_request
 import session_view/session_channel
+import session_view/shared_set
 import session_view/step_effect
 import session_view/surfaces
 import session_view/worktree_view
@@ -134,17 +135,18 @@ pub fn advance_activity_clocks(
 ) -> Shared(socket, recorder, source, replay_source) {
   let shared = advance_generation_clock(shared)
   case session_model.active_strand_live(shared) {
-    False -> Shared(..shared, activity_started_ms: None, activity_elapsed_s: 0)
+    False ->
+      shared
+      |> shared_set.activity_started_ms(None)
+      |> shared_set.activity_elapsed_s(0)
     True -> {
       let now = shared.stamp.now_ms
       let started = option.unwrap(shared.activity_started_ms, now)
       let activity_elapsed_s = { now - started } / 1000
       let advanced =
-        Shared(
-          ..shared,
-          activity_started_ms: Some(started),
-          activity_elapsed_s:,
-        )
+        shared
+        |> shared_set.activity_started_ms(Some(started))
+        |> shared_set.activity_elapsed_s(activity_elapsed_s)
       case activity_elapsed_s == shared.activity_elapsed_s {
         True -> advanced
         False -> session_model.invalidate_frame(advanced)
@@ -383,13 +385,13 @@ pub fn update(
 ) {
   let reduced = case message {
     msg.Arrived(arrivals:) -> list.fold(arrivals, shared, file)
-    msg.Input(at:, event: msg.Ticked) -> tick(Shared(..shared, stamp: at))
+    msg.Input(at:, event: msg.Ticked) -> tick(shared_set.stamp(shared, at))
     msg.Input(at:, event: msg.Acted(command:)) -> {
-      let started = Shared(..shared, stamp: at)
+      let started = shared_set.stamp(shared, at)
       settle(started, commands.act(started, command))
     }
   }
-  #(Shared(..reduced, outbox: []), list.reverse(reduced.outbox))
+  #(shared_set.outbox(reduced, []), list.reverse(reduced.outbox))
 }
 
 /// Makes `strand` the active strand for a host with no surfaces of its own,
@@ -430,7 +432,7 @@ pub fn focus(
   Shared(socket, recorder, source, replay_source),
   List(step_effect.Effect(socket, recorder)),
 ) {
-  let started = Shared(..shared, stamp: at)
+  let started = shared_set.stamp(shared, at)
   let #(cancelled, updates) =
     lane_fold.cancel_unsent(started, "target change from " <> shared.session)
   let focused =
@@ -438,7 +440,7 @@ pub fn focus(
     |> commands.focus(strand)
     |> commands.load_strand(strand, lane_fold.nothing_shown())
   let reduced = settle(started, focused) |> forget_surfaces
-  #(Shared(..reduced, outbox: []), list.reverse(reduced.outbox))
+  #(shared_set.outbox(reduced, []), list.reverse(reduced.outbox))
 }
 
 /// Drops what the record's reducers noted for surfaces a host does not have:
@@ -464,7 +466,10 @@ pub fn focus(
 pub fn forget_surfaces(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(..shared, surface_facts: [], queue_notices: [], goal_observations: [])
+  shared
+  |> shared_set.surface_facts([])
+  |> shared_set.queue_notices([])
+  |> shared_set.goal_observations([])
 }
 
 // Files one arrival into the buffer that waits for it. A frame from a source
@@ -507,7 +512,7 @@ fn advance_roster(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
   let #(roster, repaint) = agent_roster.tick(shared.roster, shared.stamp.now_ms)
-  let advanced = Shared(..shared, roster:)
+  let advanced = shared_set.roster(shared, roster)
   case repaint {
     agent_roster.Changed -> session_model.invalidate_frame(advanced)
     agent_roster.Unchanged -> advanced
@@ -539,7 +544,7 @@ fn take_frame(
   Result(connection_event.Message, Nil),
 ) {
   let #(taken, next) = inbox.take(shared.inbox)
-  #(Shared(..shared, inbox: taken), next)
+  #(shared_set.inbox(shared, taken), next)
 }
 
 fn receive_frame(

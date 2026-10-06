@@ -27,10 +27,11 @@ import session_view/command
 import session_view/commands
 import session_view/composer
 import session_view/context_view
-import session_view/model.{ComposerSubmission, OverlaySubmission, Shared} as session_model
+import session_view/model.{ComposerSubmission, OverlaySubmission} as session_model
 import session_view/msg
 import session_view/operator
 import session_view/protocol
+import session_view/shared_set
 import session_view/surfaces
 import session_view/worktree_view
 import tui/agent_strip
@@ -52,17 +53,18 @@ import tui/queue_editor
 import tui/rail
 import tui/session_control
 import tui/side_surfaces
+import tui/view_set
 
 /// Opens the agent workspace on the active strand.
 @internal
 pub fn open_agents(model: Model) -> Model {
   Model(
-    shared: Shared(..model.shared, notice: "agent workspace"),
-    view: View(
-      ..model.view,
-      overlay: AgentInspector(agents.inspect(model.shared.active_strand)),
-      repaint_phase: !model.view.repaint_phase,
-    ),
+    shared: shared_set.notice(model.shared, "agent workspace"),
+    view: model.view
+      |> view_set.overlay(
+        AgentInspector(agents.inspect(model.shared.active_strand)),
+      )
+      |> view_set.toggle_repaint,
   )
 }
 
@@ -176,20 +178,16 @@ fn surface_command(model: Model, surface: command.Surface) -> Model {
     command.Quit -> quit(cleared)
     command.Help ->
       Model(
-        shared: Shared(
-          ..cleared.shared,
-          note_board: None,
-          notes_requested: None,
-          notice: "/help",
-        ),
-        view: View(
-          ..cleared.view,
-          help_open: True,
-          notes_open: False,
-          note_selected: None,
-          scroll_offset: 0,
-          repaint_phase: !cleared.view.repaint_phase,
-        ),
+        shared: cleared.shared
+          |> shared_set.note_board(None)
+          |> shared_set.notes_requested(None)
+          |> shared_set.notice("/help"),
+        view: cleared.view
+          |> view_set.help_open(True)
+          |> view_set.notes_open(False)
+          |> view_set.note_selected(None)
+          |> view_set.scroll_offset(0)
+          |> view_set.toggle_repaint,
       )
 
     // The selector opens on what the session already lists, and a `models`
@@ -197,15 +195,15 @@ fn surface_command(model: Model, surface: command.Surface) -> Model {
     command.Models -> {
       let opened =
         Model(
-          shared: Shared(..cleared.shared, notice: "model selector"),
-          view: View(
-            ..cleared.view,
-            overlay: ModelSelector(model_selector.new(
-              model.shared.models,
-              model.shared.current_model,
-            )),
-            repaint_phase: !cleared.view.repaint_phase,
-          ),
+          shared: shared_set.notice(cleared.shared, "model selector"),
+          view: cleared.view
+            |> view_set.overlay(
+              ModelSelector(model_selector.new(
+                model.shared.models,
+                model.shared.current_model,
+              )),
+            )
+            |> view_set.toggle_repaint,
         )
       tui_model.send_frame(opened, protocol.models(opened.shared.next_id))
     }
@@ -220,24 +218,22 @@ fn surface_command(model: Model, surface: command.Surface) -> Model {
       }
     command.Notes ->
       side_surfaces.refresh_notes(Model(
-        shared: Shared(
-          ..cleared.shared,
-          worktree: worktree_view.State(
-            ..cleared.shared.worktree,
-            focus: worktree_view.Composer,
-          ),
-          notice: "agent notes",
-        ),
-        view: View(
-          ..cleared.view,
-          help_open: False,
-          diff_view: DiffHidden,
-          notes_open: True,
-          note_mode: note_panel.Readable,
-          note_scroll: 0,
-          scroll_offset: 0,
-          repaint_phase: !cleared.view.repaint_phase,
-        ),
+        shared: cleared.shared
+          |> shared_set.worktree(
+            worktree_view.State(
+              ..cleared.shared.worktree,
+              focus: worktree_view.Composer,
+            ),
+          )
+          |> shared_set.notice("agent notes"),
+        view: cleared.view
+          |> view_set.help_open(False)
+          |> view_set.diff_view(DiffHidden)
+          |> view_set.notes_open(True)
+          |> view_set.note_mode(note_panel.Readable)
+          |> view_set.note_scroll(0)
+          |> view_set.scroll_offset(0)
+          |> view_set.toggle_repaint,
       ))
     command.QueueInspect -> open_queue(cleared)
     command.Summary -> side_surfaces.open_summary(cleared)
@@ -279,12 +275,10 @@ pub fn navigate_history(model: Model, older: Bool) -> Model {
     )
   Model(
     ..model,
-    view: View(
-      ..model.view,
-      input: text_area.state_from_string(value),
-      history_index:,
-      history_draft:,
-    ),
+    view: model.view
+      |> view_set.input(text_area.state_from_string(value))
+      |> view_set.history_index(history_index)
+      |> view_set.history_draft(history_draft),
   )
 }
 
@@ -351,28 +345,28 @@ pub fn toggle_submission_mode(model: Model) -> Model {
     Some(_), _, _ ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "stopped · enter sends held input with your message",
+        shared: shared_set.notice(
+          model.shared,
+          "stopped · enter sends held input with your message",
         ),
       )
     None, False, _ ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "steering is available while an agent runs",
+        shared: shared_set.notice(
+          model.shared,
+          "steering is available while an agent runs",
         ),
       )
     None, True, PromptNext ->
       Model(
-        shared: Shared(..model.shared, notice: "steer now"),
-        view: View(..model.view, submission_mode: SteerNow),
+        shared: shared_set.notice(model.shared, "steer now"),
+        view: view_set.submission_mode(model.view, SteerNow),
       )
     None, True, SteerNow ->
       Model(
-        shared: Shared(..model.shared, notice: "queue for next turn"),
-        view: View(..model.view, submission_mode: PromptNext),
+        shared: shared_set.notice(model.shared, "queue for next turn"),
+        view: view_set.submission_mode(model.view, PromptNext),
       )
   }
 }
@@ -419,9 +413,9 @@ pub fn interrupt_and_insert(model: Model, character: String) -> Model {
   let editor = text_area.textarea_new() |> text_area.with_max_lines(1)
   Model(
     ..interrupted,
-    view: View(
-      ..interrupted.view,
-      input: text_area.insert_char(editor, interrupted.view.input, character),
+    view: view_set.input(
+      interrupted.view,
+      text_area.insert_char(editor, interrupted.view.input, character),
     ),
   )
 }
@@ -438,12 +432,10 @@ pub fn toggle_agent_rail(model: Model) -> Model {
   case layout.diff_shown(model) && layout.rail_present(model) {
     True ->
       Model(
-        shared: Shared(..model.shared, notice: "changes closed"),
-        view: View(
-          ..model.view,
-          diff_view: DiffHidden,
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: shared_set.notice(model.shared, "changes closed"),
+        view: model.view
+          |> view_set.diff_view(DiffHidden)
+          |> view_set.toggle_repaint,
       )
     False ->
       case model.view.width >= rail.narrowest {
@@ -459,15 +451,13 @@ pub fn toggle_agent_rail(model: Model) -> Model {
             False -> layout_memory.RailShown
           }
           Model(
-            shared: Shared(..model.shared, notice: case docked {
+            shared: shared_set.notice(model.shared, case docked {
               True -> "rail hidden"
               False -> "rail docked"
             }),
-            view: View(
-              ..model.view,
-              rail: Some(choice),
-              repaint_phase: !model.view.repaint_phase,
-            ),
+            view: model.view
+              |> view_set.rail(Some(choice))
+              |> view_set.toggle_repaint,
           )
         }
       }
@@ -480,15 +470,13 @@ pub fn toggle_agent_rail(model: Model) -> Model {
 pub fn toggle_details(model: Model) -> Model {
   let expanded = !model.shared.details_expanded
   Model(
-    shared: Shared(
-      ..model.shared,
-      details_expanded: expanded,
-      notice: case expanded {
+    shared: model.shared
+      |> shared_set.details_expanded(expanded)
+      |> shared_set.notice(case expanded {
         True -> "details expanded"
         False -> "details collapsed"
-      },
-    ),
-    view: View(..model.view, repaint_phase: !model.view.repaint_phase),
+      }),
+    view: view_set.toggle_repaint(model.view),
   )
 }
 
@@ -512,7 +500,7 @@ pub fn quit(model: Model) -> Model {
 
   // The attempt moves into its cancel effect, which closes what it opened.
   let model =
-    Model(..model, view: View(..model.view, candidate: attachment.idle()))
+    Model(..model, view: view_set.candidate(model.view, attachment.idle()))
     |> tui_model.emit_attachment(attachment.Abandon(model.view.candidate))
 
   // Every running job is cancelled by its key, and its slot is cleared in
@@ -525,7 +513,7 @@ pub fn quit(model: Model) -> Model {
   let model = case model.view.control_request {
     None -> model
     Some(run) ->
-      Model(..model, view: View(..model.view, control_request: None))
+      Model(..model, view: view_set.control_request(model.view, None))
       |> tui_model.emit(effect.CancelJob(job.key(run.job)))
   }
 
@@ -535,20 +523,20 @@ pub fn quit(model: Model) -> Model {
   let model = case model.view.reconnect {
     ReconnectIdle | ReconnectSpent -> model
     ReconnectAttempting(job: awaiting) ->
-      Model(..model, view: View(..model.view, reconnect: ReconnectSpent))
+      Model(..model, view: view_set.reconnect(model.view, ReconnectSpent))
       |> tui_model.release_reconnect(awaiting)
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
   let model = case model.view.activity_poll {
     ActivityDue | ActivityResting(..) -> model
     ActivityAsking(job: awaiting, ..) ->
-      Model(..model, view: View(..model.view, activity_poll: ActivityDue))
+      Model(..model, view: view_set.activity_poll(model.view, ActivityDue))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
   let model = case model.view.configuring {
     None -> model
     Some(awaiting) ->
-      Model(..model, view: View(..model.view, configuring: None))
+      Model(..model, view: view_set.configuring(model.view, None))
       |> tui_model.emit(effect.CancelJob(job.key(awaiting)))
   }
   let model = case model.view.daemon_host {
@@ -590,12 +578,10 @@ pub fn switch_active_strand(model: Model, strand: String) -> Model {
   let selected =
     Model(
       ..focused,
-      view: View(
-        ..focused.view,
-        overlay: NoOverlay,
-        cache_outlook: "",
-        repaint_phase: !focused.view.repaint_phase,
-      ),
+      view: focused.view
+        |> view_set.overlay(NoOverlay)
+        |> view_set.cache_outlook("")
+        |> view_set.toggle_repaint,
     )
   let around = inbound.surroundings(selected)
   inbound.run_settled(selected, commands.load_strand(_, strand, around))
@@ -646,12 +632,14 @@ fn choose_rail_tab(model: Model, tab: rail.Tab) -> Model {
         Model(
           ..closed,
           view: View(
-            ..closed.view,
+            ..{
+              closed.view
+              |> view_set.rail_focus(tui_model.FocusComposer)
+              |> view_set.sheet(sheet_for(closed))
+              |> view_set.rail(docked_choice(closed))
+            },
             rail_tab: rail.remembered(tab),
             rail_scroll: 0,
-            rail_focus: tui_model.FocusComposer,
-            sheet: sheet_for(closed),
-            rail: docked_choice(closed),
           ),
         )
       let left =
@@ -663,7 +651,10 @@ fn choose_rail_tab(model: Model, tab: rail.Tab) -> Model {
         rail.Session ->
           Model(
             ..left,
-            shared: Shared(..left.shared, jobs_refresh: worktree_view.Requested),
+            shared: shared_set.jobs_refresh(
+              left.shared,
+              worktree_view.Requested,
+            ),
           )
           |> tui_model.run_shared(surfaces.service_jobs_read)
         rail.Strands | rail.Changes | rail.Trace -> left
@@ -705,7 +696,7 @@ fn sheet_for(model: Model) -> tui_model.Sheet {
 /// ```
 @internal
 pub fn open_sheet(model: Model) -> Model {
-  Model(..model, view: View(..model.view, sheet: tui_model.SheetOpen))
+  Model(..model, view: view_set.sheet(model.view, tui_model.SheetOpen))
   |> focus_sheet
   |> tui_model.invalidate_transcript
   |> tui_model.invalidate_frame
@@ -723,11 +714,9 @@ pub fn close_sheet(model: Model) -> Model {
   let closed =
     Model(
       ..model,
-      view: View(
-        ..model.view,
-        sheet: tui_model.SheetClosed,
-        rail_focus: tui_model.FocusComposer,
-      ),
+      view: model.view
+        |> view_set.sheet(tui_model.SheetClosed)
+        |> view_set.rail_focus(tui_model.FocusComposer),
     )
   tui_model.store_strip(closed, agent_strip.leave(tui_model.strip(closed)))
   |> tui_model.invalidate_transcript
@@ -754,11 +743,11 @@ fn focus_sheet(model: Model) -> Model {
         False ->
           Model(
             ..model,
-            view: View(..model.view, rail_focus: tui_model.FocusTab),
+            view: view_set.rail_focus(model.view, tui_model.FocusTab),
           )
       }
     rail.Trace | rail.Session ->
-      Model(..model, view: View(..model.view, rail_focus: tui_model.FocusTab))
+      Model(..model, view: view_set.rail_focus(model.view, tui_model.FocusTab))
   }
 }
 
@@ -779,9 +768,9 @@ pub fn hand_off_sheet(model: Model) -> Model {
     tui_model.SheetOpen, True ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          notice: "sheet closed · Shift+Tab docks the rail on "
+        shared: shared_set.notice(
+          model.shared,
+          "sheet closed · Shift+Tab docks the rail on "
             <> rail.name(layout.rail_tab(model)),
         ),
       )
@@ -814,9 +803,9 @@ pub fn open_trace_tab(model: Model) -> Model {
 pub fn open_queue(model: Model) -> Model {
   Model(
     ..model,
-    view: View(
-      ..model.view,
-      queue_editor: queue_editor.open(model.view.queue_editor),
+    view: view_set.queue_editor(
+      model.view,
+      queue_editor.open(model.view.queue_editor),
     ),
   )
   |> tui_model.invalidate_frame
@@ -832,18 +821,16 @@ pub fn open_queue(model: Model) -> Model {
 @internal
 pub fn open_diff(model: Model) -> Model {
   case layout.diff_shown(model) {
-    True -> Model(..model, view: View(..model.view, diff_view: DiffHidden))
+    True -> Model(..model, view: view_set.diff_view(model.view, DiffHidden))
     False ->
       inbound.refresh_worktree(
         Model(
           ..model,
-          view: View(
-            ..model.view,
-            diff_view: DiffVisible,
-            diff_scroll_offset: 0,
-            help_open: False,
-            notes_open: False,
-          ),
+          view: model.view
+            |> view_set.diff_view(DiffVisible)
+            |> view_set.diff_scroll_offset(0)
+            |> view_set.help_open(False)
+            |> view_set.notes_open(False),
         ),
       )
   }

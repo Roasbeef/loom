@@ -358,6 +358,59 @@ their existing bounds. A peer message still requires an exact directional
 grant. The broader import set does not bypass broker grants or the
 satellite's kernel sandbox.
 
+A strand's active tool list also bounds what its programs may do.
+`codemode/tool_gate` holds the one table from capability to the tool that
+authorizes it, and a capability is refused with `tool_not_held` ("<cap>
+needs <tool>, which this strand does not hold") unless the calling strand
+holds that tool:
+
+| capability | needs |
+| --- | --- |
+| `strand.spawn`, `strand.wait`, `strand.send` | `agent_spawn`, `agent_wait`, `agent_send` |
+| `strand.note`, `strand.notes`, `strand.roster` | `agent_note`, `agent_notes`, `agent_roster` |
+| `notes.put` | `agent_note` (the same blackboard write as `strand.note`) |
+| `notes.get`, `notes.list`, `notes.read` | `agent_notes` (the cells `strand.notes` reads) |
+| `workflow.step` | `agent_spawn` (it mints a child strand) |
+| `peer.send` | `peer_send` |
+| `proc.run`, `job.start` | `bash` |
+| `job.poll`, `job.list` | `job_poll` (which lists when given no id) |
+| `job.send`, `job.kill` | `job_send`, `job_kill` |
+| `fs.write`, `fs.edit` | `fs_write`, `fs_edit` |
+| `lsp.rename` | `fs_edit` (it lands edits to files) |
+| `schedule.create`, `schedule.list`, `schedule.cancel` | `schedule_create`, `schedule_list`, `schedule_cancel` |
+
+A parent that withholds `agent_send` to keep a child silent therefore
+silences its programs too, withholding `bash` or `fs_write` makes a
+read-only reviewer read-only from `code_mode` as well, and withholding
+`agent_spawn` remains the depth cap on either path.
+
+The check runs in the call's own worker (`SatelliteConfig.precheck`), after
+admission and before the plan is served or cleared, so it covers served
+and jailed capabilities alike and a slow answer delays one call rather than
+the host actor. It asks the Agency's `holds` on every call, reading the
+strand's durable configuration, so a `set_config` that withdraws a tool
+applies to a program already running. Only a tool genuinely missing is
+`tool_not_held`; a holder that is down or an unreadable store keeps its own
+code (`strands_unavailable`, `plane_failed`) and still stops the call. The
+sync and background seams share the one execution configuration, so both
+are covered. Every seam selection installs the check, workspace-only
+included; a host with no messaging plane has no durable configuration to
+read and installs none.
+
+These stay open on purpose: `fs.read`, `fs.list`, `search.*`, the `lsp.*`
+queries (not `lsp.rename`), the `kv.*` scratch store, `report.emit`, the
+`peer.*` reads, the `execution.*` capabilities (the running execution's own
+mailbox and progress channel to the run that owns it) and `mcp.<server>`.
+The reads have no authority a strand's list was withholding. MCP is open
+for now because an MCP server is already an operator's per-server decision,
+made in configuration and bounded by its own allowlist, and the registry
+has no per-server tool name to ask about. Extensions are not strands: an
+extension satellite is reached through its own registered tool, which the
+strand's list already gates, and the long-lived host it runs on takes no
+precheck at all. The tool description is session-wide like the system
+prompt and still lists every capability; the refusal names the missing
+tool.
+
 `serve.with_code_mode_peers` composes the peer router around the preceding
 per-execution host wrapper. It retains that wrapper function before creating
 the callback, so the callback does not capture the complete host configuration.

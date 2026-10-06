@@ -333,7 +333,7 @@ the shared step an `Acted`. The `JobReplied` arrival
 it is filed into does.
 
 `Stamp` loses `wall_ms`. The one reader is the session creation key
-(`tui/session_control.gleam:667` (`wall_ms`)), which stays in the
+(`tui/session_control.gleam:673` (`wall_ms`)), which stays in the
 terminal, and the terminal's stamp gains it back beside the shared one. The web shell sets `now_ms` and `transport_ms` to the same
 reading.
 
@@ -426,7 +426,7 @@ fields the adoption arm resets today (`tui/interaction.gleam:260`
 `Attached`. `next_due` is
 `option.then(model.channel, session_channel.next_due)`; a host that has
 other reasons to wake, as the terminal does, combines it with its own
-(`tui/tick.gleam:543` (`lane_wait`)).
+(`tui/tick.gleam:534` (`lane_wait`)).
 
 ### The shells
 
@@ -459,7 +459,7 @@ terminal halves of the splits. A terminal reducer that calls into the
 shared step stores the result through `hold_shared`, the same discipline
 as `hold_channel`: the shared outbox is moved into the terminal's at the
 point of the call, so a step that decides a lane close, then a terminal
-`Discard`, then a lane write (`tui/interaction.gleam:363` (`Discard`))
+`Discard`, then a lane write (`tui/interaction.gleam:371` (`Discard`))
 still performs them in that order. The terminal's effect type gains one
 variant, `Step(step.Effect(Connection, Recorder))`,
 and `perform_io` gains two arms (`tui/runtime.gleam:446`
@@ -471,7 +471,7 @@ The web's `component.Model(socket)` becomes
 `let at = model.view.transport.now()`, and builds the stamp from it; the
 selector mappings that read `transport.now()` today, in `open` and `arm`,
 stop carrying `at`, and the read in `commanded` goes with them. This is the
-terminal's `runtime.stamp` shape (`tui/runtime.gleam:80` (`stamp`)). An
+terminal's `runtime.stamp` shape (`tui/runtime.gleam:86` (`stamp`)). An
 `Arrived`
 becomes two shared calls in one Lustre message, `Arrived` then
 `Input(Ticked)`, which is the delivery ADR-014 describes for a host that
@@ -524,7 +524,7 @@ they reach that it misses.
   `mutation_refusal`, less the `clear_composer` call and the queue
   editor's `request_id`.
 - The command arms: `interrupt_active` (`session_view/commands.gleam:80`),
-  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:583`),
+  `stop_strand`, `switch_active_strand` (`tui/submit.gleam:574`),
   `select_model`, `decide` (`session_view/commands.gleam:168`), `send_prompt_to`,
   `cancel_pending` and `service_history`.
 - The auxiliary reads and their edges: every `service_*_read` from
@@ -549,7 +549,7 @@ shell, after the shared call, compares `before.shared` with
 `after.shared` and makes the terminal write itself. This is the shape
 `surfaces.sync_context(before, after)` already has
 (`session_view/surfaces.gleam:1047` (`sync_context`)) and the shape
-`refresh_render_cache(before, after)` has (`tui/projection.gleam:72`
+`refresh_render_cache(before, after)` has (`tui/projection.gleam:79`
 (`refresh_render_cache`)); the shell gains one more before-and-after
 pass beside them. It is right when the terminal write is a consequence of
 a session fact.
@@ -572,7 +572,7 @@ The worst cases in the code, and the cut for each:
    `agent_summary` is dropped and derived at paint. The other 27 writes
    are shared and the function moves as it is.
 
-2. **`select_workspace`** (`session_view/event_fold.gleam:1538`
+2. **`select_workspace`** (`session_view/event_fold.gleam:1548`
    (`select_workspace`)) parks the editor, the history window, the
    viewport and the anchors under one key and restores another's. It
    splits into `step.select_workspace`, which parks and restores
@@ -623,7 +623,7 @@ The worst cases in the code, and the cut for each:
    `pending_submission` marker moves into the shared `Submit` arm.
 
 6. **`present_pending_approval` and `close_settled_approval`**
-   (`tui/inbound.gleam:590` (`present_pending_approval`),
+   (`tui/inbound.gleam:600` (`present_pending_approval`),
    `session_view/lane_fold.gleam:599` (`close_settled_approval`)) open and close the
    approval inspector from the projected approvals. Both are terminal:
    the page has no inspector and draws every pending record. They become
@@ -647,10 +647,10 @@ The worst cases in the code, and the cut for each:
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
    `request_visible_worktree` on a diff pane appearing, which becomes
    `Acted(RefreshWorktree)` because only the shell knows the pane appeared
-   (`tui/inbound.gleam:1063` (`request_visible_worktree`) reads
+   (`tui/inbound.gleam:1078` (`request_visible_worktree`) reads
    `layout.diff_shown`); `request_history_for_view`, which becomes
    `Acted(OlderHistory)` for the same reason
-   (`tui/interaction.gleam:2102` (`request_history_for_view`) reads the
+   (`tui/interaction.gleam:2075` (`request_history_for_view`) reads the
    viewport); `publish_herdr`; `refresh_render_cache`; the viewport snap;
    and `refresh_frame_cache`. The compile-time boundary the comment above
    `apply_input` describes keeps its shape: the shared `update` applies
@@ -664,7 +664,7 @@ The worst cases in the code, and the cut for each:
    chain. The order is kept by having the terminal's tick call the shared
    `Ticked` at the point where the connection drain sits today, after the
    terminal's job drains and the candidate's poll. `tick_strip`
-   (`tui/inbound.gleam:1173` (`tick_strip`)) reads the strip's focus and
+   (`tui/inbound.gleam:1181` (`tick_strip`)) reads the strip's focus and
    stays; `advance_cache_outlook` (`tui/tick.gleam:290`
    (`advance_cache_outlook`)) writes the footer label and stays, reading
    `shared.cache` and the stamp. `settle_tick`'s quiet-time and backlog
@@ -676,7 +676,7 @@ The worst cases in the code, and the cut for each:
    terminal function over `TuiModel`, and the calls it makes into shared
    reducers become `Acted` commands or direct calls through `hold_shared`.
    `update_ready_key`'s order, Escape before the drain
-   (`tui/interaction.gleam:1744` (`update_ready_key`)), is kept because
+   (`tui/interaction.gleam:1719` (`update_ready_key`)), is kept because
    the shell decides when to call the shared drain, as it does today.
 
 ## 4. What the web view deletes
@@ -696,7 +696,7 @@ no lines.
 | `reduce`, `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
 | `apply` | `apply_channel_update` | `session_view/inbound` |
 | `captured`, `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
-| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:938`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
+| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:946`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
 | `relaned`, `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
 | `ticked` | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
 | `settled` | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |

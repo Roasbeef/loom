@@ -27,6 +27,7 @@ import session_view/model as session_model
 import session_view/notice_words
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript_line
@@ -35,6 +36,7 @@ import tui/connection
 import tui/inbound
 import tui/model as tui_model
 import tui/recording
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 
@@ -539,11 +541,9 @@ fn attached() {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("test", None))
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Replaying,
-        channel: Some(ready),
-      ),
+      shared: base.shared
+        |> shared_set.peer(session_model.Replaying)
+        |> shared_set.channel(Some(ready)),
       view: tui_model.View(
         ..base.view,
         // A socketless replay lane keeps the frozen transport clock its
@@ -762,7 +762,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
     let base = attached()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, peer: session_model.Preview),
+      shared: shared_set.peer(base.shared, session_model.Preview),
     )
   }
   let reported =
@@ -795,7 +795,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
     inbound.accept_connection_message(
       tui_model.Model(
         ..covered,
-        view: tui_model.View(..covered.view, monotonic_time_ms: fn() { 120_000 }),
+        view: view_set.monotonic_time_ms(covered.view, fn() { 120_000 }),
       ),
       usage_push("main", reported),
     )
@@ -804,10 +804,7 @@ pub fn a_pushed_usage_row_folds_into_the_terminal_model_test() {
   assert duplicate.shared.usage == settled.shared.usage
 
   let captured =
-    tui_model.Model(
-      ..model,
-      shared: session_model.Shared(..model.shared, usage: reported),
-    )
+    tui_model.Model(..model, shared: shared_set.usage(model.shared, reported))
   let after_cut =
     inbound.accept_connection_message(captured, usage_push("main", reported))
   assert after_cut.shared.usage == reported
@@ -835,17 +832,17 @@ pub fn an_old_operation_cannot_reseed_the_cache_after_a_model_switch_test() {
     tui.update(backend.KeyPress("enter"), {
       let base = attached()
       tui_model.Model(
-        shared: session_model.Shared(
-          ..base.shared,
-          peer: session_model.Preview,
-          cache: cache_watch.Ledger(
-            ..attached().shared.cache,
-            watches: dict.from_list([#("main", watch)]),
+        shared: base.shared
+          |> shared_set.peer(session_model.Preview)
+          |> shared_set.cache(
+            cache_watch.Ledger(
+              ..attached().shared.cache,
+              watches: dict.from_list([#("main", watch)]),
+            ),
           ),
-        ),
-        view: tui_model.View(
-          ..base.view,
-          input: textarea.state_from_string("/model new-provider"),
+        view: view_set.input(
+          base.view,
+          textarea.state_from_string("/model new-provider"),
         ),
       )
     })
@@ -897,10 +894,7 @@ pub fn a_remote_switch_before_the_first_row_still_fences_the_old_operation_test(
         let base = attached()
         tui_model.Model(
           ..base,
-          shared: session_model.Shared(
-            ..base.shared,
-            peer: session_model.Preview,
-          ),
+          shared: shared_set.peer(base.shared, session_model.Preview),
         )
       },
       11,
@@ -960,10 +954,7 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
         let base = attached()
         tui_model.Model(
           ..base,
-          shared: session_model.Shared(
-            ..base.shared,
-            peer: session_model.Preview,
-          ),
+          shared: shared_set.peer(base.shared, session_model.Preview),
         )
       },
       11,
@@ -971,14 +962,14 @@ pub fn a_remote_switch_capture_cancels_an_early_usage_comparison_test() {
     )
   let old =
     tui_model.Model(
-      shared: session_model.Shared(
-        ..captured.shared,
-        cache: cache_watch.Ledger(
+      shared: shared_set.cache(
+        captured.shared,
+        cache_watch.Ledger(
           ..captured.shared.cache,
           watches: dict.from_list([#("main", watch)]),
         ),
       ),
-      view: tui_model.View(..captured.view, monotonic_time_ms: fn() { 600_000 }),
+      view: view_set.monotonic_time_ms(captured.view, fn() { 600_000 }),
     )
   let pending =
     inbound.accept_connection_message(
@@ -1012,7 +1003,7 @@ pub fn an_initial_cut_fences_an_operation_running_under_an_older_model_test() {
     let base = attached()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, peer: session_model.Preview),
+      shared: shared_set.peer(base.shared, session_model.Preview),
     )
   }
   let first =
@@ -1058,7 +1049,7 @@ pub fn an_initial_cut_ignores_a_late_push_from_a_finished_old_operation_test() {
     let base = attached()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, peer: session_model.Preview),
+      shared: shared_set.peer(base.shared, session_model.Preview),
     )
   }
   let first = cache_cut(model, 11, "new-provider")
@@ -1100,11 +1091,9 @@ pub fn a_queued_prompt_reads_as_a_booked_turn_rather_than_a_refusal_test() {
     inbound.accept_connection_message(
       tui_model.Model(
         ..model,
-        shared: session_model.Shared(
-          ..model.shared,
-          channel: Some(sent),
-          submitting: Some("main"),
-        ),
+        shared: model.shared
+          |> shared_set.channel(Some(sent))
+          |> shared_set.submitting(Some("main")),
       ),
       reply(
         id,

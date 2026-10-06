@@ -16,6 +16,7 @@ import tui/daemon/protocol
 import tui/job
 import tui/model as tui_model
 import tui/session_selector
+import tui/view_set
 import tui/workspace
 
 fn row(id: String) -> protocol.Session {
@@ -108,10 +109,7 @@ pub fn a_refused_delete_leaves_the_page_the_terminal_already_has_test() {
 fn picker(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    view: tui_model.View(
-      ..model.view,
-      overlay: tui_model.DaemonSelector(page()),
-    ),
+    view: view_set.overlay(model.view, tui_model.DaemonSelector(page())),
   )
 }
 
@@ -144,9 +142,9 @@ pub fn a_delete_is_refused_while_a_page_load_is_in_flight_test() {
   let loading =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        control_request: Some(tui_model.ControlRequest(job.awaiting(key), None)),
+      view: view_set.control_request(
+        model.view,
+        Some(tui_model.ControlRequest(job.awaiting(key), None)),
       ),
     )
   let asking = tui.update(backend.KeyPress("d"), loading)
