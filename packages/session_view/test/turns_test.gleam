@@ -1166,3 +1166,77 @@ pub fn a_decision_inside_a_folded_turn_stays_a_visible_row_test() {
 pub fn no_decisions_leave_the_pieces_untouched_test() {
   assert turns.with_decisions(pieces([]), []) == pieces([])
 }
+
+fn failed_response(reason: String) -> message.AgentMessage {
+  message.AssistantMessage(
+    [],
+    "test",
+    "test",
+    "test",
+    None,
+    None,
+    None,
+    usage(),
+    message.Errored,
+    None,
+    Some(reason),
+    None,
+    None,
+    0,
+  )
+}
+
+// A response that failed before it said anything is work with nothing to
+// fold: its cause is a row of the lane, not a line behind a divider.
+pub fn a_failed_turn_shows_its_cause_outside_the_fold_test() {
+  let laid =
+    laid_out(
+      [
+        #(10_000, said("run it", Some(message.Origin("p", "Alice")))),
+        #(10_500, failed_response("secret KEY is not available")),
+      ],
+      whole(),
+    )
+  assert list.map(laid, shape)
+    == ["prompt:Alice:run it", "plain:secret KEY is not available"]
+}
+
+// When the failing response also made calls, the calls fold and the cause
+// still stands after the divider.
+pub fn a_failure_after_work_stays_beside_the_divider_test() {
+  let laid =
+    laid_out(
+      [
+        #(10_000, said("run it", Some(message.Origin("p", "Alice")))),
+        #(14_000, assistant([read_call()])),
+        #(15_000, result("c1", "fs_read", json.Object([]), 15_000)),
+        #(16_000, failed_response("the provider refused")),
+      ],
+      whole(),
+    )
+  assert list.map(laid, shape)
+    == [
+      "prompt:Alice:run it",
+      "work:folded",
+      "plain:the provider refused",
+    ]
+}
+
+// A turn cut inside a long run of calls holds results whose calls are older
+// than the window. Each is still one call, so the divider counts it and the
+// figure grows as older rows are loaded.
+pub fn results_whose_calls_are_cut_count_as_steps_test() {
+  let laid =
+    laid_out(
+      [
+        #(10_000, said("run it", Some(message.Origin("p", "Alice")))),
+        #(15_000, result("c1", "fs_read", json.Object([]), 15_000)),
+        #(16_000, result("c2", "fs_read", json.Object([]), 16_000)),
+        #(17_000, assistant([message.AssistantText("Done.", None)])),
+      ],
+      whole(),
+    )
+  let assert [_, turns.Work(worked:, ..), _] = laid
+  assert worked.steps == 2
+  assert turns.divider(worked) == "Worked 7s · 2 steps"
+}

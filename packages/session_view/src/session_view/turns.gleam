@@ -989,10 +989,43 @@ fn entry_kind(
       case list.any(content, speaks), prose.rows {
         True, _ -> [Answer(prose, at, thoughts, None), ..own]
         False, [] -> own
-        False, [_, ..] -> [
-          Doing(Narrated(prose, thoughts, None), at, 0, []),
-          ..own
-        ]
+        False, [_, ..] -> {
+          // A response that failed says why on a row of its own, and that
+          // row stays outside the fold: the cause of a failed turn is the
+          // one thing the reader must not have to open anything to see.
+          let #(failures, spoken) =
+            list.partition(prose.rows, fn(row) {
+              { row.1 }.speaker == transcript_line.Failure
+            })
+          list.flatten([
+            case spoken {
+              [] -> []
+              [_, ..] -> [
+                Doing(
+                  Narrated(
+                    transcript_lines.Block(..prose, rows: spoken),
+                    thoughts,
+                    None,
+                  ),
+                  at,
+                  0,
+                  [],
+                ),
+              ]
+            },
+            own,
+            case failures {
+              [] -> []
+              [_, ..] -> [
+                Outside(Plain(
+                  transcript_lines.Block(..prose, rows: failures),
+                  dict.new(),
+                  None,
+                )),
+              ]
+            },
+          ])
+        }
       }
     }
 
@@ -1001,6 +1034,12 @@ fn entry_kind(
     // their cards from the joined result, so the result's own block draws
     // nothing. A result whose call is outside the window is drawn as it is,
     // a wait's with its cards.
+    //
+    // An orphan result is still one call the turn made, so it counts as one
+    // step on the divider. A turn cut inside a long run of calls then shows
+    // a figure that grows with each page of older rows, where a count of
+    // zero left the divider's label as the only thing "Load older" moved,
+    // and only by the seconds the older records spanned.
     _,
       entry.MessageEntry(
         message: message.ToolResultMessage(
@@ -1027,10 +1066,10 @@ fn entry_kind(
           Outside(spawned(block.key, None, details, outcome, strands)),
         ]
         False, "agent_wait" -> [
-          Doing(Narrated(block, dict.new(), None), at, 0, []),
+          Doing(Narrated(block, dict.new(), None), at, 1, []),
           ..returned(block.key, details, strands)
         ]
-        False, _ -> [Doing(Narrated(block, dict.new(), None), at, 0, [])]
+        False, _ -> [Doing(Narrated(block, dict.new(), None), at, 1, [])]
       }
     }
 

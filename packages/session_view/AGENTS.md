@@ -236,7 +236,10 @@ for a host with no surfaces.
   `turns.attributed` sets it on that principal's messages, never the reader's), one
   `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
   on an approval; its `Worked` figures come from the records, failed calls included, which
-  `turns.divider` prints as `· 1 failed`). The fold's
+  `turns.divider` prints as `· 1 failed`; a result whose call lies outside the
+  window counts as one step, so a turn cut inside a long run of calls shows a
+  figure that grows as older rows load). A response that failed says why on a
+  `Plain` row beside the divider, never inside the fold. The fold's
   items are `Narrated` blocks (each with `took`, the response's time, which a
   reasoning row reads), `Step`s (`words` from `step_words.of_call`) and
   `Memory`, the memory context the daemon recorded ahead of a prompt: it is no
