@@ -557,7 +557,6 @@ pub type Transport(socket) {
     /// stopping ends this page, so the answer reaches it only when the task
     /// refused before the stop.
     shareable: Option(fn(fn(grants.Answer) -> Nil) -> Nil),
-
     /// Asks the daemon to observe the session's Git working tree for the
     /// Changes tab (protocol-change/051, the addendum on the worktree read). It
     /// must return at once: the daemon runs the observation in a task of its
