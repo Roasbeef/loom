@@ -6014,10 +6014,90 @@ fn read_board(
   board
 }
 
+// The daemon's owner on an authenticated attachment: the one principal that may
+// remember permissions for the session (protocol-change/073). The page caps it
+// to operator authority, as `ui_relay.capped` does.
+fn authenticated_owner(harness: Harness, socket: process.Pid) {
+  let #(handle, auth, closed) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      harness.inbox,
+      access.Principal("alice", "Alice", access.OwnerPrincipal),
+      access.Participant(access.Operator),
+      socket,
+    )
+  gateway.connection_text(handle, subscribe_frame(harness.runtime, 700))
+  let _snapshot = next_reply(harness, 700, 8)
+  #(handle, auth, closed)
+}
+
+// A member who may allow once and deny may not remember anything for the
+// session, nor see or forget what the owner remembered.
+pub fn a_member_operator_may_not_remember_list_or_forget_test() {
+  let harness = start_harness()
+  let #(owner, _, _) = authenticated_owner(harness, process.self())
+  remember_network_as(harness, owner, "owners", 620, 960)
+  let #(member, _, _) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  claim(
+    harness,
+    "members",
+    scope_on("main", op_id(621)),
+    durable.Action("bash", "members-action", "network request"),
+    [policy.GrantNetwork(policy.NetworkFull)],
+  )
+  let _displayed = next_escalation(harness)
+  list.each(
+    [
+      #(
+        961,
+        protocol.ApproveForSession(
+          "members",
+          [policy.GrantNetwork(policy.NetworkFull)],
+          "members-action",
+          current_question_seq(harness, "members"),
+        ),
+      ),
+      #(962, protocol.PermissionsGet),
+      #(963, protocol.PermissionForget(protocol.ForgetAll, None)),
+    ],
+    fn(sent) {
+      gateway.connection_text(
+        member,
+        protocol.encode_command(protocol.CommandEnvelope(sent.0, sent.1)),
+      )
+      let assert protocol.ErrorEvent(code: "forbidden", ..) =
+        next_reply(harness, sent.0, 20).event
+        as "a member is refused what only the owner may do"
+    },
+  )
+  assert stored(harness, "members").status == durable.Pending
+  assert permissions.read(harness.runtime.session)
+    == Ok([policy.GrantNetwork(policy.NetworkFull)])
+    as "the owner's grant is untouched"
+
+  // Allow once is still a member's.
+  gateway.connection_text(
+    member,
+    protocol.encode_command(protocol.CommandEnvelope(
+      964,
+      protocol.Approve(
+        "members",
+        [policy.GrantNetwork(policy.NetworkFull)],
+        "members-action",
+        current_question_seq(harness, "members"),
+      ),
+    )),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 964, 20).event
+  assert record.status == "approved"
+}
+
 pub fn session_approval_records_the_principal_the_credential_and_the_time_test() {
   let harness = start_harness()
-  let #(handle, _, _) =
-    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
   remember_network_as(harness, handle, "provenance", 606, 940)
   let assert Ok(permissions.Listing(grants: [remembered], ..)) =
     permissions.listing(harness.runtime)
@@ -6025,7 +6105,7 @@ pub fn session_approval_records_the_principal_the_credential_and_the_time_test()
   assert remembered.grant == policy.GrantNetwork(policy.NetworkFull)
   let assert permissions.Approved(by:, via:, at_ms:) = remembered.provenance
     as "the approval is attributed"
-  assert by == Some(message.Origin("alice", "Alice"))
+  assert by == message.Origin("alice", "Alice")
   assert via == permissions.Device(string.repeat("a", 16))
   assert at_ms >= 1_756_000_000_000
   let board = read_board(harness, handle, 941)
@@ -6038,8 +6118,7 @@ pub fn session_approval_records_the_principal_the_credential_and_the_time_test()
 
 pub fn a_fact_written_before_provenance_reads_as_unknown_test() {
   let harness = start_harness()
-  let #(handle, _, _) =
-    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
   let earlier =
     json.Object([
       #(
@@ -6060,8 +6139,7 @@ pub fn a_fact_written_before_provenance_reads_as_unknown_test() {
 
 pub fn an_observer_may_neither_list_nor_forget_remembered_permissions_test() {
   let harness = start_harness()
-  let #(operator, _, _) =
-    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(operator, _, _) = authenticated_owner(harness, process.self())
   remember_network_as(harness, operator, "kept", 607, 943)
   let #(observer, _, _) =
     authenticated(harness, access.Participant(access.Observer), process.self())
@@ -6091,8 +6169,7 @@ pub fn an_observer_may_neither_list_nor_forget_remembered_permissions_test() {
 
 pub fn forgetting_a_permission_removes_it_and_leaves_the_rest_test() {
   let harness = start_harness()
-  let #(handle, _, _) =
-    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
   remember_network_as(harness, handle, "network", 608, 946)
   let board = read_board(harness, handle, 947)
   gateway.connection_text(
@@ -6124,8 +6201,7 @@ pub fn forgetting_a_permission_removes_it_and_leaves_the_rest_test() {
 
 pub fn a_forget_made_from_a_list_that_has_moved_writes_nothing_test() {
   let harness = start_harness()
-  let #(handle, _, _) =
-    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
   remember_network_as(harness, handle, "first", 609, 949)
   let seen = read_board(harness, handle, 950)
 
@@ -6168,8 +6244,7 @@ pub fn a_forget_made_from_a_list_that_has_moved_writes_nothing_test() {
 
 pub fn forgetting_everything_also_forgets_exact_action_consents_test() {
   let harness = start_harness()
-  let #(handle, _, _) =
-    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
   remember_network_as(harness, handle, "everything", 611, 953)
   let arguments = json.Object([#("command", json.String("substrate watch"))])
   let digest = escalate.action_digest(arguments)
@@ -6225,8 +6300,7 @@ pub fn forgetting_everything_also_forgets_exact_action_consents_test() {
 
 pub fn forgetting_names_only_what_the_listing_could_have_named_test() {
   let harness = start_harness()
-  let #(handle, _, _) =
-    authenticated(harness, access.Participant(access.Operator), process.self())
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
   gateway.connection_text(
     handle,
     protocol.encode_command(protocol.CommandEnvelope(

@@ -109,9 +109,9 @@ pub type Provenance {
   /// The approval was attributed: who approved it, on which credential and
   /// when.
   Approved(
-    /// The authenticated principal, or `None` for a connection that carries
-    /// none (a host fixture).
-    by: Option(message.Origin),
+    /// The authenticated principal. A connection that carries none (a host
+    /// fixture) records no provenance at all.
+    by: message.Origin,
     /// The credential the approval arrived on.
     via: Via,
     /// When the approval was committed, in Unix milliseconds.
@@ -134,9 +134,6 @@ pub type Via {
 
   /// A bearer credential: the terminal's.
   Device(fingerprint: String)
-
-  /// The connection held no credential.
-  Uncredentialed
 }
 
 /// One remembered filesystem or network permission with its provenance.
@@ -437,7 +434,7 @@ fn encode_general(
 
 fn provenance_author(provenance: Provenance) -> Option(message.Origin) {
   case provenance {
-    Approved(by:, ..) -> by
+    Approved(by:, ..) -> Some(by)
     Unknown -> None
   }
 }
@@ -455,7 +452,7 @@ pub fn encode_provenance(provenance: Provenance) -> json.JsonValue {
     Unknown -> json.Null
     Approved(by:, via:, at_ms:) ->
       json.Object([
-        #("by", origin.encode(by)),
+        #("by", origin.encode(Some(by))),
         #("via", encode_via(via)),
         #("at_ms", json.Int(at_ms)),
       ])
@@ -474,7 +471,6 @@ fn encode_via(via: Via) -> json.JsonValue {
         #("kind", json.String("device")),
         #("fingerprint", json.String(fingerprint)),
       ])
-    Uncredentialed -> json.Object([#("kind", json.String("none"))])
   }
 }
 
@@ -497,7 +493,8 @@ pub fn decode_provenance(value: json.JsonValue) -> Provenance {
       origin.decode_field([
         #("origin", result.unwrap(list.key_find(fields, "by"), json.Null)),
       ])
-      |> result.replace_error(Nil),
+      |> result.replace_error(Nil)
+      |> result.try(option.to_result(_, Nil)),
     )
     use via <- result.try(case list.key_find(fields, "via") {
       Ok(json.Object(inner)) -> decode_via(inner)
@@ -518,7 +515,6 @@ fn decode_via(fields: List(#(String, json.JsonValue))) -> Result(Via, Nil) {
       Ok(Login(fingerprint:))
     Ok(json.String("device")), Ok(json.String(fingerprint)) ->
       Ok(Device(fingerprint:))
-    Ok(json.String("none")), _ -> Ok(Uncredentialed)
     _, _ -> Error(Nil)
   }
 }
@@ -637,8 +633,9 @@ fn text_of(payload: json.JsonValue, field: String) -> Option(String) {
 /// that is no longer remembered, is `Stale`: the permission set the operator
 /// looked at is not the one in force, so nothing is written and the operator
 /// reads again. `ForgetAll` removes the general permissions and every consent
-/// cell it finds, each guarded by its sequence as read here, so a consent
-/// granted after the read loses the transaction.
+/// cell it finds, each guarded by the sequence it has when the forget is built,
+/// so a consent that moves before the commit loses the transaction; one granted
+/// after the listing is forgotten too.
 ///
 /// The general fact is rewritten and never deleted, so its sequence keeps
 /// guarding the next approval even when nothing is left in it.

@@ -315,7 +315,11 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       html.footer([attribute.class("dock")], [
         component.plan(model),
         controls.dock(bar(model)),
-        approvals(component.pending(model), component.raised_on(model)),
+        approvals(
+          component.pending(model),
+          component.raised_on(model),
+          component.may_remember(model),
+        ),
         composer(model),
       ]),
 
@@ -342,15 +346,19 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       ),
       controls.session(bar(model)),
       component.rename_form(model, form_submit_text(Renaming)),
-      remembered_view.view(
-        component.permissions_kept(model),
-        component.permissions_state(model),
-        remembered_view.Presses(
-          ask: AskingForget,
-          confirm: ConfirmingForget,
-          cancel: CancellingForget,
-        ),
-      ),
+      case component.may_remember(model) {
+        True ->
+          remembered_view.view(
+            component.permissions_kept(model),
+            component.permissions_state(model),
+            remembered_view.Presses(
+              ask: AskingForget,
+              confirm: ConfirmingForget,
+              cancel: CancellingForget,
+            ),
+          )
+        False -> element.none()
+      },
     ),
     component.needing(model),
     component.workspace_digest(model),
@@ -496,6 +504,7 @@ pub const approvals_marker = "loom-approvals"
 fn approvals(
   pending: List(approval.Review),
   raised_on: List(#(String, String)),
+  owner: Bool,
 ) -> Element(Msg(socket)) {
   case pending {
     [] -> element.none()
@@ -510,7 +519,7 @@ fn approvals(
           keyed.div(
             [attribute.class("approval-list")],
             list.map(pending, fn(record) {
-              #(int.to_string(record.seq), card(record, raised_on))
+              #(int.to_string(record.seq), card(record, raised_on, owner))
             }),
           ),
         ],
@@ -541,6 +550,7 @@ fn approvals(
 fn card(
   record: approval.Review,
   raised_on: List(#(String, String)),
+  owner: Bool,
 ) -> Element(Msg(socket)) {
   let tool = case record.tool {
     "" -> "this request"
@@ -588,7 +598,7 @@ fn card(
               "Allow " <> tool <> " once",
               Decided(record.id, record.seq, component.AllowOnce),
             ),
-            ..session_offer(record, tool, arming)
+            ..session_offer(record, tool, arming, owner)
           ],
         ),
       ])
@@ -617,9 +627,10 @@ fn session_offer(
   record: approval.Review,
   tool: String,
   arming: Element(Msg(socket)),
+  owner: Bool,
 ) -> List(Element(Msg(socket))) {
-  case approval.rememberable(record) {
-    Ok(Nil) -> [
+  case owner, approval.rememberable(record) {
+    True, Ok(Nil) -> [
       button(
         "approval-allow",
         "Allow " <> tool <> " for this session",
@@ -627,7 +638,7 @@ fn session_offer(
       ),
       arming,
     ]
-    Error(_) -> [arming]
+    True, Error(_) | False, _ -> [arming]
   }
 }
 

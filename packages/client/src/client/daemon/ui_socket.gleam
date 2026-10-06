@@ -2646,8 +2646,8 @@ pub fn worktree_capability(
 }
 
 /// The capability a page of `role` is handed to ask which browser sign-ins
-/// have ended: `ask` for an owner's or an operator's page and none for an
-/// observer's, which draws no list of what the session remembers
+/// have ended: `ask` for an owner's page and none for a member's or an
+/// observer's, neither of which draws a list of what the session remembers
 /// (protocol-change/073). The daemon asks the registry again when `ask` runs
 /// (`ended_logins`), so holding the capability judges nothing about a sign-in
 /// on its own.
@@ -2665,8 +2665,8 @@ pub fn logins_capability(
   fn(List(remembered.Login), fn(List(remembered.Login)) -> Nil) -> Nil,
 ) {
   case role {
-    Observing -> None
-    Operating | Owning -> Some(ask)
+    Observing | Operating -> None
+    Owning -> Some(ask)
   }
 }
 

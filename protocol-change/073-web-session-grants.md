@@ -29,8 +29,8 @@ that browser made in force.
 **Offer it only on the fresh home's pages.** The stolen-cookie risk is real, and
 a page opened from a `loom ui` exchange is the strongest evidence that the
 person is at the keyboard. A bookmarked page, resumed from a cookie, would offer
-allow once and deny only. Not taken. The owner's ruling is that every page where
-the owner can already approve may offer it. The bookmarked page can already
+allow once and deny only. Not taken. The owner's ruling is that every page of the
+owner's may offer it, bookmarked ones included. The bookmarked page can already
 allow once and run a command the owner never typed, and the thing it adds is a
 grant that lasts, which Forget and the provenance below bound after the fact.
 Restricting by origin would also give two answers to "may this page approve for
@@ -42,6 +42,13 @@ does in one keystroke.
 their own: they are needed for the terminal's grants too. But the friction is
 the other half of the problem, and a list with no web path to create entries
 would never be exercised by the people who read it.
+
+**Offer it to members too.** A member operator may allow once and deny, and a
+member who could also remember would add authority to the session that the
+owner did not choose, would see the owner's provenance (principals and
+credential fingerprints), and could forget the owner's grants. Not taken. The
+owner's ruling is that remembering, the list and Forget are the owner's alone,
+and a member keeps allow once and deny as before.
 
 **Make a remembered grant end with the sign-in that made it.** It sounds like
 the fix for the stolen cookie, and it is wrong for the people it would affect. A
@@ -63,6 +70,18 @@ transaction, so no state has one without the other.
 ## Decision
 
 **Accepted.**
+
+*Owner only.* `approve` with `scope: "session"`, `permissions` and
+`permission_forget` are refused with `forbidden` to any authenticated attachment
+whose principal is not the daemon's owner (`gateway.owner_only`,
+`member_attached`), whatever role it holds, in addition to the observer refusal.
+That is the gate. An attachment with no principal (the in-VM host fixture) is the
+trusted sink and is not refused. The page derives owner-ness at open from the
+authenticated principal (`Standing.reader`, the same principal kind the gateway
+checks) and draws the session button, the list and Forget only for the owner;
+`Transport.logins` is handed to the owner's page alone, and the page asks again
+at the click (`component.may_remember`). A member's page draws allow once and
+deny, no list, and never reads one.
 
 *The page.* `component.Answer` gains `AllowForSession`. The card offers *Allow
 bash for this session* after *Allow bash once*, only where `approval.rememberable`
@@ -102,7 +121,9 @@ everything. The edit is one transaction through the session's writer
 (`api.edit_reserved_facts`): the general fact is rewritten, never deleted, so
 its sequence keeps guarding the next approval, and consent cells are removed,
 each guarded by the sequence it was read at. A cell that moved, or a target that
-is already gone, loses the whole transaction as `conflict` and writes nothing;
+is already gone, loses the whole transaction as `conflict` and writes nothing
+(forgetting everything when nothing is remembered is not a target that is gone
+and succeeds with the empty list);
 the server never retries a stale answer, as 041 requires. The reply is the
 fresh `permissions` snapshot, so one reply redraws the list. The gateway checks
 what it checks for an approval: a subscribed attachment, not an observer, and
@@ -128,7 +149,7 @@ survive; that is the cost of keeping a grant's lifetime the session's. So the
 list marks a permission whose sign-in has since ended and says to forget it if
 unrecognised. The daemon, not the page, judges: `Transport.logins` asks the
 registry for the principal's active sign-ins, which the owner may read for any
-principal and a member only for themselves. A login is marked ended only when the
+principal. A login is marked ended only when the
 registry answered for that principal and the whole list, which must fit one page,
 did not hold it. Anything the daemon could not judge draws no note.
 

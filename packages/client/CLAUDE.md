@@ -5627,8 +5627,10 @@ hexadecimal id, or everything) as the operator saw it, and the gateway applies
 it through `api.edit_reserved_facts`: a moved cell, or a target already gone,
 is `Stale` and answers `conflict` with nothing written. The general fact is
 rewritten and never deleted. `PermissionsGet` and `PermissionForget` count as
-mutations in `gateway.read_only`, so an observer attachment is refused both, and
-neither runs while the session drains.
+mutations in `gateway.read_only`, so an observer attachment is refused both and
+neither runs while the session drains. Both, and `ApproveForSession`, are also
+owner-only (`gateway.owner_only`): an authenticated attachment whose principal is
+a member is refused with `forbidden`.
 
 `lsp/jail.workspace_reads` intersects the workspace with session-authorized
 readable and writable roots. Sibling dependencies become readable while writes

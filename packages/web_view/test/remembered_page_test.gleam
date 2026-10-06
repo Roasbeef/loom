@@ -136,10 +136,31 @@ fn answer(request: Int, board: json.JsonValue) -> connection_event.Message {
 // answered. A `permissions` read is answered with `listed` when there is a
 // board and refused when there is none, as an older daemon would.
 fn page(role: String, cells, listed: option.Option(json.JsonValue)) {
+  page_of(owner_start(), role, cells, listed)
+}
+
+// The daemon's owner's page: the only one that may remember anything.
+fn owner_start() -> component.Start(page_fixture.Wire) {
+  let start = page_fixture.start()
+  component.Start(
+    ..start,
+    standing: component.Standing(
+      ..start.standing,
+      reader: component.DaemonOwner,
+    ),
+  )
+}
+
+fn page_of(
+  start: component.Start(page_fixture.Wire),
+  role: String,
+  cells,
+  listed: option.Option(json.JsonValue),
+) {
   let wire = process.new_subject()
   let model =
     page_fixture.run(
-      component.new(page_fixture.start()),
+      component.new(start),
       operator_page.update,
       list.flatten([
         [operator_page.Observed(component.Opened(wire))],
@@ -487,4 +508,43 @@ pub fn an_observers_page_draws_no_list_and_no_handler_there_test() {
       string.starts_with(key, component.remembered_path)
     })
     == []
+}
+
+// --- members -----------------------------------------------------------------
+
+// A member who may allow once and deny may not remember anything for the
+// session or see what the owner remembered (protocol-change/073), so the card
+// offers the two answers it always did, the pane draws no list, and the page
+// never asks for one.
+pub fn a_members_page_offers_allow_once_and_deny_only_test() {
+  let #(model, wire) =
+    page_of(
+      page_fixture.start(),
+      "operator",
+      rememberable(),
+      Some(remembered_board()),
+    )
+  let html = drawn(model)
+  assert string.contains(html, "Deny bash")
+  assert string.contains(html, "Allow bash once")
+  assert !string.contains(html, "for this session")
+  assert !string.contains(html, "Remembered permissions")
+  assert !string.contains(html, "Read /repo")
+  assert component.permissions_kept(model) == option.None
+
+  // Nothing the browser sends can ask for it either.
+  let sent =
+    send(model, [
+      operator_page.Decided("esc-1", 7, component.AllowForSession),
+    ])
+  assert page_fixture.commands(page_fixture.sent(wire)) == []
+  let assert component.Warned(_) = component.notice(sent)
+}
+
+pub fn an_owners_page_offers_the_session_choice_and_the_list_test() {
+  let #(model, _) = page("operator", rememberable(), Some(remembered_board()))
+  let html = drawn(model)
+  assert string.contains(html, "Allow bash for this session")
+  assert string.contains(html, "Remembered permissions")
+  assert string.contains(html, "Read /repo")
 }

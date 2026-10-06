@@ -1424,7 +1424,10 @@ would try to trick the person into approving:
   Send, Queue or Steer button, or by Command or Control with Enter in the
   editor, which submits that same form; the form's submit never carries a
   decision.
-- The page offers allow once, allow for the session and deny
+- The owner's page offers allow once, allow for the session and deny; a member's
+  offers allow once and deny only, and draws no list, because remembering,
+  listing and forgetting are the owner's alone (the gateway refuses them to a
+  member; `component.may_remember` is the page's offer)
   ([protocol-change/073](../../protocol-change/073-web-session-grants.md)).
   Allow for the session follows allow once, names the tool ("Allow bash for
   this session"), and appears only where `approval.rememberable` holds, the

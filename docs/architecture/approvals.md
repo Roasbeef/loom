@@ -292,7 +292,7 @@ session's agent wrote. The card sits in its own region directly above the
 composer, in the dock pinned to the bottom of the viewport, drawn from the
 record alone. Its buttons refuse clicks for 600 ms after it appears, so a
 click aimed elsewhere cannot land on Allow. It offers *deny* first and *allow once*
-second, each naming the tool, then *allow for this session* where the
+second, each naming the tool, then *allow for this session*, on the owner's page only, where the
 record can be remembered, which is the terminal's rule
 (`approval.rememberable`, [protocol-change/073](../../protocol-change/073-web-session-grants.md)).
 Nothing on the page takes focus when a card appears, and Enter in the
@@ -392,7 +392,9 @@ reads as `Unknown`, and a fact written before provenance existed is read with
 every grant `Unknown` and every grant still honoured.
 
 `permissions` lists what the session remembers and `permission_forget` removes
-it. Both are refused to an observer, as every mutation is, and a forget is one
+it. Both are refused to an observer, as every mutation is, and, with an approval for
+the session, to an authenticated member: remembering, listing and forgetting are
+the owner's. A forget is one
 transaction through the session's writer (`api.edit_reserved_facts`) guarded by
 the sequences the listing carried: a grant added or removed since the operator
 looked loses the whole edit as `conflict`, and nothing is written. The general

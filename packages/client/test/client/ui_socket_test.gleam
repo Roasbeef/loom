@@ -1491,11 +1491,12 @@ pub fn a_login_is_judged_ended_only_when_the_registry_could_say_so_test() {
     == []
 }
 
-// Only a page that draws the list is handed the means to ask which sign-ins
-// have ended, so an observer's page holds no way to learn who else signed in.
+// Only the owner's page, the one that draws the list, is handed the means to
+// ask which sign-ins have ended, so a member's or an observer's page holds no
+// way to learn who else signed in.
 pub fn an_observers_page_is_handed_no_way_to_judge_sign_ins_test() {
   let ask = fn(_logins, _deliver) { Nil }
   assert ui_socket.logins_capability(ui_socket.Observing, ask) == None
-  assert option.is_some(ui_socket.logins_capability(ui_socket.Operating, ask))
+  assert ui_socket.logins_capability(ui_socket.Operating, ask) == None
   assert option.is_some(ui_socket.logins_capability(ui_socket.Owning, ask))
 }

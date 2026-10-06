@@ -2852,6 +2852,35 @@ fn connection_origin(state: State, connection: Int) {
   |> result.unwrap(None)
 }
 
+// The commands that only the owner may send, beyond what an operator may.
+fn owner_only(command: Command) -> Bool {
+  case command {
+    protocol.ApproveForSession(..)
+    | protocol.PermissionsGet
+    | protocol.PermissionForget(..) -> True
+    _ -> False
+  }
+}
+
+// Whether the connection is an authenticated member rather than the daemon's
+// owner. A host fixture carries no principal and is the trusted in-VM sink, so
+// it is not a member.
+fn member_attached(state: State, connection: Int) -> Bool {
+  case dict.get(state.connections, connection) {
+    Ok(Connection(
+      authentication: Authenticated(
+        Binding(
+          principal: access.Principal(kind: access.MemberPrincipal, ..),
+          ..,
+        ),
+        ..,
+      ),
+      ..,
+    )) -> True
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
 fn observer(state: State, connection: Int) {
   case dict.get(state.connections, connection) {
     Ok(Connection(
@@ -4545,6 +4574,25 @@ fn run_command(
         id,
         "forbidden",
         "observer attachments are read-only",
+      )
+      state
+    },
+  )
+
+  // Remembering authority for the session, and seeing or removing what the
+  // session remembers, are the owner's (protocol-change/073). A member who may
+  // allow once or deny may not do these: the list names the owner's grants and
+  // credentials, and a member could otherwise forget the owner's grants. This
+  // is the gate; the page's own offer is only a convenience over it.
+  use <- bool.lazy_guard(
+    when: owner_only(command) && member_attached(state, connection),
+    return: fn() {
+      reply_error(
+        state,
+        connection,
+        id,
+        "forbidden",
+        "only the session owner may remember permissions for the session",
       )
       state
     },
@@ -7021,10 +7069,14 @@ fn approval_provenance(
 ) -> permissions.Provenance {
   let #(now, _clock) = clock.read(state.runtime.effects.clock)
   case dict.get(state.connections, connection) {
-    Ok(Connection(authentication: Authenticated(binding, ..), origin:, ..)) -> {
+    Ok(Connection(
+      authentication: Authenticated(binding, ..),
+      origin: Some(by),
+      ..,
+    )) -> {
       let fingerprint = access.fingerprint(binding.digest)
       permissions.Approved(
-        by: origin,
+        by:,
         via: case access.credential_kind(binding.digest) {
           access.Browser -> permissions.Login(fingerprint:)
           access.Bearer -> permissions.Device(fingerprint:)

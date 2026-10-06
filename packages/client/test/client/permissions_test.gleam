@@ -9,11 +9,10 @@ import client/permissions
 import core/json
 import core/message
 import gleam/list
-import gleam/option.{None, Some}
 
 fn approved() -> permissions.Provenance {
   permissions.Approved(
-    by: Some(message.Origin("alice", "Alice")),
+    by: message.Origin("alice", "Alice"),
     via: permissions.Login("9c1e0f2ab3d4e5f6"),
     at_ms: 1_790_000_000_000,
   )
@@ -24,11 +23,10 @@ pub fn a_provenance_round_trips_through_the_fact_test() {
     [
       approved(),
       permissions.Approved(
-        by: Some(message.Origin("alice", "Alice")),
+        by: message.Origin("alice", "Alice"),
         via: permissions.Device("0123456789abcdef"),
         at_ms: 0,
       ),
-      permissions.Approved(by: None, via: permissions.Uncredentialed, at_ms: 5),
       permissions.Unknown,
     ],
     fn(provenance) {

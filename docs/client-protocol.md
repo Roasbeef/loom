@@ -1854,7 +1854,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6189`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6237`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -2344,9 +2344,11 @@ section 5.19.
 What a session remembers for its operator: the filesystem and network
 permissions, and the exact-action consents, that an approval for the session
 (`approve` with `scope: "session"`) left behind, each with who approved it.
-Neither command is a read an observer may make. The listing names principals
-and credentials, and forgetting is a mutation, so an observer attachment is
-refused both with `forbidden`, and neither runs while the session is draining.
+Neither command is a read an observer may make, and both are the daemon
+owner's alone, as is `approve` with `scope: "session"`. The listing names
+principals and credentials, and forgetting is a mutation, so an observer
+attachment or an authenticated member is refused with `forbidden`, and neither
+runs while the session is draining.
 See [protocol 073](../protocol-change/073-web-session-grants.md).
 
 ```json
@@ -2377,8 +2379,9 @@ consent that predates them. Each list holds at most 100 rows.
 | `expected_seq` | integer | for `grant` and `all` when the fact exists; always for `action` | The sequence the listing carried: the general fact's for `grant` and `all`, the consent's own for `action`. |
 
 The edit is one transaction through the session's writer, guarded by the
-sequences the operator saw. A cell that moved since, or a target already gone,
-is `conflict` and nothing is written; the client reads again. A malformed
+sequences the operator saw. A cell that moved since, or a grant or consent
+already gone, is `conflict` and nothing is written; the client reads again. A
+forget of everything when nothing is remembered succeeds with the empty list. A malformed
 target, including a consent id that is not hexadecimal, is `bad_request`. On
 success the reply is the `permissions` snapshot that remains, so one round
 trip both acts and redraws. A forget does not reach a call that is already
@@ -3555,7 +3558,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3721`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3754`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

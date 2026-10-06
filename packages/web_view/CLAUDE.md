@@ -91,6 +91,10 @@ page keys and nonces, and the relay into the session's gateway.
   sixth child (protocol-change/073); the operator socket admits clicks beneath
   it and the observer's admits none.
 - **Allowing for the session, and what it kept** (protocol-change/073).
+  Owner only: `component.may_remember` (the owner's `Standing.reader`) gates the
+  session button, the list, `want_permissions`, `ask_forget` and the click; a
+  member's page offers allow once and deny, and the gateway refuses the same
+  commands from a member.
   `component.Answer` is `AllowOnce | AllowForSession | Deny`. The card offers
   `Allow <tool> for this session` after allow once only where
   `approval.rememberable` holds, and `component.decide` asks again at the click

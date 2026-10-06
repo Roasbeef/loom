@@ -3796,6 +3796,27 @@ pub fn decide(
         "That approval changed after it was drawn, so nothing was decided.",
       )
     Ok(record) -> {
+      case answer, may_remember(model) {
+        AllowForSession, False ->
+          refused(
+            model,
+            "Only the session owner can allow for the session, so nothing was decided.",
+          )
+        _, _ -> decided(model, record, answer)
+      }
+    }
+  }
+}
+
+// The decision on a record the page drew, now that the answer is one this
+// page may give.
+fn decided(
+  model: Model(socket),
+  record: approval.Review,
+  answer: Answer,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  {
+    {
       let choice = case answer {
         AllowOnce -> operator.AllowOnce
         AllowForSession -> operator.AllowForSession
@@ -3844,8 +3865,13 @@ fn owing_permissions(model: Model(socket), answer: Answer) -> Model(socket) {
 /// ```
 pub fn want_permissions(model: Model(socket)) -> Model(socket) {
   let at = model.view.transport.now()
-  case holding.due(model.view.holding, at), model.shared.remembered_refresh {
-    True, worktree_view.Settled ->
+  case
+    may_remember(model),
+    holding.due(model.view.holding, at),
+    model.shared.remembered_refresh
+  {
+    False, _, _ -> model
+    True, True, worktree_view.Settled ->
       Model(
         shared: Shared(
           ..model.shared,
@@ -3856,7 +3882,26 @@ pub fn want_permissions(model: Model(socket)) -> Model(socket) {
           holding: holding.wanted(model.view.holding, at),
         ),
       )
-    True, worktree_view.Requested | False, _ -> model
+    True, True, worktree_view.Requested | True, False, _ -> model
+  }
+}
+
+/// Whether this page may remember permissions for the session, list what is
+/// remembered and forget it: only the daemon's owner's page may
+/// (protocol-change/073). Members keep allow once and deny. The page reads it
+/// from the standing the daemon derived from the authenticated principal when
+/// the page opened, and the gateway refuses the same commands from a member
+/// whatever a page sends, so this is the offer and not the gate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.may_remember(model)
+/// ```
+pub fn may_remember(model: Model(socket)) -> Bool {
+  case model.view.reader {
+    DaemonOwner -> True
+    Participant -> False
   }
 }
 
@@ -3946,10 +3991,17 @@ fn judging(
 /// // component.ask_forget(model, armed)
 /// ```
 pub fn ask_forget(model: Model(socket), armed: holding.Armed) -> Model(socket) {
-  Model(
-    ..model,
-    view: View(..model.view, holding: holding.arm(model.view.holding, armed)),
-  )
+  case may_remember(model) {
+    True ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          holding: holding.arm(model.view.holding, armed),
+        ),
+      )
+    False -> model
+  }
 }
 
 /// Closes the question without sending anything.
@@ -3978,9 +4030,9 @@ pub fn cancel_forget(model: Model(socket)) -> Model(socket) {
 pub fn confirm_forget(
   model: Model(socket),
 ) -> #(Model(socket), Effect(Msg(socket))) {
-  case model.view.holding.armed {
-    None -> #(model, effect.none())
-    Some(open) ->
+  case model.view.holding.armed, may_remember(model) {
+    None, _ | _, False -> #(model, effect.none())
+    Some(open), True ->
       commanded(cancel_forget(model), msg.Forget(forget: open.forget))
   }
 }

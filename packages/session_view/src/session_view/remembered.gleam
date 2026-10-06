@@ -118,9 +118,6 @@ pub type Via {
 
   /// The terminal's own credential, identified by its fingerprint.
   Device(fingerprint: String)
-
-  /// A connection that held no credential.
-  Uncredentialed
 }
 
 /// Decodes the board of a `permissions` snapshot. Total: a malformed board is
@@ -229,7 +226,6 @@ fn decode_via(fields: List(#(String, json.JsonValue))) -> Result(Via, Nil) {
       Ok(Login(fingerprint:))
     Ok(json.String("device")), Ok(json.String(fingerprint)) ->
       Ok(Device(fingerprint:))
-    Ok(json.String("none")), _ -> Ok(Uncredentialed)
     _, _ -> Error(Nil)
   }
 }
@@ -324,7 +320,6 @@ pub fn who(provenance: Provenance) -> String {
         Login(fingerprint:) ->
           " from a browser sign-in " <> text_hygiene.single_line(fingerprint)
         Device(_) -> " from a terminal"
-        Uncredentialed -> ""
       }
     }
   }
