@@ -432,7 +432,14 @@ operator presses again. On a synchronized lane a read in flight does not
 refuse it, and the lane queues the decision behind the read. The lane
 itself refuses a mutation when the attachment's role is observer
 (`session_channel.can_mutate`), which is a third layer under the
-component's type and the gateway's role check. The step leaves the facts a
+component's type and the gateway's role check. A decision draws a row in
+the transcript ("Owner allowed bash") from the approval ledger. A page
+opened after the decision never saw the request pending, so it sends one
+`escalations_decided` read when its lane first idles after the capture's
+reads (`component.decisions_read`; never queued, so an operator's first
+command is not refused behind it) and the answer joins the ledger as an
+exact lookup does, keyed by escalation id: a decision seen live and read is
+one row. The step leaves the facts a
 command recorded on the record; the component reads `DraftTaken` to know
 the command consumed the composer's draft, then drops them
 (`step.forget_surfaces`).

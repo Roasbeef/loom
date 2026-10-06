@@ -680,6 +680,14 @@ page keys and nonces, and the relay into the session's gateway.
   `turns.with_decisions`, called by `component.pieces`, places each by the
   register sequence that committed it. The lane draws
   `p.decided` with the author, the verb and the tool as text nodes.
+  A page opened after a decision never saw the request pending, so it reads
+  `escalations_decided` once (`View.decided`, `component.decisions_read`,
+  sent when the lane is idle after the capture's own reads and never queued)
+  and folds the answer into the ledger as an exact lookup would. The record's
+  own scope names the strand, so the row is the one a page that watched the
+  decision draws; the ledger is keyed by escalation id, so a decision seen
+  live and read again is one row. The read is `protocol-change/015`'s
+  decided-approvals addendum.
 - `lane.Replies(fn(key) -> message)` or `NoReplies`, the last argument of
   `lane.view`. A peer card draws a `Reply to
   this peer` button after its body when the lane has replies, and the button

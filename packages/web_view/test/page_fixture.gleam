@@ -467,6 +467,20 @@ pub fn first_reads_refused() -> List(connection_event.Message) {
   [refusal(4), refusal(5), refusal(6), refusal(7)]
 }
 
+/// The refusal of the read of the session's decided approvals, which the
+/// page asks in the message that frees the lane after the four reads of
+/// `first_reads_refused`, so it is request eight and arrives in a message of
+/// its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.decided_read_refused()
+/// ```
+pub fn decided_read_refused() -> List(connection_event.Message) {
+  [refusal(8)]
+}
+
 /// A page for `role` whose lane has completed its first transfer and every
 /// read the transfer's capture set going, so it is following and has no
 /// request out, writing to `wire`. The frames of the transfer and of those

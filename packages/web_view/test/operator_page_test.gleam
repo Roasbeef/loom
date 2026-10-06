@@ -938,6 +938,189 @@ pub fn a_denied_approval_leaves_a_who_line_in_the_lane_test() {
   assert count(html, "class=\"decided ") == 2
 }
 
+fn decided_record(id, seq, status, tool, strand) {
+  approval.Review(
+    id,
+    seq,
+    status,
+    tool,
+    "printf hi",
+    Some(message.Origin("principal-owner", "Owner")),
+    approval.Unavailable("this decision is already resolved"),
+    strand:,
+  )
+}
+
+// Two views of one session agree. A page that was open when a request was
+// decided saw it pending and learned its strand from the capture; a page
+// opened afterwards never did, and reads the decided approvals instead,
+// whose records carry the strand in the escalation's own scope. Both draw the
+// same row.
+pub fn a_page_opened_after_a_decision_draws_the_row_the_live_page_drew_test() {
+  let #(live, _) = page("operator", [])
+  let live =
+    component.apply(live, [
+      lane_fixture.captured_cells(10, None, [], [
+        page_fixture.pending_cell("esc-9", 12, "bash", "main"),
+      ]),
+      lane_fixture.captured_cells(10, None, [], []),
+      session_channel.LookedUp(
+        [decided_record("esc-9", 20, approval.Rejected, "bash", Some("main"))],
+        [],
+      ),
+    ])
+  let #(later, _) = page("operator", [])
+  let later =
+    component.apply(later, [
+      lane_fixture.captured_cells(10, None, [], []),
+      session_channel.LookedUp(
+        [decided_record("esc-9", 20, approval.Rejected, "bash", Some("main"))],
+        [],
+      ),
+    ])
+  let drawn = fn(model) {
+    let html = element.to_string(operator_page.view(model))
+    let assert Ok(#(_, after)) =
+      string.split_once(html, "class=\"decided decided-denied\"")
+      as "the page draws the decision row"
+    let assert Ok(#(row, _)) = string.split_once(after, "</p>")
+      as "the row closes"
+    #(row, count(html, "class=\"decided "))
+  }
+  assert drawn(later) == drawn(live)
+  assert drawn(later).1 == 1
+}
+
+// A decision the page watched and then read again is one row: the ledger is
+// keyed by the escalation's identity, so the second arrival replaces the
+// first instead of adding to it.
+pub fn a_decision_seen_live_and_read_again_draws_once_test() {
+  let #(model, _) = page("operator", [])
+  let record =
+    decided_record("esc-9", 20, approval.Approved, "bash", Some("main"))
+  let model =
+    component.apply(model, [
+      lane_fixture.captured_cells(10, None, [], [
+        page_fixture.pending_cell("esc-9", 12, "bash", "main"),
+      ]),
+      lane_fixture.captured_cells(10, None, [], []),
+      session_channel.LookedUp([record], []),
+      session_channel.LookedUp([record], []),
+    ])
+  let html = element.to_string(operator_page.view(model))
+  assert count(html, "class=\"decided ") == 1
+}
+
+// The person's name in the row is peer text and is only ever a text node.
+pub fn a_decider_name_in_a_read_row_is_text_not_markup_test() {
+  let #(model, _) = page("operator", [])
+  let record =
+    approval.Review(
+      ..decided_record("esc-9", 20, approval.Rejected, "bash", Some("main")),
+      origin: Some(message.Origin("principal-x", "<b onclick=x>Eve</b>")),
+    )
+  let model =
+    component.apply(model, [
+      lane_fixture.captured_cells(10, None, [], []),
+      session_channel.LookedUp([record], []),
+    ])
+  let html = element.to_string(operator_page.view(model))
+  assert string.contains(html, "&lt;b onclick=x&gt;Eve&lt;/b&gt;")
+  assert !string.contains(html, "<b onclick=x>")
+}
+
+// A page reads the decided approvals once, in the message that frees its lane
+// after the capture's own reads, and never again: the read is owed until the
+// lane can send it and spent when it is sent.
+pub fn a_page_reads_the_decided_approvals_once_when_it_opens_test() {
+  let wire = process.new_subject()
+  let model =
+    page_fixture.run(component.new(page_fixture.start()), component.update, [
+      component.Opened(wire),
+      component.Arrived(page_fixture.transfer("operator", [])),
+    ])
+  let #(model, frames) = refuse_every_read(model, wire, [], 8)
+  let asked = list.filter(frames, string.contains(_, "\"escalations_decided\""))
+  let assert [read] = asked as "the page asked once"
+  assert string.contains(read, "\"body\":{}")
+
+  // Later messages ask nothing more.
+  let _ = page_fixture.run(model, component.update, [component.Ticked])
+  assert list.filter(page_fixture.sent(wire), string.contains(
+      _,
+      "\"escalations_decided\"",
+    ))
+    == []
+}
+
+// A refused decided-approvals read is nobody's command outcome: an older
+// daemon refuses it as unknown and an over-budget session as failed, and the
+// page keeps the decisions it saw live without a row or a notice.
+pub fn a_refused_decided_read_leaves_the_transcript_and_notice_alone_test() {
+  let wire = process.new_subject()
+  let model =
+    page_fixture.run(component.new(page_fixture.start()), component.update, [
+      component.Opened(wire),
+      component.Arrived(page_fixture.transfer("operator", [])),
+    ])
+  let #(asked, read) = refuse_until_decided(model, wire, 8)
+  let refused =
+    page_fixture.run(asked, component.update, [
+      component.Arrived([page_fixture.refusal(page_fixture.request_id(read))]),
+    ])
+  assert component.lines(refused) == component.lines(asked)
+  assert component.notice(refused) == component.notice(asked)
+}
+
+// Refuses the page's other reads, one round at a time, and stops with the
+// decided-approvals read outstanding, returning its frame.
+fn refuse_until_decided(model, wire, rounds: Int) {
+  let reads =
+    list.filter(page_fixture.sent(wire), fn(frame) {
+      !string.contains(frame, "\"cmd\":\"snapshot")
+      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+    })
+  let decided = list.find(reads, string.contains(_, "\"escalations_decided\""))
+  case decided, rounds {
+    Ok(read), _ -> #(model, read)
+    Error(Nil), 0 -> panic as "the page never asked for the decided approvals"
+    Error(Nil), _ ->
+      page_fixture.run(model, component.update, [
+        component.Arrived(
+          list.map(reads, fn(frame) {
+            page_fixture.refusal(page_fixture.request_id(frame))
+          }),
+        ),
+      ])
+      |> refuse_until_decided(wire, rounds - 1)
+  }
+}
+
+// Refuses each read the page writes, one round at a time, until the wire
+// holds none, and returns every frame the page wrote.
+fn refuse_every_read(model, wire, written: List(String), rounds: Int) {
+  let frames = page_fixture.sent(wire)
+  let reads =
+    list.filter(frames, fn(frame) {
+      !string.contains(frame, "\"cmd\":\"snapshot")
+      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+    })
+  let written = list.append(written, frames)
+  case reads, rounds {
+    [], _ -> #(model, written)
+    _, 0 -> #(model, written)
+    _, _ ->
+      page_fixture.run(model, component.update, [
+        component.Arrived(
+          list.map(reads, fn(frame) {
+            page_fixture.refusal(page_fixture.request_id(frame))
+          }),
+        ),
+      ])
+      |> refuse_every_read(wire, written, rounds - 1)
+  }
+}
+
 fn count(html: String, part: String) -> Int {
   list.length(string.split(html, part)) - 1
 }

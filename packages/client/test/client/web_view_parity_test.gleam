@@ -575,17 +575,20 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
   // The first capture makes both hosts read the strand's notes, the
   // session's context, the advisor's pending nudges and the goal, one after
   // the other, each sent when the one before is answered. The script answers
-  // them by refusal, so the lane is free for the prompt.
+  // them by refusal, so the lane is free for the prompt. The page then asks
+  // for the session's decided approvals, request eight, which the terminal
+  // does not (`mirror_decided_read`); the script answers it as well.
   let script =
     list.flatten([
       list.map(transfer(), Frame),
       [Tick],
-      list.map([4, 5, 6, 7], fn(id) { Frame(refusal(id)) }),
+      list.map([4, 5, 6, 7, 8], fn(id) { Frame(refusal(id)) }),
       [Prompt("inspect the tree"), Deny("esc-1"), Tick],
     ])
-  let #(terminal, page) =
-    list.fold(script, #(terminal(), page.0), fn(hosts, step) {
-      let terminal = on_terminal(hosts.0, step)
+  let #(terminal, page, _) =
+    list.fold(script, #(terminal(), page.0, Owed), fn(hosts, step) {
+      let #(terminal, asked) =
+        mirror_decided_read(on_terminal(hosts.0, step), hosts.2)
       let page = on_page(hosts.1, step)
       let assert Some(web_lane) = component.lane(page)
         as "the page holds a lane"
@@ -593,7 +596,7 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
         as "the terminal holds a lane"
       assert session_channel.state(web_lane)
         == session_channel.state(terminal_lane)
-      #(terminal, page)
+      #(terminal, page, asked)
     })
 
   // The two hosts offer the same approvals and draw the same lines.
@@ -612,6 +615,37 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
     })
     as "one command left the page while the prompt's reply is outstanding"
   assert string.contains(prompt, "\"cmd\":\"prompt\"")
+}
+
+// Whether the terminal has made the read the page makes for the decided
+// approvals.
+type Decided {
+  Owed
+  Asked
+}
+
+// The page reads the session's decided approvals once its lane idles after the
+// first capture, as the terminal does not. So that the two lanes stay
+// comparable, the terminal makes the same read at the same moment: when its
+// lane can send it after a step, and once.
+fn mirror_decided_read(
+  model: tui_model.Model,
+  asked: Decided,
+) -> #(tui_model.Model, Decided) {
+  case asked, model.shared.channel {
+    Owed, Some(lane) ->
+      case session_channel.decided(lane, now: model.shared.stamp.transport_ms) {
+        Ok(lane) -> #(
+          tui_model.Model(
+            ..model,
+            shared: session_model.hold_channel(model.shared, lane),
+          ),
+          Asked,
+        )
+        Error(_) -> #(model, Owed)
+      }
+    Owed, None | Asked, _ -> #(model, asked)
+  }
 }
 
 // The daemon's refusal of the read sent as request `id`.

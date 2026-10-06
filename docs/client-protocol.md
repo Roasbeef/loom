@@ -267,7 +267,7 @@ principal's authority over the target session. Three authorities exist.
 Source: (`client/gateway.gleam:1917-1923`).
 
 The read-only set is `subscribe`, `catch_up`, `snapshot_next`,
-`history`, `escalations_get`, `models`, `skills`, `notes`, `live_jobs`, `queued_input`,
+`history`, `escalations_get`, `escalations_decided`, `models`, `skills`, `notes`, `live_jobs`, `queued_input`,
 `worktree_diff`, `context` and `schedules`. Every other
 command from an observer is refused with the code `forbidden` before any
 durable write or effect dispatch.
@@ -1338,8 +1338,8 @@ Source: (`client/gateway.gleam:808-818`).
 Conversation state does not arrive in one frame. It arrives as a
 transfer: one header, then a fragment per credit, then a terminator.
 
-Four commands begin a transfer: `subscribe`, `catch_up`, `history` and
-`escalations_get`.
+Five commands begin a transfer: `subscribe`, `catch_up`, `history`,
+`escalations_get` and `escalations_decided`.
 Source: (`client/gateway.gleam:1259-1289`).
 
 A connection holds at most one transfer. Beginning a second while one is
@@ -1354,7 +1354,8 @@ Source: (`client/daemon/transfer.gleam:33-34`) and
 
 #### 4.3.1 The procedure
 
-1. Send `subscribe`, `catch_up`, `history` or `escalations_get`.
+1. Send `subscribe`, `catch_up`, `history`, `escalations_get` or
+   `escalations_decided`.
 2. Receive `snapshot_begin`. Validate its identity fields against the
    attachment the client selected, and record `snapshot_id`,
    `next_seq`, `record_bytes_limit` and `fragment_bytes_limit`. Set the
@@ -1396,7 +1397,7 @@ a protocol violation. Source: (`session_view/snapshot.gleam:340-350`).
 |---|---|---|---|
 | `snapshot_id` | string | required | Transfer identity, 1 to 256 bytes. |
 | `next_seq` | integer | required | First sequence after this cut. Nothing in the transfer has a sequence at or above it. |
-| `window` | string | required | `recent`, `catch_up`, `history` or `escalations`. |
+| `window` | string | required | `recent`, `catch_up`, `history`, `escalations` or `decided`. |
 | `complete_history` | boolean | required | Always `false`. The window is explicitly partial. |
 | `record_bytes_limit` | integer | required | Largest single record, in bytes. Always `33554432`. |
 | `fragment_bytes_limit` | integer | required | Largest decoded fragment, in bytes. Always `24576`. |
@@ -1478,7 +1479,7 @@ state: everything a client needs besides the entries themselves.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `missing` | array of string | required | For an `escalations` window, the requested ids that had no cell. Empty for every other window. |
+| `missing` | array of string | required | For an `escalations` window, the requested ids that had no cell. Empty for every other window, a `decided` window included. |
 | `cells` | array | required | Register cells in the cut. |
 | `usage` | object | required | Session running total, in the durable usage shape (section 5.9). |
 | `message_count` | integer | required | Messages in the session. |
@@ -1638,6 +1639,40 @@ A client applies the result to those questions only. It MUST NOT replace
 its history cursor or its pending-escalation projection from an
 escalations transfer. A missing record names no author.
 
+#### 4.7.1 `escalations_decided`
+
+The body is empty. Any field refuses the command with `bad_request`.
+
+```json
+{"v":2,"id":16,"cmd":"escalations_decided","body":{}}
+```
+
+The reply is `snapshot_begin` with `window` `decided`, followed by the
+same metadata-only transfer an `escalations_get` returns: the cells of
+the session's decided escalations, oldest first, each with its current
+register sequence and resolution origin, and an empty `missing` array. A
+decided escalation is one whose status is `approved`, `rejected` or
+`consumed`; a pending one is never in the answer, because the pending
+ones already arrive with every capture. The server keeps the newest
+sixteen by register sequence and drops the rest, which is the number of
+resolved records a client's approval ledger holds. No entry descriptors
+follow.
+
+The read exists for a client that opens after a request was decided. It
+never saw the request pending, so it has no id to give `escalations_get`.
+A client folds the cells into the same ledger it fills from
+`escalations_get`, keyed by escalation id, so a decision it saw live and
+reads again is one record. A cell's `value.scope.strand` names the strand
+whose call raised the request. If the selection exceeds the metadata
+budget (1024 cells or 1 MiB), the transfer is refused with `snapshot_failed`
+and the client keeps only the decisions it saw live.
+
+An observer may send it: it is a read, and the decision rows it supplies
+are the ones the live path already shows every attachment. Authority is
+checked at admission like any other command. A client MUST NOT replace its
+history cursor or its pending-escalation projection from a `decided`
+transfer.
+
 ### 4.8 `snapshot_next`
 
 | Field | Type | Presence | Meaning |
@@ -1757,7 +1792,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1142`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1155`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1819,7 +1854,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6149`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6181`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -3206,6 +3241,7 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Descriptor page | 100 entries | `subscribe`, `catch_up`, `history` |
 | Recent window | 100 entries | `subscribe` |
 | Escalation lookup | 8 ids | `escalations_get` |
+| Decided approvals read | 16 cells | `escalations_decided` |
 | Held normal inputs per strand | 4 | `prompt`, `prompt_content`, `follow_up` |
 | Held priority inputs per strand | 4 | `steer` |
 | Stream delta text | 24576 bytes | `stream_delta` |
@@ -3474,7 +3510,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3690`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3721`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

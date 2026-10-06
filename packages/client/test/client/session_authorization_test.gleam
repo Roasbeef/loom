@@ -21,8 +21,10 @@ import core/clock
 import core/ids
 import core/json
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{None}
 import gleam/otp/actor
+import gleam/result
 import gleam/string
 import runtime/api
 import storage/access
@@ -85,6 +87,15 @@ fn attach(
   script: Subject(Script),
   closed: Subject(Nil),
 ) -> gateway.ConnectionHandle {
+  attach_as(harness, script, closed, access.Operator)
+}
+
+fn attach_as(
+  harness: gateway_test.Harness,
+  script: Subject(Script),
+  closed: Subject(Nil),
+  role: access.Role,
+) -> gateway.ConnectionHandle {
   let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
     as "the fixture digest is valid"
   let assert Ok(handle) =
@@ -96,7 +107,7 @@ fn attach(
         incarnation: "incarnation",
         connection_id: "connection-alice",
         principal: access.Principal("alice", "Alice", access.MemberPrincipal),
-        authority: access.Participant(access.Operator),
+        authority: access.Participant(role),
         digest:,
       ),
       fn() { process.call(script, waiting: 1000, sending: Ask) },
@@ -242,4 +253,95 @@ pub fn idle_revocation_refuses_the_next_mutation_before_write_test() {
   assert process.receive(closed, 1000) == Ok(Nil)
   assert consumed(script) == admitted + 1
   assert api.fact_cell(harness.runtime, api.run_settings_key) == Ok(None)
+}
+
+fn decided(id: Int) -> String {
+  protocol.encode_command(protocol.CommandEnvelope(
+    id:,
+    command: protocol.EscalationsDecided,
+  ))
+}
+
+// Finishes the transfer a subscribe begins, which a second transfer cannot
+// start until it has: the reply's snapshot identity is credited one piece at
+// a time until the end arrives.
+fn finish_first_transfer(
+  handle: gateway.ConnectionHandle,
+  reply: String,
+  id: Int,
+) -> Nil {
+  let assert Ok(protocol.EventEnvelope(event: protocol.SnapshotBegin(body), ..)) =
+    protocol.decode_event(reply)
+    as "a subscribe begins a bounded transfer"
+  let assert json.Object(fields) = body as "the begin body is an object"
+  let assert Ok(json.String(snapshot_id)) = list.key_find(fields, "snapshot_id")
+    as "the transfer is named"
+  credit(handle, snapshot_id, 0, id)
+}
+
+fn credit(
+  handle: gateway.ConnectionHandle,
+  snapshot_id: String,
+  index: Int,
+  id: Int,
+) -> Nil {
+  let frame =
+    protocol.encode_command(protocol.CommandEnvelope(
+      id:,
+      command: protocol.SnapshotNext(snapshot_id, index),
+    ))
+  let assert Ok(reply) = gateway.connection_request(handle, frame)
+    as "each credit is answered"
+  case protocol.decode_event(reply) {
+    Ok(protocol.EventEnvelope(event: protocol.SnapshotEnd(_), ..)) -> Nil
+    _ -> credit(handle, snapshot_id, index + 1, id + 1)
+  }
+}
+
+/// A member whose membership ends after subscribing is refused the decided
+/// approvals read, like every other command: the read has no authority of
+/// its own, and no transfer starts.
+pub fn a_revoked_member_is_refused_the_decided_approvals_read_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id())
+  let allowed =
+    Ok(#(
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      access.Participant(access.Operator),
+    ))
+  let revoked = Error("revoked")
+  let script =
+    scripted([allowed, allowed, allowed, allowed, revoked, revoked, revoked])
+  let closed = process.new_subject()
+  let handle = attach(harness, script, closed)
+  let assert Ok(_) = gateway.connection_request(handle, subscribe(harness, 910))
+    as "the subscribe is admitted while the member belongs"
+  assert result.is_error(gateway.connection_request(handle, decided(990)))
+  let assert Ok(Nil) = process.receive(closed, 1000)
+    as "the revoked attachment is closed"
+}
+
+/// An observer may read the decided approvals: the live row shows its words
+/// to every attachment, and the read is as read-only as `history`.
+pub fn an_observer_may_read_the_decided_approvals_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id())
+  let observer =
+    Ok(#(
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      access.Participant(access.Observer),
+    ))
+  let script = scripted(list.repeat(observer, 40))
+  let closed = process.new_subject()
+  let handle = attach_as(harness, script, closed, access.Observer)
+  let assert Ok(reply) =
+    gateway.connection_request(handle, subscribe(harness, 920))
+    as "the observer subscribes"
+  finish_first_transfer(handle, reply, 921)
+  let assert Ok(frame) = gateway.connection_request(handle, decided(990))
+    as "the observer's read is admitted"
+  let assert Ok(protocol.EventEnvelope(event: protocol.SnapshotBegin(body), ..)) =
+    protocol.decode_event(frame)
+    as "the reply begins a bounded transfer"
+  let assert json.Object(fields) = body as "the begin body is an object"
+  assert list.key_find(fields, "window") == Ok(json.String("decided"))
+  assert list.key_find(fields, "role") == Ok(json.String("observer"))
 }

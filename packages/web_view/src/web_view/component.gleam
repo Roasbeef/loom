@@ -678,6 +678,15 @@ type Earlier {
   Unheld
 }
 
+// Whether the page has sent its one read of the session's decided approvals.
+type Decided {
+  // The read is owed: the lane has no cut yet, or the lane was busy.
+  Owed
+
+  // The read was sent, and its answer joins the approval ledger like a lookup.
+  Asked
+}
+
 // The shared record with the web's handles bound: the component has no
 // recorder and its two inboxes have no sources to tell apart, so all three
 // are `Nil`.
@@ -786,6 +795,11 @@ type View(socket) {
     /// not the daemon answered. A refused read is therefore not repeated on
     /// every tick.
     jobs_asked_at: Option(Int),
+    /// Whether the page has asked for the session's decided approvals. A page
+    /// that opens after a decision never saw the request pending, so it reads
+    /// the decisions once its first cut is adopted and seeds the approval
+    /// ledger the transcript's decision rows come from.
+    decided: Decided,
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
     /// How many composer submits were refused with the draft kept, by the
@@ -1021,6 +1035,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       },
       renamed: 0,
       jobs_asked_at: None,
+      decided: Owed,
       refusal: None,
       refusals: 0,
       outcome: "",
@@ -1365,7 +1380,41 @@ fn stepping(
       let #(shared, effects) = step.update(done.0, message)
       #(shared, list.append(done.1, effects))
     })
+
+  // The decided-approvals read is asked once the messages have left the lane
+  // idle, and the tick that follows it carries the frame out, so the read
+  // leaves in the message that freed the lane and not in some later one.
+  let owed = model.view.decided
+  let model = decisions_read(Model(..model, shared:), at)
+  let #(shared, effects) = case owed, model.view.decided {
+    Owed, Asked -> {
+      let #(shared, sent) = step.update(model.shared, tick_at(at))
+      #(shared, list.append(effects, sent))
+    }
+    Owed, Owed | Asked, _ -> #(model.shared, effects)
+  }
   finished(Model(..model, shared:), effects, at)
+}
+
+// Sends the one read of the session's decided approvals, once the lane has
+// adopted a cut and has no request out. A busy lane refuses it, and the read
+// stays owed for the next message to ask again; only a sent read is spent.
+// The read never waits in the lane's queue, which would hold the slot an
+// operator's first command needs. The frame leaves with the step the message
+// is about to run.
+fn decisions_read(model: Model(socket), at: Int) -> Model(socket) {
+  case model.view.decided, model.shared.channel {
+    Owed, Some(lane) ->
+      case session_channel.decided(lane, now: at) {
+        Ok(lane) ->
+          Model(
+            shared: session_model.hold_channel(model.shared, lane),
+            view: View(..model.view, decided: Asked),
+          )
+        Error(_) -> model
+      }
+    Owed, None | Asked, _ -> model
+  }
 }
 
 // The end of every message: what the page draws is derived from the record

@@ -401,6 +401,34 @@ pub fn lookup(
   Ok(#(cells, missing))
 }
 
+/// Reads the cells of a decided-approvals transfer: every cell is an
+/// escalation register, no conversation entry rides along, and nothing is
+/// reported missing, since the read names no identity to be absent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot_view.decided(captured)
+/// ```
+pub fn decided(captured: snapshot.Captured) -> Result(List(Cell), String) {
+  use <- bool.guard(
+    captured.window.items != [],
+    Error("invalid decided approvals extent"),
+  )
+  use cells <- result.try(captured_cells(captured))
+  use fields <- result.try(object(captured.metadata))
+  use missing <- result.try(array(fields, "missing"))
+  use <- bool.guard(
+    missing != []
+      || list.any(cells, fn(cell) {
+      cell.namespace != register.FactCustom
+      || !string.starts_with(cell.key, "escalation/")
+    }),
+    Error("decided approvals returned an unrequested register"),
+  )
+  Ok(cells)
+}
+
 fn decode_cell(value) {
   use fields <- result.try(object(value))
   use namespace <- result.try(

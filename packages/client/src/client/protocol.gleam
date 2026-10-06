@@ -141,6 +141,11 @@ pub type Command {
   /// Reads up to eight exact escalation cells, including resolution authors.
   EscalationsGet(ids: List(String))
 
+  /// Reads the session's newest decided approvals, with their authors, so a
+  /// page that opened after a decision draws the same row as one that saw it
+  /// made. The body carries nothing; the server chooses the window.
+  EscalationsDecided
+
   /// Scope the connection to a session and start the event stream.
   Subscribe(session: String, from_seq: Option(Int))
 
@@ -785,6 +790,7 @@ pub fn encode_command(envelope: CommandEnvelope) -> String {
 
 fn command_body(command: Command) -> #(String, JsonValue) {
   case command {
+    EscalationsDecided -> #("escalations_decided", json.Object([]))
     EscalationsGet(ids) -> #(
       "escalations_get",
       json.Object([
@@ -1081,6 +1087,13 @@ fn decode_command_body(
   body: JsonValue,
 ) -> Result(Command, String) {
   case cmd {
+    "escalations_decided" -> {
+      use fields <- result.try(body_fields(body))
+      case fields {
+        [] -> Ok(EscalationsDecided)
+        _ -> Error("escalations_decided takes no fields")
+      }
+    }
     "escalations_get" -> {
       use fields <- result.try(body_fields(body))
       use values <- result.try(case list.key_find(fields, "ids") {
@@ -1996,7 +2009,10 @@ fn decode_transfer_begin(body) {
     origin.decode_field(fields) |> result.replace_error("invalid origin"),
   )
   case
-    list.contains(["recent", "catch_up", "history", "escalations"], window),
+    list.contains(
+      ["recent", "catch_up", "history", "escalations", "decided"],
+      window,
+    ),
     list.contains(["owner", "operator", "observer"], role),
     list.key_find(fields, "complete_history"),
     list.key_find(fields, "record_bytes_limit"),
