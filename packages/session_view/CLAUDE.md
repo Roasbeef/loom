@@ -126,11 +126,12 @@ for a host with no surfaces.
   `before_seq`; `scanned` gives what it holds as a `Branch`, `scan_older` asks
   for the interval below it (a read the host's step sends through the same
   `range`/`sent`/`accept` as the window's, the window's demand served first, a
-  reply going to whichever asked for it), `scan_readable` and `scan_size` say
-  whether it can go on, and `scan_end` drops it. It is bounded at
-  `scan_records` (4,096) and `scan_bytes` (32 MiB), and a window over its bound
-  drops the newest end, so the host stops the scan before the bound. A `cancel`
-  abandons it. The window is the same value after a scan as before it.
+  reply going to whichever asked for it), `scan_readable` says
+  whether it can go on (a sequence is left, and it has neither reached its
+  bound nor been cut), and `scan_end` drops it. It is bounded at 4,096 records
+  and 32 MiB, private to the module, and a page that would take it past the
+  bound is cut at the oldest end, so it still ends at its leaf, and the scan is
+  unreadable afterwards. A `cancel` abandons it. The window is the same value after a scan as before it.
 - `protocol.Event`, `protocol.EntryRecord` and the board types, and
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
@@ -577,10 +578,19 @@ first record's sequence and parent, the last record (`end`, an `Anchor` of
 identity and sequence, which is the next turn's first record's parent, or the
 newest record when no open turn follows, so `after` names the turns that stay
 open) and the `changes_view`, `trace_view` and newest tool result the turn's
-records carried. `older`, `completed` and `steps` take what a scan has read so
+records carried, and `bytes`, about how many bytes of text the summary holds
+(`fold_budget.sealed_bytes`, 16 MiB, is the budget a host holds closed turns to
+beside its rows). A lead's divider is keyed `work:<first seq>.0`, not by the
+window's start. A turn is sealed once nothing more will be added, which the
+records cannot always say (an operation can lag the record that opens its turn,
+and a turn can go on with no new input); records that arrive after a sealed turn
+with no input of their own are read as the end of a turn whose start the host
+does not hold and the whole turn is sealed again in place of the partial one
+(module doc, "When a turn is sealed"). `older`, `completed` and `steps` take what a scan has read so
 far and a `Source` (`Readable | Exhausted`) and say whether it is enough:
 `older` for ten whole turns below the host's oldest, `completed` for the turn a
-window began inside, `steps` for the newest `fold_rows` rows of one turn's
+window began inside (`Whole(sealed)`, or `Partial` when the scan ended before the
+turn's input, which closes nothing), `steps` for the newest `fold_rows` rows of one turn's
 steps (`Steps(items, unread)`; `unread` is the cut's and, when the read stopped
 before the turn's input, the divider's count less the steps shown). `lead_end`
 is where the blocks before a window's first input end, which a read of the rest

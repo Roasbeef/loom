@@ -68,7 +68,8 @@ downward through the lane's `history` read in the same intervals of at most a
 hundred sequences, and holds what it read apart from the window. It starts from
 the records the page already holds, the newest cut and the window, so a turn
 closed a moment ago is often answered without a read. It is bounded at 4,096
-records and 32 MiB, and the page stops it before the bound. When the page has
+records and 32 MiB. A scan that reaches either is unreadable, and one a page
+would take past them keeps its newest end, the one it started at. When the page has
 what it wanted, or the read was refused, the scan and everything it read are
 dropped. The window is the same value after a scan as before it, so a read
 through a turn of thousands of records cannot evict the live end.
@@ -89,6 +90,22 @@ through a turn of thousands of records cannot evict the live end.
    stops at the first page that holds ten whole turns, at the strand's first
    record, or at the scan's bound. A press loads turns and not records, and
    draws the turns it found, not a number of rows.
+
+*When a turn closes.* The records cannot always say that nothing more will be
+added: an operation can lag the record that opens its turn, and a turn can go on
+with no new input (a provider retry, a restart). Records that arrive after a
+closed turn with no input of their own are therefore read as the end of a turn
+whose start the page does not hold, and the whole turn is closed again in place
+of the partial summary. A page that watched a turn and a page opened after it
+draw the same divider once the turn settles. A read that ends before the turn's
+input, at a bound, closes nothing and leaves the page's older closed turns
+alone. A closed turn whose start the window did not hold is keyed by its first
+record, not by the window's start.
+
+*What the page retains.* Rows bound what the page draws; the summaries are also
+held to 16 MiB of text (`fold_budget.sealed_bytes`, the size of the window they
+replace), counting the text of the pieces and of the boards, since one row can
+be as long as a record may be. A page over either drops its oldest closed turns.
 
 *Authority.* Every read is the lane's `history` read, which the gateway admits
 for an observer's attachment as for an operator's, and which the page's relay
@@ -126,9 +143,9 @@ turn's start has been read, which is about a tenth of a second for each hundred
 sequence numbers on a local daemon. A fold read that stops early says how many
 earlier steps it did not reach by the divider's count of the turn's steps, so
 the number is the divider's and not a count of rows. Find in page does not see a
-closed fold's steps, as under 070. A turn of more than 4,096 records is closed
-as far as the scan reaches and its remainder is a turn of its own, which
-"Load older" reads.
+closed fold's steps, as under 070. A turn of more than 4,096 records
+cannot be read whole: it is drawn as far as it is known, as a turn of its own,
+and "Load older" reads what is below it.
 
 The page's history window no longer holds closed turns, so anything that drew
 from it beyond the transcript now draws from the summaries: the Changes and

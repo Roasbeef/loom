@@ -482,7 +482,8 @@ page keys and nonces, and the relay into the session's gateway.
   turn is not kept as records. `relaned` closes every turn of the history window
   whose records are all in it and that nothing will be added to (every turn but
   the newest, and the newest once its strand settles) into a `turn_ledger.Sealed`
-  (`View.sealed`, newest first), drops the window's records up to the newest
+  (`View.sealed`, newest first, held to `fold_budget.sealed_bytes` of text beside
+  the row limit), drops the window's records up to the newest
   closed turn's last (`frontier`, `trimmed`), and draws the closed turns from
   their summaries and the window's turns from its blocks. The window holds the
   running turn and nothing older, so a turn of a thousand records costs the page
@@ -512,7 +513,11 @@ page keys and nonces, and the relay into the session's gateway.
   step's tick, and a reply folds in as any frame does, so a scan is a chain of
   messages and no timer. A refused or lost read is given up (`abandoned`): the
   press can be made again, a lead is drawn as far as it is known
-  (`View.completion: Spent`), and a fold says how many steps it did not show.
+  (`View.completion: Spent`, also what a read that ended before the turn's input
+  leaves, so older closed turns are untouched), and a fold says how many steps
+  it did not show. Records that arrive after a closed turn with no input of
+  their own are read with that turn again (`lead_of`, `beside`). A parked
+  strand's closed turns are dropped with its window.
   `FoldToggled(fold)` opens or closes a fold (`folded_at`): it acts only on a
   `Connected` page with a cut and only on a number that is the id of a fold the
   page draws, as `OlderRequested` acts only on a page that is reading, and a
