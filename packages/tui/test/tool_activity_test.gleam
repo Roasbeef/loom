@@ -746,12 +746,15 @@ pub fn aborted_turns_show_stopped_above_an_unconfirmed_diagnostic_test() {
   let stopped = settled(placed, body, message.Aborted, Some(diagnostic))
   let #(compact, shown) = model() |> received(stopped) |> painted
   assert string.contains(shown, "Stopped")
-  assert string.contains(shown, diagnostic)
+  let plain = "The provider may not have confirmed the stop."
+  assert string.contains(shown, plain)
     as "an unconfirmed stop is not hidden behind ctrl+g"
+  assert !string.contains(shown, "runtime:")
+    as "the harness's own account is not shown"
   let #(_, expanded) =
     compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
   assert string.contains(expanded, "Stopped")
-  assert string.contains(expanded, diagnostic)
+  assert string.contains(expanded, plain)
 
   // Orphan recovery settles a restarted turn as Aborted with the planner's
   // warning. The provider may still be generating, so the collapsed frame
