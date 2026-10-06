@@ -60,10 +60,12 @@ import web_view/completion
 import web_view/component
 import web_view/image
 import web_view/invites
+import web_view/remembered
 import web_view/sessions
 import web_view/view/archiving
 import web_view/view/controls
 import web_view/view/lane
+import web_view/view/remembered as remembered_view
 import web_view/view/resume
 import web_view/view/share
 import web_view/view/shell
@@ -155,6 +157,18 @@ pub type Msg(socket) {
 
   /// The sidebar question's Cancel.
   CancellingArchive
+
+  /// A Forget button of the remembered-permissions list, with the question
+  /// it asks: the request as the list looked when the button was drawn. The
+  /// page opens the question and sends nothing (protocol-change/073).
+  AskingForget(armed: remembered.Armed)
+
+  /// The question's confirm: the page sends the forget that question armed,
+  /// and nothing else, through the shared step like any other command.
+  ConfirmingForget
+
+  /// The question's Keep: the page closes it and sends nothing.
+  CancellingForget
 }
 
 /// The Lustre application for one session's operator page.
@@ -191,6 +205,7 @@ pub fn update(
   message: Msg(socket),
 ) -> #(component.Model(socket), Effect(Msg(socket))) {
   let before = component.notice(model)
+  let held = model
   let #(model, effects) = case message {
     Observed(message:) -> component.update(model, message)
     Submitted(text:, delivery:, images:) ->
@@ -212,7 +227,17 @@ pub fn update(
     )
     ConfirmingArchive(session:) -> component.confirm_archive(model, session)
     CancellingArchive -> #(component.cancel_archive(model), effect.none())
+    AskingForget(armed:) -> #(component.ask_forget(model, armed), effect.none())
+    ConfirmingForget -> component.confirm_forget(model)
+    CancellingForget -> #(component.cancel_forget(model), effect.none())
   }
+
+  // The list of what the session remembers is this page's to read, and the
+  // read is owed on the page's own cadence. When a read has changed it, the
+  // daemon is asked which of the sign-ins it names have since ended.
+  let #(model, judged) =
+    component.judge_logins(held, component.want_permissions(model))
+  let effects = effect.batch([effects, judged])
 
   // A notice that changed is a new element, which fades from the start. One
   // that did not is left alone, so a background refresh does not restart the
@@ -290,7 +315,11 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       html.footer([attribute.class("dock")], [
         component.plan(model),
         controls.dock(bar(model)),
-        approvals(component.pending(model), component.raised_on(model)),
+        approvals(
+          component.pending(model),
+          component.raised_on(model),
+          component.may_remember(model),
+        ),
         composer(model),
       ]),
 
@@ -317,6 +346,19 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
       ),
       controls.session(bar(model)),
       component.rename_form(model, form_submit_text(Renaming)),
+      case component.may_remember(model) {
+        True ->
+          remembered_view.view(
+            component.permissions_kept(model),
+            component.permissions_state(model),
+            remembered_view.Presses(
+              ask: AskingForget,
+              confirm: ConfirmingForget,
+              cancel: CancellingForget,
+            ),
+          )
+        False -> element.none()
+      },
     ),
     component.needing(model),
     component.workspace_digest(model),
@@ -462,6 +504,7 @@ pub const approvals_marker = "loom-approvals"
 fn approvals(
   pending: List(approval.Review),
   raised_on: List(#(String, String)),
+  owner: Bool,
 ) -> Element(Msg(socket)) {
   case pending {
     [] -> element.none()
@@ -476,7 +519,7 @@ fn approvals(
           keyed.div(
             [attribute.class("approval-list")],
             list.map(pending, fn(record) {
-              #(int.to_string(record.seq), card(record, raised_on))
+              #(int.to_string(record.seq), card(record, raised_on, owner))
             }),
           ),
         ],
@@ -507,6 +550,7 @@ fn approvals(
 fn card(
   record: approval.Review,
   raised_on: List(#(String, String)),
+  owner: Bool,
 ) -> Element(Msg(socket)) {
   let tool = case record.tool {
     "" -> "this request"
@@ -554,7 +598,7 @@ fn card(
               "Allow " <> tool <> " once",
               Decided(record.id, record.seq, component.AllowOnce),
             ),
-            arming,
+            ..session_offer(record, tool, arming, owner)
           ],
         ),
       ])
@@ -569,6 +613,32 @@ fn card(
           [deny, arming],
         ),
       ])
+  }
+}
+
+// What follows "Allow once" on a card whose request can be remembered: the
+// button that remembers it, which names the tool as the one before it does,
+// and the arming note. A request the terminal could not remember either
+// (`approval.rememberable`: a limit, an environment variable, scratch space,
+// or a grant set that is not whole) offers only the note. The same rule is
+// asked again when the button is pressed (`component.decide`), so a card drawn
+// from a record that has since moved cannot remember what it did not show.
+fn session_offer(
+  record: approval.Review,
+  tool: String,
+  arming: Element(Msg(socket)),
+  owner: Bool,
+) -> List(Element(Msg(socket))) {
+  case owner, approval.rememberable(record) {
+    True, Ok(Nil) -> [
+      button(
+        "approval-allow",
+        "Allow " <> tool <> " for this session",
+        Decided(record.id, record.seq, component.AllowForSession),
+      ),
+      arming,
+    ]
+    True, Error(_) | False, _ -> [arming]
   }
 }
 

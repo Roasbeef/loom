@@ -216,6 +216,7 @@ import web_view/invites
 import web_view/names
 import web_view/operator_page
 import web_view/page
+import web_view/remembered
 import web_view/renames
 import web_view/sessions
 import web_view/signins
@@ -1423,6 +1424,26 @@ fn admit(
       shareable:,
       worktree:,
       manage: managing,
+      logins: logins_capability(role, fn(logins, deliver) {
+        read_task(deliver, fn() {
+          ended_logins(
+            attachment.principal.id,
+            open,
+            fn(target) {
+              manager.signins(
+                attachment.registry,
+                attachment.digest,
+                target,
+                after: "",
+                now_ms: bootstrap.system_time_ms(),
+              )
+              |> result.map(fn(answer) { answer.1 })
+              |> result.replace_error(Nil)
+            },
+            logins,
+          )
+        })
+      }),
     )
 
   // The start takes its standing as an argument because reading it can wait on
@@ -2832,6 +2853,81 @@ pub fn worktree_capability(
   case role {
     Observing -> None
     Operating | Owning -> Some(start)
+  }
+}
+
+/// The capability a page of `role` is handed to ask which browser sign-ins
+/// have ended: `ask` for an owner's page and none for a member's or an
+/// observer's, neither of which draws a list of what the session remembers
+/// (protocol-change/073). The daemon asks the registry again when `ask` runs
+/// (`ended_logins`), so holding the capability judges nothing about a sign-in
+/// on its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.logins_capability(ui_socket.Observing, ask) == None
+/// ```
+@internal
+pub fn logins_capability(
+  role: Role,
+  ask: fn(List(remembered.Login), fn(List(remembered.Login)) -> Nil) -> Nil,
+) -> Option(
+  fn(List(remembered.Login), fn(List(remembered.Login)) -> Nil) -> Nil,
+) {
+  case role {
+    Observing | Operating -> None
+    Owning -> Some(ask)
+  }
+}
+
+/// Which of `logins` are no longer standing sign-ins of their principals, as
+/// the registry reads them now.
+///
+/// `signins` asks the registry for a principal's active sign-ins: `None` for
+/// the page's own principal `own`, and `Some(id)` for another's, which only
+/// the owner may read (`manager.signins`). A login is judged ended only when
+/// the registry answered for its principal and the principal's whole list of
+/// active sign-ins did not hold it. A member's page cannot judge another
+/// principal's login, and neither can a page whose registry read failed or
+/// whose list ran past one page: those are left out, because the page words
+/// only what the daemon could say. The page's own standing is checked first,
+/// as every read a page makes is: one that has ended judges nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.ended_logins("alice", open, signins, [remembered.Login("alice", "9c1e0f2ab3d4e5f6")])
+/// ```
+@internal
+pub fn ended_logins(
+  own: String,
+  open: fn() -> Result(Int, Nil),
+  signins: fn(Option(String)) -> Result(access.SigninPage, Nil),
+  logins: List(remembered.Login),
+) -> List(remembered.Login) {
+  case open() {
+    Error(Nil) -> []
+    Ok(_) -> {
+      let principals =
+        list.map(logins, fn(login) { login.principal }) |> list.unique
+      list.flat_map(principals, fn(principal) {
+        let target = case principal == own {
+          True -> None
+          False -> Some(principal)
+        }
+        case signins(target) {
+          Ok(access.SigninPage(entries:, remainder: access.Exhausted)) -> {
+            let active = list.map(entries, fn(entry) { entry.fingerprint })
+            list.filter(logins, fn(login) {
+              login.principal == principal
+              && !list.contains(active, login.fingerprint)
+            })
+          }
+          Ok(_) | Error(Nil) -> []
+        }
+      })
+    }
   }
 }
 

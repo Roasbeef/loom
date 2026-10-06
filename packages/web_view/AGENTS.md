@@ -86,7 +86,33 @@ page keys and nonces, and the relay into the session's gateway.
   control's region in the Session pane, and only an owner's socket admits a
   click at or beneath it. `component.rename_path` (`0\t3\t2\t4`) is the
   rename control's, the pane's fifth child, admitted the same way and for a
-  submit as well (protocol-change/067).
+  submit as well (protocol-change/067). `component.remembered_path`
+  (`0\t3\t2\t5`) is the operator's list of remembered permissions, the pane's
+  sixth child (protocol-change/073); the operator socket admits clicks beneath
+  it and the observer's admits none.
+- **Allowing for the session, and what it kept** (protocol-change/073).
+  Owner only: `component.may_remember` (the owner's `Standing.reader`) gates the
+  session button, the list, `want_permissions`, `ask_forget` and the click; a
+  member's page offers allow once and deny, and the gateway refuses the same
+  commands from a member.
+  `component.Answer` is `AllowOnce | AllowForSession | Deny`. The card offers
+  `Allow <tool> for this session` after allow once only where
+  `approval.rememberable` holds, and `component.decide` asks again at the click
+  (`operator.decision` refuses a record that is not eligible) and echoes the
+  drawn sequence, digest and grants with `scope: "session"`. The Session pane's
+  list of what the session remembers is `view/remembered`, drawn from
+  `Shared.remembered` (`session_view/remembered.Board`, which the shared step reads
+  with `permissions` and replaces from every `permission_forget` answer) and
+  `web_view/remembered.State`: `asked_at`, the open question `Armed(key, forget)`
+  and the `Login`s the daemon said have ended. A Forget button's message
+  (`operator_page.AskingForget(armed)`) carries the question as the list looked
+  when it was drawn, so the second press (`ConfirmingForget`) sends exactly that
+  and nothing the browser chose. `component.want_permissions` marks the read owed
+  on the operator page's own cadence (`remembered.refresh_ms`, 30 s) and after an
+  approval for the session; `component.judge_logins` asks `Transport.logins`
+  (`None` on an observer's page) which sign-ins the list names have ended, and the
+  answer arrives as `LoginsJudged`. Every path, command, tool, strand and name is a
+  text node, and none is a key, a class or an attribute.
 - **Subtitle and rename.** `sessions.Entry.subtitle` is the first line of the
   session's first prompt, which the daemon derived once. It is a person's own
   prompt, so the sidebar (`session-text` wrapping `session-name` and
@@ -882,11 +908,11 @@ page keys and nonces, and the relay into the session's gateway.
   it is the heading and one line saying so, so the pane is always drawn and
   the panes after it never move. It reads no worktree: the daemon serves
   worktree bytes to an Owner binding only.
-- `session_tab.view(goal, cost, jobs, viewers, workspace, share, controls, rename)`
+- `session_tab.view(goal, cost, jobs, viewers, workspace, share, controls, rename, remembered)`
   draws the Session pane, the panel's third. Its children are the title, a
-  memoized `div.session-rows` of groups, `share`, `controls` and `rename`, in
-  that order so the three controls' paths never move (`invite_path`,
-  `session_controls_path`, `rename_path`). The groups read Session (the name
+  memoized `div.session-rows` of groups, `share`, `controls`, `rename` and
+  `remembered`, in that order so the controls' paths never move (`invite_path`,
+  `session_controls_path`, `rename_path`, `remembered_path`). The groups read Session (the name
   with its Rename control, then the workspace), People (the viewers, then the
   invitation buttons), Goal (the terminal's own row, `goal_view.row`, or `none`,
   then its buttons), Fork, Jobs and Cost, each under an eyebrow heading and with

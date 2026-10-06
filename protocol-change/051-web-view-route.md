@@ -696,6 +696,8 @@ these rules:
   session** (`approve_for_session`) is left out. A remembered grant
   outlives the page that gave it, so a page opened from a stolen cookie
   could leave authority behind that lasts after the page closes.
+  Superseded by [073](073-web-session-grants.md): the page offers it, and
+  lists, attributes and forgets what it kept.
 
 ### What was considered
 

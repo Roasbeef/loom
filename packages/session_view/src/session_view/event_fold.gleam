@@ -195,6 +195,11 @@ pub fn apply_event(
     }
     protocol.SchedulesSnapshot(schedules:) ->
       append_schedules(shared, schedules)
+
+    // The page's own read of what the session remembers, so the board is kept
+    // for the host to draw and nothing is written to the transcript.
+    protocol.PermissionsSnapshot(board:) ->
+      shared_set.remembered(shared, Some(board))
     protocol.ConfigSnapshot(model_name:, directories:) -> {
       let shared = case model_name {
         Some(name) -> {
@@ -496,6 +501,7 @@ pub fn apply_event(
     | protocol.BlockSummarized(..)
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
+    | protocol.PermissionsSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.StreamDelta(..)

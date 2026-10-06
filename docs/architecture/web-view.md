@@ -1463,8 +1463,25 @@ would try to trick the person into approving:
   Send, Queue or Steer button, or by Command or Control with Enter in the
   editor, which submits that same form; the form's submit never carries a
   decision.
-- The page offers allow once and deny. Allow for the session is left out,
-  because a remembered grant outlives the page that gave it.
+- The owner's page offers allow once, allow for the session and deny; a member's
+  offers allow once and deny only, and draws no list, because remembering,
+  listing and forgetting are the owner's alone (the gateway refuses them to a
+  member; `component.may_remember` is the page's offer)
+  ([protocol-change/073](../../protocol-change/073-web-session-grants.md)).
+  Allow for the session follows allow once, names the tool ("Allow bash for
+  this session"), and appears only where `approval.rememberable` holds, the
+  terminal's rule; `component.decide` asks it again at the click and echoes
+  the drawn sequence, action digest and grants with `scope: "session"`.
+  A remembered grant outlives the page that gave it, so the Session pane
+  lists what the session remembers (`view/remembered`): each filesystem or
+  network permission and each remembered command, who allowed it, from which
+  browser sign-in or terminal, and when. Each row has a two-step Forget and
+  "Forget all" sits under the list. A permission from a browser sign-in that
+  has since ended says so (`Transport.logins`, judged by the daemon from the
+  registry). The list is the Session pane's sixth child
+  (`component.remembered_path`); an observer's page draws none and its socket
+  admits none, and the gateway refuses `permissions` and
+  `permission_forget` to an observer on its own.
 - Cards are keyed by the record's sequence, so a click in flight while the
   list shifts reaches the same card or none.
 
@@ -1565,6 +1582,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane, as groups under eyebrow headings (Session, People, Goal, Fork, Jobs, Cost; the stylesheet orders them, the children keep their pinned paths): the workspace, the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
 | `packages/web_view/src/web_view/invites.gleam` | The invitation an owner's page may mint: `Role` (observer or operator, never an owner), `Invitation`, `Reason` with its fixed words, `Answer`, the control's `Share` state and `claim_ttl_ms` (one hour). |
 | `packages/web_view/src/web_view/view/share.gleam` | The invitation control in the Session pane: two buttons, or the invitation with a `<loom-copy>` box for the command and for the token. Drawn on an owner's page only; the messages its buttons send are values handed in. |
+| `packages/web_view/src/web_view/remembered.gleam` | The page's own part of the remembered-permissions list: `State` (when it was last wanted, the open question, the sign-ins the daemon said have ended), `Armed` (one forget as the list looked when its button was drawn), `Login`, the row identities, and `refresh_ms` (30 s). |
+| `packages/web_view/src/web_view/view/remembered.gleam` | The Session pane's list of what "Allow for this session" kept: each permission and remembered command, who allowed it, from which sign-in or terminal and when, a two-step Forget for each row and for all of them, and a note under a permission whose browser sign-in has ended. The pane's sixth child. Every path, command and name is a text node. |
 | `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn under the strand panel's panes on both pages and has no handler. |
 | `packages/web_view/src/web_view/view/commentary.gleam` | The advisor's settled commentary, read-only: the request labels and full bodies of the reviews, drawn in the Strands pane under the strand cards as one closed `details` whose summary is `Advisor · N reviews · last: …`, the bodies as Markdown, newest three then a count, with the board's not-loaded line. No handler, and nothing while the advisor itself is on screen. |
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons and the Fork form (`session`, in the Session pane), and the dock's one goal line while a goal runs or is held (`dock`). It takes the messages its buttons send and the form's submit handler as values. |

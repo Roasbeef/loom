@@ -632,7 +632,12 @@ attachment list; it also recognises the memory context the daemon attaches to
 a run, `memory_context_lines`, and folds it in `transcript_text` to `memory
 context (n lines)` beside the `[loom]` injection collapse, and owns the
 attribution lead and fence `client/memory` builds its text from), `context_view`, `file_read_view`, `goal_view`,
-`live_jobs`, `notes_view`, `pasted_image`, `queued_input`,
+`live_jobs`, `notes_view`, `pasted_image`, `queued_input`, `remembered` (what
+the session remembers for its operator, protocol-change/073: the board's total
+decoder, the words both hosts use for a row and `Forget`, the request a forget
+becomes; `Shared.remembered` holds the last board and `remembered_refresh` is
+the page's owed read, serviced by `surfaces.service_remembered_read` and
+unused by the terminal),
 `stream_identity`, `text_hygiene`, `todo_board` and `tool_activity`, and
 `worktree_view`.
 

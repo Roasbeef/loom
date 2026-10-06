@@ -385,6 +385,22 @@ pub fn fingerprint(digest: Digest) -> String {
   string.slice(digest.value, 0, 16)
 }
 
+/// Which presenter a digest names: a bearer token, or a browser login.
+///
+/// A durable record that says which credential made a decision keeps this
+/// beside the fingerprint, so a reader can tell a login the owner can end from
+/// the terminal's own credential without looking either up.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.credential_kind(digest) == access.Browser
+/// ```
+@internal
+pub fn credential_kind(digest: Digest) -> CredentialKind {
+  digest.kind
+}
+
 /// Validates a claim-token digest. Like `credential_digest`, this checks the
 /// representation only; the caller hashes the whole `loomclaim_` string.
 ///

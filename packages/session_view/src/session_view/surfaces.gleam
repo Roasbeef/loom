@@ -89,6 +89,7 @@ import session_view/model.{
 import session_view/outbound
 import session_view/protocol
 import session_view/queue_request
+import session_view/remembered
 import session_view/session_channel
 import session_view/shared_set
 import session_view/transcript_lines
@@ -343,6 +344,64 @@ pub fn service_jobs_read(
         "Live jobs unavailable without a live conversation attachment",
       )
     _, worktree_view.Settled, _ -> shared
+  }
+}
+
+/// Sends a requested read of what the session remembers once the channel is
+/// ready for it.
+///
+/// Over the shared record alone. Only a host that asked for the read sets
+/// `remembered_refresh`, and the read is the operator's: the gateway refuses
+/// it to an observer (protocol-change/073), so a host asks only where it may
+/// approve. A read that cannot be sent now stays requested for the next tick.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_remembered_read(model.shared)
+/// ```
+@internal
+pub fn service_remembered_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.remembered_refresh, shared.peer {
+    Some(channel), worktree_view.Requested, Attached ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          outbound.send_frame(
+            shared_set.remembered_refresh(shared, worktree_view.Settled),
+            protocol.permissions(shared.next_id),
+          )
+        False -> shared
+      }
+    _, worktree_view.Requested, _ | _, worktree_view.Settled, _ -> shared
+  }
+}
+
+/// Forgets remembered permissions, as the host listed them.
+///
+/// Forgetting needs what an approval needs: a live attachment that may
+/// mutate. The request echoes the sequence the host's list carried, so the
+/// daemon refuses it when the list has moved, and a refusal asks the host to
+/// read again (`lane_fold.refuse`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.forget_remembered(shared, remembered.ForgetEverything(None))
+/// ```
+@internal
+pub fn forget_remembered(
+  shared: Shared(socket, recorder, source, replay_source),
+  forget: remembered.Forget,
+) -> Shared(socket, recorder, source, replay_source) {
+  case outbound.mutation_refusal(shared, command.Approve("")) {
+    Some(reason) -> session_model.append_error(shared, reason)
+    None ->
+      outbound.send_frame(
+        shared,
+        protocol.permission_forget(shared.next_id, forget),
+      )
   }
 }
 

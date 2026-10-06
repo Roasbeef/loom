@@ -980,6 +980,7 @@ fn apply_pushed(
     | protocol.BlockSummariesSnapshot(..)
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
+    | protocol.PermissionsSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.OperationChanged(..)
     | protocol.EscalationPending(..)
@@ -1334,6 +1335,11 @@ fn matching_presentation(name, intent, event) {
 
     "schedules", Read, protocol.SchedulesSnapshot(_) -> True
     "schedule_cancel", Mutation, protocol.SchedulesSnapshot(_) -> True
+
+    // A forget answers with the permissions that remain, as a goal mutation
+    // answers with its board, so the page redraws from the one reply.
+    "permissions", Read, protocol.PermissionsSnapshot(_) -> True
+    "permission_forget", Mutation, protocol.PermissionsSnapshot(_) -> True
     _, _, _ -> False
   }
 }
@@ -1946,6 +1952,7 @@ pub fn is_read(command: String) -> Bool {
     "models"
     | "skills"
     | "schedules"
+    | "permissions"
     | "notes"
     | "queued_input"
     | "context"

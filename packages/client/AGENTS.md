@@ -5628,6 +5628,34 @@ The gateway commits it atomically with the captured approval.
 and other resource grants remain once-only. Running jobs retain the authority
 captured at launch, and session close still joins their cancellation.
 
+## Remembered permissions: provenance and forgetting (protocol 073)
+
+`client/permissions` also records who approved each remembered grant and lists
+and forgets what a session remembers. The general fact keeps `grants`, the only
+thing dispatch reads, and adds `version: 2` and a `remembered` array of
+`{grant, provenance}` rows. A `Provenance` is `Approved(by, via, at_ms)` or
+`Unknown`: `by` is the principal of the approving connection's binding, `via`
+is `Login`, `Device` or `Uncredentialed` with the credential digest's
+fingerprint (the kind comes from `access.credential_kind`), and `at_ms` is the
+gateway clock at commit (`gateway.approval_provenance`). The decoder is total
+and advisory: a missing or damaged row reads as `Unknown` and never changes what
+is permitted, and a fact with no `version` reads with every grant `Unknown`.
+Exact-action consent cells gain `tool`, `strand`, a preview of at most 200
+characters and the same provenance.
+
+`permissions.listing` reads the general fact and every consent cell with their
+sequences, and `permissions.board` encodes it as the `permissions` snapshot
+(`protocol.PermissionsSnapshot`). `permissions.forgetting` builds the guarded
+edit for a `protocol.ForgetTarget` (one grant, one consent by its lower-case
+hexadecimal id, or everything) as the operator saw it, and the gateway applies
+it through `api.edit_reserved_facts`: a moved cell, or a target already gone,
+is `Stale` and answers `conflict` with nothing written. The general fact is
+rewritten and never deleted. `PermissionsGet` and `PermissionForget` count as
+mutations in `gateway.read_only`, so an observer attachment is refused both and
+neither runs while the session drains. Both, and `ApproveForSession`, are also
+owner-only (`gateway.owner_only`): an authenticated attachment whose principal is
+a member is refused with `forbidden`.
+
 `lsp/jail.workspace_reads` intersects the workspace with session-authorized
 readable and writable roots. Sibling dependencies become readable while writes
 remain scoped to the selected package and private scratch/cache. Network-off,

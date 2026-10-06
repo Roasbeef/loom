@@ -744,7 +744,7 @@ pub fn remembered_watch_authority_survives_sqlite_reopen_test() {
     as "the decision is captured"
   let allowed = [policy.GrantLimit(policy.WallSeconds, 0)]
   let assert Ok(change) =
-    permissions.remembering_action(live, record, allowed, None)
+    permissions.remembering_action(live, record, allowed, permissions.Unknown)
     as "wall consent has a private exact-action fact"
   let assert Ok(_) =
     api.approve_escalation_with_fact_at(
@@ -803,7 +803,8 @@ pub fn remembered_file_and_network_permissions_survive_restart_without_widening_
     as "the pending record must exist"
   let assert Ok(cell) = api.escalation_cell(live, "remember-exact-file")
     as "the exact question is captured"
-  let assert Ok(change) = permissions.remembering(live, allowed, None)
+  let assert Ok(change) =
+    permissions.remembering(live, allowed, permissions.Unknown)
     as "a missing writable file is a valid remembered target"
   let assert Ok(_) =
     api.approve_escalation_with_fact_at(

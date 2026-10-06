@@ -2127,6 +2127,8 @@ fn network_command(
     | protocol.SetConfig(..)
     | protocol.ListSchedules
     | protocol.CancelSchedule(..)
+    | protocol.PermissionsGet
+    | protocol.PermissionForget(..)
     | protocol.UnknownCommand(..) -> run_command(state, connection, id, command)
   }
 }
@@ -2883,6 +2885,35 @@ fn connection_origin(state: State, connection: Int) {
   |> result.unwrap(None)
 }
 
+// The commands that only the owner may send, beyond what an operator may.
+fn owner_only(command: Command) -> Bool {
+  case command {
+    protocol.ApproveForSession(..)
+    | protocol.PermissionsGet
+    | protocol.PermissionForget(..) -> True
+    _ -> False
+  }
+}
+
+// Whether the connection is an authenticated member rather than the daemon's
+// owner. A host fixture carries no principal and is the trusted in-VM sink, so
+// it is not a member.
+fn member_attached(state: State, connection: Int) -> Bool {
+  case dict.get(state.connections, connection) {
+    Ok(Connection(
+      authentication: Authenticated(
+        Binding(
+          principal: access.Principal(kind: access.MemberPrincipal, ..),
+          ..,
+        ),
+        ..,
+      ),
+      ..,
+    )) -> True
+    Ok(_) | Error(Nil) -> False
+  }
+}
+
 fn observer(state: State, connection: Int) {
   case dict.get(state.connections, connection) {
     Ok(Connection(
@@ -2936,6 +2967,8 @@ fn read_only(command: Command) {
     | protocol.GoalPause
     | protocol.GoalResume
     | protocol.CancelSchedule(..)
+    | protocol.PermissionsGet
+    | protocol.PermissionForget(..)
     | protocol.UnknownCommand(..) -> False
   }
 }
@@ -4580,6 +4613,25 @@ fn run_command(
     },
   )
 
+  // Remembering authority for the session, and seeing or removing what the
+  // session remembers, are the owner's (protocol-change/073). A member who may
+  // allow once or deny may not do these: the list names the owner's grants and
+  // credentials, and a member could otherwise forget the owner's grants. This
+  // is the gate; the page's own offer is only a convenience over it.
+  use <- bool.lazy_guard(
+    when: owner_only(command) && member_attached(state, connection),
+    return: fn() {
+      reply_error(
+        state,
+        connection,
+        id,
+        "forbidden",
+        "only the session owner may remember permissions for the session",
+      )
+      state
+    },
+  )
+
   // A connection that has gone away between admission and dispatch is treated
   // as unsubscribed, which refuses the command rather than acting on it.
   let subscription = case dict.get(state.connections, connection) {
@@ -4750,6 +4802,10 @@ fn run_command(
     protocol.ListSchedules, Subscribed -> list_schedules(state, connection, id)
     protocol.CancelSchedule(target:, name:), Subscribed ->
       cancel_schedule(state, connection, id, target, name)
+    protocol.PermissionsGet, Subscribed ->
+      list_permissions(state, connection, id)
+    protocol.PermissionForget(target:, expected_seq:), Subscribed ->
+      forget_permissions(state, connection, id, target, expected_seq)
   }
 }
 
@@ -6304,7 +6360,12 @@ fn commit_approval(
   use change <- result.try(case lifetime {
     Once -> Ok(None)
     ForSession ->
-      permissions.remembering_action(state.runtime, cell.record, echoed, author)
+      permissions.remembering_action(
+        state.runtime,
+        cell.record,
+        echoed,
+        approval_provenance(state, connection),
+      )
       |> result.map(Some)
       |> result.map_error(fn(reason) {
         refusal(protocol.code_bad_request, reason)
@@ -6958,6 +7019,107 @@ fn cancel_schedule(
           state
         }
       }
+  }
+}
+
+// --- remembered permissions (protocol-change/073) --------------------------
+
+// `permissions`: everything the session remembers, with who approved it. An
+// observer never reaches this (`read_only` counts it with the mutations), so
+// the listing of principals and credentials goes only to a connection that
+// may approve.
+fn list_permissions(state: State, connection: Int, id: Int) -> State {
+  case permissions.listing(state.runtime) {
+    Ok(listing) -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(
+          protocol.PermissionsSnapshot(board: permissions.board(listing)),
+        ),
+      )
+      state
+    }
+    Error(reason) -> {
+      reply_error(state, connection, id, protocol.code_internal, reason)
+      state
+    }
+  }
+}
+
+// `permission_forget`: remove remembered permissions through the session's one
+// writer, in a single transaction guarded by the sequences the listing
+// carried, and answer with the listing that remains. A guard that fails writes
+// nothing and answers a conflict, so a permission added by another operator
+// since the list was drawn is never forgotten unseen; the client reads again
+// and the operator decides again.
+fn forget_permissions(
+  state: State,
+  connection: Int,
+  id: Int,
+  target: protocol.ForgetTarget,
+  expected_seq: Option(Int),
+) -> State {
+  let forgotten = {
+    use edits <- result.try(permissions.forgetting(
+      state.runtime,
+      target,
+      expected: expected_seq,
+    ))
+    api.edit_reserved_facts(state.runtime, edits)
+    |> result.map_error(fn(error) {
+      case error {
+        api.RaceLost -> permissions.Stale
+        other -> permissions.Failed(describe_api_error(other, "").1)
+      }
+    })
+  }
+  case forgotten {
+    Ok(Nil) -> list_permissions(state, connection, id)
+    Error(permissions.Stale) -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_conflict,
+        "the remembered permissions changed after they were listed, so nothing was forgotten",
+      )
+      state
+    }
+    Error(permissions.Failed(reason:)) -> {
+      reply_error(state, connection, id, protocol.code_bad_request, reason)
+      state
+    }
+  }
+}
+
+// Who is approving, as the fact will record it. The principal and the
+// credential's kind and fingerprint come from the connection's authenticated
+// binding and nothing a client sent, so a client cannot attribute a grant to
+// someone else. A connection with no binding (a host fixture) records none.
+fn approval_provenance(
+  state: State,
+  connection: Int,
+) -> permissions.Provenance {
+  let #(now, _clock) = clock.read(state.runtime.effects.clock)
+  case dict.get(state.connections, connection) {
+    Ok(Connection(
+      authentication: Authenticated(binding, ..),
+      origin: Some(by),
+      ..,
+    )) -> {
+      let fingerprint = access.fingerprint(binding.digest)
+      permissions.Approved(
+        by:,
+        via: case access.credential_kind(binding.digest) {
+          access.Browser -> permissions.Login(fingerprint:)
+          access.Bearer -> permissions.Device(fingerprint:)
+        },
+        at_ms: now,
+      )
+    }
+    Ok(_) | Error(Nil) -> permissions.Unknown
   }
 }
 

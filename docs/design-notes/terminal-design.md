@@ -286,7 +286,7 @@ tight; the same facts fit on the frame.
 
 Data: context is `context_view.footer`
 (`packages/session_view/src/session_view/context_view.gleam:358`) (`footer`),
-cost is the session's `usage` (`packages/session_view/src/session_view/model.gleam:353`)
+cost is the session's `usage` (`packages/session_view/src/session_view/model.gleam:365`)
 (`usage`), the needs-you count is `strand_card.needing`
 (`packages/session_view/src/session_view/strand_card.gleam:69`) (`needing`),
 and the activity label is `layout.active_status_label`

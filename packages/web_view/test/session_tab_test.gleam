@@ -35,6 +35,7 @@ fn drawn(jobs, viewers) -> String {
     element.none(),
     element.none(),
     element.none(),
+    element.none(),
   ))
 }
 
@@ -55,7 +56,7 @@ pub fn nothing_to_say_still_draws_the_heading_and_the_cost_test() {
 
 // The groups are in the order a reader scans, each under an eyebrow heading:
 // the pane's title is the Session group's, then People, Goal, Jobs and Cost.
-// The pane keeps five children so the handlers' paths hold, and the
+// The pane keeps six children so the handlers' paths hold, and the
 // stylesheet puts the controls and the invitation among the groups.
 pub fn the_groups_read_session_people_goal_jobs_cost_test() {
   let html =
@@ -65,6 +66,7 @@ pub fn the_groups_read_session_people_goal_jobs_cost_test() {
       Unread,
       Some(Viewers([], 1)),
       Some("/src/loom"),
+      element.none(),
       element.none(),
       element.none(),
       element.none(),
@@ -106,6 +108,7 @@ pub fn a_pinned_goal_is_the_terminals_row_and_no_goal_says_none_test() {
       element.none(),
       element.none(),
       element.none(),
+      element.none(),
     ))
   assert string.contains(with_goal, "Goal")
   assert string.contains(
@@ -127,6 +130,7 @@ pub fn the_goal_is_only_ever_a_text_node_test() {
       Unread,
       None,
       None,
+      element.none(),
       element.none(),
       element.none(),
       element.none(),
