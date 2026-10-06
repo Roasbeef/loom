@@ -430,12 +430,6 @@
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}
-  /* The strand bars on the current row: one thin bar per live strand in its
-     hue, pulsing while the strand works. They are decoration and take no
-     pointer or focus. */
-  .dots{flex:0 0 auto;display:flex;gap:2px;align-items:center;align-self:center;margin-left:auto;pointer-events:none;}
-  .bar{display:block;width:4px;height:14px;border-radius:2px;background:var(--hue);opacity:.5;}
-  .bar.w{opacity:1;animation:pulse 1.4s infinite;}
   @keyframes pulse{50%{opacity:.35;}}
   /* A row that opens its session is a button filling the row, drawn like the
      row's text until it is hovered or focused. */
@@ -521,7 +515,8 @@
   .home-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .home-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .home-glyph{flex:0 0 auto;width:1em;text-align:center;color:var(--color-fg-quiet);}
-  .home-row.live .home-glyph,.home-row.idle .home-glyph,.home-row.working .home-glyph,.home-row.opening .home-glyph{color:var(--color-current);}
+  .home-row.live .home-glyph,.home-row.working .home-glyph,.home-row.opening .home-glyph{color:var(--color-current);}
+  .home-row.idle .home-glyph{color:var(--color-fg-quiet);}
   .home-row.working .home-glyph{animation:loom-pulse 1.4s ease-in-out infinite;}
   .home-row.needs-you .home-glyph{color:var(--color-signal-text);}
   .home-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
@@ -535,10 +530,10 @@
      the group by its count (`acts-N`). Below 640px the group moves under the
      row's words instead of over them. */
   li.home-row.actionable{position:relative;}
-  li.home-row.acts-1 .home-text{padding-right:84px;}
-  li.home-row.acts-2 .home-text{padding-right:150px;}
-  li.home-row.acts-3 .home-text{padding-right:220px;}
-  .home-acts{position:absolute;top:50%;right:34px;transform:translateY(-50%);display:flex;gap:6px;}
+  li.home-row.acts-1 .home-text{padding-right:96px;}
+  li.home-row.acts-2 .home-text{padding-right:162px;}
+  li.home-row.acts-3 .home-text{padding-right:232px;}
+  .home-acts{position:absolute;top:50%;right:46px;transform:translateY(-50%);display:flex;gap:6px;}
   .home-rename,.home-act{margin:0;padding:2px 8px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
   .home-rename:hover,.home-act:hover:not(:disabled){background:var(--color-bg-raised);color:var(--color-fg);}
   .home-act-delete:hover:not(:disabled){border-color:color-mix(in srgb,var(--color-danger) 45%,transparent);background:color-mix(in srgb,var(--color-danger) 10%,var(--color-bg-raised));color:var(--color-danger-text);}

@@ -220,14 +220,14 @@ fn lists(model: home.Model, session: String) -> Bool {
 }
 
 // The first read answers when the timer exists, the sessions are grouped by
-// workspace with the newest workspace first, and the sessions of a workspace
-// run newest first.
+// workspace in alphabetical order, and the sessions of a workspace run newest
+// first.
 pub fn the_page_lists_the_sessions_grouped_by_workspace_test() {
   let #(model, _) = opened(start())
   assert home.status(model) == home.Connected
   assert list.map(home.groups(model), fn(group) { group.workspace })
-    == ["/src/weft", "/src/notes", "/src/loom"]
-  let assert [_, _, loom] = home.groups(model)
+    == ["/src/loom", "/src/notes", "/src/weft"]
+  let assert [loom, _, _] = home.groups(model)
   assert list.map(loom.entries, fn(entry) { entry.id }) == ["B", "A"]
 }
 

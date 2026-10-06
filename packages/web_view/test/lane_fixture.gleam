@@ -280,6 +280,38 @@ pub fn captured(
   captured_with(count, operation, [#(child, review_op()), #(tester, tests_op())])
 }
 
+/// The metadata cell of a pending escalation on `strand` under its operation
+/// `op`: the evidence `agent_view` requires before it says a strand needs
+/// input. Pass it as `captured_cells`'s `extra`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.pending_approval("main", lane_fixture.main_op())
+/// ```
+pub fn pending_approval(strand: String, op: String) -> snapshot_view.Cell {
+  snapshot_view.Cell(
+    register.FactCustom,
+    "escalation/esc-1",
+    7,
+    json.Object([
+      #("id", json.String("esc-1")),
+      #("status", json.String("pending")),
+      #("tool", json.String("fs_write")),
+      #("preview", json.String("write the file")),
+      #("action", json.String("captured-action")),
+      #("origin", json.Null),
+      #(
+        "scope",
+        json.Object([
+          #("strand", json.String(strand)),
+          #("operation", json.String(op)),
+        ]),
+      ),
+    ]),
+  )
+}
+
 /// A capture of the first `count` of `items`, with `main` running under
 /// `operation` when one is given and each of `running` running its
 /// operation. A strand not running is idle.

@@ -18,8 +18,8 @@
 //// are made of, `Answer` and `Reason`, with the fixed words for each refusal.
 ////
 //// Grouping and ordering are a pure function of the entries, so a test can
-//// state them without a page: `grouped` puts the project of the session
-//// on screen first, then the projects by their newest session, and orders
+//// state them without a page: `grouped` orders the projects
+//// alphabetically by directory name, whatever session is on screen, and orders
 //// the sessions of a project newest first. A project is the repository a
 //// workspace belongs to, which the daemon derives from the filesystem once per
 //// workspace (`client/daemon/ui_project`): the sessions of every worktree of
@@ -417,24 +417,25 @@ fn parent_name(path: String) -> String {
   }
 }
 
-/// The entries grouped by project and ordered for the sidebar.
+/// The entries grouped by project and ordered for the sidebar and the home.
 ///
-/// The group holding the session named `current` comes first, so the reader
-/// finds the session they are in without scrolling; the other groups follow
-/// by their newest session, newest first, and a tie is broken by the
-/// project path so the order never depends on the daemon's. Within a group
-/// the sessions run newest first, a tie broken by identity.
+/// The groups are alphabetical by their project's directory name, ignoring
+/// case, and a tie (two projects with one name, or names that differ only in
+/// case) is broken by the project path. Nothing about the page's own session
+/// enters the order, so selecting another session never moves a group under
+/// the reader's cursor. Within a group the sessions run newest first, a tie
+/// broken by identity.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert sessions.grouped([], "a") == []
+/// assert sessions.grouped([]) == []
 /// ```
-pub fn grouped(entries: List(Entry), current: String) -> List(Group) {
+pub fn grouped(entries: List(Entry)) -> List(Group) {
   entries
   |> list.group(project_of)
   |> dict_to_groups
-  |> list.sort(fn(left, right) { by_group(left, right, current) })
+  |> list.sort(by_group)
 }
 
 // The groups of a grouping, each with its entries newest first.
@@ -469,26 +470,11 @@ fn by_recency(left: Entry, right: Entry) -> order.Order {
   }
 }
 
-// The current session's group first, then the newest group first.
-fn by_group(left: Group, right: Group, current: String) -> order.Order {
-  case holds(left, current), holds(right, current) {
-    True, False -> order.Lt
-    False, True -> order.Gt
-    True, True | False, False ->
-      case int.compare(newest(right), newest(left)) {
-        order.Eq -> string.compare(left.project, right.project)
-        other -> other
-      }
+// Alphabetical by directory name, then by the whole project path.
+fn by_group(left: Group, right: Group) -> order.Order {
+  let name = fn(group: Group) { string.lowercase(base_name(group.project)) }
+  case string.compare(name(left), name(right)) {
+    order.Eq -> string.compare(left.project, right.project)
+    other -> other
   }
-}
-
-fn holds(group: Group, current: String) -> Bool {
-  list.any(group.entries, fn(entry) { entry.id == current })
-}
-
-// A group's newest creation time.
-fn newest(group: Group) -> Int {
-  list.fold(group.entries, 0, fn(latest, entry) {
-    int.max(latest, entry.created_at)
-  })
 }

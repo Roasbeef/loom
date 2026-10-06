@@ -16,7 +16,6 @@ import lane_fixture
 import lustre/effect
 import lustre/element.{type Element}
 import page_fixture
-import session_view/turns
 import web_view/component
 import web_view/operator_page
 import web_view/sessions.{type Entry, Entry, Live, Saved}
@@ -62,41 +61,55 @@ fn names(group: sessions.Group) -> List(String) {
   list.map(group.entries, fn(entry) { entry.id })
 }
 
-// The workspace of the session on screen is first, though `/src/weft` holds a
-// newer session; the rest follow by their newest session. Within a workspace
-// the newest session is first.
-pub fn the_current_workspace_comes_first_then_the_newest_test() {
-  let groups = sessions.grouped(listing(), "A")
+// The groups are alphabetical by the project's directory name, though
+// `/src/weft` holds the newest session of the three. Within a workspace the
+// newest session is first.
+pub fn the_groups_are_alphabetical_and_the_newest_session_leads_test() {
+  let groups = sessions.grouped(listing())
   assert list.map(groups, fn(group) { group.workspace })
-    == ["/src/loom", "/src/weft", "/src/notes"]
-  let assert [loom, weft, notes] = groups
+    == ["/src/loom", "/src/notes", "/src/weft"]
+  let assert [loom, notes, weft] = groups
   assert names(loom) == ["B", "A"]
-  assert names(weft) == ["C", "E"]
   assert names(notes) == ["D"]
+  assert names(weft) == ["C", "E"]
 }
 
-// With another session on screen the order follows it, and a session that is
-// listed nowhere leaves the recency order alone.
-pub fn the_order_follows_the_session_on_screen_test() {
-  let groups = sessions.grouped(listing(), "C")
-  assert list.map(groups, fn(group) { group.workspace })
-    == ["/src/weft", "/src/notes", "/src/loom"]
-  let unlisted = sessions.grouped(listing(), "Z")
-  assert list.map(unlisted, fn(group) { group.workspace })
-    == ["/src/weft", "/src/notes", "/src/loom"]
+// Which session is on screen never reorders the groups: the page's list is
+// the same whichever row is selected, and a case difference in a name does not
+// change the place.
+pub fn selecting_a_session_does_not_reorder_the_groups_test() {
+  let workspaces = fn(model) {
+    list.map(component.session_groups(model), fn(group) { group.workspace })
+  }
+  let rows = [
+    entry("W", "w", "/src/Zed", 900, Live),
+    entry("A", "a", "/src/alpha", 100, Live),
+    entry("M", "m", "/src/mid", 500, Live),
+  ]
+  let on = fn(id) {
+    let start = page_fixture.start()
+    let model =
+      component.new(component.Start(..start, session_id: id))
+      |> component.apply([lane_fixture.captured(10, None)])
+    let #(model, _) = component.update(model, component.SessionsListed(rows))
+    model
+  }
+  assert workspaces(on("W")) == ["/src/alpha", "/src/mid", "/src/Zed"]
+  assert workspaces(on("A")) == workspaces(on("W"))
+  assert workspaces(on("M")) == workspaces(on("W"))
 }
 
 // Two sessions created in the same millisecond are ordered by identity, and
-// two workspaces whose newest sessions tie are ordered by path, so the order
-// never depends on the order the daemon listed them in.
+// two workspaces with one name are ordered by path, so the order never
+// depends on the order the daemon listed them in.
 pub fn ties_are_broken_by_identity_and_by_path_test() {
   let tied = [
     entry("b", "second", "/src/b", 10, Live),
     entry("a", "first", "/src/b", 10, Live),
     entry("c", "other", "/src/a", 10, Live),
   ]
-  let forward = sessions.grouped(tied, "none")
-  let backward = sessions.grouped(list.reverse(tied), "none")
+  let forward = sessions.grouped(tied)
+  let backward = sessions.grouped(list.reverse(tied))
   assert forward == backward
   assert list.map(forward, fn(group) { group.workspace })
     == ["/src/a", "/src/b"]
@@ -105,7 +118,7 @@ pub fn ties_are_broken_by_identity_and_by_path_test() {
 }
 
 pub fn no_sessions_make_no_groups_test() {
-  assert sessions.grouped([], "A") == []
+  assert sessions.grouped([]) == []
 }
 
 // A page reads the list when it opens: the transport's read is asked for once
@@ -150,7 +163,7 @@ pub fn the_answer_fills_the_sidebar_test() {
   assert list.map(component.session_groups(listed), fn(group) {
       group.workspace
     })
-    == ["/src/loom", "/src/weft", "/src/notes"]
+    == ["/src/loom", "/src/notes", "/src/weft"]
 }
 
 // A list past the catalogue's page is cut, not drawn whole.
@@ -394,67 +407,22 @@ pub fn an_observers_page_draws_no_sidebar_test() {
   assert !string.contains(drawn, "/src/loom")
 }
 
-// A sidebar over `listing()` with the given bars, as the page's frame would
-// draw it, for the tests of the strand bars.
-fn sidebar_with(bars: List(sidebar.Bar)) -> Element(Nil) {
-  sidebar.view(
-    sessions.grouped(listing(), "A"),
-    "A",
-    bars,
-    dict.new(),
-    fn(_) { Nil },
-    resume.Never,
-    archiving.Never,
-  )
-}
-
-// The current row draws one bar per live strand in the strand's hue, with
-// the pulse only on a working one, and no other row draws any. The span is
-// hidden from assistive technology.
-pub fn only_the_current_row_draws_strand_bars_test() {
+// The current row draws no strand bars: its activity word and dot are the one
+// indicator, and the strands' states are the Strands panel's.
+pub fn the_current_row_draws_no_strand_bars_test() {
   let drawn =
-    element.to_string(
-      sidebar_with([
-        sidebar.Bar(hue: turns.Primary, pulse: sidebar.Pulsing),
-        sidebar.Bar(hue: turns.Sub(index: 0), pulse: sidebar.Still),
-      ]),
-    )
-  assert list.length(string.split(drawn, "class=\"dots\"")) == 2
-  assert list.length(string.split(drawn, "class=\"bar hue-main w\"")) == 2
-  assert list.length(string.split(drawn, "class=\"bar hue-2\"")) == 2
-  assert string.contains(drawn, "aria-hidden=\"true\" class=\"dots\"")
-
-  // The bars sit inside the current row, between its name and its words.
-  let assert Ok(#(_, from_current)) =
-    string.split_once(drawn, "class=\"session current\"")
-  let assert Ok(#(row, _)) = string.split_once(from_current, "</li>")
-  let assert Ok(#(before, after)) = string.split_once(row, "class=\"dots\"")
-  assert string.contains(before, "web ui")
-  assert string.contains(after, "running")
-}
-
-// The bars add no handler and no focusable element: the markup holds the
-// same handlers with and without them, and nothing in them is a control.
-pub fn strand_bars_carry_no_handler_test() {
-  let bare = sidebar_with([])
-  let barred =
-    sidebar_with([
-      sidebar.Bar(hue: turns.Primary, pulse: sidebar.Pulsing),
-      sidebar.Bar(hue: turns.Advisor, pulse: sidebar.Still),
-    ])
-  assert handlers(barred) == handlers(bare)
-
-  let drawn = element.to_string(barred)
-  let assert Ok(#(_, from_dots)) = string.split_once(drawn, "class=\"dots\"")
-  let assert Ok(#(dots, _)) = string.split_once(from_dots, "</span></span>")
-  assert !string.contains(dots, "<button")
-  assert !string.contains(dots, "tabindex")
-  assert !string.contains(dots, "onclick")
-}
-
-// With no strand listed the row has no bars span at all.
-pub fn no_strands_draw_no_bars_test() {
-  assert !string.contains(element.to_string(sidebar_with([])), "dots")
+    element.to_string(sidebar.view(
+      sessions.grouped(listing()),
+      "A",
+      dict.new(),
+      fn(_) { Nil },
+      resume.Never,
+      archiving.Never,
+    ))
+  assert !string.contains(drawn, "dots")
+  assert !string.contains(drawn, "class=\"bar")
+  let page = operator_html(listed_page(listing()))
+  assert !string.contains(page, "class=\"dots\"")
 }
 
 // A session with a subtitle draws it in a quiet line under its name
@@ -542,7 +510,7 @@ pub fn worktrees_group_under_their_repository_test() {
     ),
     entry("c", "notes", "/home/notes", 50, Live),
   ]
-  let groups = sessions.grouped(rows, "none")
+  let groups = sessions.grouped(rows)
   assert list.map(groups, fn(group) { group.project })
     == ["/src/btcd", "/home/notes"]
   let assert [btcd, _] = groups
@@ -562,7 +530,7 @@ pub fn a_group_with_no_checkout_session_creates_where_the_newest_runs_test() {
     in_project("a", "/src/btcd/.claude/worktrees/one", "/src/btcd", 100, Live),
     in_project("b", "/src/btcd/.claude/worktrees/two", "/src/btcd", 200, Live),
   ]
-  let assert [group] = sessions.grouped(rows, "none")
+  let assert [group] = sessions.grouped(rows)
   assert group.workspace == "/src/btcd/.claude/worktrees/two"
 }
 
@@ -575,7 +543,7 @@ pub fn repositories_that_share_a_name_never_merge_test() {
     in_project("b", "/play/api", "/play/api", 200, Live),
     in_project("c", "/src/loom", "/src/loom", 300, Live),
   ]
-  let groups = sessions.grouped(rows, "none")
+  let groups = sessions.grouped(rows)
   assert list.length(groups) == 3
   let titles = sessions.titles(groups)
   assert dict.get(titles, "/work/api") == Ok("work/api")
@@ -586,7 +554,7 @@ pub fn repositories_that_share_a_name_never_merge_test() {
     in_project("d", "/a/x/api", "/a/x/api", 100, Live),
     in_project("e", "/b/x/api", "/b/x/api", 200, Live),
   ]
-  let titles = sessions.titles(sessions.grouped(same_parent, "none"))
+  let titles = sessions.titles(sessions.grouped(same_parent))
   assert dict.get(titles, "/a/x/api") == Ok("/a/x/api")
   assert dict.get(titles, "/b/x/api") == Ok("/b/x/api")
 }
@@ -748,19 +716,14 @@ fn with_activity(
 
 // The session page asks the daemon what its running sessions are doing, once
 // for each read of the list, naming only the running ones in the order the
-// sidebar draws them, and the answer sets each row's word and dot class: the
-// same three states the home draws.
+// sidebar draws them, and the answer sets each other row's word and dot class:
+// the same three states the home draws. The page's own row is its lane's
+// (`the_current_row_follows_the_lane_not_the_read_test`).
 pub fn the_session_pages_sidebar_draws_each_sessions_activity_test() {
-  let #(model, asked) =
-    with_activity(listing(), [
-      #("B", sessions.Working),
-      #("A", sessions.NeedsYou),
-    ])
+  let #(model, asked) = with_activity(listing(), [#("B", sessions.NeedsYou)])
   assert asked == Ok(["B", "A"])
   let assert Ok(sidebar) = sidebar_of(operator_html(model))
-  assert string.contains(sidebar, "residency live working")
   assert string.contains(sidebar, "residency live needs-you")
-  assert string.contains(sidebar, "</span>working</span>")
   assert string.contains(sidebar, "</span>needs you</span>")
 
   let #(idle, _) = with_activity(listing(), [#("B", sessions.Idle)])
@@ -768,7 +731,13 @@ pub fn the_session_pages_sidebar_draws_each_sessions_activity_test() {
   assert string.contains(sidebar, "residency live idle")
   assert string.contains(sidebar, "</span>idle</span>")
 
+  let #(working, _) = with_activity(listing(), [#("B", sessions.Working)])
+  let assert Ok(sidebar) = sidebar_of(operator_html(working))
+  assert string.contains(sidebar, "residency live working")
+
   // A session the read has not named yet says "running" as it always did.
+  let #(unnamed, _) = with_activity(listing(), [])
+  let assert Ok(sidebar) = sidebar_of(operator_html(unnamed))
   assert string.contains(sidebar, "</span>running</span>")
 }
 
@@ -796,4 +765,124 @@ pub fn a_list_with_nothing_running_asks_no_activity_test() {
     fn(_, _) { Nil },
     fn(_) { Nil },
   )
+}
+
+// The page's own row is read from its lane, not from the activity read, so it
+// never lags the Strands panel beside it. The read's answer for the page's own
+// session is ignored in every state: here it says idle (or working) while the
+// lane says otherwise.
+pub fn the_current_row_follows_the_lane_not_the_read_test() {
+  let row_of = fn(capture, said) {
+    let model =
+      component.new(page_fixture.start()) |> component.apply([capture])
+    let #(model, _) =
+      component.update(model, component.SessionsListed(listing()))
+    let #(model, _) = component.update(model, component.ActivityObserved(said))
+    let assert Ok(sidebar) = sidebar_of(operator_html(model))
+    let assert Ok(#(_, from_current)) =
+      string.split_once(sidebar, "class=\"session current\"")
+    let assert Ok(#(row, _)) = string.split_once(from_current, "</li>")
+    row
+  }
+
+  // A strand is working: the lane says working though the read says idle.
+  let working = row_of(lane_fixture.captured(10, None), [#("A", sessions.Idle)])
+  assert string.contains(working, "residency live working")
+  assert string.contains(working, "</span>working</span>")
+
+  // Nothing runs: idle, though the read still says working.
+  let idle =
+    row_of(lane_fixture.captured_with(10, None, []), [
+      #("A", sessions.Working),
+    ])
+  assert string.contains(idle, "residency live idle")
+  assert string.contains(idle, "</span>idle</span>")
+
+  // A strand waits on an approval: needs you, at once, though the read says
+  // idle.
+  let waiting =
+    row_of(
+      lane_fixture.captured_cells(
+        10,
+        None,
+        [#(lane_fixture.tester, lane_fixture.tests_op())],
+        [
+          lane_fixture.pending_approval(
+            lane_fixture.tester,
+            lane_fixture.tests_op(),
+          ),
+        ],
+      ),
+      [#("A", sessions.Idle)],
+    )
+  assert string.contains(waiting, "residency live needs-you")
+  assert string.contains(waiting, "</span>needs you</span>")
+}
+
+// Before the first capture the page knows nothing of its own session, so the
+// read's answer stands for its row.
+pub fn the_current_row_uses_the_read_before_a_capture_test() {
+  let #(model, _) =
+    component.update(
+      component.new(page_fixture.start()),
+      component.SessionsListed(listing()),
+    )
+  let #(model, _) =
+    component.update(
+      model,
+      component.ActivityObserved([#("A", sessions.NeedsYou)]),
+    )
+  assert dict.get(component.session_activity(model), "A")
+    == Ok(sessions.NeedsYou)
+}
+
+// The activity is read again every `activity_refresh_ms`, on the tick, apart
+// from the list: not before the interval, not for a page with no list, and
+// never twice for one list read.
+pub fn the_activity_is_read_on_its_own_faster_cadence_test() {
+  let asked = process.new_subject()
+  let clock = page_fixture.clock()
+  let start = page_fixture.start_with(clock)
+  let start =
+    component.Start(
+      ..start,
+      transport: component.Transport(..start.transport, activity: fn(ids, _) {
+        process.send(asked, ids)
+      }),
+    )
+  let run = fn(model, message) {
+    let #(model, effects) = component.update(model, message)
+    effect.perform(
+      effects,
+      fn(_) { Nil },
+      fn(_, _) { Nil },
+      fn(_) { Nil },
+      fn() { panic as "no dynamic value" },
+      fn(_, _) { Nil },
+      fn(_, _) { Nil },
+      fn(_) { Nil },
+    )
+    model
+  }
+
+  // A tick with no list asks nothing, and the list read asks once.
+  let model = run(component.new(start), component.Ticked)
+  assert process.receive(asked, 0) == Error(Nil)
+  let model = run(model, component.SessionsListed(listing()))
+  assert process.receive(asked, 0) == Ok(["B", "A"])
+
+  // Just under the interval, nothing; at it, one read for the running rows.
+  page_fixture.set(clock, component.activity_refresh_ms - 1)
+  let model = run(model, component.Ticked)
+  assert process.receive(asked, 0) == Error(Nil)
+  page_fixture.set(clock, component.activity_refresh_ms)
+  let model = run(model, component.Ticked)
+  assert process.receive(asked, 0) == Ok(["B", "A"])
+
+  // The same tick again asks nothing, and the next interval asks once more.
+  let model = run(model, component.Ticked)
+  assert process.receive(asked, 0) == Error(Nil)
+  page_fixture.set(clock, component.activity_refresh_ms * 2)
+  let _ = run(model, component.Ticked)
+  assert process.receive(asked, 0) == Ok(["B", "A"])
 }

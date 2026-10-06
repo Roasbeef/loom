@@ -332,7 +332,6 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
       shell.Listed(sidebar.view(
         groups,
         component.session_id(model),
-        sidebar.bars(component.strip(model)),
         component.session_activity(model),
         Opening,
         resume.Offered(Resuming, component.resuming_session(model)),
