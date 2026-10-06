@@ -46,6 +46,13 @@ folder.
   daemon's default state directory, where its own conversation is kept. It also
   refuses a project nested under a hidden folder, which is rare and which the
   terminal still allows.
+  On macOS `~/Library` is hidden without a dot (Keychains, Cookies, browser
+  profiles, Mail), so a first segment below home equal to `Library`, in any case
+  because the volume is case-insensitive, is refused as hidden too. A daemon
+  started with a `--state-dir` under home that is not dot-prefixed would
+  otherwise offer its own catalogue, credentials and session databases, so a
+  folder that is the canonical state directory, lies in it or contains it is
+  refused as well (`new_folder.apart_from`; the daemon passes its state root in).
 - **A configured list of allowed roots.** Rejected as machinery for a rare
   need. The home directory is a root every owner has and no one configures.
 
@@ -108,8 +115,9 @@ runtime (`ui_socket.create_task`):
    user's home directory, and `~user` and a relative path are refused; the path
    is made canonical, which fails for one that does not exist or is not a
    directory; the canonical folder must lie strictly inside the canonical home
-   directory and have no segment below it that begins with a dot
-   (`creations.inside`); and it must be owned by the user who owns the home
+   directory and have no segment below it that begins with a dot and no first
+   segment `Library` (`creations.inside`), and it must be apart from the daemon's
+   state directory; and it must be owned by the user who owns the home
    directory, with read, write and search permission for its owner. A path that
    is not a usable folder is `NotAFolder`, and one that is usable but not allowed
    is `OutsideHome`.
