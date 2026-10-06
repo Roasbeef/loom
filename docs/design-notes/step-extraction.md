@@ -549,7 +549,7 @@ shell, after the shared call, compares `before.shared` with
 `after.shared` and makes the terminal write itself. This is the shape
 `surfaces.sync_context(before, after)` already has
 (`session_view/surfaces.gleam:1047` (`sync_context`)) and the shape
-`refresh_render_cache(before, after)` has (`tui/projection.gleam:72`
+`refresh_render_cache(before, after)` has (`tui/projection.gleam:79`
 (`refresh_render_cache`)); the shell gains one more before-and-after
 pass beside them. It is right when the terminal write is a consequence of
 a session fact.
