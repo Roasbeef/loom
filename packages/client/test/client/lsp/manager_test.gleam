@@ -2611,6 +2611,40 @@ pub fn dependency_inputs_include_transitive_path_config_and_inventory_test() {
   Nil
 }
 
+pub fn a_reordered_package_inventory_is_the_same_installation_test() {
+  let workspace = scratch("inventory-order")
+  let root = project(workspace, "app")
+  write(root <> "/gleam.toml", "name = \"app\"\nversion = \"1.0.0\"\n")
+  write(
+    root <> "/build/packages/packages.toml",
+    "[packages]\ngleam_stdlib = \"1.0.5\"\nsibling = \"1.0.0\"\n\n[git]\n",
+  )
+  let assert Ok(first) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "an installed inventory can be fingerprinted"
+
+  // Gleam prints this file from a hash map, so a rewrite of the same
+  // installation may list the packages in another order.
+  write(
+    root <> "/build/packages/packages.toml",
+    "[packages]\nsibling = \"1.0.0\"\ngleam_stdlib = \"1.0.5\"\n\n[git]\n",
+  )
+  let assert Ok(reordered) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "the rewritten inventory can be fingerprinted"
+  assert first == reordered
+  write(
+    root <> "/build/packages/packages.toml",
+    "[packages]\nsibling = \"1.0.0\"\ngleam_stdlib = \"1.0.6\"\n\n[git]\n",
+  )
+  let assert Ok(upgraded) =
+    dependency_state.fingerprint(workspace, [], [workspace], root)
+    as "an upgraded inventory can be fingerprinted"
+  assert first != upgraded
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 pub fn a_dependency_config_fifo_is_refused_before_a_blocking_read_test() {
   let workspace = scratch("dependency-fifo")
   let root = project(workspace, "app")
