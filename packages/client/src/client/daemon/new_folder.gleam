@@ -29,10 +29,12 @@
 ////    `check_in`, which a test calls with a home of its own.
 //// 2. `check_in` applies the pure rules and the canonical resolution, and returns
 ////    the canonical folder.
-//// 3. `usable` compares the folder's owner and mode with the home directory's.
+//// 3. `apart_from` keeps a folder away from the daemon's own state directory.
+//// 4. `usable` compares the folder's owner and mode with the home directory's.
 
 import gleam/int
 import gleam/result
+import gleam/string
 import host/bootstrap
 import simplifile
 import web_view/creations.{type Reason}
@@ -64,9 +66,9 @@ pub fn home() -> Result(String, Reason) {
 /// ```gleam
 /// // new_folder.check("~/code/app")
 /// ```
-pub fn check(typed: String) -> Result(String, Reason) {
+pub fn check(typed: String, state_root: String) -> Result(String, Reason) {
   use home <- result.try(home())
-  check_in(typed, home)
+  check_in(typed, home, state_root)
 }
 
 /// `check` against a given canonical home directory, so a test names one.
@@ -82,7 +84,11 @@ pub fn check(typed: String) -> Result(String, Reason) {
 /// ```gleam
 /// // new_folder.check_in("~/code/app", "/Users/o")
 /// ```
-pub fn check_in(typed: String, home: String) -> Result(String, Reason) {
+pub fn check_in(
+  typed: String,
+  home: String,
+  state_root: String,
+) -> Result(String, Reason) {
   use path <- result.try(
     creations.typed_path(typed) |> result.replace_error(creations.NotAFolder),
   )
@@ -94,8 +100,30 @@ pub fn check_in(typed: String, home: String) -> Result(String, Reason) {
     |> result.replace_error(creations.NotAFolder),
   )
   use Nil <- result.try(creations.inside(home, folder))
+  use Nil <- result.try(apart_from(folder, state_root))
   use Nil <- result.map(usable(folder, home))
   folder
+}
+
+// A session's workspace is writable, so a folder that is the daemon's state
+// directory, lies in it or contains it would hand the agent the catalogue, the
+// credentials and every session's database. The default state directory is
+// hidden and so already refused; this covers one the owner placed elsewhere in
+// home. The state root is canonicalized here so a link to it is no way round;
+// one that cannot be resolved refuses every folder, which fails closed.
+fn apart_from(folder: String, state_root: String) -> Result(Nil, Reason) {
+  use root <- result.try(
+    bootstrap.canonical_directory(state_root)
+    |> result.replace_error(creations.Unavailable),
+  )
+  case
+    folder == root
+    || string.starts_with(folder, root <> "/")
+    || string.starts_with(root, folder <> "/")
+  {
+    True -> Error(creations.OutsideHome)
+    False -> Ok(Nil)
+  }
 }
 
 // The folder's owner is the home directory's, and that owner has read, write and

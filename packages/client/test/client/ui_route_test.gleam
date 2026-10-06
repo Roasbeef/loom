@@ -613,8 +613,8 @@ fn creating_from_home(
   // `x-create-home` stands for the owner's home directory, so a test can type a
   // path under a directory of its own; without it the daemon's own is used.
   let folder = case req.get_header(request, "x-create-home") {
-    Ok(home) -> new_folder.check_in(_, home)
-    Error(Nil) -> new_folder.check
+    Ok(home) -> new_folder.check_in(_, home, attachment.state_root)
+    Error(Nil) -> new_folder.check(_, attachment.state_root)
   }
   let ask = fn(place, name, sharing, deliver) {
     ui_socket.create_task(
@@ -4235,7 +4235,7 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         tickets,
         page_open,
         create,
-        new_folder.check,
+        new_folder.check(_, ready.state_root),
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
@@ -4257,7 +4257,7 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         tickets,
         fn() { Error(Nil) },
         create,
-        new_folder.check,
+        new_folder.check(_, ready.state_root),
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
@@ -4295,7 +4295,7 @@ pub fn the_eleventh_creation_in_an_hour_is_refused_test() {
         tickets,
         page_open,
         create,
-        new_folder.check,
+        new_folder.check(_, ready.state_root),
         creations.Drawn(workspace),
         name,
         creations.Shareable,
@@ -4343,7 +4343,7 @@ pub fn each_creation_draws_its_own_request_key_test() {
           tickets,
           page_open,
           create,
-          new_folder.check,
+          new_folder.check(_, ready.state_root),
           creations.Drawn(ready.state_root),
           "k",
           creations.Private,
@@ -4387,7 +4387,7 @@ pub fn a_session_that_does_not_open_is_reported_as_created_test() {
         tickets,
         page_open,
         create,
-        new_folder.check,
+        new_folder.check(_, ready.state_root),
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
@@ -4422,7 +4422,7 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       tickets,
       page_open,
       slow,
-      new_folder.check,
+      new_folder.check(_, ready.state_root),
       creations.Drawn(ready.state_root),
       "slow",
       creations.Private,
@@ -4567,7 +4567,7 @@ pub fn a_remembered_folder_is_judged_again_at_the_press_test() {
         tickets,
         page_open,
         create,
-        new_folder.check_in(_, home),
+        new_folder.check_in(_, home, ready.state_root),
         creations.Drawn(path),
         "again",
         creations.Private,

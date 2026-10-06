@@ -257,8 +257,9 @@ pub const signins_path = "0\t2\t2"
 /// `home_test` fails if the view moves it.
 pub const admin_path = "0\t0\t5"
 
-/// The most remembered folders the page keeps from a read, which is the
-/// catalogue's own bound.
+/// The most remembered folders the page keeps from a read. It mirrors
+/// `catalogue.recent_folder_limit`, the catalogue's own bound, which this package
+/// cannot import from `storage`; the two are kept equal by hand.
 pub const recent_limit = 10
 
 /// How long the page's list stands before it is read again, in milliseconds.

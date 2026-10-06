@@ -230,6 +230,10 @@ pub type HomeAttachment(instance) {
     /// value and never a page's, and only the owner's fresh home may reach it
     /// (`ui_socket.manage_for`).
     sessions_directory: String,
+    /// The daemon's own state directory, which a typed folder may never be, lie
+    /// in or contain (`new_folder.check_in`, protocol-change/074). It is the
+    /// daemon's value and never a page's.
+    state_root: String,
     /// Creates a session as the principal it is given, which is the control
     /// command's own `create_session` over this daemon's registry and sessions
     /// directory. It blocks for the registry's call, so the page never calls it
@@ -527,6 +531,7 @@ fn home_upgrade(
             registry: state.registry,
             activity: home_activity(config, state.registry, grant.credential),
             sessions_directory: state.sessions_directory,
+            state_root: state.state_root,
             create: fn(principal, request, scope) {
               create_session(
                 config,

@@ -746,7 +746,7 @@ pub fn upgrade_home(
           tickets,
           open,
           attachment.create,
-          new_folder.check,
+          new_folder.check(_, attachment.state_root),
           place,
           name,
           sharing,
@@ -2709,16 +2709,25 @@ pub fn recent_for(
   open: fn() -> Result(Int, Nil),
   home: String,
 ) -> List(creations.Recent) {
-  case
-    authorized_owner(standing, open),
-    manager.recent_folders(standing.registry)
-  {
-    Ok(_), Ok(recent) ->
+  case authorized_owner(standing, open) {
+    Ok(_) -> listed_recent(standing, home)
+    Error(_) -> []
+  }
+}
+
+// The list `recent_for` answers once the owner check has passed, so a caller that
+// has made its own check does not make it twice.
+fn listed_recent(
+  standing: Standing(instance),
+  home: String,
+) -> List(creations.Recent) {
+  case manager.recent_folders(standing.registry) {
+    Ok(recent) ->
       list.filter_map(recent, fn(entry) {
         creations.inside(home, entry.workspace)
         |> result.replace(creations.Recent(entry.id, entry.workspace))
       })
-    Error(_), _ | _, Error(_) -> []
+    Error(_) -> []
   }
 }
 
@@ -2743,7 +2752,7 @@ pub fn forget_for(
     Error(_) -> []
     Ok(_) -> {
       let _forgotten = manager.forget_folder(standing.registry, id)
-      recent_for(standing, open, home)
+      listed_recent(standing, home)
     }
   }
 }

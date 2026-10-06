@@ -261,9 +261,19 @@ pub fn expanded(path: String, home: String) -> Result(String, Nil) {
   }
 }
 
+// macOS keeps Keychains, Cookies, browser profiles and Mail in `~/Library`, which
+// Finder hides without a dot. The volume is case-insensitive, so the comparison
+// is too.
+fn first_is_library(segments: List(String)) -> Bool {
+  case segments {
+    [first, ..] -> string.lowercase(first) == "library"
+    [] -> False
+  }
+}
+
 /// Whether a canonical folder may start a session, given the canonical home
 /// directory: it must lie strictly inside `home`, and no segment below home may
-/// begin with a dot.
+/// begin with a dot, and the first may not be `Library` in any case.
 ///
 /// A session's agent may write to its whole workspace, so the home directory
 /// itself would hand it every dotfile and credential the owner keeps there. The
@@ -280,15 +290,17 @@ pub fn expanded(path: String, home: String) -> Result(String, Nil) {
 /// assert creations.inside("/home/o", "/home/o") == Error(creations.OutsideHome)
 /// assert creations.inside("/home/o", "/home/other") == Error(creations.OutsideHome)
 /// assert creations.inside("/home/o", "/home/o/.ssh") == Error(creations.OutsideHome)
+/// assert creations.inside("/home/o", "/home/o/Library/Keychains") == Error(creations.OutsideHome)
 /// ```
 pub fn inside(home: String, folder: String) -> Result(Nil, Reason) {
   case string.starts_with(folder, home <> "/") {
     False -> Error(OutsideHome)
     True -> {
       let below = string.drop_start(folder, string.length(home) + 1)
+      let segments = string.split(below, "/")
       let hidden =
-        string.split(below, "/")
-        |> list.any(string.starts_with(_, "."))
+        list.any(segments, string.starts_with(_, "."))
+        || first_is_library(segments)
       case below != "" && !hidden {
         True -> Ok(Nil)
         False -> Error(OutsideHome)

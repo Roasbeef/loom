@@ -34,4 +34,9 @@ pub fn a_typed_path_is_clean_expanded_and_inside_home_test() {
   assert creations.inside("/home/o", "/home/o/code/.git/x")
     == Error(creations.OutsideHome)
   assert creations.inside("/home/o", "/home/o/a.b/c") == Ok(Nil)
+  assert creations.inside("/home/o", "/home/o/Library")
+    == Error(creations.OutsideHome)
+  assert creations.inside("/home/o", "/home/o/library/Keychains")
+    == Error(creations.OutsideHome)
+  assert creations.inside("/home/o", "/home/o/code/Library") == Ok(Nil)
 }

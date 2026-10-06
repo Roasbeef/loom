@@ -10,6 +10,9 @@ import simplifile
 import support/extensions
 import web_view/creations
 
+// A state directory that no test folder is near, for the tests that are not about it.
+const state = "/"
+
 // A canonical, empty directory standing for the owner's home, with a project
 // folder and a nested one inside it.
 fn owners_home(name: String) -> String {
@@ -22,20 +25,23 @@ fn owners_home(name: String) -> String {
 
 pub fn a_folder_inside_home_is_accepted_in_canonical_form_test() {
   let home = owners_home("folder-accepted")
-  assert new_folder.check_in("~/code/app", home) == Ok(home <> "/code/app")
-  assert new_folder.check_in("~/code", home) == Ok(home <> "/code")
-  assert new_folder.check_in(home <> "/code/app", home)
+  assert new_folder.check_in("~/code/app", home, state)
     == Ok(home <> "/code/app")
-  assert new_folder.check_in("  ~/code/app/  ", home) == Ok(home <> "/code/app")
+  assert new_folder.check_in("~/code", home, state) == Ok(home <> "/code")
+  assert new_folder.check_in(home <> "/code/app", home, state)
+    == Ok(home <> "/code/app")
+  assert new_folder.check_in("  ~/code/app/  ", home, state)
+    == Ok(home <> "/code/app")
 
   // A `..` that stays inside is folded away, and a link that stays inside is
   // followed, so the session is made in the folder the path really names.
-  assert new_folder.check_in("~/code/../code/app", home)
+  assert new_folder.check_in("~/code/../code/app", home, state)
     == Ok(home <> "/code/app")
   let assert Ok(Nil) =
     simplifile.create_symlink(home <> "/code/app", home <> "/shortcut")
     as "a link inside home"
-  assert new_folder.check_in("~/shortcut", home) == Ok(home <> "/code/app")
+  assert new_folder.check_in("~/shortcut", home, state)
+    == Ok(home <> "/code/app")
 }
 
 pub fn the_home_directory_itself_and_what_is_outside_it_are_refused_test() {
@@ -43,19 +49,21 @@ pub fn the_home_directory_itself_and_what_is_outside_it_are_refused_test() {
   let assert Ok(sibling) =
     bootstrap.canonical_directory(extensions.scratch("folder-outside-sibling"))
     as "a folder beside home"
-  assert new_folder.check_in("~", home) == Error(creations.OutsideHome)
-  assert new_folder.check_in("~/", home) == Error(creations.OutsideHome)
-  assert new_folder.check_in(home, home) == Error(creations.OutsideHome)
-  assert new_folder.check_in(sibling, home) == Error(creations.OutsideHome)
-  assert new_folder.check_in("/", home) == Error(creations.OutsideHome)
-  assert new_folder.check_in("~/..", home) == Error(creations.OutsideHome)
-  assert new_folder.check_in("~/code/../..", home)
+  assert new_folder.check_in("~", home, state) == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/", home, state) == Error(creations.OutsideHome)
+  assert new_folder.check_in(home, home, state) == Error(creations.OutsideHome)
+  assert new_folder.check_in(sibling, home, state)
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("/", home, state) == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/..", home, state)
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/code/../..", home, state)
     == Error(creations.OutsideHome)
 
   // A folder whose name only begins like home's is not inside it.
   let assert Ok(Nil) = simplifile.create_directory_all(home <> "2/x")
     as "a folder named like home"
-  assert new_folder.check_in(home <> "2/x", home)
+  assert new_folder.check_in(home <> "2/x", home, state)
     == Error(creations.OutsideHome)
   let _ = simplifile.delete(home <> "2")
 }
@@ -70,10 +78,11 @@ pub fn a_link_or_a_dot_dot_cannot_leave_home_test() {
     as "a nested folder outside"
   let assert Ok(Nil) = simplifile.create_symlink(outside, home <> "/escape")
     as "a link to the outside"
-  assert new_folder.check_in("~/escape", home) == Error(creations.OutsideHome)
-  assert new_folder.check_in("~/escape/deep", home)
+  assert new_folder.check_in("~/escape", home, state)
     == Error(creations.OutsideHome)
-  assert new_folder.check_in("~/code/app/../../escape/deep", home)
+  assert new_folder.check_in("~/escape/deep", home, state)
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/code/app/../../escape/deep", home, state)
     == Error(creations.OutsideHome)
 
   // A link inside home that points at a hidden folder lands in it.
@@ -82,7 +91,8 @@ pub fn a_link_or_a_dot_dot_cannot_leave_home_test() {
   let assert Ok(Nil) =
     simplifile.create_symlink(home <> "/.secrets", home <> "/innocent")
     as "a link to it"
-  assert new_folder.check_in("~/innocent", home) == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/innocent", home, state)
+    == Error(creations.OutsideHome)
 }
 
 pub fn hidden_folders_are_refused_wherever_they_are_test() {
@@ -92,50 +102,70 @@ pub fn hidden_folders_are_refused_wherever_they_are_test() {
   let assert Ok(Nil) =
     simplifile.create_directory_all(home <> "/code/.git/hooks")
     as "a hidden folder below a project"
-  assert new_folder.check_in("~/.ssh", home) == Error(creations.OutsideHome)
-  assert new_folder.check_in("~/code/.git", home)
+  assert new_folder.check_in("~/.ssh", home, state)
     == Error(creations.OutsideHome)
-  assert new_folder.check_in("~/code/.git/hooks", home)
+  assert new_folder.check_in("~/code/.git", home, state)
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/code/.git/hooks", home, state)
+    == Error(creations.OutsideHome)
+
+  // `~/Library` is hidden on macOS without a dot, in any case.
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(home <> "/Library/Keychains")
+    as "macOS's hidden library"
+  assert new_folder.check_in("~/Library", home, state)
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/Library/Keychains", home, state)
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/library", home, state)
     == Error(creations.OutsideHome)
 
   // A dot inside a name does not make a folder hidden; only a name that begins
   // with one does.
   let assert Ok(Nil) = simplifile.create_directory_all(home <> "/v1.2/app.d")
     as "dots inside names"
-  assert new_folder.check_in("~/v1.2/app.d", home) == Ok(home <> "/v1.2/app.d")
+  assert new_folder.check_in("~/v1.2/app.d", home, state)
+    == Ok(home <> "/v1.2/app.d")
 }
 
 pub fn a_path_that_is_not_a_folder_is_refused_test() {
   let home = owners_home("folder-missing")
   let assert Ok(Nil) = simplifile.write(home <> "/notes.txt", "hello")
     as "a file"
-  assert new_folder.check_in("~/missing", home) == Error(creations.NotAFolder)
-  assert new_folder.check_in("~/code/missing/deeper", home)
+  assert new_folder.check_in("~/missing", home, state)
     == Error(creations.NotAFolder)
-  assert new_folder.check_in("~/notes.txt", home) == Error(creations.NotAFolder)
-  assert new_folder.check_in("~/notes.txt/x", home)
+  assert new_folder.check_in("~/code/missing/deeper", home, state)
+    == Error(creations.NotAFolder)
+  assert new_folder.check_in("~/notes.txt", home, state)
+    == Error(creations.NotAFolder)
+  assert new_folder.check_in("~/notes.txt/x", home, state)
     == Error(creations.NotAFolder)
 
   // A link whose target is gone is not a folder either.
   let assert Ok(Nil) =
     simplifile.create_symlink(home <> "/gone", home <> "/dangling")
     as "a dangling link"
-  assert new_folder.check_in("~/dangling", home) == Error(creations.NotAFolder)
+  assert new_folder.check_in("~/dangling", home, state)
+    == Error(creations.NotAFolder)
 }
 
 pub fn text_that_cannot_name_a_folder_is_refused_test() {
   let home = owners_home("folder-text")
-  assert new_folder.check_in("", home) == Error(creations.NotAFolder)
-  assert new_folder.check_in("   ", home) == Error(creations.NotAFolder)
-  assert new_folder.check_in("code/app", home) == Error(creations.NotAFolder)
-  assert new_folder.check_in("./code", home) == Error(creations.NotAFolder)
-  assert new_folder.check_in("~code", home) == Error(creations.NotAFolder)
-  assert new_folder.check_in("~root/code", home) == Error(creations.NotAFolder)
-  assert new_folder.check_in("~/code\n/app", home)
+  assert new_folder.check_in("", home, state) == Error(creations.NotAFolder)
+  assert new_folder.check_in("   ", home, state) == Error(creations.NotAFolder)
+  assert new_folder.check_in("code/app", home, state)
     == Error(creations.NotAFolder)
-  assert new_folder.check_in("~/code\u{202e}/app", home)
+  assert new_folder.check_in("./code", home, state)
     == Error(creations.NotAFolder)
-  assert new_folder.check_in("~/" <> string.repeat("a", 5000), home)
+  assert new_folder.check_in("~code", home, state)
+    == Error(creations.NotAFolder)
+  assert new_folder.check_in("~root/code", home, state)
+    == Error(creations.NotAFolder)
+  assert new_folder.check_in("~/code\n/app", home, state)
+    == Error(creations.NotAFolder)
+  assert new_folder.check_in("~/code\u{202e}/app", home, state)
+    == Error(creations.NotAFolder)
+  assert new_folder.check_in("~/" <> string.repeat("a", 5000), home, state)
     == Error(creations.NotAFolder)
 }
 
@@ -148,12 +178,12 @@ pub fn a_folder_the_owner_cannot_write_is_refused_test() {
   let assert Ok(Nil) =
     simplifile.set_permissions_octal(home <> "/locked", 0o500)
     as "made read-only"
-  let refused = new_folder.check_in("~/locked", home)
+  let refused = new_folder.check_in("~/locked", home, state)
   let assert Ok(Nil) =
     simplifile.set_permissions_octal(home <> "/locked", 0o700)
     as "restored"
   assert refused == Error(creations.NotAFolder)
-  assert new_folder.check_in("~/locked", home) == Ok(home <> "/locked")
+  assert new_folder.check_in("~/locked", home, state) == Ok(home <> "/locked")
 }
 
 // The daemon's own home is read from the environment and is canonical.
@@ -161,4 +191,38 @@ pub fn the_daemons_home_is_canonical_test() {
   let assert Ok(home) = new_folder.home() as "the test runs with a HOME"
   assert bootstrap.canonical_directory(home) == Ok(home)
   assert result.is_ok(bootstrap.getenv("HOME"))
+}
+
+// The daemon's own state directory, when it is not hidden, is refused, and so is
+// any folder inside it or containing it.
+pub fn the_daemons_state_directory_is_refused_test() {
+  let home = owners_home("folder-state")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(home <> "/loomstate/sessions")
+    as "a state directory"
+  let root = home <> "/loomstate"
+  assert new_folder.check_in("~/loomstate", home, root)
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/loomstate/sessions", home, root)
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/code", home, root) == Ok(home <> "/code")
+
+  // A folder that contains the state directory exposes it too.
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(home <> "/code/app/state")
+    as "a state directory inside a project"
+  assert new_folder.check_in("~/code", home, home <> "/code/app/state")
+    == Error(creations.OutsideHome)
+  assert new_folder.check_in("~/code/app", home, home <> "/code/app/state")
+    == Error(creations.OutsideHome)
+
+  // A link to the state directory is judged by where it ends.
+  let assert Ok(Nil) = simplifile.create_symlink(root, home <> "/alias")
+    as "a link to the state directory"
+  assert new_folder.check_in("~/alias", home, root)
+    == Error(creations.OutsideHome)
+
+  // A state directory that cannot be resolved refuses every folder.
+  assert new_folder.check_in("~/code", home, home <> "/missing")
+    == Error(creations.Unavailable)
 }
