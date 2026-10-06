@@ -585,6 +585,7 @@ fn apply_updates(candidate: Candidate, updates) {
     | [channel.RequestRefused(..), ..]
     | [channel.Submission(_), ..]
     | [channel.HistoryPage(..), ..]
+    | [channel.LineagePage(..), ..]
     | [channel.LookedUp(..), ..]
     | [channel.Acknowledged(..), ..]
     | [channel.UnknownOutcome(..), ..] ->

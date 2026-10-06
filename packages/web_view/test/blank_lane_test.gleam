@@ -8,6 +8,12 @@
 //// open such a session as a reader does, with a gateway that holds the whole of
 //// it, and expect the newest turn's prompt, its divider with the turn's step
 //// count and its answer, and the offer of older turns when there are any.
+////
+//// The page reads the strand through its lineage (`history_lineage`): the
+//// records on the path from its leaf down its parent links, and nothing another
+//// strand wrote between them. How many records the advisor wrote after `main`'s
+//// last turn therefore changes nothing about how the page opens, and a turn is
+//// complete when the reads have reached its input, however many records it has.
 
 import gleam/erlang/process
 import gleam/int
@@ -93,11 +99,18 @@ fn dividers(page) -> List(String) {
   })
 }
 
-// The history reads the page has written and not had answered.
+// The lineage reads the page has written and not had answered.
 fn reads(wire) -> List(String) {
-  list.filter(page_fixture.sent(wire), fn(frame) {
-    string.contains(frame, "\"cmd\":\"history\"")
-  })
+  page_fixture.lineage_reads(wire)
+}
+
+// How many of `frames` are lineage reads.
+fn read_count(frames: List(String)) -> Int {
+  list.length(
+    list.filter(frames, fn(frame) {
+      string.contains(frame, "\"cmd\":\"history_lineage\"")
+    }),
+  )
 }
 
 // One turn of these parallel calls, opened after a review of this many records.
@@ -127,6 +140,13 @@ pub fn the_newest_turn_is_drawn_whatever_the_advisor_wrote_after_it_test() {
       [25, 25],
       [40, 40, 40],
       [31, 31, 31, 31, 31],
+
+      // The shapes that reloaded blank: parallel calls that run to a hundred
+      // and thirty records or more, in a few messages or in many.
+      [33, 33, 33, 33],
+      [36, 36, 36, 36],
+      [40, 40, 40, 40],
+      [20, 20, 20, 20, 20, 20, 20, 20],
     ],
     fn(batches) {
       draws_whole(batches, 60)
@@ -149,9 +169,8 @@ pub fn older_turns_are_offered_below_the_newest_test() {
   assert component.top(page) == lane.Beginning
 }
 
-// The page reads the turn from the strand's leaf in the bounded intervals every
-// read uses, and while it does the lane says it is loading and not that the
-// conversation begins.
+// The page reads the turn from the strand's leaf a page at a time, and while it
+// does the lane says it is loading and not that the conversation begins.
 pub fn the_page_says_it_is_loading_until_the_turn_arrives_test() {
   let #(archive, capture) = reviewed([[55]], 60)
   let wire = process.new_subject()
@@ -190,45 +209,58 @@ pub fn a_strand_that_only_receives_feeds_opens_in_a_few_reads_test() {
       component.FocusRequested("advisor"),
     ])
     |> lane_fixture.served(wire, archive, capture, "operator")
-  assert list.length(
-      list.filter(frames, fn(frame) {
-        string.contains(frame, "\"cmd\":\"history\"")
-      }),
-    )
-    <= 3
+  assert read_count(frames) <= 3
   assert component.top(page) != lane.Loading
   assert component.pieces(page) != []
 }
 
-// The number of history reads among `frames`, and the lowest sequence any of
-// them asked below.
-fn read_cost(frames: List(String)) -> #(Int, Int) {
-  let asked =
-    list.filter_map(frames, fn(frame) {
-      case string.split(frame, "\"before_seq\":") {
-        [_, rest] ->
-          case string.contains(frame, "\"cmd\":\"history\"") {
-            True ->
-              case string.split(rest, "}") {
-                [digits, ..] -> int.parse(digits)
-                [] -> Error(Nil)
-              }
-            False -> Error(Nil)
-          }
-        _ -> Error(Nil)
-      }
-    })
-  #(list.length(asked), list.fold(asked, 1_000_000, int.min))
+// A turn of many parallel calls reloads whole, behind a long review by the
+// advisor, with older turns offered below it. The records of one turn run past
+// a page of a hundred, so the page reads on from the oldest record it holds
+// until it reaches the turn's input: the newest prompt, the divider with the
+// turn's own count of steps, the answer, and Load older. A press then draws the
+// turns below.
+pub fn a_long_turn_reloads_whole_and_offers_the_turns_below_it_test() {
+  list.each(
+    [
+      [33, 33, 33, 33],
+      [36, 36, 36, 36],
+      [40, 40, 40, 40],
+      [31, 31, 31, 31, 31],
+      [20, 20, 20, 20, 20, 20, 20, 20],
+    ],
+    fn(batches) {
+      let steps = list.fold(batches, 0, int.add)
+      let older = list.repeat([3], 40)
+      let #(archive, capture) = reviewed(list.append(older, [batches]), 60)
+      let #(page, wire) = opened(archive, capture)
+      let newest = list.length(older) + 1
+      assert list.drop(spoken(page), list.length(spoken(page)) - 2)
+        == [
+          "question " <> int.to_string(newest),
+          "answer " <> int.to_string(newest),
+        ]
+      let assert Ok(divider) = list.last(dividers(page))
+      assert string.contains(divider, int.to_string(steps) <> " step")
+      assert component.top(page) == lane.Earlier
+
+      // The press reads the turns below, and the page draws more of them.
+      let held = list.length(spoken(page))
+      let page =
+        page_fixture.run(page, component.update, [component.OlderRequested])
+        |> lane_fixture.serve(wire, archive, capture)
+      assert list.length(spoken(page)) > held
+    },
+  )
 }
 
-// A strand sparse among the session's sequences is read in steps. Its leaf is
-// below five thousand records another strand wrote, and every interval of a
-// hundred sequences holds none of its own, so a read that went on until it found
-// one would be fifty reads. The page reads at most eight intervals that find
-// nothing, says so by offering Load older, and each press goes on below where the
-// last stopped until the turn is found.
-pub fn a_sparse_strand_is_read_in_steps_test() {
-  let main = lane_fixture.batched([[2]])
+// A strand sparse among the session's records: five thousand records of another
+// strand come after `main`'s last turn, as they do when the advisor reviews a
+// long run of work. The page's first read walks `main`'s own records, so it opens
+// on `main`'s newest turns in one read, and each press of Load older reads the
+// turns below them in one more, until the conversation begins.
+pub fn a_sparse_strand_opens_and_pages_by_its_own_records_test() {
+  let main = lane_fixture.batched(list.repeat([2], 60))
   let archive = lane_fixture.advised(main, 5000)
   let capture =
     lane_fixture.newest_by(archive, 50, [
@@ -241,28 +273,32 @@ pub fn a_sparse_strand_is_read_in_steps_test() {
     |> component.apply([capture])
     |> page_fixture.run(component.update, [component.Ticked])
     |> lane_fixture.served(wire, archive, capture, "operator")
-  let #(reads, lowest) = read_cost(frames)
-  assert reads <= 8
-  assert spoken(page) == []
+  assert read_count(frames) == 1
+  let newest = list.last(spoken(page))
+  assert newest == Ok("answer 60")
   assert component.top(page) == lane.Earlier
-  press_until_drawn(page, wire, archive, capture, lowest, 0)
+  press_until_beginning(page, wire, archive, capture, 0)
 }
 
-fn press_until_drawn(page, wire, archive, capture, lowest: Int, presses: Int) {
-  case spoken(page) {
-    [] -> {
+fn press_until_beginning(page, wire, archive, capture, presses: Int) {
+  let drawn = list.length(spoken(page))
+  case component.top(page) {
+    lane.Beginning -> {
+      assert presses >= 2
+      assert list.first(spoken(page)) == Ok("question 1")
+      assert list.last(spoken(page)) == Ok("answer 60")
+    }
+    _ -> {
       assert presses < 10
       let #(page, frames) =
         page_fixture.run(page, component.update, [component.OlderRequested])
         |> lane_fixture.served(wire, archive, capture, "operator")
-      let #(reads, next) = read_cost(frames)
-      assert reads <= 8
-      assert next < lowest
-      press_until_drawn(page, wire, archive, capture, next, presses + 1)
-    }
-    drawn -> {
-      assert presses >= 2
-      assert drawn == ["question 1", "answer 1"]
+
+      // Each press draws turns the page did not hold, in at most two reads.
+      assert read_count(frames) >= 1
+      assert read_count(frames) <= 2
+      assert list.length(spoken(page)) > drawn
+      press_until_beginning(page, wire, archive, capture, presses + 1)
     }
   }
 }

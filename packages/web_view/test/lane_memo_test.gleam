@@ -207,14 +207,17 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
   let cache = first(first_view)
   assert drawn(lines) == 100
 
-  // The read goes out for the hundred sequences below the oldest record,
-  // and its reply lands above what is drawn.
+  // The read goes out from the parent of the oldest record, and its reply
+  // lands above what is drawn.
   let page =
     page_fixture.run(page, component.update, [component.OlderRequested])
   assert component.top(page) == lane.Loading
   let page =
     component.apply(page, [
-      session_channel.HistoryPage(lane_fixture.older_page(201, 300), 301, 200),
+      session_channel.LineagePage(
+        lane_fixture.older_page(201, 300),
+        lane_fixture.entry_text(300),
+      ),
     ])
   let next_view =
     lane.rows(

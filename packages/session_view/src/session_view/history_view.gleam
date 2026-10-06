@@ -8,11 +8,14 @@
 ////
 //// A host that draws summaries instead of records (the web view) also reads
 //// a second, transient stretch of ancestry beside the window: a scan. It
-//// starts at one record and reads downward through the same bounded
-//// intervals, holds what it found until the host has taken what it wanted
-//// from it, and then is dropped. The window is never touched by a scan, so a
-//// read that wanders through a turn of thousands of records cannot evict the
-//// live end the page is drawing.
+//// starts at one record and reads downward through the strand's own parent
+//// links, a page of at most a hundred records at a time
+//// (`session_channel.lineage`), holds what it found until the host has taken
+//// what it wanted from it, and then is dropped. The window is never touched by
+//// a scan, so a read that wanders through a turn of thousands of records
+//// cannot evict the live end the page is drawing. What other strands wrote in
+//// between is never read, so how far a scan has to go depends on the strand
+//// and on nothing else.
 
 import core/ids
 import gleam/dict
@@ -63,19 +66,40 @@ pub type Scan {
     leaf: Option(ids.EntryId),
     /// What the scan has read, newest first.
     window: snapshot.Window,
-    /// Exclusive upper bound for the next older sequence interval.
-    before_seq: Int,
     /// The scan's own outstanding or deferred read.
-    request: Request,
-    /// How many reads in a row added nothing to what the scan holds, which is
-    /// what a strand sparse among the session's sequences costs: every
-    /// interval is another strand's records.
-    barren: Int,
+    request: Lineage,
+    /// Whether the store holds anything below what the scan holds.
+    floor: Floor,
   )
 
   /// A read of the scan was refused, or the lane was lost, so the scan was
   /// dropped. The host takes the fact once and ends the scan.
   Abandoned
+}
+
+/// What a scan's next read is, when it has one.
+///
+/// A scan reads a strand's ancestry from an entry downward, so its demand names
+/// the entry and not a sequence: the parent its records do not yet reach.
+pub type Lineage {
+  /// No read is owed or out.
+  Idle
+
+  /// The next read starts at this entry, which is the parent the scan lacks.
+  Owed(from: String)
+
+  /// A read that starts at this entry is out.
+  Out(from: String)
+}
+
+/// Whether a scan can find anything below the records it holds.
+pub type Floor {
+  /// The last read added records, or none has been made.
+  Open
+
+  /// A read added nothing: the store holds no record below what the scan holds
+  /// that the scan can reach, and asking again would ask for the same entry.
+  Bottomed
 }
 
 // How many records, and how many payload bytes, a scan holds at most. A scan
@@ -85,13 +109,6 @@ pub type Scan {
 const scan_records = 4096
 
 const scan_bytes = 33_554_432
-
-// How many reads in a row may add nothing before a scan stops being readable.
-// Each read is an interval of a hundred sequences, so a strand whose records
-// are further apart than that is read in steps of this many intervals, and the
-// host resumes from `scan_floor` when the reader asks for more. A scan that is
-// finding its strand's records never reaches it.
-const scan_barren = 8
 
 /// Presentation retention never supplies operation or authorization metadata.
 pub type State {
@@ -244,8 +261,9 @@ pub fn older(state: State, missing: Option(String)) -> State {
 
 /// Computes a complete interval of at most one hundred sequence positions.
 ///
-/// The window's demand is served before the scan's, and only one is answered
-/// at a time, since the lane has one read slot.
+/// Only the window asks for an interval. A scan asks for a strand's ancestry
+/// (`lineage`), which the lane reads in its own request, and the window's
+/// demand is served first, since the lane has one read slot.
 ///
 /// ## Examples
 ///
@@ -254,12 +272,9 @@ pub fn older(state: State, missing: Option(String)) -> State {
 /// ```
 @internal
 pub fn range(state: State) -> Option(#(Int, Int)) {
-  case state.request, state.scan {
-    Wanted, _ -> Some(interval(state.before_seq))
-    Quiet, Scanning(request: Wanted, before_seq:, ..)
-    | Pending(_), Scanning(request: Wanted, before_seq:, ..)
-    -> Some(interval(before_seq))
-    Quiet, _ | Pending(_), _ -> None
+  case state.request {
+    Wanted -> Some(interval(state.before_seq))
+    Quiet | Pending(_) -> None
   }
 }
 
@@ -267,10 +282,28 @@ fn interval(before_seq: Int) -> #(Int, Int) {
   #(int.max(0, before_seq - 101), before_seq)
 }
 
-/// Records admission after the channel has allocated the exact request.
+/// The entry the scan's next read starts at, when one is owed and the window
+/// has nothing it is waiting to ask first.
 ///
-/// It marks the demand `range` answered: the window's when it has one, the
-/// scan's otherwise.
+/// ## Examples
+///
+/// ```gleam
+/// assert history_view.lineage(history_view.empty()) == option.None
+/// ```
+@internal
+pub fn lineage(state: State) -> Option(String) {
+  case state.request, state.scan {
+    Quiet, Scanning(request: Owed(from:), ..) -> Some(from)
+    Quiet, Scanning(..)
+    | Quiet, Unscanned
+    | Quiet, Abandoned
+    | Wanted, _
+    | Pending(_), _
+    -> None
+  }
+}
+
+/// Records admission after the channel has allocated the exact request.
 ///
 /// ## Examples
 ///
@@ -279,18 +312,22 @@ fn interval(before_seq: Int) -> #(Int, Int) {
 /// ```
 @internal
 pub fn sent(state: State, before: Int) -> State {
-  case state.request, state.scan {
-    Wanted, _ -> State(..state, request: Pending(before))
-    _, Scanning(..) -> State(..state, scan: pending(state.scan, before))
-    _, Unscanned | _, Abandoned -> State(..state, request: Pending(before))
-  }
+  State(..state, request: Pending(before))
 }
 
-fn pending(scan: Scan, before: Int) -> Scan {
-  case scan {
-    Scanning(leaf:, window:, before_seq:, barren:, ..) ->
-      Scanning(leaf:, window:, before_seq:, request: Pending(before), barren:)
-    Unscanned | Abandoned -> scan
+/// Records that the lane issued the scan's read from `from`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history_view.sent_lineage(history, "0198...")
+/// ```
+@internal
+pub fn sent_lineage(state: State, from: String) -> State {
+  case state.scan {
+    Scanning(leaf:, window:, floor:, ..) ->
+      State(..state, scan: Scanning(leaf:, window:, request: Out(from), floor:))
+    Unscanned | Abandoned -> state
   }
 }
 
@@ -366,19 +403,9 @@ pub fn scan(
           dict.has_key(chain, snapshot.sequence(item))
         })
       let window = newest_within(held, scan_records, scan_bytes)
-      let next = case window.items {
-        [] -> before_seq
-        [_, ..] -> oldest(window)
-      }
       State(
         ..state,
-        scan: Scanning(
-          leaf: Some(id),
-          window:,
-          before_seq: next,
-          request: Quiet,
-          barren: 0,
-        ),
+        scan: Scanning(leaf: Some(id), window:, request: Idle, floor: Open),
       )
     }
   }
@@ -412,9 +439,12 @@ pub fn scanned(
   }
 }
 
-/// Asks for the interval below what the scan holds, when a parent is still
-/// missing and a sequence remains to read, and says whether it did. A scan
+/// Asks for the records below what the scan holds, when a parent is still
+/// missing and the scan can be read further, and does nothing otherwise. A scan
 /// with a read already out or owed asks nothing more.
+///
+/// The read starts at the missing parent itself, which is the entry the scan's
+/// oldest record names, so a read never repeats a record the scan holds.
 ///
 /// ## Examples
 ///
@@ -424,60 +454,45 @@ pub fn scanned(
 @internal
 pub fn scan_older(state: State, missing: Option(String)) -> State {
   case state.scan, missing {
-    Scanning(leaf:, window:, before_seq:, request: Quiet, barren:), Some(_)
-      if before_seq > 1
-    ->
-      State(
-        ..state,
-        scan: Scanning(leaf:, window:, before_seq:, request: Wanted, barren:),
-      )
-    _, _ -> state
+    Scanning(leaf:, window:, request: Idle, floor: Open), Some(parent) ->
+      case scan_readable(state, missing) {
+        True ->
+          State(
+            ..state,
+            scan: Scanning(leaf:, window:, request: Owed(parent), floor: Open),
+          )
+        False -> state
+      }
+    Scanning(..), _ | Unscanned, _ | Abandoned, _ -> state
   }
 }
 
-/// The sequence a scan that stopped for want of finding anything had reached,
-/// or nothing when it did not stop for that. A host that was told the scan is
-/// not readable and holds no turn from it starts its next scan below this
-/// sequence, so each press goes further down and none reads the same intervals.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert history_view.scan_floor(history_view.empty()) == option.None
-/// ```
-@internal
-pub fn scan_floor(state: State) -> Option(Int) {
-  case state.scan {
-    Scanning(before_seq:, barren:, ..) if barren >= scan_barren ->
-      Some(before_seq)
-    Scanning(..) | Unscanned | Abandoned -> None
-  }
-}
-
-/// Whether the scan can be asked for more: a sequence is left to read below
+/// Whether the scan can be asked for more: the store may hold records below
 /// what it holds, it has neither reached its bound nor had to cut, and the
 /// parent it is missing (`missing`, the scan's `Branch.unloaded`) is a record it
 /// could ever read. A parent the scan already holds as a descriptor with no
 /// payload is a record over the presentation limit, which a read below returns
-/// as a descriptor again, so no interval is going to prove it and the scan would
-/// otherwise walk every sequence beneath it to the strand's first. A host that
-/// finds it unreadable takes what it holds as all there will be.
+/// as a descriptor again, so no read is going to prove it. A host that finds the
+/// scan unreadable takes what it holds as all there will be.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert !history_view.scan_readable(history_view.empty(), None)
+/// assert !history_view.scan_readable(history_view.empty(), option.None)
 /// ```
 @internal
 pub fn scan_readable(state: State, missing: Option(String)) -> Bool {
-  case state.scan {
-    Scanning(window:, before_seq:, ..) ->
-      before_seq > 1
-      && window.evicted_through == None
-      && list.length(window.items) + 101 <= scan_records
+  case state.scan, missing {
+    Scanning(window:, floor: Open, ..), Some(_) ->
+      window.evicted_through == None
+      && list.length(window.items) + 100 <= scan_records
       && window.bytes < scan_bytes
       && !held_unloaded(window, missing)
-    Unscanned | Abandoned -> False
+    Scanning(floor: Bottomed, ..), _
+    | Scanning(..), None
+    | Unscanned, _
+    | Abandoned, _
+    -> False
   }
 }
 
@@ -577,8 +592,6 @@ pub fn branch(state: State, view: snapshot_view.View) -> snapshot_view.Branch {
 ///
 /// Only an outstanding matching range can extend this view. A late reply after
 /// navigation or returning to live output cannot attach to the new selection.
-/// A reply is the window's when the window asked for it and the scan's when
-/// the scan did; the lane has one read out at a time, so it cannot be both.
 ///
 /// ## Examples
 ///
@@ -592,79 +605,6 @@ pub fn accept(
   before: Int,
   after: Int,
   view: snapshot_view.View,
-) -> State {
-  case state.request == Pending(before), state.scan {
-    True, _ -> accepted(state, page, before, after, view, KeepOldest)
-    False,
-      Scanning(leaf:, window:, before_seq:, request: Pending(asked), barren:)
-      if asked == before
-    -> {
-      let reading =
-        State(
-          state.strand,
-          Reading,
-          leaf,
-          window,
-          before_seq,
-          Pending(before),
-          Unscanned,
-        )
-      let read = accepted(reading, page, before, after, view, KeepNewest)
-      State(
-        ..state,
-        scan: Scanning(
-          leaf: read.leaf,
-          window: read.window,
-          before_seq: read.before_seq,
-          request: Quiet,
-          barren: case
-            list.length(read.window.items) > list.length(window.items)
-          {
-            True -> 0
-            False -> barren + 1
-          },
-        ),
-      )
-    }
-    False, _ -> state
-  }
-}
-
-// Which end a window keeps when a page takes it past its bound.
-type Retention {
-  // The window keeps its oldest records, as a window paging backward does.
-  KeepOldest
-
-  // The scan keeps its newest, which is the end it was started at.
-  KeepNewest
-}
-
-// The newest of `items` (newest first) that fit the bound, and where the ones
-// left out end, so the window says it was cut.
-fn newest_within(
-  items: List(snapshot.Item),
-  records: Int,
-  allowance: Int,
-) -> snapshot.Window {
-  let #(kept, size, _count, left_out) =
-    list.fold(items, #([], 0, 0, None), fn(acc, item) {
-      let #(kept, size, count, left_out) = acc
-      case left_out, count < records && size + bytes(item) <= allowance {
-        None, True -> #([item, ..kept], size + bytes(item), count + 1, None)
-        None, False -> #(kept, size, count, Some(snapshot.sequence(item)))
-        Some(_), _ -> acc
-      }
-    })
-  snapshot.Window(list.reverse(kept), size, left_out)
-}
-
-fn accepted(
-  state: State,
-  page: snapshot.Window,
-  before: Int,
-  after: Int,
-  view: snapshot_view.View,
-  keeping: Retention,
 ) -> State {
   case state.request == Pending(before) {
     False -> state
@@ -688,19 +628,16 @@ fn accepted(
             snapshot.Loaded(..) -> False
           }
         })
-      let window = case keeping {
-        KeepOldest ->
-          snapshot.Window(
-            list.reverse(related),
-            list.fold(related, 0, fn(sum, item) { sum + bytes(item) }),
-            None,
-          )
-          |> bounded(600, 16 * 1024 * 1024)
-          |> fn(retained) {
-            snapshot.Window(..retained, items: list.reverse(retained.items))
-          }
-        KeepNewest -> newest_within(related, scan_records, scan_bytes)
-      }
+      let window =
+        snapshot.Window(
+          list.reverse(related),
+          list.fold(related, 0, fn(sum, item) { sum + bytes(item) }),
+          None,
+        )
+        |> bounded(600, 16 * 1024 * 1024)
+        |> fn(retained) {
+          snapshot.Window(..retained, items: list.reverse(retained.items))
+        }
       let kept =
         dict.from_list(
           list.map(window.items, fn(item) { #(snapshot.sequence(item), Nil) }),
@@ -720,6 +657,67 @@ fn accepted(
       State(..state, window:, leaf:, before_seq: next_before, request: Quiet)
     }
   }
+}
+
+/// Adds the page a scan's read returned, when the scan asked for it.
+///
+/// The page is the strand's ancestry from the entry the read named, so its
+/// records join what the scan holds and the next read starts at the parent of
+/// the oldest of them. A page that adds no record the scan did not hold says
+/// the store holds nothing further (`Bottomed`), which is what keeps a read of
+/// an entry the store does not have from being asked for again. A reply to a
+/// read the scan did not ask for, or to a scan that was dropped, changes
+/// nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // history_view.accept_lineage(history, page, "0198...")
+/// ```
+@internal
+pub fn accept_lineage(
+  state: State,
+  page: snapshot.Window,
+  from: String,
+) -> State {
+  case state.scan {
+    Scanning(leaf:, window:, request: Out(asked), ..) if asked == from -> {
+      let merged = merge(window, page)
+      let grown = list.length(merged.items) > list.length(window.items)
+      State(
+        ..state,
+        scan: Scanning(
+          leaf:,
+          window: newest_within(merged.items, scan_records, scan_bytes),
+          request: Idle,
+          floor: case grown {
+            True -> Open
+            False -> Bottomed
+          },
+        ),
+      )
+    }
+    Scanning(..) | Unscanned | Abandoned -> state
+  }
+}
+
+// The newest of `items` (newest first) that fit the bound, and where the ones
+// left out end, so the window says it was cut.
+fn newest_within(
+  items: List(snapshot.Item),
+  records: Int,
+  allowance: Int,
+) -> snapshot.Window {
+  let #(kept, size, _count, left_out) =
+    list.fold(items, #([], 0, 0, None), fn(acc, item) {
+      let #(kept, size, count, left_out) = acc
+      case left_out, count < records && size + bytes(item) <= allowance {
+        None, True -> #([item, ..kept], size + bytes(item), count + 1, None)
+        None, False -> #(kept, size, count, Some(snapshot.sequence(item)))
+        Some(_), _ -> acc
+      }
+    })
+  snapshot.Window(list.reverse(kept), size, left_out)
 }
 
 fn merge(first: snapshot.Window, second: snapshot.Window) {
