@@ -879,6 +879,132 @@ pub fn a_path_whose_real_location_leaves_the_root_is_refused_test() {
   Nil
 }
 
+// A second project on the same machine that is not under the workspace,
+// the shape of a sibling clone. It has a marker, so only its location
+// keeps a server from owning it. Returns the project's directory.
+fn foreign_project(tag: String) -> String {
+  let foreign = scratch(tag)
+  write(foreign <> "/gleam.toml", "name = \"foreign\"\n")
+  write(foreign <> "/src/a.gleam", "pub fn greet() -> String {\n  \"hi\"\n}\n")
+  foreign
+}
+
+// The three spellings that lead out of the workspace: an absolute path,
+// a `..` climb, and a symlinked directory inside the workspace.
+fn foreign_spellings(workspace: String, foreign: String) -> List(String) {
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: foreign, from: workspace <> "/linked")
+    as "the fixture directory link must be made"
+  let climb = "../" <> last_segment(foreign) <> "/src/a.gleam"
+  [foreign <> "/src/a.gleam", climb, "linked/src/a.gleam"]
+}
+
+fn last_segment(path: String) -> String {
+  let assert Ok(last) = list.last(string.split(path, "/"))
+    as "a path has a last segment"
+  last
+}
+
+// What a refusal must tell the model: the path it asked about and the
+// root the answer would have been limited to.
+fn assert_refused_naming(
+  outcome: Result(a, query.QueryError),
+  path: String,
+  workspace: String,
+) -> Nil {
+  let assert Error(query.NoServer(reason)) = outcome
+    as { "a path outside the root must be refused: " <> path }
+  assert string.contains(reason, path)
+  assert string.contains(reason, "outside")
+  assert string.contains(reason, workspace)
+  Nil
+}
+
+pub fn every_entry_point_refuses_a_path_outside_the_root_test() {
+  let workspace = scratch("foreign-entry")
+  let _root = project(workspace, "app")
+  let foreign = foreign_project("foreign-tree")
+  let rig = rig(workspace, no_search, outline_script)
+  let door = rig.door
+  list.each(foreign_spellings(workspace, foreign), fn(path) {
+    let asked = query.SymbolQuery("greet", Some(path), None)
+    let on_line = query.SymbolQuery("greet", Some(path), Some(1))
+    assert_refused_naming(door.outline(path), path, workspace)
+    assert_refused_naming(door.definition(asked), path, workspace)
+    assert_refused_naming(door.definition(on_line), path, workspace)
+    assert_refused_naming(door.references(asked), path, workspace)
+    assert_refused_naming(door.hover(on_line), path, workspace)
+    assert_refused_naming(door.calls(asked, query.Incoming), path, workspace)
+    assert_refused_naming(door.diagnostics(Some(path)), path, workspace)
+    assert_refused_naming(door.prepare_rename(asked, "hello"), path, workspace)
+    assert door.after_write(path) == None
+  })
+
+  // Nothing was started on the way: a refusal costs no server.
+  assert started(rig) == []
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace, foreign])
+  Nil
+}
+
+pub fn a_relative_path_still_means_the_workspace_test() {
+  let workspace = scratch("relative-means-workspace")
+  let _root = project(workspace, "app")
+  let foreign = foreign_project("relative-foreign")
+  let rig = rig(workspace, no_search, outline_script)
+  let assert Ok(served) = rig.door.outline("app/src/a.gleam")
+    as "a workspace-relative path is answered"
+  assert list.map(served.value, fn(entry) { entry.name }) == ["greet"]
+
+  // The same file by absolute path inside the workspace is the same answer,
+  // and the root that served it is the workspace's own project.
+  let assert Ok(again) = rig.door.outline(workspace <> "/app/src/a.gleam")
+    as "an absolute path inside the workspace is answered"
+  assert list.map(again.value, fn(entry) { entry.name }) == ["greet"]
+  assert list.map(started(rig), fn(start) { start.0 })
+    == [resolve.workspace_real(workspace <> "/app")]
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace, foreign])
+  Nil
+}
+
+pub fn an_empty_bare_name_search_says_which_tree_it_searched_test() {
+  let workspace = scratch("searched-root")
+  let root = project(workspace, "app")
+  let rig = rig(workspace, no_search, outline_script)
+  let door = rig.door
+
+  // Before any server runs, the search covers the whole workspace for every
+  // configured server, and says so.
+  let assert Error(query.NotFound(asked, Some(searched))) =
+    door.definition(query.SymbolQuery("ParseLevel", None, None))
+    as "a name nothing defines is not found"
+  assert asked.symbol == "ParseLevel"
+  assert searched == "the workspace " <> workspace
+
+  // Once a server runs, the search covers its project root, and the answer
+  // names that root rather than the workspace.
+  let assert Ok(_) = door.outline("app/src/a.gleam") as "the server must start"
+  let assert Error(query.NotFound(_, Some(searched))) =
+    door.definition(query.SymbolQuery("ParseLevel", None, None))
+    as "a name nothing defines is still not found"
+  assert searched
+    == "the fake server rooted at " <> resolve.workspace_real(root)
+
+  // A question that named its file says nothing of roots: the path already
+  // told the harness where to look.
+  let assert Error(query.NotFound(_, None)) =
+    door.definition(query.SymbolQuery(
+      "ParseLevel",
+      Some("app/src/a.gleam"),
+      None,
+    ))
+    as "a name absent from a named file is not found there"
+  manager.stop(rig.manager)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 pub fn two_distinct_definitions_are_ambiguous_and_a_qualifier_narrows_test() {
   let workspace = scratch("ambiguous")
   let root = project(workspace, "app")
@@ -922,7 +1048,7 @@ pub fn two_distinct_definitions_are_ambiguous_and_a_qualifier_narrows_test() {
     as "a qualifier must pick the module"
   assert list.map(served.value, fn(site) { #(site.path, site.line) })
     == [#("app/src/b.gleam", 1)]
-  let assert Error(query.NotFound(_)) =
+  let assert Error(query.NotFound(_, _)) =
     rig.door.definition(query.SymbolQuery("c.greet", None, None))
     as "a qualifier nothing satisfies finds nothing"
   manager.stop(rig.manager)
@@ -1843,7 +1969,7 @@ fn run_gleam(live: Live) -> Nil {
     as "a qualified symbol must resolve"
   assert sites(served) == [#(probe_path, 1)]
   assert served.warmth == query.Warm
-  let assert Error(query.NotFound(_)) =
+  let assert Error(query.NotFound(_, _)) =
     door.definition(query.SymbolQuery("nowhere.greet", None, None))
     as "a qualifier no file satisfies finds nothing"
 

@@ -138,10 +138,14 @@ const unavailable_code = "server_unavailable"
 ///
 /// With `path` and `line`, the first occurrence of the identifier on that
 /// line is meant. With `path` alone, the file's outline is searched by
-/// name. With neither, the whole project is searched, and more than one
-/// distinct definition is `Ambiguous` rather than a guess. A `line`
-/// without a `path` narrows nothing and is refused as `LspDenied` with
-/// code `invalid_argument`, as is a line below 1.
+/// name. With neither, the session's project is searched, and more than one
+/// distinct definition is `Ambiguous` rather than a guess. That search can
+/// only answer about the tree the session's server is rooted in; a `path`
+/// outside the workspace is refused as `NoServer` rather than answered from
+/// that tree, and a `NotFound` from the search names the root it covered.
+///
+/// A `line` without a `path` narrows nothing and is refused as `LspDenied`
+/// with code `invalid_argument`, as is a line below 1.
 pub type Query {
   Query(
     /// The symbol's name, plain or qualified.
@@ -387,7 +391,10 @@ pub type RenameReport {
 /// can act on, which is why none of them is a bare string.
 pub type LspError {
   /// No configured server owns the path, the path's real location is
-  /// outside the server's root, or the server could not start.
+  /// outside the server's root, or the server could not start. A path
+  /// outside the session's workspace is always this, never an answer from
+  /// the workspace's own tree: `reason` names the path and the root, and
+  /// a relative path means the workspace.
   NoServer(reason: String)
 
   /// The server does not offer `request` (for example call hierarchy),
@@ -397,7 +404,14 @@ pub type LspError {
   /// The symbol was not found where the query said to look. A bare name
   /// (`AcceptForScheme`) may need its qualified form (`package.Name`, or
   /// `Receiver.Method` for a method) before the server finds it.
-  NotFound(symbol: String)
+  ///
+  /// A query with no `path` searches one server's project root, and
+  /// `searched` names it ("the go server rooted at /work/app"). An empty
+  /// answer from that search says nothing about any other tree, such as a
+  /// sibling clone of the same project, so read `searched` before taking
+  /// the answer for the code you meant. It is `None` when the query named a
+  /// file, because the path already says where the harness looked.
+  NotFound(symbol: String, searched: Option(String))
 
   /// More than one distinct definition matched. Narrow the query with
   /// `in` or `at_line` using one of these.
@@ -669,7 +683,8 @@ fn decode_unresolved(value: MsgPackValue) -> Result(LspError, String) {
   case tag {
     "not_found" -> {
       use symbol <- result.try(wire.string_field(value, "symbol"))
-      Ok(NotFound(symbol:))
+      use searched <- result.try(optional_text(value, "searched"))
+      Ok(NotFound(symbol:, searched:))
     }
 
     "ambiguous" -> {
@@ -891,7 +906,7 @@ fn map_error(error: CallError) -> LspError {
 /// ## Examples
 ///
 /// ```gleam
-/// assert lsp.error_text(lsp.NotFound("util.Greet")) == "symbol not found: util.Greet"
+/// assert lsp.error_text(lsp.NotFound("util.Greet", None)) == "symbol not found: util.Greet"
 /// ```
 ///
 pub fn error_text(error: LspError) -> String {
@@ -899,15 +914,11 @@ pub fn error_text(error: LspError) -> String {
     NoServer(reason:) -> "no language server: " <> reason
     Unsupported(server:, request:) ->
       "server " <> server <> " does not support " <> request
-    NotFound(symbol:) ->
-      case string.contains(symbol, ".") {
-        True -> "symbol not found: " <> symbol
-        False ->
-          "symbol not found: "
-          <> symbol
-          <> "; the name is unqualified, and the server may want the "
-          <> "qualified form (package.Name, or Receiver.Method for a method)"
-      }
+    NotFound(symbol:, searched:) ->
+      "symbol not found: "
+      <> symbol
+      <> unqualified_hint(symbol)
+      <> searched_note(searched)
     Ambiguous(candidates:) ->
       "ambiguous symbol: "
       <> int.to_string(list.length(candidates))
@@ -915,5 +926,25 @@ pub fn error_text(error: LspError) -> String {
     Refused(message:) -> "server refused: " <> message
     LspDenied(code:, message:) -> "denied (" <> code <> "): " <> message
     LspUnavailable(reason:) -> "lsp unavailable: " <> reason
+  }
+}
+
+// A bare name is the commonest reason a search comes back empty, so the text
+// says which qualified form the server is likely to want.
+fn unqualified_hint(symbol: String) -> String {
+  case string.contains(symbol, ".") {
+    True -> ""
+    False ->
+      "; the name is unqualified, and the server may want the "
+      <> "qualified form (package.Name, or Receiver.Method for a method)"
+  }
+}
+
+// A path-less search covers one server's root and nothing else, so the text
+// names it: an empty answer from one tree says nothing about a sibling clone.
+fn searched_note(searched: Option(String)) -> String {
+  case searched {
+    Some(root) -> "; searched " <> root
+    None -> ""
   }
 }

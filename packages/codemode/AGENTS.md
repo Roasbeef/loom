@@ -287,7 +287,8 @@ session and sends it many invocations.
   `cap/lsp` decodes. Sentence-only `QueryError`s are refusals under
   `no_server`, `server_refused`, `server_unavailable`; `NotFound`,
   `Ambiguous` and `Unsupported` carry structure and travel as a `CapOk`
-  tagged `unresolved`. A rename `preview` is computed here from
+  tagged `unresolved`; a `NotFound` from a path-less search also carries
+  `searched`, the root that search covered. A rename `preview` is computed here from
   `prepare_rename`'s base and edited text and writes nothing; `apply` only
   calls the seam's closure. Every `Site` gains its line's
   `hashline.anchor`, because `lsp` cannot depend on `tools`. Lists are

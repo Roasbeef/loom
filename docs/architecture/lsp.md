@@ -110,8 +110,8 @@ The jail bounds what a server can read, but not which paths it can put in
 an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
-`admit` (`client/lsp/resolve.gleam:399`), called from one place in the
-manager (`gate`, `client/lsp/manager.gleam:2202`). Without it, a hostile
+`admit` (`client/lsp/resolve.gleam:420`), called from one place in the
+manager (`gate`, `client/lsp/manager.gleam:2308`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
@@ -583,6 +583,26 @@ answer about nothing. Such a path is refused as `NoServer` before any
 request is sent, and the server is thereafter addressed only by real
 paths.
 
+The same refusal covers a file outside the workspace altogether, such as
+a sibling clone of the project that is not a subdirectory of the session's
+root. An absolute path there, a `..` climb out of the workspace, and a
+symlink inside the workspace that leads out are all `NoServer`, and the
+reason names the path and the workspace root, so a model sees that the
+question was about a tree no server of this session is rooted in. A
+relative path always means the workspace, never the tree the model is
+thinking about. Nothing is answered from the workspace's own tree in
+place of the one asked about: path-scoped questions, `lsp.diagnostics`,
+`lsp.rename` and the `lsp_sql` capture's outlines and seeds all pass the
+same ownership check (`resolve.owner`) before a server is started or asked.
+
+A question with no path cannot be refused this way, because it names no
+file. A bare `lsp.symbol("Name")` searches one server's project root, and
+it can only ever answer about that root. When the search finds nothing,
+the `NotFound` answer carries `searched`, the root it covered ("the go
+server rooted at /work/app", or "the workspace /work" before any server is
+running), so an empty answer about a name that exists in another clone is
+not mistaken for a statement about that clone.
+
 ### Readiness
 
 A server may answer while it is still loading its project, and
@@ -734,7 +754,7 @@ pub fn used_elsewhere(path: String) -> Result(List(String), lsp.LspError) {
     use found <- result.try(lsp.references(lsp.symbol(entry.name) |> lsp.in(path)))
     case list.any(found.items, fn(reference) { reference.site.path != path }) {
       True -> Ok(entry.name)
-      False -> Error(lsp.NotFound(entry.name))
+      False -> Error(lsp.NotFound(entry.name, None))
     }
   }))
 }
@@ -752,8 +772,8 @@ host's call timeout bound a call.
 Failures travel on two channels. A refusal that is only a sentence
 (`NoServer`, a server's refusal, `Unavailable`) is an in-band denial with
 a code and a message. The three that carry structure a message cannot,
-`NotFound`'s symbol, `Ambiguous`'s candidate sites, `Unsupported`'s
-server and request, travel as an answer tagged `unresolved`, because the
+`NotFound`'s symbol and the root a bare search covered, `Ambiguous`'s
+candidate sites, `Unsupported`'s server and request, travel as an answer tagged `unresolved`, because the
 harness looked and the looking is the answer.
 
 A program's rename previews in the router, which diffs the door's base
