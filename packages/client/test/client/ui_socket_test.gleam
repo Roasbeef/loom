@@ -171,6 +171,57 @@ pub fn an_observer_socket_accepts_a_chip_click_test() {
   )
 }
 
+// Protocol-change/068: an observer's socket admits a click at the divider of a
+// settled turn's work, at its exact path, and not at its neighbours: another
+// place in the row, a key that is not a work's, a forged number, another event
+// at the divider's path, or a batch.
+pub fn an_observer_socket_accepts_a_divider_click_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let divider = "0\t2\t1\t1\twork:12.0\t1\t0\t0"
+  assert ui_socket.observer_accepts(click_at(divider, "click"))
+  assert ui_socket.observer_accepts(click_at(
+    "0\t2\t1\t1\twork:window-start\t1\t0\t0",
+    "click",
+  ))
+  list.each(
+    [
+      // The row, its body, the work's element and a step beneath it.
+      click_at("0\t2\t1\t1\twork:12.0", "click"),
+      click_at("0\t2\t1\t1\twork:12.0\t1", "click"),
+      click_at("0\t2\t1\t1\twork:12.0\t1\t0", "click"),
+      click_at(divider <> "\t0", "click"),
+      click_at("0\t2\t1\t1\twork:12.0\t1\t0\t1", "click"),
+
+      // A piece that is not a turn's work, and keys that are not a work's.
+      click_at("0\t2\t1\t1\t12.0\t1\t0\t0", "click"),
+      click_at("0\t2\t1\t1\tlive\t1\t0\t0", "click"),
+      click_at("0\t2\t1\t1\twork:12\t1\t0\t0", "click"),
+      click_at("0\t2\t1\t1\twork:-1.0\t1\t0\t0", "click"),
+      click_at("0\t2\t1\t1\twork:012.0\t1\t0\t0", "click"),
+      click_at("0\t2\t1\t1\twork:12.0.1\t1\t0\t0", "click"),
+      click_at("0\t2\t1\t1\twork:\t1\t0\t0", "click"),
+
+      // The lane's other children and the older button's neighbours.
+      click_at("0\t2\t1\t0\twork:12.0\t1\t0\t0", "click"),
+      click_at("0\t2\t0\t1\twork:12.0\t1\t0\t0", "click"),
+
+      // Another event at the divider's path, and a batch.
+      click_at(divider, "submit"),
+      click_at(divider, "keydown"),
+      "{\"kind\":3,\"messages\":[" <> click_at(divider, "click") <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
 // Protocol-change/065, the second pull request: an observer's socket admits one
 // more click, at the "Home" button's exact path, and not its neighbours in the
 // top bar, anything beneath it, another event at it, or the path inside a
