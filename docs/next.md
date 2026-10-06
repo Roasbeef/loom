@@ -95,7 +95,7 @@ establish those results.
    **Exit:** more sequential Launches than the active limit complete in one
    live session; each retains exact native, transport and resource witnesses.
    The [additive retirement API](design-notes/distributed-launch-native-retirement.md)
-   is awaiting the owner's decision.
+   was approved on October 6 and is being implemented.
    Do not infer that witness from terminal history or close the shared session
    pool for each Launch.
 2. Wire registered remote Compile/Launch and LSP into ordinary session assembly.
@@ -112,7 +112,7 @@ establish those results.
    applicable model gates, full repository gates and assembled-system review.
    Automatic failover and workspace snapshot migration remain deferred.
 
-## Decisions still needed
+## Approved next work and host access
 
 The [native retirement proposal](design-notes/distributed-launch-native-retirement.md)
 is saved for review. The native service returns helpers to its pool after
@@ -121,19 +121,27 @@ Its per-execution path has no retirement witness; only scoped pool closure does.
 The reviewed proposal retires the exact borrowed Launch helper through the
 existing pool's native and owner-exit observations, keeping Compile and ordinary
 command reuse unchanged. It costs one helper restart per Launch. That additive
-API has not been approved or implemented; a new per-execution helper protocol
-is the alternative under consideration.
+API was approved on October 6. Implementation and the sequential-Launch
+retirement gate are in progress.
 
 The [Compile rewrite proposal](design-notes/distributed-compile-rewrite.md)
 adds exactly Original and UnusedImportRewrite attempts under the same ToolKey,
 with immutable inputs and checked predecessor evidence. It preserves the
 existing single rewrite while avoiding changed-source reuse of one remote
-Compile identity. Its public/protocol changes have not been approved or
-implemented.
+Compile identity. The owner approved this design on October 6; the exact
+protocol amendment and implementation are in progress.
 
-Separate-host testing also awaits permission to copy the private source to the
-designated remote host. The copy was rejected before transfer, and no remote
-checkout was created. Local implementation and two-node TLS controls can continue.
+The owner will provide a new SSH user for separate-host testing. The earlier
+archive copy was rejected before transfer, and no remote checkout was created.
+Wait for the new destination identity before transferring private source.
+Local implementation and two-node TLS controls continue.
+
+Distributed orchestrators and cross-machine strand messaging remain required
+under C1 through C3. Each session retains one authoritative owner. The sender
+retains a durable message intent; the recipient stores admission under the same
+message ID before acknowledging. Admission does not claim model consumption.
+These phases remain unimplemented, and remote executor transport alone does not
+establish their acceptance.
 
 ## Rulings already made
 
