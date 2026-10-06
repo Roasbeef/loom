@@ -68,18 +68,20 @@ passes actual producer, reader, owner-file protection and cumulative limit check
 in the integration tree. Default registered-host wiring and companion lifecycle
 are still pending. The [terminal preflight](../review/distributed-terminal-preflight.md)
 and [owner Launch binding](../review/distributed-launch-command.md) are integrated;
-the [consumed Launch channel](distributed-launch-channel.md) is the next runtime
-boundary under implementation and formal modeling.
+the [consumed Launch channel](distributed-launch-channel.md) is integrated,
+with bounded modeling and source-correspondence evidence.
 The [remote Launch consumer](../review/distributed-launch-client.md) now composes
 the original stream with actual satellite capability traffic and retained
 native/outer receipts. It passes the independent complete client gate and
-original-journal reopen controls. Native retirement remains unresolved; the
-[exact-helper proposal](distributed-launch-native-retirement.md) and
-[bounded Compile rewrite identity](distributed-compile-rewrite.md) were approved
-on October 6 and are being implemented. Registered Compile/Launch, remote LSP and daemon configuration remain
-required. Acceptance must drive ordinary tools and code
-mode with the owner and executor on separate hosts and no checkout on the
-owner's disk.
+original-journal reopen controls. The approved
+[exact-helper retirement](../architecture/launch-native-retirement.md) and
+[bounded Compile rewrite identity](distributed-compile-rewrite.md) now compose
+through real Original and Rewrite Launch controls. The
+[combined review](../review/distributed-compile-retirement.md) records independent
+package gates, corrected findings and remaining coverage. Registered default
+Compile/Launch assembly, remote LSP and daemon configuration remain required.
+Acceptance must drive ordinary tools and code mode with the owner and executor
+on separate hosts and no checkout on the owner's disk.
 
 Executor pools, trusted orchestrator routing, durable cross-node messaging and
 controlled session movement follow that first working remote path. These are
