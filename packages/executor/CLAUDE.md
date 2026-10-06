@@ -848,3 +848,68 @@ original epoch fence and every covered-key retirement confirmation must also
 succeed. `shutdown` terminates the service only after that complete result. The
 enclosing host must consume this service-owned proof rather than invoking the
 same native close independently.
+
+
+## Whole Launch local custody
+
+`remote/launch_service` owns a finite original Launch continuation over the
+existing resource journal and native command service. `configure` admits one
+through four active entries, with a separate equally bounded metadata lane.
+`resource_owner` exposes only the exact original writer PID for same-row
+registration checks. Authenticated `Caller` facts bind Owner, executor, full
+scope and transport generation before any local control operation.
+
+`PlaceToken(original, nonce, budget_ms, token)` is the closed token placement
+operation. It checks exactly 32 bytes against the original SHA-256 commitment,
+reads the retained successful Compile producer, calls `service_input.admit_launch`,
+and physically fingerprints the original producer's `ebin` directory. Those
+checks precede Claim admission and every Launch file or socket effect. The actor
+retains the fresh Claim, then retains the original `launch_channel.Owner`, before
+allowing exclusive canonical directory, token and listener creation. An existing
+allocation refuses; partial effects retain their original cleanup custody.
+
+The finite placement reply is `Observed(preparation, LaunchStatus)`. It can report
+Claim custody before Ready, so the owner can query the later historical Ready and
+clear its exact SatelliteCommand without holding a request credit while socket
+accept waits. `send_command_exchange` gives the existing native engine the exact
+live Claim and unchanged executor deadline. Historical routes use only checked
+native contexts. `Query` never grants preparation, native execution or connection
+activation permission.
+
+`install_host` accepts a trusted local HostEndpoint for the original active entry
+exactly once. Its finite `Installed(deadline_ms)` receipt carries the immutable
+active original deadline on the native clock. Repeated installation and history
+cannot mint another deadline. The separate handoff subject receives
+one paused `run_channel.Connection` after socket acceptance and adoption of both
+reader and writer by weft. The caller installs original send, close, incarnation
+and grants before activation. The socket owner independently mirrors the pure
+one-frame window and charges its lifetime allowance before body reads or writer
+publication. One inbound producer orders frames and End. Final consumption passes
+through the original owner before reader teardown. `launch_observation` reads the
+committed native phase before exact terminal payloads and never publishes cap End.
+
+`RefuseBeforeNative` is restricted to a definite original owner clearance refusal.
+It retains the original Claim and answers only after `fail_launch_preparation`
+atomically fences phases 1/2 and commits the closed refusal. Association winning
+first rejects that refusal. Timeout, caller loss and BrokerUnavailable use
+cancellation or uncertainty. A committed refusal plus actual transport joins and
+original preparation join and directory removal can commit ResourceOwnerCleaned.
+Cancellation may establish the same no-dispatch cleanup custody through a
+successful original fence followed by exact same-row Unassociated readback.
+That witness never fabricates a RefusedBeforeNative history result. Lost fence,
+readback or join remains unresolved. Associated native
+terminal evidence currently leaves resource retirement unresolved; neither node
+reporting nor transport join substitutes for a native resource witness.
+
+Cancellation and watchdog closure independently close the original accepted
+socket and listener before joining blocked I/O. Active slots remain occupied
+through unresolved native, resource or transport custody. Effect-owning entries
+require a completed original continuation, actual child joins and
+ResourcesReleased before releasing their slot. A drained historical observation
+owns no Claim or channel and releases its observation-only slot directly.
+The original execution deadline is immutable. A separate six-second observation
+grace can retain settlement and join evidence but cannot authorize dispatch.
+Each active original owns one cancellation lane independent of metadata credits.
+Closed local channel observations expire after six seconds; historical journal
+queries never recreate those callbacks or sockets. BEAM control/stream binding,
+owner client wiring and default daemon assembly are separate integration work.
