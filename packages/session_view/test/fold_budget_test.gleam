@@ -30,13 +30,13 @@ pub fn a_closed_turn_costs_its_closed_rows_test() {
 pub fn many_closed_turns_fit_whatever_they_did_test() {
   let weights = [turn(3, 30, 200), turn(3, 20, 200), turn(3, 10, 200)]
   assert fold_budget.fit(weights, [], 150)
-    == Fitted(kept: 3, used: 9, allowance: dict.new())
+    == Fitted(kept: 3, used: 9, allowance: dict.new(), folds: [])
 }
 
 pub fn the_page_keeps_the_newest_turns_that_fit_test() {
   let weights = [bare(60), bare(60), bare(60), bare(60)]
   assert fold_budget.fit(weights, [], 150)
-    == Fitted(kept: 2, used: 120, allowance: dict.new())
+    == Fitted(kept: 2, used: 120, allowance: dict.new(), folds: [])
 }
 
 // The first turn that does not fit ends the page, even when an older one
@@ -50,37 +50,57 @@ pub fn the_newest_turn_is_held_even_when_it_alone_is_over_the_limit_test() {
   assert fold_budget.fit([bare(200), bare(1)], [], 150).kept == 1
 }
 
-pub fn an_open_fold_adds_its_steps_test() {
+pub fn an_open_fold_takes_room_the_closed_turns_leave_test() {
   let weights = [turn(3, 30, 40), turn(3, 20, 10)]
   assert fold_budget.fit(weights, [30], 150)
-    == Fitted(kept: 2, used: 46, allowance: dict.new())
+    == Fitted(kept: 2, used: 6, allowance: dict.new(), folds: [30])
 }
 
-// An open fold that does not fit beside the turns newer than it is held with
-// the steps the room allows, and that fills the page: nothing older follows.
+// An open fold never changes which turns are held: a fold that does not fit
+// is cut to the room left and the older turns stay.
 pub fn an_open_fold_that_does_not_fit_is_cut_to_the_room_test() {
   let weights = [bare(10), turn(5, 20, 400), bare(3)]
   assert fold_budget.fit(weights, [20], 150)
-    == Fitted(kept: 2, used: 150, allowance: dict.from_list([#(20, 135)]))
+    == Fitted(
+      kept: 3,
+      used: 18,
+      allowance: dict.from_list([#(20, 132)]),
+      folds: [20],
+    )
+  assert fold_budget.fit(weights, [], 150).kept == 3
 }
 
-// The newest turn's fold is cut the same way.
 pub fn the_newest_turns_open_fold_is_cut_to_the_limit_test() {
   assert fold_budget.fit([turn(3, 20, 400)], [20], 150)
-    == Fitted(kept: 1, used: 150, allowance: dict.from_list([#(20, 147)]))
+    == Fitted(kept: 1, used: 3, allowance: dict.from_list([#(20, 147)]), folds: [
+      20,
+    ])
 }
 
-// A fold that is not open is never cut, and an open number that names no turn
-// of the page costs nothing.
+// The fold opened last is kept; one opened before it that no longer fits is
+// closed, and one that fits whole stays open.
+pub fn the_most_recent_fold_wins_the_room_test() {
+  let weights = [turn(3, 30, 100), turn(3, 20, 100), turn(3, 10, 30)]
+  let fitted = fold_budget.fit(weights, [20, 30, 10], 150)
+  assert fitted.folds == [20, 10]
+  assert fitted.allowance == dict.new()
+  let fitted = fold_budget.fit(weights, [10, 20, 30], 150)
+  assert fitted.folds == [10, 20]
+  let fitted = fold_budget.fit(weights, [30, 20], 150)
+  assert fitted.folds == [30]
+  assert fitted.kept == 3
+}
+
+// A number that names no turn of the page costs nothing and is not kept.
 pub fn only_an_open_fold_is_cut_test() {
   let weights = [turn(3, 20, 400), turn(3, 10, 400)]
   assert fold_budget.fit(weights, [99], 150)
-    == Fitted(kept: 2, used: 6, allowance: dict.new())
+    == Fitted(kept: 2, used: 6, allowance: dict.new(), folds: [])
 }
 
 pub fn no_turns_hold_no_rows_test() {
   assert fold_budget.fit([], [1], 150)
-    == Fitted(kept: 0, used: 0, allowance: dict.new())
+    == Fitted(kept: 0, used: 0, allowance: dict.new(), folds: [])
 }
 
 fn work(id: Int, count: Int, folding: turns.Folding) -> turns.Piece {

@@ -2056,10 +2056,13 @@ fn relaned(model: Model(socket)) -> Model(socket) {
             False -> #(shared.scrollback, Reached)
           }
         AtInput, _ -> #(trimmed(shared.scrollback, lead), Unheld)
-        Cut, _ | Overrun, _ -> #(
-          trimmed(shared.scrollback, kept.window),
-          Unheld,
-        )
+        Cut, _ -> #(trimmed(shared.scrollback, kept.window), Unheld)
+
+        // A running turn too long to draw whole leaves the window alone:
+        // the records a read brings stay in it and are drawn once the turn
+        // settles, where trimming them on arrival would make each Load
+        // older do nothing.
+        Overrun, _ -> #(shared.scrollback, Unheld)
       }
 
       // A paged page that had to cut a whole turn to stay within its
@@ -2166,10 +2169,12 @@ fn limit(paging: Paging) -> Int {
 // it runs. A settled turn alone over the limit with its fold closed can only
 // be one whose own prompt or answer is that long, and is cut the same way.
 //
-// Opening a fold adds its steps to the count. When that pushes the page past
-// its limit, the folds opened before it are closed, oldest first, until it
-// fits or one is left; a fold that alone does not fit draws its newest steps
-// that do (`fold_budget.fit`).
+// Which turns the page holds never depends on the open folds
+// (`fold_budget.fit`): the turns are chosen as if every fold were closed, and
+// the rows they leave over go to the open folds, most recently opened first.
+// A fold that does not fit whole draws its newest steps that do, if it is the
+// most recent that did not fit, and an older one is closed. So pressing a
+// divider cannot move where the page is cut, trim its history or fill it.
 fn held(
   lead: List(transcript_lines.Block),
   opened: List(List(transcript_lines.Block)),
@@ -2202,7 +2207,7 @@ fn held(
           )
         False -> {
           let weights = [head, ..list.map(older, fold_budget.weigh(_, strands))]
-          let #(fitted, folds) = squeezed(weights, open, limit)
+          let fitted = fold_budget.fit(weights, open, limit)
           let blocks =
             newest_first
             |> list.take(fitted.kept)
@@ -2216,7 +2221,7 @@ fn held(
             blocks:,
             fit:,
             window: blocks,
-            folds: held_folds(folds, weights, fitted.kept),
+            folds: fitted.folds,
             allowance: fitted.allowance,
           )
         }
@@ -2236,50 +2241,6 @@ fn newest_weight(
     turns.Running -> fold_budget.Weight(base: row_count(turn), fold: None)
     turns.Settled -> fold_budget.weigh(turn, strands)
   }
-}
-
-// How many turns fit with these folds open, and which folds stay open.
-//
-// The fit counts the open folds' steps. When that leaves a turn out, or makes
-// a fold draw fewer steps than it has, and more than one fold is open, the
-// fold opened longest ago is closed and the fit is made again, so the fold
-// the reader just opened is the last to give way. The same fit without any
-// open fold is what the page would hold anyway, and a page that is full of
-// closed turns is not a reason to close anything.
-fn squeezed(
-  weights: List(fold_budget.Weight),
-  open: List(Int),
-  limit: Int,
-) -> #(fold_budget.Fitted, List(Int)) {
-  let fitted = fold_budget.fit(weights, open, limit)
-  case open {
-    [_, _, ..] ->
-      case
-        dict.is_empty(fitted.allowance)
-        && fitted.kept == fold_budget.fit(weights, [], limit).kept
-      {
-        True -> #(fitted, open)
-        False ->
-          squeezed(weights, list.take(open, list.length(open) - 1), limit)
-      }
-    [_] | [] -> #(fitted, open)
-  }
-}
-
-// The open folds that belong to a turn the page holds, in the order they
-// were opened. The turns are the first `kept` of `weights`, newest first.
-fn held_folds(
-  open: List(Int),
-  weights: List(fold_budget.Weight),
-  kept: Int,
-) -> List(Int) {
-  let held =
-    weights
-    |> list.take(kept)
-    |> list.filter_map(fn(weight) {
-      option.map(weight.fold, fn(fold) { fold.id }) |> option.to_result(Nil)
-    })
-  list.filter(open, list.contains(held, _))
 }
 
 // A page that starts at an input stays that way only while the end of the
@@ -4505,9 +4466,12 @@ pub fn session_id(model: Model(socket)) -> String {
 /// page is read-only, and the strand panel, which carries the advisor's
 /// pending nudges when any are queued. Its event handlers are
 /// the lane's "Load older" button, whose message asks for a read and nothing
-/// else, and one focus click per card of the strand panel; the page socket
+/// else, one focus click per card of the strand panel, the "Home" button on a
+/// page opened from a home, and one click per settled turn's divider, which
+/// draws or drops steps of records the page already holds; the page socket
 /// admits those from an observer and drops every other frame
-/// (protocol-change/051, the addenda on history paging and strand focus).
+/// (protocol-change/051, the addenda on history paging and strand focus, 065
+/// for Home, and 070 for the dividers).
 ///
 /// Each region is drawn by its own module under `web_view/view` (`heading`,
 /// `lane`, `panel` and `strip`); this function only lays them out through

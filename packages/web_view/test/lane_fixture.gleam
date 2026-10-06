@@ -1770,21 +1770,33 @@ pub fn beyond_dividers(keys: List(String)) -> List(String) {
 /// lane_fixture.opened(component.apply(component.new(page_fixture.start()), [lane_fixture.captured(7, None)]))
 /// ```
 pub fn opened(model: component.Model(socket)) -> component.Model(socket) {
-  list.fold(component.pieces(model), model, fn(page, piece) {
+  let page =
+    list.fold(component.pieces(model), model, fn(page, piece) {
+      case piece {
+        turns.Work(id: Some(id), folding: turns.Folded, ..) ->
+          component.update(page, component.FoldToggled(id)).0
+        turns.Work(..)
+        | turns.Plain(..)
+        | turns.Prompt(..)
+        | turns.Spawned(..)
+        | turns.Returned(..)
+        | turns.Nudged(..)
+        | turns.Peer(..)
+        | turns.Sibling(..)
+        | turns.Missed(..)
+        | turns.Decided(..)
+        | turns.Commentary(..) -> page
+      }
+    })
+
+  // A page over its limit closes the folds it cannot hold, which would leave
+  // a test reading steps that are not there, so say so here.
+  list.each(component.pieces(page), fn(piece) {
     case piece {
-      turns.Work(id: Some(id), folding: turns.Folded, ..) ->
-        component.update(page, component.FoldToggled(id)).0
-      turns.Work(..)
-      | turns.Plain(..)
-      | turns.Prompt(..)
-      | turns.Spawned(..)
-      | turns.Returned(..)
-      | turns.Nudged(..)
-      | turns.Peer(..)
-      | turns.Sibling(..)
-      | turns.Missed(..)
-      | turns.Decided(..)
-      | turns.Commentary(..) -> page
+      turns.Work(id: Some(_), folding: turns.Folded, ..) ->
+        panic as "opened: a fold did not fit the page, so it stayed closed"
+      _ -> Nil
     }
   })
+  page
 }

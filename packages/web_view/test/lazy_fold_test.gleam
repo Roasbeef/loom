@@ -279,3 +279,39 @@ fn received(lines: process.Subject(Nil)) -> Int {
     Error(Nil) -> 0
   }
 }
+
+// Opening a fold never changes which turns the page holds, so it cannot make a
+// paged page full: the huge fold is cut to the room the closed turns leave,
+// the older turns stay, and closing it leaves the page as it was.
+pub fn a_huge_fold_never_fills_a_paged_page_test() {
+  let model = page(lane_fixture.weighty(6, [3, 3, 3, 400]))
+  let assert [_, _, huge] = folds(model)
+  let #(paged, _) = component.older(model)
+  assert component.paging(paged) == component.Paged
+  let turns_held = list.length(folds(paged))
+
+  let open = toggled(paged, huge)
+  let assert [#(_, hidden)] = drawn_folds(open)
+  assert hidden > 0
+  assert component.paging(open) == component.Paged
+  assert list.length(folds(open)) == turns_held
+  assert component.top(open) == component.top(paged)
+
+  let closed = toggled(open, huge)
+  assert component.paging(closed) == component.Paged
+  assert list.length(folds(closed)) == turns_held
+  assert component.top(closed) == component.top(paged)
+}
+
+// From a tail page, a huge open fold does not trim the history, so pressing
+// Load older afterwards asks for the read and leaves the page unfilled.
+pub fn load_older_after_opening_a_huge_fold_still_reads_test() {
+  let model = page(lane_fixture.weighty(6, [3, 3, 3, 400]))
+  let assert [_, _, huge] = folds(model)
+  let open = toggled(model, huge)
+  assert component.top(open) == lane.Earlier
+  let #(pressed, _) = component.older(open)
+  assert component.top(pressed) == lane.Loading
+  assert component.paging(pressed) == component.Paged
+  assert list.length(folds(pressed)) == 3
+}

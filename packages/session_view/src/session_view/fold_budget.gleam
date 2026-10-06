@@ -10,6 +10,12 @@
 //// two, and a page can hold the turns around it. Opening a fold adds its
 //// steps to the count.
 ////
+//// The rows an open fold costs are the rows of each step's line and result.
+//// The expansion a step can open to (a whole program or output, cut by the
+//// host's `Expansion`) is not counted here: it is bounded separately, per row,
+//// where it is built (`web_view/view/expansion.capped`), and the weighing
+//// reads the turn without building it.
+////
 //// Everything here is a decision about rows, made over values the engine
 //// already built (`turns.Piece`, `Block`) and with no clock, process or
 //// host handle, so a terminal could ask the same questions. The host keeps
@@ -30,8 +36,10 @@
 ////    newest steps that fit for an open one, and how many are left out.
 
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import session_view/protocol
 import session_view/transcript_lines.{type Block}
@@ -64,11 +72,14 @@ pub type Fitted {
     /// How many turns, counting from the newest, the page holds. At least
     /// one when there is any turn at all.
     kept: Int,
-    /// The rows those turns draw.
+    /// The rows those turns draw with every fold closed.
     used: Int,
     /// For each open fold whose steps did not all fit, how many rows of its
     /// newest steps it may draw. A fold absent from it draws every step.
     allowance: Dict(Int, Int),
+    /// The open folds that belong to a held turn and draw steps, most
+    /// recently opened first. The others are closed.
+    folds: List(Int),
   )
 }
 
@@ -122,14 +133,22 @@ pub fn cost(weight: Weight, open: List(Int)) -> Int {
   }
 }
 
-/// How many of the turns, given newest first, a page of `limit` rows holds.
+/// How many of the turns, given newest first, a page of `limit` rows holds,
+/// and which open folds draw how much.
 ///
-/// The newest turn is always held. A turn is held whole while its rows fit
-/// what is left. An older turn with an open fold that does not fit, but
-/// whose closed rows do, is held with the newest steps of its fold that the
-/// rest of the room takes, and that fills the page. The first turn that
-/// fits neither way ends the page, so older turns are never skipped for a
-/// smaller one behind them.
+/// Which turns are held does not depend on the folds that are open: the
+/// newest turn is always held, and an older one is held while its closed rows
+/// fit what is left, and the first that does not ends the page, so a smaller
+/// older turn is never taken past it. Opening or closing a fold therefore
+/// never changes the turns a page holds, so it never moves where the page is
+/// cut, trims its history or fills it. The rows the closed turns leave over
+/// are the folds' room. `open` lists the open folds, most recently opened
+/// first, and each of those that belongs to a held turn is given its steps in
+/// that order while they fit. The most recently opened fold that does not
+/// fit whole draws its newest steps that do, with the allowance saying how
+/// many rows, and takes the rest of the room; every fold opened before it is
+/// left closed. A fold opened earlier than one that fit, and that does not
+/// fit itself, is left closed too.
 ///
 /// ## Examples
 ///
@@ -137,60 +156,76 @@ pub fn cost(weight: Weight, open: List(Int)) -> Int {
 /// assert fold_budget.fit([fold_budget.Weight(4, option.None)], [], 150).kept == 1
 /// ```
 pub fn fit(weights: List(Weight), open: List(Int), limit: Int) -> Fitted {
-  case weights {
-    [] -> Fitted(kept: 0, used: 0, allowance: dict.new())
-    [newest, ..older] -> {
-      let #(used, allowance) = case admit(newest, open, limit) {
-        Ok(admitted) -> admitted
-        Error(Nil) -> #(newest.base, dict.new())
-      }
-      fit_older(older, open, limit, Fitted(1, used, allowance))
-    }
+  let held = case weights {
+    [] -> Fitted(kept: 0, used: 0, allowance: dict.new(), folds: [])
+    [newest, ..older] ->
+      fit_older(older, limit, Fitted(1, newest.base, dict.new(), []))
   }
+  let rows =
+    weights
+    |> list.take(held.kept)
+    |> list.filter_map(fn(weight) {
+      option.to_result(weight.fold, Nil)
+      |> result.map(fn(fold) { #(fold.id, fold.rows) })
+    })
+    |> dict.from_list
+  let wanted = list.filter(open, dict.has_key(rows, _))
+  grant(wanted, rows, limit - held.used, held)
 }
 
-fn fit_older(
-  older: List(Weight),
-  open: List(Int),
-  limit: Int,
-  fitted: Fitted,
-) -> Fitted {
+fn fit_older(older: List(Weight), limit: Int, fitted: Fitted) -> Fitted {
   case older {
     [] -> fitted
     [weight, ..rest] ->
-      case admit(weight, open, limit - fitted.used) {
-        Ok(#(used, allowance)) ->
+      case fitted.used + weight.base <= limit {
+        True ->
           fit_older(
             rest,
-            open,
             limit,
             Fitted(
+              ..fitted,
               kept: fitted.kept + 1,
-              used: fitted.used + used,
-              allowance: dict.merge(fitted.allowance, allowance),
+              used: fitted.used + weight.base,
             ),
           )
-        Error(Nil) -> fitted
+        False -> fitted
       }
   }
 }
 
-// The rows a turn takes of `room`, and the allowance it is held with, or
-// nothing when it does not fit.
-fn admit(
-  weight: Weight,
-  open: List(Int),
+// Gives the open folds, most recently opened first, the room the closed turns
+// left. The first that does not fit whole takes what is left as its
+// allowance, so the fold the reader just opened is the last to give way.
+fn grant(
+  wanted: List(Int),
+  rows: Dict(Int, Int),
   room: Int,
-) -> Result(#(Int, Dict(Int, Int)), Nil) {
-  let wanted = cost(weight, open)
-  case weight.fold, wanted <= room, weight.base <= room {
-    _, True, _ -> Ok(#(wanted, dict.new()))
-    Some(Fold(id:, ..)), False, True ->
-      case list.contains(open, id) {
-        True -> Ok(#(room, dict.from_list([#(id, room - weight.base)])))
-        False -> Error(Nil)
+  fitted: Fitted,
+) -> Fitted {
+  case wanted {
+    [] -> fitted
+    [id, ..rest] -> {
+      let size = result.unwrap(dict.get(rows, id), 0)
+      case size <= room {
+        True ->
+          grant(
+            rest,
+            rows,
+            room - size,
+            Fitted(..fitted, folds: list.append(fitted.folds, [id])),
+          )
+        False ->
+          case fitted.folds {
+            [] ->
+              Fitted(
+                ..fitted,
+                allowance: dict.from_list([#(id, int.max(room, 0))]),
+                folds: [id],
+              )
+            [_, ..] -> grant(rest, rows, room, fitted)
+          }
       }
-    Some(_), False, False | None, False, _ -> Error(Nil)
+    }
   }
 }
 
