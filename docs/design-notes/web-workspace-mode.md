@@ -86,7 +86,7 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:310`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:2081`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:2696`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:1418`)). The
@@ -730,12 +730,12 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:2099`) makes;
-3. `open` (`client/daemon/manager.gleam:1149`) is called, which is the same
+   it", the check `OpenSession` (`client/daemon/server.gleam:2809`) makes;
+3. `open` (`client/daemon/manager.gleam:1448`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
 4. the daemon waits for the session to become `Resident`, polling `get`
-   (`client/daemon/manager.gleam:1228`) with `weft/poll` for at most
+   (`client/daemon/manager.gleam:1706`) with `weft/poll` for at most
    `resume_wait_ms` (30 seconds), in a managed task, so the page's runtime
    is not blocked: the row reads "Opening…" and a second press asks
    nothing;
