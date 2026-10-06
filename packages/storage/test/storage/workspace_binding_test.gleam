@@ -35,6 +35,7 @@ fn record(seed: Int, epoch: Int) -> catalogue.Registration {
     1,
     id,
     catalogue.Reserved,
+    option.None,
   )
 }
 

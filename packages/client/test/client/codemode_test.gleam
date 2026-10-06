@@ -47,8 +47,8 @@ import codemode/notes
 import codemode/orchestration
 import codemode/satellite
 import codemode/search as search_router
-import codemode/tool_gate
 import codemode/seed
+import codemode/tool_gate
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import codemode/workspace

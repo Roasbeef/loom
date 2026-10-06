@@ -263,7 +263,7 @@ pub fn unused_imports_alone_are_removed_and_rebuilt_once_test() {
   let rewritten = "import cap/fs\npub fn main() { fs.read(\"x\") }\n"
   let assert codemode.Ran(source:, artifact:, outcome: _) = execution.outcome
   assert source == rewritten
-  assert artifact.manifest_hash == "cafe"
+  assert compile.artifact_hash(artifact) == "cafe"
   assert drain(seen) == [unused_int_source, rewritten]
   assert execution.edits == ["removed unused import gleam/int (line 2)"]
 }
