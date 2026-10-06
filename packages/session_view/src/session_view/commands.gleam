@@ -60,6 +60,7 @@ import session_view/outbound
 import session_view/pasted_image
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/surfaces
 import session_view/text_hygiene
 import session_view/transcript_line.{
@@ -87,8 +88,8 @@ pub fn interrupt_active(
     session_model.active_strand_phase(shared),
     session_model.active_interrupt(shared)
   {
-    None, _ -> Shared(..shared, notice: "nothing is running")
-    Some(_), Some(_) -> Shared(..shared, notice: "interrupt already requested")
+    None, _ -> shared_set.notice(shared, "nothing is running")
+    Some(_), Some(_) -> shared_set.notice(shared, "interrupt already requested")
     Some(_), None ->
       // The interrupt is held until the operation settles, so it is recorded
       // only for an abort the lane will take. A refused one, on an observer's
@@ -99,15 +100,15 @@ pub fn interrupt_active(
         Some(reason) -> session_model.append_error(shared, reason)
         None -> {
           let strand = shared.active_strand
-          Shared(
-            ..shared,
-            interrupt: Some(Interrupt(
+          shared
+          |> shared_set.interrupt(
+            Some(Interrupt(
               strand:,
               operation: captured_operation(shared, strand),
               pending: None,
             )),
-            notice: stopping_notice,
           )
+          |> shared_set.notice(stopping_notice)
           |> session_model.record_surface(InterruptRequested)
           |> outbound.send_frame(protocol.abort(shared.next_id, strand))
         }
@@ -149,10 +150,10 @@ pub fn stop_strand(
     session_model.strand_running(shared, strand)
   {
     True, _ -> interrupt_active(shared)
-    False, False -> Shared(..shared, notice: strand <> " is not running")
+    False, False -> shared_set.notice(shared, strand <> " is not running")
     False, True ->
       outbound.send_frame(
-        Shared(..shared, notice: "stopping " <> strand),
+        shared_set.notice(shared, "stopping " <> strand),
         protocol.abort(shared.next_id, strand),
       )
   }
@@ -327,7 +328,7 @@ pub fn quit(
       session_model.hold_channel(shared, session_channel.close(channel))
     None -> shared
   }
-  Shared(..shared, quit: True)
+  shared_set.quit(shared, True)
 }
 
 /// Carries out one operator command over the session state.
@@ -392,9 +393,9 @@ pub fn control(
     Some(reason) -> session_model.append_error(shared, reason)
     None -> {
       let ran = dispatch(shared, "", command, operator.Prompt)
-      Shared(
-        ..ran,
-        surface_facts: list.filter(ran.surface_facts, fn(fact) {
+      shared_set.surface_facts(
+        ran,
+        list.filter(ran.surface_facts, fn(fact) {
           case fact {
             DraftTaken(..) -> False
             _ -> True
@@ -437,7 +438,7 @@ pub fn submit(
         shared.peer
       {
         True, Attached ->
-          Shared(..shared, pending_submission: Some(ComposerSubmission))
+          shared_set.pending_submission(shared, Some(ComposerSubmission))
         _, _ -> shared
       }
       case composer.has_images(prepared.attachments) {
@@ -465,9 +466,9 @@ pub fn release_submission(
     Some(channel) ->
       case session_channel.has_unsent(channel) {
         True -> shared
-        False -> Shared(..shared, pending_submission: None)
+        False -> shared_set.pending_submission(shared, None)
       }
-    None -> Shared(..shared, pending_submission: None)
+    None -> shared_set.pending_submission(shared, None)
   }
 }
 
@@ -483,7 +484,7 @@ fn take_draft(
     Some(OverlaySubmission), TakenByCommand | None, TakenByCommand ->
       session_model.record_surface(shared, DraftTaken(TakenByCommand))
     Some(OverlaySubmission), TakenAsPrompt | None, TakenAsPrompt ->
-      Shared(..shared, attachments: [])
+      shared_set.attachments(shared, [])
       |> session_model.record_surface(DraftTaken(TakenAsPrompt))
   }
 }
@@ -793,18 +794,18 @@ fn send_prompt_content(
     Disconnected ->
       session_model.append_error(shared, "no conversation is attached")
     Preview ->
-      Shared(
-        ..shared,
-        transcript: list.append(shared.transcript, [
+      shared
+      |> shared_set.transcript(
+        list.append(shared.transcript, [
           Line(
             User,
             image_prompt_preview(text, images, shared.details_expanded),
           ),
           Line(Assistant, "Design-preview echo received."),
         ]),
-        record_cache_valid: False,
-        notice: "image prompt accepted",
       )
+      |> shared_set.record_cache_valid(False)
+      |> shared_set.notice("image prompt accepted")
       |> session_model.invalidate_transcript
   }
 }
@@ -893,7 +894,7 @@ fn hold_or_send_interrupt(
   case session_model.active_strand_live(before) {
     False ->
       event_fold.send_prompt_to(
-        Shared(..cleared, interrupt: None),
+        shared_set.interrupt(cleared, None),
         strand,
         text,
       )
@@ -903,11 +904,11 @@ fn hold_or_send_interrupt(
           Some(earlier <> "\n\n" <> text)
         _ -> Some(text)
       }
-      Shared(
-        ..cleared,
-        interrupt: Some(Interrupt(strand:, operation: None, pending:)),
-        notice: "steer captured; waiting for stop",
+      cleared
+      |> shared_set.interrupt(
+        Some(Interrupt(strand:, operation: None, pending:)),
       )
+      |> shared_set.notice("steer captured; waiting for stop")
     }
   }
 }
@@ -931,7 +932,7 @@ fn send_steer(
   let expected =
     event_fold.expect_own_turn(shared, steering_submission(shared, text))
   outbound.send_via(
-    Shared(..expected, notice: "steered " <> shared.active_strand),
+    shared_set.notice(expected, "steered " <> shared.active_strand),
     fn(lane, now) {
       operator.submit(
         lane,
@@ -954,7 +955,7 @@ fn send_follow_up(
   let expected =
     event_fold.expect_own_turn(shared, steering_submission(shared, text))
   outbound.send_frame(
-    Shared(..expected, notice: "queued after " <> shared.active_strand),
+    shared_set.notice(expected, "queued after " <> shared.active_strand),
     protocol.follow_up(shared.next_id, shared.active_strand, text),
   )
 }

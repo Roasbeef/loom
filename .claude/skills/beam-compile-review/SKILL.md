@@ -104,6 +104,27 @@ another local call did not fix the earlier case. A parameter boundary or a
 cross-module boundary can change expansion; prefer the smaller measured repair.
 Do not disable optimization or raise `inline_effort` as the default remedy.
 
+## Recognize the wide-record failure shape
+
+Gleam compiles `Record(..value, field: x)` to a tuple that reads every
+untouched field with its own `element/2`. On a record with tens of fields, each
+update expression is a few hundred generated expressions, and erlc's SSA passes
+(`beam_ssa_opt`, `beam_ssa_pre_codegen`) take roughly 10 ms for each. Nothing
+looks wrong in any one function, because the cost is the number of sites rather
+than their shape, so a per-function ablation shows the time spread evenly
+across every handler that updates the record.
+
+Check the width of a record that handlers update often, then count its update
+sites with grep for `Type(..` in the package and its tests. The
+field-heavy records in Loom are `View` and `Shared`. A setter per field, in one
+module (`tui/view_set`, `session_view/shared_set`), expands the record once per
+field; callers pipe the record through setters. The measured effect on the
+`tui` package, in erlc CPU: sources 5.9 s to 3.2 s, test modules 8.6 s to
+3.9 s, `session_view` 3.1 s to 2.5 s. Prefer narrowing the record to adding
+setters when the fields group naturally; setters were the smaller diff here.
+A setter costs about as much to compile as two call sites, so give a field one
+only when several sites set it.
+
 ## Profile and test the hypothesis
 
 Use [profile_module.py](../../../skills/beam-compile-review/scripts/profile_module.py) after generating the desired
@@ -121,6 +142,15 @@ It returns the compiler's failure status, 124 on timeout, or 130 on interruption
 Timeout and interruption terminate and reap the compiler's process group.
 Inspect `profile.log`; an absent completed phase on timeout is unknown, not zero.
 The helper measures one generated module, not the whole Gleam package.
+
+Gleam 1.19 writes each module as Erlang abstract forms
+(`_gleam_artefacts/<module>.abstr`) and leaves no `.erl` file for a Gleam
+module, so the helper above finds nothing to read. [profile_package.escript](../../../skills/beam-compile-review/scripts/profile_package.escript)
+ranks a built package's modules by erlc CPU (`modules`), prints the functions
+that expand the most (`sizes`), and measures what each of the largest saves
+when stubbed (`ablate`). It reads existing build output and writes nothing.
+CPU time from `erlang:statistics(runtime)` is steady on a loaded host where a
+`Compiled in` wall time is not; interleave runs and report medians anyway.
 
 If `core_inline_module` dominates, test a focused ablation or equivalent helper
 extraction in a temporary copy of generated Erlang. Retain the original and its

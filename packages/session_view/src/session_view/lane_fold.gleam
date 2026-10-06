@@ -82,6 +82,7 @@ import session_view/protocol
 import session_view/queue_request
 import session_view/reviewer_status
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/surfaces
@@ -213,7 +214,7 @@ pub fn cancel_unsent(
   List(session_channel.Update),
 ) {
   case shared.channel {
-    None -> #(Shared(..shared, pending_submission: None), [])
+    None -> #(shared_set.pending_submission(shared, None), [])
     Some(channel) -> {
       let #(channel, updates) = session_channel.cancel_unsent(channel, reason)
       #(session_model.hold_channel(shared, channel), updates)
@@ -250,14 +251,14 @@ pub fn apply_channel_update(
   // deliberately silent, so neither is an answer; nor is a refusal whose arm
   // left the notice as it was.
   case update {
-    session_channel.Acknowledged(..) -> Shared(..folded, answer: folded.notice)
+    session_channel.Acknowledged(..) -> shared_set.answer(folded, folded.notice)
     session_channel.RequestRefused(command:, ..) ->
       case host_read(command) || folded.notice == shared.notice {
         True -> folded
-        False -> Shared(..folded, answer: folded.notice)
+        False -> shared_set.answer(folded, folded.notice)
       }
     session_channel.UnknownOutcome(..) ->
-      Shared(..folded, answer: folded.notice)
+      shared_set.answer(folded, folded.notice)
     _ -> folded
   }
 }
@@ -327,7 +328,7 @@ fn fold_update(
     session_channel.Auxiliary(event) -> event_fold.apply_event(shared, event)
     session_channel.RequestRefused("history", _, code, message) ->
       session_model.append_error(
-        Shared(..shared, scrollback: history_view.cancel(shared.scrollback)),
+        shared_set.scrollback(shared, history_view.cancel(shared.scrollback)),
         "Older history: " <> code <> ": " <> message,
       )
     session_channel.RequestRefused(command, request_id, code, message) ->
@@ -381,21 +382,19 @@ fn fold_update(
     // than writing a second copy of the same news. The saved draft leaves the
     // host's editor through the `Saved` notice.
     session_channel.Acknowledged("edit_queued_input", "queued") ->
-      Shared(
-        ..shared,
-        notice: notice_words.outcome("edit_queued_input", "queued"),
-        queue_request: queue_request.new(),
-        queue_notices: list.append(shared.queue_notices, [queue_request.Saved]),
+      shared
+      |> shared_set.notice(notice_words.outcome("edit_queued_input", "queued"))
+      |> shared_set.queue_request(queue_request.new())
+      |> shared_set.queue_notices(
+        list.append(shared.queue_notices, [queue_request.Saved]),
       )
       |> session_model.invalidate_frame
     session_channel.Acknowledged("prompt", "queued") ->
       {
         let settled = event_fold.settle_own_turn(shared)
-        Shared(
-          ..settled,
-          submitting: None,
-          notice: notice_words.outcome("prompt", "queued"),
-        )
+        settled
+        |> shared_set.submitting(None)
+        |> shared_set.notice(notice_words.outcome("prompt", "queued"))
       }
       |> session_model.invalidate_frame
 
@@ -408,7 +407,7 @@ fn fold_update(
     session_channel.Acknowledged("abort", status) ->
       {
         let abandoned = event_fold.abandon_interjections(shared)
-        Shared(..abandoned, notice: notice_words.outcome("abort", status))
+        shared_set.notice(abandoned, notice_words.outcome("abort", status))
       }
       |> session_model.invalidate_frame
 
@@ -419,7 +418,7 @@ fn fold_update(
     session_channel.Acknowledged(command, status) ->
       {
         let settled = event_fold.settle_own_turn(shared)
-        Shared(..settled, notice: notice_words.outcome(command, status))
+        shared_set.notice(settled, notice_words.outcome(command, status))
       }
       |> session_model.invalidate_frame
 
@@ -428,17 +427,19 @@ fn fold_update(
     session_channel.UnknownOutcome(command, request_id) ->
       session_model.append_error(
         Shared(
-          ..shared,
+          ..{
+            shared
+            |> shared_set.queue_notices(case command {
+              "edit_queued_input" ->
+                list.append(shared.queue_notices, [queue_request.Unknown])
+              _ -> shared.queue_notices
+            })
+          },
           unconfirmed: Some(UnconfirmedSubmission(
             shared.session,
             command,
             request_id,
           )),
-          queue_notices: case command {
-            "edit_queued_input" ->
-              list.append(shared.queue_notices, [queue_request.Unknown])
-            _ -> shared.queue_notices
-          },
         ),
         "Last unconfirmed submission: " <> command <> "; not retried",
       )
@@ -506,7 +507,7 @@ fn reconcile_cut(
     Some(#(previous, _))
       if previous.next_seq == cut.next_seq && previous.metadata == cut.metadata
     ->
-      Shared(..shared, captured: Some(#(cut, view)))
+      shared_set.captured(shared, Some(#(cut, view)))
       |> close_settled_approval(around.reviewing)
     Some(_) | None -> {
       let updated =
@@ -1114,17 +1115,15 @@ pub fn receive_unlaned(
   let shared = session_model.record_arrival(shared, incoming)
   case incoming {
     connection_event.Connected ->
-      Shared(..shared, notice: "connected")
+      shared_set.notice(shared, "connected")
       |> session_model.mark_activity
       |> session_model.invalidate_frame
     connection_event.Closed(reason) ->
       session_model.append_error(
-        Shared(
-          ..shared,
-          peer: after_close(shared.peer),
-          streams: [],
-          tool_tails: [],
-        ),
+        shared
+          |> shared_set.peer(after_close(shared.peer))
+          |> shared_set.streams([])
+          |> shared_set.tool_tails([]),
         "connection closed: " <> reason,
       )
       |> session_model.record_surface(ConnectionLost)
@@ -1167,9 +1166,9 @@ pub fn service_history(
         Error(_) -> shared
         Ok(channel) -> {
           let held = session_model.hold_channel(shared, channel)
-          Shared(
-            ..held,
-            scrollback: history_view.sent(shared.scrollback, before),
+          shared_set.scrollback(
+            held,
+            history_view.sent(shared.scrollback, before),
           )
         }
       }
@@ -1191,8 +1190,8 @@ fn receive_history(
       let history =
         history_view.accept(shared.scrollback, window, before, after, view)
       let shared =
-        apply_cut(Shared(..shared, scrollback: history), cut, view, around)
-      Shared(..shared, render_revision: shared.render_revision + 1)
+        apply_cut(shared_set.scrollback(shared, history), cut, view, around)
+      shared_set.render_revision(shared, shared.render_revision + 1)
     }
   }
 }
@@ -1290,19 +1289,19 @@ pub fn refresh_worktree(
 ) -> Shared(socket, recorder, source, replay_source) {
   case shared.peer, shared.channel {
     Attached, Some(_) ->
-      Shared(
-        ..shared,
-        worktree: worktree_view.request(
+      shared_set.worktree(
+        shared,
+        worktree_view.request(
           shared.worktree,
           session_model.queue_owner(shared),
         ),
       )
       |> surfaces.service_worktree_read
     _, _ ->
-      Shared(
-        ..shared,
-        worktree: worktree_view.new(),
-        notice: "Captured edits · live worktree observation unavailable",
+      shared
+      |> shared_set.worktree(worktree_view.new())
+      |> shared_set.notice(
+        "Captured edits · live worktree observation unavailable",
       )
   }
 }
@@ -1314,7 +1313,7 @@ fn observe_completion(
   active: String,
 ) -> Shared(socket, recorder, source, replay_source) {
   let owner =
-    session_model.queue_owner(Shared(..shared, captured: Some(#(cut, view))))
+    session_model.queue_owner(shared_set.captured(shared, Some(#(cut, view))))
   let previous = case shared.completion_owner == owner {
     True -> shared.completion
     False -> completion_summary.new()
@@ -1331,25 +1330,27 @@ fn observe_completion(
     completion_summary.latest(previous, active)
     != completion_summary.latest(completion, active)
   Shared(
-    ..shared,
+    ..{
+      shared
+      |> shared_set.worktree(case shared.worktree.owner == owner {
+        True -> shared.worktree
+        False -> worktree_view.new()
+      })
+      |> shared_set.jobs(case shared.completion_owner == owner {
+        True -> shared.jobs
+        False -> None
+      })
+      |> shared_set.jobs_awaiting(case shared.completion_owner == owner {
+        True -> shared.jobs_awaiting
+        False -> None
+      })
+      |> shared_set.jobs_refresh(case changed {
+        True -> worktree_view.Requested
+        False -> shared.jobs_refresh
+      })
+    },
     completion:,
     completion_owner: owner,
-    worktree: case shared.worktree.owner == owner {
-      True -> shared.worktree
-      False -> worktree_view.new()
-    },
-    jobs: case shared.completion_owner == owner {
-      True -> shared.jobs
-      False -> None
-    },
-    jobs_awaiting: case shared.completion_owner == owner {
-      True -> shared.jobs_awaiting
-      False -> None
-    },
-    jobs_refresh: case changed {
-      True -> worktree_view.Requested
-      False -> shared.jobs_refresh
-    },
   )
 }
 
@@ -1362,9 +1363,9 @@ fn apply_request_refused(
   around: Surroundings,
 ) -> Shared(socket, recorder, source, replay_source) {
   use <- bool.lazy_guard(command == "context", fn() {
-    Shared(
-      ..shared,
-      context: context_view.refused(shared.context, request_id, code, message),
+    shared_set.context(
+      shared,
+      context_view.refused(shared.context, request_id, code, message),
     )
     |> session_model.invalidate_frame
   })
@@ -1381,7 +1382,7 @@ fn apply_request_refused(
   // be the one visible trace of a feature the operator never asked for, so
   // the terminal stops asking for this attachment and says nothing.
   use <- bool.lazy_guard(command == "block_summaries", fn() {
-    Shared(..shared, summaries: block_summary.refused(shared.summaries))
+    shared_set.summaries(shared, block_summary.refused(shared.summaries))
   })
 
   // A notes read refused while no notes surface is open was the todo
@@ -1396,10 +1397,10 @@ fn apply_request_refused(
     "queued_input" | "edit_queued_input" ->
       case shared.queue_request.request_id == Some(request_id) {
         True ->
-          Shared(
-            ..shared,
-            queue_request: queue_request.new(),
-            queue_notices: list.append(shared.queue_notices, [
+          shared
+          |> shared_set.queue_request(queue_request.new())
+          |> shared_set.queue_notices(
+            list.append(shared.queue_notices, [
               queue_request.Refused(reason),
             ]),
           )
@@ -1408,12 +1409,10 @@ fn apply_request_refused(
     "live_jobs" ->
       case shared.jobs_request == Some(request_id) {
         True ->
-          Shared(
-            ..shared,
-            jobs_request: None,
-            jobs_awaiting: None,
-            jobs_notice: "Live jobs unavailable: " <> reason,
-          )
+          shared
+          |> shared_set.jobs_request(None)
+          |> shared_set.jobs_awaiting(None)
+          |> shared_set.jobs_notice("Live jobs unavailable: " <> reason)
         False -> shared
       }
 
@@ -1424,18 +1423,16 @@ fn apply_request_refused(
     "advisor_pending" ->
       case shared.nudges_request == Some(request_id) {
         True ->
-          Shared(
-            ..shared,
-            nudges: None,
-            nudges_request: None,
-            nudges_awaiting: None,
-          )
+          shared
+          |> shared_set.nudges(None)
+          |> shared_set.nudges_request(None)
+          |> shared_set.nudges_awaiting(None)
         False -> shared
       }
     "worktree_diff" ->
-      Shared(
-        ..shared,
-        worktree: worktree_view.receive(
+      shared_set.worktree(
+        shared,
+        worktree_view.receive(
           shared.worktree,
           session_model.queue_owner(shared),
           worktree_view.Failed(request_id, reason),
@@ -1468,13 +1465,19 @@ pub fn take_replayed(
   List(attempt_replay.Change),
 ) {
   let #(replay_inbox, next) = inbox.take(shared.replay_inbox)
-  let shared = Shared(..shared, replay_inbox:)
+  let shared = shared_set.replay_inbox(shared, replay_inbox)
   case shared.peer, next {
     Replaying, Ok(event) ->
       case attempt_replay.apply(shared.replay_state, event) {
         Error(reason) -> #(
           session_model.append_error(
-            Shared(..shared, replay_error: Some(reason), quit: True),
+            Shared(
+              ..{
+                shared
+                |> shared_set.quit(True)
+              },
+              replay_error: Some(reason),
+            ),
             reason,
           ),
           [],
@@ -1509,12 +1512,9 @@ pub fn apply_replay_change(
 ) -> Shared(socket, recorder, source, replay_source) {
   case change {
     attempt_replay.RequestedHistory(before) ->
-      Shared(
-        ..shared,
-        scrollback: history_view.sent(
-          history_view.freeze(shared.scrollback),
-          before,
-        ),
+      shared_set.scrollback(
+        shared,
+        history_view.sent(history_view.freeze(shared.scrollback), before),
       )
     attempt_replay.Rejected(reason) ->
       session_model.append_error(shared, "open session: " <> reason)

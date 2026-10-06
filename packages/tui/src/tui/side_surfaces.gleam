@@ -18,19 +18,21 @@ import gleam/option.{None, Some}
 import gleam/result
 import session_view/context_view
 import session_view/model.{
-  Attached, Disconnected, HoldGoalReport, Preview, Replaying, ReportGoal, Shared,
+  Attached, Disconnected, HoldGoalReport, Preview, Replaying, ReportGoal,
 }
+import session_view/shared_set
 import session_view/surfaces
 import session_view/worktree_view
 import tui/agents
 import tui/focused_goal_panel
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
-  GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager, View,
+  GoalInspector, Model, ModelSelector, NoOverlay, PeerLinkManager,
 } as tui_model
 import tui/queue_editor
 import tui/render
 import tui/summary_panel
+import tui/view_set
 
 /// Inspection has its own target. Reading a worker's notes never changes the
 /// active strand, its parked draft, or the next submitted message.
@@ -70,11 +72,9 @@ pub fn notes_surface(model: Model) -> Bool {
 pub fn refresh_notes(model: Model) -> Model {
   Model(
     ..model,
-    shared: Shared(
-      ..model.shared,
-      notes_requested: Some(notes_target(model)),
-      notice: "refreshing notes for " <> notes_target(model),
-    ),
+    shared: model.shared
+      |> shared_set.notes_requested(Some(notes_target(model)))
+      |> shared_set.notice("refreshing notes for " <> notes_target(model)),
   )
   |> tui_model.run_shared(surfaces.service_notes_read)
 }
@@ -107,7 +107,9 @@ pub fn select_note(model: Model, direction: Int) -> Model {
       // transcript beneath an inspector retains its independent anchor.
       Model(
         ..model,
-        view: View(..model.view, note_selected: selected, note_scroll: 0),
+        view: model.view
+          |> view_set.note_selected(selected)
+          |> view_set.note_scroll(0),
       )
       |> tui_model.invalidate_transcript
     }
@@ -125,14 +127,12 @@ pub fn select_note(model: Model, direction: Int) -> Model {
 @internal
 pub fn open_summary(model: Model) -> Model {
   Model(
-    shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
-    view: View(
-      ..model.view,
-      summary_surface: queue_editor.Inspector,
-      summary_scroll: 0,
-      summary_tab: summary_panel.Completion,
-      summary_job_selected: 0,
-    ),
+    shared: shared_set.jobs_refresh(model.shared, worktree_view.Requested),
+    view: model.view
+      |> view_set.summary_surface(queue_editor.Inspector)
+      |> view_set.summary_scroll(0)
+      |> view_set.summary_tab(summary_panel.Completion)
+      |> view_set.summary_job_selected(0),
   )
   |> tui_model.run_shared(surfaces.service_jobs_read)
   |> tui_model.invalidate_frame
@@ -149,29 +149,21 @@ pub fn request_goal_status(model: Model) -> Model {
   case model.shared.peer {
     Preview ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          goal_report: HoldGoalReport,
-          notice: "goal inspector · illustrative observation",
-        ),
-        view: View(
-          ..model.view,
-          overlay: GoalInspector(panel),
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: model.shared
+          |> shared_set.goal_report(HoldGoalReport)
+          |> shared_set.notice("goal inspector · illustrative observation"),
+        view: model.view
+          |> view_set.overlay(GoalInspector(panel))
+          |> view_set.toggle_repaint,
       )
     Attached | Disconnected | Replaying ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          goal_refresh: worktree_view.Requested,
-          goal_report: ReportGoal,
-        ),
-        view: View(
-          ..model.view,
-          overlay: GoalInspector(panel),
-          repaint_phase: !model.view.repaint_phase,
-        ),
+        shared: model.shared
+          |> shared_set.goal_refresh(worktree_view.Requested)
+          |> shared_set.goal_report(ReportGoal),
+        view: model.view
+          |> view_set.overlay(GoalInspector(panel))
+          |> view_set.toggle_repaint,
       )
   }
 }
@@ -198,9 +190,9 @@ fn goal_observation(model: Model) -> String {
 pub fn open_context(model: Model, surface: context_view.Surface) -> Model {
   Model(
     ..model,
-    shared: Shared(
-      ..model.shared,
-      context: context_view.State(
+    shared: shared_set.context(
+      model.shared,
+      context_view.State(
         ..context_view.invalidate(model.shared.context),
         surface:,
         scroll: 0,

@@ -111,6 +111,7 @@ import session_view/model.{type Shared, Shared} as session_model
 import session_view/msg as session_msg
 import session_view/outbound
 import session_view/session_channel
+import session_view/shared_set
 import session_view/transcript_line.{type Line}
 import session_view/worktree_view
 import tui/access_overlay
@@ -393,7 +394,7 @@ pub fn empty_caches() -> Caches {
 ///
 /// A reducer reads a field through the half that holds it, `model.shared.x`
 /// or `model.view.x`, and writes by updating that half:
-/// `Model(..model, shared: Shared(..model.shared, notice: text))`. A reducer
+/// `Model(..model, shared: shared_set.notice(model.shared, text))`. A reducer
 /// that writes both halves updates both in the one expression, from the same
 /// `model`, so neither update can drop the other's write.
 ///
@@ -736,7 +737,7 @@ pub fn strip(model: Model) -> agent_strip.State {
 @internal
 pub fn store_strip(model: Model, strip: agent_strip.State) -> Model {
   Model(
-    shared: Shared(..model.shared, roster: strip.roster),
+    shared: shared_set.roster(model.shared, strip.roster),
     view: View(..model.view, strip_focus: strip.focus),
   )
 }
@@ -812,7 +813,7 @@ pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
     [] -> Model(shared:, view:)
     decided ->
       Model(
-        shared: Shared(..shared, outbox: []),
+        shared: shared_set.outbox(shared, []),
         view: View(
           ..view,
           outbox: list.append(list.map(decided, effect.Step), view.outbox),
@@ -857,7 +858,7 @@ fn show_queue_notices(model: Model) -> Model {
     [] -> model
     notices ->
       Model(
-        shared: Shared(..model.shared, queue_notices: []),
+        shared: shared_set.queue_notices(model.shared, []),
         view: View(
           ..model.view,
           queue_editor: list.fold(
@@ -883,7 +884,7 @@ fn show_goal_observations(model: Model) -> Model {
         other -> other
       }
       Model(
-        shared: Shared(..model.shared, goal_observations: []),
+        shared: shared_set.goal_observations(model.shared, []),
         view: View(..model.view, overlay:),
       )
     }
@@ -977,7 +978,7 @@ pub fn apply_submission(
 pub fn clear_composer(model: Model) -> Model {
   let cleared = clear_composer_text(model)
   Model(
-    shared: Shared(..cleared.shared, attachments: []),
+    shared: shared_set.attachments(cleared.shared, []),
     view: View(..cleared.view, submission_mode: PromptNext),
   )
 }
@@ -1245,7 +1246,7 @@ pub fn start_step(
 ) -> Model {
   let model =
     Model(
-      shared: Shared(..model.shared, stamp: at),
+      shared: shared_set.stamp(model.shared, at),
       view: View(..model.view, wall_ms:),
     )
   case msg.recorded(event) {

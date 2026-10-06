@@ -17,9 +17,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import session_view/commands
 import session_view/connection_event
-import session_view/model as session_model
 import session_view/msg
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/transcript_line
 import tui
@@ -29,6 +29,7 @@ import tui/frame
 import tui/model as tui_model
 import tui/pacing
 import tui/runtime
+import tui/view_set
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -46,7 +47,7 @@ fn initial(now: Int) -> tui_model.Model {
 fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    view: tui_model.View(..model.view, monotonic_time_ms: fn() { now }),
+    view: view_set.monotonic_time_ms(model.view, fn() { now }),
   )
 }
 
@@ -103,10 +104,7 @@ pub fn wheel_then_press_captures_one_painted_copy_layout_test() {
   let drawn =
     {
       let base = initial(-10_000)
-      tui_model.Model(
-        ..base,
-        shared: session_model.Shared(..base.shared, transcript: lines),
-      )
+      tui_model.Model(..base, shared: shared_set.transcript(base.shared, lines))
     }
     |> tui.update(backend.Resize(50, 12), _)
   let assert Some(tui_model.FrameCache(
@@ -310,9 +308,9 @@ const assistant_phase =
 fn stamped_at(model: tui_model.Model, now: Int) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: session_model.Shared(
-      ..model.shared,
-      stamp: msg.Stamp(..model.shared.stamp, now_ms: now),
+    shared: shared_set.stamp(
+      model.shared,
+      msg.Stamp(..model.shared.stamp, now_ms: now),
     ),
   )
 }
@@ -322,7 +320,7 @@ pub fn a_step_reads_the_stamp_and_never_the_clock_test() {
     let base = initial(-10_000)
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, monotonic_time_ms: fn() {
+      view: view_set.monotonic_time_ms(base.view, fn() {
         panic as "a step called the presentation clock"
       }),
     )
@@ -452,9 +450,9 @@ pub fn a_step_ticks_the_lane_at_the_stamped_transport_reading_test() {
   let at = fn(model: tui_model.Model, transport: Int) {
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(
-        ..model.shared,
-        stamp: msg.Stamp(..model.shared.stamp, transport_ms: transport),
+      shared: shared_set.stamp(
+        model.shared,
+        msg.Stamp(..model.shared.stamp, transport_ms: transport),
       ),
     )
   }
@@ -489,7 +487,7 @@ pub fn update_reads_the_model_transport_clock_test() {
   let late =
     tui_model.Model(
       ..frozen,
-      view: tui_model.View(..frozen.view, transport_time_ms: fn() { 10_000_000 }),
+      view: view_set.transport_time_ms(frozen.view, fn() { 10_000_000 }),
     )
   let refreshed = tui.update(backend.Tick, late)
   let assert Some(lane) = refreshed.shared.channel

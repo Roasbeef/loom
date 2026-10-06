@@ -30,6 +30,7 @@ import session_view/model as session_model
 import session_view/notice_words
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
@@ -42,6 +43,7 @@ import tui/model_selector
 import tui/queue_editor
 import tui/submit
 import tui/tick
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 
@@ -50,11 +52,9 @@ fn model() -> tui_model.Model {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    shared: session_model.Shared(
-      ..base.shared,
-      session: "demo",
-      active_strand: "main",
-    ),
+    shared: base.shared
+      |> shared_set.session("demo")
+      |> shared_set.active_strand("main"),
   )
 }
 
@@ -68,7 +68,7 @@ pub fn an_interrupt_returns_the_composer_to_prompting_test() {
   let steering =
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, submission_mode: tui_model.SteerNow),
+      view: view_set.submission_mode(base.view, tui_model.SteerNow),
     )
   let interrupted = submit.interrupt_active(steering)
   assert interrupted.shared.interrupt != None
@@ -78,8 +78,10 @@ pub fn an_interrupt_returns_the_composer_to_prompting_test() {
 
   let idle =
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, strands: [], submitting: None),
-      view: tui_model.View(..base.view, submission_mode: tui_model.SteerNow),
+      shared: base.shared
+        |> shared_set.strands([])
+        |> shared_set.submitting(None),
+      view: view_set.submission_mode(base.view, tui_model.SteerNow),
     )
   let untouched = submit.interrupt_active(idle)
   assert untouched.shared.notice == "nothing is running"
@@ -93,11 +95,9 @@ fn drafted(text: String) -> tui_model.Model {
   let base = model()
   tui_model.Model(
     ..base,
-    view: tui_model.View(
-      ..base.view,
-      input: text_area.state_from_string(text),
-      submission_mode: tui_model.SteerNow,
-    ),
+    view: base.view
+      |> view_set.input(text_area.state_from_string(text))
+      |> view_set.submission_mode(tui_model.SteerNow),
   )
 }
 
@@ -122,10 +122,7 @@ pub fn clearing_the_transcript_drops_its_gutters_test() {
   let base = drafted("/clear")
   let cleared =
     submit.submit(
-      tui_model.Model(
-        ..base,
-        view: tui_model.View(..base.view, record_gutters: [7]),
-      ),
+      tui_model.Model(..base, view: view_set.record_gutters(base.view, [7])),
     )
   assert cleared.shared.transcript == []
   assert cleared.view.record_gutters == []
@@ -143,7 +140,9 @@ pub fn a_full_snapshot_returns_the_viewport_to_the_tail_test() {
   let scrolled =
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, scroll_offset: 4, record_gutters: [7]),
+      view: base.view
+        |> view_set.scroll_offset(4)
+        |> view_set.record_gutters([7]),
     )
 
   // The snapshot names the session and strand already shown, so no
@@ -200,9 +199,9 @@ pub fn a_lost_lane_closes_the_goal_inspector_test() {
   let inspecting =
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        overlay: GoalInspector(focused_goal_panel.new(None, "observed")),
+      view: view_set.overlay(
+        base.view,
+        GoalInspector(focused_goal_panel.new(None, "observed")),
       ),
     )
   let failed =
@@ -216,12 +215,10 @@ pub fn a_replay_adoption_forgets_the_previous_prompts_test() {
   let prompted =
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        prompted_approvals: [#("esc-1", 4)],
-        inspecting_approval: Some("esc-2"),
-        note_selected: Some("note"),
-      ),
+      view: base.view
+        |> view_set.prompted_approvals([#("esc-1", 4)])
+        |> view_set.inspecting_approval(Some("esc-2"))
+        |> view_set.note_selected(Some("note")),
     )
   let cut =
     snapshot.Captured(
@@ -263,7 +260,7 @@ pub fn a_live_strand_advances_the_activity_glyph_test() {
   let live =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, strands: [
+      shared: shared_set.strands(base.shared, [
         protocol.Strand("main", Some("main"), Some("assistant")),
       ]),
     )
@@ -273,7 +270,7 @@ pub fn a_live_strand_advances_the_activity_glyph_test() {
   let resting =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, strands: [
+      shared: shared_set.strands(base.shared, [
         protocol.Strand("main", Some("main"), None),
       ]),
     )
@@ -287,9 +284,9 @@ pub fn an_acknowledged_queue_save_closes_the_editor_test() {
   let editing =
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        queue_editor: queue_editor.State(
+      view: view_set.queue_editor(
+        base.view,
+        queue_editor.State(
           ..queue_editor.new(),
           surface: queue_editor.Inspector,
           message: "saving",
@@ -313,8 +310,7 @@ pub fn a_refused_notes_read_is_reported_only_to_an_open_surface_test() {
   let refusal = session_channel.RequestRefused("notes", 7, "unsupported", "no")
   let quiet = inbound.apply_channel_update(base, refusal)
   assert quiet.shared.transcript == base.shared.transcript
-  let open =
-    tui_model.Model(..base, view: tui_model.View(..base.view, notes_open: True))
+  let open = tui_model.Model(..base, view: view_set.notes_open(base.view, True))
   let reported = inbound.apply_channel_update(open, refusal)
   assert reported.shared.notice == "unsupported: no"
 }
@@ -326,10 +322,7 @@ pub fn a_new_cut_refreshes_a_shown_worktree_only_test() {
   let base =
     tui_model.Model(
       ..replaying,
-      shared: session_model.Shared(
-        ..replaying.shared,
-        peer: session_model.Attached,
-      ),
+      shared: shared_set.peer(replaying.shared, session_model.Attached),
     )
   let cut =
     snapshot.Captured(
@@ -364,10 +357,7 @@ pub fn a_new_cut_refreshes_a_shown_worktree_only_test() {
   let hidden = inbound.apply_channel_update(base, update)
   let shown =
     inbound.apply_channel_update(
-      tui_model.Model(
-        ..base,
-        view: tui_model.View(..base.view, diff_view: DiffVisible),
-      ),
+      tui_model.Model(..base, view: view_set.diff_view(base.view, DiffVisible)),
       update,
     )
   assert shown.shared.worktree != hidden.shared.worktree

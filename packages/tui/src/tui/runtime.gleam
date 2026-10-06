@@ -48,8 +48,9 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap as host_bootstrap
-import session_view/model.{Shared} as session_model
+import session_view/model as session_model
 import session_view/msg.{type Stamp, Stamp} as _
+import session_view/shared_set
 import session_view/step_effect
 import tui/admission
 import tui/attachment
@@ -69,6 +70,7 @@ import tui/model.{type Model, Model, View} as tui_model
 import tui/msg.{type Msg}
 import tui/recording
 import tui/terminal_lane
+import tui/view_set
 import weft
 
 /// Reads the clocks and writes them onto the model, for a caller that
@@ -85,12 +87,9 @@ import weft
 /// ```
 pub fn stamp(model: Model) -> Model {
   Model(
-    shared: Shared(
-      ..model.shared,
-      stamp: read_stamp(
-        model.view.monotonic_time_ms,
-        model.view.transport_time_ms,
-      ),
+    shared: shared_set.stamp(
+      model.shared,
+      read_stamp(model.view.monotonic_time_ms, model.view.transport_time_ms),
     ),
     view: View(..model.view, wall_ms: host_bootstrap.system_time_ms()),
   )
@@ -256,7 +255,7 @@ pub fn hold(
   let model =
     Model(
       ..model,
-      view: View(..model.view, running: job_runner.observed(running, arrival)),
+      view: view_set.running(model.view, job_runner.observed(running, arrival)),
     )
   admission.admit(model, [msg.JobReplied(arrival)])
 }
@@ -275,7 +274,7 @@ pub fn hold(
 /// ```
 pub fn adopt_control(model: Model, host: daemon_selection.Host) -> Model {
   let #(running, daemon) = job_runner.adopt_control(model.view.running, host)
-  Model(..model, view: View(..model.view, running:))
+  Model(..model, view: view_set.running(model.view, running))
   |> tui_model.adopt_daemon(daemon)
 }
 
@@ -363,7 +362,7 @@ pub fn terminal_identity() -> String {
 /// ```
 pub fn take(model: Model) -> #(Model, List(Effect)) {
   #(
-    Model(..model, view: View(..model.view, outbox: [])),
+    Model(..model, view: view_set.outbox(model.view, [])),
     list.reverse(model.view.outbox),
   )
 }
@@ -401,7 +400,7 @@ pub fn settle(stepped: #(Model, List(Effect))) -> Model {
   let #(model, effects) = stepped
   Model(
     ..model,
-    view: View(..model.view, running: perform(effects, model.view.running)),
+    view: view_set.running(model.view, perform(effects, model.view.running)),
   )
 }
 

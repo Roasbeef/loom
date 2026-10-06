@@ -18,6 +18,7 @@ import session_view/model as session_model
 import session_view/msg
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import tui
 import tui/buffered
@@ -28,6 +29,7 @@ import tui/job_runner
 import tui/model as tui_model
 import tui/pacing
 import tui/tick
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 
@@ -50,11 +52,9 @@ fn attached(channel, now: Int) -> tui_model.Model {
     let base = unattached()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        channel: Some(channel),
-        stamp: msg.Stamp(now_ms: 0, transport_ms: now),
-      ),
+      shared: base.shared
+        |> shared_set.channel(Some(channel))
+        |> shared_set.stamp(msg.Stamp(now_ms: 0, transport_ms: now)),
     )
   }
 }
@@ -63,10 +63,7 @@ fn unattached() -> tui_model.Model {
   {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("test", None))
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(..base.shared, strands: []),
-    )
+    tui_model.Model(..base, shared: shared_set.strands(base.shared, []))
   }
 }
 
@@ -123,7 +120,7 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let running =
     tui_model.Model(
       ..quiet,
-      shared: session_model.Shared(..quiet.shared, strands: [
+      shared: shared_set.strands(quiet.shared, [
         protocol.Strand("side", None, Some("assistant")),
       ]),
     )
@@ -134,7 +131,7 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let deferred =
     tui_model.Model(
       ..quiet,
-      view: tui_model.View(..quiet.view, frame_debt: pacing.FrameDeferred),
+      view: view_set.frame_debt(quiet.view, pacing.FrameDeferred),
     )
   assert tick.wakes_itself(deferred)
   assert tick.terminal_poll_timeout(deferred) == 8
@@ -144,9 +141,9 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let backlogged =
     tui_model.Model(
       ..quiet,
-      shared: session_model.Shared(
-        ..quiet.shared,
-        connection_backlog: session_model.MailboxMayHoldMore,
+      shared: shared_set.connection_backlog(
+        quiet.shared,
+        session_model.MailboxMayHoldMore,
       ),
     )
   assert tick.wakes_itself(backlogged)
@@ -157,9 +154,9 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let running_job =
     tui_model.Model(
       ..allocated,
-      view: tui_model.View(
-        ..allocated.view,
-        running: job_runner.start_task(
+      view: view_set.running(
+        allocated.view,
+        job_runner.start_task(
           allocated.view.running,
           key,
           fn() {
@@ -180,10 +177,7 @@ pub fn what_no_wake_announces_keeps_the_paced_poll_test() {
   let held =
     tui_model.Model(
       ..quiet,
-      shared: session_model.Shared(
-        ..quiet.shared,
-        inbox: buffered.top_up(inbox, up_to: 64),
-      ),
+      shared: shared_set.inbox(quiet.shared, buffered.top_up(inbox, up_to: 64)),
     )
   assert tick.wakes_itself(held)
   assert tick.terminal_poll_timeout(held) == paced
@@ -208,12 +202,9 @@ fn drain(model: tui_model.Model) -> tui_model.Model {
   let topped =
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(
-        ..model.shared,
-        inbox: buffered.top_up(
-          model.shared.inbox,
-          up_to: tui_model.connection_batch,
-        ),
+      shared: shared_set.inbox(
+        model.shared,
+        buffered.top_up(model.shared.inbox, up_to: tui_model.connection_batch),
       ),
     )
   inbound.drain_connection(topped, tui_model.connection_batch)
@@ -228,9 +219,9 @@ pub fn an_adopting_tick_owes_one_more_batch_test() {
   let adopted =
     tui_model.Model(
       ..before,
-      shared: session_model.Shared(
-        ..before.shared,
-        inbox: buffered.new(connection.new_inbox()),
+      shared: shared_set.inbox(
+        before.shared,
+        buffered.new(connection.new_inbox()),
       ),
     )
   assert tick.adopted_backlog(before, adopted)
@@ -238,9 +229,9 @@ pub fn an_adopting_tick_owes_one_more_batch_test() {
   assert tick.terminal_poll_timeout(
       tui_model.Model(
         ..adopted,
-        shared: session_model.Shared(
-          ..adopted.shared,
-          connection_backlog: tick.adopted_backlog(before, adopted),
+        shared: shared_set.connection_backlog(
+          adopted.shared,
+          tick.adopted_backlog(before, adopted),
         ),
       ),
     )

@@ -29,7 +29,7 @@ import gleam/option.{None}
 import gleam/result
 import gleam/string
 import session_view/connection_event
-import session_view/model as session_model
+import session_view/shared_set
 import session_view/transcript_line
 import tui
 import tui/buffered
@@ -412,7 +412,7 @@ fn said(text: String) -> Pane {
     let base = quiet_model(connection.new_inbox(), Compact)
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, transcript: [
+      shared: shared_set.transcript(base.shared, [
         transcript_line.Line(transcript_line.Assistant, text),
       ]),
     )
@@ -544,16 +544,14 @@ fn quiet_model(
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        transcript: [],
-        strands: [],
-        notice: "ready",
-        details_expanded: case view {
+      shared: base.shared
+        |> shared_set.transcript([])
+        |> shared_set.strands([])
+        |> shared_set.notice("ready")
+        |> shared_set.details_expanded(case view {
           Compact -> False
           Expanded -> True
-        },
-      ),
+        }),
     )
   }
 }

@@ -1,7 +1,7 @@
 import etui/backend
 import etui/widgets/textarea
 import gleam/option.{None, Some}
-import session_view/model as session_model
+import session_view/shared_set
 import tui
 import tui/connection
 import tui/daemon/protocol
@@ -10,6 +10,7 @@ import tui/model as tui_model
 import tui/runtime
 import tui/session_control
 import tui/session_selector
+import tui/view_set
 import tui/workspace
 import weft
 
@@ -18,10 +19,10 @@ pub fn rename_without_attachment_reports_no_session_test() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work/loom", None))
   let model =
     tui_model.Model(
-      shared: session_model.Shared(..model.shared, session: ""),
-      view: tui_model.View(
-        ..model.view,
-        input: textarea.state_from_string("/rename review auth"),
+      shared: shared_set.session(model.shared, ""),
+      view: view_set.input(
+        model.view,
+        textarea.state_from_string("/rename review auth"),
       ),
     )
   let after = tui.update(backend.KeyPress("enter"), model)
@@ -45,10 +46,10 @@ pub fn completed_rename_page_refresh_preserves_selected_identity_test() {
   let #(model, key) = tui_model.allocate_job(model)
   let pending =
     tui_model.Model(
-      shared: session_model.Shared(..model.shared, session: row.session_id),
-      view: tui_model.View(
-        ..model.view,
-        control_request: Some(tui_model.ControlRequest(job.awaiting(key), None)),
+      shared: shared_set.session(model.shared, row.session_id),
+      view: view_set.control_request(
+        model.view,
+        Some(tui_model.ControlRequest(job.awaiting(key), None)),
       ),
     )
 
@@ -97,10 +98,7 @@ pub fn left_inside_a_draft_moves_the_cursor_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        input: textarea.state_from_string("draft"),
-      ),
+      view: view_set.input(model.view, textarea.state_from_string("draft")),
     )
   let after = tui.update(backend.KeyPress("left"), model)
   assert after.shared.notice == model.shared.notice

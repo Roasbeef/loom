@@ -19,7 +19,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None}
 import session_view/connection_event
-import session_view/model as session_model
+import session_view/shared_set
 import session_view/transcript_line
 import tui
 import tui/buffered
@@ -102,9 +102,9 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
   let model =
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(
-        ..model.shared,
-        inbox: int.range(
+      shared: shared_set.inbox(
+        model.shared,
+        int.range(
           from: 0,
           to: already,
           with: model.shared.inbox,
@@ -141,12 +141,9 @@ pub fn the_host_reads_no_more_than_each_buffer_has_room_for_test() {
   let full =
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(
-        ..model.shared,
-        inbox: buffered.top_up(
-          model.shared.inbox,
-          up_to: tui_model.connection_batch,
-        ),
+      shared: shared_set.inbox(
+        model.shared,
+        buffered.top_up(model.shared.inbox, up_to: tui_model.connection_batch),
       ),
     )
   assert list.filter(runtime.arrivals(full), fn(arrival) {
@@ -196,14 +193,15 @@ pub fn generated_runs_reduce_as_they_did_before_admission_test() {
 fn phase_two_receive(model: tui_model.Model) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    shared: session_model.Shared(
-      ..model.shared,
-      inbox: buffered.top_up(
+    shared: model.shared
+      |> shared_set.inbox(buffered.top_up(
         model.shared.inbox,
         up_to: tui_model.connection_batch,
-      ),
-      replay_inbox: buffered.top_up(model.shared.replay_inbox, up_to: 1),
-    ),
+      ))
+      |> shared_set.replay_inbox(buffered.top_up(
+        model.shared.replay_inbox,
+        up_to: 1,
+      )),
   )
 }
 

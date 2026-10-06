@@ -331,6 +331,11 @@ for a host with no surfaces.
   which suppresses the outlook while a strand runs): the prompt-cache rules
   both hosts draw.
 
+`shared_set`: one setter per `Shared` field that three or more sites set. A
+reducer that changes one field pipes the record through the setter instead of
+writing `Shared(..shared, f: x)`: `Shared` has about ninety fields, and each
+record update cost erlc roughly 10 ms (`tui/CLAUDE.md` has the measurements).
+
 The shared step. Every function here takes and returns `model.Shared` alone
 and reads no host state; a host stores each result and applies what it
 recorded (the terminal through `tui_model.hold_shared`, `run_shared` and

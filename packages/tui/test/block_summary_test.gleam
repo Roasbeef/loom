@@ -16,10 +16,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/block_summary.{Key}
-import session_view/model as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/transcript_line
 import session_view/transcript_lines
 import tui
@@ -233,11 +233,12 @@ pub fn the_tick_times_the_live_row_test() {
   let ticked =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        summaries: labels,
-        generation_started_ms: Some(base.view.monotonic_time_ms() - 64_000),
-        streams: [
+      shared: base.shared
+        |> shared_set.summaries(labels)
+        |> shared_set.generation_started_ms(Some(
+          base.view.monotonic_time_ms() - 64_000,
+        ))
+        |> shared_set.streams([
           transcript_line.Stream(
             "main",
             "op-1",
@@ -246,8 +247,7 @@ pub fn the_tick_times_the_live_row_test() {
             ["a\nb\nc"],
             5,
           ),
-        ],
-      ),
+        ]),
     )
     |> tui.update(backend.Tick, _)
 
@@ -275,10 +275,7 @@ pub fn a_pushed_label_repaints_a_cached_row_test() {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   let before =
-    tui_model.Model(
-      ..base,
-      shared: session_model.Shared(..base.shared, records: [record]),
-    )
+    tui_model.Model(..base, shared: shared_set.records(base.shared, [record]))
     |> tui.update(backend.Tick, _)
   assert string.contains(paint(before), "Opening line.  [Ctrl+G to expand]")
 
@@ -499,7 +496,7 @@ pub fn a_label_read_back_by_exact_key_labels_the_block_test() {
     inbound.apply_channel_update(
       tui_model.Model(
         ..model,
-        shared: session_model.Shared(..model.shared, records: [record]),
+        shared: shared_set.records(model.shared, [record]),
       ),
       session_channel.Auxiliary(event),
     )
@@ -631,7 +628,7 @@ fn thought_of(records: List(protocol.EntryRecord)) -> protocol.EntryRecord {
 fn reading(records: List(protocol.EntryRecord)) -> tui_model.Model {
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
-  tui_model.Model(..base, shared: session_model.Shared(..base.shared, records:))
+  tui_model.Model(..base, shared: shared_set.records(base.shared, records))
   |> tui.update(backend.Resize(100, 20), _)
   |> tui.update(backend.MouseScroll(5, 5, True), _)
   |> tui.update(backend.MouseScroll(5, 5, True), _)

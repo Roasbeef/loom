@@ -15,10 +15,11 @@
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import session_view/model.{Shared}
+import session_view/shared_set
 import session_view/transcript_image
 import tui/job
-import tui/model.{type Model, Model, View} as tui_model
+import tui/model.{type Model, Model} as tui_model
+import tui/view_set
 import weft
 
 /// Starts opening the viewed strand's newest image, or says there is none.
@@ -49,7 +50,7 @@ pub fn open_newest(model: Model) -> Model {
         )
       Model(
         ..model,
-        view: View(..model.view, opening_image: Some(job.awaiting(key))),
+        view: view_set.opening_image(model.view, Some(job.awaiting(key))),
       )
       |> notice("opening the newest image outside the terminal")
     }
@@ -74,10 +75,10 @@ pub fn drain(model: Model) -> Model {
           let held =
             Model(
               ..model,
-              view: View(..model.view, opening_image: Some(awaiting)),
+              view: view_set.opening_image(model.view, Some(awaiting)),
             )
           let freed =
-            Model(..model, view: View(..model.view, opening_image: None))
+            Model(..model, view: view_set.opening_image(model.view, None))
           case reply {
             weft.NotYet -> held
             weft.PulledOutcome(weft.Completed(..)) ->
@@ -106,6 +107,6 @@ pub fn drain(model: Model) -> Model {
 }
 
 fn notice(model: Model, text: String) -> Model {
-  Model(..model, shared: Shared(..model.shared, notice: text))
+  Model(..model, shared: shared_set.notice(model.shared, text))
   |> tui_model.invalidate_frame
 }

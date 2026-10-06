@@ -21,8 +21,8 @@ import gleam/list
 import gleam/option.{None}
 import gleam/string
 import session_view/connection_event
-import session_view/model as session_model
 import session_view/protocol
+import session_view/shared_set
 import tui
 import tui/connection
 import tui/frame
@@ -31,6 +31,7 @@ import tui/model as tui_model
 import tui/pacing
 import tui/render
 import tui/tick
+import tui/view_set
 import tui/virtual_backend
 import tui/workspace
 import tui_test/gateway
@@ -144,7 +145,9 @@ fn streamed_shifts() -> List(Int) {
   let model =
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, transcript: [], records: []),
+      shared: base.shared
+        |> shared_set.transcript([])
+        |> shared_set.records([]),
     )
   let script =
     virtual_backend.Script(
@@ -279,11 +282,9 @@ pub fn an_unrevealed_backlog_keeps_the_loop_waking_test() {
   let catching_up =
     tui_model.Model(
       ..settled,
-      view: tui_model.View(
-        ..settled.view,
-        rendered_row_count: 40,
-        revealed_rows: 10,
-      ),
+      view: settled.view
+        |> view_set.rendered_row_count(40)
+        |> view_set.revealed_rows(10),
     )
   assert tick.viewport_pacing(catching_up) == pacing.ViewportCatchingUp
   assert tick.terminal_poll_timeout(catching_up) == 16
@@ -293,7 +294,7 @@ pub fn an_unrevealed_backlog_keeps_the_loop_waking_test() {
 fn at(model: tui_model.Model, now: Int) -> tui_model.Model {
   tui_model.Model(
     ..model,
-    view: tui_model.View(..model.view, monotonic_time_ms: fn() { now }),
+    view: view_set.monotonic_time_ms(model.view, fn() { now }),
   )
 }
 
@@ -308,11 +309,9 @@ fn build_backlog() -> tui_model.Model {
     |> fn(model) {
       tui_model.Model(
         ..model,
-        shared: session_model.Shared(
-          ..model.shared,
-          transcript: [],
-          records: [],
-        ),
+        shared: model.shared
+          |> shared_set.transcript([])
+          |> shared_set.records([]),
       )
     }
     |> fn(model) { tui.update(backend.Resize(84, 24), model) }
@@ -357,9 +356,9 @@ pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
     render.view(
       tui_model.Model(
         ..backlogged,
-        view: tui_model.View(
-          ..backlogged.view,
-          caches: tui_model.Caches(..backlogged.view.caches, frame_cache: None),
+        view: view_set.caches(
+          backlogged.view,
+          tui_model.Caches(..backlogged.view.caches, frame_cache: None),
         ),
       ),
       geometry.rect_new(0, 0, 84, 24),
@@ -369,9 +368,9 @@ pub fn a_wheel_up_during_a_backlog_moves_the_window_older_test() {
     render.view(
       tui_model.Model(
         ..scrolled,
-        view: tui_model.View(
-          ..scrolled.view,
-          caches: tui_model.Caches(..scrolled.view.caches, frame_cache: None),
+        view: view_set.caches(
+          scrolled.view,
+          tui_model.Caches(..scrolled.view.caches, frame_cache: None),
         ),
       ),
       geometry.rect_new(0, 0, 84, 24),
@@ -429,11 +428,9 @@ pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
   let idled =
     tui_model.Model(
       ..backlogged,
-      shared: session_model.Shared(
-        ..backlogged.shared,
-        strands: ended_strands,
-        submitting: None,
-      ),
+      shared: backlogged.shared
+        |> shared_set.strands(ended_strands)
+        |> shared_set.submitting(None),
     )
   let settled = tui.update(backend.Tick, idled)
   assert settled.view.revealed_rows == settled.view.rendered_row_count
@@ -443,9 +440,9 @@ pub fn the_idle_strand_snap_reveals_the_trailing_frame_test() {
     render.view(
       tui_model.Model(
         ..settled,
-        view: tui_model.View(
-          ..settled.view,
-          caches: tui_model.Caches(..settled.view.caches, frame_cache: None),
+        view: view_set.caches(
+          settled.view,
+          tui_model.Caches(..settled.view.caches, frame_cache: None),
         ),
       ),
       geometry.rect_new(0, 0, 84, 24),
@@ -463,11 +460,9 @@ pub fn a_backlog_past_the_catch_up_threshold_accelerates_test() {
     |> fn(model) {
       tui_model.Model(
         ..model,
-        shared: session_model.Shared(
-          ..model.shared,
-          transcript: [],
-          records: [],
-        ),
+        shared: model.shared
+          |> shared_set.transcript([])
+          |> shared_set.records([]),
       )
     }
     |> fn(model) { tui.update(backend.Resize(84, 60), at(model, 0)) }
@@ -514,13 +509,11 @@ pub fn a_backlog_behind_a_full_width_diff_view_answers_settled_test() {
   let behind_diff =
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        rendered_row_count: 40,
-        revealed_rows: 10,
-        diff_view: tui_model.DiffVisible,
-        width: 90,
-      ),
+      view: base.view
+        |> view_set.rendered_row_count(40)
+        |> view_set.revealed_rows(10)
+        |> view_set.diff_view(tui_model.DiffVisible)
+        |> view_set.width(90),
     )
   assert tick.viewport_pacing(behind_diff) == pacing.ViewportSettled
     as "a backlog behind a full-width diff view is not on its way to any screen the loop is painting"

@@ -22,7 +22,8 @@ import gleam/string
 import host/bootstrap as host_bootstrap
 import session_view/agent_view
 import session_view/approval
-import session_view/model.{Shared} as _
+import session_view/model as _
+import session_view/shared_set
 import simplifile
 import tui
 import tui/agent_strip
@@ -33,6 +34,7 @@ import tui/layout_memory
 import tui/model.{type Model, Model} as tui_model
 import tui/rail
 import tui/submit
+import tui/view_set
 import tui_test/stepping
 
 // ------------------------------------------------------------ the decision
@@ -104,7 +106,7 @@ fn scene() -> Model {
     ])
   Model(
     ..base,
-    shared: Shared(..base.shared, agent_rows: [
+    shared: shared_set.agent_rows(base.shared, [
       agent("main", agent_view.Working, "Waiting for 2 reviewers"),
       agent("advisor", agent_view.Working, "1 nudge pending"),
       agent(
@@ -230,7 +232,7 @@ pub fn escape_at_a_cursor_whose_strip_is_gone_does_not_interrupt_test() {
   let settled =
     Model(
       ..browsing,
-      shared: Shared(..browsing.shared, agent_rows: [
+      shared: shared_set.agent_rows(browsing.shared, [
         agent("main", agent_view.Finished, "Finished"),
       ]),
     )
@@ -263,9 +265,9 @@ pub fn an_approval_steps_the_rail_aside_without_moving_the_columns_test() {
   let opened =
     Model(
       ..before,
-      view: tui_model.View(
-        ..before.view,
-        overlay: tui_model.ApprovalInspector(approval_panel.new(review())),
+      view: view_set.overlay(
+        before.view,
+        tui_model.ApprovalInspector(approval_panel.new(review())),
       ),
     )
   assert layout.rail_columns(opened) == layout.rail_columns(before)
@@ -370,12 +372,12 @@ pub fn twins_in_the_rail_keep_the_part_that_tells_them_apart_test() {
   }
   let model =
     Model(
-      shared: Shared(..base.shared, agent_rows: [
+      shared: shared_set.agent_rows(base.shared, [
         agent("main", agent_view.Working, "Waiting for reviewers"),
         twin("48f3a1b2c3d4e5f6"),
         twin("ec14a1b2c3d4e5f6"),
       ]),
-      view: tui_model.View(..base.view, rail: Some(layout_memory.RailShown)),
+      view: view_set.rail(base.view, Some(layout_memory.RailShown)),
     )
   let text = string.join(rows_of(model, 120, 40), "\n")
   assert string.contains(text, "review-48f3")
@@ -389,7 +391,7 @@ pub fn a_single_agent_in_the_rail_is_still_drawn_and_ticked_test() {
   let one =
     Model(
       ..base,
-      shared: Shared(..base.shared, agent_rows: [
+      shared: shared_set.agent_rows(base.shared, [
         agent("main", agent_view.Working, "Working"),
       ]),
     )

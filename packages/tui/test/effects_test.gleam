@@ -18,6 +18,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import session_view/model as session_model
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/step_effect
 import session_view/transcript_line
@@ -30,6 +31,7 @@ import tui/job
 import tui/model as tui_model
 import tui/runtime
 import tui/terminal_lane
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 import tui_test/stepping
@@ -79,21 +81,23 @@ pub fn quit_with_a_channel_queues_every_close_and_cancel_test() {
   let attempt = attachment.opening(replacement, None)
   let model =
     tui_model.Model(
-      shared: session_model.Shared(
-        ..model.shared,
-        peer: session_model.Attached,
-        channel: Some(channel),
-      ),
-      view: tui_model.View(
-        ..model.view,
-        candidate: attempt,
-        control_request: Some(tui_model.ControlRequest(
-          job: job.awaiting(request),
-          result: None,
-        )),
-        reconnect: tui_model.ReconnectAttempting(job.awaiting(relaunch)),
-        activity_poll: tui_model.ActivityAsking(job.awaiting(poll), ["A"]),
-      ),
+      shared: model.shared
+        |> shared_set.peer(session_model.Attached)
+        |> shared_set.channel(Some(channel)),
+      view: model.view
+        |> view_set.candidate(attempt)
+        |> view_set.control_request(
+          Some(tui_model.ControlRequest(
+            job: job.awaiting(request),
+            result: None,
+          )),
+        )
+        |> view_set.reconnect(
+          tui_model.ReconnectAttempting(job.awaiting(relaunch)),
+        )
+        |> view_set.activity_poll(
+          tui_model.ActivityAsking(job.awaiting(poll), ["A"]),
+        ),
     )
     |> runtime.adopt_control(host)
   let assert Some(daemon) = model.view.daemon_host
@@ -132,11 +136,8 @@ pub fn a_replayed_prompt_queues_no_write_test() {
   let model = {
     let base = pushed.attached()
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, active_strand: "main"),
-      view: tui_model.View(
-        ..base.view,
-        input: text_area.state_from_string("hello"),
-      ),
+      shared: shared_set.active_strand(base.shared, "main"),
+      view: view_set.input(base.view, text_area.state_from_string("hello")),
     )
   }
 
@@ -158,7 +159,7 @@ fn drag_and_release(
   let model = {
     let base = quiet_model()
     tui_model.Model(
-      shared: session_model.Shared(..base.shared, transcript: [
+      shared: shared_set.transcript(base.shared, [
         transcript_line.Line(transcript_line.System, "alpha beta"),
         transcript_line.Line(transcript_line.System, "gamma delta"),
       ]),
@@ -185,12 +186,10 @@ fn quiet_model() -> tui_model.Model {
       )
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        transcript: [],
-        strands: [],
-        notice: "ready",
-      ),
+      shared: base.shared
+        |> shared_set.transcript([])
+        |> shared_set.strands([])
+        |> shared_set.notice("ready"),
     )
   }
 }

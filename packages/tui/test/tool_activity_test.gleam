@@ -19,8 +19,8 @@ import machine/codec as machine_codec
 import machine/operation
 import machine/strand
 import session_view/connection_event
-import session_view/model as session_model
 import session_view/protocol
+import session_view/shared_set
 import session_view/snapshot_view
 import session_view/tool_activity
 import tui
@@ -31,6 +31,7 @@ import tui/layout
 import tui/layout_memory
 import tui/model as tui_model
 import tui/render
+import tui/view_set
 import tui/workspace
 import tui_test/gateway
 
@@ -212,12 +213,10 @@ fn model() {
     tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
   tui_model.Model(
     ..base,
-    shared: session_model.Shared(
-      ..base.shared,
-      transcript: [],
-      records: [],
-      notice: "fixture",
-    ),
+    shared: base.shared
+      |> shared_set.transcript([])
+      |> shared_set.records([])
+      |> shared_set.notice("fixture"),
   )
 }
 
@@ -251,10 +250,7 @@ pub fn the_diff_panel_shows_only_successful_captured_edits_test() {
       backend.KeyPress("enter"),
       tui_model.Model(
         ..model,
-        view: tui_model.View(
-          ..model.view,
-          input: textarea.state_from_string("/diff"),
-        ),
+        view: view_set.input(model.view, textarea.state_from_string("/diff")),
       ),
     )
   let #(opened, text) = painted(opened)
@@ -291,10 +287,7 @@ fn toggle_diff(model) {
     backend.KeyPress("enter"),
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        input: textarea.state_from_string("/diff"),
-      ),
+      view: view_set.input(model.view, textarea.state_from_string("/diff")),
     ),
   )
 }
@@ -436,7 +429,7 @@ pub fn diff_toggle_restores_the_rail_choice_test() {
     let base = changes_model("-old\n+new")
     tui_model.Model(
       ..base,
-      view: tui_model.View(..base.view, rail: Some(layout_memory.RailHidden)),
+      view: view_set.rail(base.view, Some(layout_memory.RailHidden)),
     )
   }
   let #(opened, _) = base |> toggle_diff |> painted_buffer(160)
@@ -707,10 +700,7 @@ pub fn collapsing_a_long_result_keeps_its_call_visible_at_video_dimensions_test(
   let reading =
     tui_model.Model(
       ..expanded,
-      view: tui_model.View(
-        ..expanded.view,
-        scroll_offset: prefix + index - height + 1,
-      ),
+      view: view_set.scroll_offset(expanded.view, prefix + index - height + 1),
     )
   let compact = tui.update(backend.KeyPress("ctrl+g"), reading)
   let offset =

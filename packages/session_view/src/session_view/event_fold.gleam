@@ -82,6 +82,7 @@ import session_view/operator
 import session_view/outbound
 import session_view/protocol.{Strand}
 import session_view/queue_request
+import session_view/shared_set
 import session_view/stream_identity
 import session_view/surfaces
 import session_view/todo_board
@@ -151,7 +152,7 @@ pub fn apply_event(
       )
       |> session_model.invalidate_transcript
     }
-    protocol.StrandsSnapshot(strands:) -> Shared(..shared, strands:)
+    protocol.StrandsSnapshot(strands:) -> shared_set.strands(shared, strands)
     protocol.SkillsSnapshot(page:) -> {
       let previous = case page.offset {
         0 -> []
@@ -165,7 +166,7 @@ pub fn apply_event(
           )
         True -> {
           let loaded =
-            Shared(..shared, skills: list.append(previous, page.commands))
+            shared_set.skills(shared, list.append(previous, page.commands))
           case page.next {
             None -> loaded
             Some(offset) ->
@@ -198,16 +199,16 @@ pub fn apply_event(
       let shared = case model_name {
         Some(name) -> {
           let selected = select_model(shared, name)
-          Shared(..selected, notice: "model: " <> name)
+          shared_set.notice(selected, "model: " <> name)
         }
         None -> shared
       }
       case directories {
         None -> shared
         Some(value) ->
-          Shared(
-            ..shared,
-            notice: "Session directory access: " <> json.to_string(value),
+          shared_set.notice(
+            shared,
+            "Session directory access: " <> json.to_string(value),
           )
       }
     }
@@ -219,28 +220,29 @@ pub fn apply_event(
     // the cache is rebuilt; its entry-level keys carry the labels, which
     // limits the re-projection to the entries whose labels moved.
     protocol.BlockSummariesSnapshot(labels:) ->
-      Shared(
-        ..shared,
-        summaries: block_summary.receive_board(shared.summaries, labels),
-        record_cache_valid: False,
-      )
+      shared
+      |> shared_set.summaries(block_summary.receive_board(
+        shared.summaries,
+        labels,
+      ))
+      |> shared_set.record_cache_valid(False)
       |> session_model.invalidate_transcript
     protocol.BlockSummarized(subject:, text:) ->
       receive_block_summary(shared, subject, text)
     protocol.GoalSnapshot(board) -> surfaces.receive_goal(shared, board)
     protocol.ContextSnapshot(observation) ->
-      Shared(
-        ..shared,
-        context: context_view.receive(
+      shared_set.context(
+        shared,
+        context_view.receive(
           shared.context,
           session_model.queue_owner(shared),
           observation,
         ),
       )
     protocol.WorktreeSnapshot(observation) ->
-      Shared(
-        ..shared,
-        worktree: worktree_view.receive(
+      shared_set.worktree(
+        shared,
+        worktree_view.receive(
           shared.worktree,
           session_model.queue_owner(shared),
           observation,
@@ -257,10 +259,10 @@ pub fn apply_event(
         queue_request.receive(shared.queue_request, owner, namespace, document)
       {
         Ok(request) ->
-          Shared(
-            ..shared,
-            queue_request: request,
-            queue_notices: list.append(shared.queue_notices, [
+          shared
+          |> shared_set.queue_request(request)
+          |> shared_set.queue_notices(
+            list.append(shared.queue_notices, [
               queue_request.Received(owner:, namespace:, document:),
             ]),
           )
@@ -272,9 +274,9 @@ pub fn apply_event(
       // asked for it, so the panel is seeded before the notes view decides
       // whether this read is its own.
       let shared =
-        Shared(
-          ..shared,
-          todo_boards: todo_board.seed(shared.todo_boards, board),
+        shared_set.todo_boards(
+          shared,
+          todo_board.seed(shared.todo_boards, board),
         )
 
       // Whether the board is the one a notes surface shows, and so whether
@@ -327,7 +329,10 @@ pub fn apply_event(
         )
 
       let updated =
-        Shared(..shared, streams:, generation_started_ms:, notice: case kind {
+        shared
+        |> shared_set.streams(streams)
+        |> shared_set.generation_started_ms(generation_started_ms)
+        |> shared_set.notice(case kind {
           "end" -> "request finished"
           _ -> "streaming " <> kind
         })
@@ -367,21 +372,19 @@ pub fn apply_event(
       }
 
       let updated =
-        Shared(
-          ..shared,
-          submitting:,
-          strands:,
-          generation_started_ms:,
-          streams: case phase == "done" {
-            True -> transcript_lines.clear_streams(shared.streams, strand)
-            False -> shared.streams
-          },
-          tool_tails: case phase == "done" {
-            True -> clear_tails(shared.tool_tails, strand)
-            False -> shared.tool_tails
-          },
-          notice: strand <> ": " <> phase,
-        )
+        shared
+        |> shared_set.submitting(submitting)
+        |> shared_set.strands(strands)
+        |> shared_set.generation_started_ms(generation_started_ms)
+        |> shared_set.streams(case phase == "done" {
+          True -> transcript_lines.clear_streams(shared.streams, strand)
+          False -> shared.streams
+        })
+        |> shared_set.tool_tails(case phase == "done" {
+          True -> clear_tails(shared.tool_tails, strand)
+          False -> shared.tool_tails
+        })
+        |> shared_set.notice(strand <> ": " <> phase)
       let settled = settle_interrupt(updated, strand, phase)
       case phase == "done" && strand == shared.active_strand {
         True -> session_model.invalidate_transcript(settled)
@@ -403,9 +406,9 @@ pub fn apply_event(
       total_bytes:,
     ) -> {
       let updated =
-        Shared(
-          ..shared,
-          tool_tails: receive_tail(
+        shared_set.tool_tails(
+          shared,
+          receive_tail(
             shared.tool_tails,
             ToolTail(
               strand:,
@@ -445,7 +448,7 @@ pub fn apply_event(
       session_model.append_error(
         {
           let discarded = outbound.discard_own_turn(shared)
-          Shared(..discarded, submitting: None)
+          shared_set.submitting(discarded, None)
         },
         code <> ": " <> message,
       )
@@ -544,7 +547,9 @@ fn receive_block_summary(
       transcript_lines.response_recorded(shared.records, generation)
   }
   let valid = shared.record_cache_valid && !recorded
-  Shared(..shared, summaries:, record_cache_valid: valid)
+  shared
+  |> shared_set.summaries(summaries)
+  |> shared_set.record_cache_valid(valid)
   |> session_model.invalidate_transcript
 }
 
@@ -604,7 +609,10 @@ fn append_schedules(
         list.fold(rows, shared, fn(shared, row) {
           session_model.append_system(shared, schedule_line(row))
         })
-      Shared(..listed, notice: int.to_string(list.length(rows)) <> " schedules")
+      shared_set.notice(
+        listed,
+        int.to_string(list.length(rows)) <> " schedules",
+      )
     }
   }
 }
@@ -948,7 +956,7 @@ fn receive_usage(
       settled,
       transcript_lines.tokens(usage.total_tokens) <> " tokens",
     )
-  watch_cache(Shared(..updated, usage:), strand, settled)
+  watch_cache(shared_set.usage(updated, usage), strand, settled)
 }
 
 // A network push is an observation of one durable row, not a second owner of
@@ -984,16 +992,14 @@ fn receive_usage_observation(
       // context size. The ledger's sequence guard is what keeps a delayed
       // push from replacing a newer reading in the strip.
       let observed =
-        Shared(
-          ..shared,
-          cache:,
-          roster: agent_roster.observe_usage(
-            shared.roster,
-            strand,
-            operation,
-            agent_roster.context(settled),
-          ),
-        )
+        shared
+        |> shared_set.cache(cache)
+        |> shared_set.roster(agent_roster.observe_usage(
+          shared.roster,
+          strand,
+          operation,
+          agent_roster.context(settled),
+        ))
         |> settle_usage(
           strand,
           settled,
@@ -1026,7 +1032,7 @@ pub fn settle_pending_cache(
 ) -> Shared(socket, recorder, source, replay_source) {
   let #(cache, missed) =
     cache_watch.settle(shared.cache, next_seq, cache_timing(shared))
-  list.fold(missed, Shared(..shared, cache:), fn(current, found) {
+  list.fold(missed, shared_set.cache(shared, cache), fn(current, found) {
     note_cache_miss(current, found.strand, found.miss)
   })
 }
@@ -1077,7 +1083,10 @@ fn settle_usage(
       None,
     )
   }
-  Shared(..shared, generation_started_ms:, output_rate_tps:, notice:)
+  shared
+  |> shared_set.generation_started_ms(generation_started_ms)
+  |> shared_set.output_rate_tps(output_rate_tps)
+  |> shared_set.notice(notice)
 }
 
 // Folds one row into its strand's cache watch and raises any notice it
@@ -1101,7 +1110,7 @@ fn watch_cache(
       shared.stamp.now_ms,
       cache_timing(shared),
     )
-  let watched = Shared(..shared, cache:)
+  let watched = shared_set.cache(shared, cache)
   case missed {
     None -> watched
     Some(found) -> note_cache_miss(watched, found.strand, found.miss)
@@ -1116,7 +1125,8 @@ fn forget_cache(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
 ) -> Shared(socket, recorder, source, replay_source) {
-  let shared = Shared(..shared, cache: cache_watch.forget(shared.cache, strand))
+  let shared =
+    shared_set.cache(shared, cache_watch.forget(shared.cache, strand))
 
   // The footer's outlook label is the terminal's, and it describes the
   // active strand's watch alone, so only forgetting that one clears it.
@@ -1144,7 +1154,7 @@ pub fn select_model(
     True -> shared
     False -> forget_cache(shared, shared.active_strand)
   }
-  Shared(..shared, current_model: name)
+  shared_set.current_model(shared, name)
 }
 
 // Whether the instants this terminal hands the ledger are wall time: a
@@ -1186,7 +1196,10 @@ fn note_cache_miss(
     None -> shared
     Some(after_entry) ->
       Shared(
-        ..shared,
+        ..{
+          shared
+          |> shared_set.record_cache_valid(False)
+        },
         cache_notices: list.append(shared.cache_notices, [
           CacheNotice(
             strand:,
@@ -1194,7 +1207,6 @@ fn note_cache_miss(
             text: cache_watch.notice_text(miss),
           ),
         ]),
-        record_cache_valid: False,
       )
       |> session_model.invalidate_transcript
       |> session_model.invalidate_frame
@@ -1275,11 +1287,9 @@ pub fn send_prompt_to(
 ) -> Shared(socket, recorder, source, replay_source) {
   let sent = {
     let expected = expect_own_turn(shared, HeldPrompt(text))
-    Shared(
-      ..expected,
-      submitting: Some(strand),
-      notice: "prompt sent to " <> strand,
-    )
+    expected
+    |> shared_set.submitting(Some(strand))
+    |> shared_set.notice("prompt sent to " <> strand)
   }
   case shared.peer {
     Attached ->
@@ -1300,15 +1310,15 @@ pub fn send_prompt_to(
     Disconnected ->
       session_model.append_error(shared, "no conversation is attached")
     Preview ->
-      Shared(
-        ..shared,
-        transcript: list.append(shared.transcript, [
+      shared
+      |> shared_set.transcript(
+        list.append(shared.transcript, [
           Line(User, composer.transcript_text(text, shared.details_expanded)),
           Line(Assistant, "Design-preview echo received."),
         ]),
-        record_cache_valid: False,
-        notice: "prompt accepted",
       )
+      |> shared_set.record_cache_valid(False)
+      |> shared_set.notice("prompt accepted")
       |> session_model.invalidate_transcript
   }
 }
@@ -1345,10 +1355,10 @@ pub fn expect_own_turn(
 ) -> Shared(socket, recorder, source, replay_source) {
   case shared.peer, session_model.active_strand_live(shared) {
     Attached, True ->
-      Shared(..shared, awaiting_outcome: Some(submission))
+      shared_set.awaiting_outcome(shared, Some(submission))
       |> session_model.invalidate_transcript
     Replaying, True ->
-      Shared(..shared, queued: in_commit_order(shared.queued, submission))
+      shared_set.queued(shared, in_commit_order(shared.queued, submission))
       |> session_model.invalidate_transcript
     Attached, False | Replaying, False | Preview, _ | Disconnected, _ -> shared
   }
@@ -1368,11 +1378,9 @@ pub fn settle_own_turn(
 ) -> Shared(socket, recorder, source, replay_source) {
   case shared.awaiting_outcome {
     Some(submission) ->
-      Shared(
-        ..shared,
-        queued: in_commit_order(shared.queued, submission),
-        awaiting_outcome: None,
-      )
+      shared
+      |> shared_set.queued(in_commit_order(shared.queued, submission))
+      |> shared_set.awaiting_outcome(None)
     None -> shared
   }
 }
@@ -1412,7 +1420,9 @@ pub fn abandon_interjections(
     Some(HeldPrompt(..)) | None -> shared.awaiting_outcome
   }
 
-  Shared(..shared, queued: held, awaiting_outcome: awaiting)
+  shared
+  |> shared_set.queued(held)
+  |> shared_set.awaiting_outcome(awaiting)
   |> session_model.invalidate_transcript
 }
 
@@ -1482,9 +1492,11 @@ fn settle_interrupt(
     True, Some(Interrupt(strand: target, pending:, ..)) ->
       case target == strand, pending {
         True, Some(text) ->
-          send_prompt_to(Shared(..shared, interrupt: None), target, text)
+          send_prompt_to(shared_set.interrupt(shared, None), target, text)
         True, None ->
-          Shared(..shared, interrupt: None, notice: target <> ": interrupted")
+          shared
+          |> shared_set.interrupt(None)
+          |> shared_set.notice(target <> ": interrupted")
         False, _ -> shared
       }
     _, _ -> shared
@@ -1507,19 +1519,17 @@ fn settle_interrupt(
 pub fn leave_session(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(
-    ..shared,
-    nudges: None,
-    nudges_refresh: worktree_view.Settled,
-    nudges_awaiting: None,
-    nudges_request: None,
-    summaries: block_summary.new(),
-    goal: None,
-    goal_refresh: worktree_view.Settled,
-    goal_awaiting: None,
-    goal_request: None,
-    goal_report: HoldGoalReport,
-  )
+  shared
+  |> shared_set.nudges(None)
+  |> shared_set.nudges_refresh(worktree_view.Settled)
+  |> shared_set.nudges_awaiting(None)
+  |> shared_set.nudges_request(None)
+  |> shared_set.summaries(block_summary.new())
+  |> shared_set.goal(None)
+  |> shared_set.goal_refresh(worktree_view.Settled)
+  |> shared_set.goal_awaiting(None)
+  |> shared_set.goal_request(None)
+  |> shared_set.goal_report(HoldGoalReport)
 }
 
 /// Moves the session state from one session and strand to another: parks

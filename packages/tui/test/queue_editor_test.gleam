@@ -23,6 +23,7 @@ import session_view/protocol
 import session_view/queue_request
 import session_view/queued_input
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import tui
@@ -35,6 +36,7 @@ import tui/recording
 import tui/render
 import tui/runtime
 import tui/submit
+import tui/view_set
 import tui/workspace
 import tui_test/pushed
 
@@ -127,12 +129,12 @@ fn ready_as(rows, expected: snapshot.Expected, connection_id: String) {
     let base =
       tui.new_model(connection.new_inbox(), workspace.Context("/work", None))
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Replaying,
-        channel: Some(channel),
-        attachments: [composer.Attachment("retained pasted context", 10)],
-      ),
+      shared: base.shared
+        |> shared_set.peer(session_model.Replaying)
+        |> shared_set.channel(Some(channel))
+        |> shared_set.attachments([
+          composer.Attachment("retained pasted context", 10),
+        ]),
       view: tui_model.View(
         ..base.view,
         // A socketless replay lane keeps the frozen transport clock its
@@ -291,10 +293,7 @@ pub fn queue_inspector_preserves_composer_and_attachments_test() {
     key(
       tui_model.Model(
         ..model,
-        view: tui_model.View(
-          ..model.view,
-          input: textarea.state_from_string("/queue"),
-        ),
+        view: view_set.input(model.view, textarea.state_from_string("/queue")),
       ),
       "enter",
     )
@@ -405,9 +404,9 @@ pub fn two_row_queue_title_pages_beside_a_multiline_composer_test() {
   let compact =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        input: textarea.state_from_string("ordinary draft\nsecond draft line"),
+      view: view_set.input(
+        model.view,
+        textarea.state_from_string("ordinary draft\nsecond draft line"),
       ),
     )
     |> tui.update(backend.Resize(40, 12), _)
@@ -436,7 +435,7 @@ pub fn two_row_queue_title_pages_beside_an_active_status_test() {
   let compact =
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(..model.shared, submitting: Some("main")),
+      shared: shared_set.submitting(model.shared, Some("main")),
     )
     |> tui.update(backend.Resize(40, 12), _)
     |> submit.open_queue
@@ -657,12 +656,10 @@ pub fn uncertain_save_locks_text_and_cannot_reissue_until_reconciled_test() {
   let retry =
     tui_model.Model(
       ..locked,
-      shared: session_model.Shared(
-        ..locked.shared,
-        channel: reconnected.shared.channel,
-        captured: reconnected.shared.captured,
-        peer: session_model.Replaying,
-      ),
+      shared: locked.shared
+        |> shared_set.channel(reconnected.shared.channel)
+        |> shared_set.captured(reconnected.shared.captured)
+        |> shared_set.peer(session_model.Replaying),
     )
   let fetching = key(retry, "ctrl+r")
   let read = issued(reads, "queued_input")
@@ -684,9 +681,9 @@ pub fn attachment_change_cannot_save_an_old_editor_test() {
   let changed =
     tui_model.Model(
       ..model,
-      shared: session_model.Shared(
-        ..model.shared,
-        captured: Some(#(snapshot.Captured(..cut, attachment:), view)),
+      shared: shared_set.captured(
+        model.shared,
+        Some(#(snapshot.Captured(..cut, attachment:), view)),
       ),
     )
   let saved = key(changed, "ctrl+s")
@@ -706,12 +703,10 @@ pub fn selecting_another_item_does_not_discard_an_uncertain_draft_test() {
   let switched =
     tui_model.Model(
       ..uncertain,
-      shared: session_model.Shared(
-        ..uncertain.shared,
-        channel: reconnected.shared.channel,
-        captured: reconnected.shared.captured,
-        peer: session_model.Replaying,
-      ),
+      shared: uncertain.shared
+        |> shared_set.channel(reconnected.shared.channel)
+        |> shared_set.captured(reconnected.shared.captured)
+        |> shared_set.peer(session_model.Replaying),
     )
     |> key("esc")
     |> key("down")
@@ -799,12 +794,10 @@ pub fn retained_draft_cannot_refresh_or_save_into_another_queue_namespace_test()
     let switched =
       tui_model.Model(
         ..edited,
-        shared: session_model.Shared(
-          ..edited.shared,
-          channel: other.shared.channel,
-          captured: other.shared.captured,
-          peer: session_model.Replaying,
-        ),
+        shared: edited.shared
+          |> shared_set.channel(other.shared.channel)
+          |> shared_set.captured(other.shared.captured)
+          |> shared_set.peer(session_model.Replaying),
       )
     let refreshed = key(switched, "ctrl+r")
     assert requests(events, []) == []
@@ -836,9 +829,9 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
   let interrupted =
     tui_model.Model(
       ..first,
-      shared: session_model.Shared(
-        ..first.shared,
-        interrupt: Some(session_model.Interrupt("main", None, None)),
+      shared: shared_set.interrupt(
+        first.shared,
+        Some(session_model.Interrupt("main", None, None)),
       ),
     )
   let interrupted = receive(interrupted, pushed.notice("main", 10))
@@ -874,10 +867,7 @@ pub fn an_idle_held_queue_survives_interrupt_retirement_on_both_terminals_test()
     key(
       tui_model.Model(
         ..halted,
-        shared: session_model.Shared(
-          ..halted.shared,
-          peer: session_model.Attached,
-        ),
+        shared: shared_set.peer(halted.shared, session_model.Attached),
       ),
       "enter",
     )

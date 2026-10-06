@@ -43,6 +43,7 @@ import tui/model as tui_model
 import tui/runtime
 import tui/session_selector
 import tui/submit
+import tui/view_set
 import tui/workspace
 import tui_test/stepping
 import weft
@@ -137,14 +138,14 @@ fn picker(options: bootstrap.Options) -> tui_model.Model {
     let base = model()
     tui_model.Model(
       ..base,
-      view: tui_model.View(
-        ..base.view,
-        local_options: Some(options),
-        overlay: tui_model.DaemonSelector(session_selector.new(
-          protocol.Page(0, [], None),
-          "",
-        )),
-      ),
+      view: base.view
+        |> view_set.local_options(Some(options))
+        |> view_set.overlay(
+          tui_model.DaemonSelector(session_selector.new(
+            protocol.Page(0, [], None),
+            "",
+          )),
+        ),
     )
   }
   |> runtime.adopt_control(host_on(owner))

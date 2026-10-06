@@ -14,10 +14,10 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/connection_event
-import session_view/model as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/session_channel
+import session_view/shared_set
 import session_view/surfaces
 import tui
 import tui/connection
@@ -252,7 +252,7 @@ pub fn a_seed_for_a_known_board_is_dropped_test() {
   let waiting =
     tui_model.Model(
       ..known,
-      shared: session_model.Shared(..known.shared, todo_seed: Some("main")),
+      shared: shared_set.todo_seed(known.shared, Some("main")),
     )
   assert surfaces.service_todo_seed(waiting.shared).todo_seed == None
 }
@@ -262,11 +262,9 @@ pub fn the_seed_waits_behind_an_operator_notes_read_test() {
     let fresh = base()
     tui_model.Model(
       ..fresh,
-      shared: session_model.Shared(
-        ..fresh.shared,
-        todo_seed: Some("main"),
-        notes_requested: Some("main"),
-      ),
+      shared: fresh.shared
+        |> shared_set.todo_seed(Some("main"))
+        |> shared_set.notes_requested(Some("main")),
     )
   }
   assert surfaces.service_todo_seed(waiting.shared) == waiting.shared

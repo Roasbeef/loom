@@ -93,6 +93,7 @@ import session_view/model.{
 import session_view/msg as session_msg
 import session_view/queue_request
 import session_view/session_channel
+import session_view/shared_set
 import session_view/step as session_step
 import session_view/text_hygiene
 import session_view/transcript_line.{
@@ -145,6 +146,7 @@ import tui/update
 import tui/update/download
 import tui/update/options as update_options
 import tui/view_link
+import tui/view_set
 import tui/virtual_backend
 import tui/workspace
 
@@ -533,7 +535,7 @@ pub fn new_model(
     calendar.local_offset()
     |> duration.to_seconds_and_nanoseconds
     |> fn(pair) { pair.0 / 60 }
-  Model(..model, shared: Shared(..model.shared, clock_offset: Some(offset)))
+  Model(..model, shared: shared_set.clock_offset(model.shared, Some(offset)))
 }
 
 /// Creates a presentation state whose timing is controlled by its caller.
@@ -786,25 +788,21 @@ fn interactive(launch: Launch, record: String) -> Nil {
       let local =
         Model(
           ..base,
-          view: tui_model.View(
-            ..base.view,
-            local_options: Some(options),
-            workspace: case options.workspace {
+          view: base.view
+            |> view_set.local_options(Some(options))
+            |> view_set.workspace(case options.workspace {
               "" -> base.view.workspace
               path -> workspace.discover_from(path)
-            },
-          ),
+            }),
         )
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
         Error(reason) ->
           tui_model.append_error(
             Model(
               ..local,
-              shared: Shared(
-                ..local.shared,
-                peer: Disconnected,
-                notice: "daemon startup failed",
-              ),
+              shared: local.shared
+                |> shared_set.peer(Disconnected)
+                |> shared_set.notice("daemon startup failed"),
             ),
             reason,
           )
@@ -820,7 +818,7 @@ fn interactive(launch: Launch, record: String) -> Nil {
     }
     Invalid(reason) ->
       tui_model.append_error(
-        Model(..base, shared: Shared(..base.shared, notice: "invalid launch")),
+        Model(..base, shared: shared_set.notice(base.shared, "invalid launch")),
         reason,
       )
     Remote(address, session, token) ->
@@ -955,14 +953,12 @@ fn open_recording(model: Model, record: String) -> Model {
       case recording.start(path) {
         Ok(recorder) ->
           Model(
-            shared: Shared(
-              ..model.shared,
-              recorder: Some(recorder),
-              notice: "recording",
-            ),
-            view: tui_model.View(
-              ..model.view,
-              candidate: attachment.with_trace(
+            shared: model.shared
+              |> shared_set.recorder(Some(recorder))
+              |> shared_set.notice("recording"),
+            view: view_set.candidate(
+              model.view,
+              attachment.with_trace(
                 model.view.candidate,
                 recording.trace(
                   Some(recorder),
@@ -2035,7 +2031,7 @@ pub fn connect_remote(
 ) -> Model {
   let base =
     live_base(
-      Model(..base, shared: Shared(..base.shared, inbox: buffered.new(inbox))),
+      Model(..base, shared: shared_set.inbox(base.shared, buffered.new(inbox))),
     )
   let connected = {
     use address <- result.try(daemon_selection.control_address(address))
@@ -2065,22 +2061,23 @@ pub fn connect_remote(
 fn live_base(base: Model) -> Model {
   Model(
     ..base,
-    shared: Shared(
-      ..base.shared,
-      peer: Disconnected,
-      session: "",
-      models: [],
-      skills: [],
-      strands: [],
-      records: [],
-      streams: [],
-      tool_tails: [],
-      transcript: [],
-      current_model: "unconfigured",
-      reviewer_rows: [],
-      advisor_history: advisor_history.Board(items: [], unloaded: None),
-      notice: "select a saved session or create one",
-    ),
+    shared: base.shared
+      |> shared_set.peer(Disconnected)
+      |> shared_set.session("")
+      |> shared_set.models([])
+      |> shared_set.skills([])
+      |> shared_set.strands([])
+      |> shared_set.records([])
+      |> shared_set.streams([])
+      |> shared_set.tool_tails([])
+      |> shared_set.transcript([])
+      |> shared_set.current_model("unconfigured")
+      |> shared_set.reviewer_rows([])
+      |> shared_set.advisor_history(advisor_history.Board(
+        items: [],
+        unloaded: None,
+      ))
+      |> shared_set.notice("select a saved session or create one"),
   )
 }
 
@@ -2111,7 +2108,7 @@ fn attach_daemon(
       let model =
         Model(
           ..model,
-          shared: Shared(..model.shared, transcript: model.shared.build_notice),
+          shared: shared_set.transcript(model.shared, model.shared.build_notice),
         )
 
       // Flushed for the reason `connect_remote` gives: the first request
@@ -2240,14 +2237,14 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
     msg.Resized(width:, height:) ->
       Model(
         ..model,
-        view: tui_model.View(
-          ..model.view,
-          width:,
-          height:,
-          selection: None,
-          selection_gutters: [],
-          caches: tui_model.Caches(..model.view.caches, selection_frame: None),
-        ),
+        view: model.view
+          |> view_set.width(width)
+          |> view_set.height(height)
+          |> view_set.selection(None)
+          |> view_set.selection_gutters([])
+          |> view_set.caches(
+            tui_model.Caches(..model.view.caches, selection_frame: None),
+          ),
       )
       |> image_plan.resized
       |> submit.hand_off_sheet
@@ -2358,10 +2355,7 @@ fn snap_viewport_for(model: Model, event: msg.Event) -> Model {
     pacing.AddressesTranscript ->
       Model(
         ..model,
-        view: tui_model.View(
-          ..model.view,
-          revealed_rows: model.view.rendered_row_count,
-        ),
+        view: view_set.revealed_rows(model.view, model.view.rendered_row_count),
       )
   }
 }

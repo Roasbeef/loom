@@ -46,6 +46,7 @@ import session_view/model.{
 import session_view/notice_words
 import session_view/queue_request
 import session_view/session_channel
+import session_view/shared_set
 import session_view/worktree_view
 
 /// Sends one encoded command frame. With a session channel the channel
@@ -128,14 +129,11 @@ pub fn apply_submission(
       case has_unsent(shared) {
         True ->
           waiting_notice(
-            Shared(
-              ..shared,
-              pending_submission: Some(option.unwrap(
-                shared.pending_submission,
-                OverlaySubmission,
-              )),
-              submitting: None,
-            ),
+            shared
+            |> shared_set.pending_submission(
+              Some(option.unwrap(shared.pending_submission, OverlaySubmission)),
+            )
+            |> shared_set.submitting(None),
           )
         False -> shared
       }
@@ -146,15 +144,18 @@ pub fn apply_submission(
     session_channel.DefinitelyNotSent(reason) -> {
       let shared = case has_unsent(shared) {
         True -> shared
-        False -> Shared(..shared, pending_submission: None, submitting: None)
+        False ->
+          shared
+          |> shared_set.pending_submission(None)
+          |> shared_set.submitting(None)
       }
 
       // The frame never reached the wire, so no entry answers it.
       let discarded = discard_own_turn(shared)
-      Shared(
-        ..discarded,
-        queue_request: queue_request.new(),
-        queue_notices: list.append(discarded.queue_notices, [
+      discarded
+      |> shared_set.queue_request(queue_request.new())
+      |> shared_set.queue_notices(
+        list.append(discarded.queue_notices, [
           queue_request.Refused(reason),
         ]),
       )
@@ -192,17 +193,17 @@ fn record_sent(
 
   let shared = case command {
     "queued_input" | "edit_queued_input" ->
-      Shared(
-        ..shared,
-        queue_request: queue_request.State(
+      shared_set.queue_request(
+        shared,
+        queue_request.State(
           ..shared.queue_request,
           request_id: Some(request_id),
         ),
       )
     "context" ->
-      Shared(..shared, context: context_view.sent(shared.context, request_id))
-    "live_jobs" -> Shared(..shared, jobs_request: Some(request_id))
-    "advisor_pending" -> Shared(..shared, nudges_request: Some(request_id))
+      shared_set.context(shared, context_view.sent(shared.context, request_id))
+    "live_jobs" -> shared_set.jobs_request(shared, Some(request_id))
+    "advisor_pending" -> shared_set.nudges_request(shared, Some(request_id))
 
     // Every goal command is answered with a board, so a mutation owns
     // the same slot its read does: the server renders the fresh panel
@@ -213,16 +214,14 @@ fn record_sent(
     | "goal_clear"
     | "goal_pause"
     | "goal_resume" ->
-      Shared(
-        ..shared,
-        goal_request: Some(request_id),
-        goal_report:,
-        goal_awaiting: Some(session_model.queue_owner(shared)),
-      )
+      shared
+      |> shared_set.goal_request(Some(request_id))
+      |> shared_set.goal_report(goal_report)
+      |> shared_set.goal_awaiting(Some(session_model.queue_owner(shared)))
     "worktree_diff" ->
-      Shared(
-        ..shared,
-        worktree: worktree_view.sent(shared.worktree, request_id),
+      shared_set.worktree(
+        shared,
+        worktree_view.sent(shared.worktree, request_id),
       )
     _ -> shared
   }
@@ -236,22 +235,24 @@ fn record_sent(
     _, _ -> shared.submitting
   }
   Shared(
-    ..shared,
-    attachments:,
-    drafts_sent:,
-    submitting:,
-    pending_submission: None,
-    next_id: shared.next_id + 1,
-    notice: case command {
-      // Automatic observation must not erase a user's command outcome.
-      "context" -> shared.notice
-      "goal_get" ->
-        case shared.goal_report {
-          HoldGoalReport -> shared.notice
-          ReportGoal | ConfirmGoal(..) -> notice_words.sent(command)
-        }
-      _ -> notice_words.sent(command)
+    ..{
+      shared
+      |> shared_set.attachments(attachments)
+      |> shared_set.submitting(submitting)
+      |> shared_set.pending_submission(None)
+      |> shared_set.next_id(shared.next_id + 1)
+      |> shared_set.notice(case command {
+        // Automatic observation must not erase a user's command outcome.
+        "context" -> shared.notice
+        "goal_get" ->
+          case shared.goal_report {
+            HoldGoalReport -> shared.notice
+            ReportGoal | ConfirmGoal(..) -> notice_words.sent(command)
+          }
+        _ -> notice_words.sent(command)
+      })
     },
+    drafts_sent:,
   )
   |> session_model.invalidate_frame
 }
@@ -276,7 +277,7 @@ fn has_unsent(shared: Shared(socket, recorder, source, replay_source)) -> Bool {
 pub fn waiting_notice(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
-  Shared(..shared, notice: "Waiting to send · draft locked · Esc cancels")
+  shared_set.notice(shared, "Waiting to send · draft locked · Esc cancels")
 }
 
 /// The daemon refused it, or it never reached the wire. No entry is coming,
@@ -293,7 +294,7 @@ pub fn discard_own_turn(
 ) -> Shared(socket, recorder, source, replay_source) {
   case shared.awaiting_outcome {
     Some(_) ->
-      Shared(..shared, awaiting_outcome: None)
+      shared_set.awaiting_outcome(shared, None)
       |> session_model.invalidate_transcript
     None -> shared
   }

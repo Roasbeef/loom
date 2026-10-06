@@ -24,6 +24,7 @@ import session_view/attempt
 import session_view/connection_event
 import session_view/model as session_model
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/step_effect
 import simplifile
@@ -39,6 +40,7 @@ import tui/model as tui_model
 import tui/recording
 import tui/runtime
 import tui/terminal_lane
+import tui/view_set
 import tui/virtual_backend
 import tui/workspace
 import tui_test/pushed
@@ -149,10 +151,7 @@ fn playing_the_worker(
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(key, trace),
-      ),
+      view: view_set.candidate(model.view, attachment.opening(key, trace)),
     )
     |> runtime.hold(job.AttachArrived(key, job.Published(prepared_on(frames))))
   #(model, key)
@@ -191,12 +190,9 @@ pub fn a_failing_replacement_keeps_its_notes_and_drops_its_writes_test() {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        candidate: attachment.opening(
-          key,
-          recording.trace(Some(recorder), attempt.Id(2)),
-        ),
+      view: view_set.candidate(
+        model.view,
+        attachment.opening(key, recording.trace(Some(recorder), attempt.Id(2))),
       ),
     )
     |> runtime.hold(job.AttachArrived(key, job.Published(prepared_on(frames))))
@@ -287,11 +283,9 @@ pub fn replaying_a_recording_queues_no_recording_effect_test() {
       )
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Replaying,
-        session: "replay",
-      ),
+      shared: base.shared
+        |> shared_set.peer(session_model.Replaying)
+        |> shared_set.session("replay"),
     )
   }
   let steps = recording.to_steps(moments)
@@ -336,18 +330,14 @@ fn scripted_session(path: String) -> String {
     let base =
       tui.new_model(inbox, workspace.Context(path: "/w/demo", branch: None))
     tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        recorder: Some(recorder),
-        peer: session_model.Attached,
-        channel: Some(channel),
-        session: "A",
-      ),
-      view: tui_model.View(
-        ..base.view,
-        next_attempt: 2,
-        transport_time_ms: fn() { 0 },
-      ),
+      shared: base.shared
+        |> shared_set.recorder(Some(recorder))
+        |> shared_set.peer(session_model.Attached)
+        |> shared_set.channel(Some(channel))
+        |> shared_set.session("A"),
+      view: base.view
+        |> view_set.next_attempt(2)
+        |> view_set.transport_time_ms(fn() { 0 }),
     )
   }
 
@@ -382,20 +372,18 @@ fn scripted_session(path: String) -> String {
   let model =
     tui_model.Model(
       ..model,
-      view: tui_model.View(
-        ..model.view,
-        next_attempt: 3,
-        running: job_runner.start_attach(
+      view: model.view
+        |> view_set.next_attempt(3)
+        |> view_set.running(job_runner.start_attach(
           model.view.running,
           key,
           fn() { Error("no route to the selected session") },
           5000,
-        ),
-        candidate: attachment.opening(
+        ))
+        |> view_set.candidate(attachment.opening(
           key,
           recording.trace(Some(recorder), attempt.Id(2)),
-        ),
-      ),
+        )),
     )
   let model = tick_until_settled(model)
   let _ = tui.update(backend.KeyPress("ctrl+c"), model)
@@ -430,13 +418,11 @@ fn captured_session(recorder: recording.Recorder) {
           workspace.Context(path: "/w/demo", branch: None),
         )
       tui_model.Model(
-        shared: session_model.Shared(
-          ..base.shared,
-          recorder: Some(recorder),
-          peer: session_model.Attached,
-          session: "A",
-        ),
-        view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
+        shared: base.shared
+          |> shared_set.recorder(Some(recorder))
+          |> shared_set.peer(session_model.Attached)
+          |> shared_set.session("A"),
+        view: view_set.transport_time_ms(base.view, fn() { 0 }),
       )
     }
     |> tui_model.hold_channel(channel)

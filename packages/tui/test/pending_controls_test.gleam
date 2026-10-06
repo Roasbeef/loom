@@ -12,6 +12,7 @@ import machine/operation
 import machine/strand
 import session_view/model as session_model
 import session_view/session_channel
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript_line
@@ -106,9 +107,9 @@ pub fn a_successor_cut_retires_the_old_interrupt_without_an_idle_event_test() {
   let stopped =
     tui_model.Model(
       ..before,
-      shared: session_model.Shared(
-        ..before.shared,
-        interrupt: Some(session_model.Interrupt(
+      shared: shared_set.interrupt(
+        before.shared,
+        Some(session_model.Interrupt(
           "main",
           Some(ids.op_id_to_string(first)),
           None,
@@ -128,9 +129,9 @@ pub fn a_credited_idle_cut_retires_the_interrupt_test() {
     let base = pushed.attached()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(
-        ..base.shared,
-        interrupt: Some(session_model.Interrupt("main", Some("previous"), None)),
+      shared: shared_set.interrupt(
+        base.shared,
+        Some(session_model.Interrupt("main", Some("previous"), None)),
       ),
     )
   }
@@ -144,7 +145,7 @@ pub fn host_queue_identity_survives_equal_text_and_clears_after_drain_test() {
     let base = pushed.attached()
     tui_model.Model(
       ..base,
-      shared: session_model.Shared(..base.shared, queued: [
+      shared: shared_set.queued(base.shared, [
         transcript_line.HeldPrompt("obsolete local guess"),
       ]),
     )
