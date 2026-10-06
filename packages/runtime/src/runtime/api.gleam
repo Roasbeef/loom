@@ -2761,6 +2761,83 @@ pub fn delete_reserved_prefix(
   }
 }
 
+/// One edit in a guarded reserved-fact transaction: replace a cell with the
+/// value a harness component built from what it read, or remove a cell it
+/// read.
+///
+/// Both forms carry the sequence their caller observed, so the transaction
+/// that applies them proves nothing moved between the read and the write.
+pub type ReservedFactEdit {
+  /// Replace one reserved cell, guarded by `change.expected`.
+  ReservedFactSet(change: ReservedFactChange)
+
+  /// Remove one reserved cell that was observed at `expected`.
+  ReservedFactRemove(key: String, expected: Seq)
+}
+
+/// Applies several reserved-fact edits in one transaction, each guarded by
+/// the sequence its caller observed.
+///
+/// This is the door for a harness component that retires part of what it
+/// remembered: the replacement of one cell and the removal of others land
+/// together or not at all, and a cell that moved after it was read loses the
+/// whole transaction as `RaceLost` rather than being overwritten. Nothing is
+/// retried: the caller's read was a question put to a person, and a changed
+/// answer needs a new question. Every key must be reserved, as for
+/// `put_reserved_fact`, so this is never a general write.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.edit_reserved_facts(runtime, [ReservedFactSet(change)])
+/// ```
+///
+pub fn edit_reserved_facts(
+  runtime: Runtime,
+  edits: List(ReservedFactEdit),
+) -> Result(Nil, ApiError) {
+  let keys =
+    list.map(edits, fn(edit) {
+      case edit {
+        ReservedFactSet(change:) -> change.key
+        ReservedFactRemove(key:, ..) -> key
+      }
+    })
+  use <- bool.guard(edits == [], Ok(Nil))
+  use <- bool.lazy_guard(
+    list.any(keys, fn(key) { !reserved_fact_key(key) }),
+    fn() { Error(UnreservedFactKey(key: string.join(keys, ","))) },
+  )
+  let plan_tx =
+    tx.Tx(
+      writes: list.map(edits, fn(edit) {
+        case edit {
+          ReservedFactSet(change:) ->
+            tx.SetRegister(
+              register.FactCustom,
+              change.key,
+              register.value(change.value),
+            )
+          ReservedFactRemove(key:, ..) ->
+            tx.DeleteRegister(ns: register.FactCustom, key:)
+        }
+      }),
+      expected: list.map(edits, fn(edit) {
+        case edit {
+          ReservedFactSet(change:) ->
+            tx.Expect(register.FactCustom, change.key, change.expected)
+          ReservedFactRemove(key:, expected:) ->
+            tx.Expect(register.FactCustom, key, Some(expected))
+        }
+      }),
+    )
+  case writer.commit(writer_subject(runtime), plan_tx) {
+    Ok(_) -> Ok(Nil)
+    Error(writer.Underlying(tx.StaleExpectation(..))) -> Error(RaceLost)
+    Error(error) -> Error(commit_failure(error))
+  }
+}
+
 /// Lists `fact.custom` cells under one reserved prefix — the harness-only
 /// read path for a namespace `facts` filters out.
 ///
