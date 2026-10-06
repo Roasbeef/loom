@@ -97,6 +97,7 @@ import tools/lsp as lsp_tool
 import tools/remember
 import tools/schedule as schedule_tool
 import tools/tool.{type Registry, type Tool}
+import tools/working_directory
 
 /// Where a registered tool came from.
 ///
@@ -535,5 +536,36 @@ fn first_taken(
       Ok(first) -> Ok(Collision(name:, first:, second: origin))
       Error(Nil) -> Error(Nil)
     }
+  })
+}
+
+/// Adds persistent shell directories to the built-in contribution only.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // contributions.with_directory(builtins, jobs, directory)
+/// ```
+pub fn with_directory(
+  builtins: List(Contribution),
+  jobs: job_tool.Jobs,
+  directory: working_directory.Door,
+) -> List(Contribution) {
+  list.map(builtins, fn(contribution) {
+    Contribution(
+      ..contribution,
+      tools: list.append(
+        list.map(contribution.tools, fn(offered) {
+          case offered.name {
+            "bash" -> {
+              let selected = bash.tool_with_directory(jobs, directory)
+              tool.Tool(..offered, schema: selected.schema, run: selected.run)
+            }
+            _ -> offered
+          }
+        }),
+        [working_directory.tool(directory)],
+      ),
+    )
   })
 }

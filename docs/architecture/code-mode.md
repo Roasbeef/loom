@@ -1677,3 +1677,18 @@ contracts these packages implement (the framing, `cap_call` and
 channels share them. `packages/codemode/CLAUDE.md` and
 `packages/cap/CLAUDE.md` are denser than this document about their own
 packages.
+
+## Directory defaults and finite LSP scope
+
+The production host wraps `proc.run` with the strand's persistent shell
+directory. `proc.in_dir` resolves an override against that default; file,
+search and LSP capabilities retain workspace-relative paths. The wrapper
+checks canonical targets against captured native-directory authority and
+keeps the workspace and execution policy unchanged.
+
+`lsp_sql.plan` infers the configured server and nearest marked root from the
+explicit files. Every file must share that owner. An explicit `Plan` remains
+an assertion, and scope errors name the actual configured server/root beside
+the requested pair. SQL's file columns are named `path`; query documentation
+carries the schema. On-demand `cap://` function docs retain examples while the
+cached type surface keeps its existing size boundary.

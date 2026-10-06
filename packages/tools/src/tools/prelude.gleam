@@ -31,22 +31,22 @@
 ////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
 ////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
 ////   9d69171624d282c2cf4dfea2f07a725d38938764a864d02577e47b291ab7c7f4  packages/cap/src/cap/lsp.gleam
-////   c14dc2ff4a7dcb5f5a5d6a19f43988fb101655d8c61b030b2df11bebc4adbbe8  packages/cap/src/cap/lsp_sql.gleam
+////   92d8ef8e146f4085e17964c285334ca8085457c382228876d52691e5be23d3f3  packages/cap/src/cap/lsp_sql.gleam
 ////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
 ////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
 ////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
 ////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
 ////   65722a205812d78ae90cfb0f93e804bb2d3da1be02500c88f4607d824964c320  packages/cap/src/cap/proc.gleam
-////   007692391de90b5df269341bf5f6d6393de56c6a95ad2d7cbc4159491f42a976  packages/cap/src/cap/report.gleam
+////   102f12585b03c0a8f50790e891d3420d3b04decb444aaf5bef82ccf802de7e1e  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   3156b1ffaca196b1fec58975df71e52158b8ee298b2f1b36a4cbe9df72de3f64  packages/cap/src/cap/schedule.gleam
 ////   df1e81353fbcfef3ec434f48869e35070f1ab79d0cc1354f922fd46ccc652a00  packages/cap/src/cap/search.gleam
 ////   982b0d1630132ae6c19e3308d16a5cbe92917715a6fbc696954c858da4f845a3  packages/cap/src/cap/strand.gleam
 ////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
-////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
+////   13e21c346eea7292f312ec82b6fb42a6b86158b9211ec18f4d574186313f7f0d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): df0f6850afe0b3e6c2094aeb8e8e6400f494016db3b9b65520df7ed6103642a8
+//// Body digest (every line after the marker): fa88db34d1027cf1f1ecd6d3bd24b06bd715dbf1bc93b3c862a7f5b78a151c9e
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -104,6 +104,14 @@ pub fn call(Address(a, b), fn(Reply(c)) -> b, timeout: Int) -> Result(c, ActorEr
 /// Continue with a (possibly updated) state — the usual handler return.
 pub fn continue(a) -> Next(a)
 /// A one-line rendering of an `ActorError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert actor.error_text(actor.NoReply) == \"no reply\"
+///  ```
+///
+///
 pub fn error_text(ActorError) -> String
 /// Reads the actor's current state. Ordered after any messages already
 /// admitted from this process.
@@ -201,14 +209,47 @@ pub const max_idle_within_ms: Int
 /// The returned value is non-generic because its closure decodes and
 /// delivers the same private `message` type. This permits a heterogeneous
 /// endpoint list without exposing a raw BEAM subject.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // execution.endpoint(\"counter\", fn(value) {
+///  //   report.as_int(value) |> result.replace_error(\"expected integer\")
+///  // }, fn(n) {
+///  //   actor.send(counter, n)
+///  //   Ok(Nil)
+///  // })
+///  ```
+///
 pub fn endpoint(name: String, decode: fn(report.Value) -> Result(a, String), deliver: fn(a) -> Result(Nil, String)) -> Result(Endpoint, EndpointError)
 /// Starts reading at the beginning of the input journal.
+///
+///  ## Examples
+///
+///  ```gleam
+///  execution.first_input()
+///  ```
+///
 pub fn first_input() -> InputCursor
 /// Restores a nonnegative cursor from a previously observed input
 /// sequence.
+///
+///  ## Examples
+///
+///  ```gleam
+///  execution.input_cursor(3)
+///  ```
+///
 pub fn input_cursor(Int) -> Result(InputCursor, ExecutionError)
 /// Renders the sequence for persistence without changing its journal
 /// identity.
+///
+///  ## Examples
+///
+///  ```gleam
+///  execution.input_sequence(execution.first_input()) == 0
+///  ```
+///
 pub fn input_sequence(InputCursor) -> Int
 /// Publishes the execution's latest bounded progress snapshot.
 ///
@@ -216,11 +257,25 @@ pub fn input_sequence(InputCursor) -> Int
 /// names the snapshot currently published by the host. The submitted
 /// value may still be pending, and a later update may supersede it before
 /// publication.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // execution.progress(report.string(\"indexing\"))
+///  ```
+///
 pub fn progress(report.Value) -> Result(Progress, ExecutionError)
 /// Reads input committed after the supplied cursor, initially zero. This
 /// never changes the execution's original lifetime or permissions.
 /// Calling it before typed `serve` publishes legacy readiness for
 /// `default`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // execution.receive(after: execution.first_input(), within_ms: 1000)
+///  ```
+///
 pub fn receive(after: InputCursor, within_ms: Int) -> Result(Received, ExecutionError)
 /// Registers typed endpoints and drains the execution-owned input
 /// journal.
@@ -231,6 +286,13 @@ pub fn receive(after: InputCursor, within_ms: Int) -> Result(Received, Execution
 /// cancellation, then answers this loop with `Idle`; channel closure may
 /// win that response race and yield `InputClosed` instead. The host reaps
 /// the satellite in either case.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // execution.serve([counter_endpoint], idle_within_ms: 60_000)
+///  ```
+///
 pub fn serve(List(Endpoint), idle_within_ms: Int) -> Result(ServeExit, ServeError)
 ",
   ),
@@ -287,6 +349,14 @@ pub type Replacement {
 /// Capability: `fs.edit`.
 pub fn edit(String, List(Replacement)) -> Result(Nil, FsError)
 /// A one-line rendering of an `FsError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert fs.error_text(fs.NotFound(\"a.txt\")) == \"not found: a.txt\"
+///  ```
+///
+///
 pub fn error_text(FsError) -> String
 /// Lists a directory's entries.
 ///
@@ -298,6 +368,15 @@ pub fn list(String) -> Result(List(DirEntry), FsError)
 /// Virtual reads admit at most 64 calls per execution; they are not
 /// mounted files, so shell tools require an explicit copy to a workspace
 /// file.
+///
+///  ## Examples
+///
+///  ```gleam
+///  fs.read(\"note://main/analysis\")
+///  ```
+///
+///  Capability: `fs.read`.
+///
 pub fn read(String) -> Result(String, FsError)
 /// Writes `contents` to `path`, creating or replacing the whole file.
 ///
@@ -338,6 +417,14 @@ pub fn current_branch() -> Result(String, GitError)
 /// The unified diff of the working tree (optionally staged).
 pub fn diff(staged: Bool) -> Result(String, GitError)
 /// A one-line rendering of a `GitError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert git.error_text(git.CommandFailed(128, \"fatal: not a repository\\n\")) == \"git exited 128: fatal: not a repository\"
+///  ```
+///
+///
 pub fn error_text(GitError) -> String
 /// The most recent commits, newest first, at most `limit`.
 pub fn log(limit: Int) -> Result(List(Commit), GitError)
@@ -476,14 +563,60 @@ pub type Stream(a) {
   Stream(bytes: BitArray, cursor: a, dropped: Int)
 }
 /// The cursors one poll's answer leaves behind, to hand to the next.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(id) = job.parse_job_id(\"01JQ8XZ\")
+///  let assert Ok(first) = job.poll(id, 0, job.from_start())
+///  let assert Ok(_next) = job.poll(id, 0, job.after(first))
+///  ```
+///
+///
 pub fn after(Job) -> Cursors
 /// A one-line rendering of a `JobError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert job.error_text(job.JobNotFound(\"j1\")) == \"job not found: j1\"
+///  ```
+///
+///
 pub fn error_text(JobError) -> String
 /// The cursors that read a job's whole retained tail: the first poll's.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(id) = job.parse_job_id(\"01JQ8XZ\")
+///  let assert Ok(watched) = job.poll(id, 0, job.from_start())
+///  ```
+///
+///
 pub fn from_start() -> Cursors
 /// Whether a job in this state is one to come back to.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(watched) = job.poll(started.id, 5000, job.from_start())
+///  case job.is_pending(watched.state) {
+///    True -> Nil
+///    False -> Nil
+///  }
+///  ```
+///
+///
 pub fn is_pending(State) -> Bool
 /// Renders the identity for storage in a later program's input.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // job.job_id_to_string(started.id)
+///  ```
+///
 pub fn job_id_to_string(JobId) -> String
 /// Stops one job: TERM to the payload and its descendants, then KILL of
 /// the group — the same ladder a cancelled foreground command climbs.
@@ -494,6 +627,15 @@ pub fn job_id_to_string(JobId) -> String
 /// `Exit.cancelled` is the helper's own witness that it climbed.
 ///
 /// Capability: `job.kill`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(id) = job.parse_job_id(\"01JQ8XZ\")
+///  let assert Ok(Nil) = job.kill(id)
+///  ```
+///
+///
 pub fn kill(JobId) -> Result(Nil, JobError)
 /// Lists every job this strand owns, live and terminal alike, with its
 /// state and how long it has been alive.
@@ -503,13 +645,42 @@ pub fn kill(JobId) -> Result(Nil, JobError)
 /// never started here.
 ///
 /// Capability: `job.list`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(mine) = job.list()
+///  ```
+///
+///
 pub fn list() -> Result(List(Row), JobError)
 /// Parses a saved job identity using the host's register-key grammar.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert job.parse_job_id(\"job/other\") == Error(\"job id must be nonempty and contain no '/'\")
+///  ```
+///
 pub fn parse_job_id(String) -> Result(JobId, String)
 /// Restores a saved stderr position; a negative position is invalid.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert job.parse_stderr_cursor(-1) == Error(\"stderr cursor must be nonnegative\")
+///  ```
+///
 pub fn parse_stderr_cursor(Int) -> Result(StderrCursor, String)
 /// Restores a saved stdout position; a negative position is invalid.
 /// Prefer `after` when continuing directly from a poll.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert job.parse_stdout_cursor(-1) == Error(\"stdout cursor must be nonnegative\")
+///  ```
+///
 pub fn parse_stdout_cursor(Int) -> Result(StdoutCursor, String)
 /// Reads one job: its state, and what each stream has printed since
 /// `cursors`.
@@ -521,6 +692,15 @@ pub fn parse_stdout_cursor(Int) -> Result(StdoutCursor, String)
 /// and it costs at least one slice per turn whatever it passes.
 ///
 /// Capability: `job.poll`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(id) = job.parse_job_id(\"01JQ8XZ\")
+///  let assert Ok(watched) = job.poll(id, 5000, job.from_start())
+///  ```
+///
+///
 pub fn poll(JobId, Int, Cursors) -> Result(Job, JobError)
 /// Writes bytes to a job's standard input, leaving it open.
 ///
@@ -529,6 +709,15 @@ pub fn poll(JobId, Int, Cursors) -> Result(Job, JobError)
 /// watch; a foreground command has stdin closed from the start.
 ///
 /// Capability: `job.send`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(id) = job.parse_job_id(\"01JQ8XZ\")
+///  let assert Ok(Nil) = job.send(id, <<\"2 + 2\\n\":utf8>>)
+///  ```
+///
+///
 pub fn send(JobId, BitArray) -> Result(Nil, JobError)
 /// `send`, closing the job's stdin after this write.
 ///
@@ -536,6 +725,15 @@ pub fn send(JobId, BitArray) -> Result(Nil, JobError)
 /// Nothing can be written afterwards.
 ///
 /// Capability: `job.send`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(id) = job.parse_job_id(\"01JQ8XZ\")
+///  let assert Ok(Nil) = job.send_last(id, <<\"quit\\n\":utf8>>)
+///  ```
+///
+///
 pub fn send_last(JobId, BitArray) -> Result(Nil, JobError)
 /// Starts `command` as a background job with the host's default wall.
 ///
@@ -544,6 +742,14 @@ pub fn send_last(JobId, BitArray) -> Result(Nil, JobError)
 /// this call and after this program returns.
 ///
 /// Capability: `job.start`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(building) = job.start(\"make check\")
+///  ```
+///
+///
 pub fn start(String) -> Result(Started, JobError)
 /// Starts an explicitly authorized job without a wall deadline.
 ///
@@ -555,6 +761,14 @@ pub fn start(String) -> Result(Started, JobError)
 /// Started.wall_ms are zero.
 ///
 /// Capability: job.start.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(watching) = job.start_for_session(\"substrate watch --session-id ...\")
+///  ```
+///
+///
 pub fn start_for_session(String) -> Result(Started, JobError)
 /// `start`, asking for a particular wall in milliseconds.
 ///
@@ -563,10 +777,32 @@ pub fn start_for_session(String) -> Result(Started, JobError)
 /// never renewed once the job is running.
 ///
 /// Capability: `job.start`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(serving) = job.start_within(\"./serve\", 600_000)
+///  ```
+///
+///
 pub fn start_within(String, Int) -> Result(Started, JobError)
 /// Renders a stderr position for persistence between programs.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert job.stderr_cursor_to_int(job.from_start().stderr) == 0
+///  ```
+///
 pub fn stderr_cursor_to_int(StderrCursor) -> Int
 /// Renders a stdout position for persistence between programs.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert job.stdout_cursor_to_int(job.from_start().stdout) == 0
+///  ```
+///
 pub fn stdout_cursor_to_int(StdoutCursor) -> Int
 ",
   ),
@@ -590,6 +826,14 @@ pub type KvError {
 /// Capability: `kv.delete`.
 pub fn delete(String) -> Result(Nil, KvError)
 /// A one-line rendering of a `KvError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert kv.error_text(kv.KvUnavailable(\"no channel\")) == \"kv unavailable: no channel\"
+///  ```
+///
+///
 pub fn error_text(KvError) -> String
 /// Reads a key. `Ok(None)` when the key is absent or was evicted — the
 /// case every caller must handle.
@@ -768,24 +1012,71 @@ pub type Symbol {
 pub const max_items: Int
 /// Narrows a query to one line of its file, 1-based as `fs.read` shows
 /// it. Pair it with `in`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let query = lsp.symbol(\"greet\") |> lsp.in(\"src/app.gleam\") |> lsp.at_line(12)
+///  ```
+///
+///
 pub fn at_line(Query, Int) -> Query
 /// One level of the call hierarchy around the queried symbol. Servers
 /// that do not offer call hierarchy answer `Unsupported`; `references`
 /// with its `container` is the portable way to ask who calls a symbol.
 ///
 /// Capability: `lsp.calls`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(callers) = lsp.calls(lsp.symbol(\"greet\"), lsp.Incoming)
+///  ```
+///
+///
 pub fn calls(Query, CallDirection) -> Result(List(Call), LspError)
 /// Where the queried symbol is defined.
 ///
 /// Capability: `lsp.definition`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(lsp.Found(items: [site, ..], total: _)) =
+///    lsp.definition(lsp.symbol(\"util.Greet\"))
+///  let where = site.path
+///  ```
+///
+///
 pub fn definition(Query) -> Result(Found(Site), LspError)
 /// Diagnostics for one file, or for every file the server has reported on
 /// when `path` is `None`.
 ///
 /// Capability: `lsp.diagnostics`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  case lsp.diagnostics(Some(\"src/app.gleam\")) {
+///    Ok(lsp.Settled([])) -> \"clean\"
+///    Ok(lsp.Settled(_)) -> \"broken\"
+///    Ok(lsp.Unsettled(_)) -> \"unknown: the server had not settled\"
+///    Error(_) -> \"no answer\"
+///  }
+///  ```
+///
+///
 pub fn diagnostics(option.Option(String)) -> Result(Diagnostics, LspError)
 /// A one-line rendering of an `LspError`, for a program building a report
 /// out of what went wrong rather than branching on it.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert lsp.error_text(lsp.NotFound(\"util.Greet\", None)) == \"symbol not found: util.Greet\"
+///  ```
+///
+///
 pub fn error_text(LspError) -> String
 /// Type information and documentation for the queried symbol, as the
 /// server renders it (usually markdown).
@@ -795,17 +1086,63 @@ pub fn error_text(LspError) -> String
 /// because the server chooses how much it sends.
 ///
 /// Capability: `lsp.hover`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(text) =
+///    lsp.hover(lsp.symbol(\"greet\") |> lsp.in(\"src/app.gleam\"))
+///  ```
+///
+///
 pub fn hover(Query) -> Result(String, LspError)
 /// Narrows a query to one file.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let query = lsp.symbol(\"greet\") |> lsp.in(\"src/app.gleam\")
+///  ```
+///
+///
 pub fn in(Query, String) -> Query
 /// A file's outline: its declared symbols, nested.
 ///
 /// Capability: `lsp.outline`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(symbols) = lsp.outline(\"src/app.gleam\")
+///  let names = list.map(symbols, fn(symbol) { symbol.name })
+///  ```
+///
+///
 pub fn outline(String) -> Result(List(Symbol), LspError)
 /// Every reference to the queried symbol, its declaration included, each
 /// with the symbol whose body holds it.
 ///
 /// Capability: `lsp.references`.
+///
+///  ## Examples
+///
+///  The case code mode exists for: every public function in a file with
+///  at least one reference from outside that file.
+///
+///  ```gleam
+///  let path = \"src/app.gleam\"
+///  let assert Ok(outline) = lsp.outline(path)
+///  let used_elsewhere =
+///    list.filter(outline, fn(entry) {
+///      entry.kind == \"function\"
+///      && case lsp.references(lsp.symbol(entry.name) |> lsp.in(path)) {
+///        Ok(found) -> list.any(found.items, fn(r) { r.site.path != path })
+///        Error(_) -> False
+///      }
+///    })
+///  ```
+///
+///
 pub fn references(Query) -> Result(Found(Reference), LspError)
 /// Renames the queried symbol to `new_name` across the project.
 ///
@@ -816,8 +1153,28 @@ pub fn references(Query) -> Result(Found(Reference), LspError)
 /// the rename is `Rejected`, never overwritten.
 ///
 /// Capability: `lsp.rename`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let query = lsp.symbol(\"greet\") |> lsp.in(\"src/app.gleam\")
+///  let assert Ok(lsp.Previewed(files:)) = lsp.rename(query, \"welcome\", lsp.Preview)
+///  let assert Ok(lsp.Applied(files: landed, diagnostics: lsp.Settled([]))) =
+///    lsp.rename(query, \"welcome\", lsp.Apply)
+///  ```
+///
+///
 pub fn rename(Query, String, RenameMode) -> Result(RenameReport, LspError)
 /// A query for `name` anywhere in the project.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let query = lsp.symbol(\"greet\")
+///  let qualified = lsp.symbol(\"util.Greet\")
+///  ```
+///
+///
 pub fn symbol(String) -> Query
 ",
   ),
@@ -928,19 +1285,70 @@ pub type Target {
 }
 /// A query cell as text: `NULL` for `Null`, the printed number for
 /// `Integer` and `Real`, and the text itself for `Text`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert lsp_sql.cell_text(lsp_sql.Null) == \"NULL\"
+///  assert lsp_sql.cell_text(lsp_sql.Integer(7)) == \"7\"
+///  assert lsp_sql.cell_text(lsp_sql.Text(\"main\")) == \"main\"
+///  ```
+///
+///
 pub fn cell_text(Cell) -> String
 /// Captures one complete bounded observation, spending one capture
 /// admission.
 ///
 /// The host admits at most four collections per invocation. Every capture
 /// is complete or refused: no truncation can turn an anti-join into a
-/// false claim.
+/// false claim. Prefer `plan(outlines, targets)` to infer scope from
+/// files. An explicit `Plan.server` is the configuration key (for example
+/// `go`), which may differ from its executable (`gopls`). Paths are
+/// workspace-relative, including files in nested worktrees; selecting a
+/// shell cwd does not move these paths.
+///
+///  ## Examples
+///
+///  ```gleam
+///  lsp_sql.collect(lsp_sql.plan([\"src/app.gleam\"], []))
+///  ```
+///
 pub fn collect(Plan) -> Result(Observation, Error)
 /// A one-line rendering of a capture `Error`, for a program building a
 /// report out of what went wrong.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert lsp_sql.error_text(lsp_sql.QueryFailed(\"symbol not found: main\")) == \"query failed: symbol not found: main\"
+///  ```
+///
+///
 pub fn error_text(Error) -> String
 /// Returns the declared scope and checked observation interval.
+///
+///  ## Examples
+///
+///  ```gleam
+///  lsp_sql.metadata(observation).withheld
+///  ```
+///
 pub fn metadata(Observation) -> Metadata
+/// Infers the configured server and project root from the explicit files.
+///
+/// Every source must still belong to the same server and root. Paths
+/// resolve against the session workspace, so worktree files must name
+/// that worktree. Use `Plan` directly when an exact server/root assertion
+/// is required.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let plan = lsp_sql.plan([\"src/app.gleam\"], [])
+///  // lsp_sql.collect(plan)
+///  ```
+///
+pub fn plan(List(String), List(Target)) -> Plan
 /// Executes one bounded read-only SQLite statement over the captured
 /// facts.
 ///
@@ -955,10 +1363,48 @@ pub fn metadata(Observation) -> Metadata
 /// The tables are listed by `schema()`; `\"references\"` is an SQL keyword,
 /// so quote it. Joining `targets` to `\"references\"` on `target_id = id`
 /// pairs each requested target with its references, and a LEFT JOIN with
-/// `WHERE r.target_id IS NULL` proves a requested target has none.
+/// `WHERE r.target_id IS NULL` proves a requested target has none. File
+/// columns are named `path`, never `file`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  lsp_sql.query(observation, \"SELECT count(*) FROM symbols\", [], fn(row) {
+///    case row {
+///      [lsp_sql.Integer(n)] -> Ok(n)
+///      _ -> Error(\"expected one integer count\")
+///    }
+///  })
+///  ```
+///
+///  Join each requested target to its references:
+///
+///  ```sql
+///  SELECT t.symbol, r.path, r.line, r.text
+///  FROM targets t JOIN \"references\" r ON r.target_id = t.id
+///  ORDER BY t.symbol, r.path, r.line
+///  ```
+///
+///  The anti-join that proves a requested target has no references in this
+///  observation:
+///
+///  ```sql
+///  SELECT t.symbol FROM targets t
+///  LEFT JOIN \"references\" r ON r.target_id = t.id
+///  WHERE r.target_id IS NULL
+///  ```
+///
 pub fn query(Observation, String, List(Cell), fn(List(Cell)) -> Result(a, String)) -> Result(QueryResult(a), QueryError)
 /// A one-line rendering of a `QueryError`, for a program building a
 /// report out of what went wrong.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert lsp_sql.query_error_text(lsp_sql.DecodeFailed(2, \"expected text\")) == \"row 2 did not decode: expected text\"
+///  ```
+///
+///
 pub fn query_error_text(QueryError) -> String
 /// The fixed tables and columns every query runs against, one table per
 /// line, so a program can print them instead of probing `sqlite_master`,
@@ -970,6 +1416,14 @@ pub fn query_error_text(QueryError) -> String
 /// column, text, anchor) and \"references\"(target_id, path, line, column,
 /// text, anchor). A requested target is one row of targets, and
 /// \"references\".target_id points at targets.id.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert string.starts_with(lsp_sql.schema(), \"documents(path, digest, version)\")
+///  ```
+///
+///
 pub fn schema() -> String
 ",
   ),
@@ -1025,6 +1479,14 @@ pub type ToolResult {
   ToolResult(content: List(Content), structured: option.Option(report.Value))
 }
 /// A one-line rendering of an `McpError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert mcp.error_text(mcp.ServerUnavailable(\"down\")) == \"server unavailable: down\"
+///  ```
+///
+///
 pub fn error_text(McpError) -> String
 /// A result's text content: every `Text` block, joined with newlines —
 /// the common read for a tool whose answer is prose.
@@ -1055,6 +1517,14 @@ pub type Response {
   Response(status: Int, headers: List(#(String, String)), body: BitArray)
 }
 /// A one-line rendering of a `NetError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert net.error_text(net.NetDenied(\"host not allowed\")) == \"denied: host not allowed\"
+///  ```
+///
+///
 pub fn error_text(NetError) -> String
 /// Fetches a URL with a GET request.
 ///
@@ -1080,19 +1550,48 @@ pub type NotesError {
   NotesUnavailable(reason: String)
 }
 /// A one-line rendering of a `NotesError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert notes.error_text(notes.NotesUnavailable(\"no channel\")) == \"notes unavailable: no channel\"
+///  ```
+///
+///
 pub fn error_text(NotesError) -> String
 /// Reads one exact shared key, relative to agent/. A missing key returns
 /// None; a stored JSON null returns Some(report.null()). Capability:
 /// notes.get. The execution allows at most 64 calls.
+///
+///  ## Examples
+///
+///  ```gleam
+///  notes.get(\"main/analysis\")
+///  ```
+///
 pub fn get(String) -> Result(option.Option(report.Value), NotesError)
 /// Reads cells matching a relative prefix. Returned keys can be passed
 /// directly to get, or prefixed with note:// for cap/fs.read. None scans
 /// the session's shared agent notes. Oversized replies fail explicitly.
 /// Capability: notes.list. The execution allows at most 64 calls.
+///
+///  ## Examples
+///
+///  ```gleam
+///  notes.list(Some(\"main/\"))
+///  ```
+///
 pub fn list(option.Option(String)) -> Result(List(#(String, report.Value)), NotesError)
 /// Stores JSON-compatible data under the caller's own key. Reusing a key
 /// replaces its current value; a child's result key retains schema
 /// checks. Capability: notes.put. The execution allows at most 256 calls.
+///
+///  ## Examples
+///
+///  ```gleam
+///  notes.put(\"analysis\", report.object([#(\"count\", report.int(3))]))
+///  ```
+///
 pub fn put(String, report.Value) -> Result(Nil, NotesError)
 ",
   ),
@@ -1235,61 +1734,222 @@ pub type Wake {
   MayWake
 }
 /// Renders a message identity for persistence.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.entry_id_to_string(entry)
+///  ```
+///
 pub fn entry_id_to_string(EntryId) -> String
 /// Starts from the caller's current transcript leaf.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.first_history()
+///  ```
+///
 pub fn first_history() -> HistoryCursor
 /// Starts a fresh traversal of current pending inputs.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.first_pending()
+///  ```
+///
 pub fn first_pending() -> PendingCursor
 /// Starts a fresh scan; receipt hash cursors are not arrival watermarks.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.first_receipt()
+///  ```
+///
 pub fn first_receipt() -> ReceiptCursor
 /// Pages materialized inputs; scanned assistant messages may produce
 /// empty pages.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.history(before: peer.first_history(), limit: 64)
+///  ```
+///
 pub fn history(before: HistoryCursor, limit: Int) -> Result(HistoryPage, PeerError)
 /// Restores a positive exclusive transcript sequence cursor.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.history_before(42)
+///  ```
+///
 pub fn history_before(Int) -> Result(HistoryCursor, PeerError)
 /// Renders the transcript sequence for persistence; zero means the
 /// current leaf.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.history_sequence(peer.first_history()) == 0
+///  ```
+///
 pub fn history_sequence(HistoryCursor) -> Int
 /// Pages current pending inputs without consuming them; follow next on
 /// empty pages.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.inbox(after: peer.first_pending(), limit: 12)
+///  ```
+///
 pub fn inbox(after: PendingCursor, limit: Int) -> Result(InboxPage, PeerError)
 /// Reads a caller-owned pending or materialized input; absence is None.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.inbox_get(id: entry)
+///  ```
+///
 pub fn inbox_get(id: EntryId) -> Result(option.Option(Input), PeerError)
 /// Renders an observed operation identity for persistence.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.op_id_to_string(operation)
+///  ```
+///
 pub fn op_id_to_string(OpId) -> String
 /// Parses a persisted message identity without importing another
 /// capability.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.parse_entry_id(saved_entry)
+///  ```
+///
 pub fn parse_entry_id(String) -> Result(EntryId, PeerError)
 /// Parses an observed operation identity.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.parse_op_id(saved_operation)
+///  ```
+///
 pub fn parse_op_id(String) -> Result(OpId, PeerError)
 /// Parses a canonical session identity for sending or exact receipt
 /// lookup.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.parse_session_id(saved_session)
+///  ```
+///
 pub fn parse_session_id(String) -> Result(SessionId, PeerError)
 /// Restores a pending cursor from a valid entry identity.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.pending_after(entry)
+///  ```
+///
 pub fn pending_after(EntryId) -> PendingCursor
 /// Renders a pending cursor for persistence; empty means a fresh scan.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.pending_cursor_text(peer.first_pending()) == \"\"
+///  ```
+///
 pub fn pending_cursor_text(PendingCursor) -> String
 /// Restores one exact receipt-key cursor without admitting arbitrary
 /// prefixes.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.receipt_after(saved_cursor)
+///  ```
+///
 pub fn receipt_after(String) -> Result(ReceiptCursor, PeerError)
 /// Renders a receipt cursor for persistence without changing its meaning.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.receipt_cursor_text(peer.first_receipt()) == \"\"
+///  ```
+///
 pub fn receipt_cursor_text(ReceiptCursor) -> String
 /// Pages durable admission receipts; rescan and reconcile IDs for new
 /// admissions.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.received(after: peer.first_receipt(), limit: 64)
+///  ```
+///
 pub fn received(after: ReceiptCursor, limit: Int) -> Result(ReceiptPage, PeerError)
 /// Looks up an existing receipt only when addressed to the caller;
 /// absence is None.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.received_get(source_session: source, source_strand: \"reviewer\", message_id: \"review-1\")
+///  ```
+///
 pub fn received_get(source_session: SessionId, source_strand: String, message_id: String) -> Result(option.Option(Receipt), PeerError)
 /// Returns authorized outgoing links; an empty list says nothing about
 /// inboxes.
+///
+///  ## Examples
+///
+///  ```gleam
+///  peer.roster()
+///  ```
+///
 pub fn roster() -> Result(List(Link), PeerError)
 /// Admits a stable retry identity; reuse it only for the same recipient
 /// and body.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.send(session: recipient, strand: \"main\", message_id: \"review-1\", text: \"Ready.\")
+///  ```
+///
 pub fn send(session: SessionId, strand: String, message_id: String, text: String) -> Result(Receipt, PeerError)
 /// Reads a linked resident recipient's receipt with host-bound sender
 /// identity.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.sent_receipt(session: recipient, message_id: \"review-1\")
+///  ```
+///
 pub fn sent_receipt(session: SessionId, message_id: String) -> Result(option.Option(Receipt), PeerError)
 /// Renders an identity for persistence or display.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // peer.session_id_to_string(session)
+///  ```
+///
 pub fn session_id_to_string(SessionId) -> String
 ",
   ),
@@ -1319,6 +1979,14 @@ pub type ProcError {
 /// Begins a command from its argv. The first element is the executable.
 pub fn command(List(String)) -> Command
 /// A one-line rendering of a `ProcError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert proc.error_text(proc.SpawnFailed(\"no such file\")) == \"spawn failed: no such file\"
+///  ```
+///
+///
 pub fn error_text(ProcError) -> String
 /// Sets the working directory for the command.
 pub fn in_dir(Command, String) -> Command
@@ -1373,6 +2041,14 @@ pub type ReportError {
   EmitUnavailable(reason: String)
 }
 /// A value's boolean, or `Error(Nil)` when it is not one.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_bool(report.string(\"true\")) == Error(Nil)
+///  ```
+///
+///
 pub fn as_bool(Value) -> Result(Bool, Nil)
 /// A value's floating-point number, or `Error(Nil)` when it is not one.
 /// An int is *not* accepted, the mirror of `as_int`'s refusal of a float:
@@ -1381,19 +2057,67 @@ pub fn as_bool(Value) -> Result(Bool, Nil)
 /// field a schema declared as `number` may nonetheless arrive int-tagged
 /// — `number` admits `42`, and the value crosses the wire carrying the
 /// tag it was written with — so try `as_int` when `as_float` refuses one.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_float(report.int(1)) == Error(Nil)
+///  ```
+///
+///
 pub fn as_float(Value) -> Result(Float, Nil)
 /// A value's whole number, or `Error(Nil)` when it is not one. A float is
 /// *not* accepted: rounding silently is how a count becomes wrong.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_int(report.float(1.0)) == Error(Nil)
+///  ```
+///
+///
 pub fn as_int(Value) -> Result(Int, Nil)
 /// A value's items, or `Error(Nil)` when it is not a list.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_list(report.object([])) == Error(Nil)
+///  ```
+///
+///
 pub fn as_list(Value) -> Result(List(Value), Nil)
 /// A value's text, or `Error(Nil)` when it is not text.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_string(report.int(1)) == Error(Nil)
+///  ```
+///
+///
 pub fn as_string(Value) -> Result(String, Nil)
 /// A boolean value.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_bool(report.bool(True)) == Ok(True)
+///  ```
+///
+///
 pub fn bool(Bool) -> Value
 /// Parses JSON into the same structured value used by notes and child
 /// results. Rejects duplicate object keys, excessive nesting, and
 /// trailing input.
+///
+///  ## Examples
+///
+///  ```gleam
+///  report.decode_json(\"{\\\"count\\\":3}\")
+///    == Ok(report.object([#(\"count\", report.int(3))]))
+///  ```
+///
 pub fn decode_json(String) -> Result(Value, String)
 /// Emits an artifact and returns a durable reference to it.
 ///
@@ -1403,25 +2127,100 @@ pub fn emit(name: String, content_type: String, bytes: BitArray) -> Result(Artif
 /// Encodes a structured value as compact JSON without coercing its
 /// contents. Binary values, non-text keys, duplicate keys, and excessive
 /// nesting fail.
+///
+///  ## Examples
+///
+///  ```gleam
+///  report.encode_json(report.object([#(\"count\", report.int(3))]))
+///    == Ok(\"{\\\"count\\\":3}\")
+///  ```
+///
 pub fn encode_json(Value) -> Result(String, String)
 /// A one-line rendering of a `ReportError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.error_text(report.EmitUnavailable(\"no channel\")) == \"emit unavailable: no channel\"
+///  ```
+///
+///
 pub fn error_text(ReportError) -> String
 /// An `Errored` outcome from a message alone, with nil details.
 pub fn failure(String) -> Outcome
 /// One field of an object value, or `Error(Nil)` when the value is not an
 /// object or has no such field.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.field(report.object([]), \"missing\") == Error(Nil)
+///  ```
+///
+///
 pub fn field(Value, String) -> Result(Value, Nil)
 /// A floating-point value.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_float(report.float(1.5)) == Ok(1.5)
+///  assert report.float(1.5) != report.int(1)
+///  ```
+///
+///
 pub fn float(Float) -> Value
 /// A whole-number value.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_int(report.int(3)) == Ok(3)
+///  ```
+///
+///
 pub fn int(Int) -> Value
-/// A list value.
+/// A list value. Each item must be a `report.Value`, so convert strings
+/// with `list.map(strings, report.string)` before passing them here.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_list(report.list([report.int(1)])) == Ok([report.int(1)])
+///  ```
+///
+///
 pub fn list(List(Value)) -> Value
 /// The absent value.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_string(report.null()) == Error(Nil)
+///  ```
+///
+///
 pub fn null() -> Value
 /// An object value: named fields, in the order given.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let value = report.object([#(\"n\", report.int(2))])
+///  assert report.field(value, \"n\") == Ok(report.int(2))
+///  ```
+///
+///
 pub fn object(List(#(String, Value))) -> Value
 /// A text value.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_string(report.string(\"ok\")) == Ok(\"ok\")
+///  ```
+///
+///
 pub fn string(String) -> Value
 /// A `Completed` outcome carrying a plain-text summary.
 pub fn text(String) -> Outcome
@@ -1525,6 +2324,16 @@ pub fn run(fn() -> report.Outcome) -> Nil
 /// The mirror of `run` for the other shape. On a `BootError` it returns
 /// `Nil` without serving anything; the node exits and the host observes
 /// the socket closing, exactly as it does for a boot that failed.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // pub fn main() -> Nil {
+///  //   runtime.serve(fn(asked) { runtime.Answered(report.string(\"hi\")) })
+///  // }
+///  ```
+///
+///
 pub fn serve(fn(Asked) -> Answer) -> Nil
 /// Serves invocations over an injected transport, so the whole loop is
 /// exercisable in-process with no socket — the same seam `boot` takes and
@@ -1539,6 +2348,14 @@ pub fn serve(fn(Asked) -> Answer) -> Nil
 ///
 /// Returns once the channel closes or the harness cancels, having stopped
 /// the reader, the channel actor and its claim on the VM-global slot.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // let assert Ok(Nil) = runtime.serve_over(<<0>>, transport, answer)
+///  ```
+///
+///
 pub fn serve_over(BitArray, Transport, fn(Asked) -> Answer) -> Result(Nil, BootError)
 ",
   ),
@@ -1635,11 +2452,40 @@ pub type Wake {
 /// server is running.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.after(
+///      \"recheck\",
+///      2700,
+///      schedule.WakesIdle,
+///      \"Check whether the migration finished.\",
+///    )
+///  ```
+///
+///
 pub fn after(String, Int, Wake, String) -> Result(Created, ScheduleError)
 /// `after`, onto a strand this one spawned rather than onto itself. The
 /// target rule and the ownership rule are `every_on`'s exactly.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.after_on(
+///      spawned.strand,
+///      \"nudge\",
+///      600,
+///      schedule.SteersOnly,
+///      \"Wrap up and report what you have.\",
+///    )
+///  ```
+///
+///
 pub fn after_on(String, String, Int, Wake, String) -> Result(Created, ScheduleError)
 /// Schedules `body` to fire on this strand once, at `instant` — an
 /// RFC3339 UTC timestamp, for example `\"2026-09-01T09:00:00Z\"`.
@@ -1648,11 +2494,40 @@ pub fn after_on(String, String, Int, Wake, String) -> Result(Created, ScheduleEr
 /// never replayed for every occurrence that was missed.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.at(
+///      \"window\",
+///      \"2026-09-01T09:00:00Z\",
+///      schedule.WakesIdle,
+///      \"The window opened.\",
+///    )
+///  ```
+///
+///
 pub fn at(String, String, Wake, String) -> Result(Created, ScheduleError)
 /// `at`, onto a strand this one spawned rather than onto itself. The
 /// target rule and the ownership rule are `every_on`'s exactly.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.at_on(
+///      spawned.strand,
+///      \"deadline\",
+///      \"2026-09-01T09:00:00Z\",
+///      schedule.SteersOnly,
+///      \"Wrap up and report what you have.\",
+///    )
+///  ```
+///
+///
 pub fn at_on(String, String, String, Wake, String) -> Result(Created, ScheduleError)
 /// Cancels one schedule this strand set on itself, by name. It will not
 /// fire again, and its record of past fires goes with it, so the name is
@@ -1664,6 +2539,14 @@ pub fn at_on(String, String, String, Wake, String) -> Result(Created, ScheduleEr
 /// strand is not found by this call at all: it wants `cancel_on`.
 ///
 /// Capability: `schedule.cancel`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(Nil) = schedule.cancel(\"poll\")
+///  ```
+///
+///
 pub fn cancel(String) -> Result(Nil, ScheduleError)
 /// Cancels one schedule this strand set onto another strand — the
 /// counterpart to `every_on` and `at_on`, addressed by the same target.
@@ -1674,6 +2557,14 @@ pub fn cancel(String) -> Result(Nil, ScheduleError)
 /// shows which target each schedule fires onto.
 ///
 /// Capability: `schedule.cancel`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(Nil) = schedule.cancel_on(spawned.strand, \"watch\")
+///  ```
+///
+///
 pub fn cancel_on(String, String) -> Result(Nil, ScheduleError)
 /// Schedules `body` to fire on this strand on a five-field cron
 /// expression — `\"0 9 * * 1-5\"` for 09:00 on weekdays.
@@ -1693,6 +2584,20 @@ pub fn cancel_on(String, String) -> Result(Nil, ScheduleError)
 /// was never asked for and does not fire.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.cron(
+///      \"standup\",
+///      \"0 9 * * 1-5\",
+///      schedule.WakesIdle,
+///      \"Summarise what is in flight, as a standup note.\",
+///    )
+///  ```
+///
+///
 pub fn cron(String, String, Wake, String) -> Result(Created, ScheduleError)
 /// `cron`, with the expression's fields read against a clock a fixed
 /// offset from UTC — `\"+02:00\"`, `\"-05:30\"` — rather than against UTC
@@ -1715,18 +2620,71 @@ pub fn cron(String, String, Wake, String) -> Result(Created, ScheduleError)
 /// that, or written any other way, is denied with `invalid_schedule`.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.cron_at_offset(
+///      \"standup\",
+///      \"0 9 * * 1-5\",
+///      \"+02:00\",
+///      schedule.WakesIdle,
+///      \"Summarise what is in flight, as a standup note. 09:00 UTC+02:00.\",
+///    )
+///  ```
+///
+///
 pub fn cron_at_offset(String, String, String, Wake, String) -> Result(Created, ScheduleError)
 /// `cron`, onto a strand this one spawned rather than onto itself. The
 /// target rule and the ownership rule are `every_on`'s exactly.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.cron_on(
+///      spawned.strand,
+///      \"hourly-check\",
+///      \"0 * * * *\",
+///      schedule.SteersOnly,
+///      \"Say where the review has got to.\",
+///    )
+///  ```
+///
+///
 pub fn cron_on(String, String, String, Wake, String) -> Result(Created, ScheduleError)
 /// `cron`, with the expiry bounds stated rather than defaulted. The
 /// bounds rule is `every_within`'s exactly.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.cron_within(
+///      \"standup\",
+///      \"0 9 * * 1-5\",
+///      schedule.Bounds(max_fires: 5, expires_after_s: 604_800),
+///      schedule.SteersOnly,
+///      \"Summarise what is in flight, as a standup note.\",
+///    )
+///  ```
+///
+///
 pub fn cron_within(String, String, Bounds, Wake, String) -> Result(Created, ScheduleError)
 /// A one-line rendering of a `ScheduleError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert schedule.error_text(schedule.ScheduleUnavailable(\"no channel\")) == \"schedule unavailable: no channel\"
+///  ```
+///
+///
 pub fn error_text(ScheduleError) -> String
 /// Schedules `body` to fire on this strand every `seconds` seconds, until
 /// the schedule expires on its own.
@@ -1738,6 +2696,20 @@ pub fn error_text(ScheduleError) -> String
 /// anything, so replacing one is always `cancel` then `every` again.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.every(
+///      \"poll\",
+///      300,
+///      schedule.WakesIdle,
+///      \"Check whether the build finished.\",
+///    )
+///  ```
+///
+///
 pub fn every(String, Int, Wake, String) -> Result(Created, ScheduleError)
 /// `every`, onto a strand this one spawned rather than onto itself.
 ///
@@ -1753,6 +2725,22 @@ pub fn every(String, Int, Wake, String) -> Result(Created, ScheduleError)
 /// child while there is something to steer and stops when there is not.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(spawned) = strand.start(assignment)
+///  let assert Ok(made) =
+///    schedule.every_on(
+///      spawned.strand,
+///      \"watch\",
+///      300,
+///      schedule.SteersOnly,
+///      \"Say where the review has got to.\",
+///    )
+///  ```
+///
+///
 pub fn every_on(String, String, Int, Wake, String) -> Result(Created, ScheduleError)
 /// `every`, with the expiry bounds stated rather than defaulted.
 ///
@@ -1763,6 +2751,21 @@ pub fn every_on(String, String, Int, Wake, String) -> Result(Created, ScheduleEr
 /// `invalid_schedule`.
 ///
 /// Capability: `schedule.create`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(made) =
+///    schedule.every_within(
+///      \"poll\",
+///      300,
+///      schedule.Bounds(max_fires: 12, expires_after_s: 3600),
+///      schedule.WakesIdle,
+///      \"Check whether the build finished.\",
+///    )
+///  ```
+///
+///
 pub fn every_within(String, Int, Bounds, Wake, String) -> Result(Created, ScheduleError)
 /// Lists the schedules this strand owns, wherever each fires.
 ///
@@ -1772,6 +2775,14 @@ pub fn every_within(String, Int, Bounds, Wake, String) -> Result(Created, Schedu
 /// not listed and cannot be cancelled here.
 ///
 /// Capability: `schedule.list`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(existing) = schedule.list()
+///  ```
+///
+///
 pub fn list() -> Result(List(Schedule), ScheduleError)
 ",
   ),
@@ -1891,6 +2902,14 @@ pub const default_max_matches: Int
 /// `tools/search` holds the same list and is the enforcer.
 pub const default_prune: List(String)
 /// A one-line rendering of a `SearchError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert search.error_text(search.NotFound(\"src\")) == \"not found: src\"
+///  ```
+///
+///
 pub fn error_text(SearchError) -> String
 /// Walks `root` and returns the entries whose path matches the query's
 /// pattern, ordered by path. Symlinks are reported and never descended.
@@ -1903,19 +2922,75 @@ pub fn error_text(SearchError) -> String
 /// `src/**/*.gleam`. `grep` filters its files with the same language.
 ///
 /// Capability: `search.glob`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(search.Listing(entries:, completeness: search.Complete)) =
+///    search.glob(search.glob_query(under: \"src\", matching: \"*.gleam\"))
+///  ```
+///
+///
 pub fn glob(GlobQuery) -> Result(Listing, SearchError)
 /// A query that walks `root` for `pattern` with every bound at its
 /// default: `default_max_entries`, `SkipHidden`, `default_prune`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let query = search.glob_query(under: \"src\", matching: \"**/*.gleam\")
+///  let assert Ok(listing) = search.glob(query)
+///  ```
+///
+///  ```gleam
+///  // Widen one field and leave the rest alone.
+///  let query =
+///    search.GlobQuery(
+///      ..search.glob_query(under: \".\", matching: \"*.toml\"),
+///      hidden: search.IncludeHidden,
+///    )
+///  ```
+///
+///
 pub fn glob_query(under: String, matching: String) -> GlobQuery
 /// Searches the files under `root` for lines matching the query's regular
 /// expression. Files that are too large or not valid UTF-8 are counted in
 /// `files_skipped` rather than failing the call.
 ///
 /// Capability: `search.grep`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(found) =
+///    search.grep(search.grep_query(under: \"src\", matching: \"panic\"))
+///  let count = found.files_scanned
+///  ```
+///
+///
 pub fn grep(GrepQuery) -> Result(Found, SearchError)
 /// A query that searches `root` for `pattern` with every bound at its
 /// default: no globs, `default_context`, `default_max_matches`,
 /// `SkipHidden`, `default_prune`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let query = search.grep_query(under: \"src\", matching: \"pub fn start\")
+///  let assert Ok(found) = search.grep(query)
+///  ```
+///
+///  ```gleam
+///  // Two lines of context, gleam files only.
+///  let query =
+///    search.GrepQuery(
+///      ..search.grep_query(under: \".\", matching: \"TODO\"),
+///      globs: [\"*.gleam\"],
+///      context: 2,
+///    )
+///  ```
+///
+///
 pub fn grep_query(under: String, matching: String) -> GrepQuery
 /// Reads the lines of `path` from `first` to `last`, both 1-based and
 /// inclusive. `last` past the end of the file is clamped and the clamped
@@ -1927,11 +3002,29 @@ pub fn grep_query(under: String, matching: String) -> GrepQuery
 /// refused.
 ///
 /// Capability: `search.read_lines`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(lines) = search.read_lines(\"src/app.gleam\", from: 1, to: 40)
+///  let shown = lines.last
+///  ```
+///
+///
 pub fn read_lines(String, from: Int, to: Int) -> Result(Lines, SearchError)
 /// Reports what is at `path`, without following a final symlink: a link
 /// answers `Symlink(target:)` rather than the kind of its target.
 ///
 /// Capability: `search.stat`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let assert Ok(entry) = search.stat(\"gleam.toml\")
+///  let assert search.File = entry.kind
+///  ```
+///
+///
 pub fn stat(String) -> Result(Entry, SearchError)
 ",
   ),
@@ -2151,23 +3244,65 @@ pub const wait_margin_ms: Int
 /// `purpose` is what the child's minted name is derived from, so two
 /// spawns in one program that share a purpose are two spawns the harness
 /// cannot tell apart — give each one its own.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.assignment(purpose: \"review core\", brief: \"look for …\")
+///  ```
+///
+///
 pub fn assignment(purpose: String, brief: String) -> Assignment
 /// Detaches the child, so the calling strand's run end does not reap it.
 pub fn detached(Assignment) -> Assignment
 /// Renders an entry identity in its canonical wire form.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.entry_id_to_string(entry)
+///  ```
+///
 pub fn entry_id_to_string(EntryId) -> String
 /// A one-line rendering of a refusal, for a program building a report out
 /// of what went wrong rather than branching on it.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert strand.error_text(strand.NotADescendant(\"x\")) == \"not_a_descendant: x\"
+///  ```
+///
+///
 pub fn error_text(StrandError) -> String
 /// Demands a result shape of the child, which the harness holds it to on
 /// its own terminal write — so a program that joins can branch on typed
 /// fields instead of parsing prose.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.assignment(purpose: p, brief: b)
+///  // |> strand.expecting([strand.required(\"count\", strand.IntegerField)])
+///  ```
+///
+///
 pub fn expecting(Assignment, List(Field)) -> Assignment
 /// Starts the child at the calling strand's own leaf, copying its whole
 /// conversation, rather than at the root with only its brief.
 pub fn from_my_conversation(Assignment) -> Assignment
 /// A handle rendered as the text the harness and the model both use,
 /// `{strand}#{operation}`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let text = \"00000000-0000-7000-8000-000000000001\"
+///  let assert Ok(operation) = strand.parse_op_id(text)
+///  assert strand.handle_text(strand.Handle(\"sub:a\", operation)) == \"sub:a#\" <> text
+///  ```
+///
+///
 pub fn handle_text(Handle) -> String
 /// Runs assignments in batches of at most `max_concurrency` children.
 /// Returns one entry per assignment in input order, retaining every known
@@ -2181,6 +3316,14 @@ pub fn handle_text(Handle) -> String
 /// are not cancelled. Ready children with Failed/Aborted outcomes or
 /// unusable results remain explicit Joined entries and do not prevent the
 /// next batch from starting.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.map(assignments, max_concurrency: 3, within_ms: 30_000)
+///  // Match every Joined, SpawnFailed, JoinFailed, and NotStarted result.
+///  ```
+///
 pub fn map(List(Assignment), max_concurrency: Int, within_ms: Int) -> Result(List(Mapped), StrandError)
 /// Writes one blackboard cell under the calling strand's own namespace.
 /// The key is forced under that namespace by the harness, so a program
@@ -2194,18 +3337,63 @@ pub fn note(key: String, value: report.Value) -> Result(Nil, StrandError)
 /// Capability: `strand.notes`.
 pub fn notes(option.Option(String)) -> Result(List(#(String, report.Value)), StrandError)
 /// Renders an operation identity in its canonical wire form.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.op_id_to_string(handle.operation)
+///  ```
+///
 pub fn op_id_to_string(OpId) -> String
 /// A field the child may report.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert strand.optional(\"note\", strand.StringField).required == strand.Optional
+///  ```
+///
+///
 pub fn optional(String, FieldType) -> Field
 /// Parses a UUIDv7 entry identity from a saved reference.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert strand.parse_entry_id(\"invalid\") == Error(\"invalid entry UUIDv7\")
+///  ```
+///
 pub fn parse_entry_id(String) -> Result(EntryId, String)
 /// Parses a UUIDv7 operation identity without importing harness modules.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert strand.parse_op_id(\"invalid\") == Error(\"invalid operation UUIDv7\")
+///  ```
+///
 pub fn parse_op_id(String) -> Result(OpId, String)
 /// How long a join actually waited, summed over the handles still pending
 /// — a program pacing itself against its own deadline needs the number
 /// and would otherwise fold it out of `Waited` by hand.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert strand.pending_count([]) == 0
+///  ```
+///
+///
 pub fn pending_count(List(Waited)) -> Int
 /// A field the child must report.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert strand.required(\"count\", strand.IntegerField).required == strand.Required
+///  ```
+///
+///
 pub fn required(String, FieldType) -> Field
 /// The calling strand's parent and its live descendants, read from the
 /// durable lineage ledger.
@@ -2224,6 +3412,15 @@ pub fn roster() -> Result(List(Peer), StrandError)
 /// for that checkpoint: `cap/peer.inbox` reads caller-owned pending
 /// inputs, and `cap/peer.history` reads materialized inputs. Acceptance
 /// is not a read receipt.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.send(to: \"main\", text: \"Review ready.\")
+///  ```
+///
+///  Capability: `strand.send`.
+///
 pub fn send(to: String, text: String) -> Result(Delivery, StrandError)
 /// Starts a child strand and returns a durable handle to its brief run.
 ///
@@ -2255,6 +3452,14 @@ pub fn wait(List(Handle), within_ms: Int) -> Result(List(Waited), StrandError)
 /// A one-line rendering of one joined handle, for the same reason
 /// `error_text` exists: a program that reduces a fan-out to a report
 /// should not have to spell the vocabulary out itself.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.waited_text(ready) == \"sub:a#op_1 completed\"
+///  ```
+///
+///
 pub fn waited_text(Waited) -> String
 /// Selects a configured model by catalogue name for the child's first
 /// run.
@@ -2263,6 +3468,15 @@ pub fn waited_text(Waited) -> String
 /// step, the assignment uses the host's subagent route or inherits the
 /// parent model. The chosen entry also supplies the child's initial
 /// thinking level.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // strand.assignment(purpose: \"review\", brief: \"Check the change\")
+///  // |> strand.with_model(\"reviewer\")
+///  // |> strand.spawn
+///  ```
+///
 pub fn with_model(Assignment, String) -> Assignment
 /// Narrows the child's tool set. It may only ever narrow the calling
 /// strand's own set; naming a tool the caller does not hold is
@@ -2324,6 +3538,13 @@ pub type WorkflowError {
 /// execution. Join the returned handle with strand.wait, whose result is
 /// durable. Other completed steps retain their handles when a failed step
 /// is retried by name.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // workflow.step(\"review-42\", \"v1\", commit, \"security\", assignment)
+///  ```
+///
 pub fn step(String, String, String, String, strand.Assignment) -> Result(strand.Handle, WorkflowError)
 ",
   ),

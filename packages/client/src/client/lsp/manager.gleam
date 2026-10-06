@@ -3072,6 +3072,21 @@ fn observed(
       "the observation requires a source file",
     )),
   )
+
+  // An omitted assertion selects the first file's actual configured owner.
+  // Every other file must agree before acquisition or source reads begin.
+  let request =
+    observation.Request(
+      ..request,
+      server: case request.server {
+        "" -> first.identity.server.name
+        named -> named
+      },
+      root: case request.root {
+        "" -> first.identity.root
+        named -> named
+      },
+    )
   let root =
     resolve.workspace_real(case filepath.is_absolute(request.root) {
       True -> request.root
@@ -3085,7 +3100,18 @@ fn observed(
       {
         False ->
           Error(observation.InvalidScope(
-            "every source must belong to the requested configured server and root",
+            "source "
+            <> owned.path
+            <> " belongs to configured server "
+            <> owned.identity.server.name
+            <> " at "
+            <> owned.identity.root
+            <> "; requested "
+            <> request.server
+            <> " at "
+            <> root
+            <> ". Use lsp_sql.plan(outlines, targets) to infer scope; the "
+            <> "server name is the configuration key, not the executable.",
           ))
         True ->
           admitted(gate(manager, owned.identity, owned.path))
