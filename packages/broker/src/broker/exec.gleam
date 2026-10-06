@@ -2942,6 +2942,12 @@ pub opaque type Pool {
 pub opaque type PoolMsg {
   Checkout(reply: Subject(Result(Helper, CheckoutError)))
   Checkin(helper: Helper)
+  PrepareBorrowed(
+    helper: Helper,
+    observer: TargetedObserver,
+    reply: Subject(Result(Nil, RetirementFailure)),
+  )
+  RetireBorrowed(helper: Helper, registration: Subject(Nil))
   StopPool
   AwaitPoolRetirement(reply: Subject(Result(Nil, RetirementFailure)))
   HelperRetired(pid: Pid, outcome: Result(Nil, RetirementFailure))
@@ -3121,11 +3127,26 @@ type PoolEntry {
     helper: Helper,
     monitor: process.Monitor,
     availability: Availability,
+    targeted: Option(TargetedObserver),
     // Which spawn this was, from one. Introspection only.
     ordinal: Int,
     // The hello features `await_ready` answered at spawn; empty until then.
     features: List(String),
   )
+}
+
+// One original send-only observer survives both retirement boundaries. Its
+// registration subject binds a retirement door to this concrete borrow.
+type TargetedObserver {
+  TargetedObserver(
+    registration: Subject(Nil),
+    completed: fn(Result(Nil, RetirementFailure)) -> Nil,
+  )
+}
+
+/// A retirement door for one originally observed borrow, never a lookup handle.
+pub opaque type BorrowedRetirement {
+  BorrowedRetirement(pool: Pool, helper: Helper, registration: Subject(Nil))
 }
 
 /// Where one inventoried helper stands with respect to lending and to
@@ -3342,6 +3363,49 @@ pub fn checkin(pool: Pool, helper: Helper) -> Nil {
   process.send(pool.subject, Checkin(helper:))
 }
 
+/// Installs exact retirement custody before dispatch without withdrawing the borrow.
+/// A lost acknowledgement triggers retirement through the same original door;
+/// it grants no dispatch permission and never checks the helper back in.
+/// The callback must only send to its original owner.
+///
+/// ## Examples
+///
+/// `prepare_borrowed_retirement(pool, helper, completed)` returns one live door.
+pub fn prepare_borrowed_retirement(
+  pool: Pool,
+  helper: Helper,
+  completed: fn(Result(Nil, RetirementFailure)) -> Nil,
+) -> Result(BorrowedRetirement, RetirementFailure) {
+  let registration = process.new_subject()
+  let original = BorrowedRetirement(pool, helper, registration)
+  let observer = TargetedObserver(registration, completed)
+  case
+    call.try_call(pool.subject, waiting: 1000, sending: fn(reply) {
+      PrepareBorrowed(helper, observer, reply)
+    })
+  {
+    Ok(Ok(Nil)) -> Ok(original)
+    Ok(Error(failure)) -> Error(failure)
+    Error(call.NoReply) | Error(call.CalleeGone) -> {
+      retire_borrowed(original)
+      Error(RetirementPending)
+    }
+  }
+}
+
+/// Permanently withdraws the exact observed borrow through its original pool.
+/// Duplicate or foreign doors cannot notify success or affect another helper.
+///
+/// ## Examples
+///
+/// `retire_borrowed(original)` asks the inventory to retain both cleanup boundaries.
+pub fn retire_borrowed(original: BorrowedRetirement) -> Nil {
+  process.send(
+    original.pool.subject,
+    RetireBorrowed(original.helper, original.registration),
+  )
+}
+
 /// Requests shutdown of every owned helper, including borrowed helpers.
 /// The pool stops only after confirmed retirement. Use `close_pool` when
 /// the caller needs the outcome; this cast is not proof of cleanup.
@@ -3409,6 +3473,25 @@ fn handle_pool(
       pool_step(PoolLive, handle_checkin(state, helper))
     PoolClosing, Checkin(..) | PoolFinished(..), Checkin(..) ->
       state_machine.keep(state)
+    phase, PrepareBorrowed(helper, observer, reply) -> {
+      let #(state, outcome) = prepare_targeted(state, helper, observer)
+      process.send(reply, outcome)
+      pool_step(phase, state)
+    }
+    phase, RetireBorrowed(helper, registration) -> {
+      let entries =
+        list.map(state.entries, fn(entry) {
+          case entry.helper == helper, entry.targeted {
+            True, Some(TargetedObserver(registration: actual, ..)) ->
+              case actual == registration {
+                True -> retire_entry(entry, state.commands)
+                False -> entry
+              }
+            _, _ -> entry
+          }
+        })
+      pool_step(phase, PoolState(..state, entries:))
+    }
     PoolLive, StopPool -> {
       let entries =
         list.map(state.entries, fn(entry) {
@@ -3557,6 +3640,38 @@ fn pool_step(
   |> state_machine.with_selector(pool_selector(state))
 }
 
+fn prepare_targeted(
+  state: PoolState,
+  helper: Helper,
+  observer: TargetedObserver,
+) -> #(PoolState, Result(Nil, RetirementFailure)) {
+  case list.find(state.entries, fn(entry) { entry.helper == helper }) {
+    Ok(PoolEntry(availability: Borrowed, targeted: None, ..)) -> {
+      let entries =
+        list.map(state.entries, fn(entry) {
+          case entry.helper == helper {
+            True -> PoolEntry(..entry, targeted: Some(observer))
+            False -> entry
+          }
+        })
+      #(PoolState(..state, entries:), Ok(Nil))
+    }
+    Ok(_) | Error(Nil) -> #(state, Error(RetirementProofLost))
+  }
+}
+
+// Observer publication precedes inventory removal; absence cannot recreate it.
+fn finish_targeted(
+  entry: PoolEntry,
+  outcome: Result(Nil, RetirementFailure),
+) -> PoolEntry {
+  case entry.targeted {
+    Some(observer) -> observer.completed(outcome)
+    None -> Nil
+  }
+  PoolEntry(..entry, targeted: None)
+}
+
 fn retire_entry(entry: PoolEntry, commands: Subject(PoolMsg)) -> PoolEntry {
   case entry.availability {
     Draining | RetiringActor | Unconfirmed(_) -> entry
@@ -3580,14 +3695,17 @@ fn record_retirement(
 ) -> PoolState {
   let entries =
     list.filter_map(state.entries, fn(entry) {
-      case entry.helper.pid == pid, outcome {
-        False, _ -> Ok(entry)
-        True, Ok(Nil) -> {
+      case entry.helper.pid == pid, entry.availability, outcome {
+        False, _, _ -> Ok(entry)
+        True, Draining, Ok(Nil) -> {
           process.send(entry.helper.commands, ForgetRetired)
           Ok(PoolEntry(..entry, availability: RetiringActor))
         }
-        True, Error(failure) ->
+        True, Draining, Error(failure) -> {
+          let entry = finish_targeted(entry, Error(failure))
           Ok(PoolEntry(..entry, availability: Unconfirmed(failure)))
+        }
+        True, _, _ -> Ok(entry)
       }
     })
   PoolState(..state, entries:)
@@ -3606,10 +3724,13 @@ fn record_owner_exit(
         False, _, _ -> Ok(entry)
         True, RetiringActor, process.Normal -> {
           process.demonitor_process(entry.monitor)
+          let _ = finish_targeted(entry, Ok(Nil))
           Error(Nil)
         }
-        True, _, _ ->
+        True, _, _ -> {
+          let entry = finish_targeted(entry, Error(RetirementOwnerGone))
           Ok(PoolEntry(..entry, availability: Unconfirmed(RetirementOwnerGone)))
+        }
       }
     })
 
@@ -3627,9 +3748,9 @@ fn handle_checkin(state: PoolState, helper: Helper) -> PoolState {
     list.map(state.entries, fn(entry) {
       case entry.helper.pid == helper.pid, entry.availability {
         True, Borrowed ->
-          case helper_ready(helper) {
-            True -> PoolEntry(..entry, availability: Available)
-            False -> retire_entry(entry, state.commands)
+          case entry.targeted, helper_ready(helper) {
+            None, True -> PoolEntry(..entry, availability: Available)
+            _, _ -> retire_entry(entry, state.commands)
           }
         False, _
         | True, Available
@@ -3709,6 +3830,7 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
           availability: Borrowed,
           ordinal: state.spawned + 1,
           features: [],
+          targeted: None,
         )
       let state =
         PoolState(
