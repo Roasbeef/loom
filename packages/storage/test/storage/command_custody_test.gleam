@@ -674,7 +674,7 @@ pub fn native_reservation_respects_original_actual_child_64_ceiling_test() {
   assert custody.close(store) == Ok(Nil)
 }
 
-pub fn fixed_two_offer_purposes_and_frozen_fences_never_evict_test() {
+pub fn fixed_three_offer_purposes_and_frozen_fences_never_evict_test() {
   let parent = key(0)
   let compile = make_service(parent, command.CompileService, "a")
   let launch = make_service(parent, command.LaunchService, "a")
@@ -709,6 +709,26 @@ pub fn fixed_two_offer_purposes_and_frozen_fences_never_evict_test() {
       make_offer(launch, "satellite command"),
     )
     == Ok(custody.Fresh)
+  let assert Ok(completion) =
+    custody.workspace_completion(limits(), <<"retained Original failure":utf8>>)
+    as "Storage checks structural lineage, while the owner validates semantics."
+  assert custody.receive_workspace_child(
+      store,
+      command.service_origin(compile),
+      command.request_id(compile),
+      completion,
+    )
+    == Ok(Nil)
+  let assert Ok(rewrite) =
+    command.rewrite_service_key(compile, id(5), command.digests(compile).0)
+    as "The fixed second Compile purpose retains its Original predecessor."
+  assert custody.admit_service_child(store, request(rewrite)) == Ok(Nil)
+  assert custody.admit_offer(
+      store,
+      request(rewrite),
+      make_offer(rewrite, "rewrite compile command"),
+    )
+    == Ok(custody.Fresh)
   assert custody.close(store) == Ok(Nil)
   corrupt(
     path,
@@ -734,7 +754,7 @@ pub fn fixed_two_offer_purposes_and_frozen_fences_never_evict_test() {
   assert custody.close(store) == Ok(Nil)
   let assert Ok(db) = sqlight.open(path)
     as "Frozen rows are still durably present."
-  assert scalar(db, "SELECT COUNT(*) FROM owner_custody_command_offers") == 2
+  assert scalar(db, "SELECT COUNT(*) FROM owner_custody_command_offers") == 3
   assert scalar(
       db,
       "SELECT MIN(reserved_bytes)>0 FROM owner_custody_command_offers",
@@ -785,7 +805,7 @@ pub fn impossible_per_parent_offer_overcount_refuses_before_blob_materialization
     == Ok(custody.Fresh)
   corrupt(
     path,
-    "INSERT INTO owner_custody_command_offers SELECT address || '-corrupt1', parent, service_origin, service_id, identity, native_origin || '-corrupt1', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers; INSERT INTO owner_custody_command_offers SELECT address || '-corrupt2', parent, service_origin, service_id, identity, native_origin || '-corrupt2', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers LIMIT 1",
+    "INSERT INTO owner_custody_command_offers SELECT address || '-corrupt1', parent, service_origin, service_id, identity, native_origin || '-corrupt1', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers; INSERT INTO owner_custody_command_offers SELECT address || '-corrupt2', parent, service_origin, service_id, identity, native_origin || '-corrupt2', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers LIMIT 1; INSERT INTO owner_custody_command_offers SELECT address || '-fourth', parent, service_origin, service_id, identity, native_origin || '-fourth', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers LIMIT 1",
   )
   assert custody.offer(store, ref(service))
     == Error(custody.Invalid(
@@ -1094,7 +1114,7 @@ pub fn indexed_lookup_cardinality_guard_precedes_oversized_neighbors_test() {
   let #(path, store, service, _) = lookup_fixture("overcount")
   corrupt(
     path,
-    "INSERT INTO owner_custody_command_offers SELECT address || '-1', parent, service_origin, service_id, identity, native_origin || '-1', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers; INSERT INTO owner_custody_command_offers SELECT address || '-2', parent, service_origin, service_id, identity, native_origin || '-2', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers LIMIT 1",
+    "INSERT INTO owner_custody_command_offers SELECT address || '-1', parent, service_origin, service_id, identity, native_origin || '-1', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers; INSERT INTO owner_custody_command_offers SELECT address || '-2', parent, service_origin, service_id, identity, native_origin || '-2', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers LIMIT 1; INSERT INTO owner_custody_command_offers SELECT address || '-fourth', parent, service_origin, service_id, identity, native_origin || '-fourth', offer_digest, zeroblob(262145), state, reserved_bytes FROM owner_custody_command_offers LIMIT 1",
   )
   assert custody.command_offer_for_origin(
       store,

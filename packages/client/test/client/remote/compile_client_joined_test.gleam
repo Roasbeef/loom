@@ -394,6 +394,7 @@ fn joined_owner(
             5000,
             [],
             owner_limits(),
+            vet_policy.workspace_effects(),
           )
         let assert Ok(config) =
           client.new(
@@ -420,6 +421,7 @@ fn joined_owner(
           as "Actual owner vetting."
         let compiled =
           client.service(config).compile(compile.CompileRequest(
+            compile.Original,
             vetted,
             compile.default_dependencies(),
             [],
@@ -789,6 +791,7 @@ fn historical_evidence(
         5000,
         [],
         owner_limits(),
+        vet_policy.workspace_effects(),
       ),
     )
     |> required
@@ -1030,6 +1033,7 @@ fn refusal_lifecycle(peer: distribution.Peer, mode: Refusal) -> Nil {
               5000,
               [],
               owner_limits(),
+              vet_policy.workspace_effects(),
             ),
           )
           |> required
@@ -1048,6 +1052,7 @@ fn refusal_lifecycle(peer: distribution.Peer, mode: Refusal) -> Nil {
           |> phase.build_phase
         let compiled =
           client.service(consumer).compile(compile.CompileRequest(
+            compile.Original,
             vetted,
             compile.default_dependencies(),
             generated,

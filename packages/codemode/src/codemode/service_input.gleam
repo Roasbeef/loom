@@ -32,6 +32,7 @@ import broker/enrollment
 import broker/policy
 import codemode/compile
 import codemode/enforcement
+import codemode/unused_imports
 import codemode/vet
 import codemode/vet/policy as vet_policy
 import core/bounded_msgpack
@@ -43,6 +44,7 @@ import core/workspace
 import gleam/bit_array
 import gleam/bool
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/set
 import gleam/string
@@ -427,6 +429,64 @@ pub fn admit_compile(
     Error(AssociationMismatch),
   )
   Ok(AdmittedCompile(key, input, vetted))
+}
+
+/// Checks the sole rewritten input against its retained Original failure.
+/// Both sources pass the same trusted policy and exact generated catalogue.
+/// The caller must obtain predecessor input and completion from actual custody.
+///
+/// ## Examples
+///
+/// `admit_rewrite(key, contract, next, previous, original, failure)` refuses
+/// changed dependencies, policy, source or a successful predecessor.
+pub fn admit_rewrite(
+  key: command.ServiceKey,
+  contract: CompilationContract,
+  next: CompileInput,
+  previous: command.ServiceKey,
+  original: CompileInput,
+  failure: compile.CompileError,
+) -> Result(AdmittedCompile, InputError) {
+  use <- bool.guard(
+    command.compile_predecessor(key) != option.Some(previous),
+    Error(AssociationMismatch),
+  )
+  use _ <- result.try(admit_compile(previous, contract, original))
+  use diagnostics <- result.try(case failure {
+    compile.BuildRejected(text) -> Ok(text)
+    _ -> Error(AssociationMismatch)
+  })
+  use rewrite <- result.try(
+    unused_imports.rewrite(
+      original.facts.source,
+      diagnostics,
+      "src/" <> compile.program_module <> ".gleam",
+    )
+    |> result.replace_error(AssociationMismatch),
+  )
+
+  // The rewrite narrows imports only; it cannot alter original host ceilings.
+  use <- bool.guard(
+    next.facts.source != rewrite.source
+      || next.facts.enrolled != original.facts.enrolled
+      || next.facts.seam != original.facts.seam
+      || next.facts.dependencies != original.facts.dependencies
+      || next.facts.policy_seed != original.facts.policy_seed
+      || next.facts.build_timeout_ms != original.facts.build_timeout_ms,
+    Error(AssociationMismatch),
+  )
+  admit_compile(key, contract, next)
+}
+
+/// Projects the administratively pinned enrollment for canonical wire decoding.
+///
+/// ## Examples
+///
+/// `contract_enrolled(contract)` never reads peer-selected enrollment defaults.
+pub fn contract_enrolled(
+  contract: CompilationContract,
+) -> enrollment.SessionEnrollment {
+  contract.enrolled
 }
 
 /// Returns the original key, bounded input and executor-revetted source token.

@@ -458,6 +458,7 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
     as "the spinning program must vet"
   let assert Ok(artifact) =
     config.compile.compile(compile.CompileRequest(
+      compile.Original,
       vetted:,
       dependencies: config.compile.dependencies,
       generated: config.compile.generated,

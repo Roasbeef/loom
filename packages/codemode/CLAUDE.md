@@ -19,6 +19,13 @@ selected facade list in trusted catalogue order. A workspace-only host uses
 Agency capability set. Incoming module names, sources and digest claims cannot
 widen this pin. Dependencies equal the current ordered production table.
 
+`admit_rewrite` requires the exact checked Original predecessor, retained
+BuildRejected diagnostics, and the deterministic unused-import transformation.
+It compares unchanged enrollment, seam, dependency, policy-seed and timeout facts,
+then re-vets and selects generated modules under the same trusted contract.
+The owner and executor read their actual retained Original evidence before
+calling this pure validator; packet-selected diagnostics cannot replace it.
+
 `admit_launch` matches the full producing Compile ServiceKey and every field of
 its retained successful `compile.Compiled` executor artifact, with its reported
 build enforcement. Physical Compile/Launch steps may differ; original parents
@@ -181,7 +188,8 @@ session and sends it many invocations.
 
 ## Physical host boundaries
 
-`compile.CompileService` receives vetted source, narrowed generated imports,
+`compile.CompileService` receives a `CompileRequest` with the closed Original or
+UnusedImportRewrite attempt, vetted source, narrowed generated imports,
 dependencies and phase identity before any preparation touches disk.
 `compile.local_service` closes over the local build root and Builder and
 performs the existing preparation/build/hash sequence. `Artifact` separates
@@ -1104,13 +1112,20 @@ module|value|type|item` warning about `src/loom_program.gleam` and the
 closing `error: N warnings generated.` count equals the warnings listed;
 anything else, the transitive-dependency warning above all, returns
 `Error(Nil)` and the failure stands as printed. The rewritten source goes
-back through `vet.vet` under the same `VetPolicy` and is built once more in
-the same build root; that second source is what the artifact's content
-address covers and what `Ran.source` returns. The second build's result is
+back through `vet.vet` under the same `VetPolicy`, selects generated modules
+again, and is built once more with the same original Build PhaseIdentity. Local
+compilation reuses its build root; the remote adapter uses two immutable physical
+service/native identities linked by the checked Original predecessor. Original
+and UnusedImportRewrite preserve operation, step, pooled budget, deadline and
+empty Build grants. The second source is what the artifact's content address
+covers and what `Ran.source` returns. The second build's result is
 final, so there is never a second rewrite. `Execution.edits` carries the
 removal notes. The tests run over output captured from the pinned
 toolchain; if a Gleam upgrade changes the diagnostic layout the rewrite
 refuses (the tests fail first), it never guesses.
+
+The remote boundary is specified in [protocol 071](../../protocol-change/071-remote-compile-attempts.md)
+and [remote Compile attempts](../../docs/architecture/remote-compile-attempts.md).
 
 ## The call record (protocol 060)
 
