@@ -96,6 +96,9 @@ fn reader(capture: fn() -> Result(snapshot.Cut, snapshot.Error)) {
   snapshot.Reader(
     capture: fn(_plan, _wait) { capture() },
     page: fn(_after, _before, _limit, _wait) { Error(snapshot.InvalidRequest) },
+    lineage: fn(_from, _before, _limit, _wait) {
+      Error(snapshot.InvalidRequest)
+    },
     fragment: fn(_descriptor, _offset, _wait) { Error(snapshot.InvalidRequest) },
   )
 }
