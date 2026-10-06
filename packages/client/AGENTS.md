@@ -449,16 +449,32 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `Start.rename`, and a home that holds either gets `home_owner_accepts` (a
   `submit` beneath `home.table_path`, plus the clicks `home_accepts` takes), one
   rule for both forms; every other home gets `home_accepts`.
-  `create_for(standing, tickets, open, create, workspace, name, sharing,
-  within:)` re-derives the page from the grant: open (the epoch check), Operator
-  ceiling, the credential authenticates as the page's principal and that is the
-  owner, `creations.chosen_name`, a workspace the owner's `authorized_page`
-  lists, `ui_sessions.reserve_creation` (10 an hour per credential, apart from
+  `create_for(standing, tickets, open, create, folder, place, name, sharing,
+  within:)` re-derives the page from the grant: `authorized_owner` (open, the
+  epoch check, Operator ceiling, the credential authenticates as the page's
+  principal and that is the owner), `placed` (a `creations.Place`: a typed path
+  is judged by `folder`, which is `new_folder.check` in production; a drawn
+  workspace is one the owner's `authorized_page` lists, or one of the owner's
+  remembered folders, judged again by `folder`; protocol-change/074),
+  `creations.chosen_name` against that workspace, `ui_sessions.reserve_creation` (10 an hour per credential, apart from
   invitations, not given back), then `create` (`HomeAttachment.create`, which is
   `server.create_session`, the control command's own function) under a key
   `web-<hex>`, a `daemon.session_created` line, and `opened_ticket` (the open,
   wait and mint `resume_for` shares). `create_task` runs it in a weft run linked
   to the Lustre runtime and returns at once.
+  A folder with no session (protocol-change/074). `client/daemon/new_folder` is
+  the filesystem half of the rule for a typed path: `check_in(typed, home)` types
+  the text (`creations.typed_path`), expands `~` (`creations.expanded`), makes it
+  canonical with `bootstrap.canonical_directory`, requires the canonical folder
+  to lie strictly inside the canonical home with no hidden segment
+  (`creations.inside`), and requires the folder's owner to be the home's owner
+  with owner rwx; `check` reads `HOME`. `server.create_session` ends by
+  `manager.remember_folder`, a cast to the registry that writes the catalogue's
+  recent-folders table (`catalogue.remember_folder`), so every surface feeds it;
+  `manager.recent_folders` and `forget_folder` read and edit it. `recent_for` and
+  `forget_for` run `authorized_owner` first and list only entries inside home;
+  `home_folders_capability` gives `Start.folders` on the creation capability's
+  condition, and `upgrade_home` builds its two functions with `read_task`.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential

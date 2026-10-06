@@ -89,7 +89,7 @@ the page's cookie, key and nonce in one actor. A ticket for it is minted
 only by `UiLink` (`client/daemon/server.gleam:2081`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:1335`)). The
+switching to another session (`ticket_for` (`ui_socket.gleam:1411`)). The
 exchange redeems it once (`redeem` (`ui_sessions.gleam:737`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
@@ -297,7 +297,7 @@ that adds it says what the narrowed holder may ask.
 
 Keying the row by the digest of the identifier is what makes a login fit
 the existing model: every check in the tree takes a credential digest
-(`authenticate` (`client/daemon/manager.gleam:1297`), `session_authority`,
+(`authenticate` (`client/daemon/manager.gleam:1365`), `session_authority`,
 `frame_authority`, `administer`), and a page minted from a login carries
 that digest as its `Grant.credential`. The page's socket, its relay, the
 gateway's per-frame re-check and the admin dispatch all run unchanged
@@ -641,7 +641,7 @@ login add these cases.
 `sessions.create` is owner-only (`CreateSession`
 (`client/daemon/server.gleam:1604`)): it canonicalizes a workspace path on the
 daemon's host, canonicalizes or inherits a configuration path, and runs
-`create_scoped` (`client/daemon/manager.gleam:1403`) under an idempotency key.
+`create_scoped` (`client/daemon/manager.gleam:1471`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
 counter (`CreateSession` (`tui/session_control.gleam:678`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
@@ -731,7 +731,7 @@ and the epoch the page was admitted in:
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
    it", the check `OpenSession` (`client/daemon/server.gleam:2099`) makes;
-3. `open` (`client/daemon/manager.gleam:1081`) is called, which is the same
+3. `open` (`client/daemon/manager.gleam:1149`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
 4. the daemon waits for the session to become `Resident`, polling `get`
@@ -770,9 +770,9 @@ membership is.
 053 designed the admin page in full (phase 4) and the owner ruled on
 2026-09-30 that it waits for use of the terminal's `/access` overlay
 (`tui/access_overlay.gleam`). The daemon serves the two owner-only reads it
-needs, `principal_page` (`client/daemon/manager.gleam:1139`) and
-`membership_page` (`client/daemon/manager.gleam:1162`), and every mutation
-through one dispatch, `administer` (`client/daemon/manager.gleam:734`): invite,
+needs, `principal_page` (`client/daemon/manager.gleam:1207`) and
+`membership_page` (`client/daemon/manager.gleam:1230`), and every mutation
+through one dispatch, `administer` (`client/daemon/manager.gleam:745`): invite,
 set-role, revoke membership, rotate, revoke credentials, isolate. The owner's
 session page already starts one of those from a browser, `invite_for`
 (`ui_socket.gleam:812`), bounded to three an hour for the credential and shown
@@ -887,7 +887,7 @@ A principal has a stable ID and a display name (`Principal`
 SESSION PRINCIPAL ROLE NAME`, and `Guest <digits>` from the page). The
 catalogue can rename one (`rename` (`storage/access.gleam:1161`)) and no control
 command exposes it (053, Open). A claim binds a credential to the principal
-(`claim` (`client/daemon/manager.gleam:659`)) and carried no name before this change. The name
+(`claim` (`client/daemon/manager.gleam:665`)) and carried no name before this change. The name
 reaches everyone through the roster: the gateway stamps each connection and
 each admitted command with the principal's current name (`Origin`
 (`client/gateway.gleam:1783`)), presence frames carry it, and an origin keeps
