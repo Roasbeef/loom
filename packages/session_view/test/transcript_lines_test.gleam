@@ -48,19 +48,38 @@ pub fn a_confirmed_stop_says_stopped_and_nothing_more_test() {
     == stopped
 }
 
-// A stop the harness could not establish keeps its words, and a failed turn is
-// still a failure.
-pub fn an_unconfirmed_stop_keeps_its_diagnostic_test() {
-  let unconfirmed =
-    "provider cancellation could not be confirmed (runtime: explicit stop)"
+// A stop the harness could not establish says so in plain words, with no part
+// of the harness named, and any other diagnostic keeps its own words. A failed
+// turn is still a failure.
+pub fn an_unconfirmed_stop_says_so_in_plain_words_test() {
+  let stopped = transcript_line.Line(transcript_line.System, "Stopped")
+  let detail = fn(words) {
+    transcript_line.Line(transcript_line.ToolDetail, words)
+  }
   assert transcript_lines.assistant_terminal_lines(
       message.Aborted,
-      Some(unconfirmed),
+      Some(
+        "provider cancellation could not be confirmed (runtime: explicit stop)",
+      ),
     )
-    == [
-      transcript_line.Line(transcript_line.System, "Stopped"),
-      transcript_line.Line(transcript_line.ToolDetail, unconfirmed),
-    ]
+    == [stopped, detail("The provider may not have confirmed the stop.")]
+  assert transcript_lines.assistant_terminal_lines(
+      message.Aborted,
+      Some("provider cancellation could not be confirmed"),
+    )
+    == [stopped, detail("The provider may not have confirmed the stop.")]
+  assert transcript_lines.assistant_terminal_lines(
+      message.Aborted,
+      Some(
+        "provider ownership ended without proof of drain (gateway: transport exit)",
+      ),
+    )
+    == [stopped, detail("The provider may still be working on the request.")]
+  assert transcript_lines.assistant_terminal_lines(
+      message.Aborted,
+      Some("the response was settled after a restart"),
+    )
+    == [stopped, detail("the response was settled after a restart")]
   assert transcript_lines.assistant_terminal_lines(
       message.Errored,
       Some("provider request was cancelled (runtime: explicit stop)"),

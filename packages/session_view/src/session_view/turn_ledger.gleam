@@ -251,6 +251,14 @@ pub fn completed(
 /// divider's count of the turn's steps, which says how many a read that
 /// stopped early did not reach.
 ///
+/// A step is a call drawn with its result, and a result never comes before its
+/// call. A read that stopped early began somewhere inside the turn's records,
+/// and a model that makes its calls in one message and gets the results as many
+/// records can leave the read between the two: results whose call the read did
+/// not reach. A result with no call names nothing, so those are not drawn, nor
+/// counted toward filling a fold, and the steps they belong to are among the
+/// ones the read did not reach.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -269,7 +277,12 @@ pub fn steps(
     Ok(newest) -> #(newest, True)
     Error(Nil) -> #(lead, False)
   }
-  let items = work_items(turn, strands, expansion)
+  let items = case whole {
+    True -> work_items(turn, strands, expansion)
+    False ->
+      work_items(turn, strands, expansion)
+      |> list.filter(fn(item) { !is_orphan(item) })
+  }
   let full = fold_budget.item_rows(items) >= fold_budget.fold_rows
   case whole, full, source {
     True, _, _ -> Ok(cut(items))
@@ -652,12 +665,29 @@ fn cut(items: List(turns.Item)) -> Steps {
 
 // The steps of a read that stopped before the turn's input. The divider has
 // counted every step of the turn, so what the page does not show is that count
-// less the steps it does, whatever else the read held: the result of a call the
-// read did not reach is an item, and counting it would count the step it
-// belongs to twice.
+// less the steps it does, whatever else the read held. The steps drawn and the
+// steps not shown add up to the divider's.
 fn early(items: List(turns.Item), worked_steps: Int) -> Steps {
   let #(kept, _) = fold_budget.newest(items, fold_budget.fold_rows)
   Steps(items: kept, unread: int.max(0, worked_steps - count_steps(kept)))
+}
+
+// Whether an item is a tool result drawn on its own, because the call it
+// answers is outside what was read.
+fn is_orphan(item: turns.Item) -> Bool {
+  case item {
+    turns.Narrated(
+      block: transcript_lines.Block(
+        source: transcript_lines.FromEntry(entry.MessageEntry(
+          message: message.ToolResultMessage(..),
+          ..,
+        )),
+        ..,
+      ),
+      ..,
+    ) -> True
+    turns.Narrated(..) | turns.Step(..) | turns.Memory(..) -> False
+  }
 }
 
 fn count_steps(items: List(turns.Item)) -> Int {

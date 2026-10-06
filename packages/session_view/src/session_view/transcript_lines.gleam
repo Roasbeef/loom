@@ -3399,15 +3399,17 @@ pub const stopped_words = "Stopped"
 /// clean abort commits no diagnostic at all, so an `Aborted` message that
 /// carries one names a stop the harness could not establish: an unconfirmed
 /// provider cancellation, a lost drain proof, or an orphaned response settled
-/// across a restart. The provider may still be generating in all three, so the
-/// text stays visible at both extents. It is dim detail rather than the failure
-/// style because it describes the provider, not a failed turn.
+/// across a restart. The provider may still be generating in all three, so a
+/// line stays beneath `Stopped`. It is dim detail rather than the failure style
+/// because it describes the provider, not a failed turn.
 ///
-/// A stop the provider confirmed (`provider request was cancelled`) is what a
-/// Stop or a steer does to a response that is being written, and the records do
-/// not say which of them asked, so it is the one word `Stopped` and nothing
-/// beneath it, whatever part of the harness the diagnostic names (`(runtime:
-/// explicit stop)`). Every other diagnostic is shown as it was written.
+/// The diagnostic is the harness's own account, with the part of the harness
+/// that observed the stop named after it (`(runtime: explicit stop)`), and none
+/// of that is for the reader. A stop the provider confirmed (`provider request
+/// was cancelled`) is what a Stop or a steer does to a response that is being
+/// written, and the records do not say which of them asked, so it is the one
+/// word `Stopped` and nothing beneath it. The two stops it could not confirm
+/// say so in plain words. Any other diagnostic is shown as it was written.
 @internal
 pub fn assistant_terminal_lines(
   reason: message.StopReason,
@@ -3425,25 +3427,40 @@ pub fn assistant_terminal_lines(
   }
 }
 
-// The diagnostic of a stop, or nothing when it says only that the provider's
-// request was cancelled and the part of the harness that asked, which
-// `Stopped` already says. Every other diagnostic is kept as it was written.
+// What a stop's diagnostic tells the reader beyond `Stopped`, or nothing. The
+// harness's note of where it observed the stop is dropped first, so each
+// diagnostic is read by what it says.
 fn stop_detail(text: String) -> Option(String) {
-  let confirmed = "provider request was cancelled"
   case string.split_once(text, " (") {
-    Ok(#(head, cause)) if head == confirmed ->
-      case
-        string.ends_with(cause, ")")
-        && list.any(
-          ["attempt: ", "gateway: ", "relay: ", "runtime: "],
-          fn(source) { string.starts_with(cause, source) },
-        )
-      {
-        True -> None
-        False -> Some(text)
+    Ok(#(head, cause)) ->
+      case observed_at(cause) {
+        True -> stop_words(head)
+        False -> stop_words(text)
       }
-    _ if text == confirmed -> None
-    _ -> Some(text)
+    Error(Nil) -> stop_words(text)
+  }
+}
+
+// Whether the text after a diagnostic's ` (` is the harness's note of the
+// boundary that observed the stop and why (`runtime: explicit stop)`).
+fn observed_at(cause: String) -> Bool {
+  string.ends_with(cause, ")")
+  && list.any(["attempt: ", "gateway: ", "relay: ", "runtime: "], fn(source) {
+    string.starts_with(cause, source)
+  })
+}
+
+// The words for a stop's diagnostic: nothing for the provider's confirmed
+// cancellation, which `Stopped` already says, plain words for the two stops it
+// could not confirm, and every other diagnostic as it was written.
+fn stop_words(diagnostic: String) -> Option(String) {
+  case diagnostic {
+    "provider request was cancelled" -> None
+    "provider cancellation could not be confirmed" ->
+      Some("The provider may not have confirmed the stop.")
+    "provider ownership ended without proof of drain" ->
+      Some("The provider may still be working on the request.")
+    other -> Some(other)
   }
 }
 

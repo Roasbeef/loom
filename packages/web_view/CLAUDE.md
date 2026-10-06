@@ -474,9 +474,13 @@ page keys and nonces, and the relay into the session's gateway.
   between turns (`turns.grouped`); once the reader loads older turns its limit is
   `held_rows`. The limit counts drawn rows: a settled turn is its prompt, its
   answer and one divider, and its steps are drawn only while the reader has
-  its fold open (below). `component.Paging` is `Tail | Paged | Full`; `Full`
+  its fold open (below). `component.Paging` is `Tail | Paged | Crowded | Full`; `Full`
   means a paged page had to cut a whole turn, so it loads no more, and a page
-  that fits again after a fold closed is `Paged` again.
+  that fits again after a fold closed is `Paged` again. `Crowded` is the same
+  stop while the running turn's rows (drawn open) are what cut the page: it is
+  `Paged` again when the turn settles into one divider and the cut is gone, and
+  `Full` if it is still cut. A cut by the bytes of the closed turns, which only
+  grow, is `Full` for good (`component.paged`).
 - **Lazy folds** (protocol-change/070, `session_view/fold_budget`) and
   **turn summaries** (protocol-change/071, `session_view/turn_ledger`). A closed
   turn is not kept as records. `relaned` closes every turn of the history window
@@ -514,8 +518,9 @@ page keys and nonces, and the relay into the session's gateway.
   messages and no timer. A refused or lost read is given up (`abandoned`): the
   press can be made again, a lead is drawn as far as it is known
   (`View.completion: Spent`, also what a read that ended before the turn's input
-  leaves, so older closed turns are untouched), and a fold says how many steps
-  it did not show. Records that arrive after a closed turn with no input of
+  leaves, so older closed turns are untouched; it holds for that lead only and
+  is `Untried` again once the lead has been closed, `completion_after`), and a
+  fold says how many steps it did not show. Records that arrive after a closed turn with no input of
   their own are read with that turn again (`lead_of`, `beside`). A parked
   strand's closed turns are dropped with its window.
   `FoldToggled(fold)` opens or closes a fold (`folded_at`): it acts only on a

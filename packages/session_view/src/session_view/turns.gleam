@@ -158,12 +158,12 @@ pub type Frame {
 
 /// How a turn's work ended, as the records say.
 pub type Ending {
-  /// No response of the turn was aborted.
+  /// No response of the turn was aborted, and no command it ran was stopped.
   Finished
 
-  /// A response of the turn was aborted. The records say the response was
-  /// stopped and not what stopped it, so a steer, a Stop and an abort all read
-  /// as this.
+  /// A response of the turn was aborted, or a command it ran was stopped on
+  /// request. The records say it was stopped and not what stopped it, so a steer,
+  /// a Stop and an abort all read as this.
   Interrupted
 }
 
@@ -725,9 +725,16 @@ type Classified {
     took: Option(Int),
   )
 
-  // Something folded under the divider, with the tool calls it made and
-  // the paths those calls wrote.
-  Doing(item: Item, at: Option(Int), steps: Int, wrote: List(String))
+  // Something folded under the divider, with the tool calls it made, the
+  // paths those calls wrote, and whether the turn was stopped while it ran
+  // (`cancelled`).
+  Doing(
+    item: Item,
+    at: Option(Int),
+    steps: Int,
+    wrote: List(String),
+    ending: Ending,
+  )
 
   // Something drawn where it stands, outside any fold.
   Outside(piece: Piece)
@@ -807,8 +814,9 @@ fn remembered(
         None,
         0,
         [],
+        Finished,
       )
-    Skip -> Doing(Memory(block.key <> ":0", lines, []), None, 0, [])
+    Skip -> Doing(Memory(block.key <> ":0", lines, []), None, 0, [], Finished)
   }
 }
 
@@ -1054,6 +1062,7 @@ fn entry_kind(
                   at,
                   0,
                   [],
+                  Finished,
                 ),
               ]
             },
@@ -1110,10 +1119,12 @@ fn entry_kind(
           Outside(spawned(block.key, None, details, outcome, strands)),
         ]
         False, "agent_wait" -> [
-          Doing(Narrated(block, dict.new(), None), at, 1, []),
+          Doing(Narrated(block, dict.new(), None), at, 1, [], Finished),
           ..returned(block.key, details, strands)
         ]
-        False, _ -> [Doing(Narrated(block, dict.new(), None), at, 1, [])]
+        False, _ -> [
+          Doing(Narrated(block, dict.new(), None), at, 1, [], Finished),
+        ]
       }
     }
 
@@ -1287,7 +1298,13 @@ fn called(
       )),
     ]
     "agent_wait" -> [
-      Doing(step(key, call, standing, expansion), at, 1, []),
+      Doing(
+        step(key, call, standing, expansion),
+        at,
+        1,
+        [],
+        cancelled(call.outcome),
+      ),
       ..returned(key, details(call.outcome), strands)
     ]
     _ -> [
@@ -1296,6 +1313,7 @@ fn called(
         at,
         1,
         result.unwrap(wrote, []),
+        cancelled(call.outcome),
       ),
     ]
   }
@@ -1327,6 +1345,25 @@ fn step(
     full:,
     images: transcript_image.of_outcome(call.outcome),
   )
+}
+
+// Whether a call's result says its command was stopped on request: the broker
+// asked for the stop while it ran, as a Stop or a steer does, and its wall clock
+// did not run out (`tools/bash`: `cancelled` together with `timed_out` is a
+// deadline). Only a result that says so counts, since other tools do not record
+// why they ended, and the divider says `interrupted` for no other.
+fn cancelled(outcome: Option(message.AgentMessage)) -> Ending {
+  let flag = fn(details, name) {
+    option.then(details, field(_, name)) == Some(json.Bool(True))
+  }
+  case outcome {
+    Some(message.ToolResultMessage(details:, ..)) ->
+      case flag(details, "cancelled"), flag(details, "timed_out") {
+        True, False -> Interrupted
+        True, True | False, _ -> Finished
+      }
+    Some(_) | None -> Finished
+  }
 }
 
 fn standing(outcome: Option(message.AgentMessage)) -> Standing {
@@ -1611,6 +1648,7 @@ fn stopped(item: Classified) -> Bool {
           transcript_lines.stopped_words,
         )
       })
+    Doing(ending: Interrupted, ..) -> True
     Doing(..) | Input(..) | Outside(..) -> False
   }
 }

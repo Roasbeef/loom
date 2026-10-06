@@ -363,7 +363,11 @@ pub fn opening_a_fold_reads_only_its_newest_steps_test() {
   // The turn is the records 9 to 1150, and its newest steps are at its end.
   assert reads != []
   assert list.length(reads) <= 3
-  assert list.all(reads, fn(read) { before_of(read) > 1000 })
+
+  // A hundred rows of steps are the newest two hundred records, and the read
+  // that stops at one of them has to go a little past them, since a result
+  // whose call it did not reach is not drawn and does not count.
+  assert list.all(reads, fn(read) { before_of(read) > 900 })
   let assert [#(held, hidden)] = drawn(open)
   assert held == 100
 
@@ -385,14 +389,13 @@ pub fn opening_a_fold_reads_only_its_newest_steps_test() {
     })
   let assert [seq, _] = string.split(key, ".")
   let assert Ok(seq) = int.parse(seq)
-  assert seq > 2 * hidden
+  assert seq > hidden
 
   // The newest steps are the ones the read reached, and the earlier ones are
-  // those it did not: a result whose call lay below the read is a row of the
-  // fold and not a step, so the count of steps shown and not shown is the
-  // divider's 570 whichever way that boundary fell.
-  assert held + hidden >= 570
-  assert held + hidden <= 571
+  // those it did not: a result whose call lay below the read is not drawn, so
+  // the steps shown and not shown are the divider's 570 whichever way that
+  // boundary fell.
+  assert held + hidden == 570
   let html = element.to_string(component.view(open))
   assert string.contains(
     html,
@@ -503,6 +506,107 @@ pub fn a_new_page_holds_no_open_fold_test() {
   let archive = lane_fixture.reading([570])
   let #(page, _, _) = reloaded(archive)
   assert drawn(page) == []
+}
+
+// Going Home and pressing the browser's Back opens the session's page again,
+// which is a new page for the same session: it holds nothing of the page the
+// reader left, so it draws what a first open draws, whatever the reader had
+// loaded or opened there. The turns the reader loaded are one press away, the
+// same press a first open offers.
+pub fn a_page_that_back_returns_to_draws_what_a_first_open_draws_test() {
+  let archive = lane_fixture.reading([30, 30, 30, 30])
+  let #(first, wire, capture) = reloaded(archive)
+  assert component.top(first) == lane.Earlier
+  let loaded = pressed(first, wire, archive, capture)
+  assert list.length(spoken(loaded)) > list.length(spoken(first))
+  let assert [fold, ..] = folds(loaded)
+  let #(open, _) = opened(loaded, wire, archive, capture, fold)
+  assert drawn(open) != []
+
+  let #(back, wire, capture) = reloaded(archive)
+  assert spoken(back) == spoken(first)
+  assert dividers(back) == dividers(first)
+  assert drawn(back) == []
+  assert component.top(back) == lane.Earlier
+  let again = pressed(back, wire, archive, capture)
+  assert spoken(again) == spoken(loaded)
+}
+
+// The steps each open fold of the page draws, oldest turn first.
+fn open_items(page) -> List(turns.Item) {
+  list.flat_map(component.pieces(page), fn(piece) {
+    case piece {
+      turns.Work(items:, folding: turns.Unfolded(_), ..) -> items
+      turns.Work(..)
+      | turns.Plain(..)
+      | turns.Prompt(..)
+      | turns.Spawned(..)
+      | turns.Returned(..)
+      | turns.Nudged(..)
+      | turns.Peer(..)
+      | turns.Sibling(..)
+      | turns.Missed(..)
+      | turns.Decided(..)
+      | turns.Commentary(..) -> []
+    }
+  })
+}
+
+// A model that issues its calls in batches writes one message of many calls and
+// then one record for each result. The newest hundred records of such a turn
+// start among the results, so a read that stops there holds results whose call
+// it did not reach. The fold draws no result without its call, and the steps it
+// draws and the steps it says it does not show are the divider's count.
+pub fn a_fold_over_batched_calls_draws_only_whole_steps_test() {
+  let archive = lane_fixture.batched([[40, 40, 40]])
+  let #(page, wire, capture) = reloaded(archive)
+  let assert [divider] = dividers(page)
+  assert string.contains(divider, "120 steps")
+  let assert [fold] = folds(page)
+  let #(open, _) = opened(page, wire, archive, capture, fold)
+  let items = open_items(open)
+  assert items != []
+  assert list.all(items, fn(item) {
+    case item {
+      turns.Step(..) -> True
+      turns.Narrated(..) | turns.Memory(..) -> False
+    }
+  })
+  let assert [#(held, hidden)] = drawn(open)
+  assert held == list.length(items)
+  assert hidden > 0
+  assert held + hidden == 120
+  let html = element.to_string(component.view(open))
+  assert string.contains(
+    html,
+    int.to_string(hidden)
+      <> " earlier steps are not shown, to keep the page small.",
+  )
+}
+
+// A refused read gives up on completing one lead. It does not outlive that
+// lead: records that arrive afterwards with no input of their own are a lead
+// of their own, and are read like the first, so the turn is one divider, as it
+// is on a page opened after both.
+pub fn a_refused_read_does_not_split_a_later_resume_test() {
+  let first = lane_fixture.reading([110])
+  let wire = process.new_subject()
+  let page =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([lane_fixture.newest(first, 100)])
+    |> page_fixture.run(component.update, [component.Ticked])
+    |> page_fixture.refuse_reads(component.update, wire, component.Arrived)
+  assert list.length(dividers(page)) == 1
+
+  let archive = lane_fixture.resumed(first, 3)
+  let capture = lane_fixture.newest(archive, 100)
+  let page =
+    component.apply(page, [capture])
+    |> page_fixture.run(component.update, [component.Ticked])
+    |> lane_fixture.serve(wire, archive, capture)
+  let #(fresh, _, _) = reloaded(archive)
+  assert list.length(dividers(page)) == 1
+  assert dividers(page) == dividers(fresh)
 }
 
 // An aborted response draws one word, and the diagnostic the harness attached

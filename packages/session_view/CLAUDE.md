@@ -126,9 +126,11 @@ for a host with no surfaces.
   `before_seq`; `scanned` gives what it holds as a `Branch`, `scan_older` asks
   for the interval below it (a read the host's step sends through the same
   `range`/`sent`/`accept` as the window's, the window's demand served first, a
-  reply going to whichever asked for it), `scan_readable` says
-  whether it can go on (a sequence is left, and it has neither reached its
-  bound nor been cut), and `scan_end` drops it. It is bounded at 4,096 records
+  reply going to whichever asked for it), `scan_readable(state, missing)` says
+  whether it can go on (a sequence is left, it has neither reached its
+  bound nor been cut, and the parent it is missing, `missing`, is not a record
+  over the presentation limit that it already holds as a descriptor: no read
+  below such a record proves it), and `scan_end` drops it. It is bounded at 4,096 records
   and 32 MiB, private to the module, and a page that would take it past the
   bound is cut at the oldest end, so it still ends at its leaf, and the scan is
   unreadable afterwards. A `cancel` abandons it. The window is the same value after a scan as before it.
@@ -261,9 +263,15 @@ for a host with no surfaces.
   on an approval; a host that lets the reader open a fold sets `Unfolded(hidden)`
   through `fold_budget.draw`, and `Work.id` is the sequence of the first record
   the work folds, the number the host names the fold by; its `Worked` figures come from the records, failed calls included, which
-  `turns.divider` prints as `· 1 failed`, and `Worked.ending` is `Interrupted` when a response of the turn was aborted (its row leads with `transcript_lines.stopped_words`), which the divider prints as `· interrupted`; a result whose call lies outside the
+  `turns.divider` prints as `· 1 failed`, and `Worked.ending` is `Interrupted` when a response of the turn was aborted (its row leads with `transcript_lines.stopped_words`) or when a command it ran says the broker stopped it on request (`cancelled` without `timed_out` in a tool result's details, which `bash` records), which the divider prints as `· interrupted`; a result whose call lies outside the
   window counts as one step, so a turn cut inside a long run of calls shows a
-  figure that grows as older rows load). A response that failed says why on a
+  figure that grows as older rows load). A fold's steps read by `turn_ledger.steps`
+  never hold a result without its call: a read that stopped between a batch's
+  calls and its results leaves those results out, and the count of steps not shown
+  is the divider's less the steps drawn. A stop's diagnostic is worded for the
+  reader (`transcript_lines.assistant_terminal_lines`): nothing beneath `Stopped`
+  for a stop the provider confirmed, one plain sentence for a stop it could not
+  confirm, and never the harness's note of where it observed the stop. A response that failed says why on a
   `Plain` row beside the divider, never inside the fold. The fold's
   items are `Narrated` blocks (each with `took`, the response's time, which a
   reasoning row reads), `Step`s (`words` from `step_words.of_call`) and

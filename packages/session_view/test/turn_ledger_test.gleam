@@ -369,10 +369,132 @@ pub fn the_steps_of_a_fold_are_the_newest_that_fit_test() {
     turn_ledger.steps(partial, strands(), turns.Skip, 150, turn_ledger.Readable)
   assert fold_budget.item_rows(early.items) <= fold_budget.fold_rows
 
-  // A result whose call the read did not reach is an item and not a step, so
-  // the count can be one over: the read says what it did not see, not more.
-  assert list.length(early.items) + early.unread >= 150
-  assert list.length(early.items) + early.unread <= 151
+  // A result whose call the read did not reach is not drawn, so the steps
+  // drawn and the steps the read did not reach are the turn's, exactly.
+  assert list.length(early.items) + early.unread == 150
+}
+
+// A model that makes its calls in one message and gets the results as many
+// records: one question, then for each size one message of that many calls and
+// that many results, and an answer.
+fn batched(sizes: List(Int)) -> List(snapshot.Item) {
+  let question =
+    item(
+      1,
+      10_010,
+      message.UserMessage([message.UserText("question", None)], 0, None),
+    )
+  let #(seq, batches) =
+    list.fold(sizes, #(2, []), fn(acc, size) {
+      let #(seq, held) = acc
+      let names =
+        int.range(from: size, to: 0, with: [], run: fn(all, n) { [n, ..all] })
+        |> list.map(fn(n) {
+          "b" <> int.to_string(seq) <> "-" <> int.to_string(n)
+        })
+      let calls =
+        item(
+          seq,
+          10_000 + seq * 10,
+          assistant(
+            list.map(names, fn(name) {
+              message.AssistantToolCall(message.ToolCall(
+                name,
+                "fs_read",
+                json.Object([#("path", json.String("notes/" <> name))]),
+                None,
+                None,
+              ))
+            }),
+          ),
+        )
+      let results =
+        list.index_map(names, fn(name, index) {
+          let at = seq + 1 + index
+          item(
+            at,
+            10_000 + at * 10,
+            message.ToolResultMessage(
+              name,
+              "fs_read",
+              [message.ToolResultText("ok", None)],
+              Some(json.Object([])),
+              None,
+              None,
+              False,
+              10_000 + at * 10,
+            ),
+          )
+        })
+      #(seq + 1 + size, list.append(held, [calls, ..results]))
+    })
+  list.flatten([
+    [question],
+    batches,
+    [
+      item(
+        seq,
+        10_000 + seq * 10,
+        assistant([message.AssistantText("answer", None)]),
+      ),
+    ],
+  ])
+}
+
+// The read that fills a fold stops between a batch's calls and its results.
+// Those results name no call, so none is drawn, and what the page says it does
+// not show is the divider's count of steps less the steps it draws.
+pub fn a_read_cut_inside_a_batch_draws_no_result_without_its_call_test() {
+  let items = batched([60, 110])
+  let assert [sealed] = closed(items)
+  let worked = turn_ledger.worked_steps(sealed)
+  assert worked == 170
+
+  // Batch one's calls are record 2 and its results 3 to 62; the window holds
+  // the last twenty of those results and all of batch two, a hundred and ten
+  // calls.
+  let end = list.filter(items, fn(held) { snapshot.sequence(held) >= 43 })
+  let #(blocks, _, _, _) = held(end)
+  let assert Ok(steps) =
+    turn_ledger.steps(
+      blocks,
+      strands(),
+      turns.Skip,
+      worked,
+      turn_ledger.Readable,
+    )
+  assert steps.items != []
+  assert list.all(steps.items, fn(step) {
+    case step {
+      turns.Step(..) -> True
+      turns.Narrated(..) | turns.Memory(..) -> False
+    }
+  })
+  assert fold_budget.item_rows(steps.items) <= fold_budget.fold_rows
+  assert list.length(steps.items) + steps.unread == worked
+}
+
+// A read that holds only results has drawn nothing yet: it asks for more, or,
+// with nothing more to read, draws no step and says every step is not shown.
+pub fn a_read_of_results_alone_draws_nothing_test() {
+  let items = batched([60, 110])
+  let results =
+    list.filter(items, fn(held) {
+      snapshot.sequence(held) >= 43 && snapshot.sequence(held) <= 62
+    })
+  let #(blocks, _, _, _) = held(results)
+  assert turn_ledger.steps(
+      blocks,
+      strands(),
+      turns.Skip,
+      170,
+      turn_ledger.Readable,
+    )
+    == Error(Nil)
+  let assert Ok(steps) =
+    turn_ledger.steps(blocks, strands(), turns.Skip, 170, turn_ledger.Exhausted)
+  assert steps.items == []
+  assert steps.unread == 170
 }
 
 // A read that has not filled a fold and has not reached the turn's input needs
