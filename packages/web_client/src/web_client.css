@@ -805,23 +805,26 @@
      squeezing rows. The scroller fills the centre, so its scrollbar is at
      the column's edge, and its children are the transcript's 780px column,
      centred. */
-  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;padding-bottom:56px;}
-  loom-follow.follow > *{flex-shrink:0;width:100%;max-width:780px;align-self:center;box-sizing:border-box;}
+  loom-follow.follow{display:flex;flex-direction:column;flex:1 1 0;min-height:0;min-width:0;overflow-y:auto;overflow-anchor:none;overscroll-behavior:contain;scrollbar-width:thin;padding-bottom:56px;container-type:inline-size;}
+  loom-follow.follow > *{flex-shrink:0;width:100%;max-width:780px;align-self:center;box-sizing:border-box;padding-right:clamp(0px,calc((876px - 100cqw) / 2),48px);}
   /* The scroller ends in room for the "Jump to latest" button below (56px: its
      12px off the bottom edge, its height and a gap), so the last row of the
      transcript is never under it when the reader has scrolled to the end. */
   /* The "Jump to latest" button, drawn inside the client component while
      the reader is away from the bottom. Its wrapper has no height and
-     sticks to the bottom edge of the scroller, so the button floats over
-     the rows and the content's size does not change when it appears. A
-     button over the middle of the 780px column covers a line of whatever
-     the reader stopped at, a code block's included, so the wrapper spans the
-     scroller (not the column) and the button sits at its right edge: in the
-     gutter where the scroller is wider than the column, and over the end of a
-     line, where there is least to read, where it is not. */
-  .jump-anchor{position:sticky;bottom:0;z-index:1;flex:0 0 0;height:0;display:flex;justify-content:flex-end;padding-right:16px;}
+     sticks to the bottom edge of the scroller, so the button floats and the
+     content's size does not change when it appears. A button over the column
+     covers a line of whatever the reader stopped at, a code block's included,
+     so it is never over the column: it is a 32px disc at the scroller's right
+     edge, in a zone 48px wide that no row reaches. Where the scroller is wider
+     than the column by 48px a side the zone is the gutter. Where it is not
+     (the strands panel open at 1440 leaves 44px, a window of 800px none) the
+     column keeps a right padding of what is missing, so the zone is 48px at
+     every width and nothing is drawn in it (the 876px is the 780px column and
+     the zone on both sides). */
+  .jump-anchor{position:sticky;bottom:0;z-index:1;flex:0 0 0;height:0;display:flex;justify-content:flex-end;padding-right:8px;}
   loom-follow.follow > .jump-anchor{align-self:stretch;max-width:none;}
-  .jump-latest{position:absolute;bottom:12px;padding:5px 14px;border:1px solid var(--color-divider);border-radius:999px;background:var(--color-bg-raised);color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-float);}
+  .jump-latest{position:absolute;bottom:12px;display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:1px solid var(--color-divider);border-radius:50%;background:var(--color-bg-raised);color:var(--color-fg);font:16px/1 var(--font-sans);cursor:pointer;box-shadow:var(--shadow-float);}
   /* The line above the lane's oldest row: the "Load older" button, or
      words saying why there is none. Each fits the same minimum height, so
      the change from one to the other does not move the rows below. */

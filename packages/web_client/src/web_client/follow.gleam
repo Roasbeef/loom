@@ -738,9 +738,12 @@ fn keep(watching: Option(Watching), anchor: Anchor) -> Effect(Msg) {
 //
 // The button after the slot is drawn only while the reader is reading and
 // the bottom is further than `slack` away. Its wrapper has no height and
-// sticks to the bottom of the scroller (`web_client.css`), so it floats over
-// the last rows without changing the content's size, which is what the
-// resize observation would otherwise report as growth.
+// sticks to the bottom of the scroller (`web_client.css`), so it floats without
+// changing the content's size, which is what the resize observation would
+// otherwise report as growth. It floats in a strip at the scroller's right edge
+// that the stylesheet keeps clear of rows at every width, so it is over no
+// line. A disc with an arrow has no room for words, and so its name is its
+// title and its accessible label.
 fn view(model: Model) -> Element(Msg) {
   let slot =
     component.default_slot(
@@ -763,9 +766,11 @@ fn view(model: Model) -> Element(Msg) {
             [
               attribute.type_("button"),
               attribute.class("jump-latest"),
+              attribute.title("Jump to latest"),
+              attribute.aria_label("Jump to latest"),
               event.on_click(Jumped),
             ],
-            [html.text("Jump to latest")],
+            [html.text("↓")],
           ),
         ]),
       ])
