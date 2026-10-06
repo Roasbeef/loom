@@ -39,11 +39,12 @@ only its captured payload through the scripted enforcement probe.
 `context_view.reader` projects the immutable tool registry into a private
 name-keyed table containing only names, descriptions and schemas before
 constructing the hub's session-lived reader. Every observation still captures
-the current strand configuration and leaf together, then selects active tool
-names from that configuration. Sorting, deduplication, missing-name omission
+the current strand configuration, leaf and active operation together, then
+selects active tool names from that configuration. Sorting, deduplication, missing-name omission
 and duplicate registration replacement retain their existing semantics.
-`serve` also projects the fallback context window and compaction settings
-before retaining the reader. The public `read` and `inventory` adapters share
+`serve` retains the model holder and compaction settings before constructing
+`reader_with_operation`; active observations use the captured operation revision,
+while idle observations use publication. The public `read` and `inventory` adapters share
 the projected implementation; the production reader projects once at boot.
 
 `serve.with_code_mode_peers` retains the preceding `wrap_router` function
@@ -135,7 +136,8 @@ real path once, reads the boot bytes through the same bounded reader used by
 polling, and stores that path for both watching and sandbox protection.
 Retargeting an original file or parent symlink cannot select another trusted
 source. Environment-only startup watches nothing. Regular files are limited to
-1 MiB; preflight refuses FIFOs before open, and weft bounds each read or complete
+1 MiB; daemon startup and shared-domain construction also use that reader.
+Preflight refuses FIFOs before open, and weft bounds each read or complete
 validator at one second. Two equal 500 ms observations coalesce saves, including
 atomic replacements. Invalid, missing, oversized or unreadable files leave the
 last valid revision intact. Diagnostics log fixed event names and restart
@@ -4066,7 +4068,7 @@ these forks because they define the same modules.
   status and the metadata probes fail the observation. The pinned HEAD
   and subsequent filesystem reads form an observation, not an atomic snapshot.
 - **Current context is a server observation.** `ContextGet(strand)` captures
-  `StrandConfig` and `StrandLeaf` together, then projects the immutable branch
+  `StrandConfig`, `StrandLeaf` and `StrandState` together, then projects the immutable branch
   through its latest compaction. `client/context_view` prices the pinned prompt,
   active unique tool definitions, and projected messages. A usable provider
   total already includes static components; `runtime/hooks.context_tokens`

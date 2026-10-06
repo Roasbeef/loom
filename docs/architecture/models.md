@@ -715,11 +715,11 @@ because the gateway's `ProviderConfig` has no header slot to put one in.
 The bearer key from `api_key_env` is the only credential either adapter
 sends, which is all Baseten's OpenAI-compatible endpoints need.
 
-**Role chains are boot-time only, and the head is always tried first.** The
-`[roles]` routing is fixed in the registry that the wiring closures capture
-when the server starts. `model_name` moves a strand's (or the session's)
-identity, but re-routing a role's chain at runtime would need a mutable
-registry or a restart, and neither exists.
+**Role chains follow the operation snapshot, and the head is always tried
+first.** Explicit configuration edits publish `[roles]` routing for subsequent
+operations. Active work retains its captured chain, and `model_name` still
+changes durable strand identity explicitly. Background service consumers keep
+their boot-owned routing until restart.
 
 Nor does the gateway keep any state *within* a boot: no health tracking,
 no circuit breaker, no sticky chain position. A chain whose rate-limited
