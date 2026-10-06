@@ -360,6 +360,29 @@ page keys and nonces, and the relay into the session's gateway.
   acts only for the row and action that are confirming. The request is the daemon's task and its answer
   `ActionAnswered`, which words the notice and reads the list again. `home_test`
   reads it.
+- **Archiving from the sidebar** (protocol-change/065, the addendum on archiving
+  from the sidebar). `view/archiving` (`Archiving(message)`: `Never | Offered(ask,
+  confirm, cancel, stage)`) is what a page passes `sidebar.view` and `sidebar.home`
+  as their last argument. `Offered` draws `button.session-archive` after each
+  other row's own button (`Archive` on a saved or blocked row, `Stop and archive`
+  on a running one; hover and focus reveal it in the stylesheet, and it stays in
+  the tab order) and, while the row is asking, `li.session.confirming` holding the
+  question (`div.session-confirm`: a fixed sentence, the session's name as a text
+  node, a confirm and a Cancel). The session on screen has no button and a `title`
+  that says why. The memo key includes `archiving.stage`. `archiving.action(entry)`
+  is the action a press means (`StopArchive` for `Live`, `Archive` otherwise) and
+  is read from the page's own list, never from the message; `archiving.confirmed`
+  gives the action a confirm may act on only when the open question is the
+  sidebar's for that session. The home reuses its `acting` stage (`home.Msg`
+  `SidebarArchiveAsked`, `SidebarArchiveConfirmed`, `ConfirmCancelled`;
+  `home_table.in_row` treats the sidebar's two actions as calm so the table does
+  not draw the same question). The session page has `Transport.manage` (the home's
+  capability from `home_manage_capability`), `View.archiving`, `component.ask_archive`,
+  `confirm_archive`, `cancel_archive`, `Msg.ManageAnswered` (effect-owned, which
+  words the composer's notice and reads the list again) and
+  `operator_page.AskingArchive | ConfirmingArchive | CancellingArchive`. The new
+  action `actions.StopArchive` is one daemon task (`manage_for` stops, waits for
+  the session to be saved, archives). `sidebar_archive_test` reads it.
 - **The admin page's pill.** `admin.Start.ends_at` is the instant the page ends
   (an in-daemon value); `home_bar.ending` draws `ends in <loom-elapsed
   remaining="...">` after the first read, and the body has no sentence about the

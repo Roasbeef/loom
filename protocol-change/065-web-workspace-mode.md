@@ -2251,3 +2251,85 @@ refused standings), `ui_socket_test` (the capability, and none for a bookmark), 
 session page's states, the confirm guard, the refusal, an unasked answer),
 `admin_test` (the question, the guard, the saved variant, the running words, the
 refusal) and `grants_test`.
+
+## Addendum: archiving from the sidebar (2026-10-05)
+
+**Status**: IMPLEMENTED in the change that adds it (the owner's request to archive
+sessions directly from the sidebar). It adds no route, no admitted event and no
+control command. It adds one `Action`, `StopArchive`, to the session actions
+above, one capability to the session page's transport, and one field to the
+session attachment.
+
+**The problem.** The home's table offers Stop, Archive and Delete beside each row,
+but the sidebar, the column the owner keeps in sight, offered only a way to open a
+session. To clear a finished session away the owner had to go to the home page.
+
+**What changed.**
+
+- **A quiet button on each row.** Each sidebar row other than the one on screen
+  has a button after the row's own button (`view/archiving`): `Archive` on a saved
+  or blocked row and `Stop and archive` on a running one. The stylesheet shows it
+  on hover and on keyboard focus and keeps it in the tab order while hidden, so
+  the keyboard always reaches it; on a device with no hover it is always shown. It
+  is drawn after the row's own button, so no pinned path moves: the sidebar is
+  still at `0\t1` and the home's table at `0\t2\t1`.
+- **One question, then the request.** A press sends `SidebarArchiveAsked` on the
+  home and `AskingArchive` on a session page, and nothing is asked of the daemon.
+  The row's words are replaced by one sentence in fixed words, the session's name
+  beneath it as a text node, a confirm button and a Cancel. A running row's
+  sentence names both steps: `Stop this session, then archive it?`. Which action a
+  press means is decided by the server from the row's residency in the page's own
+  list (`archiving.action`): the message carries only the session. The confirm
+  message carries only the session too, and acts only when the open question is the
+  sidebar's for that session (`archiving.confirmed`), so a stale click on the
+  sidebar's confirm button cannot answer the table's Stop or Delete question, and
+  the table's Delete confirm cannot answer the sidebar's.
+- **`StopArchive` is one task.** The daemon stops the session, waits up to
+  `stop_wait_ms` for the registry to hold it saved, and archives it, in the one
+  `manage_task` the home's Stop and Archive already use, so the page's runtime
+  never waits and holds no stop answer to chain a second request from. A stop that
+  outlasts the wait is a stop that was made, so the archive is refused as busy and
+  the page says the session is still running; the owner presses again. A session
+  that was already saved is archived all the same.
+- **The same authority as the home's Archive button.** The session page is handed
+  the capability by the same function, `ui_socket.home_manage_capability`: the
+  owner, a page minted to operate, a `Workspace` reach and a `Fresh` origin. A page
+  a bookmark resumed, a member's page, a read-only link and a page of one session
+  (`loom ui --session`) draw no button and ignore the messages. `manage_for`
+  re-derives all of it at the click, as it does for the home, so nothing is trusted
+  from the page.
+- **The session on screen has no button.** Stopping it ends the page that asked,
+  and the task is linked to that page's runtime, so the archive would never run.
+  The row says so in its `title`. Archiving it by navigating home after the stop
+  would need a ticket minted for a page that is ending, which is not trivial.
+- **The table and the sidebar draw their own questions.** The home's single
+  `acting` stage serves both; the table treats the sidebar's two actions as calm
+  (`home_table.in_row`), so a state is never drawn twice.
+- **`Attachment` gains `sessions_directory`**, the daemon's own directory the
+  home's attachment already carries, so the session page's `manage_task` is the
+  home's. Only Delete removes anything from it, and a session page never offers
+  Delete. No page supplies it.
+- **Names are text nodes.** The question names the session as a text node and the
+  button's title is a fixed string.
+
+**What was considered.**
+
+- *Chaining the stop and the archive in the page*, from the stop's answer. The
+  page would hold a follow-up in its model and the session page would need the
+  state on both pages. One daemon task is the terminal's own sequence and has one
+  answer.
+- *Offering the action on the session on screen and ending on the home page.*
+  Rejected for the reason above.
+- *Offering it on the home's sidebar only.* A session page reached from a fresh
+  home has the same standing, so the capability is the same function and the
+  restriction would have cost the owner the column they use most.
+
+**Cost.** One variant on `Action`, one transport field and one message on the
+session page, one field on the attachment, and a stylesheet block. The sidebar's
+memo gains the archive stage in its key.
+
+**Tests.** `sidebar_archive_test` (the button by capability on both pages, the
+question and its escaped name, the ask once, the action each residency gives, a
+stale or forged confirmation, each question in its own place, the refusal words and
+the click paths), `home_test` and `sidebar_test` (their counts), `ui_route_test`
+(`StopArchive` against a real registry and in the table of refused standings).
