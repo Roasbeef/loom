@@ -416,7 +416,7 @@ pub fn a_feed_frame_is_recognized_on_the_advisors_branch_test() {
     == [
       transcript_line.Line(
         transcript_line.System,
-        "advisor feed: user:  [Ctrl+G to expand]",
+        "Recent work sent to the advisor for review  [Ctrl+G to expand]",
       ),
     ]
   assert transcript_lines.advisor_lines(
@@ -424,7 +424,10 @@ pub fn a_feed_frame_is_recognized_on_the_advisors_branch_test() {
       notes_view.Complete,
     )
     == [
-      transcript_line.Line(transcript_line.System, "advisor feed"),
+      transcript_line.Line(
+        transcript_line.System,
+        "Recent work sent to the advisor for review",
+      ),
       transcript_line.Line(transcript_line.ToolDetail, body),
     ]
 }
