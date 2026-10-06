@@ -267,7 +267,7 @@ principal's authority over the target session. Three authorities exist.
 Source: (`client/gateway.gleam:1917-1923`).
 
 The read-only set is `subscribe`, `catch_up`, `snapshot_next`,
-`history`, `escalations_get`, `escalations_decided`, `models`, `skills`, `notes`, `live_jobs`, `queued_input`,
+`history`, `history_lineage`, `escalations_get`, `escalations_decided`, `models`, `skills`, `notes`, `live_jobs`, `queued_input`,
 `worktree_diff`, `context` and `schedules`. Every other
 command from an observer is refused with the code `forbidden` before any
 durable write or effect dispatch.
@@ -1338,8 +1338,8 @@ Source: (`client/gateway.gleam:808-818`).
 Conversation state does not arrive in one frame. It arrives as a
 transfer: one header, then a fragment per credit, then a terminator.
 
-Five commands begin a transfer: `subscribe`, `catch_up`, `history`,
-`escalations_get` and `escalations_decided`.
+Six commands begin a transfer: `subscribe`, `catch_up`, `history`,
+`history_lineage`, `escalations_get` and `escalations_decided`.
 Source: (`client/gateway.gleam:1259-1289`).
 
 A connection holds at most one transfer. Beginning a second while one is
@@ -1354,8 +1354,8 @@ Source: (`client/daemon/transfer.gleam:33-34`) and
 
 #### 4.3.1 The procedure
 
-1. Send `subscribe`, `catch_up`, `history`, `escalations_get` or
-   `escalations_decided`.
+1. Send `subscribe`, `catch_up`, `history`, `history_lineage`,
+   `escalations_get` or `escalations_decided`.
 2. Receive `snapshot_begin`. Validate its identity fields against the
    attachment the client selected, and record `snapshot_id`,
    `next_seq`, `record_bytes_limit` and `fragment_bytes_limit`. Set the
@@ -1397,7 +1397,7 @@ a protocol violation. Source: (`session_view/snapshot.gleam:340-350`).
 |---|---|---|---|
 | `snapshot_id` | string | required | Transfer identity, 1 to 256 bytes. |
 | `next_seq` | integer | required | First sequence after this cut. Nothing in the transfer has a sequence at or above it. |
-| `window` | string | required | `recent`, `catch_up`, `history`, `escalations` or `decided`. |
+| `window` | string | required | `recent`, `catch_up`, `history`, `lineage`, `escalations` or `decided`. |
 | `complete_history` | boolean | required | Always `false`. The window is explicitly partial. |
 | `record_bytes_limit` | integer | required | Largest single record, in bytes. Always `33554432`. |
 | `fragment_bytes_limit` | integer | required | Largest decoded fragment, in bytes. Always `24576`. |
@@ -1463,7 +1463,7 @@ above 4194304 bytes. Source: (`session_view/snapshot.gleam:415-420`).
 | `snapshot_id` | string | required | Transfer identity. |
 | `index` | integer | required | The final continuation index. |
 | `next_seq` | integer | required | Same value the header carried. |
-| `more_after` | integer or null | required | For a `history` window, the sequence to pass as the next request's `after_seq`; `null` when the window is exhausted. |
+| `more_after` | integer or null | required | For a `history` window, the sequence to pass as the next request's `after_seq`; `null` when the window is exhausted. Always `null` for a `lineage` window, which has no cursor. |
 
 Source: (`client/daemon/transfer.gleam:253-263`) and
 (`client/protocol.gleam:1446-1453`).
@@ -1614,6 +1614,44 @@ Source: (`client/daemon/transfer.gleam:378-386`).
 
 `history` does not move the client's adopted history cursor. It fills in
 older entries beside the window a `subscribe` or `catch_up` established.
+
+#### 4.6.1 `history_lineage`
+
+The read of one strand's records. A `history` page is an interval of the
+session's sequence and holds every strand's records in it, so reading one
+strand's turns through it costs a read for every hundred sequences between them,
+however few of the strand's own there are. `history_lineage` walks the strand's
+own parent links instead (protocol-change/072).
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `from` | string | required | The identity of the newest entry the reply may hold. |
+
+A client names a strand by its leaf, which the cut's metadata gives, and pages
+by naming the parent of the oldest record it holds. A `from` that is not an
+entry identity is refused with `bad_request`.
+
+```json
+{"v":2,"id":17,"cmd":"history_lineage","body":{"from":"0198c0de-0000-7000-8000-0000000000a1"}}
+```
+
+The reply is `snapshot_begin` with `window` `lineage`, then metadata, then one
+ascending page of the records on the path from `from` down its parent links, at
+most 100 descriptors and at most 2 MiB of payload past the first record (which
+is always returned, so a record larger than the bound still has a page). The
+newest record of the page is `from` itself. A client MUST refuse a page whose
+newest record is another entry. An entry the store does not hold, or one at or
+above the transfer's `next_seq`, has no records, and the page is empty.
+
+`snapshot_end` carries `more_after: null`. The next page is a request of its
+own, from the parent of the page's oldest record, which the client reads from
+that record's payload. A record the client cannot decode (over the presentation
+limit) names no parent, so a walk ends there.
+
+The command is read-only. An observer's attachment may issue it, and it is
+authorized per frame as `history` is. Naming an entry reveals nothing a
+`history` interval over the same sequences would not.
+Like `history`, it does not move the client's adopted history cursor.
 
 ### 4.7 `escalations_get`
 
@@ -1792,7 +1830,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1155`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1171`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1854,7 +1892,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6181`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6216`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -3238,7 +3276,8 @@ Sources: (`client/daemon/protocol.gleam:124-160`),
 | Snapshot fragment, base64 | 32768 bytes | `snapshot_chunk.data` |
 | Snapshot record | 33554432 bytes | `snapshot_chunk.total_bytes` |
 | Metadata record | 2097152 bytes | The metadata document |
-| Descriptor page | 100 entries | `subscribe`, `catch_up`, `history` |
+| Descriptor page | 100 entries | `subscribe`, `catch_up`, `history`, `history_lineage` |
+| Lineage page, payload | 2097152 bytes past the first record | `history_lineage` |
 | Recent window | 100 entries | `subscribe` |
 | Escalation lookup | 8 ids | `escalations_get` |
 | Decided approvals read | 16 cells | `escalations_decided` |
@@ -3510,7 +3549,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:3721`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:3755`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

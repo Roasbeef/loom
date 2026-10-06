@@ -1263,6 +1263,22 @@ pub fn no_decisions_leave_the_pieces_untouched_test() {
   assert turns.with_decisions(pieces([]), []) == pieces([])
 }
 
+// A page that has not read a strand's records draws no piece, and a decision
+// that stood alone there read as the answer (the tail of an older approval turn,
+// drawn above "Load older" with the newest turns missing). With no record drawn
+// there is nothing to place it beside, so it is not drawn.
+pub fn a_decision_is_not_drawn_with_no_piece_to_place_it_beside_test() {
+  let decided =
+    decisions.Decision(
+      seq: 5,
+      strand: "main",
+      who: "Owner",
+      verdict: decisions.Denied,
+      tool: "bash",
+    )
+  assert turns.with_decisions([], [decided]) == []
+}
+
 fn failed_response(reason: String) -> message.AgentMessage {
   message.AssistantMessage(
     [],

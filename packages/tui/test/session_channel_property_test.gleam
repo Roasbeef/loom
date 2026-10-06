@@ -650,6 +650,7 @@ fn account(
       }
     session_channel.Captured(..)
     | session_channel.HistoryPage(..)
+    | session_channel.LineagePage(..)
     | session_channel.LookedUp(..)
     | session_channel.Auxiliary(_)
     | session_channel.RequestRefused(..)
@@ -774,6 +775,7 @@ fn is_presentation(update: session_channel.Update) -> Bool {
     | session_channel.Failed(_) -> False
     session_channel.Captured(..)
     | session_channel.HistoryPage(..)
+    | session_channel.LineagePage(..)
     | session_channel.LookedUp(..)
     | session_channel.Auxiliary(_)
     | session_channel.RequestRefused(..)

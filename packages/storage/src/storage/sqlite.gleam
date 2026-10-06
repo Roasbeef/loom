@@ -181,6 +181,14 @@ pub opaque type Message {
     reply: Subject(Result(List(snapshot.Descriptor), snapshot.Error)),
   )
 
+  /// Walk one entry's ancestry below the caller's fixed high-water.
+  SnapshotLineage(
+    from: ids.EntryId,
+    before: Int,
+    limit: Int,
+    reply: Subject(Result(List(snapshot.Descriptor), snapshot.Error)),
+  )
+
   /// Slice one immutable record before returning bytes to the gateway.
   SnapshotFragment(
     descriptor: snapshot.Descriptor,
@@ -758,6 +766,14 @@ pub fn snapshot_reader(handle: Subject(Message)) -> snapshot.Reader {
     page: fn(after, before, limit, waiting_ms) {
       snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotPage(
         after,
+        before,
+        limit,
+        _,
+      ))
+    },
+    lineage: fn(from, before, limit, waiting_ms) {
+      snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotLineage(
+        from,
         before,
         limit,
         _,
@@ -1939,6 +1955,8 @@ fn handle_closed(
       answer(state, reply, Error(snapshot.StorageFailure(HandleClosed)))
     SnapshotPage(reply:, ..) ->
       answer(state, reply, Error(snapshot.StorageFailure(HandleClosed)))
+    SnapshotLineage(reply:, ..) ->
+      answer(state, reply, Error(snapshot.StorageFailure(HandleClosed)))
     SnapshotFragment(reply:, ..) ->
       answer(state, reply, Error(snapshot.StorageFailure(HandleClosed)))
     RenewLease(reply:) -> answer(state, reply, Error(HandleClosed))
@@ -1973,6 +1991,12 @@ fn handle_open(
         state,
         reply,
         snapshot_sqlite.page(state.conn, after, before, limit),
+      )
+    SnapshotLineage(from, before, limit, reply) ->
+      answer(
+        state,
+        reply,
+        snapshot_sqlite.lineage(state.conn, from, before, limit),
       )
     SnapshotFragment(descriptor, offset, reply) ->
       answer(

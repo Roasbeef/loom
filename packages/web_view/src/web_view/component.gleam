@@ -72,10 +72,12 @@
 //// a summary (`turn_ledger`) when every record of it is in the window and
 //// nothing will be added, so the window holds the running turn and the page
 //// holds the closed turns as the pieces it draws, not as records
-//// (protocol-change/071). `older` pages further back by turns, through the
-//// lane's `history` read, the read the terminal pages with, and opening a
-//// closed turn's fold reads that turn's newest steps the same way. The limit
-//// and `Paging` are this page's view state.
+//// (protocol-change/071). `older` pages further back by turns, and opening a
+//// closed turn's fold reads that turn's newest steps the same way: both walk
+//// the strand's own parent links through the lane's lineage read
+//// (`history_lineage`, protocol-change/072), so what other strands wrote in
+//// between costs the page nothing. The limit and `Paging` are this page's view
+//// state.
 ////
 //// What the page draws is derived from the shared record by `refreshed`, which
 //// runs at the end of every message and rebuilds a projection only when the
@@ -874,12 +876,6 @@ type View(socket) {
     /// `Reached` once a read found nothing below the page's oldest turn, which
     /// says the strand has no more even where its last record names a parent.
     floor: Earlier,
-    /// The sequence the last read for the strand's newest or older turns got
-    /// to before it stopped, having found none of the strand's records in a run
-    /// of intervals (`history_view.scan_floor`). The next such read starts below
-    /// it, so a strand that is sparse among the session's sequences is read in
-    /// steps and not all at once.
-    resume: Option(Int),
     /// The closed turns of each strand the reader left, by the strand's name,
     /// for the life of the page, as `parked_paging` is kept: the history
     /// window of a parked strand has been trimmed to what the closed turns do
@@ -1198,7 +1194,6 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       older: Unasked,
       completion: Untried,
       floor: Unheld,
-      resume: None,
       parked_sealed: dict.new(),
       blocks: [],
       pieces: [],
@@ -1718,9 +1713,12 @@ fn serviced(
   effects: List(step_effect.Effect(socket, Nil)),
   at: Int,
 ) -> #(Model(socket), List(step_effect.Effect(socket, Nil))) {
-  case history_view.range(model.shared.scrollback) {
-    None -> #(model, effects)
-    Some(_) -> {
+  case
+    history_view.range(model.shared.scrollback),
+    history_view.lineage(model.shared.scrollback)
+  {
+    None, None -> #(model, effects)
+    Some(_), _ | None, Some(_) -> {
       let #(shared, sent) = step.update(model.shared, tick_at(at))
       let model = settled(Model(..model, shared:)) |> settled_projection
       #(model, list.append(effects, sent))
@@ -2152,8 +2150,9 @@ fn resumed(model: Model(socket)) -> Model(socket) {
 //
 // The window is written in the two places this module has always written it:
 // it is trimmed, and it is asked for a read. The read is the window's own scan
-// (`history_view.scan`), which keeps what it reads apart from the window, so
-// a read through a turn of thousands of records never evicts the live end.
+// (`history_view.scan`), which walks the strand's ancestry a page at a time and
+// keeps what it reads apart from the window, so a read through a turn of
+// thousands of records never evicts the live end.
 fn relaned(model: Model(socket)) -> Model(socket) {
   case model.shared.captured {
     None -> settled_projection(model)
@@ -2245,7 +2244,7 @@ fn scanned(
     Resting, history_view.Scanning(..) | Resting, history_view.Abandoned ->
       ended(model)
     _, history_view.Abandoned | _, history_view.Unscanned -> abandoned(model)
-    purpose, history_view.Scanning(request: history_view.Quiet, ..) ->
+    purpose, history_view.Scanning(request: history_view.Idle, ..) ->
       read(model, purpose, cut, view)
     _, history_view.Scanning(..) -> model
   }
@@ -2271,55 +2270,28 @@ fn read(
         transcript.branch_blocks(branch, cut, view, shared.active_strand, [])
       let source = source_of(shared.scrollback, branch)
       case found(model, purpose, blocks, branch, view, source) {
-        Ok(taken) ->
-          ended(Model(..taken, view: View(..taken.view, resume: None)))
+        Ok(taken) -> ended(taken)
         Error(Nil) ->
-          case history_view.scan_floor(shared.scrollback) {
-            Some(floor) -> paused(model, purpose, floor)
-            None ->
-              Model(
-                ..model,
-                shared: Shared(
-                  ..shared,
-                  scrollback: history_view.scan_older(
-                    shared.scrollback,
-                    branch.unloaded,
-                  ),
-                ),
-              )
-          }
+          Model(
+            ..model,
+            shared: Shared(
+              ..shared,
+              scrollback: history_view.scan_older(
+                shared.scrollback,
+                branch.unloaded,
+              ),
+            ),
+          )
       }
     }
   }
 }
 
-// A read that went through a run of intervals and found none of the records it
-// is after: the strand is sparse among the session's sequences. It is given up
-// as a refused one is, so the page offers "Load older" and nothing is read in a
-// loop, and for the turns the page lacks it remembers how far down it got, so
-// the press goes on from there and not from the start.
-fn paused(model: Model(socket), purpose: Purpose, floor: Int) -> Model(socket) {
-  let resume = case purpose {
-    ForOlder | ForTail -> Some(floor)
-    ForLead | ForSteps(_) | Resting -> None
-  }
-  abandoned(Model(..model, view: View(..model.view, resume:)))
-}
-
-// The sequence a read for the strand's turns starts below: the one it was
-// given, or the one an earlier read of the same turns got to.
-fn lowered(model: Model(socket), before: Int) -> Int {
-  case model.view.resume {
-    Some(floor) -> int.min(floor, before)
-    None -> before
-  }
-}
-
 // Whether the scan can be asked for more: it can not once it holds the
 // strand's first record, and not once it can no longer be read
-// (`history_view.scan_readable`: no sequence left, its bound reached, or the
-// parent it is missing is a record over the presentation limit, which it holds
-// as a descriptor and no read will load).
+// (`history_view.scan_readable`: a read found nothing below what it holds, its
+// bound was reached, or the parent it is missing is a record over the
+// presentation limit, which it holds as a descriptor and no read will load).
 fn source_of(
   scrollback: history_view.State,
   branch: snapshot_view.Branch,
@@ -3281,7 +3253,7 @@ fn wanted(
     Unfinished, Ok(end), _ -> Some(#(ForLead, end.id, end.seq + 1))
     _, _, Some(#(leaf, before)) ->
       case view.completion {
-        Untried -> Some(#(ForTail, leaf, lowered(model, before)))
+        Untried -> Some(#(ForTail, leaf, before))
         Spent -> reader_asked(model, window, cut)
       }
     _, _, None -> reader_asked(model, window, cut)
@@ -3299,8 +3271,7 @@ fn reader_asked(
     Some(turn) -> Some(#(ForSteps(turn.0), turn.1.end.id, turn.1.end.seq + 1))
     None ->
       case model.view.older, below_origin(model, window, cut) {
-        Pressed, Some(#(leaf, before)) ->
-          Some(#(ForOlder, leaf, lowered(model, before)))
+        Pressed, Some(#(leaf, before)) -> Some(#(ForOlder, leaf, before))
         Pressed, None | Unasked, _ -> None
       }
   }
@@ -4827,7 +4798,6 @@ fn focus_at(
             older: Unasked,
             completion: Untried,
             floor: Unheld,
-            resume: None,
             folds: [],
             parked_paging: dict.delete(remembered, strand),
             refusal: None,
@@ -4851,14 +4821,14 @@ fn focus_at(
 /// Asks for the rows older than the oldest one the page holds, when the
 /// lane lists them as `lane.Earlier`, and does nothing otherwise.
 ///
-/// The page's limit rises from `live_rows` to `held_rows`, and the history
-/// window asks for the interval of at most a hundred sequences below its
-/// oldest record (`history_view.older`), which the step's tick sends as a
-/// `history` read as soon as the lane has no other request out. That is the
-/// read the terminal pages with, and a read, not a mutation: the gateway
-/// admits it for an observer's attachment as for an operator's. While it
-/// is out the lane draws `lane.Loading`, and a second press asks nothing.
-/// The reply is folded in by the step.
+/// The page's limit rises from `live_rows` to `held_rows`, and the page wants
+/// the turns below its oldest. They are read from the parent of the oldest turn
+/// the page holds, down the strand's own parent links (`history_lineage`), which
+/// the step's tick sends as soon as the lane has no other request out. It is a
+/// read and not a mutation: the gateway admits it for an observer's attachment
+/// as for an operator's, and it names no strand's records but the ones on the
+/// path it starts at. While it is out the lane draws `lane.Loading`, and a
+/// second press asks nothing. The reply is folded in by the step.
 ///
 /// ## Examples
 ///
@@ -5018,7 +4988,9 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
   }
 }
 
-/// What the lane draws above the oldest row the page holds.
+/// What the lane draws above the oldest row the page holds: that the page is
+/// loading, until the first cut has arrived and while it reads turns below the
+/// ones it holds, and otherwise whether older turns exist.
 ///
 /// ## Examples
 ///
@@ -5026,12 +4998,19 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
 /// // component.top(model) == lane.Earlier
 /// ```
 pub fn top(model: Model(socket)) -> lane.Top {
-  case reading_older(model), model.view.earlier, model.view.paging {
-    True, _, _ -> lane.Loading
-    False, Reached, _ -> lane.Beginning
-    False, Unheld, Full -> lane.Full(held_rows)
-    False, Unheld, Crowded -> lane.Crowded
-    False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
+  case model.view.status {
+    // Until the first cut arrives the page knows nothing of the strand, and
+    // saying the conversation begins would be a statement about a session it
+    // has not read.
+    Connecting -> lane.Loading
+    Connected | Ended(_) ->
+      case reading_older(model), model.view.earlier, model.view.paging {
+        True, _, _ -> lane.Loading
+        False, Reached, _ -> lane.Beginning
+        False, Unheld, Full -> lane.Full(held_rows)
+        False, Unheld, Crowded -> lane.Crowded
+        False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
+      }
   }
 }
 

@@ -132,12 +132,17 @@ fn pressed(page, wire, archive, capture) {
   |> lane_fixture.serve(wire, archive, capture)
 }
 
-// The sequence a history read asks below.
-fn before_of(read: String) -> Int {
-  let assert [_, rest] = string.split(read, "\"before_seq\":")
-  let assert [digits, ..] = string.split(rest, "}")
-  let assert Ok(before) = int.parse(digits)
-  before
+// Whether a lineage read starts at one of the records with these sequences.
+fn starts_among(read: String, first: Int, last: Int) -> Bool {
+  list.contains(
+    list.map(
+      int.range(from: first, to: last + 1, with: [], run: fn(all, n) {
+        [n, ..all]
+      }),
+      lane_fixture.entry_text,
+    ),
+    page_fixture.lineage_from(read),
+  )
 }
 
 // Opens a fold and answers what the page asked for, and says which history
@@ -152,7 +157,7 @@ fn opened(page, wire, archive, capture, fold: Int) {
 
 fn history_reads(frames: List(String)) -> List(String) {
   list.filter(frames, fn(frame) {
-    string.contains(frame, "\"cmd\":\"history\"")
+    string.contains(frame, "\"cmd\":\"history_lineage\"")
   })
 }
 
@@ -367,7 +372,7 @@ pub fn opening_a_fold_reads_only_its_newest_steps_test() {
   // A hundred rows of steps are the newest two hundred records, and the read
   // that stops at one of them has to go a little past them, since a result
   // whose call it did not reach is not drawn and does not count.
-  assert list.all(reads, fn(read) { before_of(read) > 900 })
+  assert list.all(reads, fn(read) { starts_among(read, 901, 1160) })
   let assert [#(held, hidden)] = drawn(open)
   assert held == 100
 

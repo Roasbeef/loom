@@ -351,7 +351,10 @@ pub fn load_older_is_unaffected_by_an_open_fold_test() {
   assert component.top(pressed) == lane.Loading
   let loaded =
     component.apply(pressed, [
-      session_channel.HistoryPage(lane_fixture.older_page(201, 300), 301, 200),
+      session_channel.LineagePage(
+        lane_fixture.older_page(201, 300),
+        lane_fixture.entry_text(300),
+      ),
     ])
   assert list.length(folds(loaded)) > list.length(folds(model))
   let closed = toggled(loaded, fold)

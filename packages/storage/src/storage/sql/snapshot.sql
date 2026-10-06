@@ -92,3 +92,14 @@ WHERE seq < @before_seq ORDER BY seq DESC LIMIT @page_size;
 -- name: SnapshotEntryFragment :one
 SELECT CAST(substr(payload, CAST(@offset AS INTEGER) + 1, @fragment_size) AS BLOB) AS fragment FROM entries
 WHERE id = @id AND seq = @seq AND length(payload) = CAST(@payload_bytes AS INTEGER);
+
+-- One entry's placement without its payload, by identity, for the walk down a
+-- strand's ancestry. Each call is a primary-key probe of entries, so a walk
+-- costs the records it returns and never the records of other strands written
+-- between them. An entry whose sequence is not below @before_seq is not
+-- returned, which keeps the walk inside the high-water the transfer was
+-- captured at.
+-- name: SnapshotEntryHead :many
+SELECT CAST(CASE WHEN length(CAST(id AS BLOB)) = 36 THEN id ELSE '' END AS TEXT) AS id,
+  parent_id, seq, length(payload) AS payload_bytes FROM entries
+WHERE id = @entry_id AND seq < @before_seq LIMIT 2;

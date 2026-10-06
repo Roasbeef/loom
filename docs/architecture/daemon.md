@@ -466,8 +466,12 @@ running.
 session's history. It is a pure state machine; the gateway performs the
 storage reads it asks for. A transfer starts when a client subscribes (the
 `Recent` window, at most one hundred descriptors), catches up from a
-sequence (`Reconcile`), pages older history (`History`), or fetches
-specific escalations (`Escalations`).
+sequence (`Reconcile`), pages older history (`History`), reads one strand's
+ancestry from an entry (`Lineage`, protocol-change/072), or fetches specific
+escalations (`Escalations`). A `History` page is an interval of the session's
+sequence and holds every strand's records in it; a `Lineage` page is the records
+on one path down the parent links, so what other strands wrote between them is
+not read.
 
 Delivery is stop-and-wait: each `SnapshotNext` from the client buys one
 fragment of at most 24,576 raw bytes, which fits below the 64 KiB observer

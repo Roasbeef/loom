@@ -1627,3 +1627,38 @@ pub fn snapshot_entry_fragment_decoder() -> decode.Decoder(
   use fragment <- decode.field(0, decode.bit_array)
   decode.success(SnapshotEntryFragment(fragment:))
 }
+
+pub type SnapshotEntryHead {
+  SnapshotEntryHead(
+    id: String,
+    parent_id: Option(String),
+    seq: Option(Int),
+    payload_bytes: Option(Int),
+  )
+}
+
+pub fn snapshot_entry_head(
+  entry_id entry_id: String,
+  before_seq before_seq: Option(Int),
+) {
+  let sql =
+    "SELECT CAST(CASE WHEN length(CAST(id AS BLOB)) = 36 THEN id ELSE '' END AS TEXT) AS id,
+  parent_id, seq, length(payload) AS payload_bytes FROM entries
+WHERE id = ?1 AND seq < ?2 LIMIT 2"
+  #(
+    sql,
+    [
+      dev.ParamString(entry_id),
+      dev.ParamNullable(option.map(before_seq, fn(v) { dev.ParamInt(v) })),
+    ],
+    snapshot_entry_head_decoder(),
+  )
+}
+
+pub fn snapshot_entry_head_decoder() -> decode.Decoder(SnapshotEntryHead) {
+  use id <- decode.field(0, decode.string)
+  use parent_id <- decode.field(1, decode.optional(decode.string))
+  use seq <- decode.field(2, decode.optional(decode.int))
+  use payload_bytes <- decode.field(3, decode.optional(decode.int))
+  decode.success(SnapshotEntryHead(id:, parent_id:, seq:, payload_bytes:))
+}

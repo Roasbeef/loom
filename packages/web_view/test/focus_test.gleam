@@ -193,10 +193,12 @@ pub fn a_strands_loaded_history_survives_a_round_trip_test() {
     page_fixture.run(page, component.update, [component.OlderRequested])
   let assert [read] =
     page_fixture.sent(wire)
-    |> list.filter(fn(frame) { string.contains(frame, "\"cmd\":\"history\"") })
+    |> list.filter(fn(frame) {
+      string.contains(frame, "\"cmd\":\"history_lineage\"")
+    })
   let page =
     page_fixture.run(page, component.update, [
-      component.Arrived(page_fixture.history(
+      component.Arrived(page_fixture.lineage(
         page_fixture.request_id(read),
         "operator",
         lane_fixture.older_page(201, 300),
@@ -248,10 +250,12 @@ pub fn a_returning_strand_does_not_get_a_depth_over_an_emptied_window_test() {
     page_fixture.run(page, component.update, [component.OlderRequested])
   let assert [read] =
     page_fixture.sent(wire)
-    |> list.filter(fn(frame) { string.contains(frame, "\"cmd\":\"history\"") })
+    |> list.filter(fn(frame) {
+      string.contains(frame, "\"cmd\":\"history_lineage\"")
+    })
   let page =
     page_fixture.run(page, component.update, [
-      component.Arrived(page_fixture.history(
+      component.Arrived(page_fixture.lineage(
         page_fixture.request_id(read),
         "operator",
         lane_fixture.older_page(201, 300),

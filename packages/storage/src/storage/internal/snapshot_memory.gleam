@@ -15,6 +15,7 @@ import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/order
 import gleam/result
 import gleam/string
@@ -217,6 +218,30 @@ fn bounded_entries(
           }
         })
         |> list.take(limit)
+    }
+  })
+}
+
+/// Returns one entry's ancestry, oldest first, below a fixed high-water.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot_memory.lineage(view, leaf, cut.next_seq, 100)
+/// ```
+pub fn lineage(
+  view: View,
+  from: ids.EntryId,
+  before: Int,
+  limit: Int,
+) -> Result(List(snapshot.Descriptor), Error) {
+  snapshot.lineage(from, before, limit, fn(id, below) {
+    case dict.get(view.entries, ids.entry_id_to_string(id)) {
+      Ok(found) if found.seq < below -> {
+        use described <- result.map(descriptor(found))
+        Some(snapshot.Link(described, found.parent))
+      }
+      Ok(_) | Error(Nil) -> Ok(None)
     }
   })
 }

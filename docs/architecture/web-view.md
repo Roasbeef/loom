@@ -610,28 +610,32 @@ page draws from its newest blocks back, and only while it runs.
 hundred records, which are the end of a turn. It draws nothing for that turn
 until it has read its start, and then draws it once, with the right figures. The
 read is the history window's scan (`history_view.scan`): a transient read of one
-stretch of the strand's ancestry, from one record downward through the lane's
-`history` read in intervals of at most a hundred sequences, kept apart from the
-window so that a read through a turn of thousands of records cannot evict the
-live end. It starts from the records the page already holds, the capture's and
+stretch of the strand's ancestry, from one record downward along the strand's own
+parent links through the lane's lineage read (`history_lineage`,
+protocol-change/072) in pages of at most a hundred of the strand's records, kept
+apart from the window so that a read through a turn of thousands of records
+cannot evict the live end. It starts from the records the page already holds, the capture's and
 the window's, and asks the daemon only for what those do not settle. The page
 has one read out at a time and chooses the next from what it wants, in this
 order: the start of the turn the window began inside, the steps of an open fold
 it does not hold, and the turns below its oldest after a press of "Load older".
-A read that finds none of the strand's records, because other strands wrote
-every sequence in it, still moves the next read below it. The scan is bounded
-at 4,096 records, and a read the lane refuses is given up and not asked again
-until the reader presses again.
+What other strands wrote between the strand's records is never read, so a strand
+sparse among the session's sequences opens in one read and pages by its own
+turns, and a turn of any length is complete when the reads reach its input. A
+read that adds nothing ends the scan. The scan is bounded at 4,096 records, and
+a read the lane refuses is given up and not asked again until the reader presses
+again.
 
 **Load older.** Above the oldest row the lane draws `lane.Top`: the
 beginning of the conversation, a "Load older" button, "Loading older
 rows…" while the page reads turns, or a line saying the page is full. The button
 sends `component.OlderRequested` on both pages, which `component.older` turns
 into a want (`View.older`). The page then reads from the parent of the oldest
-closed turn's first record, on its own lane, the read the terminal pages with
-(`session_channel.history`), and stops at the first page that holds ten whole
+closed turn's first record, on its own lane, through the lineage read
+(`session_channel.lineage`), and stops at the first page that holds ten whole
 turns, the strand's first record or the scan's bound. A press loads turns, not
-records. The lane has one request out at a time: when it is busy the demand
+records. Until the first cut has arrived the lane says it is loading, and it says
+the conversation begins only when a read of the strand found its first record. The lane has one request out at a time: when it is busy the demand
 stays `Wanted` and is offered again after every reduction until the lane takes
 it, and a second press while a read is out asks nothing. The page keeps
 following the session while the read is out, since the records it reads are kept
@@ -686,9 +690,10 @@ its top edge was in the viewport instead, and each time the lane changes size it
 scrolls by however far the button moved, until the reader next touches the
 transcript, so the divider stays under the pointer when the steps are drawn.
 
-**Observers.** A `history` read is a read. The gateway admits it for an
-observer's binding (`gateway.read_only` lists `History`), and the lane
-sends it on any attachment (`session_channel.history` checks no role).
+**Observers.** A `history` or `history_lineage` read is a read. The gateway
+admits it for an observer's binding (`gateway.read_only` lists `History` and
+`HistoryLineage`), and the lane sends it on any attachment
+(`session_channel.lineage` and `session_channel.history` check no role).
 Protocol-change/051's addendum on history paging lets the observer's page
 carry this one handler: the button's message is `component.OlderRequested`
 on both pages, and the page socket admits from an observer a `click` at

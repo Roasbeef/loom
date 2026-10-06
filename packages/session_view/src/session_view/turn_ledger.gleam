@@ -10,8 +10,8 @@
 //// turn's records again, and the boards the turn's records contributed. The
 //// records themselves are dropped. A reader who opens the fold asks for the
 //// steps, and the host reads that turn's newest ones through a scan
-//// (`history_view.scan`), keeps them while the fold is open and drops them
-//// when it closes.
+//// (`history_view.scan`, which walks the strand's own parent links), keeps them
+//// while the fold is open and drops them when it closes.
 ////
 //// ## When a turn is sealed
 ////
@@ -70,7 +70,8 @@ pub type Anchor {
   Anchor(
     /// The record's identity, which a read of its ancestry starts from.
     id: String,
-    /// The record's durable sequence, which a read's interval is bounded by.
+    /// The record's durable sequence, which bounds the records a read starts
+    /// from that the host already holds.
     seq: Int,
   )
 }

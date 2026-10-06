@@ -161,6 +161,61 @@ pub fn history(
   replies(id, "history", before, role, [], list.reverse(window.items))
 }
 
+/// The lineage reads among the frames the page wrote since the last look.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.lineage_reads(wire)
+/// ```
+pub fn lineage_reads(wire: Wire) -> List(String) {
+  sent(wire)
+  |> list.filter(fn(frame) {
+    string.contains(frame, "\"cmd\":\"history_lineage\"")
+  })
+}
+
+/// The entry a lineage read starts at, as text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.lineage_from(frame)
+/// ```
+pub fn lineage_from(frame: String) -> String {
+  case json.parse(frame) {
+    Ok(json.Object(fields)) ->
+      case list.key_find(fields, "body") {
+        Ok(json.Object(body)) ->
+          case list.key_find(body, "from") {
+            Ok(json.String(from)) -> from
+            _ -> ""
+          }
+        _ -> ""
+      }
+    _ -> ""
+  }
+}
+
+/// The replies to a `history_lineage` read the lane sent as request `id`,
+/// carrying the records of `window` (newest first, as the lane holds a page) for
+/// an attachment with `role`. `next_seq` is the high-water the daemon captured,
+/// above every record's sequence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.lineage(4, "operator", window, 301)
+/// ```
+pub fn lineage(
+  id: Int,
+  role: String,
+  window: snapshot.Window,
+  next_seq: Int,
+) -> List(connection_event.Message) {
+  replies(id, "lineage", next_seq, role, [], list.reverse(window.items))
+}
+
 /// The replies to the catch-up the lane sent as request `id`, for an
 /// attachment with `role`: a transfer that brings no record, as the
 /// session `transfer` describes has none.
