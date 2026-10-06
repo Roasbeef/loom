@@ -243,6 +243,11 @@ pub const primary = "main"
 /// one.
 pub const live_rows = 150
 
+// Open folds have a reserve of their own beyond `live_rows` and `held_rows`,
+// `fold_budget.fold_rows` (100), so what a page draws is bounded by its limit
+// plus that constant, and a page full of closed turns can still show an open
+// fold's newest steps. The reserve is not part of which turns are held.
+
 /// The most transcript rows the page holds once its reader has loaded
 /// older ones: twice `live_rows`.
 ///

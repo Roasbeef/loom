@@ -133,6 +133,15 @@ pub fn cost(weight: Weight, open: List(Int)) -> Int {
   }
 }
 
+/// The rows the open folds have of their own, beyond the page's limit. The
+/// closed turns come first and may fill the limit, which on a long session
+/// they do, and a fold that drew only what they left over would draw nothing.
+/// So the folds share this reserve as well as any room the closed turns
+/// leave. It is a constant, so what a page retains is bounded by its limit
+/// plus this, and it is not part of which turns the page holds, so it never
+/// feeds back into the cut or the paging.
+pub const fold_rows = 100
+
 /// How many of the turns, given newest first, a page of `limit` rows holds,
 /// and which open folds draw how much.
 ///
@@ -142,7 +151,7 @@ pub fn cost(weight: Weight, open: List(Int)) -> Int {
 /// older turn is never taken past it. Opening or closing a fold therefore
 /// never changes the turns a page holds, so it never moves where the page is
 /// cut, trims its history or fills it. The rows the closed turns leave over
-/// are the folds' room. `open` lists the open folds, most recently opened
+/// are the folds' room, with `fold_rows` more. `open` lists the open folds, most recently opened
 /// first, and each of those that belongs to a held turn is given its steps in
 /// that order while they fit. The most recently opened fold that does not
 /// fit whole draws its newest steps that do, with the allowance saying how
@@ -170,7 +179,7 @@ pub fn fit(weights: List(Weight), open: List(Int), limit: Int) -> Fitted {
     })
     |> dict.from_list
   let wanted = list.filter(open, dict.has_key(rows, _))
-  grant(wanted, rows, limit - held.used, held)
+  grant(wanted, rows, int.max(limit - held.used, 0) + fold_rows, held)
 }
 
 fn fit_older(older: List(Weight), limit: Int, fitted: Fitted) -> Fitted {

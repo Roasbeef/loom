@@ -64,7 +64,7 @@ pub fn an_open_fold_that_does_not_fit_is_cut_to_the_room_test() {
     == Fitted(
       kept: 3,
       used: 18,
-      allowance: dict.from_list([#(20, 132)]),
+      allowance: dict.from_list([#(20, 232)]),
       folds: [20],
     )
   assert fold_budget.fit(weights, [], 150).kept == 3
@@ -72,7 +72,7 @@ pub fn an_open_fold_that_does_not_fit_is_cut_to_the_room_test() {
 
 pub fn the_newest_turns_open_fold_is_cut_to_the_limit_test() {
   assert fold_budget.fit([turn(3, 20, 400)], [20], 150)
-    == Fitted(kept: 1, used: 3, allowance: dict.from_list([#(20, 147)]), folds: [
+    == Fitted(kept: 1, used: 3, allowance: dict.from_list([#(20, 247)]), folds: [
       20,
     ])
 }
@@ -80,7 +80,7 @@ pub fn the_newest_turns_open_fold_is_cut_to_the_limit_test() {
 // The fold opened last is kept; one opened before it that no longer fits is
 // closed, and one that fits whole stays open.
 pub fn the_most_recent_fold_wins_the_room_test() {
-  let weights = [turn(3, 30, 100), turn(3, 20, 100), turn(3, 10, 30)]
+  let weights = [turn(3, 30, 150), turn(3, 20, 150), turn(3, 10, 30)]
   let fitted = fold_budget.fit(weights, [20, 30, 10], 150)
   assert fitted.folds == [20, 10]
   assert fitted.allowance == dict.new()
@@ -150,4 +150,15 @@ pub fn the_running_turn_is_not_touched_test() {
   assert fold_budget.draw([running], [7], dict.new()) == [running]
   let opened = work(7, 20, turns.Unfolded(hidden: 0))
   assert fold_budget.draw([opened], [], dict.new()) == [opened]
+}
+
+// A page full of closed turns leaves the folds no room, but the folds have the
+// reserve of their own, so an open fold draws `fold_rows` and not nothing, and
+// the held turns are the same as with it closed.
+pub fn the_folds_have_a_reserve_when_the_page_is_full_test() {
+  let weights = [turn(3, 20, 400), bare(75), bare(72)]
+  let fitted = fold_budget.fit(weights, [20], 150)
+  assert fitted.allowance == dict.from_list([#(20, fold_budget.fold_rows)])
+  assert fitted.kept == fold_budget.fit(weights, [], 150).kept
+  assert fitted.used == fold_budget.fit(weights, [], 150).used
 }

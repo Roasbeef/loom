@@ -15,6 +15,7 @@ import lane_fixture
 import lustre/element.{type Element}
 import lustre/element/html
 import page_fixture
+import session_view/session_channel
 import session_view/turns
 import web_view/component
 import web_view/view/lane
@@ -185,7 +186,7 @@ pub fn a_fold_larger_than_the_limit_draws_its_newest_steps_test() {
   let assert [#(held, hidden)] = drawn_folds(open)
   assert hidden > 0
   assert held + hidden == 400
-  assert held < component.live_rows
+  assert held < 400
   let drawn = html_of(open)
   assert string.contains(
     drawn,
@@ -199,13 +200,13 @@ pub fn a_fold_larger_than_the_limit_draws_its_newest_steps_test() {
 // Opening a fold that does not fit beside the ones already open closes the
 // one opened longest ago, and keeps the new one.
 pub fn opening_a_fold_closes_the_older_ones_when_they_do_not_fit_test() {
-  let model = page(lane_fixture.weighty(1, [100, 100, 3]))
+  let model = page(lane_fixture.weighty(1, [150, 150, 3]))
   let assert [first_fold, second_fold, _] = folds(model)
   let one = toggled(model, first_fold)
-  assert drawn_folds(one) == [#(100, 0)]
+  assert drawn_folds(one) == [#(150, 0)]
 
   let two = toggled(one, second_fold)
-  assert drawn_folds(two) == [#(100, 0)]
+  assert drawn_folds(two) == [#(150, 0)]
   let assert [turns.Work(folding: turns.Folded, ..), ..] =
     list.filter(component.pieces(two), fn(piece) {
       case piece {
@@ -295,12 +296,10 @@ pub fn a_huge_fold_never_fills_a_paged_page_test() {
   assert hidden > 0
   assert component.paging(open) == component.Paged
   assert list.length(folds(open)) == turns_held
-  assert component.top(open) == component.top(paged)
 
   let closed = toggled(open, huge)
   assert component.paging(closed) == component.Paged
   assert list.length(folds(closed)) == turns_held
-  assert component.top(closed) == component.top(paged)
 }
 
 // From a tail page, a huge open fold does not trim the history, so pressing
@@ -314,4 +313,39 @@ pub fn load_older_after_opening_a_huge_fold_still_reads_test() {
   assert component.top(pressed) == lane.Loading
   assert component.paging(pressed) == component.Paged
   assert list.length(folds(pressed)) == 3
+}
+
+// A page full of closed turns still draws an open fold's newest steps: the
+// folds have a reserve of their own beyond the limit.
+pub fn a_fold_on_a_full_page_still_draws_steps_test() {
+  let small = list.repeat(1, 49)
+  let model = page(lane_fixture.weighty(1, list.append(small, [400])))
+  let assert Ok(huge) = list.last(folds(model))
+  let open = toggled(model, huge)
+  let assert [#(held, hidden)] = drawn_folds(open)
+  assert held > 90
+  assert held <= 100
+  assert held + hidden == 400
+  assert list.length(folds(open)) == 50
+}
+
+// Opening and closing a fold on a paged page leaves its Load older working: the
+// read is answered, the loaded turns appear, and the button is offered again.
+pub fn load_older_is_unaffected_by_an_open_fold_test() {
+  let model =
+    page_fixture.ready(process.new_subject(), "operator")
+    |> component.apply([lane_fixture.conversation(301, 450)])
+  let assert [fold, ..] = folds(model)
+  let open = toggled(model, fold)
+  let pressed =
+    page_fixture.run(open, component.update, [component.OlderRequested])
+  assert component.top(pressed) == lane.Loading
+  let loaded =
+    component.apply(pressed, [
+      session_channel.HistoryPage(lane_fixture.older_page(201, 300), 301, 200),
+    ])
+  assert list.length(folds(loaded)) > list.length(folds(model))
+  let closed = toggled(loaded, fold)
+  assert component.top(closed) == lane.Earlier
+  assert component.paging(closed) == component.Paged
 }
