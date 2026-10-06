@@ -16,8 +16,10 @@ import gleam/option.{None, Some}
 import gleam/string
 import machine/codec as machine_codec
 import machine/strand
+import session_view/cache_watch
 import session_view/command
 import session_view/context_view as context
+import session_view/msg
 import session_view/protocol
 import session_view/session_channel
 import session_view/shared_set
@@ -443,6 +445,90 @@ pub fn the_footer_reads_at_the_operation_boundary_not_once_per_entry_test() {
     observing(second, "second", None).shared,
   )
   assert !surfaces.context_refresh_due(settled.shared, settled.shared)
+}
+
+fn usage_row() -> message.Usage {
+  message.Usage(
+    1,
+    1,
+    0,
+    0,
+    None,
+    None,
+    2,
+    message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+  )
+}
+
+// The same model after one more usage row, read at the given instant. The
+// ledger admits the row by its sequence, which is how a push lands.
+fn with_usage_row(
+  model: tui_model.Model,
+  seq: Int,
+  at: Int,
+) -> tui_model.Model {
+  let assert Ok(cache) =
+    cache_watch.admit(
+      model.shared.cache,
+      "main",
+      seq,
+      None,
+      usage_row(),
+      at,
+      None,
+    )
+    as "a fresh sequence is admitted"
+  tui_model.Model(
+    ..model,
+    shared: model.shared
+      |> shared_set.cache(cache)
+      |> shared_set.stamp(msg.Stamp(at, at)),
+  )
+}
+
+pub fn a_long_live_turn_refreshes_once_per_interval_test() {
+  let leaf = entry_leaf(1)
+  let running = observing(leaf, "first", Some("running tools"))
+  let start = 100_000
+  let interval = surfaces.usage_refresh_interval_ms
+
+  // A row landing with no earlier automatic read is the first of the turn.
+  let first = with_usage_row(running, 1, start)
+  assert surfaces.context_usage_due(running.shared, first.shared, None)
+
+  // The read it started stamps the selection; rows inside the interval wait.
+  let marked = Some(start)
+  let second = with_usage_row(first, 2, start + interval - 1)
+  assert !surfaces.context_usage_due(first.shared, second.shared, marked)
+
+  // The first row after the interval asks again.
+  let third = with_usage_row(second, 3, start + interval)
+  assert surfaces.context_usage_due(second.shared, third.shared, marked)
+
+  // A transition that admits no row, such as a tool result moving the leaf,
+  // never asks, however old the last read is.
+  let tool_result = observing(entry_leaf(2), "first", Some("running tools"))
+  let later =
+    tui_model.Model(
+      ..tool_result,
+      shared: shared_set.stamp(
+        tool_result.shared,
+        msg.Stamp(start + 10 * interval, start + 10 * interval),
+      ),
+    )
+  assert !surfaces.context_usage_due(running.shared, later.shared, marked)
+
+  // An idle strand is the settling edge's business, not this rule's.
+  let idle = observing(leaf, "first", None)
+  assert !surfaces.context_usage_due(
+    idle.shared,
+    with_usage_row(idle, 1, start).shared,
+    None,
+  )
+
+  // The settling edge still reads inside the interval.
+  let settled = observing(entry_leaf(3), "first", None)
+  assert surfaces.context_refresh_due(second.shared, settled.shared)
 }
 
 pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {

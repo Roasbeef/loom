@@ -115,6 +115,11 @@ pub type State {
     notice: String,
     /// Inspector scroll offset.
     scroll: Int,
+    /// The host-clock reading at which an automatic refresh last marked this
+    /// selection stale. It paces the refreshes a provider usage row asks
+    /// for while a turn runs, so a long turn costs the server one read per
+    /// interval and not one per generation.
+    marked_ms: Option(Int),
   )
 }
 
@@ -126,7 +131,16 @@ pub type State {
 /// assert context_view.new().board == None
 /// ```
 pub fn new() -> State {
-  State("", "", Hidden, None, Requested, "Context has not been observed", 0)
+  State(
+    "",
+    "",
+    Hidden,
+    None,
+    Requested,
+    "Context has not been observed",
+    0,
+    None,
+  )
 }
 
 /// Selects a context without retaining another attachment's measurements.
