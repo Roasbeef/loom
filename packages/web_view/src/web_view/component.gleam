@@ -3962,7 +3962,10 @@ pub fn panel(
     strip.count(model.view.strip),
     strip.view(model.view.strip, focus),
     detail(model),
-    changes.view(model.view.changes),
+    changes.view(model.view.changes, case model.view.earlier {
+      Reached -> changes.Whole
+      Unheld -> changes.Partial
+    }),
     session_tab.view(
       option.map(goal(model), goal_view.row) |> option.unwrap([]),
       cost_figure(model),

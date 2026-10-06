@@ -275,18 +275,47 @@ pub fn a_program_that_calls_nothing_is_just_code_mode_test() {
 // included, is at most `command_limit` characters; a short one is whole.
 pub fn a_long_command_is_cut_at_a_word_test() {
   let long =
-    "cd /Users/roasbeef/loom-drives/crit4/ws && python3 -m unittest test_calc -v 2>&1 | tail -5"
+    "python3 -m unittest discover -s tests -p 'test_calc*.py' -v --failfast --buffer 2>&1 | tail -5"
   let assert Words("Ran", Mono(shown), None) =
     words("bash", [#("command", text(long))])
   assert string.length(shown) <= step_words.command_limit
   assert string.ends_with(shown, "…")
-  assert string.starts_with(shown, "cd /Users/roasbeef/loom-drives/crit4/ws &&")
+  assert string.starts_with(shown, "python3 -m unittest discover")
   assert !string.ends_with(shown, " …")
 
   let unbroken = string.repeat("a", 500)
   let assert Words("Ran", Mono(cut), None) =
     words("bash", [#("command", text(unbroken))])
   assert string.length(cut) == step_words.command_limit
+}
+
+// An agent working in a long worktree path starts its commands with
+// `cd <dir> &&`, and a summary cut at a word boundary would end after `cd`.
+// The prefix is dropped from the summary, whether it is joined by `&&` or `;`
+// and whether the directory is quoted, and kept when no command follows it or
+// the join is something else.
+pub fn a_leading_cd_is_left_out_of_the_summary_test() {
+  let ran = fn(command) {
+    let assert Words("Ran", Mono(shown), None) =
+      words("bash", [#("command", text(command))])
+    shown
+  }
+  let deep = "/Users/roasbeef/code/btcd/.claude/worktrees/hungry-euclid-d93364"
+
+  assert ran("cd " <> deep <> " && go test ./...") == "go test ./..."
+  assert ran("cd " <> deep <> " ; make build") == "make build"
+  assert ran("cd \"/a b/c\" && ls -la") == "ls -la"
+  assert ran("cd '/a b/c' && ls -la") == "ls -la"
+  assert ran("cd /a && cd /b && ls") == "cd /b && ls"
+  assert ran("cd " <> deep <> " &&\ngo test ./...") == "go test ./..."
+  assert ran("cd /a && make\nmake test") == "make …"
+
+  assert ran("cd /a") == "cd /a"
+  assert ran("cd /a &&") == "cd /a &&"
+  assert ran("cd /a || echo no") == "cd /a || echo no"
+  assert ran("cd /a;make && foo") == "cd /a;make && foo"
+  assert ran("cd 'unclosed && ls") == "cd 'unclosed && ls"
+  assert ran("cdrom --eject") == "cdrom --eject"
 }
 
 // The words are session text: a tool name, or a module or function name in a

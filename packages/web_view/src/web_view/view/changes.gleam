@@ -16,7 +16,11 @@
 //// fixed literal on the first file, and the server never changes it once
 //// drawn, so a reader's choice is left alone by later patches. A session that
 //// has edited nothing draws the heading and one line saying so, so the pane's
-//// place in the panel does not move and the tab never opens on nothing.
+//// place in the panel does not move and the tab never opens on nothing. The
+//// board only sees the rows the page holds, so when older rows exist the line
+//// says the edits were looked for in the loaded part and points at Load older
+//// (`Window`). A muted line under it says which edits the tab lists: those the
+//// edit and write tools made, and not those a shell command or an editor made.
 ////
 //// The pane's children are keyed, each file by its path, so a `details` a
 //// reader opened stays the same element when a file is edited that sorts
@@ -41,18 +45,28 @@ import session_view/changes_view.{type Board, type File}
 import session_view/diff_view
 import web_view/view/diff
 
-/// The Changes pane for `board`.
+/// How much of the session the board was folded from.
+pub type Window {
+  /// The page holds the session's first row, so the board saw every edit.
+  Whole
+
+  /// Older rows exist that the page does not hold, so an edit in them is not
+  /// on the board.
+  Partial
+}
+
+/// The Changes pane for `board`, folded from `window` of the session.
 ///
-/// It is memoized on the board, so a page whose edits did not change diffs
-/// nothing.
+/// It is memoized on the board and the window, so a page whose edits did not
+/// change diffs nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // changes.view(component.changes(model))
+/// // changes.view(component.changes(model), changes.Whole)
 /// ```
-pub fn view(board: Board) -> Element(message) {
-  use <- element.memo([element.ref(board)])
+pub fn view(board: Board, window: Window) -> Element(message) {
+  use <- element.memo([element.ref(#(board, window))])
   keyed.element(
     "section",
     [
@@ -66,10 +80,14 @@ pub fn view(board: Board) -> Element(message) {
           "title",
           html.h2([attribute.class("panel-title")], [html.text("Changes")]),
         ),
+        #("empty", empty_line(window)),
         #(
-          "empty",
+          "scope",
           html.p([attribute.class("pane-empty")], [
-            html.text("No edits in this session yet."),
+            html.text(
+              "This tab lists edits made through the edit and write tools. "
+              <> "Changes made through shell commands or editors are not shown.",
+            ),
           ]),
         ),
       ]
@@ -99,6 +117,21 @@ pub fn view(board: Board) -> Element(message) {
       ]
     },
   )
+}
+
+// The line an empty board draws, which says whether the whole session was
+// searched.
+fn empty_line(window: Window) -> Element(message) {
+  html.p([attribute.class("pane-empty")], [
+    case window {
+      Whole -> html.text("No edits in this session yet.")
+      Partial ->
+        html.text(
+          "No edits in the loaded part of this session. "
+          <> "Use Load older in the transcript to look further back.",
+        )
+    },
+  ])
 }
 
 // A file's key is its path. A `details` keeps the reader's choice of open or
