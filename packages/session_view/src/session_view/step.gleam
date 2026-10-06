@@ -350,10 +350,12 @@ pub fn new(
 ///
 /// What the terminal alone does in its tick is absent: the recorded replay,
 /// its daemon-control drains, the activity poll and the footer's cache label.
-/// So is the read of summary labels (`surfaces.service_block_summaries`),
-/// which the terminal sends between the side surfaces' reads and the lane's
-/// tick. The daemon may run a summarizer for a label it is asked for, and
-/// only a host that draws labels should ask.
+/// The read of summary labels (`surfaces.service_block_summaries`) runs
+/// between the side surfaces' reads and the lane's tick, where the terminal
+/// sends it. The daemon may run a summarizer for a label it is asked for, so
+/// the read is sent only for blocks the host has marked wanted
+/// (`block_summary.want`), and the web view marks the reasoning blocks it
+/// draws.
 ///
 /// An `Acted` runs the command (`commands.act`) and settles, and leaves the
 /// facts the command recorded on the record. The host that acted knows which
@@ -501,6 +503,7 @@ fn tick(
     |> advance_roster
     |> drain_connection
     |> service_reads
+    |> surfaces.service_block_summaries
     |> tick_lane
   settle(started, after) |> forget_surfaces
 }

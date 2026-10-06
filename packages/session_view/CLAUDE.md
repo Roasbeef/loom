@@ -624,6 +624,18 @@ fit. It is pure and portable, and the web view's `component.held` is its one
 caller (protocol-change/070); `newest` and `item_rows` are public so a host that
 reads a fold's steps keeps no more than a page draws.
 
+`turn_labels` draws the summarizer's labels on the finished pieces
+(`apply(pieces, labels)`): each reasoning row of a `Plain` block or a `Work`
+item whose content block has a label (`transcript_lines.labels_for`: the stored
+label, or the live label carried over to the entry's first long reasoning block)
+becomes a `SummarizedReasoning` row, with the row's key and the block's full
+text (`thoughts`) unchanged. It is applied when the lane is drawn and never
+stored in a piece, so a label that arrives after a turn was sealed
+(`turn_ledger`) or after a fold's steps were read shows with nothing re-sealed.
+`keys(pieces)` lists the long reasoning blocks of the same pieces for
+`block_summary.want`. `step.update`'s tick runs `surfaces.service_block_summaries`
+for a host that has marked blocks wanted.
+
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and
 `advisor_pending`, `block_summary` (summarizer labels), `command` and
