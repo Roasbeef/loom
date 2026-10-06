@@ -99,7 +99,15 @@
 //// daemon's own check, made
 //// afresh in a task of its own (`create_task`). The page sends a workspace its
 //// own list drew, a name and a sharing choice, and nothing else, and the
-//// daemon creates only in a workspace the owner already holds a session in.
+//// daemon creates only in a workspace the owner already holds a session in, or
+//// has recently created in and still may (protocol-change/074).
+////
+//// The same page can start a session in a folder that holds none: the owner types
+//// a path, and `create_for` hands it to `client/daemon/new_folder`, which expands
+//// it, makes it canonical and refuses anything that is not a usable folder inside
+//// the owner's home directory. `recent_for` and `forget_for` read and edit the
+//// owner's list of recent folders, each in a task of its own and each after the
+//// same owner check as a creation.
 ////
 //// A home page also manages the browser logins of its own principal
 //// (protocol-change/065, PR 8). `signins_read` lists them, `sign_out_for` and
@@ -159,6 +167,7 @@
 
 import broker/token
 import client/daemon/manager
+import client/daemon/new_folder
 import client/daemon/root
 import client/daemon/server
 import client/daemon/shareable
@@ -731,18 +740,48 @@ pub fn upgrade_home(
     home_create_capability(
       attachment.principal,
       ceiling,
-      fn(workspace, name, sharing, deliver) {
+      fn(place, name, sharing, deliver) {
         create_task(
           standing,
           tickets,
           open,
           attachment.create,
-          workspace,
+          new_folder.check(_, attachment.state_root),
+          place,
           name,
           sharing,
           deliver,
         )
       },
+    )
+
+  // The owner's recent folders (protocol-change/074) go with the creation, since
+  // they exist to start one from. A read or a forget runs in a task of its own
+  // and the daemon's home directory is read there too, so the runtime never
+  // waits on the filesystem. A daemon that cannot find its home directory lists
+  // no folder.
+  let folders =
+    home_folders_capability(
+      attachment.principal,
+      ceiling,
+      home.Folders(
+        recent: fn(deliver) {
+          read_task(deliver, fn() {
+            case new_folder.home() {
+              Ok(directory) -> recent_for(standing, open, directory)
+              Error(_) -> []
+            }
+          })
+        },
+        forget: fn(id, deliver) {
+          read_task(deliver, fn() {
+            case new_folder.home() {
+              Ok(directory) -> forget_for(standing, open, directory, id)
+              Error(_) -> []
+            }
+          })
+        },
+      ),
     )
 
   // The same fresh home may stop, archive and delete the sessions it lists
@@ -820,6 +859,7 @@ pub fn upgrade_home(
       rename,
       managing,
       creating,
+      folders,
       signing,
       administering,
       admits,
@@ -922,12 +962,45 @@ pub fn home_manage_capability(
 pub fn home_create_capability(
   principal: access.Principal,
   ceiling: access.Role,
-  ask: fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
+  ask: fn(
+    creations.Place,
+    String,
+    creations.Sharing,
+    fn(creations.Answer) -> Nil,
+  ) -> Nil,
 ) -> Option(
-  fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
+  fn(creations.Place, String, creations.Sharing, fn(creations.Answer) -> Nil) ->
+    Nil,
 ) {
   case principal.kind, ceiling {
     access.OwnerPrincipal, access.Operator -> Some(ask)
+    access.OwnerPrincipal, access.Observer
+    | access.MemberPrincipal, access.Operator
+    | access.MemberPrincipal, access.Observer
+    -> None
+  }
+}
+
+/// The capability to read and edit the owner's recent folders that a home page
+/// minted for `principal` with `ceiling` is handed (protocol-change/074): `ask`
+/// for the daemon's owner on a page minted to operate, and none for any other,
+/// which is the creation capability's own rule, since the list exists only to
+/// start a creation from. The daemon checks both facts again when a read or a
+/// forget runs (`recent_for`, `forget_for`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_folders_capability(member, access.Operator, folders) == None
+/// ```
+@internal
+pub fn home_folders_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  folders: home.Folders,
+) -> Option(home.Folders) {
+  case principal.kind, ceiling {
+    access.OwnerPrincipal, access.Operator -> Some(folders)
     access.OwnerPrincipal, access.Observer
     | access.MemberPrincipal, access.Operator
     | access.MemberPrincipal, access.Observer
@@ -1074,8 +1147,10 @@ fn admit_home(
   rename: Option(fn(String, String, fn(renames.Answer) -> Nil) -> Nil),
   managing: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
   creating: Option(
-    fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
+    fn(creations.Place, String, creations.Sharing, fn(creations.Answer) -> Nil) ->
+      Nil,
   ),
+  folders: Option(home.Folders),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
   admits: fn(String) -> Bool,
@@ -1115,6 +1190,7 @@ fn admit_home(
       rename:,
       manage: managing,
       create: creating,
+      folders:,
       signins: fn(deliver) { read_task(deliver, signing.read) },
       login: signing.login,
       bookmark: signing.bookmark,
@@ -2355,20 +2431,28 @@ pub fn resume_task(
 ///    daemon and by no earlier one.
 /// 1. The page's ceiling must be Operator, and the credential must still
 ///    authenticate as the principal the page was admitted for, and that
-///    principal must be the daemon's owner. Each is `NotOwner`, so a page
-///    learns nothing else about its standing.
-/// 2. The name must pass `creations.chosen_name` (`InvalidName`), and the
-///    workspace must be one the owner holds a session in, read afresh from the
-///    catalogue with the page's credential (`NotKnown`). The page never names a
-///    path the owner has no session in, whatever frame reached the daemon.
-/// 3. The credential must have a creation left (`ui_sessions.reserve_creation`),
+///    principal must be the daemon's owner (`authorized_owner`). Each is
+///    `NotOwner`, so a page learns nothing else about its standing.
+/// 2. The place is resolved to a canonical workspace (`placed`). A workspace the
+///    page drew must be one the owner holds a session in, read afresh from the
+///    catalogue with the page's credential, or one of the owner's recent
+///    folders (`NotKnown` otherwise); a recent folder is judged again by
+///    `folder`, since the directory may have been removed or moved since it was
+///    remembered. A path the owner typed is judged by `folder` alone
+///    (`new_folder.check` in production: `NotAFolder` or `OutsideHome`). A
+///    workspace the owner holds a session in is not judged again: the owner put
+///    it there, wherever it is.
+/// 3. The name must pass `creations.chosen_name` against that workspace
+///    (`InvalidName`).
+/// 4. The credential must have a creation left (`ui_sessions.reserve_creation`),
 ///    counted for the credential and not for the page (`TooMany`).
-/// 4. `create` makes the session under a key drawn here, which no other
+/// 5. `create` makes the session under a key drawn here, which no other
 ///    request shares, so a retry of this call is a new creation and a repeat of
 ///    the page's press is stopped by the component, which has one out at a
 ///    time. The sharing becomes the domain scope: `Shareable` is
-///    `session_only` and `Private` is `workspace_private`.
-/// 5. The session is opened and its ticket minted as a resume's is
+///    `session_only` and `Private` is `workspace_private`. The control
+///    command's own creation remembers the workspace among the recent folders.
+/// 6. The session is opened and its ticket minted as a resume's is
 ///    (`opened_ticket`), with the page's own ceiling, reach and deadline. A
 ///    session that was created and did not open is `NotOpened`, which says it
 ///    exists.
@@ -2379,7 +2463,7 @@ pub fn resume_task(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.create_for(standing, tickets, open, create, "/work/loom", "", creations.Private, within: 30_000)
+/// // ui_socket.create_for(standing, tickets, open, create, new_folder.check, creations.Drawn("/work/loom"), "", creations.Private, within: 30_000)
 /// ```
 @internal
 pub fn create_for(
@@ -2388,30 +2472,19 @@ pub fn create_for(
   open: fn() -> Result(Int, Nil),
   create: fn(access.Principal, manager.Creation, domain.Scope) ->
     Result(manager.View, String),
-  workspace: String,
+  folder: fn(String) -> Result(String, creations.Reason),
+  place: creations.Place,
   name: String,
   sharing: creations.Sharing,
   within within: Int,
 ) -> creations.Answer {
   let outcome = {
-    use _ <- result.try(open() |> result.replace_error(creations.NotOwner))
-    use _ <- result.try(
-      operating_ceiling(standing.ceiling)
-      |> result.replace_error(creations.NotOwner),
-    )
-    use principal <- result.try(
-      manager.authenticate(standing.registry, standing.digest)
-      |> result.replace_error(creations.NotOwner),
-    )
-    use _ <- result.try(case principal.id == standing.principal {
-      True -> owner_of(principal)
-      False -> Error(creations.NotOwner)
-    })
+    use principal <- result.try(authorized_owner(standing, open))
+    use workspace <- result.try(placed(standing, folder, place))
     use name <- result.try(
       creations.chosen_name(name, workspace)
       |> result.replace_error(creations.InvalidName),
     )
-    use _ <- result.try(known_workspace(standing, workspace))
     use _ <- result.try(
       ui_sessions.reserve_creation(tickets, standing.digest)
       |> result.replace_error(creations.TooMany),
@@ -2439,6 +2512,72 @@ pub fn create_for(
         sessions.Declined(_) -> creations.Declined(creations.NotOpened)
       }
     }
+  }
+}
+
+// The first two steps of every owner-only request a home page makes: the page is
+// still open, its ceiling is an operator's, and the credential still
+// authenticates as the principal the page was admitted for, who is the daemon's
+// owner. Each refusal is `NotOwner`, so a page learns nothing else about its
+// standing. The request's own steps run after it, so no later check runs for a
+// page that may not ask.
+fn authorized_owner(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+) -> Result(access.Principal, creations.Reason) {
+  use _ <- result.try(open() |> result.replace_error(creations.NotOwner))
+  use _ <- result.try(
+    operating_ceiling(standing.ceiling)
+    |> result.replace_error(creations.NotOwner),
+  )
+  use principal <- result.try(
+    manager.authenticate(standing.registry, standing.digest)
+    |> result.replace_error(creations.NotOwner),
+  )
+  use _ <- result.map(case principal.id == standing.principal {
+    True -> owner_of(principal)
+    False -> Error(creations.NotOwner)
+  })
+  principal
+}
+
+// The canonical workspace a place stands for. A typed path is only what
+// `folder` says it is. A workspace the page drew is one the owner holds a
+// session in now, which needs no further judgement, or one of the owner's recent
+// folders, which is judged again by `folder`: the directory may have been
+// removed, moved or replaced since it was remembered, and the home page that
+// drew it may be hours old.
+fn placed(
+  standing: Standing(instance),
+  folder: fn(String) -> Result(String, creations.Reason),
+  place: creations.Place,
+) -> Result(String, creations.Reason) {
+  case place {
+    creations.Typed(path:) -> folder(path)
+    creations.Drawn(workspace:) ->
+      case known_workspace(standing, workspace) {
+        Ok(Nil) -> Ok(workspace)
+        Error(creations.NotKnown) ->
+          remembered_workspace(standing, folder, workspace)
+        Error(reason) -> Error(reason)
+      }
+  }
+}
+
+// A workspace the owner has no session in is still creatable when it is one of
+// the owner's recent folders, and it is then judged as a typed path is.
+fn remembered_workspace(
+  standing: Standing(instance),
+  folder: fn(String) -> Result(String, creations.Reason),
+  workspace: String,
+) -> Result(String, creations.Reason) {
+  case manager.recent_folders(standing.registry) {
+    Error(_) -> Error(creations.Unavailable)
+    Ok(recent) ->
+      case list.any(recent, fn(entry) { entry.workspace == workspace }) {
+        True -> folder(workspace)
+        False -> Error(creations.NotKnown)
+      }
   }
 }
 
@@ -2484,7 +2623,7 @@ fn scope_of(sharing: creations.Sharing) -> domain.Scope {
 fn creation_refusal(code: String) -> creations.Reason {
   case code {
     "forbidden" -> creations.NotOwner
-    "invalid_workspace" -> creations.NotKnown
+    "invalid_workspace" -> creations.NotAFolder
     "capacity" -> creations.Full
     _ -> creations.Unavailable
   }
@@ -2512,7 +2651,7 @@ fn hex_entropy(bytes: Int) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.create_task(standing, tickets, open, create, workspace, "", creations.Private, deliver)
+/// // ui_socket.create_task(standing, tickets, open, create, new_folder.check, place, "", creations.Private, deliver)
 /// ```
 @internal
 pub fn create_task(
@@ -2521,7 +2660,8 @@ pub fn create_task(
   open: fn() -> Result(Int, Nil),
   create: fn(access.Principal, manager.Creation, domain.Scope) ->
     Result(manager.View, String),
-  workspace: String,
+  folder: fn(String) -> Result(String, creations.Reason),
+  place: creations.Place,
   name: String,
   sharing: creations.Sharing,
   deliver: fn(creations.Answer) -> Nil,
@@ -2534,7 +2674,8 @@ pub fn create_task(
           tickets,
           open,
           create,
-          workspace,
+          folder,
+          place,
           name,
           sharing,
           within: resume_wait_ms,
@@ -2544,6 +2685,76 @@ pub fn create_task(
     ])
     |> weft.start_witnessed
   Nil
+}
+
+/// The owner's recent folders as a home page may draw them (protocol-change/074),
+/// newest first: the folders the catalogue remembers that lie where a session may
+/// start, judged by `creations.inside` against `home`, the canonical home
+/// directory. A folder outside it (one a terminal created in, say) is left out,
+/// since pressing its button could only be refused; the check at the press is
+/// still made, and still judges the filesystem, which this read does not touch.
+///
+/// The same owner check as a creation runs first (`authorized_owner`), so a page
+/// that may not create is told of no folder, and so is a registry that did not
+/// answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.recent_for(standing, open, "/Users/o")
+/// ```
+@internal
+pub fn recent_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  home: String,
+) -> List(creations.Recent) {
+  case authorized_owner(standing, open) {
+    Ok(_) -> listed_recent(standing, home)
+    Error(_) -> []
+  }
+}
+
+// The list `recent_for` answers once the owner check has passed, so a caller that
+// has made its own check does not make it twice.
+fn listed_recent(
+  standing: Standing(instance),
+  home: String,
+) -> List(creations.Recent) {
+  case manager.recent_folders(standing.registry) {
+    Ok(recent) ->
+      list.filter_map(recent, fn(entry) {
+        creations.inside(home, entry.workspace)
+        |> result.replace(creations.Recent(entry.id, entry.workspace))
+      })
+    Error(_) -> []
+  }
+}
+
+/// Forgets one recent folder, named by the identity `recent_for` listed it
+/// under, and answers the list as it is now. The same owner check runs first,
+/// and a page that fails it forgets nothing and is told of no folder. An identity
+/// that is gone, or that a newer remembering retired, changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.forget_for(standing, open, "/Users/o", 4)
+/// ```
+@internal
+pub fn forget_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  home: String,
+  id: Int,
+) -> List(creations.Recent) {
+  case authorized_owner(standing, open) {
+    Error(_) -> []
+    Ok(_) -> {
+      let _forgotten = manager.forget_folder(standing.registry, id)
+      listed_recent(standing, home)
+    }
+  }
 }
 
 /// Starts the home page's activity read in a run of its own and returns at

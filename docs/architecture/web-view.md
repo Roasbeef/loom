@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:344`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:353`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3991`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4202`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1001,8 +1001,9 @@ and mints nothing. `ui_route_test` runs each step against a real registry and
 ### Creating a session
 
 The fourth pull request of 065 lets the owner's home make a session. The owner
-picks a workspace the owner already has a session in; there is no path field.
-`ui_socket.home_create_capability` hands `Start.create` to a page whose principal
+picks a workspace the owner already has a session in, or, since
+[protocol-change/074](../../protocol-change/074-web-new-folder-sessions.md),
+types a folder inside their home directory (below). `ui_socket.home_create_capability` hands `Start.create` to a page whose principal
 is the daemon's owner and whose ceiling is Operator, and to no other, so any
 other home draws nothing (`view/create` has `Never`) and drops the messages.
 With it `view/home_table` draws a "New session" button at the head of each
@@ -1038,6 +1039,39 @@ different paths, each handler has its own decoder, and the decoders refuse each
 other's fields (`text` for a rename, `name` and `shareable` for a creation), so a
 submit reaches one handler and one message. `ui_route_test`, `ui_socket_test`, `ui_sessions_test` and
 `home_test` read each refusal and the admission.
+
+#### A folder that has no session
+
+Protocol-change/074 adds an "Other folders" section after the home's lists
+(`view/folders`), drawn only where `view/create` is `Offered` and the page has
+read its list. It holds a "New session in another folder" button and one row for
+each remembered folder that no group already shows. The button opens a form with
+a path field and the same name and Shareable box (`create.Elsewhere`, then
+`create.Sending` while the creation is out). It is the one form whose workspace is
+a field, so `view/create.typed_fields` accepts exactly one `path`, one `name`, at
+most one `shareable` and nothing else. A creation now names a `creations.Place`:
+`Drawn(workspace)` for a workspace the page drew and `Typed(path)` for the field.
+The submit sits beneath `home.table_path`, so the owner's admission is unchanged.
+
+`create_for` resolves the place before anything is created (`placed`). A typed
+path goes to `client/daemon/new_folder.check`: the text rule, `~` expansion,
+`bootstrap.canonical_directory`, the rule that the canonical folder lies strictly
+inside the canonical home directory with no hidden segment below it
+(`creations.inside`), and ownership by the home directory's owner with owner
+read, write and search. A refusal is `NotAFolder` or `OutsideHome`, in fixed words
+that never say the path. A `Drawn` workspace is accepted when the owner holds a
+session in it, or when it is one of the owner's remembered folders, which is then
+judged like a typed path, so a folder deleted since is refused at the press.
+
+The remembered folders are the catalogue's `catalogue_recent_folders` (version 8,
+ten rows, ordered by an autoincrement sequence that is also the entry's identity).
+`server.create_session` remembers the canonical workspace once a session exists, so
+every surface feeds it. `Start.folders` (`home.Folders`, given on the creation
+capability's condition by `ui_socket.home_folders_capability`) reads the list after
+each list read (`recent_for`, which leaves out folders outside home) and forgets
+an entry by its identity (`forget_for`), each in a task after the same owner check
+as a creation. The rows are keyed by that identity, and a path is drawn only as a
+text node.
 
 ### The admin page
 

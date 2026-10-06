@@ -76,6 +76,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     rename: None,
     manage: None,
     create: None,
+    folders: None,
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
@@ -1164,17 +1165,21 @@ pub fn an_unsolicited_rename_answer_is_dropped_test() {
 // daemon's task does with the request, and the page's own state is what the
 // tests read.
 fn creator(
-  ask: fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil,
+  ask: fn(
+    creations.Place,
+    String,
+    creations.Sharing,
+    fn(creations.Answer) -> Nil,
+  ) -> Nil,
 ) -> home.Start {
   home.Start(..start(), create: Some(ask))
 }
 
 fn recording(
-  asked: Subject(#(String, String, creations.Sharing)),
-) -> fn(String, String, creations.Sharing, fn(creations.Answer) -> Nil) -> Nil {
-  fn(workspace, name, sharing, _) {
-    process.send(asked, #(workspace, name, sharing))
-  }
+  asked: Subject(#(creations.Place, String, creations.Sharing)),
+) -> fn(creations.Place, String, creations.Sharing, fn(creations.Answer) -> Nil) ->
+  Nil {
+  fn(place, name, sharing, _) { process.send(asked, #(place, name, sharing)) }
 }
 
 // A member's page and an observer-ceiling page have no capability, so they draw
@@ -1195,17 +1200,17 @@ pub fn a_page_without_the_capability_draws_no_creation_control_test() {
   assert list.length(handlers(home.view(model))) == 8
 }
 
-// The owner's page has one button under each workspace and no form until a
-// button is pressed. The new handlers are clicks beneath the table, which the
+// The owner's page has one button under each workspace, one more for another
+// folder (protocol-change/074), and no form until a button is pressed. The new handlers are clicks beneath the table, which the
 // socket already admits, and the sidebar and the table keep their own.
 pub fn the_owner_has_a_button_under_each_workspace_test() {
   let asked = process.new_subject()
   let #(model, _) = opened(creator(recording(asked)))
   let html = drawn(model)
-  assert list.length(string.split(html, "class=\"home-new\"")) == 4
+  assert list.length(string.split(html, "class=\"home-new\"")) == 5
   assert !string.contains(html, "<form")
   let keys = handlers(home.view(model))
-  assert list.length(keys) == 11
+  assert list.length(keys) == 12
   assert list.all(keys, beneath_the_two_regions)
 }
 
@@ -1250,7 +1255,7 @@ pub fn a_submit_asks_once_and_the_page_waits_test() {
   let model =
     run(model, home.Creating("/src/loom", "review", creations.Shareable))
   assert process.receive(asked, 0)
-    == Ok(#("/src/loom", "review", creations.Shareable))
+    == Ok(#(creations.Drawn("/src/loom"), "review", creations.Shareable))
   let html = drawn(model)
   assert string.contains(html, "Creating</button>")
   assert string.contains(html, "disabled")
@@ -1351,9 +1356,11 @@ pub fn every_creation_refusal_has_its_own_words_test() {
     creations.Full,
     creations.NotOpened,
     creations.Unavailable,
+    creations.NotAFolder,
+    creations.OutsideHome,
   ]
   let words = list.map(reasons, creations.reason_words)
-  assert list.length(list.unique(words)) == 7
+  assert list.length(list.unique(words)) == 9
 }
 
 // A workspace, a name or a folder from the catalogue is a text node: it is
@@ -1414,7 +1421,7 @@ pub fn the_rename_and_creation_forms_cannot_be_confused_test() {
   let after_create =
     run(model, home.Creating("/src/weft", "made", creations.Private))
   assert process.receive(asked, 0)
-    == Ok(#("/src/weft", "made", creations.Private))
+    == Ok(#(creations.Drawn("/src/weft"), "made", creations.Private))
   assert process.receive(renamed, 0) == Error(Nil)
   assert string.contains(drawn(after_create), "Creating</button>")
 }
@@ -2070,4 +2077,306 @@ pub fn a_bookmarks_home_says_why_it_has_no_session_actions_test() {
 
   let #(member, _) = opened(start())
   assert !string.contains(drawn(member), sentence)
+}
+
+// ---------------------------------------------------------------------------
+// A session in a folder that has none (protocol-change/074).
+// ---------------------------------------------------------------------------
+
+// A page that may create and lists the owner's remembered folders. `rows` is
+// what each read answers, `asked` hears each creation, and `forgotten` hears
+// each forget, which answers with `after`.
+fn folder_keeper(
+  rows: List(creations.Recent),
+  asked: Subject(#(creations.Place, String, creations.Sharing)),
+  forgotten: Subject(Int),
+  after: List(creations.Recent),
+) -> home.Start {
+  home.Start(
+    ..creator(recording(asked)),
+    folders: Some(
+      home.Folders(
+        recent: fn(deliver) { deliver(rows) },
+        forget: fn(id, deliver) {
+          process.send(forgotten, id)
+          deliver(after)
+        },
+      ),
+    ),
+  )
+}
+
+fn recent(id: Int, path: String) -> creations.Recent {
+  creations.Recent(id:, path:)
+}
+
+// The control and the section exist only on a page that may create. A member's
+// or an observer-ceiling page draws neither the control nor the list, and the
+// messages that would open the form, send it or forget a folder change nothing
+// and ask nothing.
+pub fn only_a_page_that_may_create_draws_the_folder_section_test() {
+  let #(plain, _) = opened(start())
+  let html = drawn(plain)
+  assert !string.contains(html, "another folder")
+  assert !string.contains(html, "Other folders")
+  assert !string.contains(html, "Forget this folder")
+
+  let model = run(plain, home.OpeningElsewhere)
+  let model =
+    run(model, home.CreatingElsewhere("~/code/app", "", creations.Private))
+  let model = run(model, home.Forgetting(1))
+  let model = run(model, home.FoldersRead([recent(1, "/home/o/app")]))
+  assert drawn(model) == html
+
+  let asked = process.new_subject()
+  let #(owner, _) = opened(creator(recording(asked)))
+  assert string.contains(drawn(owner), "New session in another folder")
+  assert string.contains(drawn(owner), "Other folders")
+}
+
+// A page that has not read its list yet draws no section, so the control does
+// not appear before the page knows where it stands.
+pub fn the_folder_section_waits_for_the_first_list_test() {
+  let asked = process.new_subject()
+  let model = home.new(creator(recording(asked)))
+  assert !string.contains(drawn(model), "another folder")
+}
+
+// The remembered folders that no group shows are drawn, each with a button to
+// start a session there and one to forget the folder. A folder a group already
+// shows is not repeated.
+pub fn remembered_folders_without_a_group_are_listed_test() {
+  let asked = process.new_subject()
+  let forgotten = process.new_subject()
+  let rows = [
+    recent(7, "/home/o/archived-app"),
+    recent(6, "/src/loom"),
+    recent(5, "/home/o/old"),
+  ]
+  let #(model, _) = opened(folder_keeper(rows, asked, forgotten, rows))
+  let html = drawn(model)
+  assert string.contains(html, "archived-app")
+  assert string.contains(html, "/home/o/archived-app")
+  assert string.contains(html, "/home/o/old")
+  assert list.length(string.split(html, "Forget this folder")) == 3
+
+  // `/src/loom` has a group, so it appears once as that group's heading and its
+  // path is not repeated as a remembered folder.
+  assert !string.contains(html, "<span class=\"home-folder-path\">/src/loom")
+
+  // The rows are keyed by the daemon's identity and each one's buttons are
+  // beneath the table, which the socket admits.
+  let keys = handlers(home.view(model))
+  assert list.all(keys, string.starts_with(_, "0\t"))
+  assert list.any(keys, fn(key) { string.contains(key, "\tf7\t") })
+  assert list.any(keys, fn(key) { string.contains(key, "\tf5\t") })
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+// A folder's button opens the usual form under that folder, and its submit asks
+// for the folder the tree was drawn with, as a place the page drew.
+pub fn a_remembered_folder_opens_the_usual_form_test() {
+  let asked = process.new_subject()
+  let forgotten = process.new_subject()
+  let rows = [recent(7, "/home/o/archived-app")]
+  let #(model, _) = opened(folder_keeper(rows, asked, forgotten, rows))
+  let model = run(model, home.Choosing("/home/o/archived-app"))
+  let html = drawn(model)
+  assert string.contains(html, "name=\"name\"")
+  assert !string.contains(html, "name=\"path\"")
+  assert string.contains(html, "named <b>archived-app</b>.")
+
+  let model =
+    run(
+      model,
+      home.Creating("/home/o/archived-app", "again", creations.Shareable),
+    )
+  assert process.receive(asked, 0)
+    == Ok(#(
+      creations.Drawn("/home/o/archived-app"),
+      "again",
+      creations.Shareable,
+    ))
+  assert string.contains(drawn(model), "Creating</button>")
+}
+
+// The control opens one form with a path field, the same name and the same box.
+// Its submit asks for the typed path once and the form is locked while it is
+// out; a second submit, and a submit while a workspace's form is open, ask
+// nothing.
+pub fn the_typed_folder_form_asks_once_test() {
+  let asked = process.new_subject()
+  let forgotten = process.new_subject()
+  let #(model, _) = opened(folder_keeper([], asked, forgotten, []))
+  let _ =
+    run(model, home.CreatingElsewhere("~/code/app", "", creations.Private))
+  assert process.receive(asked, 0) == Error(Nil)
+
+  let model = run(model, home.OpeningElsewhere)
+  let html = drawn(model)
+  assert list.length(string.split(html, "<form")) == 2
+  assert string.contains(html, "name=\"path\"")
+  assert string.contains(html, "name=\"name\"")
+  assert string.contains(html, "name=\"shareable\"")
+  assert string.contains(html, "inside your home directory")
+  let submits =
+    list.filter(handlers(home.view(model)), string.ends_with(_, "\nsubmit"))
+  assert list.length(submits) == 1
+  assert list.all(submits, string.starts_with(_, home.table_path <> "\t"))
+
+  let sent =
+    run(model, home.CreatingElsewhere("~/code/app", "app", creations.Shareable))
+  assert process.receive(asked, 0)
+    == Ok(#(creations.Typed("~/code/app"), "app", creations.Shareable))
+  assert string.contains(drawn(sent), "Creating</button>")
+
+  let again =
+    run(sent, home.CreatingElsewhere("~/code/other", "", creations.Private))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert drawn(again) == drawn(sent)
+
+  // A workspace's form closes the typed one, and its submit is the only one.
+  let moved = run(model, home.Choosing("/src/loom"))
+  assert !string.contains(drawn(moved), "name=\"path\"")
+  let _ = run(moved, home.CreatingElsewhere("~/x", "", creations.Private))
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+// A refusal is the reason's fixed words in the section's head, with the form
+// back for a correction, and nothing the owner typed is drawn again, in text or
+// in an attribute. A session that was made and did not open closes the form.
+pub fn a_refused_folder_says_why_and_never_the_path_test() {
+  let typed = "~/<script>alert(1)</script>/secret-folder"
+  let refuse = fn(reason) {
+    let ask = fn(_, _, _, deliver) { deliver(creations.Declined(reason)) }
+    let #(model, _) = opened(creator(ask))
+    let model = run(model, home.OpeningElsewhere)
+    run(model, home.CreatingElsewhere(typed, "", creations.Private))
+  }
+  let outside = drawn(refuse(creations.OutsideHome))
+  assert string.contains(outside, creations.reason_words(creations.OutsideHome))
+  assert string.contains(outside, "name=\"path\"")
+  assert !string.contains(outside, "secret-folder")
+  assert !string.contains(outside, "<script>alert")
+  assert !string.contains(outside, "value=")
+
+  let missing = drawn(refuse(creations.NotAFolder))
+  assert string.contains(missing, creations.reason_words(creations.NotAFolder))
+
+  let unopened = drawn(refuse(creations.NotOpened))
+  assert string.contains(unopened, creations.reason_words(creations.NotOpened))
+  assert !string.contains(unopened, "name=\"path\"")
+}
+
+// A remembered folder's refusal is drawn in the same section, since the folder
+// has no group to put it beside.
+pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
+  let rows = [recent(7, "/home/o/gone")]
+  let ask = fn(_, _, _, deliver) {
+    deliver(creations.Declined(creations.NotAFolder))
+  }
+  let start =
+    home.Start(
+      ..creator(ask),
+      folders: Some(
+        home.Folders(recent: fn(deliver) { deliver(rows) }, forget: fn(_, _) {
+          Nil
+        }),
+      ),
+    )
+  let #(model, _) = opened(start)
+  let model = run(model, home.Choosing("/home/o/gone"))
+  let model = run(model, home.Creating("/home/o/gone", "", creations.Private))
+  let html = drawn(model)
+  assert string.contains(html, creations.reason_words(creations.NotAFolder))
+  assert string.contains(html, "<form")
+}
+
+// Forgetting asks the daemon with the identity the tree drew and the page then
+// shows the list the daemon answered, so a removed folder disappears. A page
+// that was handed no capability asks nothing.
+pub fn a_forgotten_folder_disappears_test() {
+  let asked = process.new_subject()
+  let forgotten = process.new_subject()
+  let rows = [recent(7, "/home/o/a"), recent(6, "/home/o/b")]
+  let remaining = [recent(6, "/home/o/b")]
+  let #(model, _) = opened(folder_keeper(rows, asked, forgotten, remaining))
+  assert string.contains(drawn(model), "/home/o/a")
+
+  let model = run(model, home.Forgetting(7))
+  assert process.receive(forgotten, 0) == Ok(7)
+  let html = drawn(model)
+  assert !string.contains(html, "/home/o/a")
+  assert string.contains(html, "/home/o/b")
+  assert process.receive(forgotten, 0) == Error(Nil)
+}
+
+// The page keeps no more than the catalogue's bound from a read, and the paths
+// it draws are text nodes: a hostile path is escaped and is in no attribute,
+// including the key and the title.
+pub fn remembered_paths_are_only_text_nodes_test() {
+  let hostile = "/home/o/<img src=x onerror=alert(1)>"
+  let asked = process.new_subject()
+  let forgotten = process.new_subject()
+  let rows = [recent(3, hostile)]
+  let #(model, _) = opened(folder_keeper(rows, asked, forgotten, rows))
+  let html = drawn(model)
+  assert !string.contains(html, "<img")
+  assert string.contains(html, "&lt;img")
+  assert !string.contains(html, "title=\"/home/o")
+  assert !string.contains(html, "value=\"/home/o")
+
+  let many =
+    list.repeat(Nil, home.recent_limit + 5)
+    |> list.index_map(fn(_, id) {
+      recent(id, "/home/o/f" <> string.inspect(id))
+    })
+  let model = run(model, home.FoldersRead(many))
+  let drawn_rows =
+    list.length(string.split(drawn(model), "Forget this folder")) - 1
+  assert drawn_rows == home.recent_limit
+}
+
+// The typed form's fields decode totally: exactly one path, exactly one name, at
+// most one box that reads `on`, and nothing else, so the workspace becomes a
+// field in this form only and the forged field of another form is refused.
+pub fn the_typed_folder_fields_decode_totally_test() {
+  assert create.typed_fields([#("path", "~/app"), #("name", "")])
+    == Ok(#("~/app", "", creations.Private))
+  assert create.typed_fields([
+      #("path", "/home/o/app"),
+      #("name", "x"),
+      #("shareable", "on"),
+    ])
+    == Ok(#("/home/o/app", "x", creations.Shareable))
+  assert create.typed_fields([
+      #("shareable", "on"),
+      #("name", "x"),
+      #("path", "~/app"),
+    ])
+    == Ok(#("~/app", "x", creations.Shareable))
+  assert create.typed_fields([]) == Error(Nil)
+  assert create.typed_fields([#("name", "x")]) == Error(Nil)
+  assert create.typed_fields([#("path", "~/app")]) == Error(Nil)
+  assert create.typed_fields([#("path", "~/a"), #("path", "~/b"), #("name", "")])
+    == Error(Nil)
+  assert create.typed_fields([#("path", "~/a"), #("name", "a"), #("name", "b")])
+    == Error(Nil)
+  assert create.typed_fields([
+      #("path", "~/a"),
+      #("name", ""),
+      #("shareable", "yes"),
+    ])
+    == Error(Nil)
+  assert create.typed_fields([
+      #("path", "~/a"),
+      #("name", ""),
+      #("workspace", "/etc"),
+    ])
+    == Error(Nil)
+  assert create.typed_fields([#("path", "~/a"), #("text", "x"), #("name", "")])
+    == Error(Nil)
+
+  // The workspace form still takes no path, so a forged `path` on it is refused.
+  assert create.fields([#("name", "x"), #("path", "/etc")]) == Error(Nil)
 }

@@ -17,6 +17,15 @@
 //// page and the daemon agree on a vocabulary without the page learning
 //// anything else about the daemon, and the one rule for a name, which both
 //// the form and the daemon apply.
+////
+//// The owner may also open a session in a folder that holds none yet
+//// (protocol-change/074), so a request names a `Place`: a workspace the page's
+//// own list or its recent folders drew, or a path the owner typed. A typed path
+//// is the one place a browser's text names a directory, so this module holds
+//// the pure half of what the daemon does with it: the hygiene rule for the text
+//// (`typed_path`), the expansion of a leading `~` (`expanded`) and the rule for
+//// where a canonical folder may be (`inside`). The half that asks the
+//// filesystem is the daemon's (`client/daemon/folders`).
 
 import gleam/list
 import gleam/string
@@ -38,6 +47,33 @@ pub type Sharing {
   /// shared with anyone. This is what a session created without the box ticked
   /// is, and what the terminal creates by default.
   Private
+}
+
+/// The most bytes a typed path may hold, which is the catalogue's own bound on
+/// a workspace.
+pub const path_limit = 4096
+
+/// Where a creation asks for its session to be made.
+pub type Place {
+  /// A workspace the page drew: one the owner holds a session in, or one of the
+  /// owner's recent folders. It is text the daemon wrote into the tree, and the
+  /// daemon checks that it is still one of those.
+  Drawn(workspace: String)
+
+  /// A path the owner typed into the form for another folder. It is the
+  /// browser's text and nothing else is: the daemon decides whether it names a
+  /// folder the owner may use (`inside`, and the checks of
+  /// `client/daemon/folders`).
+  Typed(path: String)
+}
+
+/// A folder the owner recently started a session in, as the daemon remembers it.
+/// `id` is the daemon's identity for the entry, which the page keys its list by
+/// and names to forget one, so a press that was in flight when the list changed
+/// reaches the same entry or nothing. `path` is the canonical folder, which the
+/// page draws as a text node and nowhere else.
+pub type Recent {
+  Recent(id: Int, path: String)
 }
 
 /// What the daemon answers to a request to create a session.
@@ -64,6 +100,18 @@ pub type Reason {
   /// only such workspaces, so this is a list that changed under the person or
   /// a frame the page did not draw.
   NotKnown
+
+  /// The typed path does not name a folder the daemon can use: it is empty,
+  /// holds a control character, is not absolute once `~` is expanded, does not
+  /// exist, is not a directory, or is not one the owner owns and may read and
+  /// write. One answer for each, so a page learns nothing about the filesystem
+  /// beyond whether the folder is usable.
+  NotAFolder
+
+  /// The folder exists and is usable, and is not inside the owner's home
+  /// directory, or is the home directory itself, or is or lies in a hidden
+  /// folder (one whose name begins with a dot).
+  OutsideHome
 
   /// The name is empty after trimming, longer than `name_limit` bytes, or
   /// holds a control, zero-width or direction-changing character.
@@ -99,6 +147,10 @@ pub fn reason_words(reason: Reason) -> String {
   case reason {
     NotOwner -> "Only the owner can create a session."
     NotKnown -> "That workspace is not in your list. Reload the page."
+    NotAFolder ->
+      "That folder does not exist or cannot be used. Give the path of a folder you own."
+    OutsideHome ->
+      "Choose a folder inside your home directory. The home directory itself and hidden folders are not allowed."
     InvalidName ->
       "Use a name of up to 256 bytes with no control or invisible characters."
     TooMany -> "You have created many sessions this hour. Try again later."
@@ -157,5 +209,102 @@ pub fn folder(workspace: String) -> String {
   case list.last(segments) {
     Ok(name) -> name
     Error(Nil) -> "New session"
+  }
+}
+
+/// The path a form's text stands for, or `Error(Nil)` for text that cannot name
+/// a folder: empty after trimming, longer than `path_limit` bytes, or holding a
+/// control, zero-width or direction-changing character (the rule `chosen_name`
+/// applies to a name). The text is not otherwise judged here; the daemon decides
+/// whether the folder exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert creations.typed_path("  ~/code/app ") == Ok("~/code/app")
+/// assert creations.typed_path("") == Error(Nil)
+/// assert creations.typed_path("/a\nb") == Error(Nil)
+/// ```
+pub fn typed_path(typed: String) -> Result(String, Nil) {
+  let path = string.trim(typed)
+  case
+    path != ""
+    && string.byte_size(path) <= path_limit
+    && text_hygiene.single_line(path) == path
+  {
+    True -> Ok(path)
+    False -> Error(Nil)
+  }
+}
+
+/// The absolute path a typed one names, with a leading `~` standing for `home`,
+/// or `Error(Nil)` for a path that is neither absolute nor `~`-relative. A
+/// relative path would be resolved against the daemon's own working directory,
+/// which the owner cannot see, so it is refused. `~user` is refused as well: it
+/// would name another account's home.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert creations.expanded("~/code", "/home/o") == Ok("/home/o/code")
+/// assert creations.expanded("~", "/home/o") == Ok("/home/o")
+/// assert creations.expanded("/srv/app", "/home/o") == Ok("/srv/app")
+/// assert creations.expanded("code", "/home/o") == Error(Nil)
+/// assert creations.expanded("~root/x", "/home/o") == Error(Nil)
+/// ```
+pub fn expanded(path: String, home: String) -> Result(String, Nil) {
+  case path {
+    "~" -> Ok(home)
+    "~/" <> rest -> Ok(home <> "/" <> rest)
+    "/" <> _ -> Ok(path)
+    _ -> Error(Nil)
+  }
+}
+
+// macOS keeps Keychains, Cookies, browser profiles and Mail in `~/Library`, which
+// Finder hides without a dot. The volume is case-insensitive, so the comparison
+// is too.
+fn first_is_library(segments: List(String)) -> Bool {
+  case segments {
+    [first, ..] -> string.lowercase(first) == "library"
+    [] -> False
+  }
+}
+
+/// Whether a canonical folder may start a session, given the canonical home
+/// directory: it must lie strictly inside `home`, and no segment below home may
+/// begin with a dot, and the first may not be `Library` in any case.
+///
+/// A session's agent may write to its whole workspace, so the home directory
+/// itself would hand it every dotfile and credential the owner keeps there. The
+/// hidden-folder rule keeps it from `~/.ssh`, `~/.aws`, `~/.config` and the
+/// daemon's own default state directory, where a session's conversation is
+/// kept. Both arguments are already resolved through symbolic links and `..`
+/// (`bootstrap.canonical_directory`), so the comparison is of segments and no
+/// link or dot-dot can step outside it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert creations.inside("/home/o", "/home/o/code/app") == Ok(Nil)
+/// assert creations.inside("/home/o", "/home/o") == Error(creations.OutsideHome)
+/// assert creations.inside("/home/o", "/home/other") == Error(creations.OutsideHome)
+/// assert creations.inside("/home/o", "/home/o/.ssh") == Error(creations.OutsideHome)
+/// assert creations.inside("/home/o", "/home/o/Library/Keychains") == Error(creations.OutsideHome)
+/// ```
+pub fn inside(home: String, folder: String) -> Result(Nil, Reason) {
+  case string.starts_with(folder, home <> "/") {
+    False -> Error(OutsideHome)
+    True -> {
+      let below = string.drop_start(folder, string.length(home) + 1)
+      let segments = string.split(below, "/")
+      let hidden =
+        list.any(segments, string.starts_with(_, "."))
+        || first_is_library(segments)
+      case below != "" && !hidden {
+        True -> Ok(Nil)
+        False -> Error(OutsideHome)
+      }
+    }
   }
 }

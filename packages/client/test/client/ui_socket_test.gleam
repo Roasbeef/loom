@@ -1032,7 +1032,7 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
 // operate, as the rename capability is, and the two are separate: each is given
 // by its own function and neither implies the other.
 pub fn only_an_owners_operating_home_may_create_test() {
-  let ask = fn(_workspace, _name, _sharing, _deliver) { Nil }
+  let ask = fn(_place, _name, _sharing, _deliver) { Nil }
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)
   let assert Some(_) =
@@ -1040,6 +1040,21 @@ pub fn only_an_owners_operating_home_may_create_test() {
   assert ui_socket.home_create_capability(owner, access.Observer, ask) == None
   assert ui_socket.home_create_capability(member, access.Operator, ask) == None
   assert ui_socket.home_create_capability(member, access.Observer, ask) == None
+}
+
+// Only the owner's operating home is handed the recent-folders capability.
+pub fn only_an_owners_operating_home_is_handed_the_folders_capability_test() {
+  let folders = home.Folders(recent: fn(_) { Nil }, forget: fn(_, _) { Nil })
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_folders_capability(owner, access.Operator, folders)
+  assert ui_socket.home_folders_capability(owner, access.Observer, folders)
+    == None
+  assert ui_socket.home_folders_capability(member, access.Operator, folders)
+    == None
+  assert ui_socket.home_folders_capability(member, access.Observer, folders)
+    == None
 }
 
 // The home's capability to stop, archive and delete is the owner's, on a page

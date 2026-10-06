@@ -503,10 +503,16 @@
   button.home-new{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
   button.home-new:hover:not(:disabled){background:var(--color-bg-raised);}
   button.home-new:disabled{opacity:.5;cursor:default;}
+  li.home-folder{padding:8px 0;border-bottom:1px solid var(--color-divider);}
+  .home-folder .home-group-head{margin:0;}
+  .home-folder-name{flex:0 0 auto;color:var(--color-fg);font:500 13px/1.4 var(--font-sans);}
+  .home-folder-path{flex:1 1 auto;min-width:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  button.home-forget{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
+  button.home-forget:hover{background:var(--color-bg-raised);}
   form.home-create{display:flex;flex-direction:column;gap:10px;margin:0 0 12px 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
-  .home-create-name{width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:14px/1.5 var(--font-sans);}
-  .home-create-name:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
-  .home-create-name:disabled{opacity:.6;}
+  .home-create-name,.home-create-path{width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:14px/1.5 var(--font-sans);}
+  .home-create-name:focus-visible,.home-create-path:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
+  .home-create-name:disabled,.home-create-path:disabled{opacity:.6;}
   label.home-create-share{display:flex;align-items:flex-start;gap:8px;cursor:pointer;}
   label.home-create-share input{flex:0 0 auto;margin:3px 0 0 0;}
   .home-create-share-text{display:flex;flex-direction:column;gap:1px;min-width:0;}

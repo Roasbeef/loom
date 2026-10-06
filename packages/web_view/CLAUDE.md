@@ -167,7 +167,22 @@ page keys and nonces, and the relay into the session's gateway.
   `Created(answer)` departs (a `creations.Ticketed` path into `departure`) or
   words the refusal (`creations.reason_words`). Only the open form's submit asks,
   and only once. `web_view/creations` holds `Sharing`, `Answer`, `Reason`,
-  `chosen_name` (the one rule for a name) and `folder`. The submit's event is
+  `chosen_name` (the one rule for a name) and `folder`.
+  A folder with no session (protocol-change/074): `Start.create` takes a
+  `creations.Place`, `Drawn(workspace)` or `Typed(path)`, and `Start.folders`
+  (`home.Folders(recent, forget)`, `Some` where `create` is) reads the owner's
+  remembered folders after each list (`FoldersRead`) and forgets one by identity
+  (`Forgetting(id)`). `view/folders` draws the section after the lists: the
+  "New session in another folder" button (`OpeningElsewhere`, state
+  `create.Elsewhere`, then `CreatingElsewhere(path, name, sharing)` and
+  `create.Sending`) and the remembered folders no group shows, keyed by
+  `creations.Recent.id`, each with the usual form (`Choosing`) and "Forget this
+  folder". `create.typed_fields` accepts exactly one `path`, one `name`, at most
+  one `shareable` and nothing else. `creations.typed_path`, `expanded` and `inside`
+  are the pure half of the rule for a typed path; the daemon holds the filesystem
+  half. A path is drawn only as a text node, never an attribute or a key, and a
+  refusal (`NotAFolder`, `OutsideHome`) is fixed words. A refusal's place is
+  `home_table.Elsewhere`, drawn in the section's head. The submit's event is
   beneath `table_path`, a path the owner's socket admits and no other's.
   Every list that answers also starts `Start.activity(ids, deliver)` for the
   running sessions it lists (at most `home.activity_limit`, 24): it returns
