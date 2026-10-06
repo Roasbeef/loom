@@ -471,38 +471,64 @@ page keys and nonces, and the relay into the session's gateway.
   the notice and `answer` before it runs a command.
 - `component.live_rows` (150) and `component.held_rows` (300): the page
   holds the newest turns of `main` whose drawn rows fit `live_rows`, cut
-  between turns (`turns.grouped`); once the reader loads older rows its limit is
+  between turns (`turns.grouped`); once the reader loads older turns its limit is
   `held_rows`. The limit counts drawn rows: a settled turn is its prompt, its
   answer and one divider, and its steps are drawn only while the reader has
   its fold open (below). `component.Paging` is `Tail | Paged | Full`; `Full`
   means a paged page had to cut a whole turn, so it loads no more, and a page
   that fits again after a fold closed is `Paged` again.
-- **Lazy folds** (protocol-change/070, `session_view/fold_budget`). A settled
-  turn's `Work` piece holds no steps unless its fold is open: `relaned` weighs
-  each turn (`fold_budget.weigh`: its closed rows, and what its fold would add),
-  keeps the newest turns that fit (`held`, `fold_budget.fit`) and calls
-  `fold_budget.draw`, which empties each closed fold's items and cuts an open
-  one to the newest steps its room allows (`Folding` is `Folded | Unfolded(hidden)
-  | Open`). `View.folds` is the list of open fold numbers, most recently opened
-  first; a number is the sequence of the first record the fold holds
-  (`turns.Work.id`), the daemon's number and never session text. The turns
-  held are chosen with every fold closed, so a press never changes where the
-  page is cut or its `Paging`; the rows they leave over, plus a reserve of
-  `fold_budget.fold_rows` (100) that is the folds' own, go to the open folds,
-  most recently opened first, and an older-opened fold that does not fit is
-  closed. The most recent that does not fit draws its newest steps and a line
-  says how many earlier ones are not shown. The running turn is `Open` and is counted
-  by every row of its blocks; when it alone is over the limit (`Overrun`) the
-  page draws its newest blocks but leaves the history window untrimmed, so once it settles it is one divider with its prompt, and `Paging`
-  does not go `Full` because of it. `FoldToggled(fold)` opens or closes a fold
-  (`folded_at`): it acts only on a `Connected` page with a cut, and only on a
-  number that is the id of a fold of a held turn, as `OlderRequested` acts only
-  on a page that is reading. The divider is a button (`lane.divider`) with the
-  fixed `data-loom-fold` marker; both pages draw it with `lane.Folds`, and an
-  observer's socket admits its click at `component.fold_click`'s exact path. `component.older(model)` asks for the rows below the oldest one
-  held, as a `history` read on the page's lane; `component.top(model)` is
-  the `lane.Top` the lane draws above its oldest row (`Beginning`,
-  `Earlier`, `Loading`, `Full(rows)`).
+- **Lazy folds** (protocol-change/070, `session_view/fold_budget`) and
+  **turn summaries** (protocol-change/071, `session_view/turn_ledger`). A closed
+  turn is not kept as records. `relaned` closes every turn of the history window
+  whose records are all in it and that nothing will be added to (every turn but
+  the newest, and the newest once its strand settles) into a `turn_ledger.Sealed`
+  (`View.sealed`, newest first), drops the window's records up to the newest
+  closed turn's last (`frontier`, `trimmed`), and draws the closed turns from
+  their summaries and the window's turns from its blocks. The window holds the
+  running turn and nothing older, so a turn of a thousand records costs the page
+  what a turn of two does. The row limit counts what is drawn: `fold_budget.fit`
+  takes the weights of the window's turns and then the closed turns, newest
+  first, and the closed turns that do not fit are dropped from `View.sealed`
+  (`Paging` goes `Full` when a paged page had to cut). A closed turn's divider is
+  `Folded` (no steps), `Reading` (open, steps not here yet) or `Unfolded(hidden)`
+  (open, with the newest steps read for it). `View.steps` holds the steps of
+  each open fold by its number, `View.folds` the open numbers most recently
+  opened first, and both are cut to the folds `fit` grants.
+  The page reads when it wants something, one read at a time (`View.purpose`:
+  `Resting | ForOlder | ForLead | ForSteps(fold)`), through the history window's
+  scan (`history_view.scan`), which keeps what it reads apart from the window.
+  `begun`, at the end of a projection, starts the first of: `ForLead`, the start
+  of the turn the window began inside (a page opened on a settled session holds
+  only the end of its newest turn, and draws nothing for it until the start is
+  read, so the divider's figures are the turn's), `ForSteps`, the newest
+  `fold_rows` rows of steps of an open fold of a closed turn (from the turn's
+  last record, which the summary holds), and `ForOlder`, after a press of "Load
+  older" (`View.older: Pressed`, from the parent of the oldest closed turn's
+  first record, until ten whole turns, the strand's first record or the scan's
+  bound). Each read begins with the records the page already holds, the cut and
+  the window, and asks the daemon only for what those do not settle; when they
+  settle it the projection runs again in the same message (`relaid`, `Answered`).
+  The read is sent by `serviced` at the end of the message that wanted it, the
+  step's tick, and a reply folds in as any frame does, so a scan is a chain of
+  messages and no timer. A refused or lost read is given up (`abandoned`): the
+  press can be made again, a lead is drawn as far as it is known
+  (`View.completion: Spent`), and a fold says how many steps it did not show.
+  `FoldToggled(fold)` opens or closes a fold (`folded_at`): it acts only on a
+  `Connected` page with a cut and only on a number that is the id of a fold the
+  page draws, as `OlderRequested` acts only on a page that is reading, and a
+  press on a closed turn's fold reads no more than that fold's own steps. The
+  divider is a button (`lane.divider`) with the fixed `data-loom-fold` marker;
+  both pages draw it with `lane.Folds`, and an observer's socket admits its click
+  at `component.fold_click`'s exact path; the events admitted are the same as
+  under 070. `component.top(model)` is the `lane.Top` the lane draws above its
+  oldest row (`Beginning`, `Earlier`, `Loading` while the page reads turns,
+  `Full(rows)`); the strands a reader left park their closed turns with their
+  paging (`View.parked_sealed`). The Changes and Trace boards and the newest tool
+  result are joined from the closed turns' and the window's
+  (`changes_view.append`, `trace_view.append`, `turn_ledger.latest_result`), and
+  a cache miss noticed after its turn closed is drawn after the turn's pieces
+  (`late_misses`). `component.rows` and `lines` are the rows the page draws, with
+  a closed turn's work as one divider row, and not the transcript's whole lines.
 - The view, one module per screen region under `web_view/view/`, laid out
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own

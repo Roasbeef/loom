@@ -590,57 +590,75 @@ MB where the same rows as plain text held 2.5 MB (#587).
 fit `component.live_rows` (150). A settled turn is drawn as its prompt, its
 answer and one divider, and its steps are drawn only while the reader has its
 fold open (protocol-change/070), so a turn of 170 calls costs the page what a
-turn of two does. The turns are cut between turns (`turns.grouped`), so the oldest
-row the page holds is a turn's input. A turn keyed by its input keeps its
-key when rows are added above it or the oldest turn leaves, and its lines'
-memos are reused (`lane_memo_test`). When a new capture brings rows, the
-oldest turns leave the page. The one exception to the turn boundary is a
-single turn longer than the limit, which the page holds from its newest
-blocks back, and only while it runs: its whole record stays in the history
-window, so once it settles the page holds it as one divider with its prompt.
-Once rows are cut, the history window is trimmed to the
-oldest record the page draws (`history_view.retain_from`), so each capture
-projects only what the page draws and the records the capture adds. The
-end of a turn whose input is older than the window is not drawn but stays
-in the window, so the next read asks for the sequences below it; a turn
-longer than one read then arrives over several reads, and is drawn once
-its input does. When that end alone no longer fits in the room left, the
-page counts the turn as cut. A read that finds none of the strand's
-records, because other strands wrote every sequence in it, still moves the
-next read below it (`history_view.capture` keeps the progress `accept`
-made).
+turn of two does. It also costs the page no records
+(protocol-change/071). When a turn closes, which is when every record of it is
+in the history window and nothing will be added to it, the page keeps its
+summary (`session_view/turn_ledger.Sealed`: the pieces it draws, where its
+records lie, what they added to the Changes and Trace boards) and trims the
+window to the records after it (`history_view.retain_from`). The window holds
+the running turn and nothing older, so a turn of 570 calls, over a thousand
+records, is the same few rows as any other, and its divider counts every call
+whatever the window held when the page opened. The turns are cut between turns
+(`turns.grouped`), so the oldest row the page holds is a turn's input, and a
+turn keyed by its input keeps its key when rows are added above it or the
+oldest turn leaves, and its lines' memos are reused (`lane_memo_test`). When a
+new capture brings rows, the oldest turns leave the page. The one exception to
+the turn boundary is a single running turn longer than the limit, which the
+page draws from its newest blocks back, and only while it runs.
+
+**What the page reads.** A page opened on a settled session holds the newest
+hundred records, which are the end of a turn. It draws nothing for that turn
+until it has read its start, and then draws it once, with the right figures. The
+read is the history window's scan (`history_view.scan`): a transient read of one
+stretch of the strand's ancestry, from one record downward through the lane's
+`history` read in intervals of at most a hundred sequences, kept apart from the
+window so that a read through a turn of thousands of records cannot evict the
+live end. It starts from the records the page already holds, the capture's and
+the window's, and asks the daemon only for what those do not settle. The page
+has one read out at a time and chooses the next from what it wants, in this
+order: the start of the turn the window began inside, the steps of an open fold
+it does not hold, and the turns below its oldest after a press of "Load older".
+A read that finds none of the strand's records, because other strands wrote
+every sequence in it, still moves the next read below it. The scan is bounded
+at 4,096 records, and a read the lane refuses is given up and not asked again
+until the reader presses again.
 
 **Load older.** Above the oldest row the lane draws `lane.Top`: the
 beginning of the conversation, a "Load older" button, "Loading older
-rows…" while a read is out, or a line saying the page is full. The button
-sends `component.OlderRequested` on both pages, which `component.older` turns into
-`history_view.older`: the history window asks for the interval of at most
-100 sequences below its oldest record. The page sends that as a `history`
-read on its own lane, the read the terminal pages with
-(`session_channel.history`), and the lane's `HistoryPage` update is folded
-back with `history_view.accept`. The lane has one request out at a time:
-when it is busy the demand stays `Wanted` and is offered again after every
-reduction until the lane takes it, and a second press while a read is out
-asks nothing. While the read is out the history window is frozen, so a
-capture that lands meanwhile cannot move the endpoint the reply is placed
-against; the reply, or a refusal, resumes it and folds in the newest
-capture.
+rows…" while the page reads turns, or a line saying the page is full. The button
+sends `component.OlderRequested` on both pages, which `component.older` turns
+into a want (`View.older`). The page then reads from the parent of the oldest
+closed turn's first record, on its own lane, the read the terminal pages with
+(`session_channel.history`), and stops at the first page that holds ten whole
+turns, the strand's first record or the scan's bound. A press loads turns, not
+records. The lane has one request out at a time: when it is busy the demand
+stays `Wanted` and is offered again after every reduction until the lane takes
+it, and a second press while a read is out asks nothing. The page keeps
+following the session while the read is out, since the records it reads are kept
+apart from the live ones.
 
 **Folds.** The divider of a settled turn is a button, and pressing it opens or
 closes the fold on the server. The click's message carries the fold's number,
 the sequence of the first record the work holds (`turns.Work.id`), fixed when
 the tree is drawn, and the page applies it only while it is reading a session
-and only for a fold of a turn it holds. `session_view/fold_budget` decides what
-is drawn: `weigh` costs a turn, `fit` says how many turns fit with the folds
-that are open, and `draw` empties a closed fold and cuts an open one to the
-newest steps it has room for. Opening a fold adds its steps to the count; if the
-page then does not fit, the folds opened before it close, oldest first, and a
-fold that alone is larger than the limit shows its newest steps and a line
-saying how many earlier ones are not shown. The observer's socket admits the
-click at the divider's exact path (`component.fold_click`) and nothing else at
-that row. The alternative, a fold the browser opens by itself, left every step
-in the server's retained tree; the cost of this one is a round trip on a press,
-and steps that find-in-page cannot see until the fold is open.
+and only for a fold of a turn it holds. Opening the fold of a closed turn reads
+that turn's newest steps, starting from its last record, which the page holds
+in the turn's summary, until the newest 100 rows (`fold_budget.fold_rows`) of
+steps are in hand or the turn's input is reached; the divider reads "Reading
+the steps…" meanwhile. Closing the fold drops them, so the page never holds a
+closed turn's steps beyond the folds the reader has open.
+`session_view/fold_budget` decides what is drawn: `weigh` costs a turn, `fit`
+says how many turns fit with the folds that are open, and `draw` cuts an open
+fold to the newest steps it has room for. Opening a fold adds its steps to the
+count; if the page then does not fit, the folds opened before it close, oldest
+first, and a fold that alone is larger than the limit shows its newest steps and
+a line saying how many earlier ones are not shown. The observer's socket admits
+the click at the divider's exact path (`component.fold_click`) and nothing else
+at that row, and the read is the lane's `history` read, which the gateway admits
+for an observer as for an operator and the page's relay authorizes at each
+frame. The alternative, a fold the browser opens by itself, left every step in
+the server's retained tree; the cost of this one is a round trip on a press, and
+steps that find-in-page cannot see until the fold is open.
 
 **The cap.** Loading older rows raises the page's limit to
 `component.held_rows` (300). The page still holds the newest rows, so new
@@ -656,12 +674,14 @@ everything they are reading down by the height of what arrived. The
 stylesheet turns the browser's scroll anchoring off for the transcript, so
 the page keeps the reader's place itself. `<loom-follow>` hears the click on
 the button (it carries a fixed `data-loom-older` marker) as it hears a
-fold's toggle, and a click on a settled turn's divider (`data-loom-fold`) the
-same way: it becomes `Reading`, so the growth that follows does not
+fold's toggle: it becomes `Reading`, so the growth that follows does not
 scroll to the tail, and it holds the lane's first row and its position on
 screen. When that row stops being the lane's first, the older rows have
-arrived, and it scrolls the transcript by however far the row moved. This
-is the one place the reader's place is kept.
+arrived, and it scrolls the transcript by however far the row moved. A click on
+a settled turn's divider (`data-loom-fold`) holds the pressed button and where
+its top edge was in the viewport instead, and each time the lane changes size it
+scrolls by however far the button moved, until the reader next touches the
+transcript, so the divider stays under the pointer when the steps are drawn.
 
 **Observers.** A `history` read is a read. The gateway admits it for an
 observer's binding (`gateway.read_only` lists `History`), and the lane
@@ -1375,7 +1395,7 @@ keeps a page from acting.
 | `Origin` on upgrade | A page on another origin, including another loopback port, opening the socket. It must equal `http://` and the request's `Host`. | `ui_http.origin_matches` |
 | Credential and membership | A page outliving its authority. Every page request re-authenticates the minting credential and its membership, and the gateway re-checks at every frame. | `page_grant`, `ui_relay.while_open` |
 | Role ceiling | An operator's power by default. A page is an observer's unless minted with `--operate`, and never above Operator. | `ui_relay.capped` |
-| Component type | An observer's page sending a command. Its `Msg` has no command and its view three kinds of handler, the "Load older" read, a chip's focus and a settled turn's divider (draw or drop steps of records the page holds); the socket admits only those clicks at their fixed paths and drops every other frame. | `web_view/component`, `ui_socket.observer_accepts` |
+| Component type | An observer's page sending a command. Its `Msg` has no command and its view three kinds of handler, the "Load older" read, a chip's focus and a settled turn's divider (read or drop that turn's steps); the socket admits only those clicks at their fixed paths and drops every other frame. | `web_view/component`, `ui_socket.observer_accepts` |
 | Approval card rules | Tricking the person into approving (below). | `web_view/operator_page` |
 | Text only | Script injected through session content. Session text is drawn only as text nodes; no attribute, handler, key or URL is built from it. An answer's Markdown becomes fixed elements from a closed tree, and a link's destination is hidden text that `<loom-link>` validates in the browser before it draws an anchor. | `web_view/view/lane`, `web_view/view/strip`, `web_view/view/todo_panel`, `web_view/markdown_view`, `web_view/operator_page` |
 | Response headers | Inline script and style, framing, `Referer` leaks of the ticket and key, caching. | `ui_http.secured`, `page.content_security_policy` |

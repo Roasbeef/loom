@@ -64,7 +64,15 @@ renders again just for it:
   button never covers the row the reader is about to read, and scrolling back
   to the bottom or pressing the button resumes it. When the reader presses the lane's
   "Load older" button, it keeps the row they were looking at in place while
-  the older rows arrive above it. It also listens on the document for
+  the older rows arrive above it. A press on a settled turn's divider (the
+  button's `data-loom-fold` marker) is the reader's own move too: the element
+  becomes `Reading` and holds the pressed button and where its top edge was in
+  the viewport (`Divider`), and each time the lane changes size it scrolls the
+  transcript by however far the button moved (`follow_rule.holding`, nothing
+  within a pixel), so the divider stays under the pointer when the steps are
+  drawn; the reader's next touch of the transcript lets it go (F154). The
+  scroller ends in 56px of room for the "Jump to latest" button, so the last row
+  is not under it (F156). It also listens on the document for
   `follow_rule.sent_event`, which `<loom-composer>` dispatches (bubbling,
   composed, no data) when the reader presses Send, Queue or Steer with a draft;
   the transcript then follows the tail again and scrolls to it.
