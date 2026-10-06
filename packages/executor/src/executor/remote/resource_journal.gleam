@@ -20,8 +20,10 @@
 //// COMMIT precedes replies. SQL failure poisons this endpoint as uncertain.
 //// Logical reservation ceilings do not bound SQLite pages/WAL or resident memory.
 //// No timer, row collection, native process owner or effect retry lives here.
-//// Format 2 reserves input, Ready, native association and closed completion capacity
-//// before preparation. Format 1 cannot be upgraded into permission. Actual native
+//// Format 3 reserves input, Ready, native association and closed completion capacity
+//// before preparation. It permits a Launch refusal after Ready without erasing
+//// original resource locations; Compile keeps its no-Ready refusal invariant.
+//// Older formats are refused before body reads, never upgraded into permission. Actual native
 //// readback precedes the resource writer lock; historical retries need no live
 //// native endpoint. Completion, cleanup, native retirement and outer receipt stay
 //// distinct. A recovered Reserved row does not establish a fresh original deadline;
@@ -29,7 +31,7 @@
 //// Whole-service admission uses admit_preparation: only its own insertion can
 //// issue a Claim. fence_preparation can retain a cancelled original before Submit.
 //// Both commits precede replies; retained Reserved history never reissues authority.
-//// Launch capacity is reserved but its outcome API remains unsupported.
+//// Launch completion uses its own closed codec and never recreates a live channel.
 ////
 //// Historical Input lookup reconstructs data, never the original live Claim.
 //// Only that Claim can request fresh native launch eligibility. Its association
@@ -81,6 +83,7 @@ import executor/remote/compile_completion as completion
 import executor/remote/identity
 import executor/remote/journal as native_journal
 import executor/remote/journal_codec
+import executor/remote/launch_completion
 import executor/remote/payload
 import executor/remote/wire
 import executor/resource_schema
@@ -345,6 +348,10 @@ type CustodyCommand {
   SettleCompile(Validated, completion.CompileCompletion, BitArray)
   FailPreparation(Validated, completion.CompileCompletion, BitArray)
   AcknowledgeCompile(Validated, identity.Digest)
+  ObserveLaunch(Validated)
+  SettleLaunch(Validated, launch_completion.LaunchCompletion, BitArray)
+  FailLaunch(Validated, launch_completion.LaunchCompletion, BitArray)
+  AcknowledgeLaunch(Validated, identity.Digest)
 }
 
 type CustodyAnswer {
@@ -352,6 +359,8 @@ type CustodyAnswer {
   LaunchAnswer(command.CommandRef, identity.RequestKey, identity.Digest)
   CompileAnswer(CompileStatus)
   RetainedAnswer(RetainedCompile)
+  LaunchStatusAnswer(LaunchStatus)
+  RetainedLaunchAnswer(RetainedLaunch)
   NeedReadback
 }
 
@@ -365,8 +374,40 @@ type NativeReadback {
   )
 }
 
+/// Checked historical Launch retention, never a channel or launch permission.
+pub opaque type RetainedLaunch {
+  RetainedLaunch(
+    /// Exact decoded original Launch observation.
+    decoded: launch_completion.LaunchCompletion,
+    /// Canonical completion bytes.
+    bytes: BitArray,
+    /// SHA-256 of completion bytes.
+    digest: identity.Digest,
+  )
+}
+
+/// Launch completion and its independent owner receipt.
+pub type LaunchStatus {
+  /// No closed Launch observation has committed.
+  LaunchPending
+
+  /// Durable closed Launch observation.
+  LaunchRetained(
+    /// Original canonical bytes and value.
+    retained: RetainedLaunch,
+    /// Owner receipt, independent of cleanup.
+    receipt: OuterReceipt,
+  )
+}
+
+type RetainedCompletion {
+  NoCompletion
+  CompileCompletion(RetainedCompile, OuterReceipt)
+  LaunchCompletion(RetainedLaunch, OuterReceipt)
+}
+
 type CustodyRow {
-  CustodyRow(native: NativeStatus, compiled: CompileStatus)
+  CustodyRow(native: NativeStatus, completed: RetainedCompletion)
 }
 
 type Validated {
@@ -739,13 +780,15 @@ pub fn inspect_native(
   book: Journal,
   original: Input,
 ) -> Result(NativeStatus, Error) {
-  use original <- result.try(compile_original(book, original))
+  use original <- result.try(validate_original(book, original))
   use answer <- result.try(exchange(book, Custody(ObserveNative(original), _)))
   case answer {
     NativeAnswer(value) -> Ok(value)
     CompileAnswer(_)
     | RetainedAnswer(_)
     | LaunchAnswer(_, _, _)
+    | LaunchStatusAnswer(_)
+    | RetainedLaunchAnswer(_)
     | NeedReadback -> Error(Corrupt)
   }
 }
@@ -763,7 +806,7 @@ pub fn associate_native(
   key: identity.RequestKey,
   digest: identity.Digest,
 ) -> Result(NativeStatus, Error) {
-  use original <- result.try(compile_original(book, original))
+  use original <- result.try(validate_original(book, original))
   use answer <- result.try(
     exchange(book, Custody(AssociateNative(original, ref, key, digest), _)),
   )
@@ -772,6 +815,8 @@ pub fn associate_native(
     CompileAnswer(_)
     | RetainedAnswer(_)
     | LaunchAnswer(_, _, _)
+    | LaunchStatusAnswer(_)
+    | RetainedLaunchAnswer(_)
     | NeedReadback -> Error(Corrupt)
   }
 }
@@ -796,15 +841,19 @@ pub fn associate_live_native(
   digest: identity.Digest,
 ) -> Result(NativeLaunchPermit, Error) {
   let book = claim.journal
-  use original <- result.try(compile_original(book, claim.original.original))
+  use original <- result.try(validate_original(book, claim.original.original))
   use answer <- result.try(
     exchange(book, Custody(AssociateLiveNative(original, ref, key, digest), _)),
   )
   case answer {
     LaunchAnswer(ref, key, digest) ->
       Ok(NativeLaunchPermit(book, ref, key, digest))
-    NativeAnswer(_) | CompileAnswer(_) | RetainedAnswer(_) | NeedReadback ->
-      Error(Corrupt)
+    NativeAnswer(_)
+    | CompileAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchStatusAnswer(_)
+    | RetainedLaunchAnswer(_)
+    | NeedReadback -> Error(Corrupt)
   }
 }
 
@@ -839,6 +888,8 @@ pub fn inspect_compile(
     NativeAnswer(_)
     | RetainedAnswer(_)
     | LaunchAnswer(_, _, _)
+    | LaunchStatusAnswer(_)
+    | RetainedLaunchAnswer(_)
     | NeedReadback -> Error(Corrupt)
   }
 }
@@ -930,8 +981,175 @@ pub fn acknowledge_compile(
     NativeAnswer(_)
     | RetainedAnswer(_)
     | LaunchAnswer(_, _, _)
+    | LaunchStatusAnswer(_)
+    | RetainedLaunchAnswer(_)
     | NeedReadback -> Error(Corrupt)
   }
+}
+
+/// Reads closed Launch history without recreating the original live channel.
+///
+/// ## Examples
+///
+/// `inspect_launch(book, original)` returns historical data only.
+pub fn inspect_launch(
+  book: Journal,
+  original: Input,
+) -> Result(LaunchStatus, Error) {
+  use original <- result.try(launch_original(book, original))
+  use answer <- result.try(exchange(book, Custody(ObserveLaunch(original), _)))
+  case answer {
+    LaunchStatusAnswer(value) -> Ok(value)
+    NativeAnswer(_)
+    | CompileAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _)
+    | RetainedLaunchAnswer(_)
+    | NeedReadback -> Error(Corrupt)
+  }
+}
+
+/// Commits the exact settled native terminal after independent journal readback.
+/// Native settlement establishes no cap outcome, transport or resource retirement.
+///
+/// ## Examples
+///
+/// `commit_launch(book, original, value)` returns durable historical bytes.
+pub fn commit_launch(
+  book: Journal,
+  original: Input,
+  value: launch_completion.LaunchCompletion,
+) -> Result(RetainedLaunch, Error) {
+  use original <- result.try(launch_original(book, original))
+  use bytes <- result.try(launch_bytes(book.enrolled, original, value))
+  launch_answer(book, SettleLaunch(original, value, bytes))
+}
+
+/// Retains a definite refusal from the original live owner's continuation.
+/// The owner must have witnessed refusal, rather than timeout or caller loss.
+/// Every command-route native launch requires the opaque permit issued only after
+/// association COMMIT. This atomic phase fence excludes both an existing permit
+/// and every future association, including a native readback already in progress.
+/// Original Ready paths remain cleanup evidence. This does not attest cleanup.
+///
+/// ## Examples
+///
+/// `fail_launch_preparation(claim, refused)` cannot overwrite an association.
+pub fn fail_launch_preparation(
+  claim: Claim,
+  value: launch_completion.LaunchCompletion,
+) -> Result(RetainedLaunch, Error) {
+  let book = claim.journal
+  use original <- result.try(launch_original(book, claim.original.original))
+  use bytes <- result.try(launch_bytes(book.enrolled, original, value))
+  launch_answer(book, FailLaunch(original, value, bytes))
+}
+
+/// Records the original authenticated owner's durable receipt of these bytes.
+/// Receipt is independent of native, transport and resource cleanup.
+///
+/// ## Examples
+///
+/// `acknowledge_launch(book, original, hash)` refuses a different completion.
+pub fn acknowledge_launch(
+  book: Journal,
+  original: Input,
+  hash: identity.Digest,
+) -> Result(LaunchStatus, Error) {
+  use original <- result.try(launch_original(book, original))
+  use answer <- result.try(
+    exchange(book, Custody(AcknowledgeLaunch(original, hash), _)),
+  )
+  case answer {
+    LaunchStatusAnswer(value) -> Ok(value)
+    NativeAnswer(_)
+    | CompileAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _)
+    | RetainedLaunchAnswer(_)
+    | NeedReadback -> Error(Corrupt)
+  }
+}
+
+/// Returns exact durable Launch bytes without live activation authority.
+///
+/// ## Examples
+///
+/// `retained_launch_bytes(retained)` is unchanged after restart.
+pub fn retained_launch_bytes(retained: RetainedLaunch) -> BitArray {
+  retained.bytes
+}
+
+/// Returns the independent hash of the closed Launch completion.
+///
+/// ## Examples
+///
+/// `retained_launch_digest(retained)` names completion rather than Prepared.
+pub fn retained_launch_digest(retained: RetainedLaunch) -> identity.Digest {
+  retained.digest
+}
+
+/// Returns the decoded historical observation without a socket or native permit.
+///
+/// ## Examples
+///
+/// `retained_launch_value(retained)` retains the complete original Launch key.
+pub fn retained_launch_value(
+  retained: RetainedLaunch,
+) -> launch_completion.LaunchCompletion {
+  retained.decoded
+}
+
+fn launch_original(book: Journal, original: Input) -> Result(Validated, Error) {
+  use Nil <- result.try(case command.service_role(original.key) {
+    command.LaunchService -> Ok(Nil)
+    command.CompileService -> Error(UnsupportedRole)
+  })
+  validate(book.enrolled, original)
+}
+
+fn launch_bytes(
+  enrolled: enrollment.SessionEnrollment,
+  original: Validated,
+  value: launch_completion.LaunchCompletion,
+) -> Result(BitArray, Error) {
+  use Nil <- result.try(
+    case launch_completion.original(value) == original.original.key {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    },
+  )
+  use bytes <- result.try(
+    launch_completion.encode(value) |> result.replace_error(InvalidInput),
+  )
+  use _ <- result.try(
+    launch_completion.decode(enrolled, original.original.key, bytes)
+    |> result.replace_error(InvalidInput),
+  )
+  Ok(bytes)
+}
+
+fn launch_answer(
+  book: Journal,
+  command: CustodyCommand,
+) -> Result(RetainedLaunch, Error) {
+  use answer <- result.try(exchange(book, Custody(command, _)))
+  case answer {
+    RetainedLaunchAnswer(value) -> Ok(value)
+    NativeAnswer(_)
+    | CompileAnswer(_)
+    | RetainedAnswer(_)
+    | LaunchAnswer(_, _, _)
+    | LaunchStatusAnswer(_)
+    | NeedReadback -> Error(Corrupt)
+  }
+}
+
+fn validate_original(
+  book: Journal,
+  original: Input,
+) -> Result(Validated, Error) {
+  validate(book.enrolled, original)
 }
 
 fn compile_original(
@@ -973,8 +1191,12 @@ fn retained_answer(
   use answer <- result.try(exchange(book, Custody(command, _)))
   case answer {
     RetainedAnswer(value) -> Ok(value)
-    NativeAnswer(_) | CompileAnswer(_) | LaunchAnswer(_, _, _) | NeedReadback ->
-      Error(Corrupt)
+    NativeAnswer(_)
+    | CompileAnswer(_)
+    | LaunchAnswer(_, _, _)
+    | LaunchStatusAnswer(_)
+    | RetainedLaunchAnswer(_)
+    | NeedReadback -> Error(Corrupt)
   }
 }
 
@@ -1356,8 +1578,8 @@ fn inventory(
     query(connection, sql.resource_format()) |> result.replace_error(Corrupt),
   )
   use Nil <- result.try(case formats {
-    [sql.ResourceFormat(1)] -> Error(BindingMismatch)
-    [sql.ResourceFormat(2)] -> Ok(Nil)
+    [sql.ResourceFormat(1)] | [sql.ResourceFormat(2)] -> Error(BindingMismatch)
+    [sql.ResourceFormat(3)] -> Ok(Nil)
     _ -> Error(Corrupt)
   })
   use metadata <- result.try(
@@ -1501,7 +1723,8 @@ fn checked_row(
   }
   use status <- result.try(status)
   use _ <- result.try(checked_custody(
-    config.enrolled,
+    connection,
+    config,
     validated,
     row,
     body,
@@ -1887,7 +2110,9 @@ fn custody_request(
     NativeAnswer(_)
     | CompileAnswer(_)
     | RetainedAnswer(_)
-    | LaunchAnswer(_, _, _) -> Ok(first)
+    | LaunchAnswer(_, _, _)
+    | LaunchStatusAnswer(_)
+    | RetainedLaunchAnswer(_) -> Ok(first)
   }
 }
 
@@ -1922,7 +2147,8 @@ fn custody_transaction(
       _ -> Error(Corrupt)
     })
     use custody <- result.try(checked_custody(
-      config.enrolled,
+      connection,
+      config,
       original,
       row,
       body,
@@ -1950,7 +2176,11 @@ fn custody_original(command: CustodyCommand) -> Validated {
     | ObserveCompile(original)
     | SettleCompile(original, _, _)
     | FailPreparation(original, _, _)
-    | AcknowledgeCompile(original, _) -> original
+    | AcknowledgeCompile(original, _)
+    | ObserveLaunch(original)
+    | SettleLaunch(original, _, _)
+    | FailLaunch(original, _, _)
+    | AcknowledgeLaunch(original, _) -> original
   }
 }
 
@@ -1965,8 +2195,13 @@ fn custody_transition(
   readback: Option(NativeReadback),
 ) -> Result(CustodyAnswer, Error) {
   case command {
+    ObserveLaunch(_) ->
+      launch_status(custody.completed) |> result.map(LaunchStatusAnswer)
+    SettleLaunch(_, _, _) | FailLaunch(_, _, _) | AcknowledgeLaunch(_, _) ->
+      launch_transition(connection, row, custody, command, readback)
     ObserveNative(_) -> Ok(NativeAnswer(custody.native))
-    ObserveCompile(_) -> Ok(CompileAnswer(custody.compiled))
+    ObserveCompile(_) ->
+      compile_status(custody.completed) |> result.map(CompileAnswer)
     AssociateNative(original, ref, key, digest) -> {
       case custody.native {
         Associated(saved_ref, saved_key, saved_digest, _) -> {
@@ -2005,9 +2240,9 @@ fn custody_transition(
       )
     }
     SettleCompile(original, value, bytes) -> {
-      case custody.compiled {
-        CompileRetained(retained, _) -> exact_retained(retained, bytes)
-        CompilePending ->
+      case compile_status(custody.completed) {
+        Ok(CompileRetained(retained, _)) -> exact_retained(retained, bytes)
+        Ok(CompilePending) ->
           settle_new(
             connection,
             row,
@@ -2017,12 +2252,13 @@ fn custody_transition(
             bytes,
             readback,
           )
+        Error(error) -> Error(error)
       }
     }
     FailPreparation(_, value, bytes) -> {
-      case custody.compiled {
-        CompileRetained(retained, _) -> exact_retained(retained, bytes)
-        CompilePending -> {
+      case compile_status(custody.completed) {
+        Ok(CompileRetained(retained, _)) -> exact_retained(retained, bytes)
+        Ok(CompilePending) -> {
           use Nil <- result.try(
             case
               row.phase == 1
@@ -2047,12 +2283,13 @@ fn custody_transition(
           ))
           Ok(RetainedAnswer(retained))
         }
+        Error(error) -> Error(error)
       }
     }
     AcknowledgeCompile(_, digest) -> {
-      case custody.compiled {
-        CompilePending -> Error(Missing)
-        CompileRetained(retained, receipt) -> {
+      case compile_status(custody.completed) {
+        Ok(CompilePending) -> Error(Missing)
+        Ok(CompileRetained(retained, receipt)) -> {
           use Nil <- result.try(case retained.digest == digest {
             True -> Ok(Nil)
             False -> Error(Conflict)
@@ -2072,6 +2309,7 @@ fn custody_transition(
           })
           Ok(CompileAnswer(CompileRetained(retained, ReceiptAcknowledged)))
         }
+        Error(error) -> Error(error)
       }
     }
   }
@@ -2117,7 +2355,9 @@ fn live_association(
     NativeAnswer(Unassociated)
     | CompileAnswer(_)
     | RetainedAnswer(_)
-    | LaunchAnswer(_, _, _) -> Error(Corrupt)
+    | LaunchAnswer(_, _, _)
+    | LaunchStatusAnswer(_)
+    | RetainedLaunchAnswer(_) -> Error(Corrupt)
   }
 }
 
@@ -2172,15 +2412,18 @@ fn associate_new(
   readback: Option(NativeReadback),
 ) -> Result(CustodyAnswer, Error) {
   use Nil <- result.try(case historical(status) {
-    Some(resources.CompileReady(_)) if row.completion_size == 0 -> Ok(Nil)
-    Some(resources.LaunchReady(_)) -> Error(UnsupportedRole)
+    Some(resources.CompileReady(_))
+      | Some(resources.LaunchReady(_))
+      if row.completion_size == 0
+    -> Ok(Nil)
     _ -> Error(Conflict)
   })
   case readback {
     None -> Ok(NeedReadback)
     Some(material) -> {
       use prepared <- result.try(native_template(
-        config.enrolled,
+        connection,
+        config,
         original,
         status,
         ref,
@@ -2311,7 +2554,17 @@ fn read_for_command(
       })
       native_readback(config.native, association.key, association.digest)
     }
+    SettleLaunch(_, value, _) -> {
+      use association <- result.try(option.to_result(
+        launch_completion.native_association(value),
+        Conflict,
+      ))
+      native_readback(config.native, association.key, association.digest)
+    }
     ObserveNative(_)
+    | ObserveLaunch(_)
+    | FailLaunch(_, _, _)
+    | AcknowledgeLaunch(_, _)
     | ObserveCompile(_)
     | FailPreparation(_, _, _)
     | AcknowledgeCompile(_, _) -> Error(Corrupt)
@@ -2404,7 +2657,8 @@ fn option_terminal(value: Option(payload.Item)) -> Option(BitArray) {
 }
 
 fn checked_custody(
-  enrolled: enrollment.SessionEnrollment,
+  connection: sqlight.Connection,
+  config: Config,
   original: Validated,
   row: sql.ResourceHeaders,
   body: sql.ResourceBodies,
@@ -2424,7 +2678,7 @@ fn checked_custody(
   use native <- result.try(case body.native_identity {
     <<>> -> Ok(Unassociated)
     record -> {
-      use scope <- result.try(native_scope(enrolled))
+      use scope <- result.try(native_scope(config.enrolled))
       use decoded <- result.try(
         journal_codec.decode(record, scope) |> result.replace_error(Corrupt),
       )
@@ -2437,7 +2691,6 @@ fn checked_custody(
         case
           native_id(pair.0) == row.native_id
           && journal_codec.encode(decoded) == record
-          && original.role == 0
         {
           True -> Ok(Nil)
           False -> Error(Corrupt)
@@ -2446,7 +2699,8 @@ fn checked_custody(
       use ref <- result.try(decode_ref(body.command_ref))
       use prepared <- result.try(
         native_template(
-          enrolled,
+          connection,
+          config,
           original,
           status,
           ref,
@@ -2459,46 +2713,19 @@ fn checked_custody(
       Ok(Associated(ref, pair.0, pair.1, prepared))
     }
   })
-  use compiled <- result.try(case body.completion {
-    <<>> -> Ok(CompilePending)
-    bytes -> {
-      use Nil <- result.try(
-        case original.role == 0 && digest(bytes) == row.completion_digest {
-          True -> Ok(Nil)
-          False -> Error(Corrupt)
-        },
-      )
-      use value <- result.try(
-        completion.decode(enrolled, original.original.key, bytes)
-        |> result.replace_error(Corrupt),
-      )
-      use Nil <- result.try(case native, completion.native_association(value) {
-        Unassociated, None
-          if row.ready_size == 0
-          && row.phase == 3
-          || row.ready_size == 0
-          && row.phase == 4
-        -> Ok(Nil)
-        Associated(_, _, _, _), Some(_) ->
-          matching_completion(native, value)
-          |> result.replace(Nil)
-          |> result.replace_error(Corrupt)
-        _, _ -> Error(Corrupt)
-      })
-      use receipt <- result.try(case row.outer_receipt {
-        0 -> Ok(ReceiptPending)
-        1 -> Ok(ReceiptAcknowledged)
-        _ -> Error(Corrupt)
-      })
-      use retained <- result.try(retain_value(value, bytes))
-      Ok(CompileRetained(retained, receipt))
-    }
-  })
-  Ok(CustodyRow(native, compiled))
+  use completed <- result.try(checked_completion(
+    config.enrolled,
+    original,
+    row,
+    body.completion,
+    native,
+  ))
+  Ok(CustodyRow(native, completed))
 }
 
 fn native_template(
-  enrolled: enrollment.SessionEnrollment,
+  connection: sqlight.Connection,
+  config: Config,
   original: Validated,
   status: Status,
   ref: command.CommandRef,
@@ -2506,10 +2733,6 @@ fn native_template(
   digest: identity.Digest,
   bytes: BitArray,
 ) -> Result(wire.Prepared, Error) {
-  use locations <- result.try(case historical(status) {
-    Some(resources.CompileReady(locations)) -> Ok(locations)
-    _ -> Error(Conflict)
-  })
   use prepared <- result.try(
     wire.decode_prepared(bytes) |> result.replace_error(InvalidInput),
   )
@@ -2519,13 +2742,13 @@ fn native_template(
   use hash <- result.try(
     wire.prepared_digest(prepared) |> result.replace_error(InvalidInput),
   )
-  use scope <- result.try(native_scope(enrolled))
+  use scope <- result.try(native_scope(config.enrolled))
   let #(operation, step) = #(
     command.coordinates(original.original.key).1,
     command.coordinates(original.original.key).2,
   )
   let #(native_operation, _) = identity.key_fields(key)
-  let #(registration, _) = enrollment.digests(enrolled)
+  let #(registration, _) = enrollment.digests(config.enrolled)
   use Nil <- result.try(
     case
       canonical == bytes
@@ -2555,20 +2778,13 @@ fn native_template(
     wire.Finite(ms) if ms >= actual.limits.wall_s * 1000 -> Ok(Nil)
     _ -> Error(Conflict)
   })
-  use original_input <- result.try(
-    input.decode_compile(original.original.body)
-    |> result.replace_error(InvalidInput),
-  )
-  use expected <- result.try(
-    service_command.compile_from_input(
-      enrolled,
-      original.original.key,
-      original_input,
-      locations,
-      actual.limits.wall_s,
-    )
-    |> result.replace_error(Conflict),
-  )
+  use expected <- result.try(expected_command(
+    connection,
+    config,
+    original,
+    status,
+    actual.limits.wall_s,
+  ))
   let proposal = service_command.offer(expected)
   let data = offer.data(proposal)
 
@@ -2587,6 +2803,335 @@ fn native_template(
     },
   )
   Ok(prepared)
+}
+
+fn compile_status(value: RetainedCompletion) -> Result(CompileStatus, Error) {
+  case value {
+    NoCompletion -> Ok(CompilePending)
+    CompileCompletion(retained, receipt) ->
+      Ok(CompileRetained(retained, receipt))
+    LaunchCompletion(_, _) -> Error(Corrupt)
+  }
+}
+
+fn launch_status(value: RetainedCompletion) -> Result(LaunchStatus, Error) {
+  case value {
+    NoCompletion -> Ok(LaunchPending)
+    LaunchCompletion(retained, receipt) -> Ok(LaunchRetained(retained, receipt))
+    CompileCompletion(_, _) -> Error(Corrupt)
+  }
+}
+
+fn checked_completion(
+  enrolled: enrollment.SessionEnrollment,
+  original: Validated,
+  row: sql.ResourceHeaders,
+  bytes: BitArray,
+  native: NativeStatus,
+) -> Result(RetainedCompletion, Error) {
+  case bytes {
+    <<>> -> Ok(NoCompletion)
+    _ -> {
+      use Nil <- result.try(case digest(bytes) == row.completion_digest {
+        True -> Ok(Nil)
+        False -> Error(Corrupt)
+      })
+      use receipt <- result.try(case row.outer_receipt {
+        0 -> Ok(ReceiptPending)
+        1 -> Ok(ReceiptAcknowledged)
+        _ -> Error(Corrupt)
+      })
+      checked_role_completion(enrolled, original, row, bytes, native, receipt)
+    }
+  }
+}
+
+fn checked_role_completion(
+  enrolled: enrollment.SessionEnrollment,
+  original: Validated,
+  row: sql.ResourceHeaders,
+  bytes: BitArray,
+  native: NativeStatus,
+  receipt: OuterReceipt,
+) -> Result(RetainedCompletion, Error) {
+  case command.service_role(original.original.key) {
+    command.CompileService -> {
+      use value <- result.try(
+        completion.decode(enrolled, original.original.key, bytes)
+        |> result.replace_error(Corrupt),
+      )
+      use Nil <- result.try(case native, completion.native_association(value) {
+        Unassociated, None
+          if row.ready_size == 0 && { row.phase == 3 || row.phase == 4 }
+        -> Ok(Nil)
+        Associated(_, _, _, _), Some(_) ->
+          matching_completion(native, value)
+          |> result.replace(Nil)
+          |> result.replace_error(Corrupt)
+        _, _ -> Error(Corrupt)
+      })
+      use retained <- result.try(retain_value(value, bytes))
+      Ok(CompileCompletion(retained, receipt))
+    }
+    command.LaunchService -> {
+      use value <- result.try(
+        launch_completion.decode(enrolled, original.original.key, bytes)
+        |> result.replace_error(Corrupt),
+      )
+      use Nil <- result.try(
+        case native, launch_completion.native_association(value) {
+          Unassociated, None if row.phase == 3 || row.phase == 4 -> Ok(Nil)
+          Associated(_, _, _, _), Some(_) ->
+            matching_launch(native, value)
+            |> result.replace(Nil)
+            |> result.replace_error(Corrupt)
+          _, _ -> Error(Corrupt)
+        },
+      )
+      use retained <- result.try(retain_launch(value, bytes))
+      Ok(LaunchCompletion(retained, receipt))
+    }
+  }
+}
+
+fn launch_transition(
+  connection: sqlight.Connection,
+  row: sql.ResourceHeaders,
+  custody: CustodyRow,
+  command: CustodyCommand,
+  readback: Option(NativeReadback),
+) -> Result(CustodyAnswer, Error) {
+  use status <- result.try(launch_status(custody.completed))
+  case command, status {
+    SettleLaunch(_, _, bytes), LaunchRetained(retained, _)
+    | FailLaunch(_, _, bytes), LaunchRetained(retained, _)
+    -> {
+      case bytes == retained.bytes {
+        True -> Ok(RetainedLaunchAnswer(retained))
+        False -> Error(Conflict)
+      }
+    }
+    SettleLaunch(_, value, bytes), LaunchPending ->
+      settle_launch(connection, row, custody.native, value, bytes, readback)
+    FailLaunch(_, value, bytes), LaunchPending -> {
+      use Nil <- result.try(
+        case
+          { row.phase == 1 || row.phase == 2 }
+          && custody.native == Unassociated
+          && launch_completion.native_association(value) == None
+        {
+          True -> Ok(Nil)
+          False -> Error(Conflict)
+        },
+      )
+      use retained <- result.try(retain_launch(value, bytes))
+      use Nil <- result.try(blob_change(
+        connection,
+        sql.fail_resource_preparation(
+          identity.digest_bytes(retained.digest),
+          bytes,
+          row.id,
+        ),
+        fn(row) { row.completion_digest },
+        identity.digest_bytes(retained.digest),
+      ))
+      Ok(RetainedLaunchAnswer(retained))
+    }
+    AcknowledgeLaunch(_, hash), LaunchRetained(retained, receipt) -> {
+      use Nil <- result.try(case hash == retained.digest {
+        True -> Ok(Nil)
+        False -> Error(Conflict)
+      })
+      use Nil <- result.try(case receipt {
+        ReceiptAcknowledged -> Ok(Nil)
+        ReceiptPending ->
+          phase_change(
+            connection,
+            sql.acknowledge_resource_compile(
+              row.id,
+              identity.digest_bytes(hash),
+            ),
+            fn(row) { row.outer_receipt },
+            1,
+          )
+      })
+      Ok(LaunchStatusAnswer(LaunchRetained(retained, ReceiptAcknowledged)))
+    }
+    AcknowledgeLaunch(_, _), LaunchPending -> Error(Missing)
+    _, _ -> Error(Corrupt)
+  }
+}
+
+fn settle_launch(
+  connection: sqlight.Connection,
+  row: sql.ResourceHeaders,
+  native: NativeStatus,
+  value: launch_completion.LaunchCompletion,
+  bytes: BitArray,
+  readback: Option(NativeReadback),
+) -> Result(CustodyAnswer, Error) {
+  use association <- result.try(matching_launch(native, value))
+  case readback {
+    None -> Ok(NeedReadback)
+    Some(material) -> {
+      use Nil <- result.try(case native {
+        Associated(_, _, _, prepared) if prepared == material.prepared -> Ok(Nil)
+        _ -> Error(Conflict)
+      })
+      use Nil <- result.try(case material.terminal {
+        Some(terminal) if terminal == association.terminal -> Ok(Nil)
+        _ -> Error(Conflict)
+      })
+      use hash <- result.try(
+        wire.digest(association.terminal) |> result.replace_error(InvalidInput),
+      )
+
+      // Payload bytes alone cannot certify the native reducer's committed settlement.
+      use Nil <- result.try(case admission.phase(material.evidence) {
+        admission.Terminal(saved, _, _)
+          | admission.Refused(saved, _)
+          | admission.Retired(saved)
+          | admission.RetiredRefusal(saved)
+          if saved == hash
+        -> Ok(Nil)
+        _ -> Error(Conflict)
+      })
+      use retained <- result.try(retain_launch(value, bytes))
+      use Nil <- result.try(blob_change(
+        connection,
+        sql.commit_resource_compile(
+          identity.digest_bytes(retained.digest),
+          bytes,
+          row.id,
+        ),
+        fn(row) { row.completion_digest },
+        identity.digest_bytes(retained.digest),
+      ))
+      Ok(RetainedLaunchAnswer(retained))
+    }
+  }
+}
+
+fn matching_launch(
+  native: NativeStatus,
+  value: launch_completion.LaunchCompletion,
+) -> Result(launch_completion.NativeAssociation, Error) {
+  case native, launch_completion.native_association(value) {
+    Associated(_, key, digest, _), Some(association)
+      if key == association.key && digest == association.digest
+    -> Ok(association)
+    _, _ -> Error(Conflict)
+  }
+}
+
+fn retain_launch(
+  value: launch_completion.LaunchCompletion,
+  bytes: BitArray,
+) -> Result(RetainedLaunch, Error) {
+  use hash <- result.try(wire.digest(bytes) |> result.replace_error(Corrupt))
+  Ok(RetainedLaunch(value, bytes, hash))
+}
+
+fn expected_command(
+  connection: sqlight.Connection,
+  config: Config,
+  original: Validated,
+  status: Status,
+  wall_s: Int,
+) -> Result(service_command.ExpectedCommand, Error) {
+  case historical(status), command.service_role(original.original.key) {
+    Some(resources.CompileReady(locations)), command.CompileService -> {
+      use body <- result.try(
+        input.decode_compile(original.original.body)
+        |> result.replace_error(InvalidInput),
+      )
+      service_command.compile_from_input(
+        config.enrolled,
+        original.original.key,
+        body,
+        locations,
+        wall_s,
+      )
+      |> result.replace_error(Conflict)
+    }
+    Some(resources.LaunchReady(locations)), command.LaunchService -> {
+      use body <- result.try(
+        input.decode_launch(original.original.body)
+        |> result.replace_error(InvalidInput),
+      )
+      let producer = input.launch_facts(body).compiled_by
+      use compiled <- result.try(producer_completion(
+        connection,
+        config,
+        producer,
+      ))
+      use admitted <- result.try(
+        input.admit_launch(
+          original.original.key,
+          config.enrolled,
+          body,
+          producer,
+          completion.compiled(compiled),
+        )
+        |> result.replace_error(Conflict),
+      )
+      service_command.launch(config.enrolled, admitted, locations, wall_s)
+      |> result.replace_error(Conflict)
+    }
+    _, _ -> Error(Conflict)
+  }
+}
+
+fn producer_completion(
+  connection: sqlight.Connection,
+  config: Config,
+  key: command.ServiceKey,
+) -> Result(completion.CompileCompletion, Error) {
+  use Nil <- result.try(case command.service_role(key) {
+    command.CompileService -> Ok(Nil)
+    command.LaunchService -> Error(Conflict)
+  })
+  let id =
+    bit_array.from_string(ids.entry_id_to_string(command.request_id(key)))
+  use rows <- result.try(
+    query(connection, sql.resource_headers(config.limits.rows + 1))
+    |> result.replace_error(Corrupt),
+  )
+  use row <- result.try(
+    list.find(rows, fn(row) { row.id == id }) |> result.replace_error(Conflict),
+  )
+
+  // Role is checked before descending. The same connection follows one Compile
+  // dependency edge; a producer can never recursively traverse another Launch.
+  use Nil <- result.try(case row.role == 0 {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  })
+  use checked <- result.try(checked_row(connection, config, row))
+  use Nil <- result.try(case checked.1.original.key == key {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  })
+  use bodies <- result.try(
+    query(connection, sql.resource_bodies(row.id))
+    |> result.replace_error(Corrupt),
+  )
+  use body <- result.try(case bodies {
+    [body] -> Ok(body)
+    _ -> Error(Corrupt)
+  })
+  use custody <- result.try(checked_custody(
+    connection,
+    config,
+    checked.1,
+    row,
+    body,
+    checked.0,
+  ))
+  case custody.completed {
+    CompileCompletion(retained, _) -> Ok(retained.decoded)
+    NoCompletion | LaunchCompletion(_, _) -> Error(Conflict)
+  }
 }
 
 fn normalize_policy(value: policy.SandboxPolicy) -> policy.SandboxPolicy {

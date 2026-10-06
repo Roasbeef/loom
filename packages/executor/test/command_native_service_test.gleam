@@ -1401,3 +1401,78 @@ fn terminal(
     as "Bounded observation of the actual compiler terminal."
   bytes
 }
+
+pub fn launch_command_context_accepts_satellite_and_refuses_compile_provenance_test() {
+  fixture("launch-role", fn(f) {
+    let producer = original(f, 3, "first")
+    let #(scope, operation, step) = command.coordinates(producer.key)
+    let #(input_digest, _, contract) = command.digests(producer.key)
+    let artifact =
+      compile.ExecutorArtifact(
+        scope,
+        operation,
+        step,
+        ids.entry_id_to_string(command.request_id(producer.key)),
+        input_digest,
+        "issued-artifact",
+        contract,
+        compile.entry_module,
+        "sha256-" <> string.repeat("e", 64),
+      )
+    let assert Ok(decoded) =
+      input.launch_input(
+        f.enrolled,
+        producer.key,
+        artifact,
+        [],
+        workspace.root(),
+        base(f.path),
+        string.repeat("d", 64),
+      )
+      as "Canonical Launch input, independent of artifact proof."
+    let body = input.encode_launch(decoded)
+    let assert Ok(run_step) = workspace.step("physical:run") as "Launch step."
+    let #(registration, contract) = enrollment.digests(f.enrolled)
+    let assert Ok(key) =
+      command.service_key(
+        command.parent(producer.key),
+        command.LaunchService,
+        scope,
+        operation,
+        run_step,
+        id(5),
+        string.lowercase(bit_array.base16_encode(j.digest(body))),
+        registration,
+        contract,
+      )
+      as "Full original Launch service key."
+    let launch = j.Input(key, body)
+    let assert Ok(j.FreshClaim(claim)) =
+      j.admit_preparation(f.resources, launch)
+      as "Original live Launch claim."
+    let assert Ok(satellite) =
+      command.command_ref(key, command.SatelliteCommand)
+      as "Exact SatelliteCommand purpose."
+    let assert Ok(_) =
+      service.live_command_context(
+        f.service,
+        claim,
+        satellite,
+        f.compile_deadline_ms,
+      )
+      as "Launch routes through the same native permit gate."
+    let assert Ok(_) =
+      service.command_context(f.service, f.resources, satellite)
+      as "Historical context retains no first-Submit authority."
+    assert service.live_command_context(
+        f.service,
+        claim,
+        ref(producer),
+        f.compile_deadline_ms,
+      )
+      == Error(service.Invalid)
+    assert command.command_ref(key, command.CompileCommand)
+      == Error("command role differs from original service purpose")
+    Nil
+  })
+}

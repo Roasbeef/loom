@@ -538,9 +538,13 @@ fn validate_command(
     )
     |> result.replace_error(Invalid),
   )
+  let physical_role = case command.service_role(original.key) {
+    command.CompileService -> command.CompileCommand
+    command.LaunchService -> command.SatelliteCommand
+  }
   case
     original.key == command.service(ref)
-    && command.command_ref(original.key, command.CompileCommand) == Ok(ref)
+    && command.command_ref(original.key, physical_role) == Ok(ref)
     && command.coordinates(original.key).0 == scope
     && resource_journal.native_endpoint(resources) == config.journal
   {
