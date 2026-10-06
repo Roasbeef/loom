@@ -205,6 +205,21 @@ pub fn memory_and_reasoning_read_as_a_verb_and_a_figure_test() {
   assert step_words.text(step_words.reasoning(None)) == "Reasoning"
 }
 
+pub fn a_reasoning_heading_names_a_summary_and_counts_what_there_is_to_open_test() {
+  let said = fn(provenance, lines, took) {
+    step_words.text(step_words.reasoning_of(provenance, lines, took))
+  }
+  assert said(step_words.Summarized, Some(162), Some(54_000))
+    == "Reasoning (summarized) · 162 lines · 54s"
+  assert said(step_words.Raw, Some(162), Some(54_000))
+    == "Reasoning · 162 lines · 54s"
+  assert said(step_words.Raw, Some(1), None) == "Reasoning · 1 line"
+  assert said(step_words.Summarized, None, Some(54_000))
+    == "Reasoning (summarized) · 54s"
+  assert said(step_words.Summarized, None, None) == "Reasoning (summarized)"
+  assert said(step_words.Raw, None, None) == "Reasoning"
+}
+
 pub fn a_fold_summary_leaves_out_a_figure_the_records_did_not_give_test() {
   assert step_words.worked(Some(22_000), 10, 2)
     == "Worked 22s · 10 steps · 2 files"

@@ -494,9 +494,12 @@ it. No read and no socket event is added. `component.live`
 turns them into `live.Row`s and `view/live` draws them as the last entry of
 the lane's keyed list, keyed `live`:
 
-- a reasoning row, `12 lines · <loom-elapsed> so far`, or with a headline
-  the same count and clock and the headline as text beneath. The thinking
-  itself is never drawn. The time is a `<loom-elapsed offset>` in
+- a reasoning row, `Reasoning · <loom-elapsed>` and a one-line preview of the
+  latest line, a `<loom-expand kind="live">` that opens to the reasoning so far
+  as Markdown (cut at the last blank line so only the paragraph being written
+  is parsed again), with the headline as text beneath when there is one. An
+  open live row hands its open state to the settled row that replaces it. The
+  count of lines is the row's title. The time is a `<loom-elapsed offset>` in
   milliseconds since the generation clock started, so the browser counts the
   seconds and the server renders again for a fragment and not to move a
   clock (the chips' mechanism);

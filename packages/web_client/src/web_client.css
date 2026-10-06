@@ -931,6 +931,9 @@
   .row-head .subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .row-head .mono{font:12px/1.5 var(--font-mono);}
   .row-head .figure{flex:0 0 auto;}
+  /* A reasoning row's one-line preview (view/fold_row.reasoning): the first
+     line of what the model wrote, quieter than the heading it follows. */
+  .thought .row-head .preview{flex:1 1 0;opacity:.75;}
   .row-head .change{display:inline-flex;flex:0 0 auto;gap:6px;font:12px/1.5 var(--font-mono);}
   .change .added{color:var(--color-added-text);}
   .change .removed{color:var(--color-danger-text);}

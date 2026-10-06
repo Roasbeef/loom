@@ -3348,6 +3348,7 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
         "thinking" ->
           Ok(live.Thinking(
             progress: transcript_lines.line_count(text),
+            text:,
             elapsed_ms:,
             headline: block_summary.live(shared.summaries, stream.generation),
           ))

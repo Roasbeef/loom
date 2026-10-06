@@ -163,16 +163,22 @@ pub fn a_reasoning_row_counts_lines_and_the_browser_counts_its_time_test() {
   // The generation began at the reading the first fragment was stamped
   // with, and the row carries the seconds since as a reading the browser
   // counts on from, as an agent chip's time is. The row says `Reasoning`
-  // and keeps the line count to its title. The thinking itself is not drawn.
+  // and keeps the line count to its title. Closed, the row previews the
+  // latest line and holds the reasoning so far behind its chevron.
   let model = at(model, clock, 5500)
   list.each(pages(model), fn(view) {
     let drawn = region(view)
     assert string.contains(drawn, "title=\"2 lines\"")
     assert string.contains(
       drawn,
-      "Reasoning · <loom-elapsed class=\"elapsed\" offset=\"4500\"></loom-elapsed></p>",
+      "<span class=\"verb\">Reasoning</span><span class=\"figure\">· <loom-elapsed class=\"elapsed\" offset=\"4500\"></loom-elapsed></span>",
     )
-    assert !string.contains(drawn, "first thought")
+    assert string.contains(
+      drawn,
+      "<span class=\"subject preview\">second</span>",
+    )
+    assert string.contains(drawn, "kind=\"live\"")
+    assert string.contains(drawn, "first thought")
     assert !string.contains(drawn, "thinking-headline")
     assert !string.contains(drawn, "so far")
   })
@@ -488,22 +494,122 @@ pub fn the_live_rows_are_plain_values_test() {
   // The region takes plain values and draws them with the lane's own
   // drawing of an answer, so it can be tested apart from a page.
   let drawn =
-    live.view([live.Thinking("2 lines", Some(1500), None)], fn(line: Line) {
+    live.view(
+      [live.Thinking("2 lines", "a\nb", Some(1500), None)],
+      fn(line: Line) { html.text(line.text) },
+    )
+    |> element.to_string
+  assert string.contains(
+    drawn,
+    "<span class=\"verb\">Reasoning</span><span class=\"figure\">· <loom-elapsed class=\"elapsed\" offset=\"1500\"></loom-elapsed></span>",
+  )
+  assert string.contains(drawn, "title=\"2 lines\"")
+  let none =
+    live.view([live.Thinking("1 line", "a", None, None)], fn(line: Line) {
+      html.text(line.text)
+    })
+    |> element.to_string
+  assert string.contains(none, "<span class=\"verb\">Reasoning</span>")
+  assert !string.contains(none, "loom-elapsed")
+}
+
+// Closed, the live row is its words and a one-line preview of the latest
+// line; opened (a chevron the browser owns), the body is the whole text so
+// far, drawn a paragraph at a time so a new fragment parses only the
+// paragraph still being written. Model text is a text node throughout.
+pub fn a_live_reasoning_row_previews_the_latest_line_and_opens_to_the_text_test() {
+  // Drawn through the lane's own line drawing, so the hostile markup meets
+  // the real Markdown path.
+  let drawn =
+    lane.view(
+      [],
+      [
+        live.Thinking(
+          "5 lines",
+          "First <b>paragraph</b>\nstill first\n\nSecond **para**\nlatest `line` here",
+          Some(2000),
+          None,
+        ),
+      ],
+      lane.Beginning,
+      Nil,
+      lane.NoReplies,
+      lane.no_marks(),
+      "",
+    )
+    |> element.to_string
+  assert string.contains(drawn, "<span class=\"subject preview\">latest <code")
+  assert string.contains(drawn, "slot=\"body\"")
+  assert string.contains(drawn, "First &lt;b&gt;paragraph&lt;/b&gt;")
+  assert !string.contains(drawn, "<b>")
+  assert string.contains(drawn, "<strong>para</strong>")
+}
+
+@external(erlang, "lane_memo_ffi", "first")
+fn first_cache(view: Element(message)) -> cache
+
+@external(erlang, "lane_memo_ffi", "rerender")
+fn rerender_cache(
+  cache: cache,
+  old: Element(message),
+  new: Element(message),
+) -> cache
+
+// A paragraph a blank line has closed is drawn once while the block grows:
+// the next render draws only the paragraph still being written.
+pub fn a_growing_live_body_draws_only_its_last_paragraph_test() {
+  let lines = ref_lines()
+  let draw = fn(line: Line) {
+    process.send(lines, line.text)
+    html.text(line.text)
+  }
+  let render = fn(text) {
+    lane.rows(
+      [],
+      [live.Thinking("n lines", text, None, None)],
+      element.none(),
+      draw,
+      lane.NoReplies,
+      lane.no_marks(),
+      "",
+    )
+  }
+  let one = render("First.\n\nSecond")
+  let cache = first_cache(one)
+  assert received_texts(lines) == ["First.", "Second"]
+
+  let two = render("First.\n\nSecond, longer")
+  let cache = rerender_cache(cache, one, two)
+  assert received_texts(lines) == ["Second, longer"]
+
+  let three = render("First.\n\nSecond, longer")
+  let _ = rerender_cache(cache, two, three)
+  assert received_texts(lines) == []
+}
+
+// The open state is the browser's, so the page marks the live row and the
+// settled row that replaces it, and `<loom-expand>` carries an open row over.
+pub fn the_live_and_the_settled_reasoning_rows_are_marked_for_the_hand_over_test() {
+  let live_row =
+    live.view([live.Thinking("2 lines", "a\nb", None, None)], fn(line: Line) {
       html.text(line.text)
     })
     |> element.to_string
   assert string.contains(
-    drawn,
-    "Reasoning · <loom-elapsed class=\"elapsed\" offset=\"1500\"></loom-elapsed>",
+    live_row,
+    "<loom-expand class=\"expand step thought\" kind=\"live\"",
   )
-  assert string.contains(drawn, "title=\"2 lines\"")
-  let none =
-    live.view([live.Thinking("1 line", None, None)], fn(line: Line) {
-      html.text(line.text)
-    })
-    |> element.to_string
-  assert string.contains(none, ">Reasoning</p>")
-  assert !string.contains(none, "loom-elapsed")
+}
+
+fn ref_lines() -> process.Subject(String) {
+  process.new_subject()
+}
+
+fn received_texts(lines: process.Subject(String)) -> List(String) {
+  case process.receive(lines, 0) {
+    Ok(text) -> [text, ..received_texts(lines)]
+    Error(Nil) -> []
+  }
 }
 
 // A turn that has opened and streamed nothing is not silent. The row stands
@@ -546,7 +652,10 @@ pub fn an_opened_turn_shows_thinking_before_anything_streams_test() {
     ])
   list.each(pages(reasoning), fn(view) {
     let drawn = region(view)
-    assert string.contains(drawn, "Reasoning · <loom-elapsed")
+    assert string.contains(
+      drawn,
+      "<span class=\"verb\">Reasoning</span><span class=\"figure\">· <loom-elapsed",
+    )
     assert !string.contains(drawn, "Thinking")
   })
 

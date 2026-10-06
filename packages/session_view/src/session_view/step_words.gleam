@@ -175,9 +175,57 @@ pub fn memory(lines: Int) -> Words {
 /// assert step_words.text(step_words.reasoning(Some(4000))) == "Reasoning · 4s"
 /// ```
 pub fn reasoning(took_ms: Option(Int)) -> Words {
-  case took_ms {
-    Some(ms) -> Words("Reasoning", Figure(duration(ms)), None)
-    None -> Words("Reasoning", Unnamed, None)
+  reasoning_of(Raw, None, took_ms)
+}
+
+/// Whose words a reasoning block holds.
+pub type Provenance {
+  /// The model's own reasoning text.
+  Raw
+
+  /// A summary the provider wrote of reasoning it did not send. The terminal
+  /// names it so a reader never takes it for the model's own words.
+  Summarized
+}
+
+/// The words of a reasoning block as the terminal says them: the verb names a
+/// summary (`Reasoning (summarized)`), and the figure is the line count, when
+/// there is more to open than the row shows, then the time, each left out when
+/// it is not known: `Reasoning (summarized) · 162 lines · 54s`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert step_words.text(step_words.reasoning_of(
+///     step_words.Summarized,
+///     Some(162),
+///     Some(54_000),
+///   ))
+///   == "Reasoning (summarized) · 162 lines · 54s"
+/// ```
+pub fn reasoning_of(
+  provenance: Provenance,
+  lines: Option(Int),
+  took_ms: Option(Int),
+) -> Words {
+  let verb = case provenance {
+    Raw -> "Reasoning"
+    Summarized -> "Reasoning (summarized)"
+  }
+  let figures =
+    list.append(
+      case lines {
+        Some(count) -> [counted(count, "line", "lines")]
+        None -> []
+      },
+      case took_ms {
+        Some(ms) -> [duration(ms)]
+        None -> []
+      },
+    )
+  case figures {
+    [] -> Words(verb, Unnamed, None)
+    [_, ..] -> Words(verb, Figure(string.join(figures, " · ")), None)
   }
 }
 
