@@ -71,6 +71,7 @@ fn started() -> Page {
       shut: fn(_) { Nil },
       now:,
       sessions: fn(deliver) { deliver([]) },
+      activity: fn(_, _) { Nil },
       open: fn(_) { sessions.Declined(sessions.NotHeld) },
       resume: fn(_, _) { Nil },
       invite: None,

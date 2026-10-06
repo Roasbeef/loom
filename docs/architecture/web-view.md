@@ -666,8 +666,20 @@ registry with every click and patch held behind it, never waits for it. The
 component starts it when the page opens and at most every 30 seconds on a
 tick (an observer's page is given an empty list and draws no sidebar, so a
 stolen observer link does not disclose the principal's other sessions),
-groups it by workspace (`web_view/sessions`), and `view/sidebar`
-draws it as the frame's second child (the left column). The row of the session
+groups it by project (`web_view/sessions`), and `view/sidebar`
+draws it as the frame's second child (the left column). A project is the
+repository a session's workspace belongs to: the daemon reads it from the
+filesystem (`client/daemon/ui_project`: a plain checkout is its own project, a
+git worktree's `.git` file is followed to the main repository and accepted only
+when the repository's own backlink names the worktree, anything else has none),
+with no cache, in the same task that reads the catalogue. It reaches the component as the
+entry's `project` field, in process and not on a wire, so it needs no protocol
+addendum. The heading is the project's directory name, qualified by its parent
+directory when two projects share one; a worktree's row leads its quiet line with the
+worktree's name, whose `title` is the whole path. The sidebar lists running sessions
+and keeps the saved ones behind a quiet "N saved" line: they stay in the
+document, so the session switcher still lists them, and `<loom-saved>` shows
+them in place in the browser and remembers the choice in local storage. The row of the session
 on screen also carries one thin bar per live strand in the strand's hue, drawn
 from the strip the page already has and pulsing while the strand works; the
 bars are decoration with no handler and no focus. An empty `nav` child sits
@@ -1428,7 +1440,7 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/strand_detail.gleam` | A strand's own view in the Strands tab, while a strand other than `main` is in focus: the back link (a marker, no handler), the ring, name and status line, the figures a card leaves out (model, context, cache, running) and the tools it ran lately. |
 | `packages/web_view/src/web_view/view/crumb.gleam` | The breadcrumb above the transcript while a strand other than `main` is in focus: the session and strand names and an `All strands` link that is a marker, with no handler, and an `Esc` hint for the shell's key. |
 | `packages/web_view/src/web_view/view/sidebar.gleam` | The session sidebar: the principal's sessions by workspace, memoized, the frame's second child. A row for a running session other than the one on screen is a button that asks to open it. |
-| `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry`, `Residency` and `Group`, `grouped`, the ordering (current workspace first, newest first), `label`, and `Answer` and `Reason` with their fixed words, which a switch request and its refusal are made of. |
+| `packages/web_view/src/web_view/sessions.gleam` | The sidebar's `Entry` (with its `project`), `Residency` and `Group`, `grouped` (by project), `titles`, `worktree`, the ordering (current project first, newest first), `label`, and `Answer` and `Reason` with their fixed words, which a switch request and its refusal are made of. |
 | `packages/web_view/src/web_view/view/todo_panel.gleam` | The todo panel: the followed strand's board as one line (`Todo · n of m done · <active task>`, a `<loom-fold>` summary; a board with every task closed is not drawn) which opens to the phase that holds the active task expanded and the others folded into one row, the terminal's status glyphs, `n/m done`, and the reviewer band beneath it, drawn from plain values (`component.plan` reads the shared record's `todo_boards` and `reviewer_status.lines`). It is the operator's dock's first child and sits above the observer's bar; its height is capped and it scrolls on its own. |
 | `packages/web_view/src/web_view/view/trace.gleam` | The Trace pane: the session's `code_mode` programs (`session_view/trace_view`), the newest with its state, result excerpt and a collapsed budget line, the earlier ones as rows, the panel's fourth pane after Session. It lists programs, the newest with the rows of its call record, and says a program with no record lists none; every string is a text node and it holds no handler. |
 | `packages/web_view/src/web_view/view/changes.gleam` | The Changes pane: the files the session's own `fs_edit` results and `fs_write` calls named (a write is one hunk of added lines, `written · N lines`) and their diffs (`session_view/changes_view`), the panel's second pane on both pages, bounded and drawn as text nodes with a class from a closed row kind. It reads no worktree. |

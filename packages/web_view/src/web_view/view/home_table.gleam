@@ -66,6 +66,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre/attribute.{type Attribute}
 import lustre/element.{type Element}
@@ -229,6 +230,7 @@ pub fn view(
       [_, ..] ->
         list.map(groups, group(
           _,
+          sessions.titles(groups),
           activity,
           now,
           open,
@@ -243,9 +245,12 @@ pub fn view(
   ])
 }
 
-// One workspace: its heading and the list of its sessions.
+// One project: its heading and the list of its sessions. The heading is the
+// project's directory name, qualified when two projects share one
+// (`sessions.titles`), and the project's whole path is its `title`.
 fn group(
   group: Group,
+  titles: Dict(String, String),
   activity: Dict(String, Activity),
   now: Int,
   open: fn(String) -> message,
@@ -259,9 +264,12 @@ fn group(
   html.section([attribute.class("home-group")], [
     html.div([attribute.class("home-group-head")], [
       html.h3(
-        [attribute.class("home-workspace"), attribute.title(group.workspace)],
+        [attribute.class("home-workspace"), attribute.title(group.project)],
         [
-          html.text(heading.shorten_path(group.workspace)),
+          html.text(result.unwrap(
+            dict.get(titles, group.project),
+            heading.shorten_path(group.project),
+          )),
           html.span([attribute.class("home-count")], [
             html.text(int.to_string(list.length(group.entries))),
           ]),
@@ -750,7 +758,7 @@ fn described(
       list.append(lead, [html.text(" · " <> sessions.role_words(role))])
     None -> lead
   }
-  case entry.subtitle {
+  let words = case entry.subtitle {
     Some(subtitle) -> [
       html.span([attribute.class("home-subtitle")], [html.text(subtitle)]),
       html.text(" · "),
@@ -763,6 +771,21 @@ fn described(
         Saved | Blocked -> list.append(lead, [html.text(" · "), age])
       }
     }
+  }
+
+  // A session in a git worktree leads its quiet line with the worktree's
+  // directory name, and the whole path is that word's title. The path is the
+  // host's own, never a session's.
+  case sessions.worktree(entry) {
+    Some(tree) -> [
+      html.span(
+        [attribute.class("home-tree"), attribute.title(entry.workspace)],
+        [html.text(tree)],
+      ),
+      html.text(" · "),
+      ..words
+    ]
+    None -> words
   }
 }
 

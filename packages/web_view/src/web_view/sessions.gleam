@@ -18,9 +18,13 @@
 //// are made of, `Answer` and `Reason`, with the fixed words for each refusal.
 ////
 //// Grouping and ordering are a pure function of the entries, so a test can
-//// state them without a page: `grouped` puts the workspace of the session
-//// on screen first, then the workspaces by their newest session, and orders
-//// the sessions of a workspace newest first. Recency is the catalogue's
+//// state them without a page: `grouped` puts the project of the session
+//// on screen first, then the projects by their newest session, and orders
+//// the sessions of a project newest first. A project is the repository a
+//// workspace belongs to, which the daemon derives from the filesystem once per
+//// workspace (`client/daemon/ui_project`): the sessions of every worktree of
+//// one repository share a group, headed by the repository's directory name
+//// (`titles`). Recency is the catalogue's
 //// creation time, which is all the catalogue records. The home page also shows
 //// what each running session is doing (`Activity`), which the catalogue does
 //// not record: the daemon asks the sessions themselves, off the page's runtime,
@@ -31,12 +35,21 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/order
+import gleam/result
 import gleam/string
 
 /// The most sessions a page lists: the catalogue's first page, which is
 /// its `page_limit`. A principal with more sees the first hundred by
 /// identity, and the list says nothing of the rest.
 pub const listed_limit = 100
+
+/// The most running sessions one activity read names. It is the daemon's own
+/// bound on `sessions.activity` (protocol-change/050): each answer is one
+/// row of at most 2,400 bytes under one 2,000 ms deadline, and the reply holds
+/// 24. A principal with more running sessions than this sees the activity of
+/// the first ones in the order the page draws them, and the rest show only
+/// that they are resident.
+pub const activity_limit = 24
 
 /// Whether a session has a running process behind it, which is the one live
 /// fact the catalogue read carries.
@@ -84,6 +97,15 @@ pub type Entry {
     /// something the page sent: the home's read fills it from the catalogue
     /// beside the session list.
     role: Option(Role),
+    /// The root of the repository the session's workspace belongs to, as the
+    /// daemon found it: the main repository's own directory for a git
+    /// worktree, and the workspace itself for a plain checkout. `None` for a
+    /// workspace that is no repository, or whose `.git` the daemon could not
+    /// follow, which is then its own project. It is a path the host wrote, not
+    /// text a session wrote, so it is drawn as a text node and, whole, as a
+    /// `title`. The daemon derives it once per workspace and the page never
+    /// asks the filesystem.
+    project: Option(String),
   )
 }
 
@@ -119,7 +141,7 @@ pub fn role_words(role: Role) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved, None, None))
+/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved, None, None, None))
 ///   == "Session 0198a2f4"
 /// ```
 pub fn label(entry: Entry) -> String {
@@ -278,22 +300,127 @@ pub fn reason_words(reason: Reason) -> String {
   }
 }
 
-/// The sessions of one workspace, newest first.
+/// The sessions of one project, newest first.
 pub type Group {
   Group(
-    /// The canonical working directory the sessions share.
+    /// The project's key: the repository's root path, or, for a workspace that
+    /// belongs to no repository, the workspace itself. Two repositories that
+    /// share a base name have different keys, so they never merge.
+    project: String,
+    /// The workspace a "New session" under this group's heading creates in. It
+    /// is the project's own root when one of its sessions runs there, and
+    /// otherwise the newest session's workspace, so it is always a workspace
+    /// the catalogue lists (`ui_socket.known_workspace` refuses any other).
     workspace: String,
-    /// The workspace's sessions in the order the sidebar draws them.
+    /// The project's sessions in the order the sidebar draws them.
     entries: List(Entry),
   )
 }
 
-/// The entries grouped by workspace and ordered for the sidebar.
+/// The key an entry groups under: its project, or its own workspace when it
+/// has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let entry = Entry("a", "", "/w/tree", 0, Saved, None, None, Some("/w"))
+/// assert sessions.project_of(entry) == "/w"
+/// ```
+pub fn project_of(entry: Entry) -> String {
+  option.unwrap(entry.project, entry.workspace)
+}
+
+/// The directory name of the worktree an entry runs in, when that differs from
+/// its project: the detail a row shows under a project's heading. A session in
+/// the project's own checkout, or in no repository, has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let entry = Entry("a", "", "/w/.claude/worktrees/x", 0, Saved, None, None, Some("/w"))
+/// assert sessions.worktree(entry) == Some("x")
+/// ```
+pub fn worktree(entry: Entry) -> Option(String) {
+  case project_of(entry) == entry.workspace {
+    True -> option.None
+    False -> option.Some(base_name(entry.workspace))
+  }
+}
+
+/// The last segment of a path, or the path itself when it has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.base_name("/src/loom/") == "loom"
+/// ```
+pub fn base_name(path: String) -> String {
+  string.split(path, "/")
+  |> list.filter(fn(segment) { segment != "" })
+  |> list.last
+  |> result.unwrap(path)
+}
+
+/// The heading each group is drawn under, by the group's project key: the
+/// project's directory name, which is what a person calls it. Two groups whose
+/// names are the same get their parent directory in front ("a/api" and
+/// "b/api"), and if that still matches, the whole path, so the headings on a
+/// page are always distinct while two repositories never merge.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let groups = [Group("/a/api", "/a/api", []), Group("/b/api", "/b/api", [])]
+/// assert dict.get(sessions.titles(groups), "/a/api") == Ok("a/api")
+/// ```
+pub fn titles(groups: List(Group)) -> dict.Dict(String, String) {
+  let named =
+    list.map(groups, fn(group) { #(group.project, base_name(group.project)) })
+
+  // A name that two groups share is qualified by its parent directory.
+  let qualified =
+    list.map(named, fn(pair) {
+      case count(named, pair.1) > 1 {
+        True -> #(pair.0, parent_name(pair.0) <> pair.1)
+        False -> pair
+      }
+    })
+
+  // A pair that still collides after that is told apart by the whole path.
+  list.map(qualified, fn(pair) {
+    case count(qualified, pair.1) > 1 {
+      True -> #(pair.0, pair.0)
+      False -> pair
+    }
+  })
+  |> dict.from_list
+}
+
+// How many headings in a list are this word.
+fn count(named: List(#(String, String)), title: String) -> Int {
+  list.count(named, fn(pair) { pair.1 == title })
+}
+
+// A path's parent directory name and a slash, or nothing for a path at the
+// root.
+fn parent_name(path: String) -> String {
+  let segments =
+    string.split(path, "/")
+    |> list.filter(fn(segment) { segment != "" })
+    |> list.reverse
+
+  case segments {
+    [_, parent, ..] -> parent <> "/"
+    [_] | [] -> ""
+  }
+}
+
+/// The entries grouped by project and ordered for the sidebar.
 ///
 /// The group holding the session named `current` comes first, so the reader
 /// finds the session they are in without scrolling; the other groups follow
 /// by their newest session, newest first, and a tie is broken by the
-/// workspace path so the order never depends on the daemon's. Within a group
+/// project path so the order never depends on the daemon's. Within a group
 /// the sessions run newest first, a tie broken by identity.
 ///
 /// ## Examples
@@ -303,7 +430,7 @@ pub type Group {
 /// ```
 pub fn grouped(entries: List(Entry), current: String) -> List(Group) {
   entries
-  |> list.group(fn(entry) { entry.workspace })
+  |> list.group(project_of)
   |> dict_to_groups
   |> list.sort(fn(left, right) { by_group(left, right, current) })
 }
@@ -312,8 +439,23 @@ pub fn grouped(entries: List(Entry), current: String) -> List(Group) {
 fn dict_to_groups(grouping: dict.Dict(String, List(Entry))) -> List(Group) {
   dict.to_list(grouping)
   |> list.map(fn(pair) {
-    Group(workspace: pair.0, entries: list.sort(pair.1, by_recency))
+    let entries = list.sort(pair.1, by_recency)
+    Group(project: pair.0, workspace: target(pair.0, entries), entries:)
   })
+}
+
+// Where a new session under the group goes: the project's own root when a
+// session lives there, else the newest session's workspace. Both are
+// workspaces the catalogue lists.
+fn target(project: String, entries: List(Entry)) -> String {
+  case list.any(entries, fn(entry) { entry.workspace == project }) {
+    True -> project
+    False ->
+      case entries {
+        [newest, ..] -> newest.workspace
+        [] -> project
+      }
+  }
 }
 
 // Newest first, and by identity when two were created in the same
@@ -332,7 +474,7 @@ fn by_group(left: Group, right: Group, current: String) -> order.Order {
     False, True -> order.Gt
     True, True | False, False ->
       case int.compare(newest(right), newest(left)) {
-        order.Eq -> string.compare(left.workspace, right.workspace)
+        order.Eq -> string.compare(left.project, right.project)
         other -> other
       }
   }

@@ -186,6 +186,20 @@ starts `daemon/ui_sessions` and passes `server.Ui(sessions, upgrade)` to
 is a 404, the control `hello` has no `ui` field and `ui.link` answers
 `unavailable`.
 
+- `daemon/ui_project`: derives each workspace's project for the web view's
+  lists, with no cache and no process. `locate(workspace)` reads
+  `<workspace>/.git` through one `file_info` (which follows symlinks): a
+  directory is a plain checkout (the workspace is its own project); a file of at
+  most 4 KiB is a worktree's `gitdir: <repo>/.git/worktrees/<name>` pointer,
+  followed to the main repository (a bare repository's common directory is its
+  own project) and accepted only when git's backlink
+  `<repo>/.git/worktrees/<name>/gitdir` (same size cap) names this workspace's
+  `.git`, so a hostile `.git` cannot claim someone else's repository. Anything
+  else is `None`. Plain Gleam and `simplifile`, no FFI. `ui_socket.with_projects`
+  maps it over the entries: inside the session page's list task
+  (`listed_task`), and, for now, beside `home_listing` in the home's `sessions`
+  closure, which moves into the home's read task with it. The field is in
+  process, not on a wire, so no protocol addendum.
 - `daemon/ui_sessions`: one `weft/actor` owning the ticket table (60 s,
   single use) and the UI-session table (8 h), both keyed by the SHA-256 of
   the secret. A `Grant` carries a `Scope` (`Session(id)`, `Home` or `Admin`,

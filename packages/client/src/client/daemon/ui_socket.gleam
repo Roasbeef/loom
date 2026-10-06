@@ -164,6 +164,7 @@ import client/daemon/server
 import client/daemon/shareable
 import client/daemon/ui_http
 import client/daemon/ui_login
+import client/daemon/ui_project
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
@@ -1039,9 +1040,17 @@ fn admit_home(
       refresh_ms: home.refresh_ms,
       sessions: fn(deliver) {
         read_task(deliver, fn() {
-          home_listing(attachment, open, fn(reason) {
-            process.send(signals, Ended(reason))
-          })
+          // The project lookup is a few stats for each entry, so it runs in the
+          // same task as the read it decorates and never on the home's runtime.
+          case
+            home_listing(attachment, open, fn(reason) {
+              process.send(signals, Ended(reason))
+            })
+          {
+            home.Listed(entries) -> home.Listed(with_projects(entries))
+            home.Unread -> home.Unread
+            home.Closed(reason) -> home.Closed(reason)
+          }
         })
       },
       open: opening,
@@ -1264,6 +1273,9 @@ fn admit(
       sessions: fn(deliver) {
         listed_task(role, fn() { listed(attachment) }, deliver)
       },
+      activity: fn(ids, deliver) {
+        activity_for(role, attachment.activity, ids, deliver)
+      },
       open: fn(target) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, target) })
       },
@@ -1472,13 +1484,14 @@ pub fn listed_task(
 // credential none. It carries the catalogue's own fields, and never a
 // database path or a configuration, which the entry has no place for. A
 // failed read is an empty list, which the sidebar draws as nothing. It blocks
-// the calling process on the registry for up to the call's five seconds, so
-// `listed_task` runs it off the page's runtime.
+// the calling process on the registry for up to the call's five seconds, and
+// on a few stats for each entry's project, so `listed_task` runs it off the
+// page's runtime.
 fn listed(attachment: server.Attachment(instance)) -> List(sessions.Entry) {
   case
     manager.authorized_page(attachment.registry, attachment.digest, after: "")
   {
-    Ok(#(_, views)) -> list.map(views, listed_entry)
+    Ok(#(_, views)) -> list.map(views, listed_entry) |> with_projects
     Error(_) -> []
   }
 }
@@ -1509,6 +1522,29 @@ pub fn listed_for(
   case role {
     Observing -> []
     Operating | Owning -> read()
+  }
+}
+
+/// The sidebar's activity read for a page of `role`: the daemon's read
+/// (`server.home_activity`, held by the page's own credential) from a task of
+/// its own for an operator's page, and nothing for an observer's, which lists no
+/// sessions and so asks about none. The answer is delivered from the task.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.activity_for(Observing, ask, ["0198..."], deliver)
+/// ```
+@internal
+pub fn activity_for(
+  role: Role,
+  ask: fn(List(String)) -> List(#(String, sessions.Activity)),
+  ids: List(String),
+  deliver: fn(List(#(String, sessions.Activity))) -> Nil,
+) -> Nil {
+  case role {
+    Observing -> Nil
+    Operating | Owning -> activity_task(ask, ids, deliver)
   }
 }
 
@@ -4617,7 +4653,29 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
     },
     subtitle: record.subtitle,
     role: None,
+    project: None,
   )
+}
+
+/// The entries with the project of each one's workspace, read from the host's
+/// disk now (`ui_project.locate`). A workspace that is no repository, or whose
+/// pointer does not check out, keeps no project, which makes it its own.
+///
+/// The read is a few stats for each entry, so a caller runs it off the page's
+/// runtime: the session page's list task does, and the home's listing keeps it
+/// beside `home_listing` so it moves into that read's task with it. It uses the
+/// workspace the catalogue recorded, and nothing a page sent reaches it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.with_projects(entries)
+/// ```
+@internal
+pub fn with_projects(entries: List(sessions.Entry)) -> List(sessions.Entry) {
+  list.map(entries, fn(entry) {
+    sessions.Entry(..entry, project: ui_project.locate(entry.workspace))
+  })
 }
 
 /// The entries with the role the principal holds in each, from the daemon's

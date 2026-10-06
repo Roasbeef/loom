@@ -106,7 +106,7 @@ read with the page's credential digest (`listed_for`
 (`ui_socket.gleam:663`), `authorized_page`
 (`client/daemon/manager.gleam:1263`)), grouped by workspace (`grouped`
 (`web_view/sessions.gleam:154`)), and a row for a running session is a button
-that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:75`),
+that mints a ticket and navigates (`view` (`web_view/view/sidebar.gleam:86`),
 `target` (`web_client/switch_rule.gleam:46`)). The observer page has no
 sidebar, by ruling (051, the addendum on the session sidebar): an observer
 link is the one a person hands to someone who may only watch one session.
@@ -711,7 +711,7 @@ the membership and that the session is resident (`running`
 (`ui_socket.gleam:1012`)), mints with the page's own ceiling and deadline,
 and `<loom-switch>` navigates to the exchange. A saved session is text in
 the sidebar, and the refusal says to resume it from a terminal
-(`reason_words` (`web_view/sessions.gleam:214`)). The ruling "operator
+(`reason_words` (`web_view/sessions.gleam:236`)). The ruling "operator
 surfaces do not open saved sessions" was about the listing not being
 permission to activate; the open must go through the membership- and
 epoch-checked path.

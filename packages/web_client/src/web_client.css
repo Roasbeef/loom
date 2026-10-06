@@ -401,11 +401,32 @@
   .session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .session-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;}
   .session-subtitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
+  /* A session in a git worktree leads its quiet line with the worktree's name. */
+  .session-tree{color:var(--color-fg-quiet);}
+  /* The saved sessions: a quiet "N saved" line ends the sidebar, and the saved
+     groups sit behind it until <loom-saved> publishes the custom state `shown`.
+     The groups stay in the document while folded, so the switcher still reads
+     their buttons. A hairline sets the region apart, as between groups. */
+  .saved-region{margin-top:12px;padding-top:8px;border-top:1px solid var(--color-divider);}
+  loom-saved{display:block;}
+  .saved-toggle{display:flex;align-items:baseline;gap:6px;width:100%;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  .saved-toggle::before{content:"›";display:inline-block;width:10px;font-size:14px;line-height:1;text-align:center;}
+  .saved-toggle[aria-expanded="true"]::before{transform:rotate(90deg);}
+  .saved-toggle:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);color:var(--color-fg);}
+  .saved-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .saved-panel{display:none;margin-top:8px;}
+  loom-saved:state(shown) + .saved-panel{display:block;}
   .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   .residency .glyph{margin-right:4px;}
   .residency.live .glyph{color:var(--color-current);}
   .residency.opening{color:var(--color-current);}
   .residency.needs-you,.residency.needs-you .glyph{color:var(--color-signal-text);}
+  /* A running session's dot follows what it is doing: working pulses in the
+     accent as the home's rows do, idle is quiet and still, and needs-you is the
+     signal hue with a slower pulse. The reduced-motion rule below stops both. */
+  .residency.working .glyph{animation:loom-pulse 1.4s ease-in-out infinite;}
+  .residency.idle .glyph{color:var(--color-fg-quiet);}
+  .residency.needs-you .glyph{animation:loom-pulse 2.6s ease-in-out infinite;}
   /* The app's navigation slot above the first workspace group. It is empty
      until the app has pages to link to. */
   .sidebar .nav{display:flex;flex-direction:column;gap:2px;margin:0 0 12px 0;}

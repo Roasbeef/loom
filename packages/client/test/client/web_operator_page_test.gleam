@@ -95,6 +95,7 @@ fn start_page(
         shut: ui_relay.shut,
         now: bootstrap.monotonic_time_ms,
         sessions: fn(deliver) { deliver([]) },
+        activity: fn(_, _) { Nil },
         open: fn(_) { sessions.Declined(sessions.NotHeld) },
         resume: fn(_, _) { Nil },
         invite: None,

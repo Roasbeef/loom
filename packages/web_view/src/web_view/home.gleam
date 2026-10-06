@@ -21,7 +21,7 @@
 ////
 //// What each running session is doing is not in the catalogue. Every list that
 //// answers starts a second read, `Start.activity`, for the running sessions it
-//// lists (at most `activity_limit`): the daemon asks each session from a task
+//// lists (at most `sessions.activity_limit`): the daemon asks each session from a task
 //// of its own, under the deadline `sessions.activity` has (protocol-change/050),
 //// and hands back one state word for each as `Observed`. The page draws the
 //// list first and the words when they arrive, and a session the daemon could
@@ -245,14 +245,6 @@ pub const admin_path = "0\t0\t5"
 /// which is rare, and a read is a catalogue query. It is the same interval the
 /// session page's sidebar keeps (`component.sessions_refresh_ms`).
 pub const refresh_ms = 30_000
-
-/// The most running sessions one activity read names. It is the daemon's own
-/// bound on `sessions.activity` (protocol-change/050): each answer is one
-/// row of at most 2,400 bytes under one 2,000 ms deadline, and the reply holds
-/// 24. A principal with more running sessions than this sees the activity of
-/// the first ones in the order the page draws them, and the rest show only
-/// that they are resident.
-pub const activity_limit = 24
 
 /// The most the page was minted to do. The daemon's link carries it and the
 /// top bar says it in fixed words; it decides nothing on this page, which only
@@ -1498,7 +1490,7 @@ fn observing(model: Model) -> Effect(Msg) {
   let running =
     list.flat_map(model.groups, fn(group) { group.entries })
     |> list.filter(fn(entry) { entry.residency == Live })
-    |> list.take(activity_limit)
+    |> list.take(sessions.activity_limit)
     |> list.map(fn(entry) { entry.id })
   case running, model.status {
     [], _ | _, Ended(_) | _, Connecting -> effect.none()

@@ -45,6 +45,7 @@ fn entry(
     residency:,
     subtitle: None,
     role: None,
+    project: None,
   )
 }
 
@@ -241,18 +242,18 @@ pub fn resident_and_saved_are_marked_in_words_test() {
   assert string.contains(html, "Session D")
   assert string.contains(html, "vetting lint")
 
-  // The centre is a list for each workspace, not a table: a heading with the
-  // workspace's path and a count, and one item for each session.
+  // The centre is a list for each project, not a table: a heading with the
+  // project's name and a count, and one item for each session.
   assert string.contains(html, "class=\"home-workspace\"")
-  assert string.contains(html, ">/src/weft<")
+  assert string.contains(html, ">weft<span class=\"home-count\">")
   assert !string.contains(html, "<table")
   assert !string.contains(html, "<th")
   assert list.length(string.split(html, "class=\"home-row ")) == 5
 }
 
-// The workspace heading shortens the owner's home directory to `~` and keeps
+// The project heading is the directory's name and keeps
 // the whole path in its title, with the session count beside it.
-pub fn the_workspace_heading_is_shortened_and_counted_test() {
+pub fn the_project_heading_is_the_name_and_counted_test() {
   let #(model, _) =
     opened(
       start_with(home.OperatorCeiling, fn() {
@@ -265,7 +266,7 @@ pub fn the_workspace_heading_is_shortened_and_counted_test() {
   let html = drawn(model)
   assert string.contains(
     html,
-    "<h3 class=\"home-workspace\" title=\"/Users/ada/src/loom\">~/src/loom"
+    "<h3 class=\"home-workspace\" title=\"/Users/ada/src/loom\">loom"
       <> "<span class=\"home-count\">2</span></h3>",
   )
 }
@@ -399,7 +400,7 @@ pub fn the_activity_read_is_bounded_and_skips_a_page_with_nothing_running_test()
   let asked = process.new_subject()
   let ask = fn(ids, _) { process.send(asked, ids) }
   let many =
-    list.repeat(Nil, home.activity_limit + 6)
+    list.repeat(Nil, sessions.activity_limit + 6)
     |> list.index_map(fn(_, index) {
       let n = index + 1
       entry(string.inspect(n), "s", "/src/x", 1000 * n, Live)
@@ -412,8 +413,8 @@ pub fn the_activity_read_is_bounded_and_skips_a_page_with_nothing_running_test()
       ),
     )
   let assert Ok(ids) = process.receive(asked, 0)
-  assert list.length(ids) == home.activity_limit
-  assert list.first(ids) == Ok(string.inspect(home.activity_limit + 6))
+  assert list.length(ids) == sessions.activity_limit
+  assert list.first(ids) == Ok(string.inspect(sessions.activity_limit + 6))
 
   let _ =
     opened(
@@ -530,7 +531,7 @@ pub fn an_observer_homes_only_running_rows_carry_a_press_test() {
     )
     == 2
   let html = element.to_string(home.view(observer))
-  assert list.length(string.split(html, "<button")) == 6
+  assert list.length(string.split(html, "<button")) == 7
   assert !string.contains(html, "<a ")
   assert !string.contains(html, "<form")
   assert !string.contains(html, "href")
@@ -559,7 +560,7 @@ pub fn an_operator_home_presses_saved_rows_too_test() {
   assert list.length(keys) == 8
   assert list.all(keys, beneath_the_two_regions)
   let html = element.to_string(home.view(operator))
-  assert list.length(string.split(html, "<button")) == 10
+  assert list.length(string.split(html, "<button")) == 11
   assert string.contains(html, "title=\"Resume this session\"")
   assert string.contains(html, "stuck")
 
@@ -1988,4 +1989,55 @@ pub fn an_opening_row_offers_no_actions_test() {
   let model = run(model, home.DeleteRequested("A"))
   assert process.receive(asked, 0) == Error(Nil)
   assert !string.contains(drawn(model), "mid-turn")
+}
+
+// The home groups by project as the sidebar does: the sessions of a
+// repository's worktrees share one heading, named for the repository, with the
+// repository's whole path as its title. A worktree's row leads its quiet line
+// with the worktree's directory name, whose title is the worktree's path, and
+// the repository's own checkout row says nothing extra.
+pub fn the_home_groups_by_project_and_names_the_worktree_test() {
+  let tree = "/src/btcd/.claude/worktrees/hungry-euclid-d93364"
+  let rows = [
+    Entry(
+      ..entry("A", "web ui", "/src/btcd", 1, Live),
+      project: Some("/src/btcd"),
+    ),
+    Entry(..entry("B", "lint", tree, 2, Live), project: Some("/src/btcd")),
+  ]
+  let #(model, _) =
+    opened(start_with(home.OperatorCeiling, fn() { home.Listed(rows) }))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "<h3 class=\"home-workspace\" title=\"/src/btcd\">btcd"
+      <> "<span class=\"home-count\">2</span></h3>",
+  )
+  assert !string.contains(
+    html,
+    ">hungry-euclid-d93364<span class=\"home-count\"",
+  )
+  assert string.contains(
+    html,
+    "<span class=\"home-tree\" title=\""
+      <> tree
+      <> "\">hungry-euclid-d93364</span> · ",
+  )
+  assert list.length(string.split(html, "home-tree")) == 2
+}
+
+// Each running row's dot class follows what the session is doing, in the
+// sidebar: working and idle and needs-you each have a class of their own, which
+// the stylesheet hues and pulses, and a session the read has not named has
+// none beyond `live`.
+pub fn the_sidebar_dot_class_follows_the_activity_test() {
+  let #(model, _) = opened(start())
+  let model =
+    run(model, home.Observed([#("B", sessions.Working), #("A", sessions.Idle)]))
+  let html = drawn(model)
+  assert string.contains(html, "residency live working")
+  assert string.contains(html, "residency live idle")
+  assert !string.contains(html, "residency live needs-you")
+  let model = run(model, home.Observed([#("A", sessions.NeedsYou)]))
+  assert string.contains(drawn(model), "residency live needs-you")
 }

@@ -145,6 +145,17 @@ renders again just for it:
   `scrollIntoView({block: "nearest"})` on its nearest `section` after the first
   paint. The admin claim box opens with one, so a claim made below the fold is on
   screen. It takes no attribute and sends the server nothing.
+- `<loom-saved>` (`saved`, `saved_rule`) wraps the sidebar's "N saved" button
+  (the light child, drawn through one slot). A press, which reaches the element's
+  shadow tree through the slot, flips one fact (`saved_rule.State`, `Hidden |
+  Shown`), publishes it as the custom state `shown` (the stylesheet shows the
+  saved panel beside it, `loom-saved:state(shown) + .saved-panel`) and as the
+  button's `aria-expanded`, and writes it to the browser's storage under
+  `saved_rule.key` (`loom.sidebar.saved.v1`, one item for the origin: per viewer,
+  the same on every page, through `ffi_dom.storage_read`/`storage_write`, which
+  answer `Error` when the storage is blocked). When the element connects it reads
+  the item once; anything but `shown` is `Hidden`. It takes no attribute, sends
+  the server nothing and adds no socket admission.
 - `<loom-popover wanted="open">` wraps the home's name button (the light child,
   drawn through one slot) and toggles the account panel in the browser: it keeps
   one fact, open or closed (`popover_rule.State`), publishes it as the custom

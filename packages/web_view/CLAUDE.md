@@ -134,8 +134,8 @@ page keys and nonces, and the relay into the session's gateway.
   (`Status`: `Connecting | Connected | Ended`) and stops the reads; `Unread`
   keeps the last list. The view is `shell.view(shell.Home, ...)`:
   `view/home_bar`, `sidebar.home(groups, open, resume)` (a "Home" entry, then the rows),
-  `view/home_table` (a list per workspace: a heading with the shortened path
-  and a count, and one item per session with a glyph, the name, and a quiet
+  `view/home_table` (a list per project: a heading with the project's directory name
+  (`sessions.titles`) and a count, and one item per session with a glyph, the name, and a quiet
   line of `working · created 2h ago` (`running` until the activity read answers; the
   word `resident` is not drawn) or `saved · 2h ago`; the UTC
   minute is the `time`'s `title`; `home_bar` draws the session bar's `pill`
@@ -288,9 +288,16 @@ page keys and nonces, and the relay into the session's gateway.
   `ending_test` and `grants_test` read all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved | Blocked`; `Blocked` is a saved row no page may resume),
-  `Group` and `grouped(entries, current)` (the current
-  session's workspace first, then by newest session, sessions newest first,
-  ties by identity and path). `view/resume` is the one rule for a saved row
+  `Group` and `grouped(entries, current)` (groups by project: `Entry.project`
+  is the repository root the daemon found for the workspace, `None` for one that is
+  no repository, and `project_of` falls back to the workspace; the current
+  session's project first, then by newest session, sessions newest first,
+  ties by identity and path). `Group.workspace` is where "New session" under the
+  heading creates (the project's own checkout when a session runs there, else the
+  newest session's workspace, always one the catalogue lists). `titles(groups)` is
+  each heading: the directory name, `parent/name` for two projects that share one,
+  the whole path if that still collides. `worktree(entry)` is the worktree's
+  directory name when a session's workspace is not its project. `view/resume` is the one rule for a saved row
   (`Never | Offered(press, pending)`, `kind` giving `Text | Button | Opening`),
   shared by the sidebar and the home's table. `view/sidebar.view(groups, current, bars, open, resume)`
   draws it as the frame's second child (`aside.sidebar`, the left column;
@@ -304,11 +311,25 @@ page keys and nonces, and the relay into the session's gateway.
   message is `open(id)`; a saved session is one whose message is the resume's
   `press(id)` on an operator page (`operator_page.Resuming`, which
   `component.resume` handles through `Transport.resume`); the current row is
-  text, and so is a saved row while another resume is out. A workspace is a
+  text, and so is a saved row while another resume is out. The sidebar lists
+  running sessions only: the saved ones (and `Blocked`) sit after the groups in
+  `div.saved-region`, behind a `<loom-saved>` that holds the quiet "N saved"
+  button (`data-saved="toggle"`, no handler), in a `div.saved-panel` the
+  stylesheet hides until the element publishes the custom state `shown`. They
+  stay in the document, so the switcher still reads their `.session-open`
+  buttons; a saved session that is the page on screen is listed above like any
+  current row. A project is a
   section whose label the stylesheet draws as a small uppercase eyebrow with
   the session count, and a hairline in the divider colour separates one
   section from the next (team feedback, 2026-09-29); the list's own heading
-  is kept for assistive technology and not drawn. The
+  is kept for assistive technology and not drawn. A running row's word and dot follow the home's activity
+  read: after each list arrives (`SessionsListed`) the component asks `Transport.activity(ids, deliver)` (an
+  async task, never in the page runtime; the daemon's `server.home_activity` with
+  the page's own credential, so a member hears only of sessions they hold) and
+  `ActivityObserved` sets `View.activity`, so the session page says `working`,
+  `idle` or `needs you` (classes `residency live working|idle|needs-you`, drawn
+  as accent pulse, quiet, signal hue), and `running` until a session is named.
+  The read cannot tell an approval from a failed run: `needs you` covers both. The
   component starts `Transport.sessions` on `Opened` and on a `Ticked` at
   least `sessions_refresh_ms` (30 s) after the last read (the read runs in
   the daemon's task and lands as `SessionsListed`; a read that is slow or

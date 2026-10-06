@@ -50,6 +50,9 @@
 ////   document's shape in its place.
 //// - `<loom-popover wanted="open">` (`web_client/popover`) opens and closes
 ////   the home's account panel from the person's name in the bar.
+//// - `<loom-saved>` (`web_client/saved`) folds and unfolds the sidebar's saved
+////   sessions from its quiet "N saved" line, and keeps the choice in the
+////   browser's storage.
 //// - `<loom-time at="...">` (`web_client/time`) draws an instant, in Unix
 ////   milliseconds, as the time of day in the browser's own zone.
 //// - `<loom-link>` (`web_client/link`) makes a Markdown link clickable once the
@@ -82,6 +85,7 @@ import web_client/link
 import web_client/popover
 import web_client/rename
 import web_client/reveal
+import web_client/saved
 import web_client/shell
 import web_client/switch
 import web_client/switcher
@@ -116,6 +120,7 @@ pub fn main() -> Nil {
   let _ = popover.register()
   let _ = rename.register()
   let _ = reveal.register()
+  let _ = saved.register()
   let _ = shell.register()
   let _ = switch.register()
   let _ = switcher.register()

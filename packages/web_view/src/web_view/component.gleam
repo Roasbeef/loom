@@ -482,6 +482,17 @@ pub type Transport(socket) {
     /// click and every patch behind it (protocol-change/051: the runtime
     /// never blocks).
     sessions: fn(fn(List(sessions.Entry)) -> Nil) -> Nil,
+    /// Asks the daemon what the named running sessions are doing, for the
+    /// sidebar's words and dots: the same read the home makes
+    /// (`home.Start.activity`, protocol-change/050), for at most
+    /// `sessions.activity_limit` identities the page's own list holds, and the
+    /// daemon keeps only those the page's credential holds. It returns at
+    /// once: the daemon asks from a task of its own and `deliver` is called
+    /// from there with one state for each session that answered, so the page's
+    /// runtime never waits for it. An observer's page lists nothing and asks
+    /// nothing.
+    activity: fn(List(String), fn(List(#(String, sessions.Activity))) -> Nil) ->
+      Nil,
     /// Asks the daemon for a ticket to open the named session, for an
     /// operator's page that pressed its row: the daemon checks that the page's
     /// principal holds that session and that a process runs it, and mints a
@@ -745,6 +756,10 @@ type View(socket) {
     /// so the next one waits `sessions_refresh_ms`.
     groups: List(sessions.Group),
     listed_at: Option(Int),
+    /// What the sidebar's running sessions were last said to be doing, by
+    /// identity. It is asked for after each read of the list, so it runs on the
+    /// list's cadence, and a session with no answer says "running".
+    activity: dict.Dict(String, sessions.Activity),
     /// The ticket exchange the daemon minted for the session the operator
     /// chose, which `<loom-switch>` navigates to. It stays until the next
     /// switch replaces it: the ticket is single use and lives 60 seconds, so
@@ -879,6 +894,12 @@ pub type Msg(socket) {
   /// handler carries it, so a browser cannot send one.
   SessionsListed(entries: List(sessions.Entry))
 
+  /// The daemon's answer to the activity read a list started: one state for
+  /// each running session that answered. Like `SessionsListed` it is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it.
+  ActivityObserved(rows: List(#(String, sessions.Activity)))
+
   /// The daemon asks for one of the images the page draws, to answer a
   /// request for its address (protocol-change/051, the addendum on images).
   /// `ref` and `position` are the name and place the page drew the image
@@ -972,6 +993,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       status: Connecting,
       groups: [],
       listed_at: None,
+      activity: dict.new(),
       departure: None,
       resuming: None,
       share: case
@@ -1159,17 +1181,22 @@ pub fn update(
 
     // The sidebar's list is the catalogue's own order and the page groups it,
     // at most `listed_limit` sessions. Nothing about the lane moved.
-    SessionsListed(entries:) -> #(
-      Model(
-        ..model,
-        view: View(
-          ..model.view,
-          groups: sessions.grouped(
-            list.take(entries, sessions.listed_limit),
-            model.shared.session,
-          ),
-        ),
-      ),
+    SessionsListed(entries:) -> {
+      let groups =
+        sessions.grouped(
+          list.take(entries, sessions.listed_limit),
+          model.shared.session,
+        )
+      #(
+        Model(..model, view: View(..model.view, groups:)),
+        observing(model.view.transport, groups),
+      )
+    }
+
+    // What the running sessions are doing replaces the last answer. The page
+    // draws a word and a dot from it and nothing else moves.
+    ActivityObserved(rows:) -> #(
+      Model(..model, view: View(..model.view, activity: dict.from_list(rows))),
       effect.none(),
     )
 
@@ -1281,6 +1308,28 @@ fn jobs_wanted(model: Model(socket), at: Int) -> Model(socket) {
         view: View(..model.view, jobs_asked_at: Some(at)),
       )
     True, Some(_) | False, _ -> model
+  }
+}
+
+// Starts the activity read for the running sessions the sidebar lists, in the
+// order it draws them and no more than the home's bound, and returns at once;
+// the answer arrives later as `ActivityObserved`, dispatched from the daemon's
+// task. A list with no running session asks nothing.
+fn observing(
+  transport: Transport(socket),
+  groups: List(sessions.Group),
+) -> Effect(Msg(socket)) {
+  let running =
+    list.flat_map(groups, fn(group) { group.entries })
+    |> list.filter(fn(entry) { entry.residency == sessions.Live })
+    |> list.take(sessions.activity_limit)
+    |> list.map(fn(entry) { entry.id })
+  case running {
+    [] -> effect.none()
+    [_, ..] -> {
+      use dispatch <- effect.from
+      transport.activity(running, fn(rows) { dispatch(ActivityObserved(rows)) })
+    }
   }
 }
 
@@ -3352,6 +3401,19 @@ pub fn live(model: Model(socket)) -> List(live.Row) {
 /// ```
 pub fn session_groups(model: Model(socket)) -> List(sessions.Group) {
   model.view.groups
+}
+
+/// What the sidebar's running sessions were last said to be doing, by identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sidebar.view(groups, id, bars, component.session_activity(model), Opening, resume)
+/// ```
+pub fn session_activity(
+  model: Model(socket),
+) -> dict.Dict(String, sessions.Activity) {
+  model.view.activity
 }
 
 /// The agent strip as the page draws it.
