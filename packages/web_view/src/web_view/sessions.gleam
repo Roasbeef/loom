@@ -63,9 +63,11 @@ pub type Residency {
 
   /// The session is on disk, nothing runs it, and the daemon will not open it
   /// from a page: its creation was never reconciled, or recovery stopped it
-  /// and needs the owner. A row for it is text at every ceiling, and the
-  /// words say "saved", as they do for `Saved`, because the page cannot tell
-  /// the person more than the catalogue does.
+  /// and needs the owner. A row for it is text at every ceiling and says
+  /// "needs attention" with a fixed title, and the owner's fresh home draws
+  /// Archive and Delete on it. An unreconciled creation holds no registry slot,
+  /// so the registry takes both; a recovery that stopped does hold one, and the
+  /// registry refuses it as busy.
   Blocked
 }
 

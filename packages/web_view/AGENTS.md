@@ -349,7 +349,8 @@ page keys and nonces, and the relay into the session's gateway.
   home (`ui_socket.home_manage_capability`); a page with `None` draws nothing and
   ignores `StopRequested`, `ArchiveRequested`, `DeleteRequested`,
   `StopConfirmed`, `DeleteConfirmed`, `ConfirmCancelled` and `ActionAnswered`. `home_table.Manage`
-  draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one in
+  draws `Stop` on a running row and `Archive`/`Delete` on a saved or blocked one (a
+  blocked row says "needs attention", with a fixed title, not "saved") in
   a `home-acts` group after the row's own button (the paths beneath
   `home.table_path` are unchanged; the rename button is the group's first child),
   and Delete's first press replaces the row with the fixed question and a Delete
