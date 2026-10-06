@@ -4124,3 +4124,42 @@ the read answers, and that an observer's page is answered with no read.
 `home_test` pins that a list which answers late leaves the home open with
 no groups, that the sign-ins and the name are asked after the list and not
 after a closed one, and that the timer is armed from the answer.
+
+## Addendum: the strand key on the transcript (2026-10-05)
+
+**Status**: PROPOSED, IMPLEMENTED with the web/strand-history branch ·
+**Raised by**: the report that switching strands loses the reader's place
+
+This addendum adds one attribute to the transcript element. It adds no route, no
+event and no field on the wire, and it changes no admission rule.
+
+### What changed
+
+- **`<loom-follow>` carries `data-strand-key`.** The lane draws it from the strand on
+  screen (`Marks.key`), a decimal integer the page assigns to each strand name the
+  first time it shows it, from 1, with a counter in `View.strand_keys`. The
+  element keeps the reader's scroll place in memory under that number, for the life
+  of the element, and puts a strand back where the reader left it. It stores
+  nothing outside the element.
+- **The key is not text.** A strand's name can be chosen by a peer, so it never
+  reaches an attribute, class or key (the headline rule). The counter carries
+  none of the name's characters and cannot collide, which a hash of a name a peer
+  chose could, and the element decodes it totally (a value that is
+  not a whole number is ignored).
+
+### What was considered
+
+- **The strip position as the key.** It is already a number, but it shifts when a
+  strand settles, so a place saved under it could be restored to another strand.
+- **Keeping the place on the server.** Scrolling is the browser's, and a render per
+  scroll is what the lane avoids.
+
+### Cost
+
+One more attribute on one element, and one small map in the page's model, which
+grows by one entry for each distinct strand name the page shows.
+
+### Verification
+
+`focus_test` pins that the lane draws the counter's number, never the name, and gives two strands two numbers; `follow_test`
+pins the save and restore rule, including a strand left at the bottom.

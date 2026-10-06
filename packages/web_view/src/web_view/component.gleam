@@ -123,7 +123,7 @@
 //// 8. `view` lays the derived pieces out, through `heading`, `panel`, `live`
 ////    and the `web_view/view` modules, and reads nothing the model does not hold.
 
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -729,6 +729,18 @@ type View(socket) {
     transport: Transport(socket),
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
+    /// The `paging` of each strand the reader left, keyed by strand name,
+    /// for the life of the page. `focus` parks the departing strand's here
+    /// and restores the arriving strand's, so a strand whose older rows the
+    /// reader loaded is still held at that depth when they come back. The
+    /// key is a name the session lists and is never drawn.
+    parked_paging: Dict(String, Paging),
+    /// The number the page gave each strand it has shown, from 1, in the order
+    /// it first showed them. The lane draws it as `data-strand-key`, which
+    /// `<loom-follow>` keeps the reader's scroll place under. A counter and
+    /// not a digest of the name: it cannot collide, and a name a peer chose
+    /// never reaches the attribute.
+    strand_keys: Dict(String, Int),
     /// Whether older rows than the page holds exist, derived with `blocks`.
     earlier: Earlier,
     /// The page strand's transcript blocks that the page holds, the newest
@@ -989,6 +1001,8 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       reader: start.standing.reader,
       transport: start.transport,
       paging: Tail,
+      parked_paging: dict.new(),
+      strand_keys: dict.from_list([#(shared.active_strand, 1)]),
       earlier: Reached,
       blocks: [],
       pieces: [],
@@ -1467,7 +1481,21 @@ fn taken(model: Model(socket)) -> Model(socket) {
 // are forgotten.
 fn settled(model: Model(socket)) -> Model(socket) {
   let held = taken(model)
-  Model(..held, shared: step.forget_surfaces(held.shared))
+  Model(
+    shared: step.forget_surfaces(held.shared),
+    view: View(..held.view, strand_keys: numbered(held)),
+  )
+}
+
+// The strand keys with the strand on screen numbered, if the page has not
+// shown it before. The next number is one past the count, since numbers are
+// never taken back.
+fn numbered(model: Model(socket)) -> Dict(String, Int) {
+  let keys = model.view.strand_keys
+  case dict.has_key(keys, model.shared.active_strand) {
+    True -> keys
+    False -> dict.insert(keys, model.shared.active_strand, dict.size(keys) + 1)
+  }
 }
 
 // What the page says when prompts come back: how many, for which strand, and
@@ -3118,9 +3146,12 @@ pub fn openable(model: Model(socket), id: String) -> Option(sessions.Entry) {
 /// for the strand being left is dropped before the record parks its window
 /// (`history_view.resume`), because the reply to it could not be placed and a
 /// parked window stuck at "Pending" would leave the strand's lane reading
-/// "Loading" for good when the reader came back. The row limit starts again at
-/// `Tail`, as a page's first strand does, and the projection and the strip are
-/// rebuilt by `refreshed`, since the strand is one of their inputs.
+/// "Loading" for good when the reader came back. The row limit is
+/// parked beside the window under the strand's name and restored with it, so a
+/// strand the reader paged back keeps its depth when they return, and a strand
+/// not yet left starts at `Tail`, as a page's first strand does. The projection
+/// and the strip are rebuilt by `refreshed`, since the strand is one of their
+/// inputs.
 ///
 /// Focusing cancels the lane's unsent frames, as the terminal's
 /// `cancel_pending` does, so a submit or a decision still queued behind the
@@ -3172,10 +3203,40 @@ fn focus_at(
           answer: "",
         )
       let #(focused, effects) = step.focus(parked, strand, stamp(at))
+
+      // The row limit is parked with the history window under the strand's
+      // name. Restoring the window without its limit would let the next
+      // projection trim the older rows the reader loaded back down to
+      // `live_rows`, which is the history this keeps.
+      let remembered =
+        dict.insert(
+          model.view.parked_paging,
+          shared.active_strand,
+          model.view.paging,
+        )
+
+      // The depth is used only over a window that still holds rows. The
+      // record empties a parked window when its strand leaves the capture
+      // (`lane_fold.prune_parked_scrollback`), and a strand that later
+      // returns under the same name must open at `Tail`: `Full` over an empty
+      // window draws no Load older, so the reader could not page.
+      let arriving = case
+        dict.get(remembered, strand),
+        dict.get(shared.parked_scrollback, #(shared.session, strand))
+      {
+        Ok(depth), Ok(window) if window.strand != "" -> depth
+        _, _ -> Tail
+      }
       finished(
         Model(
           shared: focused,
-          view: View(..model.view, paging: Tail, refusal: None, outcome: ""),
+          view: View(
+            ..model.view,
+            paging: arriving,
+            parked_paging: dict.delete(remembered, strand),
+            refusal: None,
+            outcome: "",
+          ),
         ),
         effects,
         at,
@@ -3976,6 +4037,8 @@ pub fn marks(model: Model(socket)) -> lane.Marks {
     active: model.shared.active_strand,
     hue: turns.hue(model.shared.strands, model.shared.active_strand),
     positions: strip.positions(model.view.strip),
+    key: dict.get(model.view.strand_keys, model.shared.active_strand)
+      |> result.unwrap(0),
   )
 }
 

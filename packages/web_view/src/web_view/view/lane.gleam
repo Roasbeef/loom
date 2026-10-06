@@ -162,6 +162,9 @@ pub type Marks {
     hue: turns.Hue,
     /// The position of each listed strand's card, by the strand's identity.
     positions: Dict(String, Int),
+    /// The page's number for that strand, assigned in the order the page first
+    /// showed strands and never reused, so two strands never share one.
+    key: Int,
   )
 }
 
@@ -174,7 +177,7 @@ pub type Marks {
 /// // lane.view(pieces, [], lane.Beginning, load, lane.NoReplies, lane.no_marks())
 /// ```
 pub fn no_marks() -> Marks {
-  Marks(active: "main", hue: turns.Primary, positions: dict.new())
+  Marks(active: "main", hue: turns.Primary, positions: dict.new(), key: 1)
 }
 
 /// Whether the lane offers a reply to a peer's message, and what pressing it
@@ -263,26 +266,33 @@ pub fn rows(
   session: String,
 ) -> Element(message) {
   let newest = newest_thought(pieces)
-  element.element("loom-follow", [attribute.class("follow")], [
-    top,
-    keyed.div(
-      [attribute.class("transcript lane"), attribute.role("log")],
-      list.append(
-        list.filter_map(pieces, fn(piece) {
-          case piece {
-            // The advisor's reviews are the panel's, never a row of the lane.
-            turns.Commentary(..) -> Error(Nil)
-            _ ->
-              Ok(#(
-                piece_key(piece),
-                timeline_row(piece, draw, replies, marks, session, newest),
-              ))
-          }
-        }),
-        live_entry(live, draw, marks),
+  element.element(
+    "loom-follow",
+    [
+      attribute.class("follow"),
+      attribute.data(strand_key_marker, int.to_string(marks.key)),
+    ],
+    [
+      top,
+      keyed.div(
+        [attribute.class("transcript lane"), attribute.role("log")],
+        list.append(
+          list.filter_map(pieces, fn(piece) {
+            case piece {
+              // The advisor's reviews are the panel's, never a row of the lane.
+              turns.Commentary(..) -> Error(Nil)
+              _ ->
+                Ok(#(
+                  piece_key(piece),
+                  timeline_row(piece, draw, replies, marks, session, newest),
+                ))
+            }
+          }),
+          live_entry(live, draw, marks),
+        ),
       ),
-    ),
-  ])
+    ],
+  )
 }
 
 // The row key of the newest settled reasoning row in the lane, or nothing
@@ -320,6 +330,13 @@ fn thought_keys(block: transcript_lines.Block) -> List(String) {
     }
   })
 }
+
+/// The suffix of the attribute `<loom-follow>` reads the strand's key from
+/// (`data-strand-key`). Its value is `Marks.key`, a small number the page
+/// assigned to the strand the first time it showed it, so the attribute
+/// carries none of the strand's name (protocol-change/051, the addendum on the
+/// strand key).
+pub const strand_key_marker = "strand-key"
 
 // The live region as the lane's last entry, or no entry while nothing is
 // streaming. Its key is a word, and a piece's key is a sequence, so the two

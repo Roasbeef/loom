@@ -1580,3 +1580,31 @@ pub fn phased(
     other -> other
   }
 }
+
+/// `update`, a capture, with the strand `name` left out of the strands it
+/// lists, as a capture is when that strand has retired. The records are
+/// untouched. A retired strand's parked history window is released on the
+/// next capture that omits it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.without_strand(lane_fixture.conversation(301, 451), "advisor")
+/// ```
+pub fn without_strand(
+  update: session_channel.Update,
+  name: String,
+) -> session_channel.Update {
+  case update {
+    session_channel.Captured(cut, view, refresh) ->
+      session_channel.Captured(
+        cut,
+        snapshot_view.View(
+          ..view,
+          strands: list.filter(view.strands, fn(strand) { strand.id != name }),
+        ),
+        refresh,
+      )
+    other -> other
+  }
+}

@@ -109,8 +109,10 @@ page keys and nonces, and the relay into the session's gateway.
 - **Strand focus.** `component.focus(model, strand)` (`FocusRequested`) is
   `step.focus`, the shared step's change of strand, plus what only this host
   holds: the history read owed for the strand being left is dropped
-  (`history_view.resume`) before its window parks, and paging starts again
-  at `Tail`. The strand must be listed, must not be the active one, and the
+  (`history_view.resume`) before its window parks, and the row limit
+  (`Paging`) parks beside the window in `View.parked_paging`, keyed by strand
+  name, so returning to a strand restores its depth; a strand not yet left
+  starts at `Tail`. The strand must be listed, must not be the active one, and the
   page must be `Connected`; otherwise nothing changes. Every derived input
   (`Projected.strand`, `Stripped.followed`) includes the active strand, so
   the projection and the strip are rebuilt by `refreshed`. `component.strand(model)`
@@ -491,11 +493,14 @@ page keys and nonces, and the relay into the session's gateway.
   `lane.view(pieces, live, top, load, replies, marks)` draws the transcript
   lane, memoized per line, followed by the live region, with the line above its oldest row: a "Load older" button sending
   `load` and carrying the fixed `data-loom-older` marker while older rows
-  exist, and words otherwise.
+  exist, and words otherwise. The `<loom-follow>` around it carries
+  `data-strand-key`, `marks.key`, a small number the page assigns each strand
+  the first time it shows it (`View.strand_keys`, never the name), under which the element keeps the reader's
+  scroll place per strand (protocol-change/051, the addendum on the strand key).
 - **The timeline and the marker controls.** Each piece of the lane is a
   `div.tl-row` holding a `span.dot` (decoration, `aria-hidden`, in the hue of
   the strand the piece belongs to, on a line down the left edge) and the
-  piece. `lane.Marks(active, hue, positions)` is what the lane needs to place
+  piece. `lane.Marks(active, hue, positions, key)` is what the lane needs to place
   them, built by `component.marks` from `strip.positions`: a piece of the
   strand on screen has no marker; a spawn's and a result's dot and the strand's
   `button.tag` in their heads belong to the child; a nudge's belong to the

@@ -331,16 +331,17 @@ pub fn a_session_without_a_name_is_named_by_its_short_identity_test() {
 }
 
 // The lane is drawn inside `<loom-follow>`, the client component that keeps
-// the newest row in view, and it carries no attribute: the element reads
-// the page's scroll position and the lane's size, never session text.
+// the newest row in view, and it carries one attribute besides its class, the
+// strand's numeric key: the element reads the page's scroll position and the
+// lane's size, never session text.
 pub fn the_lane_is_drawn_inside_the_follower_test() {
   let page =
     simulate.message(simulation(), component.Opened(wire()))
     |> arrive(page_fixture.transfer("observer", []))
   let html = element.to_string(simulate.view(page))
   let assert Ok(#(_, inside)) =
-    string.split_once(html, "<loom-follow class=\"follow\">")
-    as "the page draws the follower with no attribute but its class"
+    string.split_once(html, "<loom-follow class=\"follow\" data-strand-key=\"")
+    as "the page draws the follower with its strand key"
   let assert Ok(#(lane, _)) = string.split_once(inside, "</loom-follow>")
     as "the follower is closed"
   assert string.contains(lane, "class=\"transcript lane\"")
@@ -359,7 +360,7 @@ pub fn the_observers_frame_is_bar_centre_panel_test() {
     "<loom-shell class=\"loom-session\" needing=\"0\" sidebar=\"none\">",
     "class=\"session-head\"",
     "<main class=\"centre\">",
-    "<loom-follow class=\"follow\">",
+    "<loom-follow class=\"follow\" data-strand-key=\"",
     "class=\"observer-bar\"",
     "</main>",
     "<aside aria-label=\"Strand panel\" class=\"panel\" slot=\"right\">",

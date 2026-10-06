@@ -238,7 +238,7 @@ pub fn a_focused_strand_has_a_breadcrumb_and_a_view_test() {
     "&lt;b&gt;review",
     "<button class=\"crumb-all\" data-loom-focus=\"0\" type=\"button\">All strands</button>",
     "<kbd class=\"crumb-hint\">Esc</kbd>",
-    "<loom-follow class=\"follow\">",
+    "<loom-follow class=\"follow\" data-strand-key=\"",
   ])
 
   // The Strands pane carries the strand's view after the list, and says so, so

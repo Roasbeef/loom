@@ -610,7 +610,7 @@ pub fn the_frame_is_bar_centre_panel_test() {
     "<loom-shell class=\"loom-session operator\"",
     "class=\"session-head\"",
     "<main class=\"centre\">",
-    "<loom-follow class=\"follow\">",
+    "<loom-follow class=\"follow\" data-strand-key=\"",
     "<footer class=\"dock\">",
     "</main>",
     "<aside aria-label=\"Strand panel\" class=\"panel\" slot=\"right\">",

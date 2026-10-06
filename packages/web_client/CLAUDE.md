@@ -62,6 +62,17 @@ renders again just for it:
 - `<loom-composer commands="<json>" returned="<n>" refused="<n>">` wraps the
   operator's editor, the server's uncontrolled textarea, which is its default
   slot. It lists the slash commands as the draft grows, sends the draft on
+
+  the older rows arrive above it. The server draws `data-strand-key`, a
+  small number the page assigned to the strand on screen (`Marks.key`, never the name),
+  on it; when the key changes the element saves the departing strand's place
+  in memory (`follow_rule.leaving`: an offset, or at the bottom) and restores
+  the arriving strand's (`follow_rule.arriving`), following the tail for a
+  strand left at the bottom or never seen. Nothing is stored outside the
+  element.
+- `<loom-composer commands="<json>" returned="<n>">` wraps the operator's
+  editor, the server's uncontrolled textarea, which is its default slot.
+  It lists the slash commands as the draft grows, sends the draft on
   Command or Control with Enter, and puts a prompt the daemon handed back
   into the editor. These react to text that only the browser has until the
   form is submitted, which is why they are here. It also disables the form's
