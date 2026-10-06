@@ -1,5 +1,8 @@
 # Code mode
 
+For a one-page overview, read [Code mode at a glance](../code-mode.md)
+first. This document is the mechanics.
+
 Code mode lets the model write a Gleam **program** that composes tools,
 instead of issuing one tool call per turn. The harness vets the program,
 compiles it in a sandbox, runs it in a jailed Erlang node called the
