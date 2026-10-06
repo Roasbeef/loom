@@ -14,6 +14,7 @@
 
 import broker/framing.{type CapOutcome}
 import codemode/enforcement
+import codemode/run_channel
 import codemode/satellite
 import core/msgpack.{type MsgPackValue}
 import gleam/bit_array
@@ -21,11 +22,15 @@ import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/result
 import simplifile
+import weft/state_machine as sm
 
 /// Bytes and lifecycle delivered to the peer by the host's connection.
 pub type Inbound {
   InboundBytes(data: BitArray)
   InboundClose
+
+  /// The foreground writer releases custody only when the script reads this frame.
+  InboundConsumedFrame(data: BitArray, consume: fn() -> Nil)
 }
 
 /// What a peer script runs against: the cap token the host minted, the
@@ -89,6 +94,228 @@ pub fn reporting_launcher(
 
 fn read_token(path: String) -> BitArray {
   simplifile.read_bits(from: path) |> result.unwrap(<<>>)
+}
+
+/// Builds a paused foreground peer. Its script reads the original minted token
+/// directly because physical token placement belongs to the local adapter.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // satellite_peer.foreground_launcher(script)
+/// ```
+pub fn foreground_launcher(script: fn(PeerCtx) -> Nil) -> run_channel.Launcher {
+  foreground_reporting_launcher(
+    script,
+    enforcement.Unreported("the fixture owns no jailed node"),
+  )
+}
+
+/// Supplies explicit fixture evidence while retaining actual read-consumption ACKs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // satellite_peer.foreground_reporting_launcher(script, injected_report)
+/// ```
+pub fn foreground_reporting_launcher(
+  script: fn(PeerCtx) -> Nil,
+  report: enforcement.Report,
+) -> run_channel.Launcher {
+  fn(request) {
+    let incarnation = run_channel.new_incarnation()
+    let #(_host, events) = run_channel.endpoint(run_channel.host(request))
+    use bridge <- result.try(
+      start_foreground_bridge(events, incarnation)
+      |> result.map_error(fn(_) {
+        run_channel.LaunchOutcomeUnknown("fixture bridge did not prepare")
+      }),
+    )
+    let #(commands, wire) = bridge.data
+    let handoff = process.new_subject()
+    process.spawn(fn() {
+      let inbox = process.new_subject()
+      let gate = process.new_subject()
+      process.send(handoff, #(inbox, gate))
+      case process.receive(gate, 60_000) {
+        Ok(Nil) ->
+          script(PeerCtx(token: run_channel.token(request), wire:, inbox:))
+        Error(Nil) -> Nil
+      }
+    })
+    case process.receive(handoff, 1000) {
+      Error(Nil) ->
+        Error(run_channel.LaunchOutcomeUnknown("fixture peer did not prepare"))
+      Ok(#(inbox, gate)) -> {
+        let active =
+          run_channel.prepare_direction(incarnation, run_channel.ToNode)
+          |> run_channel.activate_direction
+          |> result.try(run_channel.write_grant)
+        let assert Ok(grant) = active
+          as "fixture creates one original write window"
+        Ok(
+          run_channel.Connection(
+            incarnation:,
+            initial_write_grant: grant,
+            activate: fn() {
+              process.send(commands, PeerActivate)
+              process.send(gate, Nil)
+              Ok(Nil)
+            },
+            offer: fn(reservation, payload) {
+              let #(frame, _) = run_channel.reservation(reservation)
+              process.send(
+                inbox,
+                InboundConsumedFrame(run_channel.wire_bytes(payload), fn() {
+                  process.send(events, run_channel.WriteConsumed(frame))
+                }),
+              )
+              Ok(Nil)
+            },
+            close: fn() {
+              process.send(inbox, InboundClose)
+              process.send(commands, PeerStop)
+              run_channel.CloseResult(
+                node: report,
+                transport: run_channel.TransportJoined,
+                resources: run_channel.ResourcesReleased,
+              )
+            },
+          ),
+        )
+      }
+    }
+  }
+}
+
+// Existing finite scripts retain their raw-wire probes. The bridge admits one
+// complete frame and postpones the scripts' bounded test traffic while held.
+// Production adapters never accept this fixture's arbitrary WireBytes surface.
+type PeerPhase {
+  PeerPrepared
+  PeerAvailable
+  PeerHeld
+}
+
+type PeerCommand {
+  PeerActivate
+  PeerBytes(event: satellite.WireIn)
+  PeerConsumed(
+    frame: run_channel.FrameRef,
+    disposition: run_channel.Consumption,
+  )
+  PeerStop
+}
+
+type PeerBridge {
+  PeerBridge(
+    window: run_channel.Window,
+    commands: Subject(PeerCommand),
+    events: Subject(run_channel.Event),
+    incarnation: run_channel.Incarnation,
+  )
+}
+
+fn start_foreground_bridge(
+  events: Subject(run_channel.Event),
+  incarnation: run_channel.Incarnation,
+) -> Result(
+  sm.Started(#(Subject(PeerCommand), Subject(satellite.WireIn))),
+  sm.StartError,
+) {
+  sm.new_with_initialiser(1000, fn(commands) {
+    let wire = process.new_subject()
+    let selector =
+      process.new_selector()
+      |> process.select(commands)
+      |> process.select_map(wire, PeerBytes)
+    sm.initialised(
+      PeerPrepared,
+      PeerBridge(
+        window: run_channel.prepare_direction(incarnation, run_channel.ToHost),
+        commands:,
+        events:,
+        incarnation:,
+      ),
+    )
+    |> sm.selecting(selector)
+    |> sm.returning(#(commands, wire))
+    |> Ok
+  })
+  |> sm.on_event(peer_bridge_step)
+  |> sm.start
+}
+
+fn peer_bridge_step(
+  phase: PeerPhase,
+  bridge: PeerBridge,
+  event: PeerCommand,
+) -> sm.Next(PeerPhase, PeerBridge, PeerCommand) {
+  case phase, event {
+    PeerPrepared, PeerActivate -> {
+      let assert Ok(window) = run_channel.activate_direction(bridge.window)
+        as "fixture activates once"
+      sm.transition(to: PeerAvailable, data: PeerBridge(..bridge, window:))
+    }
+    PeerAvailable, PeerBytes(satellite.WireBytes(bytes)) -> {
+      let checked = {
+        use payload <- result.try(run_channel.from_wire(bytes))
+        use length <- result.try(
+          run_channel.payload_length(
+            bit_array.byte_size(run_channel.payload(payload)),
+          ),
+        )
+        use #(window, reservation) <- result.try(run_channel.reserve_frame(
+          bridge.window,
+          length,
+        ))
+        use window <- result.try(run_channel.publish_frame(window, reservation))
+        let #(frame, _) = run_channel.reservation(reservation)
+        let commands = bridge.commands
+        use delivery <- result.try(
+          run_channel.delivery(reservation, payload, fn(disposition) {
+            process.send(commands, PeerConsumed(frame, disposition))
+          }),
+        )
+        Ok(#(window, delivery))
+      }
+      case checked {
+        Error(_) -> {
+          process.send(
+            bridge.events,
+            run_channel.Fault(bridge.incarnation, "malformed cap frame"),
+          )
+          sm.stop()
+        }
+        Ok(#(window, delivery)) -> {
+          process.send(bridge.events, run_channel.Frame(delivery))
+          sm.transition(to: PeerHeld, data: PeerBridge(..bridge, window:))
+        }
+      }
+    }
+    PeerHeld, PeerConsumed(frame, disposition) -> {
+      let #(window, consumed) =
+        run_channel.consume_frame(bridge.window, frame, disposition)
+      case consumed, disposition {
+        run_channel.Ignored, _ -> sm.keep(bridge)
+        run_channel.Consumed, run_channel.Final -> sm.stop()
+        run_channel.Consumed, run_channel.Continue ->
+          sm.transition(to: PeerAvailable, data: PeerBridge(..bridge, window:))
+      }
+    }
+    _, PeerStop -> sm.stop()
+    _, PeerBytes(satellite.WireClosed(reason)) -> {
+      process.send(bridge.events, run_channel.End(bridge.incarnation, reason))
+      sm.stop()
+    }
+    PeerPrepared, PeerBytes(_) | PeerHeld, PeerBytes(_) ->
+      sm.keep(bridge) |> sm.postpone
+    PeerAvailable, PeerActivate
+    | PeerHeld, PeerActivate
+    | PeerPrepared, PeerConsumed(..)
+    | PeerAvailable, PeerConsumed(..)
+    -> sm.keep(bridge)
+  }
 }
 
 // --- sending -------------------------------------------------------------
@@ -206,10 +433,10 @@ fn collect_loop(
   case need >= 0 && list.length(acc) >= need {
     True -> list.reverse(acc)
     False ->
-      case process.receive(inbox, timeout) {
+      case receive_consumed(inbox, timeout) {
         Error(Nil) -> list.reverse(acc)
         Ok(InboundClose) -> list.reverse(acc)
-        Ok(InboundBytes(data:)) -> {
+        Ok(InboundBytes(data:)) | Ok(InboundConsumedFrame(data:, consume: _)) -> {
           let framing.Pushed(deframer:, inbound:, fault: _) =
             framing.push(deframer, data)
           let acc =
@@ -232,7 +459,7 @@ fn collect_loop(
 /// silent peer that never reports an outcome, so the host's wall deadline
 /// is what settles the execution.
 pub fn wait_for_close(ctx: PeerCtx) -> Nil {
-  case process.receive(ctx.inbox, 60_000) {
+  case receive_consumed(ctx.inbox, 60_000) {
     Ok(InboundClose) -> Nil
     Ok(_) -> wait_for_close(ctx)
     Error(Nil) -> Nil
@@ -268,10 +495,10 @@ pub fn next_frame(
   case cursor.seen {
     [frame, ..rest] -> Ok(#(Reading(..cursor, seen: rest), frame))
     [] ->
-      case process.receive(ctx.inbox, timeout) {
+      case receive_consumed(ctx.inbox, timeout) {
         Error(Nil) -> Error(Nil)
         Ok(InboundClose) -> Error(Nil)
-        Ok(InboundBytes(data:)) -> {
+        Ok(InboundBytes(data:)) | Ok(InboundConsumedFrame(data:, consume: _)) -> {
           let framing.Pushed(deframer:, inbound:, fault: _) =
             framing.push(cursor.deframer, data)
           let frames =
@@ -310,5 +537,41 @@ pub fn hook_call_parts(frame: framing.Frame) -> #(BitArray, String, String) {
   case frame.body {
     framing.HookCall(token:, kind:, name:, ..) -> #(token, kind, name)
     _other -> #(<<>>, "", "")
+  }
+}
+
+// Receiving a complete bounded reply is the fixture's consumption witness.
+fn receive_consumed(
+  inbox: Subject(Inbound),
+  timeout: Int,
+) -> Result(Inbound, Nil) {
+  process.receive(inbox, timeout)
+  |> result.map(fn(inbound) {
+    case inbound {
+      InboundConsumedFrame(data, consume) -> {
+        consume()
+        InboundBytes(data)
+      }
+      InboundBytes(_) | InboundClose -> inbound
+    }
+  })
+}
+
+/// Receives one foreground frame without returning its transport consumption.
+/// The fixture uses this to hold the original writer credit deliberately.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let Ok(#(wire_bytes, consume)) = satellite_peer.receive_unconsumed(ctx, 3000)
+/// // consume() is the later original writer acknowledgement.
+/// ```
+pub fn receive_unconsumed(
+  ctx: PeerCtx,
+  timeout: Int,
+) -> Result(#(BitArray, fn() -> Nil), Nil) {
+  case process.receive(ctx.inbox, timeout) {
+    Ok(InboundConsumedFrame(data, consume)) -> Ok(#(data, consume))
+    Ok(InboundBytes(_)) | Ok(InboundClose) | Error(Nil) -> Error(Nil)
   }
 }

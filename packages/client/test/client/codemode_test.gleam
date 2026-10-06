@@ -370,7 +370,8 @@ pub fn the_pipeline_is_handed_phase_specific_bases_test() {
       codemode.execution_policy(request.base_policy),
       sockets,
     )
-  assert built.satellite.cap_socket_path == codemode.socket_path(sockets)
+  assert codemode.foreground_launch_config(config, request, "/work/x").cap_socket_path
+    == codemode.socket_path(sockets)
   let build_config = codemode.build_config(config, request)
   let run_base = codemode.execution_policy(request.base_policy)
   assert build_config.base_policy == run_base
@@ -606,14 +607,16 @@ pub fn the_build_lives_in_that_directory_and_the_socket_beside_it_test() {
   let root = here <> "/build/codemode-selected-build-root"
   let _ = simplifile.delete(root)
   let built = codemode.exec_config(config, request, root, 9000, widened_by: [])
-  assert built.satellite.cap_socket_path
+  let placement = codemode.foreground_launch_config(config, request, root)
+  assert placement.token_path == root <> "/token/cap-token"
+  assert placement.cap_socket_path
     == codemode.socket_path(codemode.socket_directory(
       config,
       op_id: request.op_id,
       step_id: request.step_id,
       source_index: request.source_index,
     ))
-  assert string.starts_with(built.satellite.cap_socket_path, config.work_root)
+  assert string.starts_with(placement.cap_socket_path, config.work_root)
   assert built.compile.dependencies == compile.default_dependencies()
 
   // The whole service hides its local root. Check the selected directory
