@@ -6,9 +6,11 @@ import envoy
 import executor/remote/distribution
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 import gleam/time/timestamp
 import simplifile
+import tools/fs
 import weft
 
 pub fn real_two_node_unix_duplex_credit_final_and_join_test() {
@@ -31,9 +33,9 @@ fn run_fixture() {
     as "real pinned certificates"
   assert fixture.write_provisioned(provisioned, root <> "/fixture.term")
     == Ok(Nil)
-  let assert Ok(scratch) = envoy.get("LOOM_TEST_SCRATCH")
-    as "Short original socket root."
-  assert simplifile.create_directory_all(scratch) == Ok(Nil)
+  let previous_scratch = envoy.get("LOOM_TEST_SCRATCH")
+  let scratch = channel_parent(here, previous_scratch)
+  envoy.set("LOOM_TEST_SCRATCH", scratch)
   let executable = fixture.current_executable()
   let previous = envoy.get("LOOM_LAUNCH_STREAM_FIXTURE")
   envoy.set("LOOM_LAUNCH_STREAM_FIXTURE", root)
@@ -73,6 +75,10 @@ fn run_fixture() {
     Ok(value) -> envoy.set("LOOM_LAUNCH_STREAM_FIXTURE", value)
     Error(_) -> envoy.unset("LOOM_LAUNCH_STREAM_FIXTURE")
   }
+  case previous_scratch {
+    Ok(value) -> envoy.set("LOOM_TEST_SCRATCH", value)
+    Error(_) -> envoy.unset("LOOM_TEST_SCRATCH")
+  }
   let values = weft.values(outcomes)
   assert list.length(values) == 2
   list.index_map(values, fn(value, index) {
@@ -106,4 +112,42 @@ fn run_fixture() {
 pub fn main() {
   real_two_node_unix_duplex_credit_final_and_join_test()
   real_two_node_original_lifetime_credit_test()
+}
+
+// The optional override is independent of checkout ancestry. An absent override
+// uses the ordinary package directory and canonical repository build parent.
+fn channel_parent(here: String, override: Result(String, Nil)) -> String {
+  let scratch = result.unwrap(override, here <> "/../../build")
+  assert simplifile.create_directory_all(scratch) == Ok(Nil)
+  let assert Ok(scratch) = fs.resolve_real(fs.real_filesystem(), "/", scratch)
+    as "Canonical configured or ordinary checkout socket root."
+  scratch
+}
+
+pub fn optional_socket_parent_uses_checkout_fallback_and_independent_override_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "Original fixture package directory."
+  let #(seconds, nanos) =
+    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
+  let root =
+    here
+    <> "/build/scratch-parent-"
+    <> int.to_string(seconds)
+    <> int.to_string(nanos)
+  let ordinary = root <> "/checkout/packages/executor"
+  assert simplifile.create_directory_all(ordinary) == Ok(Nil)
+  let expected = root <> "/checkout/build"
+  assert simplifile.create_directory_all(expected) == Ok(Nil)
+  let assert Ok(expected) = fs.resolve_real(fs.real_filesystem(), "/", expected)
+    as "Independent ordinary checkout expectation."
+  assert channel_parent(ordinary, Error(Nil)) == expected
+
+  // A nested configured parent must not be interpreted as a checkout root.
+  let explicit = root <> "/elsewhere/build/nested"
+  assert simplifile.create_directory_all(explicit) == Ok(Nil)
+  let assert Ok(explicit) = fs.resolve_real(fs.real_filesystem(), "/", explicit)
+    as "Independent configured parent expectation."
+  assert channel_parent(ordinary, Ok(explicit)) == explicit
+  assert simplifile.write(root <> "/success", "both_canonical_resolution_modes")
+    == Ok(Nil)
 }

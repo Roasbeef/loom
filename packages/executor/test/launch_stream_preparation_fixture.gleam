@@ -82,17 +82,22 @@ fn native_executor(
   let assert Ok(pool) = exec.start_pool(1, fn() { exec.prepare_helper(spawn) })
     as "Real helper pool."
   let assert Ok(native) =
-    local.start(local.ExecutorConfig(
-      fn() {
-        before_checkout()
-        exec.checkout(pool, waiting: 3000)
+    local.start_with_retirement(
+      local.ExecutorConfig(
+        fn() {
+          before_checkout()
+          exec.checkout(pool, waiting: 3000)
+        },
+        fn(helper) { exec.checkin(pool, helper) },
+        fn() { exec.pool_custody(pool, waiting: 1000) },
+        fn(ms) { exec.close_pool(pool, waiting: ms) },
+        23,
+        log.discard(),
+      ),
+      fn(helper, completed) {
+        exec.prepare_borrowed_retirement(pool, helper, completed)
       },
-      fn(helper) { exec.checkin(pool, helper) },
-      fn() { exec.pool_custody(pool, waiting: 1000) },
-      fn(ms) { exec.close_pool(pool, waiting: ms) },
-      23,
-      log.discard(),
-    ))
+    )
     as "Existing scoped native executor."
   native
 }
@@ -162,8 +167,13 @@ fn executable(name: String) -> #(String, String) {
 
 fn channel(path: String) -> String {
   let _path = path
-  let assert Ok(root) = envoy.get("LOOM_TEST_SCRATCH")
-    as "Parent-provisioned short scratch."
+  let assert Ok(here) = simplifile.current_directory()
+    as "Original fixture package directory."
+  let root =
+    result.unwrap(envoy.get("LOOM_TEST_SCRATCH"), here <> "/../../build")
+  assert simplifile.create_directory_all(root) == Ok(Nil)
+  let assert Ok(root) = fs.resolve_real(fs.real_filesystem(), "/", root)
+    as "Canonical optional override or ordinary checkout socket root."
   root
 }
 

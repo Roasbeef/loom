@@ -418,8 +418,9 @@ original key and never authorizes an execution again from retained intent.
 A live returned Launch remains a duplicable value, so the trusted native
 adapter must apply it at most once. The admission history stores request/result digests. The remote service also
 uses the journal's typed payload API for exact requests, authorization, output,
-terminal bytes and cancellation intent. Native retirement still requires a
-witnessed scoped pool drain; a recovered old incarnation remains uncertain.
+terminal bytes and cancellation intent. Native retirement requires a live
+physical witness: exact borrowed Launch helper retirement or the original
+scope-owned pool drain. A recovered old incarnation remains uncertain.
 
 The real SQLite regressions cover independent concurrent opens, restart at
 each admission/custody phase, refusal provenance, corruption, bounds and
@@ -771,6 +772,12 @@ for canonical listener input/Ready decoding, without a separately supplied snaps
 Both start and temporary supervised construction preserve those original values.
 Source admission uses the actual effective policy and generated catalogue before
 journal admission or effects; peer seam/policy records never select authority.
+UnusedImportRewrite reads the exact retained Original input and committed
+BuildRejected completion before shared `service_input.admit_rewrite` checks the
+deterministic source and unchanged contract facts. The resource journal checks
+structural lineage and definite predecessor failure on insertion and readback.
+Each physical Compile retains one immutable native association; uncertain Original
+completion cannot authorize Rewrite.
 `resource_journal.pid` is metadata-only endpoint identity for this monitor. Its
 death establishes neither allocation liveness nor cleanup/native retirement.
 
@@ -897,9 +904,29 @@ original preparation join and directory removal can commit ResourceOwnerCleaned.
 Cancellation may establish the same no-dispatch cleanup custody through a
 successful original fence followed by exact same-row Unassociated readback.
 That witness never fabricates a RefusedBeforeNative history result. Lost fence,
-readback or join remains unresolved. Associated native
-terminal evidence currently leaves resource retirement unresolved; neither node
-reporting nor transport join substitutes for a native resource witness.
+readback or join remains unresolved. Associated native terminal evidence alone
+cannot release resources. The original shared pool retirement seam separately
+witnesses the exact Launch helper's native boundary and normal owner exit. Neither
+node reporting nor transport join substitutes for that native resource witness.
+
+Validated Launch dispatch uses `broker/executor.start_with_retirement` and the
+original pool's `exec.prepare_borrowed_retirement` seam; Compile and raw native
+dispatch retain reuse. The remote native service installs its original Row and
+adapter monitor before Begin. That Row retains the exact callback proof despite
+adapter loss, then confirms its immutable native key and Prepared digest through
+one managed task. At most two asks share the original deadline plus six seconds;
+actual AllDelivered precedes promotion or another ask. Per-Launch retirement
+notification comes only from that drained original Row. Scoped retirement proof
+is separate and emits no duplicate per-Launch notification. Scope closure refuses
+before journal writes while confirmation remains in flight or its drain is lost.
+
+Associated channel close waits within its existing fixed Closing lifetime for
+that original native retirement obligation. Resource release also requires
+original preparation and transport joins, original directory removal,
+ResourceOwnerCleaned COMMIT and continuation report drain. A cancelled observer
+may release actual physical capacity without fabricating missing terminal or
+completion evidence in immutable history. See
+[exact-helper retirement](../../docs/architecture/launch-native-retirement.md).
 
 Cancellation and watchdog closure independently close the original accepted
 socket and listener before joining blocked I/O. Active slots remain occupied
