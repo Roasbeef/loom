@@ -53,7 +53,7 @@ class Fixture(unittest.TestCase):
             STUB_RECORD=str(self.record),
         )
         (self.root / "home").mkdir()
-        for inherited in ("SSH_ORIGINAL_COMMAND", "GH_TOKEN", "SIGNOFF_PARALLEL", "LOOM_SIGNOFF_GATE"):
+        for inherited in ("SSH_ORIGINAL_COMMAND", "GH_TOKEN", "SIGNOFF_PARALLEL", "LOOM_SIGNOFF_UNGATED"):
             self.env.pop(inherited, None)
 
         self.origin = self.root / "origin.git"
@@ -201,19 +201,19 @@ class RemoteGateModeTest(Fixture):
         )
 
     def test_a_gate_is_sent_the_request_and_no_script(self):
-        result = self.remote("--dry-run", LOOM_SIGNOFF_GATE="1", SIGNOFF_PARALLEL="4")
+        result = self.remote("--dry-run", SIGNOFF_PARALLEL="4")
         self.assertEqual(result.returncode, 0, result.stderr)
         seen = self.recorded()
         self.assertEqual(seen["argv"], ["signoff-host", f"signoff {self.pushed} --dry-run --parallel 4"])
         self.assertEqual(seen["stdin"], "")
 
     def test_a_gate_takes_no_details_link(self):
-        result = self.remote("--url", "https://example.invalid", LOOM_SIGNOFF_GATE="1")
+        result = self.remote("--url", "https://example.invalid")
         self.assertEqual(result.returncode, 2)
         self.assertIsNone(self.recorded())
 
     def test_an_ungated_host_is_sent_the_driver(self):
-        result = self.remote("--dry-run")
+        result = self.remote("--dry-run", LOOM_SIGNOFF_UNGATED="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         seen = self.recorded()
         self.assertEqual(seen["stdin"], DRIVER.read_text())

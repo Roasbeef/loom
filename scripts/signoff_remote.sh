@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # signoff_remote.sh — run scripts/signoff.sh for HEAD on another machine.
 #
-# Usage: LOOM_SIGNOFF_HOST=<ssh destination> scripts/signoff_remote.sh [signoff.sh args]
-#        LOOM_SIGNOFF_GATE=1 LOOM_SIGNOFF_HOST=<ssh destination> scripts/signoff_remote.sh [--dry-run]
+# Usage: LOOM_SIGNOFF_HOST=<ssh destination> scripts/signoff_remote.sh [--dry-run]
+#        LOOM_SIGNOFF_UNGATED=1 LOOM_SIGNOFF_HOST=<ssh destination> scripts/signoff_remote.sh [signoff.sh args]
 #
 # The host comes only from the environment. Which box runs a developer's
 # Linux lane is that developer's business, not the repository's, so
@@ -143,15 +143,20 @@
 # conditionally, which would mean touching the lanes file this change was
 # scoped to leave alone.
 #
-# --- A gated host ---
+# --- A gated host, which is the default ---
 #
 # Sending the driver means the ssh key that runs a signoff can run
 # anything at all on the box, which is right for a developer's own login
-# and wrong for a key handed to agents. With LOOM_SIGNOFF_GATE set, this
-# script sends only `signoff <sha> [--dry-run] [--parallel N]` to a host
-# whose key is pinned to scripts/signoff/gate.sh, which reads that request
-# as data and runs an installed copy of the same driver. gate.sh says what
-# such a key does and does not bound.
+# and wrong for a key handed to agents. So by default this script sends
+# only `signoff <sha> [--dry-run] [--parallel N]`, to a host whose key is
+# pinned to scripts/signoff/gate.sh, which reads that request as data and
+# runs an installed copy of the same driver; gate.sh says what such a key
+# does and does not bound, and how a host is set up for it.
+#
+# LOOM_SIGNOFF_UNGATED=1 sends the driver from this checkout instead, to
+# an ordinary login. That is for a change to driver.sh itself, which a
+# gated host runs only once it is installed there; a pinned key refuses
+# the driver protocol, so the opt-in grants an agent holding one nothing.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -186,10 +191,10 @@ while [ "$i" -lt "${#args[@]}" ]; do
 done
 
 # A gated host (scripts/signoff/gate.sh) takes no script, only a request
-# it can read as data, so in that mode this side sends the commit and the
-# two knobs the gate accepts and nothing else. The gate takes no details
-# link, so asking for one is refused here rather than dropped on the way.
-if [ -n "${LOOM_SIGNOFF_GATE:-}" ]; then
+# it can read as data, so this side sends the commit and the two knobs the
+# gate accepts and nothing else. The gate takes no details link, so asking
+# for one is refused here rather than dropped on the way.
+if [ -z "${LOOM_SIGNOFF_UNGATED:-}" ]; then
 	if [ -n "$url" ]; then
 		echo "signoff_remote: a gated host takes no --url" >&2
 		exit 2
