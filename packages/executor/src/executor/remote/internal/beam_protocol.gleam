@@ -9,6 +9,7 @@
 
 import executor/remote/compile_wire
 import executor/remote/identity
+import executor/remote/launch_wire
 import executor/remote/wire
 import executor/remote/workspace_journal as journal
 import executor/remote/workspace_transfer as transfer
@@ -49,6 +50,9 @@ pub type Route {
 
   /// Whole Compile operation with unchanged canonical command bytes.
   Compile(command: compile_wire.Command)
+
+  /// Closed finite Launch metadata, without live stream admission.
+  Launch(command: launch_wire.Command)
 
   /// Physical command routed by its original live whole-service Claim.
   NativeCommand(lane: Lane)
@@ -108,6 +112,12 @@ pub fn route_lane(route: Route) -> Lane {
     Compile(compile_wire.Query)
     | Compile(compile_wire.Cancel)
     | Compile(compile_wire.Acknowledge(_)) -> Control
+    Launch(launch_wire.ChallengeRequest)
+    | Launch(launch_wire.PlaceToken(_, _)) -> Data
+    Launch(launch_wire.Query)
+    | Launch(launch_wire.Cancel)
+    | Launch(launch_wire.Acknowledge(_))
+    | Launch(launch_wire.RefuseBeforeNative) -> Control
     NativeCommand(lane) -> lane
   }
 }
@@ -137,6 +147,10 @@ pub fn header(binding: Binding, route: Route) -> Result(BitArray, Nil) {
     Compile(command) ->
       compile_wire.encode_command(command)
       |> result.map(fn(bytes) { <<1, 2, bytes:bits>> })
+      |> result.replace_error(Nil)
+    Launch(operation) ->
+      launch_wire.encode_command(operation)
+      |> result.map(fn(bytes) { <<1, 4, bytes:bits>> })
       |> result.replace_error(Nil)
     NativeCommand(Data) -> Ok(<<1, 3, 0>>)
     NativeCommand(Control) -> Ok(<<1, 3, 1>>)
@@ -181,6 +195,27 @@ pub fn decode_header(binding: Binding, bytes: BitArray) -> Result(Route, Nil) {
       )
       Ok(#(Compile(compile_wire.Acknowledge(digest)), hello))
     }
+    <<1, 4, "LLQ", 1, 0, hello:bytes>> ->
+      Ok(#(Launch(launch_wire.ChallengeRequest), hello))
+    <<1, 4, "LLQ", 1, 1, nonce:bytes-size(32), budget:32, hello:bytes>> -> {
+      use operation <- result.try(
+        launch_wire.decode_command(<<"LLQ", 1, 1, nonce:bits, budget:32>>)
+        |> result.replace_error(Nil),
+      )
+      Ok(#(Launch(operation), hello))
+    }
+    <<1, 4, "LLQ", 1, 2, hello:bytes>> ->
+      Ok(#(Launch(launch_wire.Query), hello))
+    <<1, 4, "LLQ", 1, 3, hello:bytes>> ->
+      Ok(#(Launch(launch_wire.Cancel), hello))
+    <<1, 4, "LLQ", 1, 4, digest:bytes-size(32), hello:bytes>> -> {
+      use digest <- result.try(
+        identity.digest(digest) |> result.replace_error(Nil),
+      )
+      Ok(#(Launch(launch_wire.Acknowledge(digest)), hello))
+    }
+    <<1, 4, "LLQ", 1, 5, hello:bytes>> ->
+      Ok(#(Launch(launch_wire.RefuseBeforeNative), hello))
     <<1, 3, 0, hello:bytes>> -> Ok(#(NativeCommand(Data), hello))
     <<1, 3, 1, hello:bytes>> -> Ok(#(NativeCommand(Control), hello))
     _ -> Error(Nil)
@@ -253,7 +288,7 @@ pub fn receiver(
     total < 1
       || case route {
       Native(_) | NativeCommand(_) -> total > 262_144
-      Compile(_) ->
+      Compile(_) | Launch(_) ->
         case kind {
           transfer.Invocation -> total > 9_437_184
           transfer.Completion | transfer.CompileCompletion -> total > 524_300

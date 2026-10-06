@@ -87,6 +87,8 @@ pub opaque type Service {
     native: native.Service,
     /// Original checked resource enrollment for canonical listener decoding.
     enrolled: enrollment.SessionEnrollment,
+    /// Original live resource writer identity, without its authority.
+    resource_owner: process.Pid,
     /// Private closed message door.
     subject: process.Subject(Message),
     /// Lifecycle endpoint, separate from native retirement.
@@ -383,6 +385,7 @@ pub fn start(config: Config) -> Result(Service, Error) {
       config.scope,
       config.native,
       journal.enrolled(config.resources),
+      journal.pid(config.resources),
       started.data,
       started.pid,
     )
@@ -408,6 +411,7 @@ pub fn supervised(config: Config) -> supervision.ChildSpecification(Service) {
           config.scope,
           config.native,
           journal.enrolled(config.resources),
+          journal.pid(config.resources),
           started.data,
           started.pid,
         ),
@@ -452,6 +456,17 @@ pub fn native_service(service: Service) -> native.Service {
 @internal
 pub fn enrolled(service: Service) -> enrollment.SessionEnrollment {
   service.enrolled
+}
+
+/// Projects the original resource writer identity without exposing its authority.
+///
+/// ## Examples
+///
+/// ```gleam
+/// compile_service.resource_owner(service) // -> original_writer_pid.
+/// ```
+pub fn resource_owner(service: Service) -> process.Pid {
+  service.resource_owner
 }
 
 /// Exposes only actor lifetime; endpoint death proves no resource cleanup.
