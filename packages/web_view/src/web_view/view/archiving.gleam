@@ -231,6 +231,8 @@ fn asking(
       "Stop this session, then archive it?",
       "Stop and archive",
     )
+
+    // `Stop` and `Delete` are unreachable here: `confirms` filters them first.
     actions.Archive | actions.Stop | actions.Delete -> #(
       "Archive this session",
       "Archive this session?",

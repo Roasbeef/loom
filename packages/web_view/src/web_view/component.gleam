@@ -3175,12 +3175,21 @@ pub fn confirm_archive(
           ..model.view,
           archiving: actions.Working(target, action),
           refusal: None,
-          outcome: "Working on it. A running session is stopped first.",
+          outcome: working_words(action),
         ),
       ),
       managing(ask, action, target),
     )
     Ok(_), _, _ | Error(Nil), _, _ -> #(model, effect.none())
+  }
+}
+
+// What the notice says while the request is out: a running row is stopped
+// first, so only that action says so.
+fn working_words(action: actions.Action) -> String {
+  case action {
+    actions.StopArchive -> "Working on it. A running session is stopped first."
+    actions.Archive | actions.Stop | actions.Delete -> "Working on it."
   }
 }
 

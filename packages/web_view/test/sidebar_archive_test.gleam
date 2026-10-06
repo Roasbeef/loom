@@ -239,7 +239,6 @@ pub fn a_stale_or_forged_confirmation_asks_nothing_test() {
   let _ = run(model, home.SidebarArchiveConfirmed("B"))
   assert process.receive(asked, 0) == Error(Nil)
 
-  let _ = run(owner, home.SidebarArchiveAsked("nobody"))
   assert !string.contains(
     home_html(run(owner, home.SidebarArchiveAsked("nobody"))),
     "session-confirm",

@@ -867,8 +867,8 @@ pub fn home_rename_capability(
   }
 }
 
-/// The capability to stop, archive and delete the sessions a home page lists,
-/// that a home minted for `principal` with `ceiling`, `reach` and `origin` is
+/// The capability to stop, archive and delete the sessions a home or session
+/// page lists, that a home or session page minted for `principal` with `ceiling`, `reach` and `origin` is
 /// handed: `ask` for the daemon's owner on a page minted to operate and opened
 /// by a fresh `loom ui` exchange, and none for any other (protocol-change/065,
 /// the addendum on session actions). The origin rule is the Admin button's
@@ -3214,13 +3214,13 @@ pub fn rename_task(
 /// the page's own timer reads it as saved.
 const stop_wait_ms = 5000
 
-/// Stops, archives or deletes `target` for the asking home's owner, or gives the
+/// Stops, archives or deletes `target` for the asking home or session page's owner, or gives the
 /// reason it did not (protocol-change/065, the addendum on session actions). The
 /// session is named by the page's row and the daemon decides everything else,
 /// each step made afresh with the digest of the credential the page was
 /// admitted under:
 ///
-/// 0. The home must have been opened by a fresh `loom ui` exchange
+/// 0. The page must have been opened by a fresh `loom ui` exchange
 ///    (`fresh_home`), and must still be open and minted to operate, with a
 ///    credential that still authenticates as the daemon's owner
 ///    (`owner_operating`). One refusal, `NotOwner`, for each, so a page learns

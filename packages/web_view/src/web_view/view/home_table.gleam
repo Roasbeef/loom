@@ -79,6 +79,7 @@ import web_view/sessions.{
   type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
   Working,
 }
+import web_view/view/archiving
 import web_view/view/create.{type Create}
 import web_view/view/heading
 import web_view/view/notice.{type Notice}
@@ -599,9 +600,11 @@ fn confirm_class(action: actions.Action) -> String {
 // and the same state never draws the question twice.
 fn in_row(manage: Manage(message)) -> Manage(message) {
   case manage {
-    Managed(stage: actions.Confirming(action: actions.Archive, ..), ..) as managed
-    | Managed(stage: actions.Confirming(action: actions.StopArchive, ..), ..) as managed ->
-      Managed(..managed, stage: actions.Calm)
+    Managed(stage: actions.Confirming(action:, ..), ..) as managed ->
+      case archiving.confirms(action) {
+        True -> Managed(..managed, stage: actions.Calm)
+        False -> manage
+      }
     Managed(..) | Unmanaged -> manage
   }
 }
