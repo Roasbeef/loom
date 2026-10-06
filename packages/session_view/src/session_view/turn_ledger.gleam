@@ -13,6 +13,21 @@
 //// (`history_view.scan`), keeps them while the fold is open and drops them
 //// when it closes.
 ////
+//// ## When a turn is sealed
+////
+//// A turn is sealed once nothing more will be added to it, and the records
+//// cannot always say when that is. A turn that is followed by another input is
+//// over. The newest turn is over when its strand is idle, which the host reads
+//// from the strand's operation, and an operation can lag the record that opens
+//// its turn, or a turn can go on without a new input (a provider retry, a
+//// restart). So the rule is not a promise: records that arrive after a turn
+//// was sealed and belong to it have no input of their own, and the host reads
+//// them as the end of a turn whose start it does not hold. It reads that turn
+//// again from its last record down to its input, and `completed` seals the
+//// whole of it in place of the partial summary. A page that watched the turn
+//// and a page opened after it therefore draw the same divider once the turn
+//// settles, and a prompt sealed alone is replaced the same way.
+////
 //// Everything here is a decision over values the engine already built
 //// (`turns.Piece`, `Block`, `protocol.EntryRecord`), and it holds no clock,
 //// process or host handle. The host owns the reads and the page's own state;
@@ -42,6 +57,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import session_view/changes_view
 import session_view/fold_budget
 import session_view/protocol
@@ -82,7 +98,23 @@ pub type Sealed {
     trace: trace_view.Trace,
     /// The sequence of the newest tool result in the turn, or zero.
     latest_result: Int,
+    /// About how many bytes of text the summary holds: its pieces, and the
+    /// boards its records contributed. A host holds closed turns to a budget of
+    /// these beside its budget of rows (`fold_budget.sealed_bytes`), since one
+    /// row can be as long as a record may be.
+    bytes: Int,
   )
+}
+
+/// What a scan that was asked to complete a turn found.
+pub type Completion {
+  /// The turn is whole: its input was reached, or it is the strand's first.
+  Whole(List(Sealed))
+
+  /// The scan ended before the turn's input, at the strand's start or a
+  /// bound. What it holds is not a turn, so nothing is closed and the host draws
+  /// what it has of the turn, and does not ask again.
+  Partial
 }
 
 /// The steps of one turn's fold that a page holds while the fold is open.
@@ -171,15 +203,16 @@ pub fn older(
   source: Source,
 ) -> Result(List(Sealed), Nil) {
   let #(lead, opened) = turns.grouped(blocks, strands)
-  case list.drop(opened, wanted - 1) != [] && opened != [], source {
+  case list.length(opened) >= wanted && opened != [], source {
     True, _ -> Ok(seal_all(opened, [], records, strands))
     False, Exhausted -> Ok(seal_all(headed(lead, opened), [], records, strands))
     False, Readable -> Error(Nil)
   }
 }
 
-/// The newest turn of what a scan read, when it is whole or cannot be read
-/// further: the turn a window held only the end of.
+/// The newest turn of what a scan read, when it is whole, or `Partial` when the
+/// scan cannot be read further and has not reached its input: the turn a window
+/// held only the end of.
 ///
 /// The scan starts at the last record the window held of that turn, so the
 /// newest group is that turn, and it is whole once the scan has reached its
@@ -196,14 +229,12 @@ pub fn completed(
   records: List(protocol.EntryRecord),
   strands: List(protocol.Strand),
   source: Source,
-) -> Result(List(Sealed), Nil) {
-  let #(lead, opened) = turns.grouped(blocks, strands)
-  case list.last(opened), list.last(headed(lead, opened)), source {
-    Ok(newest), _, _ -> Ok(seal_all([newest], [], records, strands))
-    Error(Nil), Ok(partial), Exhausted ->
-      Ok(seal_all([partial], [], records, strands))
-    Error(Nil), Error(Nil), Exhausted -> Ok([])
-    Error(Nil), _, Readable -> Error(Nil)
+) -> Result(Completion, Nil) {
+  let #(_, opened) = turns.grouped(blocks, strands)
+  case list.last(opened), source {
+    Ok(newest), _ -> Ok(Whole(seal_all([newest], [], records, strands)))
+    Error(Nil), Exhausted -> Ok(Partial)
+    Error(Nil), Readable -> Error(Nil)
   }
 }
 
@@ -433,17 +464,112 @@ fn sealed(
       record.entry.seq >= first && record.entry.seq <= end.seq
     })
 
+  let pieces =
+    turns.pieces(group, strands, turns.Settled, turns.Skip)
+    |> fold_budget.draw([], dict.new())
+    |> list.map(keyed_by(_, first))
+  let changes = changes_view.fold(held)
+  let trace = trace_view.fold(held)
+
   Ok(Sealed(
-    pieces: turns.pieces(group, strands, turns.Settled, turns.Skip)
-      |> fold_budget.draw([], dict.new()),
+    pieces:,
     weight: weighed(group, strands),
     first_seq: first,
     parent: option.map(opening.parent, ids.entry_id_to_string),
     end:,
-    changes: changes_view.fold(held),
-    trace: trace_view.fold(held),
+    changes:,
+    trace:,
     latest_result: latest_result(held),
+    bytes: bytes_of(pieces, changes, trace),
   ))
+}
+
+// The divider of a turn whose input the window did not hold is keyed by the
+// window's start, which would key two such turns alike. A closed turn is keyed
+// by its first record, which never moves.
+fn keyed_by(piece: turns.Piece, first: Int) -> turns.Piece {
+  case piece {
+    turns.Work(key: "work:window-start", worked:, items:, folding:, id:) ->
+      turns.Work(
+        key: "work:" <> int.to_string(first) <> ".0",
+        worked:,
+        items:,
+        folding:,
+        id:,
+      )
+    turns.Work(..)
+    | turns.Plain(..)
+    | turns.Prompt(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Commentary(..)
+    | turns.Peer(..)
+    | turns.Sibling(..)
+    | turns.Missed(..)
+    | turns.Decided(..) -> piece
+  }
+}
+
+// About how many bytes of text a summary holds: the text of its pieces and of
+// the boards. It is a budget's measure and not an allocation's: it counts what
+// a long row can make large, and not the constant overhead of a record.
+fn bytes_of(
+  pieces: List(turns.Piece),
+  changes: changes_view.Board,
+  trace: trace_view.Trace,
+) -> Int {
+  let drawn = list.fold(pieces, 0, fn(sum, piece) { sum + piece_bytes(piece) })
+  let edits =
+    list.fold(changes.files, 0, fn(sum, file) {
+      sum
+      + string.byte_size(file.path)
+      + list.fold(file.rows, 0, fn(rows, row) {
+        rows + string.byte_size(row.text)
+      })
+    })
+  let programs =
+    list.fold(trace.programs, 0, fn(sum, program) {
+      sum
+      + string.byte_size(program.label)
+      + option_bytes(program.excerpt)
+      + option_bytes(program.detail)
+      + option_bytes(program.sandbox)
+      + list.fold(program.calls, 0, fn(rows, call) {
+        rows + string.byte_size(call)
+      })
+    })
+  drawn + edits + programs
+}
+
+fn option_bytes(text: Option(String)) -> Int {
+  case text {
+    Some(text) -> string.byte_size(text)
+    None -> 0
+  }
+}
+
+fn block_bytes(block: Block) -> Int {
+  list.fold(block.rows, 0, fn(sum, row) {
+    sum + string.byte_size({ row.1 }.text)
+  })
+}
+
+fn piece_bytes(piece: turns.Piece) -> Int {
+  case piece {
+    turns.Plain(block:, ..) | turns.Commentary(block:, ..) -> block_bytes(block)
+    turns.Prompt(block:, name:, ..) ->
+      block_bytes(block) + string.byte_size(name)
+    turns.Spawned(purpose:, ..) -> string.byte_size(purpose)
+    turns.Returned(report:, outcome:, ..) ->
+      string.byte_size(report) + string.byte_size(outcome)
+    turns.Nudged(preview:, body:, ..) ->
+      string.byte_size(preview) + string.byte_size(body)
+    turns.Peer(text:, ..) | turns.Missed(text:, ..) -> string.byte_size(text)
+    turns.Sibling(text:, trailer:, ..) ->
+      string.byte_size(text) + option_bytes(trailer)
+    turns.Work(..) | turns.Decided(..) -> 0
+  }
 }
 
 // The turn's last record. The turn after it has that record as its first's

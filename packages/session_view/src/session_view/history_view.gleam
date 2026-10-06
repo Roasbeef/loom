@@ -49,10 +49,10 @@ pub type Request {
 ///
 /// A scan has its own window, its own endpoint and its own demand, and shares
 /// the one read lane with the window. It is bounded more generously than the
-/// window (`scan_records`, `scan_bytes`), because its host reads a whole turn
-/// through it and then drops everything but a summary; the host stops it
-/// before the bound is reached, since a window that is over its bound drops
-/// the newest end first.
+/// window (4,096 records and 32 MiB), because its host reads a whole turn
+/// through it and then drops everything but a summary. A scan that reaches its
+/// bound is no longer readable, and one that a page would take past it keeps
+/// its newest end, which is the end its host needs.
 pub type Scan {
   /// No scan is under way.
   Unscanned
@@ -74,11 +74,13 @@ pub type Scan {
   Abandoned
 }
 
-/// How many records a scan holds at most.
-pub const scan_records = 4096
+// How many records, and how many payload bytes, a scan holds at most. A scan
+// that reaches either stops being readable (`scan_readable`) and, if a page
+// would take it past them, keeps the newest end and drops the oldest, so what it
+// holds is still the stretch that ends at its leaf.
+const scan_records = 4096
 
-/// How many payload bytes a scan holds at most.
-pub const scan_bytes = 33_554_432
+const scan_bytes = 33_554_432
 
 /// Presentation retention never supplies operation or authorization metadata.
 pub type State {
@@ -267,12 +269,9 @@ fn interval(before_seq: Int) -> #(Int, Int) {
 @internal
 pub fn sent(state: State, before: Int) -> State {
   case state.request, state.scan {
-    Wanted, _ | Quiet, Unscanned | Quiet, Abandoned ->
-      State(..state, request: Pending(before))
-    Pending(_), Unscanned | Pending(_), Abandoned ->
-      State(..state, request: Pending(before))
-    Quiet, Scanning(..) | Pending(_), Scanning(..) ->
-      State(..state, scan: pending(state.scan, before))
+    Wanted, _ -> State(..state, request: Pending(before))
+    _, Scanning(..) -> State(..state, scan: pending(state.scan, before))
+    _, Unscanned | _, Abandoned -> State(..state, request: Pending(before))
   }
 }
 
@@ -355,13 +354,8 @@ pub fn scan(
         list.filter(below, fn(item) {
           dict.has_key(chain, snapshot.sequence(item))
         })
-      let window =
-        snapshot.Window(
-          held,
-          list.fold(held, 0, fn(sum, item) { sum + bytes(item) }),
-          None,
-        )
-      let next = case held {
+      let window = newest_within(held, scan_records, scan_bytes)
+      let next = case window.items {
         [] -> before_seq
         [_, ..] -> oldest(window)
       }
@@ -429,7 +423,9 @@ pub fn scan_older(state: State, missing: Option(String)) -> State {
   }
 }
 
-/// Whether the scan has a sequence left to read below what it holds.
+/// Whether the scan can be asked for more: a sequence is left to read below
+/// what it holds, and it has neither reached its bound nor had to cut. A host
+/// that finds it unreadable takes what it holds as all there will be.
 ///
 /// ## Examples
 ///
@@ -439,23 +435,12 @@ pub fn scan_older(state: State, missing: Option(String)) -> State {
 @internal
 pub fn scan_readable(state: State) -> Bool {
   case state.scan {
-    Scanning(before_seq:, ..) -> before_seq > 1
+    Scanning(window:, before_seq:, ..) ->
+      before_seq > 1
+      && window.evicted_through == None
+      && list.length(window.items) + 101 <= scan_records
+      && window.bytes < scan_bytes
     Unscanned | Abandoned -> False
-  }
-}
-
-/// How many records the scan holds.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert history_view.scan_size(history_view.empty()) == 0
-/// ```
-@internal
-pub fn scan_size(state: State) -> Int {
-  case state.scan {
-    Scanning(window:, ..) -> list.length(window.items)
-    Unscanned | Abandoned -> 0
   }
 }
 
@@ -558,7 +543,7 @@ pub fn accept(
   view: snapshot_view.View,
 ) -> State {
   case state.request == Pending(before), state.scan {
-    True, _ -> accepted(state, page, before, after, view, 600, 16 * 1024 * 1024)
+    True, _ -> accepted(state, page, before, after, view, KeepOldest)
     False, Scanning(leaf:, window:, before_seq:, request: Pending(asked))
       if asked == before
     -> {
@@ -572,8 +557,7 @@ pub fn accept(
           Pending(before),
           Unscanned,
         )
-      let read =
-        accepted(reading, page, before, after, view, scan_records, scan_bytes)
+      let read = accepted(reading, page, before, after, view, KeepNewest)
       State(
         ..state,
         scan: Scanning(
@@ -588,14 +572,41 @@ pub fn accept(
   }
 }
 
+// Which end a window keeps when a page takes it past its bound.
+type Retention {
+  // The window keeps its oldest records, as a window paging backward does.
+  KeepOldest
+
+  // The scan keeps its newest, which is the end it was started at.
+  KeepNewest
+}
+
+// The newest of `items` (newest first) that fit the bound, and where the ones
+// left out end, so the window says it was cut.
+fn newest_within(
+  items: List(snapshot.Item),
+  records: Int,
+  allowance: Int,
+) -> snapshot.Window {
+  let #(kept, size, _count, left_out) =
+    list.fold(items, #([], 0, 0, None), fn(acc, item) {
+      let #(kept, size, count, left_out) = acc
+      case left_out, count < records && size + bytes(item) <= allowance {
+        None, True -> #([item, ..kept], size + bytes(item), count + 1, None)
+        None, False -> #(kept, size, count, Some(snapshot.sequence(item)))
+        Some(_), _ -> acc
+      }
+    })
+  snapshot.Window(list.reverse(kept), size, left_out)
+}
+
 fn accepted(
   state: State,
   page: snapshot.Window,
   before: Int,
   after: Int,
   view: snapshot_view.View,
-  max_records: Int,
-  max_bytes: Int,
+  keeping: Retention,
 ) -> State {
   case state.request == Pending(before) {
     False -> state
@@ -619,15 +630,19 @@ fn accepted(
             snapshot.Loaded(..) -> False
           }
         })
-      let retained =
-        snapshot.Window(
-          list.reverse(related),
-          list.fold(related, 0, fn(sum, item) { sum + bytes(item) }),
-          None,
-        )
-        |> bounded(max_records, max_bytes)
-      let window =
-        snapshot.Window(..retained, items: list.reverse(retained.items))
+      let window = case keeping {
+        KeepOldest ->
+          snapshot.Window(
+            list.reverse(related),
+            list.fold(related, 0, fn(sum, item) { sum + bytes(item) }),
+            None,
+          )
+          |> bounded(600, 16 * 1024 * 1024)
+          |> fn(retained) {
+            snapshot.Window(..retained, items: list.reverse(retained.items))
+          }
+        KeepNewest -> newest_within(related, scan_records, scan_bytes)
+      }
       let kept =
         dict.from_list(
           list.map(window.items, fn(item) { #(snapshot.sequence(item), Nil) }),

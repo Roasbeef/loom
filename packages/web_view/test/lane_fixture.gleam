@@ -2056,3 +2056,33 @@ pub fn stopped(diagnostic: String) -> session_channel.Update {
     [],
   )
 }
+
+/// A capture of `main` holding `turns` turns of two records, each a one-line question
+/// and an answer of `size` characters: few rows, many bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.heavy(3, 9_000_000)
+/// ```
+pub fn heavy(turns: Int, size: Int) -> session_channel.Update {
+  let long = string.repeat("x", size)
+  capture_of(
+    list.flat_map(counted(turns), fn(turn) {
+      let seq = 2 * turn - 1
+      [
+        item(seq, 10_000 + seq, said("question " <> int.to_string(turn), None)),
+        item(
+          seq + 1,
+          10_000 + seq + 1,
+          assistant([
+            message.AssistantText(int.to_string(turn) <> long, None),
+          ]),
+        ),
+      ]
+    }),
+    None,
+    [],
+    [],
+  )
+}

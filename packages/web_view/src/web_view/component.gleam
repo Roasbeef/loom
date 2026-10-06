@@ -2267,17 +2267,15 @@ fn read(
 }
 
 // Whether the scan can be asked for more: it can not once it holds the
-// strand's first record, once it has no sequence left to read, and once
-// another read would take it past the bound it is held to.
+// strand's first record, and not once it can no longer be read
+// (`history_view.scan_readable`: no sequence left, or its bound reached).
 fn source_of(
   scrollback: history_view.State,
   branch: snapshot_view.Branch,
 ) -> turn_ledger.Source {
-  let room =
-    history_view.scan_size(scrollback) + 101 <= history_view.scan_records
-  case branch.unloaded, history_view.scan_readable(scrollback), room {
-    Some(_), True, True -> turn_ledger.Readable
-    None, _, _ | Some(_), False, _ | Some(_), _, False -> turn_ledger.Exhausted
+  case branch.unloaded, history_view.scan_readable(scrollback) {
+    Some(_), True -> turn_ledger.Readable
+    None, _ | Some(_), False -> turn_ledger.Exhausted
   }
 }
 
@@ -2302,7 +2300,17 @@ fn found(
       |> result.map(fn(sealed) { below(model, sealed, source) })
     ForLead ->
       turn_ledger.completed(blocks, branch.records, view.strands, source)
-      |> result.map(fn(sealed) { beside(model, sealed) })
+      |> result.map(fn(completion) {
+        case completion {
+          turn_ledger.Whole(sealed) -> beside(model, sealed)
+
+          // The scan could not reach the turn's input. What the page has of
+          // the turn is drawn as it stands, in place, and the older turns it
+          // holds are left alone.
+          turn_ledger.Partial ->
+            Model(..model, view: View(..model.view, completion: Spent))
+        }
+      })
     ForSteps(fold:) ->
       turn_ledger.steps(
         blocks,
@@ -2340,21 +2348,30 @@ fn below(
 }
 
 // The turn the window held only the end of, whole at last. It is the newest
-// of the turns the page holds, and it replaces what the page held below it when
-// it does not follow on from it, which only a window that lost records to its
-// bound can bring about.
+// of the turns the page holds. It replaces any turn the page closed from the
+// end of it alone, which is what a turn is when records arrive after it was
+// sealed, and it replaces what the page held below when it does not follow on
+// from it, which only a window that lost records to its bound can bring about.
 fn beside(
   model: Model(socket),
   found: List(turn_ledger.Sealed),
 ) -> Model(socket) {
-  let sealed = case found, model.view.sealed {
-    [turn, ..], [newest, ..] ->
-      case turn.parent == Some(newest.end.id) {
-        True -> list.append(found, model.view.sealed)
-        False -> found
+  let sealed = case found {
+    [turn, ..] -> {
+      let older =
+        list.filter(model.view.sealed, fn(held) {
+          held.first_seq < turn.first_seq
+        })
+      case older {
+        [newest, ..] ->
+          case turn.parent == Some(newest.end.id) {
+            True -> list.append(found, older)
+            False -> found
+          }
+        [] -> found
       }
-    [_, ..], [] -> found
-    [], _ -> model.view.sealed
+    }
+    [] -> model.view.sealed
   }
   Model(..model, view: View(..model.view, sealed:, completion: Untried))
 }
@@ -2451,7 +2468,10 @@ type Lead {
 // turn the window starts right after it, so blocks before the first input are
 // records that arrived after that turn closed, unless the record before them is
 // not the turn's last, which happens only to a turn the window lost the start
-// of to its bound. A strand's own first records are whole. When they are the
+// of to its bound. A strand's own first records are whole. Records after a
+// closed turn that have no input of their own belong to that turn, and are
+// read with it again (`turn_ledger`, "When a turn is sealed"), so they are
+// unfinished like any end of a turn whose start is not held. When they are the
 // running turn itself, with no turn after them, they are drawn as far as they
 // are known, as a running turn always is, and read once it settles. A read that
 // could not complete them leaves the page to draw what it has.
@@ -2472,8 +2492,6 @@ fn lead_of(
   {
     [], _, _, _, _, _ -> NoLead
     [_, ..], None, _, _, _, _ -> Whole
-    [_, ..], Some(parent), [newest, ..], _, _, _ if parent == newest.end.id ->
-      Whole
     [_, ..], Some(_), _, Spent, _, _ -> Whole
     [_, ..], Some(_), _, Untried, [], turns.Running -> Whole
     [_, ..], Some(_), _, Untried, [], turns.Settled
@@ -2535,6 +2553,21 @@ fn laid_out(
   cut: snapshot.Captured,
 ) -> #(Model(socket), Window) {
   let shared = model.shared
+
+  // A parked strand's closed turns are dropped when its window is, which the
+  // shared record does when the capture no longer lists the strand
+  // (`lane_fold.prune_parked_scrollback`), so a summary is never kept beside no
+  // window.
+  let model =
+    Model(
+      ..model,
+      view: View(
+        ..model.view,
+        parked_sealed: dict.filter(model.view.parked_sealed, fn(name, _) {
+          session_model.is_known_strand(view.strands, name)
+        }),
+      ),
+    )
   let branch = history_view.branch(shared.scrollback, view)
   let all =
     transcript.branch_blocks(
@@ -2754,7 +2787,8 @@ fn fitted_page(
 ) -> Model(socket) {
   let held = list.length(weights.window)
   let kept_window = int.min(fitted.kept, held)
-  let kept_sealed = list.take(model.view.sealed, int.max(fitted.kept - held, 0))
+  let by_rows = list.take(model.view.sealed, int.max(fitted.kept - held, 0))
+  let kept_sealed = within_bytes(by_rows, fold_budget.sealed_bytes)
   let blocks =
     weights.group_blocks
     |> list.take(kept_window)
@@ -2781,7 +2815,9 @@ fn fitted_page(
       turns.Expand(expansion.capped),
     )
     |> fold_budget.draw(fitted.folds, fitted.allowance)
-  let cut = fitted.kept < held + list.length(model.view.sealed)
+  let cut =
+    fitted.kept < held + list.length(model.view.sealed)
+    || list.length(kept_sealed) < list.length(by_rows)
 
   // A paged page that had to cut a whole turn to stay within its limit is
   // full: loading more would only cut again. A running turn that alone is over
@@ -2811,6 +2847,33 @@ fn fitted_page(
       trace: joined_trace(kept_sealed, window.records),
     ),
   )
+}
+
+// The newest closed turns, given newest first, whose summaries fit `budget`
+// bytes of text, and at least the newest. Rows bound what the runtime retains of
+// a turn drawn; this bounds what the page retains of the text, which one row can
+// make large.
+fn within_bytes(
+  newest_first: List(turn_ledger.Sealed),
+  budget: Int,
+) -> List(turn_ledger.Sealed) {
+  case newest_first {
+    [] -> []
+    [newest, ..older] -> [newest, ..fitting(older, budget - newest.bytes)]
+  }
+}
+
+fn fitting(
+  older: List(turn_ledger.Sealed),
+  room: Int,
+) -> List(turn_ledger.Sealed) {
+  case older {
+    [turn, ..rest] if turn.bytes <= room -> [
+      turn,
+      ..fitting(rest, room - turn.bytes)
+    ]
+    _ -> []
+  }
 }
 
 // A closed turn's pieces as the page draws them: its divider is open, with the

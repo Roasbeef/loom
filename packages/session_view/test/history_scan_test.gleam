@@ -129,7 +129,6 @@ pub fn a_scan_reads_below_its_leaf_and_leaves_the_window_alone_test() {
     )
   let assert Some(read) = history_view.scanned(received, current)
   assert list.length(read.records) == 100
-  assert history_view.scan_size(received) == 100
   assert received.window == before.window
   assert received.before_seq == before.before_seq
   assert received.request == history_view.Quiet
@@ -177,7 +176,8 @@ pub fn a_reply_goes_to_whoever_asked_for_it_test() {
   let sent = history_view.sent(asked, 501)
   let received =
     history_view.accept(sent, between(all, 400, 501), 501, 400, current)
-  assert history_view.scan_size(received) == 100
+  let assert Some(read) = history_view.scanned(received, current)
+  assert list.length(read.records) == 100
   assert received.window == sent.window
 }
 
@@ -224,4 +224,34 @@ pub fn a_leaf_that_is_not_an_entry_abandons_the_scan_test() {
       current,
     )
   assert started.scan == history_view.Abandoned
+}
+
+// A scan's bytes are bounded, and when a page would take it past the bound it
+// keeps the newest end, the one it was started at, and says it was cut: a scan
+// that kept the oldest would hand its host a stretch that no longer ends at the
+// record it asked about. It is not readable afterwards.
+pub fn a_scan_past_its_bytes_keeps_its_newest_end_test() {
+  let all = entries(1200)
+  let current = view(1200)
+  let heavy =
+    snapshot.Window(
+      list.map(between(all, 400, 501).items, fn(item) {
+        case item {
+          snapshot.Loaded(entry, _) -> snapshot.Loaded(entry, 4 * 1024 * 1024)
+          snapshot.Unloaded(..) -> item
+        }
+      }),
+      0,
+      None,
+    )
+  let asked =
+    history_view.scan(live(all), leaf_text(500), 501, snapshot.empty(), current)
+    |> history_view.scan_older(Some(leaf_text(500)))
+    |> history_view.sent(501)
+  let received = history_view.accept(asked, heavy, 501, 400, current)
+  let assert Some(read) = history_view.scanned(received, current)
+  assert list.length(read.records) == 8
+  let assert Ok(newest) = list.first(read.records)
+  assert newest.entry.seq == 500
+  assert !history_view.scan_readable(received)
 }

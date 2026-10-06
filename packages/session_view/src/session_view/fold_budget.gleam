@@ -142,6 +142,15 @@ pub fn cost(weight: Weight, open: List(Int)) -> Int {
 /// feeds back into the cut or the paging.
 pub const fold_rows = 100
 
+/// How many bytes of text a page holds in the summaries of its closed turns,
+/// beside its row limit. A row counts the same whether it is a word or a prompt
+/// of megabytes, and a page of a hundred closed turns would otherwise hold
+/// whatever their prompts and answers were. It is the size of the history window
+/// the closed turns replace (`history_view`, 16 MiB), and like `fold_rows` it is
+/// not part of which turns are held by rows: a page over it drops its oldest
+/// closed turns, as a page over its rows does.
+pub const sealed_bytes = 16_777_216
+
 /// How many of the turns, given newest first, a page of `limit` rows holds,
 /// and which open folds draw how much.
 ///

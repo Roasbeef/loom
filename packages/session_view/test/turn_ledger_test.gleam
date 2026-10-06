@@ -330,7 +330,7 @@ pub fn a_stretch_that_cannot_be_read_further_closes_what_it_has_test() {
         _ -> False
       }
     })
-  assert key == "work:window-start"
+  assert key == "work:4.0"
 }
 
 // The turn a window held only the end of is closed once the scan has reached
@@ -344,7 +344,7 @@ pub fn a_turn_a_window_began_inside_is_closed_when_its_input_arrives_test() {
     == Error(Nil)
   let reached = list.filter(items, fn(held) { snapshot.sequence(held) >= 9 })
   let #(blocks, records, _, _) = held(reached)
-  let assert Ok([whole]) =
+  let assert Ok(turn_ledger.Whole([whole])) =
     turn_ledger.completed(blocks, records, strands(), turn_ledger.Readable)
   assert whole.first_seq == 17
   assert divider_of(whole) == "Worked <1s · 3 steps"
@@ -400,4 +400,49 @@ pub fn the_newest_tool_result_is_the_closed_turns_to_report_test() {
   let assert [first, second] = closed(reading([3, 3]))
   assert first.latest_result == first.end.seq - 1
   assert second.latest_result == second.end.seq - 1
+}
+
+// A scan that cannot be read further and has not reached the turn's input
+// closes nothing: what it holds is not a turn, and the host is told so and not
+// handed a turn whose parent is a record in the middle of another.
+pub fn a_scan_that_never_reaches_the_input_closes_nothing_test() {
+  let items = reading([3, 3])
+  let end = list.filter(items, fn(held) { snapshot.sequence(held) >= 12 })
+  let end = list.filter(end, fn(held) { snapshot.sequence(held) <= 16 })
+  let #(blocks, records, _, opened) = held(end)
+  assert opened == []
+  assert turn_ledger.completed(
+      blocks,
+      records,
+      strands(),
+      turn_ledger.Exhausted,
+    )
+    == Ok(turn_ledger.Partial)
+}
+
+// Two turns the window began inside are keyed by their first records, not both
+// by the window's start, so a page holding two of them has no duplicate key.
+pub fn a_closed_lead_is_keyed_by_its_first_record_test() {
+  let items = reading([3, 3, 3])
+  let tail = list.filter(items, fn(held) { snapshot.sequence(held) >= 12 })
+  let #(_, records, lead, _) = held(tail)
+  let assert [one] = turn_ledger.seal_all([lead], [], records, strands())
+  let keys =
+    list.filter_map(one.pieces, fn(piece) {
+      case piece {
+        turns.Work(key:, ..) -> Ok(key)
+        _ -> Error(Nil)
+      }
+    })
+  assert keys == ["work:12.0"]
+}
+
+// A summary says how many bytes of text it holds, so a host can hold closed
+// turns to a budget of them beside its rows: a long prompt is one row and many
+// bytes.
+pub fn a_summary_counts_the_bytes_of_its_text_test() {
+  let small = closed(reading([2]))
+  let assert [turn] = small
+  assert turn.bytes > 0
+  assert turn.bytes < 200
 }

@@ -275,6 +275,54 @@ fn watched(archive: List(snapshot.Item), every: Int) {
   )
 }
 
+// A page that watched two long turns and a page opened after them draw the same
+// dividers, figure for figure, and not merely the same number of them.
+pub fn a_watched_page_and_a_reloaded_page_draw_equal_dividers_test() {
+  let archive = lane_fixture.reading([110, 110])
+  let #(reloaded, wire, capture) = reloaded(archive)
+  let reloaded = pressed(reloaded, wire, archive, capture)
+  let watched = watched(archive, 40)
+  assert dividers(watched) == dividers(reloaded)
+  assert folds(watched) == folds(reloaded)
+}
+
+// An input can land in a capture before its operation does. The prompt is then
+// closed alone, and the rest of the turn arrives with no input of its own: the
+// page reads the turn whole once it settles and draws one divider, the one a
+// page opened afterwards draws.
+pub fn an_input_before_its_operation_still_gives_one_divider_test() {
+  let archive = lane_fixture.reading([110, 110])
+  let wire = process.new_subject()
+  let at = fn(upto: Int, operation) {
+    let held =
+      list.filter(archive, fn(item) { snapshot.sequence(item) <= upto })
+    lane_fixture.since(held, int.max(1, upto - 99), operation)
+  }
+  let final = at(444, None)
+  let page =
+    list.fold(
+      [
+        at(40, Some(lane_fixture.op(1))),
+        at(222, Some(lane_fixture.op(1))),
+        at(222, None),
+        at(223, None),
+        at(263, Some(lane_fixture.op(2))),
+        at(343, Some(lane_fixture.op(2))),
+        at(423, Some(lane_fixture.op(2))),
+        final,
+      ],
+      page_fixture.ready(wire, "operator"),
+      fn(page, update) { component.apply(page, [update]) },
+    )
+    |> page_fixture.run(component.update, [component.Ticked])
+    |> lane_fixture.serve(wire, archive, final)
+  assert spoken(page) == ["question 1", "answer 1", "question 2", "answer 2"]
+  let #(reloaded, wire, capture) = reloaded(archive)
+  let reloaded = pressed(reloaded, wire, archive, capture)
+  assert dividers(page) == dividers(reloaded)
+  assert list.length(dividers(page)) == 2
+}
+
 // Two turns of 110 calls that arrive while the page watches are both drawn as
 // closed dividers, with no press: a closed turn costs the page what a closed
 // turn of two calls does, so the older is not behind "Load older".
@@ -318,6 +366,26 @@ pub fn opening_a_fold_reads_only_its_newest_steps_test() {
   assert list.all(reads, fn(read) { before_of(read) > 1000 })
   let assert [#(held, hidden)] = drawn(open)
   assert held == 100
+
+  // They are the newest steps of the turn: the first one drawn is far above the
+  // steps that are hidden, which are the turn's first.
+  let assert [turns.Work(items:, ..)] =
+    list.filter(component.pieces(open), fn(piece) {
+      case piece {
+        turns.Work(folding: turns.Unfolded(_), ..) -> True
+        _ -> False
+      }
+    })
+  let assert Ok(turns.Step(key:, ..)) =
+    list.find(items, fn(item) {
+      case item {
+        turns.Step(..) -> True
+        _ -> False
+      }
+    })
+  let assert [seq, _] = string.split(key, ".")
+  let assert Ok(seq) = int.parse(seq)
+  assert seq > 2 * hidden
 
   // The newest steps are the ones the read reached, and the earlier ones are
   // those it did not: a result whose call lay below the read is a row of the
@@ -455,4 +523,17 @@ pub fn a_stopped_turn_says_stopped_and_not_why_test() {
   assert string.contains(html, "Stopped")
   assert !string.contains(html, "explicit stop")
   assert !string.contains(html, "provider request was cancelled")
+}
+
+// Rows bound what the page draws and bytes bound what it holds: eight turns of
+// one row each whose answers are 4 MB are over the budget for closed turns
+// (`fold_budget.sealed_bytes`), so the page holds the newest and says there are
+// older ones to load.
+pub fn closed_turns_are_held_to_a_budget_of_bytes_test() {
+  let page =
+    component.new(page_fixture.start())
+    |> component.apply([lane_fixture.heavy(8, 4_000_000)])
+  assert list.length(spoken(page)) < 16
+  assert list.length(spoken(page)) >= 2
+  assert component.top(page) == lane.Earlier
 }
