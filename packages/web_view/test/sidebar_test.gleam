@@ -20,6 +20,7 @@ import session_view/turns
 import web_view/component
 import web_view/operator_page
 import web_view/sessions.{type Entry, Entry, Live, Saved}
+import web_view/view/archiving
 import web_view/view/resume
 import web_view/view/sidebar
 
@@ -403,6 +404,7 @@ fn sidebar_with(bars: List(sidebar.Bar)) -> Element(Nil) {
     dict.new(),
     fn(_) { Nil },
     resume.Never,
+    archiving.Never,
   )
 }
 

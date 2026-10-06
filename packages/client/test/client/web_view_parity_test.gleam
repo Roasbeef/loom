@@ -171,6 +171,7 @@ fn start() -> component.Start(process.Subject(String)) {
       rename: None,
       shareable: None,
       worktree: None,
+      manage: None,
     ),
   )
 }

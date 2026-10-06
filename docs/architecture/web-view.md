@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3929`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3977`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1130,6 +1130,20 @@ refuse a session a process still holds (`Running`, in the words "That session is
 still running. Stop it first."). `HomeAttachment.sessions_directory` is the
 daemon's own directory a delete removes from. `ui_route_test` drives each action
 against a real registry and every refusal.
+
+The sidebar offers the owner the same actions on its own rows (protocol-change/065,
+the addendum on archiving from the sidebar). `view/archiving` draws a quiet button
+after each row's own button, `Archive` on a saved or blocked row and `Stop and
+archive` on a running one, which the stylesheet shows on hover and on keyboard
+focus and never removes from the tab order. A press opens the row's question and
+asks nothing; the question names both steps for a running row and the session as a
+text node. The confirm asks for `actions.StopArchive` or `actions.Archive`, chosen
+by the server from the row's residency, as one `manage_task`: the daemon stops the
+session, waits for it to be saved, and archives it. The home and the session page
+are handed the same capability by `home_manage_capability` (the session page's is
+`Transport.manage`, dispatched as `ManageAnswered`), so a bookmark's page, a member's
+page, a read-only link and a page of one session draw nothing. The session on screen
+has no button, with the reason in its `title`. `sidebar_archive_test` reads it.
 
 ### The browser login and the home's sign-ins
 

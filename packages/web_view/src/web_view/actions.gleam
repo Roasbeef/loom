@@ -24,6 +24,11 @@
 //// the page's, and the daemon's checks are the same whether the press was
 //// confirmed or forged.
 ////
+//// The sidebar offers two of them, Archive on a saved or blocked row and
+//// `StopArchive` on a running one (`view/archiving`), each after one
+//// confirmation that names what it will do. Both are the home's own Archive
+//// and Stop, asked of the same daemon function under the same checks.
+////
 //// The words a page shows for a refusal are fixed here, so no text the daemon
 //// or the catalogue produced reaches a browser.
 
@@ -40,6 +45,13 @@ pub type Action {
   /// Remove a saved session's registration and its database. It cannot be
   /// undone.
   Delete
+
+  /// The sidebar's one action on a running row: stop the session, wait for the
+  /// registry to report it saved, then archive it, as one request. It is the
+  /// terminal's sequence made a single task, so the page never holds a stop's
+  /// answer to chain a second request from, and the daemon makes the same
+  /// checks at the start that it makes for each of the two alone.
+  StopArchive
 }
 
 /// What the daemon answers to a request to act on a session.
@@ -115,5 +127,6 @@ pub fn done_words(action: Action) -> String {
     Stop -> "Stopped."
     Archive -> "Archived."
     Delete -> "Deleted."
+    StopArchive -> "Stopped and archived."
   }
 }

@@ -65,6 +65,13 @@
 //// once, and the two pages differ only in the nav entry, the strand bars and
 //// which session is current.
 ////
+//// A row can also carry a quiet archive button, which `view/archiving` draws
+//// beside the row's own button and the stylesheet shows on hover and on focus.
+//// A press replaces the row with one question and sends nothing until it is
+//// confirmed, and the session on screen explains in a `title` why it has none.
+//// The page decides whether the action exists by what it passes, so a page
+//// without the capability draws none of it.
+////
 //// The module takes `sessions.Group`s and the current identity, and imports
 //// nothing from `web_view/component`, which imports it.
 
@@ -84,6 +91,7 @@ import web_view/sessions.{
   type Activity, type Entry, type Group, Blocked, Idle, Live, NeedsYou, Saved,
   Working,
 }
+import web_view/view/archiving.{type Archiving}
 import web_view/view/resume.{type Resume}
 import web_view/view/strip
 
@@ -128,7 +136,7 @@ pub type Pulse {
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(groups, current, sidebar.bars(component.strip(model)), activity, Opening, resume)
+/// // sidebar.view(groups, current, sidebar.bars(component.strip(model)), activity, Opening, resume, archiving)
 /// ```
 pub fn bars(strip: strip.Strip) -> List(Bar) {
   let chips = case strip.advisor {
@@ -159,12 +167,13 @@ fn pulse(status: agent_view.Status) -> Pulse {
 /// running session is doing (the home's read, asked from a task; a session it
 /// has not named says "running"), `open` the message a press of another
 /// live session's row sends, given that session's identity, and `resume` what
-/// the page offers for a saved session's row.
+/// the page offers for a saved session's row, and `archiving` what it offers
+/// for archiving a row (`view/archiving`).
 ///
 /// With no group it is `element.none()`, so a page whose daemon listed
 /// nothing, or could not, draws no empty column. The result is memoized on
-/// the groups, the identity, the bars and the activity, so a page that re-read an unchanged
-/// list diffs nothing. `open` and the resume's `press` are not part of the
+/// the groups, the identity, the bars, the activity and where the archive
+/// action stands, so a page that re-read an unchanged list diffs nothing. `open` and the resume's `press` are not part of the
 /// memo's key, so a caller passes the same functions every time, as a
 /// constructor is; the session whose resume is out is, so its row changes when
 /// the resume starts and when it ends.
@@ -172,7 +181,7 @@ fn pulse(status: agent_view.Status) -> Pulse {
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.view(component.session_groups(model), component.session_id(model), [], dict.new(), Opening, resume.Never)
+/// // sidebar.view(component.session_groups(model), component.session_id(model), [], dict.new(), Opening, resume.Never, archiving.Never)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -181,6 +190,7 @@ pub fn view(
   activity: Dict(String, Activity),
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
@@ -188,8 +198,18 @@ pub fn view(
     element.ref(bars),
     element.ref(activity),
     element.ref(resume.pending(resume)),
+    element.ref(archiving.stage(archiving)),
   ])
-  column(groups, element.none(), current, bars, Known(activity), open, resume)
+  column(
+    groups,
+    element.none(),
+    current,
+    bars,
+    Known(activity),
+    open,
+    resume,
+    archiving,
+  )
 }
 
 /// The sidebar the home page draws (protocol-change/065): the same groups, with
@@ -206,23 +226,26 @@ pub fn view(
 /// row says "saved", as it always did.
 ///
 /// With no group it is `element.none()`, as `view` is. `open` and the
-/// resume's `press` are not part of the memo's key, as in `view`.
+/// resume's `press` are not part of the memo's key, as in `view`; `archiving`'s
+/// stage is.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.home(home.groups(model), dict.new(), Opening, resume.Never)
+/// // sidebar.home(home.groups(model), dict.new(), Opening, resume.Never, archiving.Never)
 /// ```
 pub fn home(
   groups: List(Group),
   activity: Dict(String, Activity),
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
     element.ref(activity),
     element.ref(resume.pending(resume)),
+    element.ref(archiving.stage(archiving)),
   ])
   let lead =
     html.p(
@@ -232,7 +255,7 @@ pub fn home(
       ],
       [house(), html.text("Home")],
     )
-  column(groups, lead, "", [], Doing(activity), open, resume)
+  column(groups, lead, "", [], Doing(activity), open, resume, archiving)
 }
 
 // The house glyph of the "Home" entry: a fixed outline, decoration only, drawn
@@ -268,6 +291,7 @@ fn column(
   suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   case groups {
     [] -> element.none()
@@ -276,7 +300,16 @@ fn column(
       // project reads the same above the fold and below it.
       let titles = sessions.titles(groups)
       let #(running, saved) = partition(groups, current)
-      let draw = group(_, titles, current, bars, suffix, open, resume)
+      let draw = group(
+        _,
+        titles,
+        current,
+        bars,
+        suffix,
+        open,
+        resume,
+        archiving,
+      )
       html.aside(
         [
           attribute.class("sidebar"),
@@ -375,6 +408,7 @@ fn group(
   suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   let title = result.unwrap(dict.get(titles, group.project), group.project)
 
@@ -387,7 +421,15 @@ fn group(
     ]),
     html.ul(
       [attribute.class("sessions")],
-      list.map(group.entries, entry(_, current, bars, suffix, open, resume)),
+      list.map(group.entries, entry(
+        _,
+        current,
+        bars,
+        suffix,
+        open,
+        resume,
+        archiving,
+      )),
     ),
   ])
 }
@@ -402,7 +444,10 @@ fn group(
 // (protocol-change/067), as a text node: the subtitle is a person's own prompt,
 // so it is never an attribute, a class or a title. A session in a git worktree
 // leads that line with the worktree's name. A row with neither is the two words
-// it always was.
+// it always was. A page that offers archiving adds a quiet button after the
+// row's own button, which `view/archiving` draws, and a row that is asking
+// whether to archive is that question and nothing else; the session on screen
+// has no button, so it gives its reason as a `title`.
 fn entry(
   entry: Entry,
   current: String,
@@ -410,6 +455,7 @@ fn entry(
   suffix: Suffix,
   open: fn(String) -> message,
   resume: Resume(message),
+  archiving: Archiving(message),
 ) -> Element(message) {
   let kind = resume.kind(resume, entry)
   let residency = case entry.residency, kind {
@@ -460,17 +506,30 @@ fn entry(
     )
   let words = [lead, residency]
 
-  case entry.id == current, entry.residency {
-    True, _ ->
+  case
+    archiving.question(archiving, entry),
+    entry.id == current,
+    entry.residency
+  {
+    // The row is asking whether to archive, so its words give way to the
+    // question. The session on screen never asks: it has no archive action.
+    Some(question), False, _ ->
+      html.li([attribute.class("session"), attribute.class("confirming")], [
+        question,
+      ])
+
+    _, True, _ ->
       html.li(
         [
           attribute.class("session"),
           attribute.class("current"),
           attribute.attribute("aria-current", "true"),
+          ..archiving.current_title(archiving)
         ],
         [lead, ..list.append(dots(bars), [residency])],
       )
-    False, Live ->
+
+    _, False, Live ->
       html.li([attribute.class("session")], [
         html.button(
           [
@@ -481,8 +540,10 @@ fn entry(
           ],
           words,
         ),
+        ..archiving.button(archiving, entry)
       ])
-    False, Saved | False, Blocked ->
+
+    _, False, Saved | _, False, Blocked ->
       case kind {
         resume.Button(press:) ->
           html.li([attribute.class("session")], [
@@ -495,9 +556,13 @@ fn entry(
               ],
               words,
             ),
+            ..archiving.button(archiving, entry)
           ])
         resume.Text | resume.Opening ->
-          html.li([attribute.class("session")], words)
+          html.li(
+            [attribute.class("session")],
+            list.append(words, archiving.button(archiving, entry)),
+          )
       }
   }
 }

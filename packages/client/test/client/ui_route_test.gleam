@@ -7302,6 +7302,30 @@ pub fn an_owners_home_stops_a_running_session_test() {
   })
 }
 
+// The sidebar's action on a running row is the stop and the archive as one
+// request: the session ends, is held saved, and is hidden from the owner's list,
+// all from the one answer.
+pub fn an_owners_page_stops_and_archives_a_running_session_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "manage-stop-archive", 1205)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let before = session_count(ready, credential)
+    assert !is_saved(ready, session)
+    assert manage(ready, owner, actions.StopArchive, session)
+      == actions.Done(actions.StopArchive)
+    assert session_count(ready, credential) == before - 1
+
+    // A session that is already saved is archived all the same, so a row that
+    // stopped between the page's list and the press is not an error.
+    let saved_already = create_session(ready, "manage-saved-archive", 1206)
+    saved(ready, saved_already)
+    let listed = session_count(ready, credential)
+    assert manage(ready, owner, actions.StopArchive, saved_already)
+      == actions.Done(actions.StopArchive)
+    assert session_count(ready, credential) == listed - 1
+  })
+}
+
 // An archive and a delete refuse a session a process still holds, in the
 // reason's words for it, and change nothing. Once the session is stopped an
 // archive hides it from the owner's list and a delete removes it.
@@ -7358,50 +7382,53 @@ pub fn a_home_action_refuses_and_changes_nothing_test() {
       )
     }
 
-    list.each([actions.Stop, actions.Archive, actions.Delete], fn(action) {
-      assert ask(member_standing, page_open, ready.epoch, action, session)
-        == refused
-      assert ask(
-          ui_socket.Standing(..owner, origin: ui_sessions.Resumed),
-          page_open,
-          ready.epoch,
-          action,
-          session,
+    list.each(
+      [actions.Stop, actions.Archive, actions.Delete, actions.StopArchive],
+      fn(action) {
+        assert ask(member_standing, page_open, ready.epoch, action, session)
+          == refused
+        assert ask(
+            ui_socket.Standing(..owner, origin: ui_sessions.Resumed),
+            page_open,
+            ready.epoch,
+            action,
+            session,
+          )
+          == refused
+        assert ask(
+            ui_socket.Standing(..owner, reach: ui_sessions.OneSession),
+            page_open,
+            ready.epoch,
+            action,
+            session,
+          )
+          == refused
+        assert ask(
+            ui_socket.Standing(..owner, ceiling: access.Observer),
+            page_open,
+            ready.epoch,
+            action,
+            session,
+          )
+          == refused
+        assert ask(owner, fn() { Error(Nil) }, ready.epoch, action, session)
+          == refused
+        assert ask(
+            ui_socket.Standing(..owner, principal: "someone-else"),
+            page_open,
+            ready.epoch,
+            action,
+            session,
+          )
+          == refused
+        list.each(
+          ["not a session", "", "01900000-0000-7000-8000-000000000000"],
+          fn(target) {
+            assert ask(owner, page_open, ready.epoch, action, target) == refused
+          },
         )
-        == refused
-      assert ask(
-          ui_socket.Standing(..owner, reach: ui_sessions.OneSession),
-          page_open,
-          ready.epoch,
-          action,
-          session,
-        )
-        == refused
-      assert ask(
-          ui_socket.Standing(..owner, ceiling: access.Observer),
-          page_open,
-          ready.epoch,
-          action,
-          session,
-        )
-        == refused
-      assert ask(owner, fn() { Error(Nil) }, ready.epoch, action, session)
-        == refused
-      assert ask(
-          ui_socket.Standing(..owner, principal: "someone-else"),
-          page_open,
-          ready.epoch,
-          action,
-          session,
-        )
-        == refused
-      list.each(
-        ["not a session", "", "01900000-0000-7000-8000-000000000000"],
-        fn(target) {
-          assert ask(owner, page_open, ready.epoch, action, target) == refused
-        },
-      )
-    })
+      },
+    )
 
     // A stale epoch reaches the registry, which refuses an archive or a delete
     // in the same words.

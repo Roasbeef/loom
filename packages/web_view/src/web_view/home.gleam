@@ -194,6 +194,7 @@ import web_view/sessions.{
   type Activity, type Entry, type Group, Live, NeedsYou, Working,
 }
 import web_view/signins.{type Signin}
+import web_view/view/archiving
 import web_view/view/create.{type Create}
 import web_view/view/ended
 import web_view/view/heading
@@ -618,6 +619,16 @@ pub type Msg {
   /// confirming a delete.
   DeleteConfirmed(session: String)
 
+  /// A sidebar row's archive button was pressed (`view/archiving`): the page
+  /// opens that row's question and sends nothing. Which action the question is
+  /// for is the row's residency in the page's own list, never the message.
+  SidebarArchiveAsked(session: String)
+
+  /// The sidebar's question was confirmed. It acts only for the row that is
+  /// asking, and only for the action that question was opened for, so a stale
+  /// click cannot answer the table's Stop or Delete question.
+  SidebarArchiveConfirmed(session: String)
+
   /// The confirmation's Cancel was pressed: the row is as it was.
   ConfirmCancelled
 
@@ -1010,6 +1021,19 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     StopConfirmed(session:) -> confirmed(model, actions.Stop, session)
     DeleteConfirmed(session:) -> confirmed(model, actions.Delete, session)
 
+    // The sidebar's archive button opens its question for the action the row's
+    // residency gives, a stop first for a running one. A row the page does not
+    // list asks nothing.
+    SidebarArchiveAsked(session:) ->
+      case sidebar_action(model, session) {
+        Ok(action) -> confirm_first(model, action, session)
+        Error(Nil) -> #(model, effect.none())
+      }
+
+    // Its confirmation asks for the action the open question is for, and only
+    // when that question is the sidebar's.
+    SidebarArchiveConfirmed(session:) -> sidebar_confirmed(model, session)
+
     ConfirmCancelled ->
       case model.acting {
         actions.Confirming(..) -> #(
@@ -1311,6 +1335,27 @@ fn start_action(
         | None, _, _
         -> #(model, effect.none())
       }
+  }
+}
+
+// The action the sidebar's archive button means for a listed session, or none
+// for one the page does not list.
+fn sidebar_action(
+  model: Model,
+  session: String,
+) -> Result(actions.Action, Nil) {
+  list.find_map(model.groups, fn(group) {
+    list.find(group.entries, fn(entry) { entry.id == session })
+  })
+  |> result.map(archiving.action)
+}
+
+// The sidebar's confirmation: it asks for the action the open question is for,
+// and only when that question is the sidebar's.
+fn sidebar_confirmed(model: Model, session: String) -> #(Model, Effect(Msg)) {
+  case archiving.confirmed(model.acting, session) {
+    Ok(action) -> confirmed(model, action, session)
+    Error(Nil) -> #(model, effect.none())
   }
 }
 
@@ -1731,6 +1776,22 @@ fn manage_offer(model: Model) -> home_table.Manage(Msg) {
   }
 }
 
+// What the sidebar offers for archiving a row: the quiet button and its
+// question on a page whose daemon handed it the same capability as the table's
+// buttons, and nothing otherwise.
+fn archive_offer(model: Model) -> archiving.Archiving(Msg) {
+  case model.start.manage {
+    None -> archiving.Never
+    Some(_) ->
+      archiving.Offered(
+        ask: SidebarArchiveAsked,
+        confirm: SidebarArchiveConfirmed,
+        cancel: ConfirmCancelled,
+        stage: model.acting,
+      )
+  }
+}
+
 // A row's form submit as the message that names the session the server drew
 // into the tree and carries the one text field the form has. Any other field, a
 // repeated one or a missing one refuses the event, as the control forms do.
@@ -1836,6 +1897,7 @@ fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
         model.activity,
         Opening,
         resume_offer(model),
+        archive_offer(model),
       ))
   }
 }
