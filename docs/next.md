@@ -2,8 +2,10 @@
 
 This edition records the CPU and allocation work measured on 2026-10-05,
 against Loom `153fc6b60` and its pinned etui `4d5e466`. It concerns the
-`perf/beam-render-cost` and `perf/ascii-width` branches. The installed daemon
-still runs `153fc6b60`; both running terminals still use `553999027`.
+`perf/beam-render-cost` and `perf/ascii-width` branches. At the original
+measurement cuts, the installed daemon ran `153fc6b60`;
+both running terminals used `553999027`. These installed revisions have not
+been remeasured during the rebase.
 No candidate was installed, no running VM restarted and no live module patched.
 
 The complete evidence, units, profiler limits and reproduction commands are
@@ -21,11 +23,11 @@ local cumulative allocation savings from installed resident-memory claims.
 | Warm Gleam language server | `d219796fc` hashes canonical inventory values, eliminating restarts from key-order rewrites. All 46 manager tests and five additional real downloader/warm-server runs passed. |
 | JSON string codec | `1d0f8d05c` scans four safe bytes together and avoids the encoder's slice wrapper. All 140 Erlang core tests passed; both new boundary tests pass on JavaScript, whose nine baseline failures remain. |
 | Reproduction | Existing terminal driver plus `scripts/web_view_perf.sh` and `scripts/json_perf.sh`. Matched comparisons used Gleam 1.19.0 and OTP 29. |
-| Dependency integration | Both source pins and generated manifests select `7365d47`, now published in [etui #7](https://github.com/Roasbeef/etui/pull/7). Local validation used a command-scoped Git URL rewrite; the public commit is now available from the unchanged GitHub URL. |
-| Full Loom gate | Earlier `d219796fc` exited 0. The new JSON candidate at `c9ff4bba3` remains pending: full runs failed broker cancellation grace and web patch count, while a separate task ran 26 CPU-load workers. The failed and isolated logs are retained; assertions and deadlines are unchanged. |
-| Independent review | One fresh report-only pass for each body of work found no actionable issue. The second pass ran worker admission and ASCII boundary regressions; the LSP pass traced fingerprint/keeper invariants, and the JSON pass checked byte boundaries, generated JavaScript and binary ownership. Fable/Opus were unavailable; fresh inherited-model contexts were used. |
+| Dependency integration | Both source pins and generated manifests select `7365d47`, merged in [etui #7](https://github.com/Roasbeef/etui/pull/7) at `31691c734`. The pinned commit remains an ancestor of public etui main. Earlier validation used a command-scoped Git URL rewrite; rebased validation uses the unchanged GitHub URL. |
+| Full Loom gate | Earlier `d219796fc` exited 0. The rebased source at `989defd37` passed core, session_view, web_view and tui gates. Client has 2,888 passes and one concurrent shareable-session failure, also reproduced in isolation and on untouched main `c92129aba`. The exact-head full gate remains pending; earlier broker/web failures and all logs are retained. |
+| Independent review | One fresh report-only pass for each body of work found no actionable issue. The second pass ran worker admission and ASCII boundary regressions; the LSP pass traced fingerprint/keeper invariants, and the JSON pass checked byte boundaries, generated JavaScript and binary ownership. The rebase compatibility pass found no actionable issue in memo inputs, paragraph joining, generated assets or upstream docs. Fable/Opus were unavailable; fresh inherited-model contexts were used. |
 | Pickglass follow-up | Owner-requested [issue #6](https://github.com/Roasbeef/pickglass/issues/6) proposes bounded CLI allocation counters, coverage/units, export and teardown tests. |
-| Public review | The owner authorized publication on 2026-10-05. Drafts [Loom #873](https://github.com/Roasbeef/loom/pull/873) and [etui #7](https://github.com/Roasbeef/etui/pull/7) are open. Etui's hosted test passed; Loom conflicts with current `main` and has no reported checks yet. Rebase and remeasurement follow the other merges. |
+| Public review | [Etui #7](https://github.com/Roasbeef/etui/pull/7) is merged with its pinned-head hosted test passing. [Loom #873](https://github.com/Roasbeef/loom/pull/873) is ready for review and rebased onto `c92129aba`; exact-head hosted checks and live remeasurement remain pending. Loom has not been merged or installed. |
 
 The repeated local comparison removed 83.3% of reductions and 78.8% of
 allocated words for 100 unchanged operator views. At 2,048 streamed frames,
@@ -47,15 +49,14 @@ binary sharing, and live RSS savings remain separate measurement questions.
 
 ## What to do next
 
-1. Let the other merges land, then rebase Loom #873 and rerun the
-   integrated gate with normal remote dependency resolution. Keep existing
-   deadlines and leave another task's CPU load alone unless authorized.
-   `make check` previously exited 0 at `d219796fc`, with etui `7365d47`;
-   the JSON change has 140 passing core tests and a clean independent
-   review. The current integrated gate remains pending.
-2. Review the two draft PRs in dependency order, etui before Loom. The owner
-   has authorized their publication, superseding the earlier approval block.
-   No merge or deployment is authorized by that instruction.
+1. Complete the exact-head repository and hosted gates for rebased Loom #873.
+   The rebase preserves all functional optimization patches and regenerates
+   the stylesheet from combined sources. Keep existing deadlines and leave
+   another task's CPU load alone unless authorized. The older full gate at
+   `d219796fc` does not validate the rebased source.
+2. Review Loom #873 with the merged etui dependency. The owner authorized
+   merging etui #7 and removing Loom from draft; Loom merge and deployment
+   remain separate decisions.
 3. Before installing, prepare a concrete source shipment and follow
    [updating](updating.md). Coordinate a graceful shared-daemon restart;
    terminals retain their old client tree until reopened. Do not force-kill
@@ -140,6 +141,17 @@ report records these distinct outcomes and the concurrent separate load task:
 aggregate CPU. Do not infer a proven cause from that coincidence or replace
 the current gate result with the older green log. Doc-check passed for this
 body with zero errors and 188 historical warnings.
+
+The rebased source at `989defd37` passed 140 core, 325 session_view,
+682 web_view and 1,233 terminal tests. Client had 2,888 passes and one
+concurrent shareable-session failure. The exact case failed unchanged in
+isolation and on untouched main `c92129aba`, both at the second-task receive
+wait. This establishes a failing main control, not its cause or a green
+client gate. Binaries, asset digests, lint and doc-check passed separately;
+lint has zero errors and 2,119 warnings, doc-check zero errors and 188
+warnings. The rebase compatibility review found no actionable issue.
+`rebase-*.log` files in the evidence directory retain these outcomes. The
+full rebased gate, hosted CI and Linux signoff remain pending.
 
 `make check` is the full local gate; capture its own exit status. It does not
 include `make doc-check`. Run format, lint and doc checks before publication.
