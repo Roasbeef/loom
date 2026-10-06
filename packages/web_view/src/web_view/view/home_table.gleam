@@ -67,7 +67,8 @@
 //// `view` → `landing` → `group` → `row` → `offered` → `acts` → `confirming`
 ////
 //// 1. `view` is the memoized section: the heading, the page's note, a
-////    `group` for each workspace, and `withheld_line` after them.
+////    `group` for each workspace, the section for folders that hold no session
+////    (`view/folders`), and `withheld_line` after them.
 //// 2. `landing` decides where the page's last note is drawn, so it never moves
 ////    the list.
 //// 3. `group` draws a workspace's heading and its rows, and `row` draws one
@@ -96,6 +97,7 @@ import web_view/sessions.{
 }
 import web_view/view/archiving
 import web_view/view/create.{type Create}
+import web_view/view/folders.{type Folders} as folders_view
 import web_view/view/heading
 import web_view/view/notice.{type Notice}
 import web_view/view/rename as rename_view
@@ -169,6 +171,10 @@ pub type Place {
   /// refused creation).
   Workspace(path: String)
 
+  /// In the section for folders that hold no session (`view/folders`), for what
+  /// was done there: a refused creation in a typed or a remembered folder.
+  Elsewhere
+
   /// Under the page's heading, for what belongs to no row.
   Page
 }
@@ -185,6 +191,7 @@ pub type Note {
 type Landing {
   InRow(session: String, notice: Notice)
   InHeading(workspace: String, notice: Notice)
+  InFolders(notice: Notice)
   Under(notice: Notice)
 }
 
@@ -205,12 +212,14 @@ type Landing {
 /// last said (`Note`); both are part of the key. `offer` is what the page offers for
 /// making a session (`view/create`): under each workspace's heading a button, and
 /// below it the form when that workspace's is open. Its state is in the key, so a
-/// group changes when its form opens, closes or starts waiting.
+/// group changes when its form opens, closes or starts waiting. `folders` is the
+/// section after the lists for folders that hold no session (`view/folders`); its
+/// list and the page's last note are part of the key.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, None, None)
+/// // home_table.view(home.groups(model), dict.new(), now, Opening, resume.Never, Never, Unmanaged, create.Never, folders.Hidden, None, None)
 /// ```
 pub fn view(
   groups: List(Group),
@@ -221,6 +230,7 @@ pub fn view(
   rename: Rename(message),
   manage: Manage(message),
   offer: Create(message),
+  folders: Folders(message),
   opening: Option(String),
   note: Option(Note),
 ) -> Element(message) {
@@ -233,6 +243,7 @@ pub fn view(
     element.ref(stage(manage)),
     element.ref(explains(manage)),
     element.ref(create.state(offer)),
+    element.ref(folders_view.listed(folders)),
     element.ref(opening),
     element.ref(note),
   ])
@@ -241,7 +252,8 @@ pub fn view(
     html.h2([attribute.class("home-heading")], [html.text("Sessions")]),
     case landing {
       Some(Under(notice:)) -> notice.line(notice)
-      Some(InRow(..)) | Some(InHeading(..)) | None -> element.none()
+      Some(InRow(..)) | Some(InHeading(..)) | Some(InFolders(..)) | None ->
+        element.none()
     },
     ..list.append(
       case groups {
@@ -267,7 +279,13 @@ pub fn view(
             landing,
           ))
       },
-      withheld_line(manage),
+      [
+        folders_view.view(folders, offer, case landing {
+          Some(InFolders(notice:)) -> Some(notice)
+          Some(InRow(..)) | Some(InHeading(..)) | Some(Under(..)) | None -> None
+        }),
+        ..withheld_line(manage)
+      ],
     )
   ])
 }
@@ -322,8 +340,11 @@ fn group(
       case landing {
         Some(InHeading(workspace:, notice:)) if workspace == group.workspace ->
           notice.line(notice)
-        Some(InHeading(..)) | Some(InRow(..)) | Some(Under(..)) | None ->
-          element.none()
+        Some(InHeading(..))
+        | Some(InRow(..))
+        | Some(InFolders(..))
+        | Some(Under(..))
+        | None -> element.none()
       },
       create.button(offer, group.workspace),
     ]),
@@ -461,7 +482,11 @@ fn row(
   let standing = standing(entry, activity, kind, opening)
   let note = case landing {
     Some(InRow(session:, notice:)) if session == entry.id -> Some(notice)
-    Some(InRow(..)) | Some(InHeading(..)) | Some(Under(..)) | None -> None
+    Some(InRow(..))
+    | Some(InHeading(..))
+    | Some(InFolders(..))
+    | Some(Under(..))
+    | None -> None
   }
   let body = [
     html.span([attribute.class("home-glyph"), attribute.aria_hidden(True)], [
@@ -904,12 +929,14 @@ fn inline(notice: Notice) -> Element(message) {
 // Where the page's note lands, given what it lists now. A note beside a session
 // goes in that session's row, or in its workspace's heading when the row is gone
 // (an archived or a deleted session), naming the session there. A note beside a
-// workspace goes in its heading. Anything else, or a workspace the page no
-// longer draws, goes under the page's heading.
+// workspace goes in its heading. A note about a folder that holds no session
+// goes in that section's head. Anything else, or a workspace the page no longer
+// draws, goes under the page's heading.
 fn landing(groups: List(Group), note: Option(Note)) -> Option(Landing) {
   case note {
     None -> None
     Some(Note(place: Page, notice:)) -> Some(Under(notice))
+    Some(Note(place: Elsewhere, notice:)) -> Some(InFolders(notice))
     Some(Note(place: Workspace(path:), notice:)) ->
       Some(in_heading(groups, path, notice))
     Some(Note(place: Session(id:, workspace:, label:), notice:)) -> {
