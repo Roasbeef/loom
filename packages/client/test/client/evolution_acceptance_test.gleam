@@ -594,6 +594,7 @@ pub fn settings(root: String, url: String) -> serve.Settings {
       clock.from_function(native.system_time_ms),
     )
   serve.Settings(
+    first_prompt: None,
     peer_directory: None,
     codemode_sockets: Some(root <> "/run"),
     secrets: secret.from_list([]),

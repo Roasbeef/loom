@@ -754,6 +754,7 @@ fn private_program(
     ),
     refusal: codemode_tool.NothingRefused,
     calls: execution.calls,
+    edits: execution.edits,
   ))
 }
 
