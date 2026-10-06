@@ -57,6 +57,10 @@ pub type Window {
   /// One historical descriptor page between exclusive sequence bounds.
   History(after_seq: Int, before_seq: Int)
 
+  /// One strand's records: the ancestry of an entry, down its parent links, as
+  /// one bounded page of descriptors (protocol-change/072).
+  Lineage(from: ids.EntryId)
+
   /// Exact current escalation cells, without changing the adopted history cut.
   Escalations(ids: List(String))
 
@@ -99,6 +103,12 @@ pub type Step {
   /// cannot fund is unrepresentable: `step` answers `Exhausted` instead of
   /// handing back a request with a budget nobody can wait out.
   ReadPage(after_seq: Int, before_seq: Int, within_ms: Int)
+
+  /// Walk at most one hundred entries of an ancestry, down from `from` and
+  /// below the exclusive high-water `before_seq`.
+  ///
+  /// `within_ms` is funded exactly as `ReadPage`'s is.
+  ReadLineage(from: ids.EntryId, before_seq: Int, within_ms: Int)
 
   /// Fetch one storage-sized fragment, never a complete large record.
   ///
@@ -164,6 +174,7 @@ pub fn start(
       [],
       Some(#(after, int.min(before, cut.next_seq))),
     )
+    Lineage(_) -> #([], Some(#(0, cut.next_seq)))
   }
   Ok(Transfer(
     id,
@@ -274,7 +285,13 @@ fn entry_piece(transfer: Transfer, budget: Int) -> Step {
     [] ->
       case transfer.range {
         Some(#(after, before)) ->
-          funded(budget, fn(within) { ReadPage(after, before, within) })
+          funded(budget, fn(within) {
+            case transfer.window {
+              Lineage(from) -> ReadLineage(from, before, within)
+              Recent | Reconcile(_) | History(..) | Escalations(_) | Decided ->
+                ReadPage(after, before, within)
+            }
+          })
         None ->
           End(
             protocol.SnapshotEnd(
@@ -412,6 +429,47 @@ pub fn accept_page(
     _, _ -> None
   }
   Ok(Transfer(..transfer, entries: page, range:, more_after:))
+}
+
+/// Accepts the one descriptor page a lineage read produced.
+///
+/// The page is the ancestry of the entry the transfer was asked about, oldest
+/// first, so it must ascend strictly, stay below the high-water the transfer
+/// was captured at, and hold no more than a page. The transfer is not asked for
+/// a second page: the client pages by naming the parent of the oldest record it
+/// holds in a request of its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transfer.accept_lineage(current, descriptors)
+/// ```
+pub fn accept_lineage(
+  transfer: Transfer,
+  page: List(snapshot.Descriptor),
+) -> Result(Transfer, String) {
+  use #(after, before) <- result.try(option.to_result(
+    transfer.range,
+    "unexpected descriptor page",
+  ))
+  use <- bool.guard(
+    list.drop(page, snapshot.page_limit) != [],
+    Error("oversized descriptor page"),
+  )
+  use _ <- result.try(
+    list.try_fold(page, after, fn(previous, descriptor) {
+      case
+        descriptor.seq > previous
+        && descriptor.seq < before
+        && descriptor.byte_length > 0
+        && descriptor.byte_length <= snapshot.record_bytes_limit
+      {
+        True -> Ok(descriptor.seq)
+        False -> Error("invalid entry descriptor")
+      }
+    }),
+  )
+  Ok(Transfer(..transfer, entries: page, range: None, more_after: None))
 }
 
 /// Rejects premature EOF and any reader fragment outside the advertised record.

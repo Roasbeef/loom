@@ -2070,6 +2070,21 @@ fn network_command(
       begin_transfer(state, connection, id, transfer.Reconcile(from_seq))
     protocol.History(after, before) ->
       begin_transfer(state, connection, id, transfer.History(after, before))
+    protocol.HistoryLineage(from) ->
+      case ids.parse_entry_id(from) {
+        Ok(entry) ->
+          begin_transfer(state, connection, id, transfer.Lineage(entry))
+        Error(_) -> {
+          reply_error(
+            state,
+            connection,
+            id,
+            protocol.code_bad_request,
+            "lineage must start at an entry identity",
+          )
+          state
+        }
+      }
     protocol.EscalationsGet(ids) ->
       begin_transfer(state, connection, id, transfer.Escalations(ids))
     protocol.EscalationsDecided ->
@@ -2207,6 +2222,7 @@ fn begin_transfer(
         [],
         0,
       )
+    transfer.Lineage(_) -> snapshot.Plan([], [], 0)
     _ -> snapshot_plan(recent)
   }
 
@@ -2243,6 +2259,7 @@ fn captured_transfer(
     transfer.Recent
     | transfer.Reconcile(_)
     | transfer.History(..)
+    | transfer.Lineage(_)
     | transfer.Escalations(_) -> cut
   }
   let metadata =
@@ -2342,6 +2359,7 @@ fn captured_transfer(
     transfer.Recent -> "recent"
     transfer.Reconcile(_) -> "catch_up"
     transfer.History(..) -> "history"
+    transfer.Lineage(_) -> "lineage"
     transfer.Escalations(_) -> "escalations"
     transfer.Decided -> "decided"
   }
@@ -2472,6 +2490,20 @@ fn drive_transfer(
         transfer.accept_page,
       )
     }
+    transfer.ReadLineage(from, before, within) if reads > 0 -> {
+      let outcome =
+        state.runtime.session.snapshot_reader.lineage(from, before, 100, within)
+      continue_read(
+        state,
+        connection,
+        id,
+        current,
+        reads,
+        until,
+        outcome,
+        transfer.accept_lineage,
+      )
+    }
     transfer.ReadFragment(descriptor, offset, within) if reads > 0 -> {
       let outcome =
         state.runtime.session.snapshot_reader.fragment(
@@ -2490,8 +2522,9 @@ fn drive_transfer(
         transfer.accept_fragment,
       )
     }
-    transfer.ReadPage(..) | transfer.ReadFragment(..) ->
-      stale_transfer(state, connection, id)
+    transfer.ReadPage(..)
+    | transfer.ReadLineage(..)
+    | transfer.ReadFragment(..) -> stale_transfer(state, connection, id)
   }
 }
 
@@ -2869,6 +2902,7 @@ fn read_only(command: Command) {
     | protocol.CatchUp(..)
     | protocol.SnapshotNext(..)
     | protocol.History(..)
+    | protocol.HistoryLineage(..)
     | protocol.EscalationsGet(..)
     | protocol.EscalationsDecided
     | protocol.ListModels
@@ -4592,6 +4626,7 @@ fn run_command(
     }
     protocol.SnapshotNext(..), Subscribed
     | protocol.History(..), Subscribed
+    | protocol.HistoryLineage(..), Subscribed
     | protocol.EscalationsGet(..), Subscribed
     | protocol.EscalationsDecided, Subscribed
     -> {

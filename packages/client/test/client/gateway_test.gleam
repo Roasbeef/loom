@@ -6329,3 +6329,113 @@ pub fn a_held_skill_invocation_is_reported_as_typed_test() {
   assert process.receive(reported, within: 5000) == Ok("/sample the queue")
   let assert Ok(Nil) = simplifile.delete(root)
 }
+
+// Writes one message that follows `parent` on its strand and answers its
+// identity, so two strands can take turns in the sequence.
+fn write_after(
+  harness: Harness,
+  seed: Int,
+  parent: Option(ids.EntryId),
+  text: String,
+) -> ids.EntryId {
+  let #(id, _) =
+    ids.mint_entry(ids.generator(clock.fixed(1_700_000_000_001), seed))
+  let row =
+    core_entry.MessageEntry(
+      id:,
+      parent:,
+      seq: 0,
+      ts: 0,
+      message: message.UserMessage(
+        content: [message.UserText(text:, text_signature: None)],
+        timestamp: 0,
+        origin: None,
+      ),
+      terminate: False,
+    )
+  let assert Ok(_) =
+    writer.commit(harness.runtime.tree.writer, tx.Tx([tx.InsertEntry(row)], []))
+    as "the fixture entry is written"
+  id
+}
+
+// The identities of the records one lineage transfer carries, in the order it
+// sends them, once the transfer has been read to its end.
+fn lineage_records(
+  socket: gateway.ConnectionHandle,
+  id: Int,
+  from: ids.EntryId,
+) -> List(String) {
+  let assert protocol.SnapshotBegin(header) =
+    queued_request(
+      socket,
+      id,
+      protocol.HistoryLineage(ids.entry_id_to_string(from)),
+    )
+    as "a lineage read opens a transfer for an observer"
+  assert queue_field(header, "window") == json.String("lineage")
+  let assert json.String(snapshot_id) = queue_field(header, "snapshot_id")
+    as "the transfer names itself"
+  lineage_drained(socket, snapshot_id, 0, id * 1000, [])
+}
+
+fn lineage_drained(
+  socket: gateway.ConnectionHandle,
+  snapshot_id: String,
+  index: Int,
+  request: Int,
+  found: List(String),
+) -> List(String) {
+  assert index < 200 as "the bounded fixture transfer must terminate"
+  case
+    queued_request(socket, request, protocol.SnapshotNext(snapshot_id, index))
+  {
+    protocol.SnapshotEnd(_) -> list.reverse(found)
+    protocol.SnapshotChunk(body) -> {
+      let found = case
+        queue_field(body, "kind"),
+        queue_field(body, "offset"),
+        queue_field(body, "record_id")
+      {
+        json.String("entry"), json.Int(0), json.String(record) -> [
+          record,
+          ..found
+        ]
+        _, _, _ -> found
+      }
+      lineage_drained(socket, snapshot_id, index + 1, request + 1, found)
+    }
+    _ -> panic as "every credited continuation yields a fragment or its end"
+  }
+}
+
+/// A strand's lineage is read with nothing another strand wrote between its
+/// records, an observer may read it, and a request that names no entry is a
+/// bad request rather than a read.
+pub fn a_lineage_read_answers_an_observer_with_one_strands_records_test() {
+  let harness = network_harness()
+  let socket =
+    queued_socket(
+      harness,
+      operator("bob", "Bob"),
+      access.Participant(access.Observer),
+    )
+  let a1 = write_after(harness, 1, None, "a1")
+  let b1 = write_after(harness, 2, None, "b1")
+  let a2 = write_after(harness, 3, Some(a1), "a2")
+  let b2 = write_after(harness, 4, Some(b1), "b2")
+  let a3 = write_after(harness, 5, Some(a2), "a3")
+  let named = list.map([a1, a2, a3], ids.entry_id_to_string)
+  assert lineage_records(socket, 10, a3) == named
+  assert lineage_records(socket, 11, b2)
+    == list.map([b1, b2], ids.entry_id_to_string)
+
+  // The page begins at the entry it is given, so a client pages by naming the
+  // parent of the oldest record it holds, and an entry in the middle of a chain
+  // reads only what lies below it.
+  assert lineage_records(socket, 12, a2)
+    == list.map([a1, a2], ids.entry_id_to_string)
+  let assert protocol.ErrorEvent(code: "bad_request", ..) =
+    queued_request(socket, 13, protocol.HistoryLineage("not an entry"))
+    as "an identity that parses to no entry is refused"
+}

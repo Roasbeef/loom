@@ -138,6 +138,13 @@ pub type Command {
   /// Requests one ascending bounded history page, not the whole parent tree.
   History(after_seq: Int, before_seq: Int)
 
+  /// Requests one bounded page of a strand's ancestry: the records on the path
+  /// from `from`, an entry's identity, down its parent links, newest first by
+  /// the page's own order and at most one hundred, and nothing another strand
+  /// wrote between them. A client names a strand by its leaf and pages by the
+  /// parent of the oldest record it holds (protocol-change/072).
+  HistoryLineage(from: String)
+
   /// Reads up to eight exact escalation cells, including resolution authors.
   EscalationsGet(ids: List(String))
 
@@ -811,6 +818,10 @@ fn command_body(command: Command) -> #(String, JsonValue) {
         #("before_seq", json.Int(before_seq)),
       ]),
     )
+    HistoryLineage(from:) -> #(
+      "history_lineage",
+      json.Object([#("from", json.String(from))]),
+    )
     Subscribe(session:, from_seq:) -> #(
       "subscribe",
       object_of([
@@ -1126,6 +1137,11 @@ fn decode_command_body(
       use after_seq <- result.try(nonnegative_field(fields, "after_seq"))
       use before_seq <- result.try(nonnegative_field(fields, "before_seq"))
       Ok(History(after_seq, before_seq))
+    }
+    "history_lineage" -> {
+      use fields <- result.try(body_fields(body))
+      use from <- result.try(required_string(fields, "from"))
+      Ok(HistoryLineage(from:))
     }
     "subscribe" -> {
       use fields <- result.try(body_fields(body))
@@ -2010,7 +2026,7 @@ fn decode_transfer_begin(body) {
   )
   case
     list.contains(
-      ["recent", "catch_up", "history", "escalations", "decided"],
+      ["recent", "catch_up", "history", "lineage", "escalations", "decided"],
       window,
     ),
     list.contains(["owner", "operator", "observer"], role),
