@@ -506,3 +506,33 @@ pub fn a_failed_lane_retires_the_read_test() {
     ])
   assert component.top(page) != lane.Loading
 }
+
+// The line above a page that stopped loading says why, in words that are true
+// for as long as they are shown. A page the running turn crowded is not at a
+// permanent limit, and says older turns come back when the turn finishes; a
+// page at its limit says what the limit is.
+pub fn a_crowded_page_does_not_claim_a_permanent_limit_test() {
+  let drawn = fn(top) {
+    lane.view(
+      [],
+      [],
+      top,
+      Nil,
+      lane.NoReplies,
+      lane.no_marks(),
+      lane.NoFolds,
+      "",
+    )
+    |> element.to_string
+  }
+  let crowded = drawn(lane.Crowded)
+  assert string.contains(
+    crowded,
+    "Older turns come back when the current turn finishes.",
+  )
+  assert !string.contains(crowded, "300 rows")
+  assert string.contains(
+    drawn(lane.Full(300)),
+    "This page holds at most 300 rows, so it loads no older ones.",
+  )
+}

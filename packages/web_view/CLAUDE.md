@@ -477,8 +477,9 @@ page keys and nonces, and the relay into the session's gateway.
   its fold open (below). `component.Paging` is `Tail | Paged | Crowded | Full`; `Full`
   means a paged page had to cut a whole turn, so it loads no more, and a page
   that fits again after a fold closed is `Paged` again. `Crowded` is the same
-  stop while the running turn's rows (drawn open) are what cut the page: it is
-  `Paged` again when the turn settles into one divider and the cut is gone, and
+  stop while the running turn's rows (drawn open) are what cut the page, and the
+  lane says older turns come back when the turn finishes (`lane.Crowded`, where
+  `Full` says the row limit): it is `Paged` again when the turn settles into one divider and the cut is gone, and
   `Full` if it is still cut. A cut by the bytes of the closed turns, which only
   grow, is `Full` for good (`component.paged`).
 - **Lazy folds** (protocol-change/070, `session_view/fold_budget`) and

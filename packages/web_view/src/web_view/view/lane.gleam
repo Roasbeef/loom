@@ -260,6 +260,10 @@ pub type Top {
   /// Older rows exist, but the page already holds `rows`, its limit, and
   /// loads no more.
   Full(rows: Int)
+
+  /// Older rows exist, but the turn that is running fills the page, so they are
+  /// not loaded now. They come back when the turn finishes.
+  Crowded
 }
 
 /// The suffix of the attribute that marks a divider (`data-loom-fold`), so
@@ -447,6 +451,10 @@ fn boundary(top: Top, load: message) -> Element(message) {
             <> int.to_string(rows)
             <> " rows, so it loads no older ones.",
           ),
+        ])
+      Crowded ->
+        html.p([attribute.class("lane-boundary")], [
+          html.text("Older turns come back when the current turn finishes."),
         ])
     },
   ])

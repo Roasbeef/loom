@@ -4849,6 +4849,7 @@ fn older_at(
     lane.Beginning, _, _
     | lane.Loading, _, _
     | lane.Full(_), _, _
+    | lane.Crowded, _, _
     | lane.Earlier, None, _
     | lane.Earlier, Some(_), Connecting
     | lane.Earlier, Some(_), Ended(_)
@@ -4983,7 +4984,8 @@ pub fn top(model: Model(socket)) -> lane.Top {
   case reading_older(model), model.view.earlier, model.view.paging {
     True, _, _ -> lane.Loading
     False, Reached, _ -> lane.Beginning
-    False, Unheld, Full | False, Unheld, Crowded -> lane.Full(held_rows)
+    False, Unheld, Full -> lane.Full(held_rows)
+    False, Unheld, Crowded -> lane.Crowded
     False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
   }
 }
