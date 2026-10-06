@@ -61,6 +61,7 @@ import client/blocksummarybook
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
+import client/config_reload
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
@@ -340,6 +341,8 @@ pub type DomainPaths {
 /// facts (`client/wiring`'s config doc).
 pub type Settings {
   Settings(
+    /// Explicit trusted configuration path and the bytes used for this boot.
+    configuration_source: Option(#(String, String)),
     /// The SQLite session file, created if absent.
     session_path: String,
     /// The listen interface (`mist` accepts `"localhost"` or an IP).
@@ -537,6 +540,8 @@ pub type Instance {
     /// teardown can stop it after the runtime drains; an owned session
     /// retires it through custody instead, and stopping it twice is a no-op.
     tools: tool_holder.Holder(wiring.Config),
+    /// Model revisions and the trusted file watcher, drained after the runtime.
+    models: config_reload.Holder(wiring.ModelRevision),
     pool: Pool,
     /// The executor service. It sits between the broker and the pool, so
     /// teardown closes it and it closes the pool, and its death is as fatal
@@ -1411,6 +1416,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
   let helper_pool_size =
     env_int_or("LOOM_HELPER_POOL", exec.default_pool_size())
     |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
+  use source <- result.try(configuration_source(flags.config))
   use
     #(
       catalogue,
@@ -1425,7 +1431,12 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       workspace_config,
       advisor_config,
     )
-  <- result.try(load_config(flags.config))
+  <- result.try(case source {
+    None -> load_config(None)
+    Some(#(path, text)) ->
+      parse_config(text)
+      |> result.map_error(fn(reason) { path <> ": " <> reason })
+  })
 
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
@@ -1471,6 +1482,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     )
 
   Ok(Settings(
+    configuration_source: source,
     session_path:,
     bind_host:,
     bind_port:,
@@ -1746,61 +1758,158 @@ fn load_config(
       ))
     Some(path) -> {
       use text <- result.try(
-        simplifile.read(path)
-        |> result.map_error(fn(error) {
-          "the config file "
-          <> path
-          <> " is unreadable: "
-          <> string.inspect(error)
-        }),
+        config_reload.read(path)
+        |> result.replace_error(
+          "the config file " <> path <> " is unreadable or exceeds 1 MiB",
+        ),
       )
-      let named = fn(reason) { path <> ": " <> reason }
-      use catalogue <- result.try(
-        catalog.parse(text) |> result.map_error(named),
-      )
-      use rule_list <- result.try(rules.parse(text) |> result.map_error(named))
-      use schedule_list <- result.try(
-        schedule.parse(text) |> result.map_error(named),
-      )
-      use schedule_policy <- result.try(
-        schedule.parse_policy(text) |> result.map_error(named),
-      )
-      use jobs_policy <- result.try(
-        jobs.parse_policy(text) |> result.map_error(named),
-      )
-      use retry_policy <- result.try(
-        retryconf.parse_policy(text) |> result.map_error(named),
-      )
-      use memory <- result.try(
-        distillpass.parse(text) |> result.map_error(named),
-      )
-      use tools <- result.try(
-        catalog.parse_tools(text) |> result.map_error(named),
-      )
-      use secret_entries <- result.try(
-        secrets.parse(text) |> result.map_error(named),
-      )
-      use workspace_config <- result.try(
-        catalog.parse_workspace(text) |> result.map_error(named),
-      )
-      use advisor_config <- result.try(
-        catalog.parse_advisor(text) |> result.map_error(named),
-      )
-      Ok(#(
-        catalogue,
-        rule_list,
-        schedule_list,
-        schedule_policy,
-        jobs_policy,
-        retry_policy,
-        memory,
-        tools,
-        secret_entries,
-        workspace_config,
-        advisor_config,
-      ))
+      parse_config(text)
+      |> result.map_error(fn(reason) { path <> ": " <> reason })
     }
   }
+}
+
+fn configuration_source(
+  path: Option(String),
+) -> Result(Option(#(String, String)), String) {
+  case path {
+    None -> Ok(None)
+    Some(path) -> {
+      use here <- result.try(
+        simplifile.current_directory()
+        |> result.replace_error(
+          "the configuration working directory is unreadable",
+        ),
+      )
+      use path <- result.try(
+        absolute_path(path, against: here)
+        |> result.replace_error(
+          "the explicit configuration path cannot be resolved",
+        ),
+      )
+      use selected <- result.try(
+        config_reload.selected_source(path)
+        |> result.replace_error(
+          path <> ": the explicit configuration is unreadable or exceeds 1 MiB",
+        ),
+      )
+      Ok(Some(selected))
+    }
+  }
+}
+
+fn parse_config(
+  text: String,
+) -> Result(
+  #(
+    catalog.Catalog,
+    List(rules.Rule),
+    List(schedule.Schedule),
+    schedule.Policy,
+    jobs.JobsPolicy,
+    operation.NormalizedRetryPolicy,
+    distillpass.Options,
+    catalog.ToolsConfig,
+    List(secrets.Entry),
+    catalog.WorkspaceConfig,
+    catalog.AdvisorConfig,
+  ),
+  String,
+) {
+  use catalogue <- result.try(catalog.parse(text))
+  use rule_list <- result.try(rules.parse(text))
+  use schedule_list <- result.try(schedule.parse(text))
+  use schedule_policy <- result.try(schedule.parse_policy(text))
+  use jobs_policy <- result.try(jobs.parse_policy(text))
+  use retry_policy <- result.try(retryconf.parse_policy(text))
+  use memory <- result.try(distillpass.parse(text))
+  use tools <- result.try(catalog.parse_tools(text))
+  use secret_entries <- result.try(secrets.parse(text))
+  use workspace_config <- result.try(catalog.parse_workspace(text))
+  use advisor_config <- result.try(catalog.parse_advisor(text))
+  Ok(#(
+    catalogue,
+    rule_list,
+    schedule_list,
+    schedule_policy,
+    jobs_policy,
+    retry_policy,
+    memory,
+    tools,
+    secret_entries,
+    workspace_config,
+    advisor_config,
+  ))
+}
+
+// Boot-owned services and resolved credentials do not move during a reload.
+// Compare section values rather than text, so comments and ordering are quiet.
+fn model_reload_source(
+  source: Option(#(String, String)),
+  config: wiring.Config,
+  secret_store: secret.SecretStore,
+) -> Option(config_reload.Source(wiring.ModelRevision)) {
+  option.map(source, fn(source) {
+    let #(path, initial) = source
+    config_reload.Source(path:, initial:, load: fn(text, previous) {
+      use parsed <- result.try(parse_config(text) |> result.replace_error(Nil))
+      let candidate = parsed.0
+      use boot <- result.try(tom.parse(initial) |> result.replace_error(Nil))
+      use document <- result.try(tom.parse(text) |> result.replace_error(Nil))
+      let restart =
+        dict.keys(boot)
+        |> list.append(dict.keys(document))
+        |> list.unique
+        |> list.filter(fn(key) {
+          key != "models"
+          && key != "roles"
+          && dict.get(boot, key) != dict.get(document, key)
+        })
+        |> list.sort(by: string.compare)
+      let restart = case
+        dict.get(boot, "models") != dict.get(document, "models")
+        || dict.get(boot, "roles") != dict.get(document, "roles")
+      {
+        True -> ["background-models", ..restart]
+        False -> restart
+      }
+      let old = wiring.revision_catalogue(previous)
+
+      // Renames, removals and identity changes cannot silently rewrite a
+      // strand's durable selection. They require restart; additions are safe.
+      let identities_preserved =
+        list.all(old.models, fn(entry) {
+          case catalog.find(candidate, entry.name) {
+            Ok(next) -> next.model_id == entry.model_id
+            Error(Nil) -> False
+          }
+        })
+      case identities_preserved {
+        False -> Ok(#(previous, ["models", ..restart]))
+        True -> {
+          let effective =
+            catalog.Catalog(
+              ..candidate,
+              mcp_servers: old.mcp_servers,
+              lsp_servers: old.lsp_servers,
+            )
+          let gateway =
+            catalog.gateway(
+              effective,
+              transport: http.httpc_transport(),
+              secrets: secret_store,
+              clock: config.clock,
+            )
+          let revised =
+            wiring.Config(..config, gateway:, facts: catalogue_facts(effective))
+          Ok(#(
+            wiring.model_revision_after(revised, effective, previous),
+            restart,
+          ))
+        }
+      }
+    })
+  })
 }
 
 // Splits `host:port` on the *last* colon, because IPv6 hosts carry
@@ -2139,6 +2248,7 @@ fn fatal_children(booted: Booted) -> List(#(String, Pid)) {
 @internal
 pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
   [
+    #("the configuration watcher", config_reload.pid(instance.models)),
     #("the session tree", instance.runtime.tree.supervisor),
     #("the service supervisor", instance.services),
     #("the session storage", instance.storage_owner),
@@ -3569,10 +3679,23 @@ fn assemble_in(
   // ordering problem. The seam closes over a *name* instead — the same
   // indirection `hub.commit_forwarder` uses four lines above — and the
   // holder is started under that name once the open has returned.
+  let models_name = address.new_address(namespace)
   let agency_name = address.new_address(namespace)
   let agency_config =
     agency.Config(
       ..agency.default_config(agency_name, clock),
+      model_choices: Some(fn() {
+        config_reload.current_at(models_name)
+        |> result.map(fn(revision) {
+          list.map(wiring.revision_catalogue(revision).models, fn(entry) {
+            #(
+              machine_strand.ModelIdentity(entry.name, entry.model_id),
+              wiring.strand_thinking_level(entry.thinking),
+            )
+          })
+        })
+        |> result.unwrap([])
+      }),
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(
@@ -3588,8 +3711,10 @@ fn assemble_in(
       // at boot, so the answer is a function of durable configuration.
       subagent_model: fn() {
         use resolved <- result.map(
-          provider_gateway.resolve(settings.gateway, model.Subagent)
-          |> result.replace_error(Nil),
+          config_reload.current_at(models_name)
+          |> result.try(fn(revision) {
+            wiring.revision_role(revision, model.Subagent)
+          }),
         )
         #(
           machine_strand.ModelIdentity(
@@ -3856,15 +3981,23 @@ fn assemble_in(
   // strand's window the way the threshold will — the strand's own
   // catalogue entry, else the configured fallback — so what the model is
   // told and what it is compacted on are one number.
-  let facts = catalogue_facts(settings.catalog)
   let context_seam =
     checkpoint.remaining_seam(opened, settings.compaction, fn(strand) {
-      wiring.strand_window(
-        opened,
-        facts,
-        strand,
-        fallback: settings.context_window,
-      )
+      let revision = case session.strand_state(opened, strand) {
+        Ok(Some(session.Cell(
+          value: machine_strand.StrandState(
+            current_operation: Some(operation),
+            ..,
+          ),
+          ..,
+        ))) -> config_reload.capture_at(models_name, operation)
+        Ok(Some(_)) | Ok(None) | Error(_) ->
+          config_reload.current_at(models_name)
+      }
+      case revision {
+        Ok(revision) -> wiring.revision_window(revision, opened, strand)
+        Error(Nil) -> settings.context_window
+      }
     })
 
   // The advisor, on the same two-name pattern as the scratch store and
@@ -4123,12 +4256,42 @@ fn assemble_in(
   // The holder starts linked to this builder and is unlinked once custody
   // has acknowledged it, the same hand-off the broker and executor use.
   use holder <- result.try(tool_holder.start(wiring_config))
+  use models <- result.try(config_reload.start(
+    models_name,
+    wiring.model_revision(wiring_config, settings.catalog),
+    model_reload_source(
+      settings.configuration_source,
+      wiring_config,
+      settings.secrets,
+    ),
+    fn(operation) {
+      case session.op_state(opened, operation) {
+        Ok(None) -> True
+        Ok(Some(_)) | Error(_) -> False
+      }
+    },
+    logger,
+  ))
+
+  // Both holders share one custody part. The watcher retires after the
+  // runtime and before its tool holder; its failure is a fatal root below.
   use Nil <- result.try(
-    retain(owner, custody.ToolConfig, fn() { tool_holder.stop(holder) }, fn() {
-      process.unlink(tool_holder.pid(holder))
-    }),
+    retain(
+      owner,
+      custody.ToolConfig,
+      fn() {
+        use Nil <- result.try(config_reload.stop(models))
+        tool_holder.stop(holder)
+      },
+      fn() {
+        process.unlink(config_reload.pid(models))
+        process.unlink(tool_holder.pid(holder))
+      },
+    ),
   )
-  let built = wiring.build_effects_held(wiring_config, holder)
+  let built =
+    wiring.build_effects_held(wiring_config, holder)
+    |> wiring.with_model_reloads(models)
   let effects_record =
     effects.Effects(
       ..built,
@@ -4146,11 +4309,12 @@ fn assemble_in(
       provider: hub.tap_provider_with(
         hub.tap_preview_provider(built.provider, to: name),
         to: name,
-        also: summary_tap(
+        also: summary_tap_reloading(
           summary_route,
           settings.catalog,
           summary_name,
           wiring_config,
+          models,
         ),
       ),
       // The only work this adds on the driver process is one
@@ -4329,16 +4493,21 @@ fn assemble_in(
   // Context observations need the immutable tool descriptions, while the hub's
   // execution surface owns the registry. Build the reader before retaining the
   // service start callback so observations carry neither executors nor Settings.
-  let context_window = settings.context_window
   let context_reader =
-    context_view.reader(
+    context_view.reader_with_operation(
       opened,
       assembled.text,
       tool_registry,
-      fn(identity) {
-        facts(identity)
-        |> result.map(fn(pair) { pair.0.context_window })
-        |> result.unwrap(context_window)
+      fn(operation, identity) {
+        let revision = case operation {
+          Some(operation) -> config_reload.capture(models, operation)
+          None -> config_reload.current(models)
+        }
+        revision
+        |> result.map(fn(revision) {
+          wiring.revision_identity_window(revision, identity)
+        })
+        |> result.replace_error("the session configuration is unavailable")
       },
       settings.compaction,
     )
@@ -4350,7 +4519,6 @@ fn assemble_in(
   let async_heartbeat_ms = settings.jobs_policy.heartbeat_ms
   let hub_session_id = settings.session_id
   let hub_workspace = settings.workspace
-  let hub_catalog = settings.catalog
 
   // Directory mutation owns only the restartable writer capability. The hub
   // still receives Runtime for execution, but its admin supplier does not add
@@ -4452,6 +4620,7 @@ fn assemble_in(
     |> with_block_summarizer(
       summary_route,
       settings.catalog,
+      models,
       opened,
       runtime,
       event_bus,
@@ -4507,7 +4676,10 @@ fn assemble_in(
               jobs.live_jobs(jobs_name, strand, waiting: 1000)
               |> result.map_error(string.inspect)
             })
-            |> hub.with_catalog(hub_catalog)
+            |> hub.with_catalog_reader(fn() {
+              config_reload.current(models)
+              |> result.map(wiring.revision_catalogue)
+            })
             |> with_first_prompt(settings.first_prompt)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
@@ -4580,6 +4752,7 @@ fn assemble_in(
     storage_owner:,
     broker: broker_actor,
     tools: holder,
+    models:,
     pool:,
     executor: plane.executor,
     gateway: hub.Gateway(name:),
@@ -4797,6 +4970,7 @@ pub fn close_instance(instance: Instance) -> Nil {
   // Tools run until the runtime has drained, so the holder they fetch from
   // retires only after that. An owned session reaches the same ordering
   // through custody; this is the path which has no custodian.
+  let _models = config_reload.stop(instance.models)
   let _retired = tool_holder.stop(instance.tools)
 
   // The language server stops after the runtime, so no query is still
@@ -5786,7 +5960,8 @@ pub fn session_base(
   memory_digest: String,
   toolchain: Result(codemode_wiring.Toolchain, String),
 ) -> policy.SandboxPolicy {
-  protecting_index(settings.base_policy, index_path)
+  protecting_configuration(settings.base_policy, settings.configuration_source)
+  |> protecting_index(index_path)
   |> protecting_memory(memory_store, memory_digest)
   |> allowing_tool_tmpdir
   |> allowing_imported_hook_env
@@ -5794,6 +5969,16 @@ pub fn session_base(
   |> widening_linked_worktree(settings.workspace)
   |> admitting_codemode(toolchain)
   |> merging_mounts
+}
+
+fn protecting_configuration(
+  base: policy.SandboxPolicy,
+  source: Option(#(String, String)),
+) -> policy.SandboxPolicy {
+  case source {
+    None -> base
+    Some(#(path, _)) -> protecting(base, always: [path], where_maskable: [])
+  }
 }
 
 /// The discovered toolchain as this session may use it: the same value,
@@ -7194,31 +7379,50 @@ fn summary_route(
 // the catalogue's chains: only an identity every one of whose possible
 // answering targets shares the summarize entry's endpoint, which is the
 // confidentiality check for text still streaming.
-fn summary_tap(
+// The summarize actor remains boot-owned. A changed entry may no longer
+// share its actual endpoint, so live text is admitted against the operation's
+// catalogue only when the summarize entry itself still matches that boot.
+fn summary_tap_reloading(
   route: Option(blocksummary.Route),
-  catalogue: catalog.Catalog,
+  boot: catalog.Catalog,
   name: address.Address(blocksummary.Message),
   config: wiring.Config,
+  models: config_reload.Holder(wiring.ModelRevision),
 ) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
-  // This observer is copied with both provider entry points and every runtime
-  // owner. Its classification capability owns only the session, rather than
-  // the executable registry held by the provider and tool dispatch configuration.
-  let image_bearing = wiring.request_image_classifier(config)
-  case route {
-    Some(route) ->
-      blocksummary.observer(
-        name,
-        // The dispatcher's own rule, so the observer and the dispatch agree
-        // about which requests go to the `vision` chain.
-        fn(operation, context) {
-          case image_bearing(operation, context) {
-            True -> blocksummary.ImageTurn
-            False -> blocksummary.TextTurn
+  let classify = wiring.request_image_classifier(config)
+  let turn = fn(op, context) {
+    case classify(op, context) {
+      True -> blocksummary.ImageTurn
+      False -> blocksummary.TextTurn
+    }
+  }
+  fn(spec, generation) {
+    case route, spec {
+      Some(route), effects.GenerationRequest(operation:, ..) -> {
+        case config_reload.capture(models, operation) {
+          Ok(revision) -> {
+            let current = wiring.revision_catalogue(revision)
+            case
+              catalog.find(current, route.provider)
+              == catalog.find(boot, route.provider)
+            {
+              True ->
+                blocksummary.observer(
+                  name,
+                  turn,
+                  blocksummary.live_admission(current, route.provider),
+                )(spec, generation)
+              False -> fn(_event) { Nil }
+            }
           }
-        },
-        blocksummary.live_admission(catalogue, route.provider),
-      )
-    None -> fn(_spec, _generation) { fn(_event) { Nil } }
+          Error(Nil) -> fn(_event) { Nil }
+        }
+      }
+      None, _
+      | Some(_), effects.PollRequest(..)
+      | Some(_), effects.SummaryRequest(..)
+      -> fn(_event) { Nil }
+    }
   }
 }
 
@@ -7251,6 +7455,7 @@ fn with_block_summarizer(
   builder: sup.Builder,
   route: Option(blocksummary.Route),
   catalogue: catalog.Catalog,
+  models: config_reload.Holder(wiring.ModelRevision),
   opened: session.Session,
   runtime: api.Runtime,
   event_bus: bus.Bus,
@@ -7265,11 +7470,21 @@ fn with_block_summarizer(
       // subscription joins under; a label published under any other key
       // reaches no terminal.
       let key = bus.key(of: api.session_id(runtime))
+      let admitted = blocksummary.settled_admission(catalogue, route.provider)
       let wiring =
         blocksummary.Wiring(
           session: opened,
           route:,
-          settled: blocksummary.settled_admission(catalogue, route.provider),
+          settled: fn(provider) {
+            admitted(provider)
+            && {
+              config_reload.current(models)
+              |> result.map(fn(revision) {
+                wiring.revision_summary_source_allowed(revision, provider)
+              })
+              |> result.unwrap(False)
+            }
+          },
           write: fn(cell, value) {
             api.put_reserved_fact(runtime, cell, value)
             |> result.map_error(string.inspect)

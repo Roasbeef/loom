@@ -138,7 +138,7 @@ The rule is enforced in four places, from the tool outward:
    tool is unavailable, `is_error` set, and no `details`. The
    registry does not invent a value for a tool's details contract.
 3. **The wiring always answers `ToolCompleted`.** The function
-   `run_tool` (`client/wiring.gleam:1745`) wraps whatever dispatch
+   `run_tool` (`client/wiring.gleam:1913`) wraps whatever dispatch
    returned as a result message. A failure to read the session's
    directory access or standing permissions also becomes an in-band
    failure outcome.
@@ -174,7 +174,7 @@ list of **contributions**, each a `Contribution(origin, tools)` whose
 
 ### The built-in contribution
 
-`built_in` (`client/contributions.gleam:308`) takes one `Option` per
+`built_in` (`client/contributions.gleam:309`) takes one `Option` per
 plane and returns the host's own contribution in a fixed order:
 
 1. the five core tools, `bash`, `grep`, `fs_read`, `fs_write`, and
@@ -220,7 +220,7 @@ covers how discovery turns an install record into tools.
 
 ### Collisions and deactivation
 
-`registry` (`client/contributions.gleam:451`) refuses a name that two
+`registry` (`client/contributions.gleam:452`) refuses a name that two
 contributions both claim. The refusal is a `Collision` naming both
 origins, and `client/serve` turns it into a boot failure. It is never a
 warning and never "last registration wins". If an extension could
@@ -276,7 +276,7 @@ unregistered name and stores the list sorted and deduplicated.
 Two surfaces reach the model:
 
 - **The tool array.** For each generation request,
-  `tool_specs` (`client/wiring.gleam:1633`) sorts and deduplicates
+  `tool_specs` (`client/wiring.gleam:1851`) sorts and deduplicates
   the captured `active_tool_names`, looks each name up in the
   projected definition table, and returns its
   `ToolSpec(name, description, input_schema)`.
@@ -319,7 +319,7 @@ shows where the tool layer enters it.
    up front.
 2. **Clearance.** The strand driver consumes any approvals attributed to
    exactly this call, then asks the tool surface to clear it.
-   `clear` (`client/wiring.gleam:1700`) refuses a name that is not in
+   `clear` (`client/wiring.gleam:1893`) refuses a name that is not in
    the strand's `active_tool_names` or not registered; the driver stages the
    refusal as an in-band error result. A cleared call carries the
    model's arguments unchanged and the registration's replay policy,

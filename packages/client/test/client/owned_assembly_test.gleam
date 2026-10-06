@@ -27,6 +27,7 @@ import provider/adapter/anthropic
 import provider/model
 import provider/secret
 import runtime/api
+import runtime/effects
 import session/session
 import simplifile
 import storage/sqlite
@@ -66,6 +67,7 @@ pub fn settings() -> serve.Settings {
       lsp_servers: [],
     )
   serve.Settings(
+    configuration_source: None,
     peer_directory: None,
     first_prompt: None,
     codemode_sockets: None,
@@ -231,8 +233,25 @@ pub fn a_resident_projection_excludes_the_session_runtime_test() {
   let #(prepared, instance, watch) = opened(settings, identity(9))
   let resident = serve.resident(instance)
 
-  assert ffi_memory.flat_words(resident) * 8 < ffi_memory.flat_words(instance)
-    as "the projection must be a small fraction of the instance"
+  // Provider configuration now lives behind a holder, which shrinks Instance.
+  // Vary the retained effect graph directly to test the ownership invariant
+  // without requiring Instance to keep an artificially large boot graph.
+  let payload = list.repeat(1, 10_000)
+  let widened =
+    serve.Instance(
+      ..instance,
+      runtime: api.Runtime(
+        ..instance.runtime,
+        effects: effects.Effects(..instance.runtime.effects, entropy: fn() {
+          list.length(payload)
+        }),
+      ),
+    )
+  assert ffi_memory.flat_words(serve.resident(widened))
+    == ffi_memory.flat_words(resident)
+    as "the resident must not retain any added executable effect graph"
+  assert ffi_memory.flat_words(resident) * 8 < ffi_memory.flat_words(widened)
+    as "the projection must be a small fraction of an enlarged instance"
   assert list.length(resident.children)
     == list.length(serve.instance_children(instance))
     as "the projection must name the same fatal roots"

@@ -221,6 +221,7 @@ fn settings(
   let assert Ok(here) = simplifile.current_directory()
     as "the fixture locates its protocol-speaking helper"
   serve.Settings(
+    configuration_source: None,
     peer_directory: None,
     first_prompt: None,
     codemode_sockets: None,

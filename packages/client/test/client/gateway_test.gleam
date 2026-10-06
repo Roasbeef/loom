@@ -6329,3 +6329,80 @@ pub fn a_held_skill_invocation_is_reported_as_typed_test() {
   assert process.receive(reported, within: 5000) == Ok("/sample the queue")
   let assert Ok(Nil) = simplifile.delete(root)
 }
+
+// The hub must borrow the publisher on each listing and selection. A
+// catalogue captured at hub start would pass only the first assertion.
+type CataloguePublication {
+  PublishCatalogue(catalog.Catalog)
+  ReadCatalogue(Subject(catalog.Catalog))
+}
+
+pub fn published_catalogue_drives_existing_hub_listing_and_selection_test() {
+  let initial = test_catalog()
+  let assert Ok(publisher) =
+    actor.new(initial)
+    |> actor.on_message(fn(current, message) {
+      case message {
+        PublishCatalogue(next) -> actor.continue(next)
+        ReadCatalogue(reply) -> {
+          process.send(reply, current)
+          actor.continue(current)
+        }
+      }
+    })
+    |> actor.start
+    as "the host catalogue publisher starts"
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      fn(options) {
+        gateway.with_catalog_reader(options, fn() {
+          Ok(actor.call(publisher.data, 1000, ReadCatalogue))
+        })
+      },
+    )
+  subscribe(harness)
+  send(harness, 10, protocol.ListModels)
+  let assert protocol.SnapshotEvent(protocol.ModelsSnapshot(models: original)) =
+    next(harness).event
+    as "the existing hub lists the initial publisher value"
+  assert list.length(original) == 2 as "the initial catalogue has two models"
+  let assert Ok(entry) = list.first(initial.models)
+    as "the catalogue supplies a model template"
+  let added =
+    catalog.CatalogModel(..entry, name: "new-model", model_id: "new-id")
+  process.send(
+    publisher.data,
+    PublishCatalogue(
+      catalog.Catalog(..initial, models: [added, ..initial.models]),
+    ),
+  )
+  send(harness, 11, protocol.ListModels)
+  let assert protocol.SnapshotEvent(protocol.ModelsSnapshot(models: current)) =
+    next(harness).event
+    as "the same hub lists a new publication without restarting"
+  assert list.any(current, fn(model) { model.name == "new-model" })
+    as "the published model is visible"
+  send(
+    harness,
+    12,
+    protocol.SetConfig(
+      Some("main"),
+      json.Object([#("model_name", json.String("new-model"))]),
+    ),
+  )
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config: json.Object(
+    fields,
+  ))) = next(harness).event
+    as "selection uses the same published catalogue as the listing"
+  assert list.key_find(fields, "model_name") == Ok(json.String("new-model"))
+    as "the new name becomes the durable strand selection"
+  process.unlink(publisher.pid)
+  process.kill(publisher.pid)
+}

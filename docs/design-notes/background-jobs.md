@@ -75,7 +75,7 @@ owns.
 The consequence we accept is that the machine cannot wait on a job. A
 model that wants to block on one calls `job_poll` with a wait, and a
 pending job is a successful result, not a failure (the "pending is an
-answer" rule `agent_wait` already follows, `client/agency.gleam:255`).
+answer" rule `agent_wait` already follows, `client/agency.gleam:260`).
 
 ### 2. The durable record is a reserved prefix, and restart reaps
 
@@ -118,7 +118,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:3830`), bound to a
+beside `extension_hosts` (`client/serve.gleam:3957`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule
@@ -300,7 +300,7 @@ stream the runner already folds.
 
 ## The tool surface
 
-Tool-surface cost is arithmetic (`client/contributions.gleam:145-152`):
+Tool-surface cost is arithmetic (`client/contributions.gleam:146-152`):
 every permanent definition is the byte prefix of the provider's cached
 region and is paid on every request of every strand for the session. The
 roster is eighteen fully wired. So the surface is one flag and three
@@ -323,7 +323,7 @@ since the cursor for each stream, the new cursors, and the `ExecResult`
 if the job is terminal (with the spill ref). With no `job_id` it lists
 every job the strand owns with state and age, which is why there is no
 separate `job_list`. `wait_ms` is clamped to `agency.max_wait_ms`
-(30 s, `client/agency.gleam:235`) and is a `weft/poll` on the job's
+(30 s, `client/agency.gleam:236`) and is a `weft/poll` on the job's
 state under the session clock; the deadline expiring during a wait
 returns the terminal state, and a job still running returns pending as
 a success.
@@ -399,7 +399,7 @@ registers, and `Cut.cells` is namespace and key addressed
 (`storage/snapshot.gleam:149`), so the TUI's cut decoder can count
 `job/*` cells without a type change; poll results are tool results and
 already visible. `live_phase` cannot express *n* jobs because it is
-derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:5126`),
+derived from a strand's one open operation, which is what a `LiveOp` names (`client/gateway.gleam:5154`),
 and we do not bend it: an idle strand with two jobs shows idle, with a
 job count beside it once the renderer grows one. A live `job_output`
 event and a jobs panel are follow-ups that #186 and #240 already own,

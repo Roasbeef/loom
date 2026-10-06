@@ -396,3 +396,78 @@ pub fn context_reader_preserves_definitions_and_current_selection_test() {
   assert field(observed, "items_total") == json.Int(2)
   let _ = session.close(opened)
 }
+
+/// Active inspection selects its operation from the same durable metadata cut.
+pub fn operation_aware_reader_uses_the_active_pin_then_idle_publication_test() {
+  let assert Ok(opened) = session.open_memory(clock.fixed(1000))
+    as "the test owns a real session"
+  let assert Ok(Nil) =
+    session.ensure_strand(
+      opened,
+      "main",
+      strand.StrandConfiguration(
+        strand.ModelIdentity("acme", "fixture"),
+        strand.ThinkingOff,
+        [],
+      ),
+    )
+    as "the strand has complete observation metadata"
+  let assert Ok(active) =
+    ids.parse_op_id("0199e9b0-0000-7000-8000-000000000001")
+    as "the active operation has a durable identity"
+  let inspect =
+    context_view.reader_with_operation(
+      opened,
+      "system",
+      tool.registry([]),
+      fn(operation, _) {
+        case operation {
+          Some(found) if found == active -> Ok(100_000)
+          None -> Ok(200_000)
+          Some(_) -> Error("unexpected operation")
+        }
+      },
+      operation.CompactionSettings(True, 1000, 0),
+    )
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.StrandState,
+            "main",
+            register.value(
+              codec.encode_strand_state(strand.StrandState(Some(active), [])),
+            ),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "an active operation is durably visible"
+  let assert Ok(pinned) = inspect("main") as "the active observation succeeds"
+  assert field(pinned, "context_window") == json.Int(100_000)
+    as "active inspection uses its captured window instead of publication"
+  let assert Ok(_) =
+    storage.commit(
+      opened.store,
+      tx.Tx(
+        [
+          tx.SetRegister(
+            register.StrandState,
+            "main",
+            register.value(
+              codec.encode_strand_state(strand.StrandState(None, [])),
+            ),
+          ),
+        ],
+        [],
+      ),
+    )
+    as "durable completion makes the strand idle"
+  let assert Ok(published) = inspect("main") as "the idle observation succeeds"
+  assert field(published, "context_window") == json.Int(200_000)
+    as "idle inspection uses the published window"
+  let _ = session.close(opened)
+}

@@ -454,6 +454,13 @@ and it also accepts a `profile` boolean, which the launcher reads. Session
 configuration cannot change a running daemon's limits; raising one means
 restarting the daemon, which is what the refusal text says.
 
+A resident session separately watches its explicitly selected configuration
+file for model publications. That watcher is a fatal root named by
+`serve.instance_children` and retires under session custody after runtime drain.
+It can report a changed `[daemon]` table as restart-required but cannot apply
+it to the running daemon. [Live file edits](models.md#live-file-edits) describes
+the model snapshot and trust boundaries.
+
 Slots stay counted until their cleanup is proven. A stopping or blocked
 session still occupies a session slot, and a failed cleanup keeps its slot
 until the VM exits. This is deliberate: freeing a slot on a timeout would

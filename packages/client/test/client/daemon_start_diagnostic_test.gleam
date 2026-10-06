@@ -3,6 +3,7 @@
 //// real domain uses maintenance-off configuration and never calls a provider.
 
 import client/catalog
+import client/config_reload
 import client/daemon/main
 import client/daemon/manager
 import client/daemon/root
@@ -313,4 +314,38 @@ fn rejected_configuration(defect: ConfigDefect) {
       field.text("class", "configuration_rejected"),
       field.text("reason", reason),
     ]
+}
+
+/// Daemon startup refuses nonregular and oversized selections before assembly.
+pub fn daemon_startup_bounds_explicit_configuration_reads_test() {
+  let settings = owned_assembly_test.settings()
+  let path = settings.session_path <> ".toml"
+  let assert Ok(_) =
+    simplifile.create_directory_all(filepath.directory_name(path))
+    as "the isolated fixture directory exists"
+  let assert Ok(_) =
+    simplifile.write(path, string.repeat("x", config_reload.max_file_bytes + 1))
+    as "the selected document exceeds the read budget"
+  let assert Ok(config) =
+    main.parse(["--state-dir", filepath.directory_name(path), "--config", path])
+    as "the daemon selects the explicit fixture"
+  let assert Error(reason) = main.prepare_startup(config, log.discard())
+    as "the daemon rejects oversized input before TOML validation"
+  assert string.contains(reason, "exceeds 1 MiB")
+    as "the bounded reader owns the startup refusal"
+  let fifo = path <> "-fifo"
+  let assert Ok(mkfifo) = ffi_os.find_executable("mkfifo")
+    as "the Unix fixture has mkfifo"
+  let assert Ok(#(0, _)) = ffi_os.run_capture(mkfifo, [fifo], 2000)
+    as "the FIFO has no writer"
+  let assert Ok(config) =
+    main.parse(["--state-dir", filepath.directory_name(path), "--config", fifo])
+    as "the daemon explicitly selects the FIFO"
+  let started = ffi_os.system_time_ms()
+  let assert Error(_) = main.prepare_startup(config, log.discard())
+    as "nonregular input cannot block startup"
+  assert ffi_os.system_time_ms() - started < 2000
+    as "the real startup entry point returns within the read deadline"
+  let _ = simplifile.delete(fifo)
+  let _ = simplifile.delete(path)
 }
