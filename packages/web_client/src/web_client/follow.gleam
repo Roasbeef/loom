@@ -64,6 +64,12 @@
 //// that follows scrolls nothing, and the reader's next scroll to the
 //// bottom resumes following.
 ////
+//// A message the reader sends from the composer is the one event after which
+//// the transcript always returns to the tail. The composer is in the dock,
+//// outside this element, so it dispatches `follow_rule.sent_event` on press,
+//// bubbling and composed, and the element hears it on the document and
+//// follows again, whatever the reader had scrolled up to read.
+////
 //// The page holds only the newest rows, and the reader can load older ones
 //// with the lane's "Load older" button, which the server draws above the
 //// oldest row. The rows that arrive land above everything the reader was
@@ -134,6 +140,9 @@ pub type Watching {
     /// The observer of `host`'s children coming and going, which keeps
     /// `sizes` observing the current ones.
     children: ffi_dom.Observer,
+    /// The listener on the document for the composer's send
+    /// (`follow_rule.sent_event`), which is outside this element.
+    sent: ffi_dom.Listener,
   )
 }
 
@@ -206,6 +215,9 @@ pub type Msg {
 
   /// The reader pressed "Jump to latest".
   Jumped
+
+  /// The reader sent a message from the composer.
+  Sent
 
   /// The lane's first row and where it is on screen, held while older rows
   /// load above it, or nothing when the page has no lane or the lane has no
@@ -360,6 +372,15 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, reader: follow_rule.jumped(model.reader), anchor: None),
       to_bottom(model.watching),
     )
+
+    // A send is the same request made from the composer. The reader's own
+    // message lands below the fold of a lane they had scrolled up in, and
+    // the answer after it, so the transcript follows the tail again from the
+    // press, and the rows that land scroll it down as they do any follower.
+    Sent -> #(
+      Model(..model, reader: follow_rule.jumped(model.reader), anchor: None),
+      to_bottom(model.watching),
+    )
   }
 }
 
@@ -421,6 +442,10 @@ fn start() -> Effect(Msg) {
         })
       #(event, listener)
     })
+  let sent =
+    ffi_dom.add_listener(ffi_dom.get_document(), follow_rule.sent_event, fn(_) {
+      dispatch(Sent)
+    })
   let sizes = ffi_dom.resize_observer(fn() { dispatch(Resized) })
   ffi_dom.observe(sizes, host)
   observe_children(sizes, host)
@@ -429,7 +454,7 @@ fn start() -> Effect(Msg) {
   ffi_dom.observe_child_list(children, host)
 
   dispatch(Watched(
-    Watching(host:, scroll:, inputs:, sizes:, children:),
+    Watching(host:, scroll:, inputs:, sizes:, children:, sent:),
     top: ffi_dom.scroll_top(host),
     extent: extent_of(host),
   ))
@@ -448,6 +473,11 @@ fn stop(watching: Option(Watching)) -> Effect(Msg) {
       list.each(watching.inputs, fn(input) {
         ffi_dom.remove_listener(watching.host, input.0, input.1)
       })
+      ffi_dom.remove_listener(
+        ffi_dom.get_document(),
+        follow_rule.sent_event,
+        watching.sent,
+      )
       ffi_dom.disconnect(watching.sizes)
       ffi_dom.disconnect(watching.children)
     }

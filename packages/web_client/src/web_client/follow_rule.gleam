@@ -14,6 +14,12 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/order
 
+/// The event the composer dispatches when the reader sends a message, bubbling
+/// and composed, with no data. The transcript hears it as a request to follow
+/// the tail again: a reader who sends a message wants to see it and its
+/// answer, wherever they had scrolled to.
+pub const sent_event = "loom-composer-sent"
+
 /// How many pixels from the bottom of the transcript still count as at the
 /// bottom. A reader who scrolls up by one notch of a wheel moves further
 /// than this; a transcript whose last row is still being laid out does not.

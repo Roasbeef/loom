@@ -934,6 +934,9 @@
   /* A reasoning row's one-line preview (view/fold_row.reasoning): the first
      line of what the model wrote, quieter than the heading it follows. */
   .thought .row-head .preview{flex:1 1 0;opacity:.75;}
+  /* An open reasoning row shows the whole text beneath its line, which begins
+     with the same sentence, so the line drops its preview. */
+  loom-expand.thought:state(open) .row-head .preview{display:none;}
   .row-head .change{display:inline-flex;flex:0 0 auto;gap:6px;font:12px/1.5 var(--font-mono);}
   .change .added{color:var(--color-added-text);}
   .change .removed{color:var(--color-danger-text);}

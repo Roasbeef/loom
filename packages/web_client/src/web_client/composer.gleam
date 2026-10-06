@@ -65,10 +65,15 @@
 //// element (the server keys the editor by the drafts sent), or when the
 //// server refuses, which it says by raising the count in the `refused`
 //// attribute: the line goes and the text is put back in the editor.
+////
+//// A press also dispatches `follow_rule.sent_event`, bubbling and composed, so
+//// the transcript follows the tail again and the reader sees their own
+//// message land.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -86,6 +91,7 @@ import web_client/composer_rule.{
   Listing, Nothing, Observed, Open, Other, Repeating, Sending, Shut, Take,
   Unattached, Unseen,
 }
+import web_client/follow_rule
 import web_client/internal/ffi_dom
 import web_client/pending_rule
 
@@ -325,7 +331,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       let pending = pending_rule.pressed(model.pending, text, delivery)
       #(Model(..model, pending:), case pending {
         pending_rule.Clear -> effect.none()
-        pending_rule.Shown(_) -> clearing()
+        pending_rule.Shown(_) ->
+          effect.batch([
+            clearing(),
+            event.emit(follow_rule.sent_event, json.null()),
+          ])
       })
     }
 

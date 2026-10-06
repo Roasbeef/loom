@@ -50,6 +50,9 @@ renders again just for it:
   row) takes it; an older row mounted by Load older never does. Known edge: the
   note names no block, so a page switch within `handoff_window_ms` of an open
   live row leaving can hand its state to the first marked row of the next page.
+  While the body is shown the element holds the custom state `open`
+  (`expand_rule.open_state`), which the stylesheet reads to drop a reasoning
+  row's one-line preview, since the opened text begins with it.
 - `<loom-follow>` is the transcript's scroll container: the page's frame is
   pinned and only it scrolls. It scrolls itself to a row that lands below
   its view while the reader is at the bottom; once the reader scrolls up it
@@ -58,7 +61,10 @@ renders again just for it:
   button never covers the row the reader is about to read, and scrolling back
   to the bottom or pressing the button resumes it. When the reader presses the lane's
   "Load older" button, it keeps the row they were looking at in place while
-  the older rows arrive above it.
+  the older rows arrive above it. It also listens on the document for
+  `follow_rule.sent_event`, which `<loom-composer>` dispatches (bubbling,
+  composed, no data) when the reader presses Send, Queue or Steer with a draft;
+  the transcript then follows the tail again and scrolls to it.
 - `<loom-composer commands="<json>" returned="<n>" refused="<n>">` wraps the
   operator's editor, the server's uncontrolled textarea, which is its default
   slot. It lists the slash commands as the draft grows, sends the draft on

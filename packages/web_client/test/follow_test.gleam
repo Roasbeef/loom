@@ -507,3 +507,10 @@ pub fn a_strand_left_at_the_bottom_arrives_as_a_tail_test() {
   assert arrival == follow_rule.Tail
   assert reader.position == Following
 }
+
+// A send from the composer follows the tail again, as the button does: the
+// reader who had scrolled up to read is `Following` after it.
+pub fn a_send_returns_a_reader_to_the_tail_test() {
+  assert follow_rule.jumped(reading_at(90.0)).position == Following
+  assert follow_rule.sent_event == "loom-composer-sent"
+}
