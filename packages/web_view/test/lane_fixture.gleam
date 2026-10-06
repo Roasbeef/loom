@@ -25,6 +25,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import page_fixture
 import session_view/composer
+import session_view/connection_event
 import session_view/protocol
 import session_view/session_channel
 import session_view/snapshot
@@ -1799,4 +1800,259 @@ pub fn opened(model: component.Model(socket)) -> component.Model(socket) {
     }
   })
   page
+}
+
+/// The records of a conversation whose turns each read a file per step, oldest
+/// first, as a session's records read when the agent works through a tree: turn
+/// `t` is its question (`question t`), then for each of its `steps` an
+/// `fs_read` call and its result, then its answer (`answer t`). A turn of `n`
+/// steps is `2n + 2` records and its divider counts `n` steps.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.reading([3, 110])
+/// ```
+pub fn reading(steps: List(Int)) -> List(snapshot.Item) {
+  let #(_, _, items) =
+    list.fold(steps, #(1, 1, []), fn(acc, count) {
+      let #(turn, seq, items) = acc
+      let label = int.to_string(turn)
+      let reads =
+        list.flat_map(counted(count), fn(index) {
+          let name = "t" <> label <> "-" <> int.to_string(index)
+          let at = seq + 2 * index - 1
+          [
+            item(
+              at,
+              10_000 + at * 10,
+              assistant([
+                call(
+                  name,
+                  "fs_read",
+                  json.Object([
+                    #("path", json.String("notes/" <> name <> ".txt")),
+                  ]),
+                ),
+              ]),
+            ),
+            item(
+              at + 1,
+              10_000 + { at + 1 } * 10,
+              result(name, "fs_read", json.Object([]), 10_000 + { at + 1 } * 10),
+            ),
+          ]
+        })
+      let last = seq + 2 * count + 1
+      let bodies = [
+        item(seq, 10_000 + seq * 10, said("question " <> label, None)),
+        ..list.append(reads, [
+          item(
+            last,
+            10_000 + last * 10,
+            assistant([message.AssistantText("answer " <> label, None)]),
+          ),
+        ])
+      ]
+      #(turn + 1, last + 1, list.append(items, bodies))
+    })
+  items
+}
+
+/// A capture of `main` holding the records of `items` (oldest first) from the
+/// sequence `from` on, with `main` running under `operation` when one is
+/// given: what a gateway's cut carries when it holds only the newest records
+/// of a long session. A capture that starts after the first record names a
+/// parent it does not hold.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.since(lane_fixture.reading([3]), 4, None)
+/// ```
+pub fn since(
+  items: List(snapshot.Item),
+  from: Int,
+  operation: Option(String),
+) -> session_channel.Update {
+  capture_of(
+    list.filter(items, fn(held) { snapshot.sequence(held) >= from }),
+    operation,
+    [],
+    [],
+  )
+}
+
+/// A capture of the newest `count` of `items` (oldest first), as a cut holds
+/// them, and `main` idle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.newest(lane_fixture.reading([570]), 100)
+/// ```
+pub fn newest(
+  items: List(snapshot.Item),
+  count: Int,
+) -> session_channel.Update {
+  since(items, list.length(items) - count + 1, None)
+}
+
+/// The reads `page` wrote to `wire`, answered from `archive` (the records of
+/// the session, oldest first) as a gateway would, until the page writes no
+/// more. A history read is answered with the records of the interval it names,
+/// a catch-up with an empty session, as the fixture's lane carries one, and
+/// `restore` is applied after it, so the page has again the capture a real
+/// session's catch-up would have brought; any other read is refused.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.serve(page, wire, archive, capture)
+/// ```
+pub fn serve(
+  page: component.Model(page_fixture.Wire),
+  wire: page_fixture.Wire,
+  archive: List(snapshot.Item),
+  restore: session_channel.Update,
+) -> component.Model(page_fixture.Wire) {
+  served(page, wire, archive, restore, "operator").0
+}
+
+/// `serve` for an attachment with `role`, and every frame it answered, oldest
+/// first, as the frames the page wrote.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.served(page, wire, archive, capture, "observer")
+/// ```
+pub fn served(
+  page: component.Model(page_fixture.Wire),
+  wire: page_fixture.Wire,
+  archive: List(snapshot.Item),
+  restore: session_channel.Update,
+  role: String,
+) -> #(component.Model(page_fixture.Wire), List(String)) {
+  serving(page, wire, archive, restore, role, 400, [])
+}
+
+fn serving(
+  page: component.Model(page_fixture.Wire),
+  wire: page_fixture.Wire,
+  archive: List(snapshot.Item),
+  restore: session_channel.Update,
+  role: String,
+  rounds: Int,
+  written: List(String),
+) -> #(component.Model(page_fixture.Wire), List(String)) {
+  let frames =
+    list.filter(page_fixture.sent(wire), fn(frame) {
+      !string.contains(frame, "\"cmd\":\"snapshot")
+      && !string.contains(frame, "\"cmd\":\"subscribe\"")
+    })
+  case frames, rounds {
+    [], _ | _, 0 -> #(page, written)
+    _, _ -> {
+      let answered =
+        page_fixture.run(page, component.update, [
+          component.Arrived(
+            list.flat_map(frames, fn(frame) { answer(frame, archive, role) }),
+          ),
+        ])
+      let page = case
+        list.any(frames, fn(frame) {
+          string.contains(frame, "\"cmd\":\"catch_up\"")
+        })
+      {
+        True -> component.apply(answered, [restore])
+        False -> answered
+      }
+      serving(
+        page,
+        wire,
+        archive,
+        restore,
+        role,
+        rounds - 1,
+        list.append(written, frames),
+      )
+    }
+  }
+}
+
+// The gateway's reply to one frame the page wrote: the records of the
+// interval a history read names, an empty catch-up, or a refusal.
+fn answer(
+  frame: String,
+  archive: List(snapshot.Item),
+  role: String,
+) -> List(connection_event.Message) {
+  let id = page_fixture.request_id(frame)
+  case
+    string.contains(frame, "\"cmd\":\"history\""),
+    string.contains(frame, "\"cmd\":\"catch_up\"")
+  {
+    True, _ -> {
+      let assert Ok(json.Object(fields)) = json.parse(frame)
+      let assert Ok(json.Object(body)) = list.key_find(fields, "body")
+      let assert Ok(json.Int(after)) = list.key_find(body, "after_seq")
+      let assert Ok(json.Int(before)) = list.key_find(body, "before_seq")
+      let held =
+        list.filter(archive, fn(held) {
+          snapshot.sequence(held) > after && snapshot.sequence(held) < before
+        })
+      page_fixture.history(
+        id,
+        role,
+        snapshot.Window(list.reverse(held), list.length(held) * 100, None),
+        before,
+      )
+    }
+    False, True -> page_fixture.catch_up(id, role)
+    False, False -> [page_fixture.refusal(id)]
+  }
+}
+
+/// A capture of `main` holding one turn that was stopped: a question, one call
+/// and its result, and a response that was aborted with no text and carries
+/// `diagnostic`, as the records read after a Stop or a steer ended a response
+/// that was being written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.stopped("provider request was cancelled (runtime: explicit stop)")
+/// ```
+pub fn stopped(diagnostic: String) -> session_channel.Update {
+  capture_of(
+    [
+      item(1, 10_000, said("write the essay", None)),
+      item(2, 11_000, assistant([call("c1", "fs_read", json.Object([]))])),
+      item(3, 12_000, result("c1", "fs_read", json.Object([]), 12_000)),
+      item(
+        4,
+        13_000,
+        message.AssistantMessage(
+          [],
+          "test",
+          "test",
+          "test",
+          None,
+          None,
+          None,
+          usage(),
+          message.Aborted,
+          None,
+          Some(diagnostic),
+          None,
+          None,
+          0,
+        ),
+      ),
+    ],
+    None,
+    [],
+    [],
+  )
 }

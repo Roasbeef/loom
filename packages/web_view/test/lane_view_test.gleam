@@ -21,7 +21,6 @@ import page_fixture
 import session_view/agent_roster
 import session_view/snapshot
 import session_view/snapshot_view
-import session_view/transcript_lines
 import session_view/turns
 import web_view/component
 import web_view/operator_page
@@ -510,16 +509,28 @@ pub fn keys_hold_across_arrivals_test() {
   assert list.length(after) > list.length(before)
 }
 
-// The lines under the lane are the transcript's own: the parity test's
-// claim holds for the richer capture too.
+// The lines under the lane are the rows the page draws, and a card the page
+// draws from a record (a delivered nudge, a message another session sent) is a
+// piece that holds the record's words and not a row.
 pub fn the_lane_keeps_the_transcripts_lines_test() {
   let model = settled()
   let from_pieces =
     component.rows(model)
     |> list.map(fn(row) { row.line })
   assert from_pieces == component.lines(model)
-  assert list.any(component.lines(model), fn(line) {
-    string.contains(line.text, transcript_lines.nudges_header)
-    || string.contains(line.text, "Confirm the <sweep>")
+  assert list.any(component.pieces(model), fn(piece) {
+    case piece {
+      turns.Nudged(body:, ..) -> string.contains(body, "Confirm the <sweep>")
+      turns.Plain(..)
+      | turns.Prompt(..)
+      | turns.Work(..)
+      | turns.Spawned(..)
+      | turns.Returned(..)
+      | turns.Commentary(..)
+      | turns.Peer(..)
+      | turns.Sibling(..)
+      | turns.Missed(..)
+      | turns.Decided(..) -> False
+    }
   })
 }

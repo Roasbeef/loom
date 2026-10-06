@@ -36,9 +36,8 @@
 //// board the daemon has stopped vouching for. Every string in a board is the
 //// repository's own text, drawn only as a text node.
 
-import core/entry
-import core/message
 import session_view/protocol
+import session_view/turn_ledger
 import session_view/worktree_view
 
 /// The shortest time between two reads, in milliseconds. A burst of tool calls
@@ -100,19 +99,5 @@ pub type Asking {
 /// assert worktrees.latest_result([]) == 0
 /// ```
 pub fn latest_result(records: List(protocol.EntryRecord)) -> Int {
-  case records {
-    [] -> 0
-    [
-      protocol.EntryRecord(
-        entry: entry.MessageEntry(
-          message: message.ToolResultMessage(..),
-          seq:,
-          ..,
-        ),
-        ..,
-      ),
-      ..
-    ] -> seq
-    [_, ..rest] -> latest_result(rest)
-  }
+  turn_ledger.latest_result(records)
 }
