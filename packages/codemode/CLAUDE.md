@@ -341,7 +341,7 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   and `decided` is true for exactly those plus the table, which is what
   the classification tests ask of every router's `serviced_caps`.
   `precheck(holds, strand, source_index)` builds the `satellite.Precheck`
-  the host runs in each call's worker, via `SatelliteConfig.precheck`,
+  the host runs in each call's worker, via `RunConfig.precheck`,
   before the plan is served or cleared. `holds` is `Agency.holds`, asked
   on every call; only a genuinely absent tool is `tool_not_held`, and any
   other refusal keeps its own code and still stops the call.
@@ -510,33 +510,38 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   `code_mode` tool passes its `Ctx.observe_output` through
   `Request.observe_output`, so a compile streams the compiler's lines to a
   watching terminal the way a `bash` call does (`protocol-change/031`).
-- `codemode/launch.LaunchConfig` — the production `satellite.Launcher`:
-  the AF_UNIX cap socket, then a jailed `erl` dispatched under the host's
-  own `{op_id, step_id}`. Its `host_mounts` field carries the filesystem
-  regions only the host knows about — the ERTS install prefix, the
-  directory holding `gleam`, and the build seed — into
-  `node_requirements`.
-- `codemode/satellite.{Run, RunError, Outcome, SatelliteConfig,
-  LaunchSpec, CapConnection, Launcher, WireIn, CapRouter, CapRequest,
-  CapPlan, CapDenial}` — the in-harness host: the broker end of the cap
-  channel, the deadline, the teardown. `run` takes the run phase's
-  `PhaseIdentity`; `SatelliteConfig` carries none, and `LaunchSpec` and
-  `CapRequest` carry the derived identity rather than a loose
-  `{op_id, step_id, budget}` triple. `run` returns a `Run`: the
-  program's outcome and the node's enforcement report, which
-  `CapConnection.destroy` hands back, and `calls`, the host's record of the
-  capability calls the program made (below). `Msg` is opaque so no forged
-  settlement can be injected. `CapPlan` has two shapes — `ClearedCall`
-  (a jailed `broker.clear_call`) and `ServedHere` (a request the harness
-  answers itself, on a process of its own) — and `CapCeiling(cap,
-  admissions, code)` is a lifetime cap on one capability's admissions
-  within one execution, carrying the in-band code its refusal travels
-  under so the host stays generic over capability names.
+- `codemode/launch.{LaunchConfig, ForegroundLaunchConfig}` shares local native
+  construction between two host modes. `foreground_launcher` selects the
+  whole foreground Launch adapter; `launcher` retains persistent extension
+  behavior. Foreground placement owns the original token and listener; no
+  owner path appears in `run_channel.LaunchRequest`.
+- `codemode/run_channel.{LaunchRequest, Connection, Delivery, WriteGrant,
+  CloseResult}` separates paused resource installation from activation.
+  `satellite.hand_over` transfers the original close handle before activation.
+  Each direction has one live reservation identified by incarnation, direction
+  and sequence. Payloads are bounded at 16 MiB, exact frame lengths include
+  the four-byte prefix, and each direction has a nonrefundable 64 MiB lifetime
+  allowance. Local receipt charges declarations before reading bodies in
+  chunks of at most 64 KiB.
+- `codemode/satellite.{Run, RunError, RunCustody, Outcome, RunConfig,
+  CapRouter, CapRequest, CapPlan, CapDenial}` retains foreground authority,
+  admission ceilings, caller precheck and call settlement. `RunConfig` carries
+  no physical token or socket paths. `Computing`, `ReplyReady` and
+  `ReplySending` all retain their outstanding slot; exact original
+  `WriteConsumed` alone releases it. A valid terminal outcome is retained
+  before its Final consumption, which precedes original close. `Run.custody`
+  independently carries `NoLaunchResources`, `LaunchResourcesReleased` or
+  `LaunchResourcesUnresolved(reason)`. `Run.node` is the native enforcement
+  report and `Run.calls` is the existing capability ledger. Pending admitted
+  work and sticky unobserved drains are independent of the reply table; a
+  successful connection close cannot release them. Native `CallExited` and
+  joined plain weft outcomes supply drain witnesses. Timeout cancellation and
+  native failure without a terminal witness keep custody unresolved.
 - `codemode/satellite.{Host, HostConfig, Invoking, Invocation,
   InvokeError}` with `start`/`invoke`/`stop` — the *other* shape of the
   same host: a node launched once and asked many times, which is what an
   installed extension runs on (`protocol-change/012`, ADR-007 Decision 3).
-  `start` launches through the same `Launcher` and answers `cap_call`s
+  `start` retains the persistent `satellite.Launcher` and answers `cap_call`s
   through the same routers; what it adds is the reverse direction, a
   `hook_call` out and a `hook_result` back on the same frame id. The
   configuration is split along the node/invocation line: `HostConfig` is
@@ -754,22 +759,21 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   A satellite that writes its terminal `outcome` and exits can never have
   its death overtake its result. The node's exit status arrives by another
   path and only *enriches* a close the reader already saw.
-- **Teardown does not depend on the host surviving to run it.** The host
-  cleans up on every exit path it takes itself, and `launch.start_janitor`
-  spawns an unlinked process monitoring the host that runs the same
-  teardown when it dies however it died — the broker's fd-3 safety net in
-  miniature. A host killed from outside leaves no node running, no socket
-  bound, and no token file on disk.
-- **Every outcome carries both stages' enforcement reports.** The
-  build's rides in `compile.Compiled`, the node's in `satellite.Run`, and
-  `codemode.Execution` carries both as a two-field record, so an outcome
-  cannot exist without them. The node's comes from
-  `CapConnection.destroy`, which the host calls *before* it reports its
-  outcome; the launcher's holder cancels the node's clearance whichever
-  way teardown and clearance race, and a cancelled execution still
-  answers with `exec_exit`. A stage that genuinely made no report says
-  why, which is a different value from one whose report was lost
-  (issue #5, spec-gaps WP-J 14).
+- **Foreground cleanup belongs to the original Launch resource owner.**
+  Its weft state machine watches host loss, closes the original socket
+  independently of a blocked writer, cancels the original native call and
+  joins original transport work within a bounded observation window. Only
+  joined transport plus witnessed released native resources permit local
+  token/socket unlinking. Lost clearance replies preserve uncertainty because
+  broker waiting can expire before the original queued clearance dispatches.
+  Persistent extension teardown retains its existing janitor and holder.
+- **Outcome, enforcement and cleanup remain independent.** `Run` preserves a
+  valid program result even when original close is unresolved. Its node report
+  comes from `CloseResult.node`; neither an enforcement report nor terminal
+  bytes prove native retirement or complete-report COMMIT. `Execution.custody`
+  carries Launch cleanup unchanged to the existing directory owner. A compile
+  branch that never reaches Launch has no Launch resources, but that fact
+  supplies no new proof about the separate Compile worker's lifetime.
 - **The node-report holder is a `weft/state_machine`, and its two
   hand-rolled queues are gone.** `Pending | Running(handle) |
   Done(report)` is the machine's state and `Holder(broker_actor,
@@ -802,7 +806,7 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   both rely on accounting the build separately. What is typed is that the
   build phase is *derived*, never assembled beside the run's. `ExecConfig`
   has exactly one identity field; `compile.CompileConfig`,
-  `build.BuildConfig`, `satellite.SatelliteConfig` and
+  `build.BuildConfig`, `satellite.RunConfig` and
   `launch.LaunchConfig` have no operation, step or budget at all, and
   `codemode.execute` hands each injected seam the phase it derived. Both
   identity types are opaque, so a `PhaseIdentity` cannot exist without an
@@ -867,7 +871,7 @@ The shared host adds the existing `gleam_json` dependency for profile encoding.
   not extra resources. The node itself holds one outstanding effect, so a
   pooled cap below two is refused.
 - **Teardown reaps the step, not the operation.** `launch.destroy` and
-  `satellite.cleanup` call `broker.abort_step` on the run phase's own
+  the original foreground close owner call `broker.abort_step` on the run phase's own
   `{op_id, step_id}`. A satellite reaps itself; it does not reap what the
   program asked to outlive it. A background job started through `cap/job`
   clears under the sibling step `{op_id, "job/" <> id}`, so sweeping the
