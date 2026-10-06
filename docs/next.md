@@ -21,11 +21,11 @@ local cumulative allocation savings from installed resident-memory claims.
 | Warm Gleam language server | `d219796fc` hashes canonical inventory values, eliminating restarts from key-order rewrites. All 46 manager tests and five additional real downloader/warm-server runs passed. |
 | JSON string codec | `1d0f8d05c` scans four safe bytes together and avoids the encoder's slice wrapper. All 140 Erlang core tests passed; both new boundary tests pass on JavaScript, whose nine baseline failures remain. |
 | Reproduction | Existing terminal driver plus `scripts/web_view_perf.sh` and `scripts/json_perf.sh`. Matched comparisons used Gleam 1.19.0 and OTP 29. |
-| Dependency integration | Both source pins and generated manifests select `7365d47`. Local resolution used a command-scoped Git URL rewrite to the sibling repository; the committed public URLs are unchanged. The commit remains unpublished pending approval. |
+| Dependency integration | Both source pins and generated manifests select `7365d47`, now published in [etui #7](https://github.com/Roasbeef/etui/pull/7). Local validation used a command-scoped Git URL rewrite; the public commit is now available from the unchanged GitHub URL. |
 | Full Loom gate | Earlier `d219796fc` exited 0. The new JSON candidate at `c9ff4bba3` remains pending: full runs failed broker cancellation grace and web patch count, while a separate task ran 26 CPU-load workers. The failed and isolated logs are retained; assertions and deadlines are unchanged. |
 | Independent review | One fresh report-only pass for each body of work found no actionable issue. The second pass ran worker admission and ASCII boundary regressions; the LSP pass traced fingerprint/keeper invariants, and the JSON pass checked byte boundaries, generated JavaScript and binary ownership. Fable/Opus were unavailable; fresh inherited-model contexts were used. |
 | Pickglass follow-up | Owner-requested [issue #6](https://github.com/Roasbeef/pickglass/issues/6) proposes bounded CLI allocation counters, coverage/units, export and teardown tests. |
-| Public review | New branches and draft PR publication require explicit owner approval after automatic approval review rejected the export. No existing PR or remote branch was altered. |
+| Public review | The owner authorized publication of the optimizations so far on 2026-10-05. The etui draft PR is open; the Loom draft PR follows it. Integration and live remeasurement wait for the other merges to land. |
 
 The repeated local comparison removed 83.3% of reductions and 78.8% of
 allocated words for 100 unchanged operator views. At 2,048 streamed frames,
@@ -47,17 +47,15 @@ binary sharing, and live RSS savings remain separate measurement questions.
 
 ## What to do next
 
-1. Finish the fourth-pass integrated gate after the separate CPU-load task
-   finishes or the owner authorizes stopping its 26 `yes` workers. Do not
-   kill another task's load, change deadlines or present the new candidate
-   as fully green. `make check` previously exited 0 at `d219796fc`, with
-   etui `7365d47`; the JSON change has 140 passing core tests and a clean
-   independent review. After approved publication, verify normal remote
-   dependency resolution. No local path dependency is committed.
-2. Obtain the owner's explicit publication approval before pushing either
-   topic branch or opening the two draft PRs. The automatic rejection was
-   about exporting unpublished code/performance results to public GitHub,
-   not about local profiling or fixes. Attach each created PR to the task.
+1. Let the other merges land, then update the candidate and rerun the
+   integrated gate with normal remote dependency resolution. Keep existing
+   deadlines and leave another task's CPU load alone unless authorized.
+   `make check` previously exited 0 at `d219796fc`, with etui `7365d47`;
+   the JSON change has 140 passing core tests and a clean independent
+   review. The current integrated gate remains pending.
+2. Review the two draft PRs in dependency order, etui before Loom. The owner
+   has authorized their publication, superseding the earlier approval block.
+   No merge or deployment is authorized by that instruction.
 3. Before installing, prepare a concrete source shipment and follow
    [updating](updating.md). Coordinate a graceful shared-daemon restart;
    terminals retain their old client tree until reopened. Do not force-kill
