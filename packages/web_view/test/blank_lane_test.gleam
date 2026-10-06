@@ -165,6 +165,41 @@ pub fn the_page_says_it_is_loading_until_the_turn_arrives_test() {
   assert component.top(page) == lane.Beginning
 }
 
+// The advisor's strand receives one kind of message, the feed of what the
+// primary did, and answers each in a run of its own. A feed starts a turn as a
+// person's message does, so the page completes the newest review by reading back
+// to its feed. When a feed started nothing, the strand was one turn with no
+// start, and its first open read the strand's whole history, a hundred
+// sequences at a time and one read after the other, with the lane saying it was
+// loading throughout.
+pub fn a_strand_that_only_receives_feeds_opens_in_a_few_reads_test() {
+  let archive = lane_fixture.reviews(1500)
+  let capture =
+    lane_fixture.newest_by(archive, 50, [
+      #("main", 2),
+      #("advisor", list.length(archive)),
+    ])
+  let wire = process.new_subject()
+  let page =
+    page_fixture.ready(wire, "operator")
+    |> component.apply([capture])
+    |> page_fixture.run(component.update, [component.Ticked])
+    |> lane_fixture.serve(wire, archive, capture)
+  let #(page, frames) =
+    page_fixture.run(page, component.update, [
+      component.FocusRequested("advisor"),
+    ])
+    |> lane_fixture.served(wire, archive, capture, "operator")
+  assert list.length(
+      list.filter(frames, fn(frame) {
+        string.contains(frame, "\"cmd\":\"history\"")
+      }),
+    )
+    <= 3
+  assert component.top(page) != lane.Loading
+  assert component.pieces(page) != []
+}
+
 // A refused read is not asked again by the page: it offers Load older, the
 // reader's press tries again, and the turn is drawn when that is answered.
 pub fn a_refused_read_is_left_to_the_reader_test() {

@@ -1970,6 +1970,41 @@ pub fn advised(items: List(snapshot.Item), count: Int) -> List(snapshot.Item) {
   list.append(items, review)
 }
 
+/// The records of a session whose advisor has reviewed it `count` times: a
+/// question and its answer on `main` and then, on the `advisor` strand, a feed
+/// and the advisor's reply for each review, which every one of its runs answers.
+/// The feed is the only message the advisor's strand receives, so its history is
+/// as long as its reviews are many.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.reviews(1500)
+/// ```
+pub fn reviews(count: Int) -> List(snapshot.Item) {
+  let feed =
+    "[advisor feed: what the primary did since your last review]\n"
+    <> "user:\nquestion 1\n"
+    <> "[end feed. Review it and answer with exactly one advise call.]"
+  [
+    item(1, 10_000, said("question 1", None)),
+    item(2, 10_010, assistant([message.AssistantText("answer 1", None)])),
+    ..list.flat_map(counted(count), fn(index) {
+      let seq = 2 * index + 1
+      [
+        item(seq, 10_000 + seq * 10, said(feed, None)),
+        item(
+          seq + 1,
+          10_000 + { seq + 1 } * 10,
+          assistant([
+            message.AssistantText("review " <> int.to_string(index), None),
+          ]),
+        ),
+      ]
+    })
+  ]
+}
+
 /// A capture holding the newest `count` of `items` (oldest first), as a
 /// gateway's cut holds the newest records of the whole session whichever strand
 /// wrote them, with each of `leaves` naming the last record of a strand's
