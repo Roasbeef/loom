@@ -283,7 +283,10 @@ for a host with no surfaces.
   the same session sent (stored origin `StrandOrigin`, framing removed by
   `strand_framing.strip`, a brief's result-contract trailer kept apart),
   `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
-  stand next to each other are one piece with a `reviews` count). It reads
+  stand next to each other are one piece with a `reviews` count). A feed or goal
+  feed sent to the advisor is an input, since the advisor's strand has no other:
+  with none its whole history would be one turn with no start, and a host that
+  completes a turn by reading back to its input would read all of it. It reads
   `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
   each block with its `Source`. `turns.grouped(blocks, strands)` splits
   the same blocks at their inputs, the lead before the first input and

@@ -501,9 +501,17 @@ page keys and nonces, and the relay into the session's gateway.
   each open fold by its number, `View.folds` the open numbers most recently
   opened first, and both are cut to the folds `fit` grants.
   The page reads when it wants something, one read at a time (`View.purpose`:
-  `Resting | ForOlder | ForLead | ForSteps(fold)`), through the history window's
-  scan (`history_view.scan`), which keeps what it reads apart from the window.
-  `begun`, at the end of a projection, starts the first of: `ForLead`, the start
+  `Resting | ForOlder | ForLead | ForTail | ForSteps(fold)`), through the history
+  window's scan (`history_view.scan`), which keeps what it reads apart from the
+  window. `begun`, at the end of a projection, starts the first of: `ForTail`,
+  the strand's newest turns, when the window holds none of the strand's records
+  and no turn is closed (`unread_tail`). A gateway's cut is the newest records of
+  the whole session, so another strand that wrote past a settled one (the advisor
+  reviewing it) leaves the leaf below the cut, and an empty window is not an empty
+  strand: it reads from the leaf, as the turns below the window are read, once
+  (a refusal sets `Completion` to `Spent`, and the page then offers Load older,
+  whose press reads from the leaf again; a cut that names no leaf is the
+  beginning). `ForLead`, the start
   of the turn the window began inside (a page opened on a settled session holds
   only the end of its newest turn, and draws nothing for it until the start is
   read, so the divider's figures are the turn's), `ForSteps`, the newest
