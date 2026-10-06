@@ -5858,7 +5858,8 @@ opaque storage bytes alone prove neither artifact correctness nor service comple
 `remote/dispatch_binding.with_commands(binding, enrolled)` projects closed command
 callbacks over the existing owner, connection scope, actual Dispatch preparation
 and candidate allocator. It introduces no Broker or actor. Ordinary origins keep
-`configuration`'s callbacks; CompileCommand and SatelliteCommand enter
+`configuration`'s callbacks; the ChildRole origins CompileCommand,
+CompileRewriteCommand and SatelliteCommand enter
 `remote/command_binding`. Physical Launch assembly remains separate. Missing dispatched command
 custody invokes the mandatory fatal fence. Before an offer exists, whole-service
 cancellation still belongs to the assembly holding its complete ServiceKey.
@@ -5911,10 +5912,17 @@ native dispatcher share that fixed endpoint. Closed command headers and segmente
 replies preserve canonical service input, completion and native receipt bytes.
 Runtime membership grants no service admission or receipt retention. This
 adapter creates no clock, actor, registry, Broker or independent caller admission
-policy.
+policy. The configuration derives one trusted CompilationContract from fixed
+enrollment, seam, effective policy and generated catalogue. Specialized
+`reserve_compile_child` validates the exact retained Original input and
+BuildRejected completion before Rewrite mutation; generic service reservation
+refuses Rewrite. Shared `service_input.admit_rewrite` checks the deterministic
+source transformation and re-vets using that unchanged contract.
 
-A live Build phase derives the outer Compile origin from the complete original
-parent. The native command separately retains CompileCommand provenance. The
+A live Build phase derives Original Compile or the single CompileRewrite origin
+from the complete original parent and closed CompileRequest.attempt. The
+CommandRole remains CompileCommand; its checked ServiceKey selects the disjoint
+CompileCommand or CompileRewriteCommand native ChildRole provenance. The
 consumer converts the original nonzero Unix budget once to its original monotonic
 deadline, commits exact service input before transmission, and validates the
 1000 ms Compile challenge with a separate 100 ms margin. Only exact Ready can
@@ -5965,7 +5973,7 @@ for assembly ownership and remaining acceptance.
 
 `client/remote/launch_client` projects a trusted local `Config` into the existing
 `run_channel.Launcher` inside the original Fresh custodian body. It validates
-the complete original Compile producer and canonical artifact/enrollment facts
+the exact successful Original or Rewrite Compile producer and canonical artifact/enrollment facts
 before reserving one Launch service child. The original token commitment, Run
 phase, finite owner deadline and exact SatelliteCommand offer remain immutable.
 Challenge/PlaceToken and Ready precede original bridge binding; binding and
@@ -5985,9 +5993,15 @@ count, chunk and aggregate bounds before accumulation and calls the existing
 completion must name the same native terminal; owner COMMIT precedes outer ACK.
 No historical read replays output to the host or dispatches native work. Native
 Broker uncertainty, transport join and resource retirement remain independent;
-associated native resources remain unresolved without an approved retirement
-witness. The real component control exercises TLS membership, actual Compile,
-Launch, capability response, Final and repeated original receipt observation.
+normal associated resources release only after the original exact helper witness,
+preparation/transport joins, physical directory removal and resource-owner COMMIT.
+The component fixture uses `broker/executor.start_with_retirement` over its one existing
+shared pool and `broker/exec.prepare_borrowed_retirement`; Compile and ordinary native
+commands retain reuse. It observes actual Compile, Launch, capability response,
+Final and original native/outer receipts, then checks Released preparation history
+and absent canonical directory/socket/token. The unused-import control uses the
+same custody wiring for its successful Rewrite producer and reopened evidence.
+Scope loss and uncertain clearance remain conservatively unresolved.
 Default daemon assembly and separate-host acceptance remain separate work.
 
 Historical Launch recovery captures one configured endpoint observation budget
