@@ -143,7 +143,15 @@ pub fn view(
     element.ref(resume.pending(resume)),
     element.ref(archiving.stage(archiving)),
   ])
-  column(groups, element.none(), current, Known(activity), open, resume, archiving)
+  column(
+    groups,
+    element.none(),
+    current,
+    Known(activity),
+    open,
+    resume,
+    archiving,
+  )
 }
 
 /// The sidebar the home page draws (protocol-change/065): the same groups, with
