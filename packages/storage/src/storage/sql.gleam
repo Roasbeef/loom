@@ -951,6 +951,44 @@ pub fn restore_session(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
+pub type RecentFolders {
+  RecentFolders(seq: Int, workspace: String)
+}
+
+pub fn recent_folders() {
+  let sql =
+    "SELECT seq, workspace FROM catalogue_recent_folders ORDER BY seq DESC"
+  #(sql, [], recent_folders_decoder())
+}
+
+pub fn recent_folders_decoder() -> decode.Decoder(RecentFolders) {
+  use seq <- decode.field(0, decode.int)
+  use workspace <- decode.field(1, decode.string)
+  decode.success(RecentFolders(seq:, workspace:))
+}
+
+pub fn insert_recent_folder(workspace workspace: String) {
+  let sql = "INSERT INTO catalogue_recent_folders (workspace) VALUES (?)"
+  #(sql, [dev.ParamString(workspace)])
+}
+
+pub fn delete_recent_folder(workspace workspace: String) {
+  let sql = "DELETE FROM catalogue_recent_folders WHERE workspace = ?"
+  #(sql, [dev.ParamString(workspace)])
+}
+
+pub fn forget_recent_folder(seq seq: Int) {
+  let sql = "DELETE FROM catalogue_recent_folders WHERE seq = ?"
+  #(sql, [dev.ParamInt(seq)])
+}
+
+pub fn trim_recent_folders(limit limit: Int) {
+  let sql =
+    "DELETE FROM catalogue_recent_folders
+WHERE seq NOT IN (SELECT seq FROM catalogue_recent_folders ORDER BY seq DESC LIMIT ?)"
+  #(sql, [dev.ParamInt(limit)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
