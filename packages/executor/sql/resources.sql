@@ -1,7 +1,7 @@
 -- Exact preparation custody; retained byte limits exclude SQLite page/WAL overhead.
 CREATE TABLE resource_meta (
   id INTEGER PRIMARY KEY CHECK(id = 1),
-  format INTEGER NOT NULL CHECK(format = 2),
+  format INTEGER NOT NULL CHECK(format = 3),
   mode INTEGER NOT NULL CHECK(mode IN (0, 1)),
   enrollment BLOB NOT NULL CHECK(length(enrollment) BETWEEN 1 AND 262144),
   row_limit INTEGER NOT NULL CHECK(row_limit BETWEEN 1 AND 65536),
@@ -31,7 +31,7 @@ CREATE TABLE resource_call (
   CHECK((native_id IS NULL AND length(command_ref)=0 AND length(native_identity)=0 AND length(native_prepared)=0)
     OR (native_id IS NOT NULL AND length(command_ref)>0 AND length(native_identity)=106 AND length(native_prepared)>0 AND ready_size>0)),
   CHECK((length(completion)=0 AND length(completion_digest)=0 AND outer_receipt=0)
-    OR (length(completion)>0 AND length(completion_digest)=32 AND (native_id IS NOT NULL OR (ready_size=0 AND phase IN (3,4))))),
+    OR (length(completion)>0 AND length(completion_digest)=32 AND (native_id IS NOT NULL OR (phase IN (3,4) AND (ready_size=0 OR role=1))))),
   CHECK(
     (ready_size = 0 AND length(ready_digest) = 0 AND phase IN (0, 1, 3, 4))
     OR (ready_size > 0 AND length(ready_digest) = 32 AND phase IN (2, 3, 4))
