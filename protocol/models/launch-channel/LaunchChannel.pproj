@@ -1,0 +1,10 @@
+<!-- The foreground Launch and consumed duplex contract. See README.md. -->
+<Project>
+<ProjectName>LaunchChannel</ProjectName>
+<InputFiles>
+  <PFile>./PSrc/</PFile>
+  <PFile>./PSpec/</PFile>
+  <PFile>./PTst/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+</Project>
