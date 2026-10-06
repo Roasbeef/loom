@@ -136,14 +136,19 @@ for a host with no surfaces.
   value, an image result with its image's row, `absorbed` says which result entries draw nothing,
   `reads_joined` names the responses that bypass the entry cache, and
   `joined_entry_lines`/`joined_block_lines` draw a response with the
-  results joined. A compact `code_mode` call is one `✓ code_mode ·
-  completed · result …` row once it settles, and otherwise a
-  `ProgramRunning` or `ProgramFailure` block, whose text is a title, a
-  foot and a body: the program's opening lines under their numbers, or the
-  error, with a compiler diagnostic cut to its heading (`· line N`) and the
-  source it quotes. Both block speakers open and close bare, like a call.
-  With a `call_tree` record the settled row counts the calls and a failure
-  block ends in a `CALLS · …` section, grouped by capability and ending.
+  results joined. A compact `code_mode` call is a
+  `ProgramRunning`, `ProgramSettled` or `ProgramFailure` block, whose text
+  is a title, a foot and a body: the program's opening lines under their
+  numbers (`program_body`, shared by running and settled), or the error,
+  with a compiler diagnostic cut to its heading (`· line N`) and the
+  source it quotes. A settled block's title counts the calls
+  (`✓ code_mode · completed · 5 calls`), its foot says how long the program
+  ran, and it ends in the `CALLS · …` section a failure shows and a
+  `RESULT · …` preview from `value_preview`: an object's first three keys
+  with a type or size hint, a list's length and first element, a scalar as
+  it is. A result with no record has no calls section or foot, and one with
+  no `details` keeps the generic rows. All three block speakers open and
+  close bare, like a call.
 - `call_tree.{read, summary, CallLog, Call, Status}` (protocol 060): the
   total decoder for the `calls` key of a `code_mode` result's `details` and
   the one-line summary (`7 calls · 1 failed`). An absent key and a
@@ -409,7 +414,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
 - `surfaces`: the `service_*` reads (todo seed, notes, queue, worktree,
   jobs, advisor nudges, block summaries, goal, context), the receivers
   (`receive_jobs`, `receive_goal`, `receive_advisor_nudges`,
-  `retire_delivered_nudges`, `refuse_goal`), the `sync_*` edges with
+  `retire_delivered_nudges` for a pushed entry,
+  `retire_nudges_delivered_since_board` for a captured cut, `refuse_goal`),
+  the `sync_*` edges with
   `context_refresh_due`, `advisor_nudges_action` and `goal_action`, which
   compare two records, and the goal commands `submit_goal_action` and
   `confirming`. A dropped queue read appends `queue_request.Dropped`, and a
@@ -642,7 +649,7 @@ observer's page holds no command.
   and peer cards draw their bodies as Markdown too.
 - **`strand_framing` owns the Agency's framing strings, and `strip` runs only
   for a stored `StrandOrigin`.** `client/agency` builds `frame_message`,
-  `frame_brief` and `result_contract` from them, because `client` depends on
+  `frame_brief` and `child_notice` from them, because `client` depends on
   `session_view`. `strip` compares exact strings built from the origin's own
   strand, anchors a brief's trailer on the last foot plus opening line and the
   closing marker at the end, and returns any text that is not exactly the

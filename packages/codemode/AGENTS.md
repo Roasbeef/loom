@@ -85,7 +85,8 @@ session and sends it many invocations.
   kernel enforced on both jailed stages, and what an approved escalation
   widened. Every stage's failure is a
   value: `VetRejected`, `CompileFailed`, `RunFailed`,
-  `Ran(source, artifact, outcome)`. `ExecConfig.identity` is the one
+  `Ran(source, artifact, outcome)`. `Execution.edits` lists what the
+  harness changed before the run (see `unused_imports`). `ExecConfig.identity` is the one
   place in the pipeline an operation, a step, a budget *or an approval's
   grants* can be written.
 - `codemode/identity.{ExecIdentity, PhaseIdentity, Phase, BuildLedger,
@@ -906,6 +907,24 @@ responses. It changes no request decoding, schedule authority or durable record.
 The satellite owns total decoding of this response into public capability types.
 
 See [protocol 057](../../protocol-change/057-typed-capability-results.md).
+
+## Unused imports are removed and rebuilt once
+
+`codemode/unused_imports.rewrite(source, diagnostics, file)` is a pure
+parser over the compiler's text output. `codemode.execute` calls it when a
+build returns `BuildRejected`, and only then. It returns a rewritten
+source only when every diagnostic block is an `Unused imported
+module|value|type|item` warning about `src/loom_program.gleam` and the
+closing `error: N warnings generated.` count equals the warnings listed;
+anything else, the transitive-dependency warning above all, returns
+`Error(Nil)` and the failure stands as printed. The rewritten source goes
+back through `vet.vet` under the same `VetPolicy` and is built once more in
+the same build root; that second source is what the artifact's content
+address covers and what `Ran.source` returns. The second build's result is
+final, so there is never a second rewrite. `Execution.edits` carries the
+removal notes. The tests run over output captured from the pinned
+toolchain; if a Gleam upgrade changes the diagnostic layout the rewrite
+refuses (the tests fail first), it never guesses.
 
 ## The call record (protocol 060)
 

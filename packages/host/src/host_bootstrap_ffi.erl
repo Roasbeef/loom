@@ -475,11 +475,38 @@ darwin_process_identity(Pid) ->
                            <<"darwin:", Started/binary>>}}
             end;
         {ok, 1, <<>>} ->
-            {ok, process_absent};
+            darwin_absent_or_unrunnable(Pid);
         {ok, Status, Output} ->
             {error, describe({exit_status, Status, Output})};
         {error, _} = Error -> Error
     end.
+
+% ps exits 1 with no output for a pid that does not exist, and Seatbelt
+% produces the same result when it refuses to exec ps itself: /bin/ps is
+% setuid root, and no sandbox profile may exec a setuid binary. Reading
+% the refusal as absence would tell a client inside any sandbox that a live
+% daemon is dead. This VM's own pid certainly exists, so asking ps about
+% it separates the two. Only a successful answer for that pid proves ps ran,
+% and so proves the target is absent; a refusal, a timeout or any other
+% outcome means ps could not be consulted, which is never absence.
+darwin_absent_or_unrunnable(Pid) ->
+    Own = list_to_integer(os:getpid()),
+    case Pid =:= Own of
+        true -> {error, ps_unrunnable()};
+        false ->
+            case run_capture_status(
+                "/bin/ps",
+                ["-p", integer_to_list(Own), "-o", "lstart="],
+                2000
+            ) of
+                {ok, 0, _} -> {ok, process_absent};
+                _ -> {error, ps_unrunnable()}
+            end
+    end.
+
+ps_unrunnable() ->
+    <<"/bin/ps could not be consulted "
+      "(refused by the sandbox or did not answer)">>.
 
 run_capture_status(Executable, Arguments, TimeoutMs) ->
     try

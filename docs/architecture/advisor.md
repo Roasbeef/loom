@@ -86,7 +86,7 @@ a model's request, and carries a `lineage/` cell naming its parent.
 `agent_send` and `agent_wait` check that cell before one strand may
 address another, and `strand.roster` lists strands from it.
 
-`ensure_strand` (`client/advisor.gleam:3540`) creates the advisor through
+`ensure_strand` (`client/advisor.gleam:3548`) creates the advisor through
 `create_idle_strand` (`runtime/api.gleam:1514`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
@@ -736,8 +736,8 @@ supplies. Drawn as user turns they would claim the operator typed them,
 which is the same reason the run-start notes digest is already
 suppressed.
 
-`advisor_payload` (`session_view/transcript_lines.gleam:2609`) extracts one of five
-`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:3089`) renders
+`advisor_payload` (`session_view/transcript_lines.gleam:2707`) extracts one of five
+`AdvisorMessage` variants and `advisor_lines` (`session_view/transcript_lines.gleam:3187`) renders
 them. Delivered advice and nudges shorter than 512 bytes show their
 complete bodies even in compact mode, with a delivery label. A longer one
 collapses in compact mode to its heading and, beneath it as dim text of

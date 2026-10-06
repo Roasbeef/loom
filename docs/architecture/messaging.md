@@ -195,6 +195,29 @@ steer first. If the target reports no active run, it accepts a new run,
 and if a run opens in that gap it retries the steer. A target flipping
 between busy and idle therefore never drops the message.
 
+### What a child can call, and what it is told
+
+A child's active tools are the parent's set minus `agent_spawn` by default.
+An explicit `tools` list replaces that default, and the Agency then adds
+the communication floor, `agent_note` and `agent_send`
+(`agent.child_floor_tools`), limited to what the parent holds. The floor
+grants no reach beyond the default set: `agent_send` is judged by the
+addressing rule, so a child can address only its parent (a descendant too,
+were `depth_cap` raised) and an upward send is refused once the parent's
+run has ended; `agent_note` is clamped under `agent/{caller}/`. The floor
+never contains `agent_spawn`, which stays the depth cap. The spawn result
+echoes the tools the child actually received.
+
+The system prompt is built once per session from the full registry, so a
+child with fewer tools still reads an index listing tools it cannot call.
+The child's first message therefore ends with a harness trailer, inside the
+same markers as the result contract, naming the child's strand and parent,
+the sorted list of tools it can call, and that its final message is its
+result, which the parent receives through `agent_wait`. It derives only
+from the minted name and the persisted tool list, so a replayed or
+recovered spawn writes the same bytes. A call outside the active set is
+refused with the strand's active list in the reason (`wiring.clear`).
+
 Not every peer is a child. The harness creates the **advisor** strand
 through `api.create_idle_strand` rather than through the Agency, so the
 advisor has no `lineage/` cell. Its isolation from lineage tools follows
@@ -358,7 +381,7 @@ heading is built from the call or the origin and never from the body.
 The Agency is the only writer: `agent_send` admission and `brief_message` set
 `StrandOrigin(caller.strand)` from the authenticated caller, never from the
 tool arguments, and the model-visible text stays `frame_message` or
-`frame_brief` plus the result contract. The reader and the writer ship in
+`frame_brief` plus the harness trailer (`agency.child_notice`). The reader and the writer ship in
 the same release, so a client that predates both fails a whole session that
 holds one such entry, and older clients must be stopped before that release is
 selected (see [updating](../updating.md)). The origin is attribution and not authority: no

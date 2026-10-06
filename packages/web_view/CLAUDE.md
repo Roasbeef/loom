@@ -868,8 +868,8 @@ page keys and nonces, and the relay into the session's gateway.
   the terminal draws as tool-detail rows; every other row stays a `pre`.
   The three message speakers (`sent-message`, `strand-message`,
   `peer-message`) are among those: their text is a heading line and a
-  body, and a `pre` keeps the heading a line of its own. So are the two
-  program blocks (`program-running`, `program-failure`), whose text is
+  body, and a `pre` keeps the heading a line of its own. So are the three
+  program blocks (`program-running`, `program-settled`, `program-failure`), whose text is
   already laid out line by line, and an image's row (`image-row`).
   The model holds no trees. `lane.view` draws every transcript line and
   card body inside its own `element.memo` keyed on that line or body, with

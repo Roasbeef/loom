@@ -63,6 +63,20 @@
 //// **unclamped** and the door answers with the wall it granted — clamping
 //// here as well would silently cap a job at the foreground ceiling and
 //// no reader of either number could tell which had applied.
+////
+//// ## Flow
+////
+//// `tool` → `run` → `requested_lifetime` → `authorize_wall` → `attended` / `background` / `foreground` → `call_spec` → `settle` → `exited`
+////
+//// 1. `run` decodes the arguments through `requested_mode`, `requested_wake`
+////    and `requested_lifetime`; the last also refuses a subagent's
+////    `lifetime: session` before anything asks for approval.
+//// 2. `authorize_wall` obtains the operator's approval for a background wall
+////    the session base does not already cover, bound to this call.
+//// 3. The mode picks `attended` (auto), `background` or `foreground`; the
+////    first two go through the jobs door, the last clears directly.
+//// 4. `call_spec` builds the broker request, and `settle` turns the
+////    collected output into the result through `exited`.
 
 import broker/broker
 import broker/budget
@@ -79,6 +93,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import tools/agent
 import tools/blob
 import tools/job.{type Jobs}
 import tools/permissions
@@ -221,7 +236,14 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
           "lifetime",
           tool.enum_property(
             ["finite", "session"],
-            "Finite is the default, met with the session sandbox wall (normally 600 seconds). For watchers use session with mode: background and omit timeout_ms: explicitly authorizes no wall deadline, remains cancellable, and stays quiet until completion. Approval may be required.",
+            "finite (the default) runs under the session sandbox wall, normally 600 "
+              <> "seconds. Test runs, builds, and anything expected to finish "
+              <> "use the default; omit this property. session is only for a "
+              <> "watcher or server that must run indefinitely: use it with "
+              <> "mode: background and no timeout_ms. It requests no wall "
+              <> "deadline, stays cancellable and quiet until completion, and "
+              <> "always asks the operator for approval. Subagents cannot use "
+              <> "session.",
           ),
         ),
         #(
@@ -268,7 +290,7 @@ fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use requested <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
   use mode <- tool.with_arg(requested_mode(args))
   use wake <- tool.with_arg(requested_wake(args))
-  use requested <- tool.with_arg(requested_lifetime(args, mode, requested))
+  use requested <- tool.with_arg(requested_lifetime(ctx, args, mode, requested))
 
   // The floor is shared and the ceiling is not: a timeout under a
   // millisecond is nonsense in either mode, while the ceiling belongs to
@@ -294,12 +316,27 @@ fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
 
 // Session lifetime is a distinct request rather than timeout_ms=0, so an
 // invalid finite timeout cannot accidentally disable its enforcement.
+//
+// A subagent may not ask for one at all. Its jobs end with it, so an
+// unbounded wall buys nothing, and it costs an operator approval prompt
+// (`wall_seconds: 0`) that a finite default would never raise: the incident
+// was a subagent running `go test` with `lifetime: session`. The refusal
+// precedes every other check, and so precedes the approval, which is only
+// requested later by `authorize_wall`.
 fn requested_lifetime(
+  ctx: Ctx,
   args: JsonValue,
   mode: Mode,
   requested: Option(Int),
 ) -> Result(Option(Int), String) {
   use lifetime <- result.try(tool.optional_string(args, "lifetime"))
+  use <- bool.guard(
+    when: lifetime == Some("session") && agent.is_subagent(ctx.strand),
+    return: Error(
+      "lifetime: session is not available to a subagent; a subagent's jobs "
+      <> "end with it, so use the default finite lifetime (omit lifetime)",
+    ),
+  )
   case lifetime, mode, requested {
     None, _mode, _wall | Some("finite"), _mode, _wall -> {
       use <- bool.guard(

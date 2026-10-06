@@ -100,6 +100,7 @@ import gleam/result
 import gleam/string
 import tools/blob
 import tools/call_record.{type CallLog}
+import tools/codemode_pointer
 import tools/codemode_recipes
 import tools/directory_access
 import tools/fs
@@ -446,6 +447,12 @@ pub type Execution {
     enforcement: Enforcement,
     refusal: PolicyRefusal,
     calls: CallLog,
+    /// What the harness changed in the submitted program before it ran,
+    /// one line per change, such as `removed unused import gleam/int (line
+    /// 3)`. Empty when the program ran as submitted. The model reads these
+    /// lines on success and on failure, and a diagnostic's line numbers
+    /// then refer to the program after the changes.
+    edits: List(String),
   )
 }
 
@@ -1518,8 +1525,37 @@ pub fn execution_value(execution: Execution) -> JsonValue {
   }
   json.Object([
     #("enforcement", enforcement_json(execution.enforcement)),
-    ..fields
+    ..list.append(edits_fields(execution), fields)
   ])
+}
+
+// The `edits` detail, present only when the harness changed the program.
+fn edits_fields(execution: Execution) -> List(#(String, JsonValue)) {
+  case execution.edits {
+    [] -> []
+    edits -> [#("edits", json.Array(list.map(edits, json.String)))]
+  }
+}
+
+// The edit lines as text after the line they follow, or nothing.
+fn edits_suffix(execution: Execution) -> String {
+  case execution.edits {
+    [] -> ""
+    edits -> "\n" <> string.join(edits, "\n")
+  }
+}
+
+// The same lines on a failure, with the sentence that explains the line
+// numbers beside them: the compiler counted lines in the program after the
+// edits, not in the one submitted.
+fn failed_edits_suffix(execution: Execution) -> String {
+  case execution.edits {
+    [] -> ""
+    _edits ->
+      edits_suffix(execution)
+      <> "\nthe line numbers in the diagnostics are for the program after "
+      <> "these removals"
+  }
 }
 
 // --- rendering the execution ----------------------------------------------
@@ -1536,10 +1572,10 @@ fn render(
 ) -> ToolOutcome {
   case execution.result {
     VetRejected(rejections:) -> vet_outcome(offer, source, rejections)
-    CompileFailed(failure:) -> compile_outcome(ctx, execution, failure)
+    CompileFailed(failure:) -> compile_outcome(ctx, offer, execution, failure)
     RunFailed(failure:) -> run_failed_outcome(execution, failure)
     Ran(outcome:, manifest_hash:) ->
-      ran_outcome(ctx, execution, outcome, manifest_hash)
+      ran_outcome(ctx, offer, execution, outcome, manifest_hash)
   }
 }
 
@@ -1731,8 +1767,12 @@ fn rule_key(rule: Rule) -> String {
 // precise signal in the whole pipeline and the model can act on it
 // directly. Large diagnostics overflow to the blob store like any other
 // oversized tool output (spec §3.2).
+//
+// When the diagnostics name a capability module, one line says which
+// reference to read (`codemode_pointer`).
 fn compile_outcome(
   ctx: Ctx,
+  offer: SeamOffer,
   execution: Execution,
   failure: CompileFailure,
 ) -> ToolOutcome {
@@ -1741,7 +1781,11 @@ fn compile_outcome(
       "build_rejected",
       "the program did not compile and did not run. Fix the diagnostics "
         <> "below; warnings also fail the build:\n"
-        <> diagnostics,
+        <> diagnostics
+        <> pointer_suffix(codemode_pointer.compile_modules(
+        diagnostics,
+        offer.allowed_imports,
+      )),
     )
     WorkspaceSetupFailed(reason:) -> #(
       "workspace_setup_failed",
@@ -1757,13 +1801,28 @@ fn compile_outcome(
     )
   }
   let details =
-    json.Object([
-      #("status", json.String("compile_failed")),
-      #("kind", json.String(kind)),
-      #("detail", json.String(compile_detail(failure))),
-      #("sandbox", enforcement_json(execution.enforcement)),
-    ])
-  bounded_failure(ctx, body <> "\n" <> sandbox_text(execution), details)
+    json.Object(list.append(
+      [
+        #("status", json.String("compile_failed")),
+        #("kind", json.String(kind)),
+        #("detail", json.String(compile_detail(failure))),
+        #("sandbox", enforcement_json(execution.enforcement)),
+      ],
+      edits_fields(execution),
+    ))
+  bounded_failure(
+    ctx,
+    body <> failed_edits_suffix(execution) <> "\n" <> sandbox_text(execution),
+    details,
+  )
+}
+
+// The pointer as a line of its own after the text it belongs to, or nothing.
+fn pointer_suffix(modules: List(String)) -> String {
+  case codemode_pointer.line(modules) {
+    "" -> ""
+    line -> "\n" <> line
+  }
 }
 
 fn compile_detail(failure: CompileFailure) -> String {
@@ -1799,15 +1858,20 @@ fn run_failed_outcome(
       "the satellite's capability channel broke protocol: " <> reason,
     )
   }
-  tool.failure(body <> "\n" <> sandbox_text(execution))
+  tool.failure(
+    body <> edits_suffix(execution) <> "\n" <> sandbox_text(execution),
+  )
   |> tool.with_details(
-    json.Object([
-      #("status", json.String("run_failed")),
-      #("kind", json.String(kind)),
-      #("detail", json.String(run_failure_detail(failure))),
-      #("sandbox", enforcement_json(execution.enforcement)),
-      #("calls", call_record.to_json(execution.calls)),
-    ]),
+    json.Object(list.append(
+      [
+        #("status", json.String("run_failed")),
+        #("kind", json.String(kind)),
+        #("detail", json.String(run_failure_detail(failure))),
+        #("sandbox", enforcement_json(execution.enforcement)),
+        #("calls", call_record.to_json(execution.calls)),
+      ],
+      edits_fields(execution),
+    )),
   )
 }
 
@@ -1827,6 +1891,7 @@ fn run_failure_detail(failure: RunFailure) -> String {
 // `is_error` result: something for the model to react to, not a fault.
 fn ran_outcome(
   ctx: Ctx,
+  offer: SeamOffer,
   execution: Execution,
   outcome: Outcome,
   manifest_hash: String,
@@ -1860,9 +1925,26 @@ fn ran_outcome(
           #("sandbox", enforcement_json(execution.enforcement)),
           #("calls", call_record.to_json(execution.calls)),
         ],
+        edits_fields(execution),
       ]),
     )
-  let text = body <> "\n" <> sandbox_text(execution)
+
+  // A program that completed handled its failed calls itself, so a hint
+  // about them would read as a fault it did not have.
+  let pointer = case is_error {
+    False -> ""
+    True ->
+      pointer_suffix(codemode_pointer.failed_call_modules(
+        execution.calls,
+        offer.allowed_imports,
+      ))
+  }
+  let text =
+    body
+    <> edits_suffix(execution)
+    <> pointer
+    <> "\n"
+    <> sandbox_text(execution)
   case is_error {
     True -> bounded_failure(ctx, text, details)
     False -> bounded_success(ctx, text, details)
@@ -2063,39 +2145,61 @@ fn notes_guidance(seams: Seams) -> String {
 // exact executable programs, not pseudocode that makes the model guess APIs.
 fn recipes_text(seams: Seams) -> String {
   let offers = offered(seams)
-  list.fold(offers, "", fn(text, offer) {
-    let needed = case offer.seam {
-      WorkspaceSeam -> [
-        "cap/fs",
-        "cap/task",
-        "cap/notes",
-        "cap/report",
-        "gleam/list",
-        "gleam/result",
-      ]
-      OrchestrationSeam -> [
-        "cap/strand",
-        "cap/notes",
-        "cap/report",
-        "gleam/list",
-        "gleam/result",
-      ]
-    }
-    case
-      list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) }),
-      offer.seam
-    {
-      False, _ -> text
-      True, WorkspaceSeam ->
-        text
-        <> "\nWorkspace recipe (seam: workspace): read JSON inputs in parallel, save structured analysis, and export JSON.\n```gleam\n"
-        <> codemode_recipes.workspace()
-        <> "```\n"
-      True, OrchestrationSeam ->
-        text
-        <> "\nOrchestration recipe (seam: orchestration): bounded child reviews with structured results saved to notes. Results preserve assignment order; keep pending handles and retry only NotStarted work after prior children settle.\n```gleam\n"
-        <> codemode_recipes.orchestration()
-        <> "```\n"
-    }
-  })
+  let seam_recipes =
+    list.fold(offers, "", fn(text, offer) {
+      let needed = case offer.seam {
+        WorkspaceSeam -> [
+          "cap/fs",
+          "cap/task",
+          "cap/notes",
+          "cap/report",
+          "gleam/list",
+          "gleam/result",
+        ]
+        OrchestrationSeam -> [
+          "cap/strand",
+          "cap/notes",
+          "cap/report",
+          "gleam/list",
+          "gleam/result",
+        ]
+      }
+      case
+        list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) }),
+        offer.seam
+      {
+        False, _ -> text
+        True, WorkspaceSeam ->
+          text
+          <> "\nWorkspace recipe (seam: workspace): read JSON inputs in parallel, save structured analysis, and export JSON.\n```gleam\n"
+          <> codemode_recipes.workspace()
+          <> "```\n"
+        True, OrchestrationSeam ->
+          text
+          <> "\nOrchestration recipe (seam: orchestration): bounded child reviews with structured results saved to notes. Results preserve assignment order; keep pending handles and retry only NotStarted work after prior children settle.\n```gleam\n"
+          <> codemode_recipes.orchestration()
+          <> "```\n"
+      }
+    })
+
+  // One copy however many seams admit the modules it imports.
+  seam_recipes <> lsp_sql_recipe(offers)
+}
+
+// The `lsp_sql` skeleton, when any offer admits every module it imports.
+// It lives here rather than in a module doc because the prelude generator
+// keeps only the prose before a doc's first heading, and a recipe is the
+// one place the description already carries a whole compiling program.
+fn lsp_sql_recipe(offers: List(SeamOffer)) -> String {
+  let needed = ["cap/lsp_sql", "cap/report", "gleam/option", "gleam/string"]
+  let admits = fn(offer: SeamOffer) {
+    list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
+  }
+  case list.any(offers, admits) {
+    False -> ""
+    True ->
+      "\nLSP SQL recipe: capture once, join with SQL, and return every branch as a report.Outcome.\n```gleam\n"
+      <> codemode_recipes.lsp_sql_skeleton()
+      <> "```\n"
+  }
 }

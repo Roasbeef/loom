@@ -159,10 +159,48 @@ pub const tool_names = [
   "agent_wait", "todo",
 ]
 
+/// The tools a child keeps however narrow a `tools` list its parent wrote:
+/// the two that carry words back up. Without them a child told to report
+/// has no way to do so and, in the incident that added this floor, spent
+/// a run issuing no-op calls to "send" a report it did not know the
+/// harness delivers on its own.
+///
+/// Holding them grants no reach the child lacks by default. `agent_send`
+/// is judged by the addressing rule (a strand may address only its parent
+/// or a descendant), and a child at the depth cap has no descendants, so
+/// the parent is the only addressee; and `agent_note` is clamped under
+/// `agent/{caller}/`. The default child set already contains both. The
+/// floor is still limited to what the parent holds, so it never grants a
+/// tool the parent lacks, and it never contains `agent_spawn`, which is
+/// the depth cap.
+pub const child_floor_tools = ["agent_note", "agent_send"]
+
 /// The name of the tool that starts a child. Named as a constant because
 /// the depth cap is enforced structurally by leaving it out of a child's
 /// active set — a tool the model cannot see is one it never tries.
 pub const spawn_tool_name = "agent_spawn"
+
+/// The name prefix every minted subagent strand carries.
+///
+/// The Agency mints `sub:{parent}/{slug}-{digest}` and the runtime routes
+/// on this prefix to give a subagent its own restart budget, so it is the
+/// one durable marker of a child strand. It lives here, below the client,
+/// because a tool that must treat a child differently (`bash` refusing a
+/// session-lifetime job) reads `Ctx.strand` and cannot import the client.
+pub const subagent_prefix = "sub:"
+
+/// Whether a strand name is a minted subagent's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent.is_subagent("sub:main/audit-1a2b")
+/// assert !agent.is_subagent("main")
+/// ```
+///
+pub fn is_subagent(strand: String) -> Bool {
+  string.starts_with(strand, subagent_prefix)
+}
 
 /// The model-writable blackboard prefix. Every `agent_note` key is forced
 /// under `agent/{caller}/` and every `agent_notes` read under `agent/`.
@@ -1410,9 +1448,14 @@ pub fn spawn_tool(
     description: "Start a subagent on a task brief and get a handle back. "
       <> "The child is a strand in this session with its own context; it "
       <> "sees only the brief you write, so write a complete one. Join it "
-      <> "with agent_wait.",
+      <> "with agent_wait: the child's final message is its result, and "
+      <> "agent_wait delivers it. The child can also report mid-run with "
+      <> "agent_send and leave notes with agent_note. To reach a running "
+      <> "child, use agent_send with its strand name.",
     prompt_snippet: Some(
-      "`agent_spawn` starts a subagent on a brief and hands back a handle.",
+      "`agent_spawn` starts a subagent on a brief and hands back a handle; "
+      <> "its final message is its result, delivered by agent_wait, and "
+      <> "agent_send reaches it while it runs.",
     ),
     schema: tool.object_schema(
       [
@@ -1434,7 +1477,10 @@ pub fn spawn_tool(
           "tools",
           tool.string_array_property(
             "a subset of your own tools (you cannot grant what you do not "
-            <> "hold). Defaults to your set minus agent_spawn",
+            <> "hold). Defaults to your set minus agent_spawn. Whatever you "
+            <> "list, the child also keeps agent_send and agent_note when "
+            <> "you hold them, so it can always report to you; the result "
+            <> "names the tools it received",
           ),
         ),
         #(

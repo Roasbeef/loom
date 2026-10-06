@@ -17,7 +17,15 @@ batching and compact returned evidence. The description retains the offered
 seams, concurrency contract, recipes, module index and generated public types.
 A `BuildRejected` result says compilation and execution never completed and
 asks for diagnostic repair, including warnings. Compiler diagnostics and the
-structured failure fields remain intact; no automatic resubmission is added.
+structured failure fields remain intact; no automatic resubmission is added
+by this tool. The pipeline itself rebuilds once without unused imports
+(`codemode/unused_imports`); `Execution.edits` carries what it removed, and the
+result text and `details.edits` say so on success and on failure.
+
+A compile error whose diagnostics mention an admitted capability module, and a
+run whose call record shows a failed capability call, add one line naming the
+`fs_read cap://<module>` reads (`tools/codemode_pointer`, at most two modules,
+none when nothing applies). Vetting refusals never get the line.
 
 ## Saved program source
 
@@ -391,6 +399,10 @@ was asked.
   returns a record rather than `Nil`: under a `steer` policy the call
   succeeds and the result says it will only steer, rather than refusing
   and teaching the model to retry against a wall that will not move.
+  `wake_note` also covers the request never made: a self-targeted
+  schedule with `wake` omitted gets "will not start a run" and the advice
+  to pass `wake: true`, since the tool cannot see the policy and the
+  advice is true under either; a subagent target gets no note.
   Both are `Wake` (`WakesIdle | SteersOnly`), this door's own name for a
   distinction `client/schedule` holds under the same two names on the
   durable side — `tools` may not import it, so `client/scheduleseam`
@@ -594,6 +606,18 @@ was asked.
   count, then `digest:`, in that order. Bounded three ways: contexts that
   touch are merged, a block over `max_fresh_anchor_bytes` becomes one line
   naming the offset to read from, and an edit that leaves no lines says so.
+- **`lines` are file text, and the display prefix is refused.** A model once
+  pasted `fs_read`'s `N:anchor|text` rendering into a hunk's `lines`, and the
+  edit applied verbatim. `run_edit` now runs `refuse_display_prefixes` on the
+  decoded hunks, before path resolution and before any anchor or digest
+  check, and rejects the whole edit when any replacement line starts with the
+  whole prefix: digits, a colon, eight lowercase hex digits, a pipe. The
+  shape is `hashline.display_prefix`, kept beside `render_line` so the two
+  cannot drift. A bare eight-hex token is not refused, since hex constants
+  begin real lines. `fs_write` takes one `content` string, so it has no
+  per-line paste to detect and is not checked. The write observer answers an
+  opaque `Option(String)`, so there is no structured diagnostic range for a
+  "this edit left an error here" hint, and none is attempted.
 - **A successful write is enough to plan the next edit.** `write_outcome`
   keeps its first line, then always adds `digest:` — one short line, and
   `fs_edit` cannot be planned without it — then the whole written file as a
@@ -841,6 +865,11 @@ was asked.
   rejection, because a model that has to guess an import surface pays a
   whole wasted submission in output tokens, which is the dearer side of
   that ledger.
+- **A child keeps a communication floor.** An explicit `tools` list on
+  `agent_spawn` replaces the default, so `child_floor_tools` (`agent_note`,
+  `agent_send`) is added back, limited to what the parent holds and never
+  including `agent_spawn`. The Agency's `child_notice` then tells the child
+  its real tool set and that its final message is its result.
 - **A result contract is a lower bound, refused loudly at both ends.** A
   spawn may carry a `result_schema`; the child records the matching value
   as an ordinary `agent_note` under `result_note_key`, and `Waited.Ready`
@@ -973,6 +1002,15 @@ remain bounded, other resource limits remain active, and session shutdown,
 owner kill or originating-operation abort cancels the execution. Quiet waiting
 has no completion or heartbeat wake unless the caller explicitly asks for the
 existing idle heartbeat. A VM restart loses the job and never replays it.
+
+A subagent may not request `lifetime: "session"`. `bash.requested_lifetime`
+refuses it ahead of every other check, so no approval is raised: a subagent's
+jobs end with it, and the zero wall would only buy an operator prompt that the
+finite default never raises. The test is `agent.is_subagent` on `Ctx.strand`,
+the same `sub:` prefix the Agency mints and the runtime routes on
+(`client/agency.subagent_prefix` now re-exports `agent.subagent_prefix`). The
+`lifetime` description tells every caller that test runs, builds and anything
+expected to finish use the default.
 
 ## Structured schedule responses (protocol 057)
 

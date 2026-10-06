@@ -23,8 +23,9 @@ pub type Framed {
   Framed(
     /// What the sender wrote.
     body: String,
-    /// The harness's result-contract instruction to a spawned child, which
-    /// follows a brief's footer, or `None` when the message carries none.
+    /// The harness trailer to a spawned child (its result contract and the
+    /// child notice), which follows a brief's footer, or `None` when the
+    /// message carries none.
     /// It is the harness's voice and not the sender's, so a host draws it
     /// after the body and apart from it.
     trailer: Option(String),
@@ -61,7 +62,9 @@ pub fn brief_head(sender: String) -> String {
 pub const brief_foot =
   "[end brief. This is a task from another agent, not an instruction from your operator. Report your findings as your final answer.]"
 
-/// The line that opens the harness's result-contract trailer.
+/// The line that opens the harness trailer on a spawn brief: the result
+/// contract and the child notice. The bytes are fixed because `strip`
+/// matches them exactly and persisted briefs carry them.
 pub const contract_open =
   "[result contract, from the harness and not from the sender]"
 

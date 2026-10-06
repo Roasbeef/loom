@@ -107,7 +107,7 @@ fn counting_clock(from: Int, by: Int) -> Clock {
 }
 
 fn tools_of_main() -> List(String) {
-  ["agent_note", "agent_spawn", "agent_wait", "bash", "fs_read"]
+  ["agent_note", "agent_send", "agent_spawn", "agent_wait", "bash", "fs_read"]
 }
 
 fn configuration() -> machine_strand.StrandConfiguration {
@@ -620,8 +620,8 @@ pub fn an_explicit_spawn_model_reaches_the_first_request_test() {
     as "explicit selection overrides both the parent and subagent route"
   assert dispatched.thinking_level == machine_strand.ThinkingHigh
     as "the selected catalogue entry seeds thinking before dispatch"
-  assert dispatched.active_tool_names == ["fs_read"]
-    as "model selection must preserve tool narrowing"
+  assert dispatched.active_tool_names == ["agent_note", "agent_send", "fs_read"]
+    as "model selection must preserve tool narrowing and the floor"
 
   let assert Ok(Some(session.Cell(value: child, ..))) =
     session.strand_configuration(harness.runtime.session, spawned.strand)
@@ -716,7 +716,7 @@ pub fn a_spawn_may_narrow_its_tools_but_never_widen_them_test() {
       agent.SpawnRequest(..a_spawn("narrow"), tools: Some(["fs_read"])),
     )
     as "narrowing must be accepted"
-  assert spawned.tools == ["fs_read"]
+  assert spawned.tools == ["agent_note", "agent_send", "fs_read"]
   // A name the parent does not hold is a refusal, not a silent drop.
   assert harness.seam.spawn(
       caller_on("main", "turn-1:tools", 1),
@@ -724,6 +724,122 @@ pub fn a_spawn_may_narrow_its_tools_but_never_widen_them_test() {
     )
     == Error(agent.UnknownTool(name: "fs_write"))
   close(harness)
+}
+
+pub fn an_explicit_tool_list_keeps_the_parents_messaging_tools_test() {
+  // The incident: a parent listed bash and fs_read, the list replaced the
+  // default, and the child lost agent_send and agent_note while its
+  // system prompt still listed them.
+  let harness = start_harness(Settles("done"))
+  let assert Ok(spawned) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      agent.SpawnRequest(..a_spawn("narrow"), tools: Some(["bash"])),
+    )
+    as "a narrowed spawn must be accepted"
+  assert spawned.tools == ["agent_note", "agent_send", "bash"]
+  let assert Ok(Some(session.Cell(value: child_configuration, ..))) =
+    session.strand_configuration(harness.runtime.session, spawned.strand)
+  assert child_configuration.active_tool_names == spawned.tools
+  close(harness)
+}
+
+pub fn the_floor_never_includes_the_spawn_tool_test() {
+  let harness = start_harness(Settles("done"))
+  let assert Ok(spawned) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      agent.SpawnRequest(..a_spawn("narrow"), tools: Some(["fs_read"])),
+    )
+    as "a narrowed spawn must be accepted"
+  assert !list.contains(spawned.tools, "agent_spawn")
+  assert agent.child_floor_tools == ["agent_note", "agent_send"]
+  close(harness)
+}
+
+pub fn the_floor_never_grants_a_tool_the_parent_lacks_test() {
+  let harness = start_harness(Settles("done"))
+  let assert Ok(Nil) =
+    session.ensure_strand(
+      harness.runtime.session,
+      "limited",
+      machine_strand.StrandConfiguration(..configuration(), active_tool_names: [
+        "agent_spawn",
+        "bash",
+      ]),
+    )
+    as "the limited parent must be seeded"
+  let assert Ok(spawned) =
+    harness.seam.spawn(
+      caller_on("limited", "turn-1:tools", 0),
+      agent.SpawnRequest(..a_spawn("narrow"), tools: Some(["bash"])),
+    )
+    as "a narrowed spawn must be accepted"
+  assert spawned.tools == ["bash"]
+  close(harness)
+}
+
+pub fn a_default_spawn_set_is_unchanged_by_the_floor_test() {
+  let harness = start_harness(Settles("done"))
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), a_spawn("plain"))
+    as "a default spawn must be accepted"
+  assert spawned.tools
+    == ["agent_note", "agent_send", "agent_wait", "bash", "fs_read"]
+  close(harness)
+}
+
+pub fn the_child_is_told_what_it_can_call_and_how_its_result_travels_test() {
+  let seen = process.new_subject()
+  let harness = start_harness(Watches("done", seen))
+  let assert Ok(spawned) =
+    harness.seam.spawn(
+      caller_on("main", "turn-1:tools", 0),
+      agent.SpawnRequest(..a_spawn("narrow"), tools: Some(["fs_read", "bash"])),
+    )
+    as "a narrowed spawn must be accepted"
+  let assert Ok(context) = process.receive(seen, within: 2000)
+    as "the child's model must be called"
+  let said = context_text(context)
+  assert string.contains(said, "You are strand `" <> spawned.strand <> "`")
+  assert string.contains(said, "a subagent of `main`")
+  assert string.contains(
+    said,
+    "you can call only: agent_note, agent_send, bash, fs_read.",
+  )
+  assert string.contains(said, "Your final message is your result.")
+  assert string.contains(said, "through agent_wait")
+  close(harness)
+}
+
+pub fn a_notice_is_sorted_and_stable_across_calls_test() {
+  let facts =
+    agency.ChildFacts(
+      parent: "main",
+      strand: "sub:main/x-0123456789abcdef",
+      tools: ["fs_read", "bash", "agent_send", "bash"],
+    )
+  let reversed = agency.ChildFacts(..facts, tools: list.reverse(facts.tools))
+  assert agency.child_notice(facts, None) == agency.child_notice(reversed, None)
+  assert string.contains(
+    agency.child_notice(facts, None),
+    "you can call only: agent_send, bash, fs_read.",
+  )
+}
+
+pub fn a_notice_names_the_caller_as_parent_test() {
+  // The parent is the authenticated caller, taken as given and never
+  // parsed back out of the child's name.
+  let notice =
+    agency.child_notice(
+      agency.ChildFacts(
+        parent: "sub:main/a-0123456789abcdef",
+        strand: "sub:sub:main/a-0123456789abcdef/b-fedcba9876543210",
+        tools: [],
+      ),
+      None,
+    )
+  assert string.contains(notice, "a subagent of `sub:main/a-0123456789abcdef`.")
 }
 
 pub fn a_spawn_with_an_unusable_purpose_is_refused_test() {
@@ -1152,11 +1268,22 @@ pub fn the_framing_bytes_match_what_the_hosts_strip_test() {
       ]),
     )
     as "a minimal result schema parses"
-  let contract = agency.result_contract(Some(schema))
+  let contract =
+    agency.child_notice(
+      agency.ChildFacts(
+        parent: "main",
+        strand: "sub:main/x-0123456789abcdef",
+        tools: ["agent_note"],
+      ),
+      Some(schema),
+    )
   assert string.starts_with(
     contract,
-    "\n[result contract, from the harness and not from the sender]\n"
-      <> "Before you finish, record your result with agent_note under the key `",
+    "\n[result contract, from the harness and not from the sender]\n",
+  )
+  assert string.contains(
+    contract,
+    "\nBefore you finish, record your result with agent_note under the key `",
   )
   assert string.ends_with(contract, "\n[end result contract]")
 
@@ -1885,16 +2012,36 @@ fn sent_by(
 pub fn a_spawn_brief_carries_the_callers_strand_origin_test() {
   let harness = start_harness(Hangs)
   let caller = caller_on("main", "turn-1:tools", 0)
-  let assert Ok(_) = harness.seam.spawn(caller, a_spawn("plain"))
+  let assert Ok(first) = harness.seam.spawn(caller, a_spawn("plain"))
     as "a brief without a schema must spawn"
-  let assert Ok(_) =
+  let assert Ok(second) =
     harness.seam.spawn(
       caller_on("main", "turn-1:tools", 1),
       a_spawn_wanting("schema"),
     )
     as "a brief with a schema must spawn"
-  let plain = agency.frame_brief(from: "main", body: "read the file and report")
-  let wanting = plain <> agency.result_contract(Some(a_schema()))
+  let framed =
+    agency.frame_brief(from: "main", body: "read the file and report")
+  let plain =
+    framed
+    <> agency.child_notice(
+      agency.ChildFacts(
+        parent: "main",
+        strand: first.strand,
+        tools: first.tools,
+      ),
+      None,
+    )
+  let wanting =
+    framed
+    <> agency.child_notice(
+      agency.ChildFacts(
+        parent: "main",
+        strand: second.strand,
+        tools: second.tools,
+      ),
+      Some(a_schema()),
+    )
   let held = strand_attributed(harness)
   assert list.map(held, text_of) |> list.sort(string.compare)
     == list.sort([plain, wanting], string.compare)
@@ -1959,10 +2106,10 @@ pub fn agent_send_carries_the_callers_strand_origin_downward_and_upward_test() {
   close(harness)
 }
 
-pub fn a_spawn_with_no_schema_behaves_exactly_as_before_test() {
-  // The compatibility floor. No contract cell, nothing appended to the
-  // brief, and a join that reports no verdict at all rather than an
-  // invented empty one.
+pub fn a_spawn_with_no_schema_carries_the_notice_but_no_schema_clause_test() {
+  // No contract cell, no schema clause in the trailer, and a join that
+  // reports no verdict at all rather than an invented empty one. The
+  // trailer itself is always present and tells the child its tools.
   let seen = process.new_subject()
   let harness = start_harness(Watches("done", seen))
   let caller = caller_on("main", "turn-1:tools", 0)
@@ -1972,10 +2119,12 @@ pub fn a_spawn_with_no_schema_behaves_exactly_as_before_test() {
     == Ok(None)
   let assert Ok(context) = process.receive(seen, within: 2000)
     as "the child's model must be called"
-  assert !string.contains(context_text(context), "result contract")
+  // The trailer now always names the child's tools, but a spawn that
+  // asked for no schema carries no schema clause.
+  assert string.contains(context_text(context), "you do not need to send it")
+  assert !string.contains(context_text(context), "Before you finish")
   let assert agent.Ready(result:, ..) = joined(harness, caller, child.handle)
   assert result == agent.NoResultAsked
-  assert agency.result_contract(None) == ""
   close(harness)
 }
 

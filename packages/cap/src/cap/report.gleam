@@ -413,3 +413,18 @@ pub fn decode_json(text: String) -> Result(Value, String) {
 pub fn encode_json(value: Value) -> Result(String, String) {
   json_wire.to_json(value) |> result.map(json.to_string)
 }
+
+/// A one-line rendering of a `ReportError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert report.error_text(report.EmitUnavailable("no channel")) == "emit unavailable: no channel"
+/// ```
+///
+pub fn error_text(error: ReportError) -> String {
+  case error {
+    EmitDenied(code:, message:) -> code <> ": " <> message
+    EmitUnavailable(reason:) -> "emit unavailable: " <> reason
+  }
+}

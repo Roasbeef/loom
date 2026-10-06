@@ -1190,8 +1190,8 @@ catalogue without opening runtimes. Explicit admission invokes
   explicit choices as identity/thinking pairs. An optional spawn `model`
   selects one by catalogue name before consulting this default route.
 - `client/agency.{Config, Message, seam, start, reaping_hooks,
-  child_name, is_subagent, frame_message, frame_brief, result_contract,
-  result_schema_prefix}` — the Agency:
+  child_name, is_subagent, frame_message, frame_brief,
+  child_notice, ChildFacts, result_schema_prefix}` — the Agency:
   `tools/agent`'s messaging seam implemented over a live runtime. `seam`
   closes over a process *name* so it can be built before `api.open`;
   `start` puts the returned runtime behind that name. Everything with
@@ -5200,7 +5200,7 @@ The entry codec and provider projection preserve peer attribution after replay.
 See [async architecture](../../docs/architecture/async-collaboration.md) for
 custody, readiness, delivery and exclusive invocation boundaries.
 
-The Agency's `frame_message`, `frame_brief` and `result_contract` build their
+The Agency's `frame_message`, `frame_brief` and `child_notice` build their
 head, foot and contract lines from `session_view/strand_framing`, the one
 definition the hosts also strip. Protocol-change 059's reader draws `StrandOrigin` and the writer sets it
 in the same release: `agency.brief_message` and the

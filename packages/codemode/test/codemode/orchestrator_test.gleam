@@ -17,6 +17,8 @@ import codemode/vet/policy as vet_policy
 import core/clock
 import core/ids
 import core/msgpack
+import gleam/erlang/process
+import gleam/list
 import gleam/string
 import simplifile
 import support/fake_helper
@@ -187,4 +189,123 @@ pub fn a_peer_that_ran_no_node_is_never_read_as_confined_test() {
   let assert codemode.Ran(..) = execution.outcome
   let assert enforcement.Unreported(node) = execution.enforcement.node
   assert string.contains(node, "no jailed node")
+}
+
+// --- one rewrite for unused imports -----------------------------------------
+
+const unused_int_diagnostics =
+  "  Compiling loom_codemode_program
+warning: Unused imported module
+  ┌─ /b/src/loom_program.gleam:2:1
+  │
+2 │ import gleam/int
+  │ ^^^^^^^^^^^^^^^^ This imported module is never used
+
+Hint: You can safely remove it.
+
+error: 1 warning generated.
+
+Your project was compiled with the `--warnings-as-errors` flag.
+Fix the warnings and try again."
+
+const unused_int_source =
+  "import cap/fs
+import gleam/int
+pub fn main() { fs.read(\"x\") }
+"
+
+// A builder that records the program it was given on every call and answers
+// from a script, one answer per call, so a test can say how many builds ran
+// and what each one compiled.
+fn scripted_builder(
+  answers: List(Result(compile.BuildProducts, compile.CompileError)),
+  seen: process.Subject(String),
+) -> compile.Builder {
+  let remaining = process.new_subject()
+  process.send(remaining, answers)
+  fn(_phase, root, _generated) {
+    let assert Ok(program) = simplifile.read(root <> "/src/loom_program.gleam")
+    process.send(seen, program)
+    let assert Ok([answer, ..rest]) = process.receive(remaining, 100)
+    process.send(remaining, rest)
+    compile.Built(result: answer, enforcement: build_report())
+  }
+}
+
+fn built(hash: String) -> Result(compile.BuildProducts, compile.CompileError) {
+  Ok(compile.BuildProducts(beam_dir: "ebin", manifest_hash: hash))
+}
+
+fn drain(seen: process.Subject(String)) -> List(String) {
+  case process.receive(seen, 0) {
+    Ok(program) -> [program, ..drain(seen)]
+    Error(Nil) -> []
+  }
+}
+
+pub fn unused_imports_alone_are_removed_and_rebuilt_once_test() {
+  let seen = process.new_subject()
+  let builder =
+    scripted_builder(
+      [
+        Error(compile.BuildRejected(diagnostics: unused_int_diagnostics)),
+        built("cafe"),
+      ],
+      seen,
+    )
+  let config = exec_config(fresh_dir("unused-ok"), builder, reporting_peer())
+  let execution = codemode.execute(unused_int_source, config)
+
+  // What ran is the rewritten program: it is what the second build
+  // compiled, what the outcome carries as the program, and what the
+  // artifact's address was taken over.
+  let rewritten = "import cap/fs\npub fn main() { fs.read(\"x\") }\n"
+  let assert codemode.Ran(source:, artifact:, outcome: _) = execution.outcome
+  assert source == rewritten
+  assert artifact.manifest_hash == "cafe"
+  assert drain(seen) == [unused_int_source, rewritten]
+  assert execution.edits == ["removed unused import gleam/int (line 2)"]
+}
+
+pub fn a_rebuild_that_still_fails_reports_the_second_diagnostics_test() {
+  let seen = process.new_subject()
+  let builder =
+    scripted_builder(
+      [
+        Error(compile.BuildRejected(diagnostics: unused_int_diagnostics)),
+        Error(compile.BuildRejected(diagnostics: "type error on line 2")),
+      ],
+      seen,
+    )
+  let config = exec_config(fresh_dir("unused-fail"), builder, reporting_peer())
+  let execution = codemode.execute(unused_int_source, config)
+
+  // Exactly two builds: the rewrite is never repeated.
+  let assert codemode.CompileFailed(compile.BuildRejected(diagnostics:)) =
+    execution.outcome
+  assert diagnostics == "type error on line 2"
+  assert list.length(drain(seen)) == 2
+  assert execution.edits == ["removed unused import gleam/int (line 2)"]
+}
+
+pub fn any_other_failure_is_not_rewritten_test() {
+  let seen = process.new_subject()
+  let builder =
+    scripted_builder(
+      [Error(compile.BuildRejected(diagnostics: "type error"))],
+      seen,
+    )
+  let config = exec_config(fresh_dir("unused-other"), builder, reporting_peer())
+  let execution = codemode.execute(unused_int_source, config)
+  let assert codemode.CompileFailed(compile.BuildRejected(
+    diagnostics: "type error",
+  )) = execution.outcome
+  assert drain(seen) == [unused_int_source]
+  assert execution.edits == []
+}
+
+pub fn a_program_that_built_the_first_time_has_no_edits_test() {
+  let config = exec_config(fresh_dir("no-edits"), ok_builder, reporting_peer())
+  let execution = codemode.execute(unused_int_source, config)
+  assert execution.edits == []
 }

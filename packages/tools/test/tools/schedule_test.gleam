@@ -418,3 +418,146 @@ pub fn a_clamped_wake_names_the_operator_setting_test() {
   assert string.contains(text, "[schedules] model_created = \"wake\"")
   assert string.contains(text, "subagents always steer")
 }
+
+// --- the confirmation says when a heartbeat will not wake -------------------
+
+// A create seam that grants `granted` whatever was asked and lands on
+// `target`, so each test fixes the two facts the confirmation depends on
+// besides what the model wrote.
+fn created_text(
+  target target: String,
+  granted granted: schedule.Wake,
+  args args: List(#(String, JsonValue)),
+) -> String {
+  let schedules =
+    schedule.Schedules(
+      ..accepting(),
+      create: fn(_ctx: tool.Ctx, request: schedule.Request) {
+        Ok(schedule.Created(
+          name: request.name,
+          target:,
+          when: describe(request),
+          cadence: schedule.OneShotCadence(at_unix_s: 2000),
+          wake: granted,
+        ))
+      },
+    )
+  let assert Ok(create) =
+    list.find(schedule.tools(schedules, limits()), fn(candidate: tool.Tool) {
+      candidate.name == schedule.create_tool_name
+    })
+    as "the creation tool must be registered"
+  let outcome =
+    create.run(
+      a_ctx(),
+      list.append(
+        [
+          #("name", json.String("pr843-ci-watch")),
+          #("body", json.String("re-check CI")),
+          #("in_seconds", json.Int(900)),
+        ],
+        args,
+      )
+        |> json.Object,
+    )
+  assert !outcome.is_error
+  text_of(outcome)
+}
+
+// The incident: a one-shot onto the model's own strand, wake omitted. The
+// confirmation used to say nothing, so the model ended its turn believing
+// it had set a wake-up.
+pub fn an_omitted_wake_on_its_own_strand_says_it_will_not_start_a_run_test() {
+  let text =
+    created_text(target: "main", granted: schedule.SteersOnly, args: [])
+  assert string.contains(text, "It will not start a run")
+  assert string.contains(text, "waits for your next prompt")
+  assert string.contains(text, "create it with wake: true")
+  assert string.contains(text, "the result says whether waking was granted")
+}
+
+// An explicit `wake: false` is the same request as an omitted one.
+pub fn an_explicit_false_wake_gets_the_same_note_test() {
+  let text =
+    created_text(target: "main", granted: schedule.SteersOnly, args: [
+      #("wake", json.Bool(False)),
+    ])
+  assert string.contains(text, "It will not start a run")
+}
+
+// Asked and refused keeps the operator-facing note, and does not also
+// carry the advice to pass `wake: true`, which the model just did.
+pub fn a_refused_wake_keeps_the_operator_note_only_test() {
+  let text =
+    created_text(target: "main", granted: schedule.SteersOnly, args: [
+      #("wake", json.Bool(True)),
+    ])
+  assert string.contains(text, "Waking was not granted")
+  assert string.contains(text, "[schedules] model_created = \"wake\"")
+  assert !string.contains(text, "create it with wake: true")
+}
+
+// Asked and granted needs no note at all.
+pub fn a_granted_wake_adds_no_note_test() {
+  let text =
+    created_text(target: "main", granted: schedule.WakesIdle, args: [
+      #("wake", json.Bool(True)),
+    ])
+  assert !string.contains(text, "will not start a run")
+  assert !string.contains(text, "Waking was not granted")
+}
+
+// A schedule onto a spawned strand always steers by design, and no
+// argument changes that, so advising `wake: true` would be wrong.
+pub fn a_subagent_target_with_wake_omitted_adds_no_note_test() {
+  let text =
+    created_text(target: "child", granted: schedule.SteersOnly, args: [
+      #("target", json.String("child")),
+    ])
+  assert string.contains(text, " onto child")
+  assert !string.contains(text, "will not start a run")
+  assert !string.contains(text, "wake: true")
+}
+
+// --- the descriptions name the common case ----------------------------------
+
+pub fn the_wake_parameter_names_the_check_back_heartbeat_test() {
+  let schema = schema_text()
+  assert string.contains(schema, "re-check CI in 15 minutes")
+  assert string.contains(schema, "needs `wake: true`")
+}
+
+pub fn the_tool_description_says_a_plain_heartbeat_does_not_wake_test() {
+  assert string.contains(
+    create_tool().description,
+    "does not wake an idle strand either",
+  )
+  let assert Some(snippet) = create_tool().prompt_snippet
+  assert string.contains(snippet, "does not wake an idle strand")
+}
+
+// --- the listing does not read a steer-only schedule as delivered -----------
+
+pub fn a_listed_steer_only_schedule_says_held_is_not_fired_test() {
+  let listed =
+    schedule.Listed(
+      name: "pr843-ci-watch",
+      target: "main",
+      when: "once at 2026-10-05T10:00:00Z",
+      cadence: schedule.OneShotCadence(at_unix_s: 2000),
+      wake: schedule.SteersOnly,
+      fired: 1,
+      body: "re-check CI",
+    )
+  let schedules =
+    schedule.Schedules(..accepting(), list: fn(_ctx) { Ok([listed]) })
+  let assert Ok(list_tool) =
+    list.find(schedule.tools(schedules, limits()), fn(candidate: tool.Tool) {
+      candidate.name == schedule.list_tool_name
+    })
+    as "the listing tool must be registered"
+  let text = text_of(list_tool.run(a_ctx(), json.Object([])))
+  assert string.contains(text, "never wakes an idle strand")
+  assert string.contains(text, "held, and is not counted as fired")
+  assert string.contains(text, "fired 1 time(s)")
+}

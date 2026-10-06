@@ -405,7 +405,7 @@ entry points above gain the parameter with it.
 reducers decide. Every `Channel` effect comes through `hold_channel`
 (`session_view/model.gleam:897` (`hold_channel`)), and the one `Record` a shared
 reducer queues is the channelless arrival
-(`session_view/lane_fold.gleam:1083` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
+(`session_view/lane_fold.gleam:1110` (`receive_unlaned`), the arrival of a message with no lane). The input's own recording line is queued by `start_step` before
 the reducer runs
 (`tui/model.gleam:1189` (`start_step`)); the terminal's shell keeps
 queuing it, ahead of the shared call, so the recording's order holds. The
@@ -548,7 +548,7 @@ reducer keeps its decision and drops the terminal write. The terminal
 shell, after the shared call, compares `before.shared` with
 `after.shared` and makes the terminal write itself. This is the shape
 `surfaces.sync_context(before, after)` already has
-(`session_view/surfaces.gleam:972` (`sync_context`)) and the shape
+(`session_view/surfaces.gleam:1047` (`sync_context`)) and the shape
 `refresh_render_cache(before, after)` has (`tui/projection.gleam:72`
 (`refresh_render_cache`)); the shell gains one more before-and-after
 pass beside them. It is right when the terminal write is a consequence of
@@ -596,7 +596,7 @@ The worst cases in the code, and the cut for each:
    `before.shared.peer == Attached && after.shared.peer == Disconnected`
    closes the overlay and starts the job, which is a `StartJob` the
    terminal already owns. The same edge covers the arm of
-   `handle_presentation_message` for `Closed` (`session_view/lane_fold.gleam:1096` (`receive_unlaned`)).
+   `handle_presentation_message` for `Closed` (`session_view/lane_fold.gleam:1120` (`receive_unlaned`)).
    *As landed (S3d′):* recorded facts rather than a comparison of `peer`:
    `GoalReleased` and `ConnectionLost` on `Failed`, `ConnectionLost` on
    `Closed`, applied after the update.

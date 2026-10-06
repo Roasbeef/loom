@@ -78,8 +78,8 @@ import session_view/tool_activity
 import session_view/transcript_line.{
   type CacheNotice, type Line, type Speaker, type Stream, type Submission,
   type ToolTail, Assistant, Failure, HeldPrompt, ImageRow, Interjection, Line,
-  PeerMessage, ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest,
-  SentMessage, Spacer, StrandMessage, Stream, SummarizedAdvice,
+  PeerMessage, ProgramFailure, ProgramRunning, ProgramSettled, Reasoning,
+  ReasoningDigest, SentMessage, Spacer, StrandMessage, Stream, SummarizedAdvice,
   SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
   ToolPatch, ToolResult, User,
 }
@@ -1418,6 +1418,7 @@ pub fn closes_bare(speaker: Speaker) -> Bool {
     | SummarizedReasoning
     | ProgramRunning
     | ProgramFailure
+    | ProgramSettled
     | ImageRow(..) -> True
     System
     | ToolGroup
@@ -1445,6 +1446,7 @@ pub fn opens_bare(rows: List(Line), opening: GroupOpening) -> Bool {
     [Line(speaker: ToolCall, ..), ..] -> True
     [Line(speaker: ProgramRunning, ..), ..] -> True
     [Line(speaker: ProgramFailure, ..), ..] -> True
+    [Line(speaker: ProgramSettled, ..), ..] -> True
     [Line(speaker: ReasoningDigest, ..), ..] -> True
 
     // A turn, an answer and a message between agents end in a blank row
@@ -1845,9 +1847,11 @@ fn sent_lines(
 // The rows a compact `code_mode` call becomes, from its program and the
 // result joined to it, or an error for a call that is not a foreground
 // program, which leaves it to the generic rows. A program that completed
-// is one row with its value; one that failed is a titled block with the
-// error; one with no result yet is a titled block with the opening of its
-// program, which is all the client receives while it runs.
+// is a titled block with its calls and a preview of its value; one that
+// failed is a titled block with the error; one with no result yet is a
+// titled block with the opening of its program, which is all the client
+// receives while it runs. All three share one frame, so a program settling
+// replaces the words in its block and does not swap the block for a row.
 fn program_lines(
   call: message.ToolCall,
   outcome: Option(message.AgentMessage),
@@ -1860,6 +1864,14 @@ fn program_lines(
     string_field(fields, "program"),
     Nil,
   ))
+
+  // A launch carries a program too, but its result is a handle: the program
+  // was admitted, not run, so neither a running block nor a completed one
+  // would say what happened. It keeps the generic rows.
+  use <- bool.guard(
+    when: string_field(fields, "mode") |> option.unwrap("run") != "run",
+    return: Error(Nil),
+  )
   case outcome {
     None -> Ok([Line(ProgramRunning, running_text(program, fields))])
     Some(message.ToolResultMessage(
@@ -1867,7 +1879,7 @@ fn program_lines(
       details: Some(json.Object(details)),
       content:,
       ..,
-    )) -> Ok([Line(ToolCall, "✓ " <> settled_text(details, content))])
+    )) -> Ok([Line(ProgramSettled, settled_text(program, details, content))])
     Some(message.ToolResultMessage(
       is_error: True,
       details: Some(json.Object(details)),
@@ -1884,24 +1896,106 @@ const fragment_lines = 4
 // How many lines of an error a failure block shows.
 const error_lines = 4
 
-// A settled program's one row: its status and its value, cut to a row.
+// A settled program's block: its status and call count in the title, the
+// time it ran for in the foot, the same opening of the program a running
+// block showed, the calls the host recorded, and a preview of the value.
+// A result with no readable call record has no calls section and no
+// elapsed time, and a result with no `value` previews its text as a string.
 fn settled_text(
+  program: String,
   details: List(#(String, json.JsonValue)),
   content: List(message.ToolResultBlock),
 ) -> String {
   let status = string_field(details, "status") |> option.unwrap("completed")
   let value = case list.key_find(details, "value") {
-    Ok(value) -> json.to_string(value)
-    Error(Nil) -> content |> list.map(tool_result_text) |> string.join("\n")
+    Ok(value) -> value
+    Error(Nil) ->
+      json.String(content |> list.map(tool_result_text) |> string.join("\n"))
   }
-  let calls = case call_tree.read(json.Object(details)) {
-    Some(log) -> " · " <> call_count(log)
-    None -> ""
+
+  // The record decides three parts of the block at once, so it is read
+  // once: the count in the title, the foot, and the calls section.
+  let #(count, foot, calls) = case call_tree.read(json.Object(details)) {
+    Some(log) -> #(
+      " · " <> call_count(log),
+      "ran for " <> seconds_text(log.elapsed_ms),
+      call_section(log),
+    )
+    None -> #("", "", [])
   }
-  "code_mode · " <> status <> calls <> " · result " <> compact(value, 90)
+  [
+    "✓ code_mode · " <> status <> count,
+    foot,
+    ..list.flatten([
+      program_body(program),
+      calls,
+      [""],
+      value_preview(value),
+    ])
+  ]
+  |> string.join("\n")
 }
 
-// A record's count as a settled row says it: `4 calls` when every call
+// How many keys of an object result a settled block names.
+const preview_keys = 3
+
+/// The rows a settled program's value is previewed as: a `RESULT` row
+/// saying what kind of value it is, and under it a hint per top-level key
+/// of an object or for the first element of a list, so a reader sees the
+/// shape of what came back instead of a JSON document cut mid-string. A
+/// scalar is shown as it is. The preview is at most `preview_keys + 2` rows
+/// however large the value is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert transcript_lines.value_preview(json.Array([json.Int(1)]))
+///   == ["RESULT · list · 1 item", "  first: 1"]
+/// ```
+@internal
+pub fn value_preview(value: json.JsonValue) -> List(String) {
+  case value {
+    json.Object([]) -> ["RESULT · {}"]
+    json.Object(fields) -> {
+      let unshown = list.length(fields) - preview_keys
+      let more = case unshown > 0 {
+        True -> ["  … " <> count_text(unshown, "more key", "more keys")]
+        False -> []
+      }
+      let rows =
+        fields
+        |> list.take(preview_keys)
+        |> list.map(fn(field) {
+          "  " <> compact(field.0, 40) <> ": " <> value_hint(field.1)
+        })
+      [
+        "RESULT · object · " <> count_text(list.length(fields), "key", "keys"),
+        ..list.append(rows, more)
+      ]
+    }
+    json.Array([]) -> ["RESULT · []"]
+    json.Array([first, ..] as items) -> [
+      "RESULT · list · " <> count_text(list.length(items), "item", "items"),
+      "  first: " <> value_hint(first),
+    ]
+    json.String(text) -> ["RESULT · \"" <> compact(text, 88) <> "\""]
+    scalar -> ["RESULT · " <> compact(json.to_string(scalar), 90)]
+  }
+}
+
+// A value in a few words: a string quoted and cut, a collection by its kind
+// and size, anything else as it is written.
+fn value_hint(value: json.JsonValue) -> String {
+  case value {
+    json.String(text) -> "\"" <> compact(text, 40) <> "\""
+    json.Array(items) -> "list(" <> int.to_string(list.length(items)) <> ")"
+    json.Object(fields) ->
+      "object(" <> count_text(list.length(fields), "key", "keys") <> ")"
+    scalar -> compact(json.to_string(scalar), 40)
+  }
+}
+
+// A record's count as a settled block's title says it: `4 calls` when every call
 // settled, and the record's whole summary when any did not.
 fn call_count(log: CallLog) -> String {
   case log.failed + log.cancelled + log.unsettled {
@@ -2050,30 +2144,18 @@ fn seconds_text(ms: Int) -> String {
   }
 }
 
-// A running block: the title, the foot naming the budget the call asked
-// for, and the opening of the program, each shown line under its own
-// number. Blank lines are skipped, so the lines shown are ones that say
-// something.
-fn running_text(
-  program: String,
-  fields: List(#(String, json.JsonValue)),
-) -> String {
+// A program's opening as a block's body shows it, running or settled: a
+// `PROGRAM` row counting the program's lines and then the opening lines,
+// each under its own number. Blank lines are skipped, so the lines shown
+// are ones that say something.
+fn program_body(program: String) -> List(String) {
   let lines = string.split(string.trim_end(program), "\n")
   let shown =
     lines
     |> list.index_map(fn(line, index) { #(index + 1, line) })
     |> list.filter(fn(pair) { string.trim(pair.1) != "" })
     |> list.take(fragment_lines)
-  let budget = case int_field(fields, "within_ms") {
-    Some(ms) -> "budget " <> duration_text(ms)
-    None -> ""
-  }
-
-  // The key that expands a response is on its heading, once; a block's
-  // foot keeps only its facts.
   [
-    "◐ code_mode · awaiting its result",
-    budget,
     "PROGRAM · "
       <> count_text(list.length(lines), "line", "lines")
       <> ", "
@@ -2081,6 +2163,22 @@ fn running_text(
       <> " shown",
     ..numbered(shown)
   ]
+}
+
+// A running block: the title, the foot naming the budget the call asked
+// for, and the opening of the program.
+fn running_text(
+  program: String,
+  fields: List(#(String, json.JsonValue)),
+) -> String {
+  let budget = case int_field(fields, "within_ms") {
+    Some(ms) -> "budget " <> duration_text(ms)
+    None -> ""
+  }
+
+  // The key that expands a response is on its heading, once; a block's
+  // foot keeps only its facts.
+  ["◐ code_mode · awaiting its result", budget, ..program_body(program)]
   |> list.append([
     "",
     "RESULT · none yet · the result arrives when the program ends",

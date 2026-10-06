@@ -371,3 +371,19 @@ fn promote(
     _, _ -> #(queue, waiting)
   }
 }
+
+/// A one-line rendering of an `ActorError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert actor.error_text(actor.NoReply) == "no reply"
+/// ```
+///
+pub fn error_text(error: ActorError) -> String {
+  case error {
+    StartFailed(message:) -> "start failed: " <> message
+    MailboxTimeout -> "mailbox timeout"
+    NoReply -> "no reply"
+  }
+}

@@ -1092,6 +1092,7 @@ fn body_of(speaker: transcript_line.Speaker) -> Body {
     // laid out line by line.
     transcript_line.ProgramRunning
     | transcript_line.ProgramFailure
+    | transcript_line.ProgramSettled
     | transcript_line.ImageRow(..) -> Literal
   }
 }
@@ -1123,6 +1124,7 @@ fn speaker_class(
     transcript_line.PeerMessage -> attribute.class("peer-message")
     transcript_line.ProgramRunning -> attribute.class("program-running")
     transcript_line.ProgramFailure -> attribute.class("program-failure")
+    transcript_line.ProgramSettled -> attribute.class("program-settled")
     transcript_line.ImageRow(..) -> attribute.class("image-row")
   }
 }

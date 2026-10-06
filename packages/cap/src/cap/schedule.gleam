@@ -950,3 +950,19 @@ fn schedule_rows(
     _ -> Error(bad_result("field schedules is not an array"))
   }
 }
+
+/// A one-line rendering of a `ScheduleError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert schedule.error_text(schedule.ScheduleUnavailable("no channel")) == "schedule unavailable: no channel"
+/// ```
+///
+pub fn error_text(error: ScheduleError) -> String {
+  case error {
+    ScheduleDenied(code:, message:) -> code <> ": " <> message
+    ScheduleUnavailable(reason:) -> "schedule unavailable: " <> reason
+    MalformedScheduleResult(reason:) -> "malformed schedule result: " <> reason
+  }
+}

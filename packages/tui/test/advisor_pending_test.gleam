@@ -7,12 +7,15 @@
 //// that run start is what drains the queue, and advice folded into a prompt
 //// is delivered rather than pending.
 
+import core/clock
 import core/entry
 import core/ids
 import core/json
 import core/message
 import etui/backend
 import etui/geometry
+import gleam/dict
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/advisor_pending
@@ -20,6 +23,8 @@ import session_view/connection_event
 import session_view/model as session_model
 import session_view/protocol.{type Strand, Strand}
 import session_view/session_channel
+import session_view/snapshot
+import session_view/snapshot_view
 import session_view/surfaces
 import session_view/transcript_lines
 import session_view/worktree_view
@@ -435,4 +440,126 @@ pub fn pending_bodies_collapse_until_details_are_expanded_test() {
       ),
     )
   assert string.contains(expanded, "only detail mode shows")
+}
+
+// --- a drain inside a capture -----------------------------------------------
+
+// A network terminal learns of a commit from a notice and reads the branch in
+// a capture, so the delivered frame arrives inside a cut and never as a pushed
+// entry. These drive that path with a board observed at 42_000.
+
+// The primary's branch as a cut: one entry per `#(ts, text)`, oldest first,
+// chained by parent, with the leaf at the last.
+fn captured(
+  base: tui_model.Model,
+  texts: List(#(Int, String)),
+) -> tui_model.Model {
+  let #(entries, leaf, _) =
+    list.index_fold(
+      texts,
+      #([], None, ids.generator(clock.fixed(1), seed: 7)),
+      fn(acc, step, index) {
+        let #(done, parent, generator) = acc
+        let #(ts, text) = step
+        let #(id, generator) = ids.mint_entry(generator)
+        let value =
+          entry.MessageEntry(
+            id:,
+            parent:,
+            seq: index + 1,
+            ts:,
+            message: message.UserMessage(
+              content: [message.UserText(text:, text_signature: None)],
+              timestamp: ts,
+              origin: None,
+            ),
+            terminate: False,
+          )
+        #([snapshot.Loaded(value, 1), ..done], Some(id), generator)
+      },
+    )
+  let owner = message.Origin("owner-principal", "Owner")
+  let cut =
+    snapshot.Captured(
+      snapshot.Attachment(
+        snapshot.Expected("session", "epoch", "incarnation"),
+        "local",
+        owner,
+        snapshot.Owner,
+      ),
+      list.length(texts) + 1,
+      json.Object([]),
+      snapshot.Window(entries, list.length(texts), None),
+      None,
+    )
+  let view =
+    snapshot_view.View(
+      [],
+      dict.from_list([#("main", leaf)]),
+      dict.new(),
+      dict.new(),
+      base.shared.usage,
+      snapshot_view.RunSettings("one_at_a_time", "parallel", None),
+      [],
+      [],
+      None,
+      None,
+      None,
+    )
+  inbound.apply_cut(base, cut, view)
+}
+
+fn nudges_text(text: String) -> String {
+  transcript_lines.nudges_header
+  <> "\n```"
+  <> transcript_lines.nudges_fence
+  <> "\n- "
+  <> text
+  <> "\n```"
+}
+
+fn board_held() -> tui_model.Model {
+  let base = with_roster(roster(Some("assistant"), None))
+  tui_model.Model(
+    ..base,
+    shared: session_model.Shared(
+      ..base.shared,
+      nudges: Some(board(["no down step"], 1)),
+    ),
+  )
+}
+
+/// The symptom: a board read at 42_000 said "pending, not delivered" beside
+/// the frame that delivered it, because the frame reached the terminal only
+/// inside a capture.
+pub fn a_captured_delivery_after_the_board_retires_it_test() {
+  let applied =
+    captured(board_held(), [
+      #(41_000, "start"),
+      #(43_000, nudges_text("no down step")),
+    ])
+  assert applied.shared.nudges == None
+  assert applied.shared.nudges_refresh == worktree_view.Requested
+  assert applied.shared.nudges_awaiting == None
+}
+
+/// A frame older than the board was already drained when the board was read,
+/// and the board does not list it.
+pub fn a_captured_delivery_before_the_board_keeps_it_test() {
+  let held = board_held()
+  let applied =
+    captured(held, [
+      #(41_000, nudges_text("an older drain")),
+      #(41_500, "start"),
+    ])
+  assert applied.shared.nudges == held.shared.nudges
+  assert applied.shared.nudges_refresh == held.shared.nudges_refresh
+}
+
+/// With no board there is nothing to retire and nothing to ask for.
+pub fn a_captured_delivery_with_no_board_asks_nothing_test() {
+  let base = with_roster(roster(Some("assistant"), None))
+  let applied = captured(base, [#(43_000, nudges_text("no down step"))])
+  assert applied.shared.nudges == None
+  assert applied.shared.nudges_refresh == base.shared.nudges_refresh
 }

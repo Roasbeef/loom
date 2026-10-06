@@ -51,10 +51,10 @@ import session_view/notes_view
 import session_view/tool_activity
 import session_view/transcript_line.{
   type Line, type Speaker, type Stream, Assistant, Failure, ImageRow, Line,
-  PeerMessage, ProgramFailure, ProgramRunning, Reasoning, ReasoningDigest,
-  SentMessage, Spacer, StrandMessage, SummarizedAdvice, SummarizedReasoning,
-  System, ToolCall, ToolDetail, ToolFailure, ToolGroup, ToolPatch, ToolResult,
-  User,
+  PeerMessage, ProgramFailure, ProgramRunning, ProgramSettled, Reasoning,
+  ReasoningDigest, SentMessage, Spacer, StrandMessage, SummarizedAdvice,
+  SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
+  ToolPatch, ToolResult, User,
 }
 import session_view/transcript_lines.{
   BetweenEntries, Projected, Transient, WithinResponse,
@@ -580,6 +580,7 @@ fn image_of(speaker: Speaker) -> Option(Option(image_header.Picture)) {
     | PeerMessage
     | ProgramRunning
     | ProgramFailure
+    | ProgramSettled
     | Spacer -> None
   }
 }
@@ -1077,6 +1078,7 @@ fn copy_gutter(line: Line, index: Int, row_count: Int) -> Int {
     | PeerMessage
     | ProgramRunning
     | ProgramFailure
+    | ProgramSettled
     | ImageRow(..) -> 0
   }
 }

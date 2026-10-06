@@ -126,3 +126,19 @@ fn map_error(error: CallError) -> NetError {
       }
   }
 }
+
+/// A one-line rendering of a `NetError`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert net.error_text(net.NetDenied("host not allowed")) == "denied: host not allowed"
+/// ```
+///
+pub fn error_text(error: NetError) -> String {
+  case error {
+    NetDenied(message:) -> "denied: " <> message
+    NetFailed(code:, message:) -> code <> ": " <> message
+    NetUnavailable(reason:) -> "net unavailable: " <> reason
+  }
+}
