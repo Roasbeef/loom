@@ -487,7 +487,8 @@ page keys and nonces, and the relay into the session's gateway.
   first; a number is the sequence of the first record the fold holds
   (`turns.Work.id`), the daemon's number and never session text. The turns
   held are chosen with every fold closed, so a press never changes where the
-  page is cut or its `Paging`; the rows they leave over go to the open folds,
+  page is cut or its `Paging`; the rows they leave over, plus a reserve of
+  `fold_budget.fold_rows` (100) that is the folds' own, go to the open folds,
   most recently opened first, and an older-opened fold that does not fit is
   closed. The most recent that does not fit draws its newest steps and a line
   says how many earlier ones are not shown. The running turn is `Open` and is counted
@@ -1123,7 +1124,7 @@ page keys and nonces, and the relay into the session's gateway.
   the reduction; `delivery_test` counts the renders a burst costs on the
   real runtime and watches the timer fire.
 - **The page's rows are bounded.** The page draws at most `live_rows`
-  rows, or `held_rows` once paged (a settled turn costs its prompt, answer and
+  rows, or `held_rows` once paged, plus `fold_budget.fold_rows` for open folds (a settled turn costs its prompt, answer and
   divider, and an open fold its steps), plus at most one block when the newest
   turn alone is longer than the limit; loading older rows past the limit
   is refused (`Full`), never allowed to grow the page. The records of a folded

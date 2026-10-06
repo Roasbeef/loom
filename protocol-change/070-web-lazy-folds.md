@@ -62,7 +62,8 @@ already holds, never from the event.
 
 *Which turns are held.* The turns a page holds are chosen as if every fold were
 closed, so a press never changes where the page is cut, trims its history or
-fills a paged page. The rows those turns leave over go to the open folds, most
+fills a paged page. The rows those turns leave over, plus a reserve of 100 rows that belongs to the
+folds alone, go to the open folds (so what a page draws is bounded by its limit plus 100), most
 recently opened first. A fold that does not fit whole, if it is the most recent
 that did not, draws its newest steps that do; a fold opened before it that does
 not fit is closed. While a running turn is alone over the limit the page keeps
