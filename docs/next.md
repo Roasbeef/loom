@@ -1,15 +1,15 @@
 # Current handoff
 
-This edition records the distributed runtime integration through `7494a52ae`
+This edition records the distributed runtime integration through `5458e2be4`
 on October 6, 2026, checked against source, command receipts and live PR state.
 Rewrite it when the next integration milestone changes those facts. The branch
 includes `origin/main` at `552e44033`; no merge into main is authorized.
 
-The previous edition said the task was the rebase only and described six
-executor resource files as unvalidated work. Implementation has resumed, and
-that resource slice is now committed and independently verified. The foreground
-Launch implementation and its bounded channel model are also committed. This
-does not complete the distributed-runtime acceptance criteria.
+The previous edition left the whole Launch owner and finite controls in
+implementation worktrees. Both are now committed after independent review and
+an assembled executor gate. The live bridge, finite stream binding and owner
+consumer remain under implementation. This does not complete the distributed
+runtime acceptance criteria.
 
 ## Where the tree is
 
@@ -31,7 +31,7 @@ this is evidence for the base, not for the integration candidate.
 | Generated sources | Storage SQL and the capability prelude were regenerated during rebase. The Launch resource SQL was regenerated from its source after the format-3 change. |
 | Executor resource custody | Closed Launch completions, role-specific native association and the atomic refusal fence are committed. Resource format 3 rejects old formats before interpreting their rows. Compile retains its separate completion contract. |
 | Launch model | The bounded P model and source correspondence are committed. Root replay and independent review do not claim implementation refinement or unbounded liveness. |
-| Remote Launch | The whole owner, finite BEAM controls and separate duplex bridge remain in isolated implementation worktrees. They are not integrated or product-ready. |
+| Remote Launch | The whole owner and finite TLS BEAM controls are committed. The duplex bridge, finite stream binding and owner consumer remain in isolated worktrees. Associated-native retirement and default assembly are pending. |
 | Preserved work | The unrelated client owner-binding runner and main checkout files remain outside this change. |
 
 ## Verification and its limits
@@ -57,6 +57,14 @@ closure alone did not join already admitted work. The
 [foreground review](review/distributed-foreground-launch.md) records the
 correction, real socket and jailed controls, mutation evidence and exact limits.
 
+The whole Launch owner and finite controls passed the root's assembled executor
+gate with 357 tests, executor lint and documentation checks. Review and actual
+transport composition found and corrected historical admission-slot retention,
+Refused-phase termination and a cancellation message that erased the original
+close reply. The [owner review](review/distributed-launch-owner.md) records
+those paths, deterministic controls, mutation evidence and the known missing
+associated-native retirement witness.
+
 The full repository gate, registered remote default path, separate-host tests
 and hosted CI have not run on this candidate. Passing component tests do not
 establish those results.
@@ -64,8 +72,8 @@ establish those results.
 ## What to do next
 
 1. Finish the remote half of the accepted [Launch channel plan](design-notes/distributed-launch-channel.md)
-   for **#697**. Integrate the whole owner, finite control route, original live
-   stream binding and composed scope cleanup after their independent gates.
+   for **#697**. Integrate the original live stream, its finite binding route,
+   owner consumer and composed scope cleanup after their independent gates.
    **Exit:** more sequential Launches than the active limit complete in one
    live session; each retains exact native, transport and resource witnesses.
    The additive exact-helper retirement API is awaiting the owner's decision.
