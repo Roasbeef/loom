@@ -1622,7 +1622,7 @@ pub fn the_owners_fresh_home_draws_the_actions_that_fit_each_row_test() {
 
   // Two running rows and two saved ones.
   assert list.length(string.split(html, ">Stop<")) == 3
-  assert list.length(string.split(html, ">Archive<")) == 5
+  assert list.length(string.split(html, ">Archive<")) == 3
   assert list.length(string.split(html, ">Delete<")) == 3
   assert string.contains(html, "actionable")
   assert !string.contains(html, "Delete this session? This cannot be undone.")
@@ -1765,7 +1765,7 @@ pub fn a_blocked_row_draws_archive_and_delete_test() {
   assert string.contains(html, "needs attention")
   assert string.contains(html, "title=\"This session was never finished")
   assert !string.contains(html, ">Stop<")
-  assert list.length(string.split(html, ">Archive<")) == 3
+  assert list.length(string.split(html, ">Archive<")) == 2
   assert list.length(string.split(html, ">Delete<")) == 2
 
   let #(plain, _) = opened(home.Start(..start(), sessions: listed))

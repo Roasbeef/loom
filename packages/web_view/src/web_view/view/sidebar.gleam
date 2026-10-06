@@ -428,7 +428,7 @@ fn entry(
   let words = [lead, residency]
 
   case
-    archiving.question(archiving, entry),
+    archiving.question(archiving, entry, turn(entry, suffix)),
     entry.id == current,
     entry.residency
   {
@@ -485,6 +485,20 @@ fn entry(
             list.append(words, archiving.button(archiving, entry)),
           )
       }
+  }
+}
+
+// Whether the row's session is inside a turn, by the activity read: working
+// and needing its operator are, and idle or unnamed is not. It only picks the
+// sentence of the archive question, and the stop itself is the server's.
+fn turn(entry: Entry, suffix: Suffix) -> archiving.Turn {
+  let known = case suffix {
+    Doing(activity) -> dict.get(activity, entry.id)
+    Known(activity) -> dict.get(activity, entry.id)
+  }
+  case entry.residency, known {
+    Live, Ok(Working) | Live, Ok(NeedsYou) -> archiving.MidTurn
+    _, _ -> archiving.AtRest
   }
 }
 
