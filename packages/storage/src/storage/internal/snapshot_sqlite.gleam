@@ -294,6 +294,46 @@ pub fn page(
   list.try_map(rows, fn(row) { descriptor(row.id, row.seq, row.payload_bytes) })
 }
 
+/// Returns one entry's ancestry, oldest first, without entry payloads.
+///
+/// The walk is one primary-key probe per record (`snapshot.lineage`), so its
+/// cost follows the records it returns and not how far apart they were
+/// written.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot_sqlite.lineage(conn, leaf, cut.next_seq, 100)
+/// ```
+pub fn lineage(
+  conn: sqlight.Connection,
+  from: ids.EntryId,
+  before: Int,
+  limit: Int,
+) -> Result(List(snapshot.Descriptor), Error) {
+  snapshot.lineage(from, before, limit, fn(id, below) {
+    use rows <- result.try(query(
+      conn,
+      sql.snapshot_entry_head(ids.entry_id_to_string(id), Some(below)),
+    ))
+    case rows {
+      [] -> Ok(None)
+      [row] -> {
+        use found <- result.try(descriptor(row.id, row.seq, row.payload_bytes))
+        use parent <- result.map(case row.parent_id {
+          None -> Ok(None)
+          Some(text) ->
+            ids.parse_entry_id(text)
+            |> result.map(Some)
+            |> result.map_error(corrupt)
+        })
+        Some(snapshot.Link(found, parent))
+      }
+      [_, _, ..] -> Error(invalid_row("exactly one stored row"))
+    }
+  })
+}
+
 fn descriptor(
   id: String,
   seq: Option(Int),
