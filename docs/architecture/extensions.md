@@ -781,7 +781,7 @@ value the previous step produced.
 
 1. **At boot, discovery feeds the registry.** `serve.assemble` reads
    `installed.discover` for the extensions root before it builds the
-   registry (`extension_registrations` at `client/serve.gleam:2748`). A
+   registry (`extension_registrations` at `client/serve.gleam:2762`). A
    `Refused` is logged and registers nothing. A `Ready` on a host with no
    code-mode toolchain is also logged and registers nothing: with no
    `erl` there is no satellite to boot, and a tool definition that can
@@ -789,7 +789,7 @@ value the previous step produced.
    request.
 
 2. **Everything else becomes a contribution.** `dispatch.tools`
-   (`extension/dispatch.gleam:205`) turns the record and the manifest into
+   (`extension/dispatch.gleam:207`) turns the record and the manifest into
    `tools.Tool` values, and the boot appends one
    `Contribution(Extension(name), tools)` after the built-ins. From there
    the registry treats an extension tool like any other: it is dispatched
@@ -806,7 +806,7 @@ value the previous step produced.
    `extension/dispatch.gleam:414`). No build happens, because that was the
    install's job, and no node launch happens except the first time. The
    declared tool timeout is still clamped: `within`
-   (`extension/dispatch.gleam:686`) takes the minimum of the manifest's
+   (`extension/dispatch.gleam:691`) takes the minimum of the manifest's
    `timeout_ms` and the operator's `max_within_ms`, because an install is
    not a way to raise how long this host will hold a strand.
 
@@ -838,7 +838,7 @@ value the previous step produced.
    allowlist nobody wrote.
 
 6. **The answer is settled into a `ToolOutcome`.** `settle`
-   (`extension/dispatch.gleam:883`) reads what the `hook_result` carried:
+   (`extension/dispatch.gleam:888`) reads what the `hook_result` carried:
    content blocks and an optional `terminate`. When there is no answer at
    all, it turns a `hosts.HookFailure` into a sentence the model can act
    on. A refusal is text the extension wrote, and a crash is the
@@ -896,7 +896,7 @@ Answering(id) | Destroyed(reason)`. The invocation's deadline is
 `Answering`'s own state timeout, which is why these are states rather
 than a field: leaving the state cancels the timer, and weft drops a timer
 that fired while being cancelled instead of delivering it. A second
-`invoke` while one is open returns `Busy` (`InvokeError` at `codemode/satellite.gleam:2202`). The satellite also answers a second
+`invoke` while one is open returns `Busy` (`InvokeError` at `codemode/satellite.gleam:2222`). The satellite also answers a second
 `hook_call` with `busy` on its own side rather than queueing it, because
 a queue would mean a second token installed under the first invocation's
 worker.
@@ -923,7 +923,7 @@ actor is alive, so a breach fails the next boot outright instead of
 silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:4407`).
+per session (`extension_hosts.supervised` at `client/serve.gleam:4426`).
 It holds at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first. That is
 sound because every extension call in a session runs under one workspace
@@ -1535,7 +1535,7 @@ whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 | `packages/ext/src/ext.gleam` | The author-facing vocabulary: `Ctx`, `Content`, `Terminate`, `Outcome`, `Refusal`, and the `Tool` alias at `packages/ext/src/ext.gleam:110`. No effects, no FFI. |
 | `ext/runtime.gleam` | What an extension's generated entry serves from: `serve` (`ext/runtime.gleam:148`), `serving` (`ext/runtime.gleam:172`), `answer` (`ext/runtime.gleam:193`), and the five refusal codes. |
 | `cap/runtime.gleam` | The satellite's own serving loop: `serve` (`cap/runtime.gleam:549`), `serve_over` (`cap/runtime.gleam:582`), the per-invocation token install, and the `busy` and `crashed` answers. |
-| `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:2117`) with `start`, `invoke` (`codemode/satellite.gleam:2178`) and `stop`. |
+| `codemode/satellite.gleam` | Both shapes of node: `run` for one execution, and the persistent `Host` (`codemode/satellite.gleam:2198`) with `start`, `invoke` (`codemode/satellite.gleam:2392`) and `stop`. |
 | `client/extension/hosts.gleam` | The session's host registry: `HookFailure` (`extension/hosts.gleam:90`), `invoke` (`extension/hosts.gleam:354`), `invoke_event` (`extension/hosts.gleam:446`), and the reaping on the way out. |
 | `codemode/vet/policy.gleam` | The four seams. The fourth, `resident` (`vet/policy.gleam:459`), is frozen for a tier that does not exist. `extension_cap_modules` (`vet/policy.gleam:607`) and `extension_stdlib_modules` (`vet/policy.gleam:626`) widen the effect-only workspace subset, so extensions do not gain child custody. |
 | `codemode/vet/package.gleam` | Vetting a *package*: `installed_subset` (`vet/package.gleam:201`), the native-file refusal, the `gleam.toml` dependency gate, and the sibling-import widening. |
@@ -1555,8 +1555,8 @@ whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 | `client/extension/seam.gleam` | The router arms a jailed extension has that a code-mode program does not: `net.request` and the two memory arms, `routing` over `serviced_caps`, plus `checked_key` and the two bounds a leaf and a cell are held to. Msgpack in, msgpack out, and no policy and no durability at all. |
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` (the one composition of `ext/<name>/<key>`), `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
-| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:205`), `hosting` (`extension/dispatch.gleam:414`), the timeout clamp `within` (`extension/dispatch.gleam:686`), the jail's `requirements` (`extension/dispatch.gleam:333`), and `settle` (`extension/dispatch.gleam:883`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2748`), the two refusals it logs, and the contribution it appends. |
+| `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:207`), `hosting` (`extension/dispatch.gleam:424`), the timeout clamp `within` (`extension/dispatch.gleam:691`), the jail's `requirements` (`extension/dispatch.gleam:335`), and `settle` (`extension/dispatch.gleam:888`). |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2762`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:451`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |
