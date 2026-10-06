@@ -101,7 +101,7 @@ surface, a daemon-control job or a pane reporter. It is a **host handle
 (c)** when the shared step must carry it to name the target of an effect
 and must never use it: those become type parameters, as the lane's
 `socket` and `recorder` did in phase 4
-(`session_view/session_channel.gleam:388` (`Channel`)).
+(`session_view/session_channel.gleam:403` (`Channel`)).
 
 Three fields are records that hold both kinds of state and are split
 rather than placed. Four fields are counters that only the terminal reads
@@ -511,7 +511,7 @@ they reach that it misses.
 - The lane fold: `tick_channel`, `apply_channel_update`, `reconcile_cut`,
   `request_decisions`, `apply_cut` and `render_cut`
   (`tui/inbound.gleam:171` (`tick_channel`) through
-  `session_view/lane_fold.gleam:670` (`render_cut`)), less the four writes named
+  `session_view/lane_fold.gleam:678` (`render_cut`)), less the four writes named
   below.
 - The connection drain and the event fold: `drain_connection`,
   `handle_connection_message`, `handle_presentation_message`,
@@ -561,7 +561,7 @@ knows something the session does not, such as which pane is open.
 
 The worst cases in the code, and the cut for each:
 
-1. **`render_cut`** (`session_view/lane_fold.gleam:670` (`render_cut`)) writes 31
+1. **`render_cut`** (`session_view/lane_fold.gleam:678` (`render_cut`)) writes 31
    fields; four touch terminal state. `strip: agent_strip.observe(..)`
    becomes `roster: agent_roster.observe(..)`, the strip's focus being
    untouched by a capture. `cache_outlook` is reset when the active
@@ -588,7 +588,7 @@ The worst cases in the code, and the cut for each:
    shared field, `returned_drafts: List(#(strand, text))`, and the shell
    appends it to the editor it owns.
 
-3. **`apply_channel_update`'s `Failed` arm** (`session_view/lane_fold.gleam:447`
+3. **`apply_channel_update`'s `Failed` arm** (`session_view/lane_fold.gleam:455`
    (`Failed`)) closes a `GoalInspector` overlay, fails the
    worktree navigator and starts the reconnect job (`tui/inbound.gleam:212`
    (`begin_reconnect`)). The shared arm keeps the peer transition, the
@@ -596,7 +596,7 @@ The worst cases in the code, and the cut for each:
    `before.shared.peer == Attached && after.shared.peer == Disconnected`
    closes the overlay and starts the job, which is a `StartJob` the
    terminal already owns. The same edge covers the arm of
-   `handle_presentation_message` for `Closed` (`session_view/lane_fold.gleam:1120` (`receive_unlaned`)).
+   `handle_presentation_message` for `Closed` (`session_view/lane_fold.gleam:1126` (`receive_unlaned`)).
    *As landed (S3d′):* recorded facts rather than a comparison of `peer`:
    `GoalReleased` and `ConnectionLost` on `Failed`, `ConnectionLost` on
    `Closed`, applied after the update.
@@ -624,7 +624,7 @@ The worst cases in the code, and the cut for each:
 
 6. **`present_pending_approval` and `close_settled_approval`**
    (`tui/inbound.gleam:600` (`present_pending_approval`),
-   `session_view/lane_fold.gleam:599` (`close_settled_approval`)) open and close the
+   `session_view/lane_fold.gleam:607` (`close_settled_approval`)) open and close the
    approval inspector from the projected approvals. Both are terminal:
    the page has no inspector and draws every pending record. They become
    the shell's edge on `after.shared.approvals`, run after every shared
