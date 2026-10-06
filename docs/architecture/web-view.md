@@ -665,8 +665,9 @@ steps that find-in-page cannot see until the fold is open.
 rows keep arriving at the bottom. When the page, paged, has to cut a whole
 turn to stay within 300 drawn rows, it is `Full`: it keeps its newest 300 rows
 and loads no more, and the lane says so. When the running turn's own rows, drawn
-open, are what cut it, the page is `Crowded` and says the same while the turn
-runs, and is paged again once the turn settles into one divider. The page refuses rather than
+open, are what cut it, the page is `Crowded` and says that older turns come back
+when the turn finishes, since the limit is not permanent, and is paged again once
+the turn settles into one divider. The page refuses rather than
 dropping its newest rows because dropping them would stop it following the
 session and need a second mode to return to the tail, which the terminal
 has and the page does not.

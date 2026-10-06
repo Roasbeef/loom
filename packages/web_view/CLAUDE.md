@@ -477,8 +477,9 @@ page keys and nonces, and the relay into the session's gateway.
   its fold open (below). `component.Paging` is `Tail | Paged | Crowded | Full`; `Full`
   means a paged page had to cut a whole turn, so it loads no more, and a page
   that fits again after a fold closed is `Paged` again. `Crowded` is the same
-  stop while the running turn's rows (drawn open) are what cut the page: it is
-  `Paged` again when the turn settles into one divider and the cut is gone, and
+  stop while the running turn's rows (drawn open) are what cut the page, and the
+  lane says older turns come back when the turn finishes (`lane.Crowded`, where
+  `Full` says the row limit): it is `Paged` again when the turn settles into one divider and the cut is gone, and
   `Full` if it is still cut. A cut by the bytes of the closed turns, which only
   grow, is `Full` for good (`component.paged`).
 - **Lazy folds** (protocol-change/070, `session_view/fold_budget`) and
@@ -500,9 +501,20 @@ page keys and nonces, and the relay into the session's gateway.
   each open fold by its number, `View.folds` the open numbers most recently
   opened first, and both are cut to the folds `fit` grants.
   The page reads when it wants something, one read at a time (`View.purpose`:
-  `Resting | ForOlder | ForLead | ForSteps(fold)`), through the history window's
-  scan (`history_view.scan`), which keeps what it reads apart from the window.
-  `begun`, at the end of a projection, starts the first of: `ForLead`, the start
+  `Resting | ForOlder | ForLead | ForTail | ForSteps(fold)`), through the history
+  window's scan (`history_view.scan`), which keeps what it reads apart from the
+  window. `begun`, at the end of a projection, starts the first of: `ForTail`,
+  the strand's newest turns, when the window holds none of the strand's records
+  and no turn is closed (`unread_tail`). A gateway's cut is the newest records of
+  the whole session, so another strand that wrote past a settled one (the advisor
+  reviewing it) leaves the leaf below the cut, and an empty window is not an empty
+  strand: it reads from the leaf, as the turns below the window are read, once
+  (a refusal sets `Completion` to `Spent`, and the page then offers Load older,
+  whose press reads from the leaf again; a cut that names no leaf is the
+  beginning). A scan stops after eight reads in a row that add nothing
+  (`history_view.scan_floor`, a strand sparse among the session's sequences);
+  `paused` gives it up like a refusal and keeps the sequence it reached in
+  `View.resume`, which the next `ForTail` or `ForOlder` starts below. `ForLead`, the start
   of the turn the window began inside (a page opened on a settled session holds
   only the end of its newest turn, and draws nothing for it until the start is
   read, so the divider's figures are the turn's), `ForSteps`, the newest

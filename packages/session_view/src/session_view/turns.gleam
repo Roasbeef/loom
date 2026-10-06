@@ -711,8 +711,12 @@ pub fn grouped(
 // What one block, or one call of a tool group, is to a turn.
 type Classified {
   // Starts a turn: a person's message, another session's, a delivered
-  // advisor frame, or a goal continuation the harness wrote. Each starts a
-  // run the strand then answers, so each is where a turn begins.
+  // advisor frame, a feed or goal feed sent to the advisor, or a goal
+  // continuation the harness wrote. Each starts a run the strand then answers,
+  // so each is where a turn begins. The advisor's strand has no other input: a
+  // feed is the message each of its runs answers, and were it not a turn's start
+  // the strand would be one turn with no start, which a host that completes a
+  // turn by reading back to its input could only end at the strand's first record.
   Input(piece: Piece, at: Option(Int))
 
   // A message with the strand's own prose, a candidate for the answer. `took`
@@ -944,7 +948,7 @@ fn entry_kind(
         ]
         Some(transcript_lines.Feed(..)), _
         | Some(transcript_lines.GoalFeed(..)), _
-        -> [Outside(Plain(block, dict.new(), None))]
+        -> [Input(Plain(block, dict.new(), None), at)]
         Some(transcript_lines.Continuation(..)), _ -> [
           Input(Plain(block, dict.new(), None), at),
         ]

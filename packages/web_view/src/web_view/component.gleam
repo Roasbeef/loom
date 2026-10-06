@@ -758,16 +758,26 @@ type Purpose {
   // before it can draw that turn's divider with the right figures.
   ForLead
 
+  // The strand's newest turn, when the window holds none of the strand's
+  // records. A gateway's cut is the newest records of the whole session, so a
+  // strand that another strand wrote past (the advisor reviewing a turn that
+  // just settled) has its leaf below the cut, and there is nothing yet to draw
+  // or to complete. The read starts at the leaf and walks down.
+  ForTail
+
   // The newest steps of the fold with this number, which the reader opened.
   ForSteps(fold: Int)
 }
 
-// Whether a read for the start of the window's first turn may still be tried.
+// Whether a read for what the page lacks of the strand's newest turn may still
+// be tried: the start of the window's first turn or, when the window holds none
+// of the strand's records, the turn itself.
 type Completion {
   // The read has not failed.
   Untried
 
-  // The read failed, so the blocks are drawn as far as they are known.
+  // The read failed, so the blocks are drawn as far as they are known, and a
+  // window that holds none stays empty until the reader presses "Load older".
   Spent
 }
 
@@ -864,6 +874,12 @@ type View(socket) {
     /// `Reached` once a read found nothing below the page's oldest turn, which
     /// says the strand has no more even where its last record names a parent.
     floor: Earlier,
+    /// The sequence the last read for the strand's newest or older turns got
+    /// to before it stopped, having found none of the strand's records in a run
+    /// of intervals (`history_view.scan_floor`). The next such read starts below
+    /// it, so a strand that is sparse among the session's sequences is read in
+    /// steps and not all at once.
+    resume: Option(Int),
     /// The closed turns of each strand the reader left, by the strand's name,
     /// for the life of the page, as `parked_paging` is kept: the history
     /// window of a parked strand has been trimmed to what the closed turns do
@@ -1182,6 +1198,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       older: Unasked,
       completion: Untried,
       floor: Unheld,
+      resume: None,
       parked_sealed: dict.new(),
       blocks: [],
       pieces: [],
@@ -2254,20 +2271,47 @@ fn read(
         transcript.branch_blocks(branch, cut, view, shared.active_strand, [])
       let source = source_of(shared.scrollback, branch)
       case found(model, purpose, blocks, branch, view, source) {
-        Ok(taken) -> ended(taken)
+        Ok(taken) ->
+          ended(Model(..taken, view: View(..taken.view, resume: None)))
         Error(Nil) ->
-          Model(
-            ..model,
-            shared: Shared(
-              ..shared,
-              scrollback: history_view.scan_older(
-                shared.scrollback,
-                branch.unloaded,
-              ),
-            ),
-          )
+          case history_view.scan_floor(shared.scrollback) {
+            Some(floor) -> paused(model, purpose, floor)
+            None ->
+              Model(
+                ..model,
+                shared: Shared(
+                  ..shared,
+                  scrollback: history_view.scan_older(
+                    shared.scrollback,
+                    branch.unloaded,
+                  ),
+                ),
+              )
+          }
       }
     }
+  }
+}
+
+// A read that went through a run of intervals and found none of the records it
+// is after: the strand is sparse among the session's sequences. It is given up
+// as a refused one is, so the page offers "Load older" and nothing is read in a
+// loop, and for the turns the page lacks it remembers how far down it got, so
+// the press goes on from there and not from the start.
+fn paused(model: Model(socket), purpose: Purpose, floor: Int) -> Model(socket) {
+  let resume = case purpose {
+    ForOlder | ForTail -> Some(floor)
+    ForLead | ForSteps(_) | Resting -> None
+  }
+  abandoned(Model(..model, view: View(..model.view, resume:)))
+}
+
+// The sequence a read for the strand's turns starts below: the one it was
+// given, or the one an earlier read of the same turns got to.
+fn lowered(model: Model(socket), before: Int) -> Int {
+  case model.view.resume {
+    Some(floor) -> int.min(floor, before)
+    None -> before
   }
 }
 
@@ -2321,6 +2365,9 @@ fn found(
             Model(..model, view: View(..model.view, completion: Spent))
         }
       })
+    ForTail ->
+      turn_ledger.older(blocks, branch.records, view.strands, 1, source)
+      |> result.map(fn(sealed) { first_turns(model, sealed, source) })
     ForSteps(fold:) ->
       turn_ledger.steps(
         blocks,
@@ -2355,6 +2402,19 @@ fn below(
       floor: bottom,
     ),
   )
+}
+
+// The strand's newest turns, read from its leaf because the window held none of
+// its records. They are the first turns the page closes, so they are taken as
+// the turns below the window are. A read that found nothing to draw (a strand
+// whose records draw no row) marks the floor reached, which is what keeps the
+// page from asking for them on every layout.
+fn first_turns(
+  model: Model(socket),
+  found: List(turn_ledger.Sealed),
+  source: turn_ledger.Source,
+) -> Model(socket) {
+  below(model, found, source)
 }
 
 // The turn the window held only the end of, whole at last. It is the newest
@@ -2442,7 +2502,7 @@ fn abandoned(model: Model(socket)) -> Model(socket) {
   let view = model.view
   let given = case view.purpose {
     ForOlder -> View(..view, older: Unasked)
-    ForLead -> View(..view, completion: Spent)
+    ForLead | ForTail -> View(..view, completion: Spent)
     ForSteps(fold:) ->
       View(
         ..view,
@@ -3085,8 +3145,20 @@ fn earlier_of(
         None -> Reached
         Some(_) -> Unheld
       }
-    Unheld, Error(Nil), [], _ | Unheld, Error(Nil), [_, ..], None -> Reached
+    Unheld, Error(Nil), [], None | Unheld, Error(Nil), [_, ..], None -> Reached
+    Unheld, Error(Nil), [], Some(leaf) -> unread_before(leaf)
     Unheld, Error(Nil), [_, ..], Some(_) -> Unheld
+  }
+}
+
+// Whether a strand whose window is empty has anything to read: its leaf names a
+// record the window does not hold, and the page has not read it. A cut that
+// does not list the strand says so in words, not with an identity, and then
+// there is nothing.
+fn unread_before(leaf: String) -> Earlier {
+  case ids.parse_entry_id(leaf) {
+    Ok(_) -> Unheld
+    Error(_) -> Reached
   }
 }
 
@@ -3154,8 +3226,8 @@ fn begun(
   cut: snapshot.Captured,
   view: snapshot_view.View,
 ) -> Began(socket) {
-  case model.view.purpose, wanted(model, window) {
-    ForOlder, _ | ForLead, _ | ForSteps(_), _ -> Began(model)
+  case model.view.purpose, wanted(model, window, cut) {
+    ForOlder, _ | ForLead, _ | ForTail, _ | ForSteps(_), _ -> Began(model)
     Resting, Some(#(purpose, leaf, before)) -> {
       let scrollback =
         history_view.scan(
@@ -3173,7 +3245,7 @@ fn begun(
       let read = read(started, purpose, cut, view)
       case read.view.purpose {
         Resting -> Answered(read)
-        ForOlder | ForLead | ForSteps(_) -> Began(read)
+        ForOlder | ForLead | ForTail | ForSteps(_) -> Began(read)
       }
     }
     Resting, None ->
@@ -3194,23 +3266,77 @@ fn begun(
 
 // What the page reads next, and the record the read starts from and the
 // sequence it stays below.
+//
+// A window that holds none of the strand's records is read before anything
+// else, once: with nothing to draw there is no turn to complete, no fold to
+// open, and the page would say the conversation begins where it has not
+// started to read.
 fn wanted(
   model: Model(socket),
   window: Window,
+  cut: snapshot.Captured,
 ) -> Option(#(Purpose, String, Int)) {
   let view = model.view
-  case window.lead, window.reach {
-    Unfinished, Ok(end) -> Some(#(ForLead, end.id, end.seq + 1))
-    _, _ ->
-      case missing_steps(model) {
-        Some(turn) ->
-          Some(#(ForSteps(turn.0), turn.1.end.id, turn.1.end.seq + 1))
-        None ->
-          case view.older, below_origin(model, window) {
-            Pressed, Some(#(leaf, before)) -> Some(#(ForOlder, leaf, before))
-            Pressed, None | Unasked, _ -> None
-          }
+  case window.lead, window.reach, unread_tail(model, window, cut) {
+    Unfinished, Ok(end), _ -> Some(#(ForLead, end.id, end.seq + 1))
+    _, _, Some(#(leaf, before)) ->
+      case view.completion {
+        Untried -> Some(#(ForTail, leaf, lowered(model, before)))
+        Spent -> reader_asked(model, window, cut)
       }
+    _, _, None -> reader_asked(model, window, cut)
+  }
+}
+
+// The read of an open fold's steps, or of the turns below the page when the
+// reader pressed "Load older".
+fn reader_asked(
+  model: Model(socket),
+  window: Window,
+  cut: snapshot.Captured,
+) -> Option(#(Purpose, String, Int)) {
+  case missing_steps(model) {
+    Some(turn) -> Some(#(ForSteps(turn.0), turn.1.end.id, turn.1.end.seq + 1))
+    None ->
+      case model.view.older, below_origin(model, window, cut) {
+        Pressed, Some(#(leaf, before)) ->
+          Some(#(ForOlder, leaf, lowered(model, before)))
+        Pressed, None | Unasked, _ -> None
+      }
+  }
+}
+
+// The lowest sequence the cut holds, or the cursor when it holds nothing. A
+// strand the cut holds none of is below it, so the cut is not read again.
+fn below_cut(cut: snapshot.Captured) -> Int {
+  case list.last(cut.window.items) {
+    Ok(oldest) -> snapshot.sequence(oldest)
+    Error(Nil) -> cut.next_seq
+  }
+}
+
+// The strand's newest record, and the sequence to read below, when the page
+// holds nothing of the strand: no closed turn, and none of its records in the
+// window, though its leaf names one. The leaf is below the cut, which is the
+// newest records of the whole session. A leaf is the identity of a record; the
+// note a cut gives for a strand it does not list is not one, and names nothing to
+// read.
+fn unread_tail(
+  model: Model(socket),
+  window: Window,
+  cut: snapshot.Captured,
+) -> Option(#(String, Int)) {
+  case model.view.floor, model.view.sealed, window.records, window.unloaded {
+    Unheld, [], [], Some(leaf) ->
+      case ids.parse_entry_id(leaf) {
+        Ok(_) -> Some(#(leaf, below_cut(cut)))
+        Error(_) -> None
+      }
+    Unheld, [], [], None
+    | Unheld, [], [_, ..], _
+    | Unheld, [_, ..], _, _
+    | Reached, _, _, _
+    -> None
   }
 }
 
@@ -3230,10 +3356,12 @@ fn missing_steps(model: Model(socket)) -> Option(#(Int, turn_ledger.Sealed)) {
 
 // Where a read for the turns below the page starts: the parent of the oldest
 // turn the page holds, which is a closed turn's first record's parent, or the
-// window's own when nothing is closed.
+// window's own when nothing is closed. A page that holds nothing starts at the
+// strand's leaf.
 fn below_origin(
   model: Model(socket),
   window: Window,
+  cut: snapshot.Captured,
 ) -> Option(#(String, Int)) {
   case
     list.last(model.view.sealed),
@@ -3243,7 +3371,8 @@ fn below_origin(
     Ok(oldest), _, _ ->
       option.map(oldest.parent, fn(parent) { #(parent, oldest.first_seq) })
     Error(Nil), Some(parent), Ok(first) -> Some(#(parent, first.entry.seq))
-    Error(Nil), _, _ -> None
+    Error(Nil), Some(_), Error(Nil) -> unread_tail(model, window, cut)
+    Error(Nil), None, _ -> None
   }
 }
 
@@ -4698,6 +4827,7 @@ fn focus_at(
             older: Unasked,
             completion: Untried,
             floor: Unheld,
+            resume: None,
             folds: [],
             parked_paging: dict.delete(remembered, strand),
             refusal: None,
@@ -4764,6 +4894,7 @@ fn older_at(
     lane.Beginning, _, _
     | lane.Loading, _, _
     | lane.Full(_), _, _
+    | lane.Crowded, _, _
     | lane.Earlier, None, _
     | lane.Earlier, Some(_), Connecting
     | lane.Earlier, Some(_), Ended(_)
@@ -4898,7 +5029,8 @@ pub fn top(model: Model(socket)) -> lane.Top {
   case reading_older(model), model.view.earlier, model.view.paging {
     True, _, _ -> lane.Loading
     False, Reached, _ -> lane.Beginning
-    False, Unheld, Full | False, Unheld, Crowded -> lane.Full(held_rows)
+    False, Unheld, Full -> lane.Full(held_rows)
+    False, Unheld, Crowded -> lane.Crowded
     False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
   }
 }
@@ -4908,7 +5040,12 @@ pub fn top(model: Model(socket)) -> lane.Top {
 // start of the turn its window began inside.
 fn reading_older(model: Model(socket)) -> Bool {
   case model.view.purpose, model.view.older {
-    ForOlder, _ | ForLead, _ | ForSteps(_), Pressed | Resting, Pressed -> True
+    ForOlder, _
+    | ForLead, _
+    | ForTail, _
+    | ForSteps(_), Pressed
+    | Resting, Pressed
+    -> True
     ForSteps(_), Unasked | Resting, Unasked -> False
   }
 }

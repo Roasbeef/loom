@@ -72,7 +72,12 @@ renders again just for it:
   within a pixel), so the divider stays under the pointer when the steps are
   drawn; the reader's next touch of the transcript lets it go (F154). The
   scroller ends in 56px of room for the "Jump to latest" button, so the last row
-  is not under it (F156). It also listens on the document for
+  is not under it (F156). The button is a 32px disc with an arrow, named by its
+  title and label, in a 48px strip at the scroller's right edge that no row
+  reaches at any width: the column keeps a right padding of whatever the gutter
+  lacks (`clamp(0px, (876px - 100cqw) / 2, 48px)`, the scroller being a size
+  container), so the button is never over a line, with the strands panel open or
+  not and at 800px (F163). It also listens on the document for
   `follow_rule.sent_event`, which `<loom-composer>` dispatches (bubbling,
   composed, no data) when the reader presses Send, Queue or Steer with a draft;
   the transcript then follows the tail again and scrolls to it.

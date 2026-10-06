@@ -133,7 +133,7 @@ for a host with no surfaces.
   below such a record proves it), and `scan_end` drops it. It is bounded at 4,096 records
   and 32 MiB, private to the module, and a page that would take it past the
   bound is cut at the oldest end, so it still ends at its leaf, and the scan is
-  unreadable afterwards. A `cancel` abandons it. The window is the same value after a scan as before it.
+  unreadable afterwards. `Scanning.barren` counts reads in a row that added nothing, and `scan_floor` gives the sequence reached once there are eight, which the host takes as a reason to stop and resume below it (a strand sparse among the session's sequences). A `cancel` abandons it. The window is the same value after a scan as before it.
 - `protocol.Event`, `protocol.EntryRecord` and the board types, and
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
@@ -283,7 +283,10 @@ for a host with no surfaces.
   the same session sent (stored origin `StrandOrigin`, framing removed by
   `strand_framing.strip`, a brief's result-contract trailer kept apart),
   `Missed` for a cache notice and `Commentary` for the advisor's board (reviews that
-  stand next to each other are one piece with a `reviews` count). It reads
+  stand next to each other are one piece with a `reviews` count). A feed or goal
+  feed sent to the advisor is an input, since the advisor's strand has no other:
+  with none its whole history would be one turn with no start, and a host that
+  completes a turn by reading back to its input would read all of it. It reads
   `transcript_lines.keyed_record_blocks` (`transcript.blocks`), which tags
   each block with its `Source`. `turns.grouped(blocks, strands)` splits
   the same blocks at their inputs, the lead before the first input and

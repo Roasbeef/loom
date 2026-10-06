@@ -103,3 +103,21 @@ pub fn the_transcript_ends_in_room_for_the_jump_button_test() {
   assert string.contains(css, "scrollbar-width:thin;flex-direction:column")
   assert string.contains(css, "padding-bottom:56px")
 }
+
+// F163: the "Jump to latest" button is over no row at any width. It is a disc in
+// a 48px strip at the scroller's right edge, and the column keeps a right
+// padding of whatever the gutter lacks, so the strip is clear with the strands
+// panel open (a 44px gutter at 1440) and at 800px (none).
+pub fn the_jump_button_has_a_strip_no_row_reaches_test() {
+  let css = stylesheet()
+  assert string.contains(css, "container-type:inline-size")
+  assert string.contains(css, "padding-right:clamp(0px,438px - 50cqw,48px)")
+  // The anchor's own padding is set in the rule that also names the scroller,
+  // which outranks `loom-follow.follow > *` and its clamp.
+  assert string.contains(
+    css,
+    "loom-follow.follow>.jump-anchor{align-self:stretch;max-width:none;padding-right:8px}",
+  )
+  assert string.contains(css, ".jump-latest{")
+  assert string.contains(css, "width:32px;height:32px;")
+}

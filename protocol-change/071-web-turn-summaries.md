@@ -190,3 +190,47 @@ Two rules about words follow from the same review. The divider says
 result whose details say `cancelled` and not `timed_out`), as it does for an
 aborted response. A stop the provider could not confirm is worded for the
 reader, with no part of the harness named.
+
+## Addendum 2026-10-06: a window with none of the strand, and the advisor's feed
+
+No wire protocol changes. Two rules about what the page reads, found by the
+second live review.
+
+*A window that holds none of the strand's records is read, not taken for an
+empty strand.* A gateway's cut is the newest records of the whole session. When
+another strand wrote past a settled one (the advisor's review of a turn that
+just ended, when it is long), the strand's leaf is below the cut, the window holds
+none of its records, and the page had nothing to complete and nothing to offer: it
+said the conversation began, over no prompt, divider or answer. The page now reads
+the strand's newest turns from its leaf, once, when no turn is closed and the leaf
+names a record the window lacks, in the same bounded intervals and with the same
+stopping rule as the turns below the window. While it reads, the lane says it is
+loading. A read that is refused is not repeated (`completion: Spent`); the lane
+then offers "Load older", whose press reads from the leaf again. A cut that names
+no leaf is still the beginning.
+
+*A feed sent to the advisor opens a turn.* The advisor's strand receives one kind
+of message, and each of its runs answers one. Classified as outside any turn, the
+strand had no input at all, so completing its newest turn by reading back to its
+input could end only at the strand's first record, which on a long session was
+hundreds of reads in a row. A feed and a goal feed are inputs, so each review is
+a turn and the newest is completed by reading back to its feed.
+
+*A scan that finds none of its records stops, and the press goes on.* Every
+history read is an interval of a hundred sequences of the whole session, and the
+scan keeps only the records of its own ancestry. A strand sparse among the
+session's sequences (the main strand after sub-agents wrote thousands of records,
+the advisor after a long main turn) would be read one interval after another down
+to the first sequence. A scan now stops after eight reads in a row that add
+nothing (`history_view.scan_floor`), is given up as a refused read is, and the
+page remembers the sequence it got to (`View.resume`), so a press of "Load older"
+starts below it and each press goes further. A scan that is finding its records
+never reaches the limit. A strand's first read starts below the cut's lowest
+sequence and not at its cursor, so the cut is not read again.
+
+*Not covered.* A strand whose newest record is over the presentation limit reaches
+the page as a descriptor with no payload, and the page cannot read its parent
+from it, so such a strand still opens as the beginning with no "Load older". The
+descriptor would have to carry the parent; that is a wire change and is not made
+here. The advisor's feed change is to `session_view/turns`, which the web view
+draws from; the terminal does not use it.

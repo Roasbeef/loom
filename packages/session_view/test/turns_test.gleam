@@ -489,6 +489,35 @@ pub fn a_delivered_nudge_opens_a_turn_of_its_own_test() {
     ]
 }
 
+// The feed is the one message the advisor's strand receives, and each of its
+// runs answers one. A feed opens a turn as a person's message does, so the
+// strand's lane is a turn for each review and `grouped` finds where each starts,
+// which is what lets a host complete the newest review by reading back to its
+// feed and no further.
+pub fn a_feed_sent_to_the_advisor_opens_a_turn_test() {
+  let feed =
+    "[advisor feed: what the primary did since your last review]\n"
+    <> "user:\nreview the patch\n"
+    <> "[end feed. Review it and answer with exactly one advise call.]"
+  let reviews =
+    list.flat_map([1, 2, 3], fn(review) {
+      let seq = 2 * review - 1
+      [
+        item(seq, 10_000 + seq, said(feed, None)),
+        item(
+          seq + 1,
+          10_000 + seq + 1,
+          assistant([message.AssistantText("verdict", None)]),
+        ),
+      ]
+    })
+  let blocks = transcript.blocks(cut(reviews), view(6, []), "main", [])
+  let #(lead, opened) = turns.grouped(blocks, strands())
+  assert lead == []
+  assert list.length(opened) == 3
+  assert list.flatten(opened) == blocks
+}
+
 pub fn hues_follow_strand_position_test() {
   assert turns.hue(strands(), "main") == turns.Primary
   assert turns.hue(strands(), "advisor") == turns.Advisor

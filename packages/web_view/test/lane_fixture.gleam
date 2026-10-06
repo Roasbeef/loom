@@ -1930,6 +1930,104 @@ pub fn batched(batches: List(List(Int))) -> List(snapshot.Item) {
   items
 }
 
+/// `items` (oldest first) and then `count` records of the `advisor` strand,
+/// which the session writes after the turn settles: a review of it. The advisor's
+/// records hang off one another from the first record of the conversation, so
+/// none of them is on `main`'s ancestry, and they take the sequences after
+/// `main`'s.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.advised(lane_fixture.batched([[55]]), 60)
+/// ```
+pub fn advised(items: List(snapshot.Item), count: Int) -> List(snapshot.Item) {
+  let last =
+    list.fold(items, 0, fn(newest, held) {
+      int.max(newest, snapshot.sequence(held))
+    })
+  let review =
+    list.map(counted(count), fn(index) {
+      let seq = last + index
+      let parent = case index {
+        1 -> id(1)
+        _ -> id(seq - 1)
+      }
+      snapshot.Loaded(
+        entry.MessageEntry(
+          id(seq),
+          Some(parent),
+          seq,
+          10_000 + seq * 10,
+          assistant([
+            message.AssistantText("review " <> int.to_string(index), None),
+          ]),
+          False,
+        ),
+        100,
+      )
+    })
+  list.append(items, review)
+}
+
+/// The records of a session whose advisor has reviewed it `count` times: a
+/// question and its answer on `main` and then, on the `advisor` strand, a feed
+/// and the advisor's reply for each review, which every one of its runs answers.
+/// The feed is the only message the advisor's strand receives, so its history is
+/// as long as its reviews are many.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.reviews(1500)
+/// ```
+pub fn reviews(count: Int) -> List(snapshot.Item) {
+  let feed =
+    "[advisor feed: what the primary did since your last review]\n"
+    <> "user:\nquestion 1\n"
+    <> "[end feed. Review it and answer with exactly one advise call.]"
+  [
+    item(1, 10_000, said("question 1", None)),
+    item(2, 10_010, assistant([message.AssistantText("answer 1", None)])),
+    ..list.flat_map(counted(count), fn(index) {
+      let seq = 2 * index + 1
+      [
+        item(seq, 10_000 + seq * 10, said(feed, None)),
+        item(
+          seq + 1,
+          10_000 + { seq + 1 } * 10,
+          assistant([
+            message.AssistantText("review " <> int.to_string(index), None),
+          ]),
+        ),
+      ]
+    })
+  ]
+}
+
+/// A capture holding the newest `count` of `items` (oldest first), as a
+/// gateway's cut holds the newest records of the whole session whichever strand
+/// wrote them, with each of `leaves` naming the last record of a strand's
+/// ancestry by its sequence, and every strand idle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.newest_by(items, 50, [#("main", 59), #("advisor", 119)])
+/// ```
+pub fn newest_by(
+  items: List(snapshot.Item),
+  count: Int,
+  leaves: List(#(String, Int)),
+) -> session_channel.Update {
+  let held = list.drop(items, list.length(items) - count)
+  let newest =
+    list.fold(held, 0, fn(newest, item) {
+      int.max(newest, snapshot.sequence(item))
+    })
+  capture_leaves(held, newest, leaves, None, [], [])
+}
+
 /// `items` (oldest first) and then what a strand does when it resumes the turn
 /// it was in with no new input: `steps` more calls, each with its result, and a
 /// last answer (`answer resumed`). The records continue the sequence, so the
