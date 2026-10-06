@@ -118,7 +118,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:3822`), bound to a
+beside `extension_hosts` (`client/serve.gleam:3835`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule
@@ -163,7 +163,7 @@ the token deadline *is* the budget deadline (`broker/token.gleam:38-45`,
 `{op_id, step_id}` where `step_id` is the model batch (ADR-005), the
 first clearance opens the ledger with its `max_outstanding`, and a later
 clearance cannot widen it (`broker.gleam:140-147`). `bash` opens that
-ledger with `max_outstanding: 1` (`bash.gleam:853`). So if a job cleared
+ledger with `max_outstanding: 1` (`bash.gleam:868`). So if a job cleared
 under the batch's own identity, a foreground `bash` earlier in the same
 batch would cap it, and a second job in the batch would be refused
 `OutstandingCapReached` while the first still ran. That is the wrong

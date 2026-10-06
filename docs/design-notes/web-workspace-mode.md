@@ -86,7 +86,7 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:310`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:2081`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:2150`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:1335`)). The
@@ -730,7 +730,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:2099`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:2168`) makes;
 3. `open` (`client/daemon/manager.gleam:1081`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;

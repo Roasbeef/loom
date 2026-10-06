@@ -140,8 +140,8 @@ The jail bounds what a server can read, but not which paths it can put in
 an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
-`admit` (`codemode/lsp_host/resolve.gleam:399`), called from one place in the
-manager (`gate`, `codemode/lsp_host/manager.gleam:2220`). Without it, a hostile
+`admit` (`codemode/lsp_host/resolve.gleam:414`), called from one place in the
+manager (`gate`, `codemode/lsp_host/manager.gleam:2238`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
