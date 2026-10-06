@@ -302,7 +302,10 @@ pub fn an_observer_can_focus_but_not_act_test() {
   assert markers >= 2
   let dividers = list.length(string.split(drawn, "data-loom-fold")) - 1
   assert dividers >= 1
-  assert buttons == chips + markers + dividers
+
+  // The bar's context figure draws its Refresh button once a board arrives.
+  let refreshes = list.length(string.split(drawn, "class=\"ctx-button\"")) - 1
+  assert buttons == chips + markers + dividers + refreshes
 }
 
 // How many buttons carry the marker that the shell relays, read from the

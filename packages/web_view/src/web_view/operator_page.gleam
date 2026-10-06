@@ -62,6 +62,7 @@ import web_view/image
 import web_view/invites
 import web_view/sessions
 import web_view/view/archiving
+import web_view/view/context_breakdown
 import web_view/view/controls
 import web_view/view/lane
 import web_view/view/resume
@@ -271,7 +272,14 @@ pub fn update(
 pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Operator,
-    component.heading(model, Observed(component.GoingHome)),
+    component.heading(
+      model,
+      Observed(component.GoingHome),
+      context_breakdown.Actions(
+        refresh: Observed(component.ContextRefreshRequested),
+        compact: Some(Controlled(component.CompactStrand)),
+      ),
+    ),
     sidebar_place(model),
     [
       component.crumb(model),

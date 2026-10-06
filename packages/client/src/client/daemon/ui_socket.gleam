@@ -274,7 +274,11 @@ type Phase {
 }
 
 /// The browser messages an observer's page takes: exactly one kind,
-/// Lustre's `EventFired` for a `click`, and only at four places. One is
+/// Lustre's `EventFired` for a `click`, and only at five places. A fifth, added
+/// after the four below, is `component.context_refresh_path`, the Refresh
+/// button of the context breakdown, whose message carries nothing and asks the
+/// page's own lane for a fresh read of the board it already draws
+/// (protocol-change/075). One is
 /// `component.older_path`, the lane's "Load older" button, whose message asks
 /// for a read of older history and nothing else (protocol-change/051, the
 /// addendum on history paging). The other is any path beneath
@@ -318,13 +322,15 @@ fn observer_click() -> decode.Decoder(Bool) {
   decode.success(kind == 1 && name == "click" && observer_path(path))
 }
 
-// The four places an observer's click may fire: the older button, the Home
-// button, a chip beneath the strip's list, and the divider of a settled turn's
+// The five places an observer's click may fire: the older button, the Home
+// button, the context breakdown's Refresh button, a chip beneath the strip's
+// list, and the divider of a settled turn's
 // work. The list's own path is not a chip, so the prefix includes the
 // separator; a divider is admitted only at the exact path `fold_click` names.
 fn observer_path(path: String) -> Bool {
   path == component.older_path
   || path == component.home_path
+  || path == component.context_refresh_path
   || string.starts_with(path, component.strip_path <> "\t")
   || component.fold_click(path)
 }

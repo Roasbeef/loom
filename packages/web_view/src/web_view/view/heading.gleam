@@ -79,6 +79,9 @@ pub type Tone {
 /// when the host could not read the label; `status` is the connection's
 /// status as the page words it. `context` and `cost` are the two estimates
 /// the terminal's footer shows (`ctx ~41%` and `est $0.04`), already worded.
+/// The context figure is the summary of a native `<details>`, and `breakdown`
+/// is the body it opens (`view/context_breakdown`), drawn by the component
+/// from the shared record; the heading places it and reads none of it.
 /// The cost is the session's running total across strands, and the bar's
 /// label says so. A figure with no value is not drawn: an empty `context`
 /// draws no `ctx`, and a `cost` that ends in the dash (`est —`, a model with
@@ -88,7 +91,7 @@ pub type Tone {
 /// ## Examples
 ///
 /// ```gleam
-/// // heading.view("0192ab34cd", element.none(), Some("docs"), Some("/src/loom"), "connected", heading.Live, "ctx ~41%", "est $0.04", element.none())
+/// // heading.view("0192ab34cd", element.none(), Some("docs"), Some("/src/loom"), "connected", heading.Live, "ctx ~41%", element.none(), "est $0.04", element.none())
 /// ```
 pub fn view(
   session_id session_id: String,
@@ -98,6 +101,7 @@ pub fn view(
   status status: String,
   tone tone: Tone,
   context context: String,
+  breakdown breakdown: Element(message),
   cost cost: String,
   notice notice: Element(message),
 ) -> Element(message) {
@@ -125,16 +129,19 @@ pub fn view(
           case context {
             "" -> []
             _ -> [
-              html.span(
-                [
-                  attribute.class("figure"),
-                  attribute.title(case string.ends_with(context, " —") {
-                    True -> "No turn yet on the strand shown"
-                    False -> "Estimated context use of the strand shown"
-                  }),
-                ],
-                figure_words(context),
-              ),
+              html.details([attribute.class("figure"), attribute.class("ctx")], [
+                html.summary(
+                  [
+                    attribute.title(case string.ends_with(context, " —") {
+                      True -> "No turn yet on the strand shown"
+                      False ->
+                        "Estimated context use of the strand shown. Open for the breakdown."
+                    }),
+                  ],
+                  figure_words(context),
+                ),
+                breakdown,
+              ]),
             ]
           },
 
