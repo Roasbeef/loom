@@ -43,6 +43,7 @@ fn texts(count: Int) -> List(String) {
 fn pieces(count: Int) -> List(turns.Piece) {
   component.new(page_fixture.start())
   |> component.apply([lane_fixture.answered(texts(count))])
+  |> lane_fixture.opened
   |> component.pieces
 }
 
@@ -74,6 +75,7 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   let cache = first(first_view)
@@ -90,6 +92,7 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   let cache = rerender(cache, first_view, same_view)
@@ -105,6 +108,7 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   let cache = rerender(cache, same_view, next_view)
@@ -122,6 +126,7 @@ pub fn an_appended_answer_draws_only_the_lines_it_moved_test() {
         draw,
         lane.NoReplies,
         lane.no_marks(),
+        lane.NoFolds,
         "",
       ),
     )
@@ -147,6 +152,7 @@ pub fn a_sliding_window_draws_only_the_new_lines_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   let cache = first(first_view)
@@ -159,6 +165,7 @@ pub fn a_sliding_window_draws_only_the_new_lines_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   let _ = rerender(cache, first_view, next_view)
@@ -168,11 +175,13 @@ pub fn a_sliding_window_draws_only_the_new_lines_test() {
 // A page of older history lands above the rows the page holds. The rows
 // already drawn keep their keys, so only the rows the page adds are drawn.
 //
-// The page holds turns 101 to 150 of a conversation of three-row turns, 150
-// rows, which is its whole live limit. The older page is records 201 to
-// 300: the end of turn 67 and turns 68 to 100. The page starts at a turn's
-// input when it can, so it leaves out turn 67's answer, whose input is
-// older still, and draws the 99 rows of turns 68 to 100. Had it drawn that
+// The page holds turns 101 to 150 of a conversation whose turns are a prompt,
+// one folded step and an answer, three rows each, which is its whole live
+// limit. A closed fold draws no step, so the page draws the 100 lines of the
+// prompts and the answers. The older page is records 201 to 300: the end of
+// turn 67 and turns 68 to 100. The page starts at a turn's input when it can,
+// so it leaves out turn 67's answer, whose input is older still, and draws
+// the 66 lines of turns 68 to 100. Had it drawn that
 // answer, the turn would have been keyed by the window's start, and the
 // next page, which brings its input, would have redrawn it under a new key.
 pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
@@ -192,10 +201,11 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   let cache = first(first_view)
-  assert drawn(lines) == 150
+  assert drawn(lines) == 100
 
   // The read goes out for the hundred sequences below the oldest record,
   // and its reply lands above what is drawn.
@@ -214,10 +224,11 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   let cache = rerender(cache, first_view, next_view)
-  assert drawn(lines) == 99
+  assert drawn(lines) == 66
 
   // A render after the prepend keeps every line.
   let _ =
@@ -231,6 +242,7 @@ pub fn a_page_of_older_rows_draws_only_the_rows_it_adds_test() {
         draw,
         lane.NoReplies,
         lane.no_marks(),
+        lane.NoFolds,
         "",
       ),
     )

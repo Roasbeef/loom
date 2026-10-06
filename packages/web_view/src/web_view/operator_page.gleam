@@ -284,6 +284,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           openable(model, session)
         }),
         component.marks(model),
+        lane.Folds(fn(fold) { Observed(component.FoldToggled(fold)) }),
         component.session_id(model),
       ),
       html.footer([attribute.class("dock")], [

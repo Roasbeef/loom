@@ -15,12 +15,20 @@ import gleam/string
 import lane_fixture
 import lustre/element.{type Element}
 import page_fixture
+import session_view/turns
 import web_view/component
 import web_view/operator_page
 import web_view/sessions
 
 @external(erlang, "page_events_ffi", "handlers")
-fn handlers(view: Element(message)) -> List(String)
+fn every_handler(view: Element(message)) -> List(String)
+
+// The handlers other than the dividers of settled turns, which have a test of
+// their own below: what the other tests pin is the chips, the older button and
+// the controls around the lane.
+fn handlers(view: Element(message)) -> List(String) {
+  lane_fixture.beyond_dividers(every_handler(view))
+}
 
 fn older_click() -> String {
   component.older_path <> "\n" <> "click"
@@ -56,6 +64,59 @@ pub fn the_observers_page_carries_the_older_click_and_the_chips_test() {
   let others = list.filter(keys, fn(key) { key != older_click() })
   assert list.length(others) == 4
   assert list.all(others, is_chip_click)
+}
+
+// A settled turn's divider carries one click, at the path the observer's socket
+// admits (`component.fold_click`, protocol-change/070), on both pages. Nothing
+// else on either page is a handler beyond the chips and the older button, and a
+// page whose turns are open carries the same dividers, since each one closes
+// its fold.
+pub fn each_divider_has_one_click_at_the_admitted_path_test() {
+  let model = lane_fixture.weighty(1, [4, 4]) |> page_with
+  let assert [first, _] = fold_ids(model)
+  let opened = component.update(model, component.FoldToggled(first)).0
+  list.each([model, opened], fn(page) {
+    let dividers = fn(keys) {
+      list.filter(keys, fn(key) {
+        case string.split_once(key, "\n") {
+          Ok(#(path, "click")) -> component.fold_click(path)
+          Ok(_) | Error(Nil) -> False
+        }
+      })
+    }
+    let observer = every_handler(component.view(page))
+    let operator = every_handler(operator_page.view(page))
+    assert list.length(dividers(observer)) == 2
+    assert dividers(observer) == dividers(operator)
+    assert list.all(observer, fn(key) {
+      key == older_click()
+      || is_chip_click(key)
+      || list.contains(dividers(observer), key)
+    })
+  })
+}
+
+fn page_with(update) {
+  component.new(page_fixture.start()) |> component.apply([update])
+}
+
+fn fold_ids(model) -> List(Int) {
+  list.filter_map(component.pieces(model), fn(piece) {
+    case piece {
+      turns.Work(id: option.Some(id), ..) -> Ok(id)
+      turns.Work(id: option.None, ..)
+      | turns.Plain(..)
+      | turns.Prompt(..)
+      | turns.Spawned(..)
+      | turns.Returned(..)
+      | turns.Nudged(..)
+      | turns.Peer(..)
+      | turns.Sibling(..)
+      | turns.Missed(..)
+      | turns.Decided(..)
+      | turns.Commentary(..) -> Error(Nil)
+    }
+  })
 }
 
 pub fn the_operators_older_click_is_at_the_same_path_test() {

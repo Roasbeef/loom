@@ -240,7 +240,9 @@ for a host with no surfaces.
   `turns.authors` reads each principal's role from the presence rows and
   `turns.attributed` sets it on that principal's messages, never the reader's), one
   `Work` divider per turn (`Folded`, or `Open` while the strand runs or waits
-  on an approval; its `Worked` figures come from the records, failed calls included, which
+  on an approval; a host that lets the reader open a fold sets `Unfolded(hidden)`
+  through `fold_budget.draw`, and `Work.id` is the sequence of the first record
+  the work folds, the number the host names the fold by; its `Worked` figures come from the records, failed calls included, which
   `turns.divider` prints as `· 1 failed`, and `Worked.ending` is `Interrupted` when a response of the turn was aborted (its row leads with `transcript_lines.stopped_words`), which the divider prints as `· interrupted`; a result whose call lies outside the
   window counts as one step, so a turn cut inside a long run of calls shows a
   figure that grows as older rows load). A response that failed says why on a
@@ -549,6 +551,14 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   the host's own; `total` still counts attachments. Whether a host shows the
   viewers is the host's choice: the web page shows them on an operator's page
   only.
+
+`fold_budget` decides how many rows a host that retains what it draws spends on
+turns: `weigh` costs one turn's blocks (its closed rows, and the rows its fold
+would add), `fit` takes the weights newest first with the open folds and the
+limit and says how many turns fit and which open fold must draw fewer steps, and
+`draw` empties a closed fold's items and cuts an open one's to the newest that
+fit. It is pure and portable, and the web view's `component.held` is its one
+caller (protocol-change/070).
 
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and

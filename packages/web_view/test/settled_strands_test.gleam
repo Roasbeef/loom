@@ -160,7 +160,7 @@ pub fn settled_strands_are_not_counted_among_the_live_ones_test() {
 // Each settled card carries a click beneath the strip's list, where the
 // observer's socket admits one, and the page draws nothing else that acts.
 pub fn a_settled_card_has_a_click_beneath_the_strip_test() {
-  let keys = handlers(component.view(page([])))
+  let keys = lane_fixture.beyond_dividers(handlers(component.view(page([]))))
   assert list.length(keys) == 4
   assert list.all(keys, fn(key) {
     string.starts_with(key, component.strip_path <> "\t")

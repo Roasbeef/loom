@@ -56,7 +56,8 @@ fn page_of(
   let #(model, _) =
     component.update(
       component.new(start)
-        |> component.apply([lane_fixture.marked(marker, running)]),
+        |> component.apply([lane_fixture.marked(marker, running)])
+        |> lane_fixture.opened,
       component.SessionsListed(listing()),
     )
   model

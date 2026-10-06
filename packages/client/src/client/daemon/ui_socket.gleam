@@ -274,7 +274,7 @@ type Phase {
 }
 
 /// The browser messages an observer's page takes: exactly one kind,
-/// Lustre's `EventFired` for a `click`, and only at three places. One is
+/// Lustre's `EventFired` for a `click`, and only at four places. One is
 /// `component.older_path`, the lane's "Load older" button, whose message asks
 /// for a read of older history and nothing else (protocol-change/051, the
 /// addendum on history paging). The other is any path beneath
@@ -286,8 +286,13 @@ type Phase {
 /// name a strand. The third is `component.home_path`, the "Home" button of a
 /// page opened from a home, whose message carries nothing and whose answer is
 /// a ticket the daemon mints for the page's own principal and ceiling
-/// (`home_ticket_for`; protocol-change/065, the second pull request). Every
-/// other message is dropped here, a batch included, so
+/// (`home_ticket_for`; protocol-change/065, the second pull request). The
+/// fourth is the divider of a settled turn's work (`component.fold_click`),
+/// whose message names a fold by a number the server drew into the handler and
+/// asks the page to draw or drop that turn's steps from records it already
+/// holds, so it reads nothing new and sends nothing (protocol-change/070). It
+/// is admitted at the divider's exact path and nowhere beneath or beside it.
+/// Every other message is dropped here, a batch included, so
 /// it costs the component no render; the gateway refuses any mutation from an
 /// observer's binding on its own, whatever reaches it. A click beneath
 /// `component.sidebar_path`, where an operator's page has its session
@@ -313,13 +318,15 @@ fn observer_click() -> decode.Decoder(Bool) {
   decode.success(kind == 1 && name == "click" && observer_path(path))
 }
 
-// The three places an observer's click may fire: the older button, the Home
-// button, and a chip beneath the strip's list. The list's own path is not a
-// chip, so the prefix includes the separator.
+// The four places an observer's click may fire: the older button, the Home
+// button, a chip beneath the strip's list, and the divider of a settled turn's
+// work. The list's own path is not a chip, so the prefix includes the
+// separator; a divider is admitted only at the exact path `fold_click` names.
 fn observer_path(path: String) -> Bool {
   path == component.older_path
   || path == component.home_path
   || string.starts_with(path, component.strip_path <> "\t")
+  || component.fold_click(path)
 }
 
 /// The browser messages a member operator's page takes: Lustre's `EventFired`

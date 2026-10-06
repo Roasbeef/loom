@@ -54,11 +54,24 @@ pub fn a_rows_buttons_keep_clear_of_its_chevron_test() {
 // is a 24px square in it, so it never lies over the row's dot or activity word.
 pub fn the_archive_button_has_a_column_of_its_own_test() {
   let css = stylesheet()
+  assert string.contains(css, "padding-right:30px")
+  assert string.contains(css, "width:24px;height:24px")
+}
+
+// F147: the column is reserved on every row, with a button or without, so the
+// activity word is in one place down the list: no rule keys the padding to a
+// row that holds the button, and the rows that are one button have it too.
+pub fn every_row_reserves_the_archive_column_test() {
+  let css = stylesheet()
+  assert !string.contains(css, "li.session:has(>.session-archive)")
   assert string.contains(
     css,
-    "li.session:has(>.session-archive){padding-right:",
+    "li.session{padding-right:30px;position:relative}",
   )
-  assert string.contains(css, "width:24px;height:24px")
+  assert string.contains(
+    css,
+    "li.session:has(>.session-open){padding:0 30px 0 0}",
+  )
 }
 
 // F143: a home row's buttons sit in three fixed columns, Rename first, so

@@ -446,6 +446,28 @@ pub fn the_button_is_one_glyph_with_its_words_in_the_label_test() {
   assert !string.contains(sidebar, ">Archive</button>")
 }
 
+// F148: the button of a running row is a filled square, the sign for stop,
+// since its press stops the turn before it archives; a row at rest keeps the
+// cross. Each keeps its words in its label and title.
+pub fn a_running_rows_button_is_a_stop_square_test() {
+  let asked = process.new_subject()
+  let owner = opened(home_start(Some(answering(asked))))
+  let sidebar = sidebar_of(home_html(owner))
+  assert string.contains(
+    sidebar,
+    "aria-label=\"Stop and archive\" class=\"session-archive\"",
+  )
+  let assert Ok(#(_, from_running)) =
+    string.split_once(sidebar, "aria-label=\"Stop and archive\"")
+  let assert Ok(#(running, _)) = string.split_once(from_running, "</button>")
+  assert string.ends_with(running, ">■")
+  assert !string.contains(running, "×")
+  let assert Ok(#(_, from_saved)) =
+    string.split_once(sidebar, "aria-label=\"Archive\"")
+  let assert Ok(#(saved, _)) = string.split_once(from_saved, "</button>")
+  assert string.ends_with(saved, ">×")
+}
+
 // F141: a running row whose activity is working or needs-you says the turn is
 // in flight and will be stopped, as the home's Stop does. An idle row, or one
 // the activity read has not named, keeps the plain sentence, and a saved row's

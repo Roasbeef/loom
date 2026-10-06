@@ -469,12 +469,13 @@ pub fn a_fragment_draws_no_committed_line_again_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   }
   let one = render(grown("one"))
   let cache = first(one)
-  assert received(drawn) == 151
+  assert received(drawn) == 101
 
   let two = render(grown("one two"))
   let #(_, cache) = patched(cache, one, two)
@@ -535,6 +536,7 @@ pub fn a_live_reasoning_row_previews_the_latest_line_and_opens_to_the_text_test(
       Nil,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
     |> element.to_string
@@ -571,6 +573,7 @@ pub fn a_growing_live_body_draws_only_its_last_paragraph_test() {
       draw,
       lane.NoReplies,
       lane.no_marks(),
+      lane.NoFolds,
       "",
     )
   }

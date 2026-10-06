@@ -3331,7 +3331,9 @@ pub fn activity_states(
 }
 
 // The session and the state a reply row names, when it names a state the page
-// knows.
+// knows. The row's count of pending approvals tells a failed run from an
+// escalation, as both are `needs_you` (`listed_sessions.activity_from`); a row
+// that carries no count is taken at its word.
 fn state_of(
   row: JsonValue,
 ) -> Result(#(String, listed_sessions.Activity), Nil) {
@@ -3339,7 +3341,11 @@ fn state_of(
     json.Object(fields) -> {
       use id <- result.try(text_field(fields, "session_id"))
       use state <- result.try(text_field(fields, "state"))
-      use doing <- result.map(listed_sessions.activity_of(state))
+      let approvals = case list.key_find(fields, "approvals") {
+        Ok(json.Int(count)) -> count
+        Ok(_) | Error(Nil) -> 1
+      }
+      use doing <- result.map(listed_sessions.activity_from(state, approvals))
       #(id, doing)
     }
     json.Array(_)

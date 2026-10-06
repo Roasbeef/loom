@@ -143,7 +143,10 @@ pub fn stage(archiving: Archiving(message)) -> Stage {
 /// The quiet button of a row, or nothing. It is a 24px square holding one
 /// glyph, so it can sit at the row's right edge and never lie over the name,
 /// the dot or the activity word. Its `aria-label` and `title` say what it does:
-/// "Stop and archive" on a running row and "Archive" otherwise.
+/// "Stop and archive" on a running row and "Archive" otherwise. The glyph
+/// differs too, so the two read differently before they are read: a cross for
+/// archiving a row at rest, and a filled square, the sign for stop, on a row
+/// that is running, whose press ends its turn first.
 /// While a request for the row is out it is disabled, though the handler stays,
 /// because the page is the layer that ignores a second press.
 ///
@@ -159,14 +162,16 @@ pub fn button(
   case archiving {
     Never -> []
     Offered(ask:, stage:, ..) -> {
-      let #(label, title) = case entry.residency {
+      let #(label, title, glyph) = case entry.residency {
         Live -> #(
           "Stop and archive",
           "Stop this session, then archive it: hide it and keep its history",
+          "■",
         )
         Saved | Blocked -> #(
           "Archive",
           "Archive this session: hide it and keep its history",
+          "×",
         )
       }
       let working = case stage {
@@ -185,7 +190,7 @@ pub fn button(
             event.on_click(ask(entry.id)),
             ..working
           ],
-          [html.text("×")],
+          [html.text(glyph)],
         ),
       ]
     }

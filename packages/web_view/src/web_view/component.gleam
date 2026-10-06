@@ -151,6 +151,7 @@ import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/decisions
+import session_view/fold_budget
 import session_view/goal_view
 import session_view/history_view
 import session_view/inbox
@@ -241,6 +242,11 @@ pub const primary = "main"
 /// over several captures; records that draw several rows each fill it from
 /// one.
 pub const live_rows = 150
+
+// Open folds have a reserve of their own beyond `live_rows` and `held_rows`,
+// `fold_budget.fold_rows` (100), so what a page draws is bounded by its limit
+// plus that constant, and a page full of closed turns can still show an open
+// fold's newest steps. The reserve is not part of which turns are held.
 
 /// The most transcript rows the page holds once its reader has loaded
 /// older ones: twice `live_rows`.
@@ -739,6 +745,7 @@ type Projected {
     notices: List(CacheNotice),
     agents: List(agent_view.Row),
     paging: Paging,
+    folds: List(Int),
   )
 }
 
@@ -765,6 +772,12 @@ type View(socket) {
     transport: Transport(socket),
     /// How many rows the page holds. This is the page's own view state.
     paging: Paging,
+    /// The folds the reader has open, as `turns.Work.id` numbers, the most
+    /// recently opened first. A fold is open only on this page and only
+    /// while its turn is held: `relaned` drops the numbers of turns that
+    /// left the page, and the oldest-opened fold when opening another would
+    /// push the page past its row limit (`fold_budget`).
+    folds: List(Int),
     /// The `paging` of each strand the reader left, keyed by strand name,
     /// for the life of the page. `focus` parks the departing strand's here
     /// and restores the arriving strand's, so a strand whose older rows the
@@ -955,6 +968,17 @@ pub type Msg(socket) {
   /// paging). It is the one message a browser can send an observer's page.
   OlderRequested
 
+  /// The divider of a settled turn's work was pressed: open the fold if it
+  /// is closed, close it if it is open. The fold is named by the number the
+  /// view drew the handler with (`turns.Work.id`), never by anything the
+  /// browser sent, because a handler's message is fixed when the tree is
+  /// drawn and the event names only the path it fired at. A number that
+  /// names no fold the page holds changes nothing. Like `OlderRequested` it
+  /// changes what the page draws from records the page already holds and
+  /// sends no command, so an observer's page may carry it
+  /// (protocol-change/070).
+  FoldToggled(fold: Int)
+
   /// A chip of the agent strip was pressed: show this strand and address it.
   /// The strand is the name the strip was drawn with, never text the browser
   /// sent, because a handler's message is fixed when the tree is drawn and
@@ -1069,12 +1093,13 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       reader: start.standing.reader,
       transport: start.transport,
       paging: Tail,
+      folds: [],
       parked_paging: dict.new(),
       strand_keys: dict.from_list([#(shared.active_strand, 1)]),
       earlier: Reached,
       blocks: [],
       pieces: [],
-      projected: projected_of(shared, Tail),
+      projected: projected_of(shared, Tail, []),
       changes: changes_view.empty(),
       worktree: case start.transport.worktree {
         Some(_) -> worktrees.Unread
@@ -1283,6 +1308,8 @@ pub fn update(
       |> reobserved(at)
 
     OlderRequested -> older_at(model, at)
+
+    FoldToggled(fold:) -> #(folded_at(model, fold), effect.none())
 
     FocusRequested(strand:) -> focus_at(model, strand, at)
 
@@ -1769,7 +1796,8 @@ pub fn apply(
 fn refreshed(model: Model(socket)) -> Model(socket) {
   let model = resumed(model)
   let model = case
-    projected_of(model.shared, model.view.paging) == model.view.projected
+    projected_of(model.shared, model.view.paging, model.view.folds)
+    == model.view.projected
   {
     True -> model
     False -> relaned(model)
@@ -1911,7 +1939,11 @@ fn awaited(model: Model(socket), stream: Stream) -> Bool {
   }
 }
 
-fn projected_of(shared: Session(socket), paging: Paging) -> Projected {
+fn projected_of(
+  shared: Session(socket),
+  paging: Paging,
+  folds: List(Int),
+) -> Projected {
   Projected(
     strand: shared.active_strand,
     captured: shared.captured,
@@ -1919,6 +1951,7 @@ fn projected_of(shared: Session(socket), paging: Paging) -> Projected {
     notices: shared.cache_notices,
     agents: shared.agent_rows,
     paging:,
+    folds:,
   )
 }
 
@@ -1962,14 +1995,18 @@ fn resumed(model: Model(socket)) -> Model(socket) {
 // Projects the page strand's blocks and pieces from the history window and
 // the notices. This is the one place a projection runs.
 //
-// The page holds the newest turns whose rows fit its limit, and cuts the
-// rest (`held`). Records older than the oldest row it keeps are then dropped
-// from the history window, so the next capture projects only what the page
-// draws and the records a capture adds. The window is trimmed only when
-// rows were cut: a record at the start of the strand that draws no row
-// would otherwise leave the page offering to load rows it will never draw.
-// The trim is a write to the shared record, and one of the two this module
-// makes.
+// The page holds the newest turns whose drawn rows fit its limit, and cuts
+// the rest (`held`). A settled turn draws its prompt, its answer and one
+// divider, so what a turn did costs the page nothing until the reader opens
+// its fold, and the page can hold the turns around a turn of two hundred
+// calls. The steps of a closed fold are not drawn at all (`fold_budget.draw`),
+// so the server's runtime retains none of them. Records older than the oldest
+// block it keeps are then dropped from the history window, so the next
+// capture projects only what the page holds and the records a capture adds.
+// The window is trimmed only when rows were cut: a record at the start of the
+// strand that draws no row would otherwise leave the page offering to load
+// rows it will never draw. The trim is a write to the shared record, and one
+// of the two this module makes.
 //
 // The end of a turn whose input is older than the window is not drawn, but
 // its records stay in the window (`AtInput`), so the next read asks for the
@@ -1996,18 +2033,27 @@ fn relaned(model: Model(socket)) -> Model(socket) {
           shared.cache_notices,
         )
       let #(lead, opened) = turns.grouped(all, view.strands)
-      let #(blocks, fit) =
-        held(lead, opened, branch.unloaded, limit(model.view.paging))
       let latest = turns.latest(view, shared.agent_rows, shared.active_strand)
+      let kept =
+        held(
+          lead,
+          opened,
+          branch.unloaded,
+          limit(model.view.paging),
+          view.strands,
+          latest,
+          model.view.folds,
+        )
       let pieces =
         turns.pieces(
-          blocks,
+          kept.blocks,
           view.strands,
           latest,
           turns.Expand(expansion.capped),
         )
         |> turns.attributed(turns.authors(view.peers))
-      let #(scrollback, earlier) = case fit, branch.unloaded {
+        |> fold_budget.draw(kept.folds, kept.allowance)
+      let #(scrollback, earlier) = case kept.fit, branch.unloaded {
         Whole, None -> #(shared.scrollback, Reached)
         Whole, Some(_) ->
           case shared.scrollback.before_seq > 1 {
@@ -2015,21 +2061,31 @@ fn relaned(model: Model(socket)) -> Model(socket) {
             False -> #(shared.scrollback, Reached)
           }
         AtInput, _ -> #(trimmed(shared.scrollback, lead), Unheld)
-        Cut, _ -> #(trimmed(shared.scrollback, blocks), Unheld)
+        Cut, _ -> #(trimmed(shared.scrollback, kept.window), Unheld)
+
+        // A running turn too long to draw whole leaves the window alone:
+        // the records a read brings stay in it and are drawn once the turn
+        // settles, where trimming them on arrival would make each Load
+        // older do nothing.
+        Overrun, _ -> #(shared.scrollback, Unheld)
       }
 
       // A paged page that had to cut a whole turn to stay within its
-      // limit is full: loading more would only cut again.
-      let paging = case fit, model.view.paging {
+      // limit is full: loading more would only cut again. A running turn
+      // that alone is over the limit is not that: it settles into one
+      // divider, so the page is not full because of it.
+      let paging = case kept.fit, model.view.paging {
         Cut, Paged -> Full
-        Cut, Tail | Cut, Full | Whole, _ | AtInput, _ -> model.view.paging
+        Cut, Tail | Cut, Full | Overrun, _ | Whole, _ | AtInput, _ ->
+          model.view.paging
       }
       settled_projection(Model(
         shared: Shared(..shared, scrollback:),
         view: View(
           ..model.view,
-          blocks:,
+          blocks: kept.blocks,
           pieces:,
+          folds: kept.folds,
           raised: remembered(model.view.raised, view.cells),
           earlier:,
           paging:,
@@ -2050,7 +2106,7 @@ fn settled_projection(model: Model(socket)) -> Model(socket) {
     ..model,
     view: View(
       ..model.view,
-      projected: projected_of(model.shared, model.view.paging),
+      projected: projected_of(model.shared, model.view.paging, model.view.folds),
     ),
   )
 }
@@ -2068,6 +2124,27 @@ type Fit {
 
   // The newest turns that fit the page's limit; an older turn did not.
   Cut
+
+  // The newest turn is still running and alone is over the limit, so the
+  // page holds its newest blocks. Its record stays whole in the window: once
+  // the turn settles, the page holds it as one divider with its prompt.
+  Overrun
+}
+
+// What `held` chose.
+type Held {
+  Held(
+    // The blocks the page draws, oldest first.
+    blocks: List(transcript_lines.Block),
+    fit: Fit,
+    // The blocks the history window must keep. They are `blocks`, except
+    // for a running turn too long to draw whole, whose record is kept whole.
+    window: List(transcript_lines.Block),
+    // The folds that are open and held, most recently opened first.
+    folds: List(Int),
+    // How many rows of steps an open fold may draw, when it may not draw all.
+    allowance: Dict(Int, Int),
+  )
 }
 
 // The row limit for how much history the page holds.
@@ -2078,75 +2155,119 @@ fn limit(paging: Paging) -> Int {
   }
 }
 
-// The newest turns whose rows, together, fit `limit`, oldest first.
+// The newest turns whose drawn rows, together, fit `limit`, oldest first.
 //
+// A turn costs what it draws (`fold_budget.weigh`): its prompt, its answer
+// and its divider, plus the steps of its fold while the reader has it open.
 // The page starts at a turn's input whenever it can, so that no turn it
 // holds is keyed by the window's start (`turns.grouped` says why). The
 // blocks before the first input are held only when nothing older exists,
 // which makes them the start of the strand, or when they are all there is.
 //
-// The newest turn is always held. When it alone is over the limit, which a
-// long run of work can be, the page holds its newest blocks that fit, and
-// at least its newest block, so a page mid-turn still shows the turn's end.
-// That turn is then keyed by the window's start. The window's start moves
-// each time the turn grows by a block, since the window is trimmed to its
-// oldest held block, so the key changes and the turn's held rows, at most
-// the limit, are drawn again on that capture. Only a turn longer than the
-// whole limit pays this.
+// The newest turn is always held. A running turn is drawn open, so it costs
+// every row of its blocks. When it alone is over the limit, which a long run
+// of work can be, the page holds its newest blocks that fit, and at least its
+// newest block, so a page mid-turn still shows the turn's end. That turn is
+// then keyed by the window's start, which moves each time the turn grows by a
+// block, so its held rows, at most the limit, are drawn again on that
+// capture. Only a turn longer than the whole limit pays this, and only while
+// it runs. A settled turn alone over the limit with its fold closed can only
+// be one whose own prompt or answer is that long, and is cut the same way.
+//
+// Which turns the page holds never depends on the open folds
+// (`fold_budget.fit`): the turns are chosen as if every fold were closed, and
+// the rows they leave over go to the open folds, most recently opened first.
+// A fold that does not fit whole draws its newest steps that do, if it is the
+// most recent that did not fit, and an older one is closed. So pressing a
+// divider cannot move where the page is cut, trim its history or fill it.
 fn held(
   lead: List(transcript_lines.Block),
   opened: List(List(transcript_lines.Block)),
   unloaded: Option(String),
   limit: Int,
-) -> #(List(transcript_lines.Block), Fit) {
+  strands: List(protocol.Strand),
+  latest: turns.Latest,
+  open: List(Int),
+) -> Held {
   let #(groups, fit) = case lead, opened, unloaded {
     [], _, _ -> #(opened, Whole)
     [_, ..], [], _ | [_, ..], _, None -> #([lead, ..opened], Whole)
     [_, ..], [_, ..], Some(_) -> #(opened, AtInput)
   }
-  let #(blocks, fit) = case list.reverse(groups) {
-    [] -> #([], fit)
-    [newest, ..older] -> {
-      let rows = row_count(newest)
-      case rows > limit {
-        True -> #(newest_blocks(list.reverse(newest), limit, 0, []), Cut)
-        False -> older_turns(older, limit, rows, newest, fit)
+  case list.reverse(groups) {
+    [] -> Held([], fit, [], [], dict.new())
+    [newest, ..older] as newest_first -> {
+      let head = newest_weight(newest, strands, latest)
+      case head.base > limit {
+        True ->
+          Held(
+            newest_blocks(list.reverse(newest), limit, 0, []),
+            case latest {
+              turns.Running -> Overrun
+              turns.Settled -> Cut
+            },
+            newest,
+            [],
+            dict.new(),
+          )
+        False -> {
+          let weights = [head, ..list.map(older, fold_budget.weigh(_, strands))]
+          let fitted = fold_budget.fit(weights, open, limit)
+          let blocks =
+            newest_first
+            |> list.take(fitted.kept)
+            |> list.reverse
+            |> list.flatten
+          let fit = case fitted.kept < list.length(weights) {
+            True -> Cut
+            False -> at_input(fit, fitted.used, lead, strands, limit)
+          }
+          Held(
+            blocks:,
+            fit:,
+            window: blocks,
+            folds: fitted.folds,
+            allowance: fitted.allowance,
+          )
+        }
       }
     }
-  }
-
-  // The end of a turn left out above the held turns can only grow as older
-  // pages bring the rest of it. Once it alone no longer fits in the room
-  // left, the whole turn never will, so the page is as full as that turn
-  // lets it be. Calling it cut stops the page reading ever further down a
-  // turn it cannot draw, and keeps the window from filling with its records.
-  case fit {
-    AtInput ->
-      case row_count(blocks) + row_count(lead) > limit {
-        True -> #(blocks, Cut)
-        False -> #(blocks, AtInput)
-      }
-    Whole | Cut -> #(blocks, fit)
   }
 }
 
-// Adds older turns, newest first, in front of what is held while they fit.
-fn older_turns(
-  older: List(List(transcript_lines.Block)),
-  limit: Int,
-  rows: Int,
-  kept: List(transcript_lines.Block),
+// The weight of the newest turn. A running turn is drawn open, with every
+// block's rows, so it costs them all; a settled one costs its divider.
+fn newest_weight(
+  turn: List(transcript_lines.Block),
+  strands: List(protocol.Strand),
+  latest: turns.Latest,
+) -> fold_budget.Weight {
+  case latest {
+    turns.Running -> fold_budget.Weight(base: row_count(turn), fold: None)
+    turns.Settled -> fold_budget.weigh(turn, strands)
+  }
+}
+
+// A page that starts at an input stays that way only while the end of the
+// older turn it left out can still fit. Once that turn's own divider no
+// longer fits in the room left, the whole turn never will, so the page is as
+// full as that turn lets it be. Calling it cut stops the page reading ever
+// further down a turn it cannot draw, and keeps the window from filling with
+// its records.
+fn at_input(
   fit: Fit,
-) -> #(List(transcript_lines.Block), Fit) {
-  case older {
-    [] -> #(kept, fit)
-    [turn, ..rest] -> {
-      let rows = rows + row_count(turn)
-      case rows > limit {
-        True -> #(kept, Cut)
-        False -> older_turns(rest, limit, rows, list.append(turn, kept), fit)
+  used: Int,
+  lead: List(transcript_lines.Block),
+  strands: List(protocol.Strand),
+  limit: Int,
+) -> Fit {
+  case fit {
+    AtInput ->
+      case used + fold_budget.weigh(lead, strands).base > limit {
+        True -> Cut
+        False -> AtInput
       }
-    }
+    Whole | Cut | Overrun -> fit
   }
 }
 
@@ -3589,6 +3710,7 @@ fn focus_at(
           view: View(
             ..model.view,
             paging: arriving,
+            folds: [],
             parked_paging: dict.delete(remembered, strand),
             refusal: None,
             outcome: "",
@@ -3662,6 +3784,112 @@ fn older_at(
     | lane.Earlier, Some(_), Connecting
     | lane.Earlier, Some(_), Ended(_)
     -> #(model, effect.none())
+  }
+}
+
+/// Whether a Lustre event path is a settled turn's divider: the button that
+/// opens and closes a fold of work. The lane's rows are keyed, and a keyed
+/// child's path segment is its key, so a divider is at the lane's list (the
+/// second child of `<loom-follow>`, which is the lane's second child of the
+/// centre column), then the piece's key, then the row's body (`tl-body`, its
+/// second child), the work's own element and the divider, its first child.
+/// The piece's key is the one the engine gives a turn's work: `work:` and the
+/// sequence and index of the input that opened it, or `work:window-start`.
+/// Both numbers are checked, so a path naming any other key, or any other
+/// place beneath a row, is not a divider. The page socket admits a `click` from
+/// an observer at such a path and no other event beyond `older_path`'s and
+/// the strand panel's (`client/daemon/ui_socket.observer_accepts`,
+/// protocol-change/070). `page_events_test` fails if the view moves the button,
+/// so the two cannot drift apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.fold_click("0\t2\t1\t1\twork:12.0\t1\t0\t0")
+/// assert !component.fold_click("0\t2\t1\t1\twork:12.0\t1\t0")
+/// ```
+pub fn fold_click(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "2", "1", "1", key, "1", "0", "0"] -> is_work_key(key)
+    _ -> False
+  }
+}
+
+// A turn's work key, as `turns` builds it: `work:` then the input block's
+// key, a sequence and an index with a dot between them, or the window's start.
+fn is_work_key(key: String) -> Bool {
+  case string.split(key, ":") {
+    ["work", "window-start"] -> True
+    ["work", block] ->
+      case string.split(block, ".") {
+        [seq, index] -> is_counter(seq) && is_counter(index)
+        _ -> False
+      }
+    _ -> False
+  }
+}
+
+// Whether the text is a whole number as `int.to_string` writes it, so a sign,
+// a space or a leading zero is refused.
+fn is_counter(text: String) -> Bool {
+  case int.parse(text) {
+    Ok(number) -> number >= 0 && int.to_string(number) == text
+    Error(Nil) -> False
+  }
+}
+
+// Opens a closed fold, or closes an open one, and draws the page again from
+// the records it holds. It is the page's own state, so it asks the lane for
+// nothing and sends no command.
+//
+// The fold is named by the number the divider's handler was drawn with, and a
+// number that is not the id of a fold the page holds, because its turn left
+// the page or never had work, changes nothing. The page must still be reading
+// a session, which is the condition "Load older" needs: a page whose transport
+// ended draws its last cut and stays still, so its steps are not drawn after
+// the session closed to it. The newest fold opened goes first in the list, so
+// `held` can close the oldest ones first when they do not all fit.
+fn folded_at(model: Model(socket), fold: Int) -> Model(socket) {
+  case
+    model.view.status,
+    model.shared.captured,
+    list.any(model.view.pieces, is_fold(_, fold))
+  {
+    Connected, Some(_), True -> {
+      let folds = case list.contains(model.view.folds, fold) {
+        True -> list.filter(model.view.folds, fn(open) { open != fold })
+        False -> [fold, ..model.view.folds]
+      }
+      relaned(Model(..model, view: View(..model.view, folds:)))
+    }
+
+    // Nothing to read from, a page that is not following a session, or a
+    // number that names no fold the page holds.
+    Connected, None, _
+    | Connected, Some(_), False
+    | Connecting, _, _
+    | Ended(_), _, _
+    -> model
+  }
+}
+
+// Whether a piece is the settled work with this number.
+fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
+  case piece {
+    turns.Work(id: Some(found), folding: turns.Folded, ..)
+    | turns.Work(id: Some(found), folding: turns.Unfolded(_), ..) ->
+      found == fold
+    turns.Work(..)
+    | turns.Plain(..)
+    | turns.Prompt(..)
+    | turns.Spawned(..)
+    | turns.Returned(..)
+    | turns.Nudged(..)
+    | turns.Peer(..)
+    | turns.Sibling(..)
+    | turns.Missed(..)
+    | turns.Decided(..)
+    | turns.Commentary(..) -> False
   }
 }
 
@@ -3893,10 +4121,11 @@ pub fn session_activity(
 
 // What the page's own session is doing, from the strip it draws. The rule is
 // the daemon's activity read's, so the page's row and the home's row for the
-// same session say the same word: a strand waiting on a decision, or a main
-// strand whose last run failed with nothing else running, needs the person;
-// otherwise a strand with an operation (working, or waiting on a provider
-// retry) is working; otherwise idle. A page whose strip lists no strand has
+// same session say the same word: a strand waiting on a decision needs the
+// person; otherwise a strand with an operation (working, or waiting on a
+// provider retry) is working; otherwise a main strand whose last run failed
+// with nothing else running has failed, and nothing waits on the operator;
+// otherwise idle. A page whose strip lists no strand has
 // no capture yet and says nothing.
 fn live_activity(model: Model(socket)) -> Option(sessions.Activity) {
   let listed = chips(model.view.strip)
@@ -3915,7 +4144,7 @@ fn live_activity(model: Model(socket)) -> Option(sessions.Activity) {
       case needing(model) > 0, working, main_failed {
         True, _, _ -> Some(sessions.NeedsYou)
         False, True, _ -> Some(sessions.Working)
-        False, False, True -> Some(sessions.NeedsYou)
+        False, False, True -> Some(sessions.Failed)
         False, False, False -> Some(sessions.Idle)
       }
   }
@@ -4242,9 +4471,12 @@ pub fn session_id(model: Model(socket)) -> String {
 /// page is read-only, and the strand panel, which carries the advisor's
 /// pending nudges when any are queued. Its event handlers are
 /// the lane's "Load older" button, whose message asks for a read and nothing
-/// else, and one focus click per card of the strand panel; the page socket
+/// else, one focus click per card of the strand panel, the "Home" button on a
+/// page opened from a home, and one click per settled turn's divider, which
+/// draws or drops steps of records the page already holds; the page socket
 /// admits those from an observer and drops every other frame
-/// (protocol-change/051, the addenda on history paging and strand focus).
+/// (protocol-change/051, the addenda on history paging and strand focus, 065
+/// for Home, and 070 for the dividers).
 ///
 /// Each region is drawn by its own module under `web_view/view` (`heading`,
 /// `lane`, `panel` and `strip`); this function only lays them out through
@@ -4269,6 +4501,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         OlderRequested,
         lane.NoReplies,
         marks(model),
+        lane.Folds(FoldToggled),
         session_id(model),
       ),
       plan(model),

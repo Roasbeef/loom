@@ -421,6 +421,7 @@
   .residency.live .glyph{color:var(--color-current);}
   .residency.opening{color:var(--color-current);}
   .residency.needs-you,.residency.needs-you .glyph{color:var(--color-signal-text);}
+  .residency.failed,.residency.failed .glyph{color:var(--color-danger-text);}
   /* A running session's dot follows what it is doing: working pulses in the
      accent as the home's rows do, idle is quiet and still, and needs-you is the
      signal hue with a slower pulse. The reduced-motion rule below stops both. */
@@ -433,20 +434,21 @@
   @keyframes pulse{50%{opacity:.35;}}
   /* A row that opens its session is a button filling the row, drawn like the
      row's text until it is hovered or focused. */
-  li.session:has(>.session-open){padding:0;}
+  li.session:has(>.session-open){padding:0 30px 0 0;}
   .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
   .session-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   /* The archive action of a row (web_view/view/archiving): a 24px square at the
-     row's right edge, in a column the row reserves with its right padding, so it
-     never lies over the title, the dot or the activity word and the row's own
-     button gets every click on the row's body. It is drawn on hover and on
+     row's right edge, in a column every row reserves with its right padding,
+     whether or not it carries a button, so the dot and the activity word sit in
+     one place down the list. The button never lies over the title, the dot or
+     the activity word, and the row's own button gets every click on the row's
+     body. It is drawn on hover and on
      keyboard focus and stays in the tab order when hidden, so the keyboard
      reaches it; while hidden it takes no pointer. Touch has no hover, so there
      it is always drawn. Its question replaces the row, on a tinted background with a tinted
      hairline, and neither draws a shadow or an edge bar. */
-  li.session{position:relative;}
-  li.session:has(>.session-archive){padding-right:30px;}
+  li.session{position:relative;padding-right:30px;}
   .session-archive{position:absolute;top:50%;right:4px;transform:translateY(-50%);box-sizing:border-box;width:24px;height:24px;margin:0;padding:0;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:14px/1 var(--font-sans);text-align:center;cursor:pointer;opacity:0;pointer-events:none;}
   li.session:hover>.session-archive,li.session:focus-within>.session-archive,.session-archive:focus-visible{opacity:1;pointer-events:auto;}
   .session-archive:hover:not(:disabled){background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));color:var(--color-fg);}
@@ -522,10 +524,12 @@
   .home-row.idle .home-glyph{color:var(--color-fg-quiet);}
   .home-row.working .home-glyph{animation:loom-pulse 1.4s ease-in-out infinite;}
   .home-row.needs-you .home-glyph{color:var(--color-signal-text);}
+  .home-row.failed .home-glyph{color:var(--color-danger-text);}
   .home-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;}
   .home-name{font:500 14px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-sub{font:12px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   .home-row.needs-you .home-activity{color:var(--color-signal-text);}
+  .home-row.failed .home-activity{color:var(--color-danger-text);}
   /* The owner's quiet buttons (Rename, and Stop, Archive or Delete on the
      fresh home) are one group after the row's own button and are placed over
      its right side, beside the chevron, so the row's own path and its
@@ -945,6 +949,17 @@
   .fold-glyph{display:inline-block;width:1.2em;flex:0 0 auto;font-size:11px;}
   .fold-body{display:block;}
   .work-divider{min-width:0;overflow-wrap:anywhere;}
+  /* The divider of a settled turn is a button the server draws (web_view/view/
+     lane): its glyph is the stylesheet's, from the state the server renders, so
+     the button holds only the words and every click lands on it. A divider with
+     no number to open it by is plain words in the same column. */
+  .work-toggle{display:flex;align-items:baseline;width:100%;min-width:0;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);text-align:left;overflow-wrap:anywhere;}
+  button.work-toggle{cursor:pointer;}
+  button.work-toggle::before{content:"▸";display:inline-block;width:1.2em;flex:0 0 auto;font-size:11px;}
+  button.work-toggle[aria-expanded="true"]::before{content:"▾";}
+  button.work-toggle:hover{color:var(--color-fg);}
+  span.work-toggle{padding-left:1.2em;}
+  .work-hidden{margin:0;padding:2px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .work-items{display:flex;flex-direction:column;gap:1px;padding:2px 0 6px 1.2em;}
   .work.open{display:flex;flex-direction:column;gap:1px;}
   .step{min-width:0;}

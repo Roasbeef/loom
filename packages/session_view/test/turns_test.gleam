@@ -263,6 +263,7 @@ fn shape(piece: turns.Piece) -> String {
         [] -> "prompt:" <> name
       }
     turns.Work(folding: turns.Folded, ..) -> "work:folded"
+    turns.Work(folding: turns.Unfolded(_), ..) -> "work:unfolded"
     turns.Work(folding: turns.Open, ..) -> "work:open"
     turns.Spawned(child:, ..) -> "spawn:" <> option.unwrap(child, "?")
     turns.Returned(child:, ..) -> "returned:" <> child
@@ -1258,8 +1259,18 @@ pub fn results_whose_calls_are_cut_count_as_steps_test() {
 }
 
 fn stopped_response() -> message.AgentMessage {
+  stopped_with([])
+}
+
+// A response aborted after it had written the first of its prose, which the
+// transcript classifies as an answer and not as work.
+fn spoke_then_stopped() -> message.AgentMessage {
+  stopped_with([message.AssistantText("First paragraph.", None)])
+}
+
+fn stopped_with(content: List(message.AssistantBlock)) -> message.AgentMessage {
   message.AssistantMessage(
-    [],
+    content,
     "test",
     "test",
     "test",
@@ -1274,6 +1285,38 @@ fn stopped_response() -> message.AgentMessage {
     None,
     0,
   )
+}
+
+// F149: a response that spoke before it was stopped is an answer, not a
+// narration, and its `Stopped` row must still mark the turn's divider. The
+// divider reads `interrupted` whether the aborted answer is the turn's last
+// message or one the strand wrote on the way.
+pub fn an_aborted_response_that_spoke_marks_its_turn_interrupted_test() {
+  let last =
+    laid_out(
+      [
+        #(10_000, said("write an essay", Some(message.Origin("p", "Alice")))),
+        #(14_000, assistant([read_call()])),
+        #(15_000, result("c1", "fs_read", json.Object([]), 15_000)),
+        #(22_000, spoke_then_stopped()),
+      ],
+      whole(),
+    )
+  let assert [_, turns.Work(worked: cut_short, ..), turns.Plain(..)] = last
+  assert cut_short.ending == turns.Interrupted
+  assert string.ends_with(turns.divider(cut_short), " · interrupted")
+
+  let earlier =
+    laid_out(
+      [
+        #(10_000, said("write an essay", Some(message.Origin("p", "Alice")))),
+        #(22_000, spoke_then_stopped()),
+        #(30_000, assistant([message.AssistantText("Short.", None)])),
+      ],
+      whole(),
+    )
+  let assert [_, turns.Work(worked: folded, ..), _] = earlier
+  assert folded.ending == turns.Interrupted
 }
 
 // A turn whose response was aborted, as a steer does, carries `Interrupted`

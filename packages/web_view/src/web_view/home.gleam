@@ -1376,7 +1376,7 @@ type Busyness {
 fn busy(model: Model, session: String) -> Busyness {
   case dict.get(model.activity, session) {
     Ok(Working) | Ok(NeedsYou) -> Busy
-    Ok(sessions.Idle) | Error(Nil) -> Quiet
+    Ok(sessions.Idle) | Ok(sessions.Failed) | Error(Nil) -> Quiet
   }
 }
 

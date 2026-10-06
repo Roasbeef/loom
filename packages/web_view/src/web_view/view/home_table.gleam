@@ -408,6 +408,7 @@ fn standing(
 fn activity_class(activity: Activity) -> String {
   case activity {
     NeedsYou -> "needs-you"
+    sessions.Failed -> "failed"
     Working -> "working"
     Idle -> "idle"
   }

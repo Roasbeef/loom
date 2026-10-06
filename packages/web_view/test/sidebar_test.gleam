@@ -819,6 +819,41 @@ pub fn the_current_row_follows_the_lane_not_the_read_test() {
   assert string.contains(waiting, "</span>needs you</span>")
 }
 
+// F146: a session whose last run failed, with nothing pending and nothing
+// running, is not waiting on its operator, so its row says `failed` in the
+// danger hue and not `needs you`. A pending approval still says `needs you`.
+pub fn a_failed_run_reads_failed_and_not_needs_you_test() {
+  let model =
+    component.new(page_fixture.start())
+    |> component.apply([
+      lane_fixture.failed_main(lane_fixture.captured_with(10, None, [])),
+    ])
+  let #(model, _) = component.update(model, component.SessionsListed(listing()))
+  let assert Ok(sidebar) = sidebar_of(operator_html(model))
+  let assert Ok(#(_, from_current)) =
+    string.split_once(sidebar, "class=\"session current\"")
+  let assert Ok(#(row, _)) = string.split_once(from_current, "</li>")
+  assert string.contains(row, "residency live failed")
+  assert string.contains(row, "</span>failed</span>")
+  assert !string.contains(row, "needs you")
+}
+
+// The home's read says `needs_you` for both a failed run and an approval
+// waiting; its count of pending approvals tells them apart.
+pub fn a_needs_you_read_with_no_approval_is_a_failed_run_test() {
+  assert sessions.activity_from("needs_you", 0) == Ok(sessions.Failed)
+  assert sessions.activity_from("needs_you", 1) == Ok(sessions.NeedsYou)
+  assert sessions.activity_from("working", 0) == Ok(sessions.Working)
+  assert sessions.activity_from("idle", 0) == Ok(sessions.Idle)
+  assert sessions.activity_from("unknown", 0) == Error(Nil)
+  assert sessions.activity_words(sessions.Failed) == "failed"
+
+  let #(model, _) = with_activity(listing(), [#("B", sessions.Failed)])
+  let assert Ok(sidebar) = sidebar_of(operator_html(model))
+  assert string.contains(sidebar, "residency live failed")
+  assert string.contains(sidebar, "</span>failed</span>")
+}
+
 // Before the first capture the page knows nothing of its own session, so the
 // read's answer stands for its row.
 pub fn the_current_row_uses_the_read_before_a_capture_test() {

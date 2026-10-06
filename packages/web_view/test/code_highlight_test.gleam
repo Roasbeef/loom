@@ -16,6 +16,7 @@ import web_view/component
 fn drawn(program: String) -> String {
   component.new(page_fixture.start())
   |> component.apply([lane_fixture.programmed(program, "done")])
+  |> lane_fixture.opened
   |> component.view
   |> element.to_string
   |> string.replace("<!-- lustre:memo -->", "")

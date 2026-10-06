@@ -470,11 +470,36 @@ page keys and nonces, and the relay into the session's gateway.
   rows, it empties `returned_drafts` once it has taken them, and it empties
   the notice and `answer` before it runs a command.
 - `component.live_rows` (150) and `component.held_rows` (300): the page
-  holds the newest `live_rows` rows of `main`, cut between turns
-  (`turns.grouped`); once the reader loads older rows its limit is
-  `held_rows`. `component.Paging` is `Tail | Paged | Full`, and only moves
-  forward; `Full` means a paged page had to cut a whole turn, so it loads
-  no more. `component.older(model)` asks for the rows below the oldest one
+  holds the newest turns of `main` whose drawn rows fit `live_rows`, cut
+  between turns (`turns.grouped`); once the reader loads older rows its limit is
+  `held_rows`. The limit counts drawn rows: a settled turn is its prompt, its
+  answer and one divider, and its steps are drawn only while the reader has
+  its fold open (below). `component.Paging` is `Tail | Paged | Full`; `Full`
+  means a paged page had to cut a whole turn, so it loads no more, and a page
+  that fits again after a fold closed is `Paged` again.
+- **Lazy folds** (protocol-change/070, `session_view/fold_budget`). A settled
+  turn's `Work` piece holds no steps unless its fold is open: `relaned` weighs
+  each turn (`fold_budget.weigh`: its closed rows, and what its fold would add),
+  keeps the newest turns that fit (`held`, `fold_budget.fit`) and calls
+  `fold_budget.draw`, which empties each closed fold's items and cuts an open
+  one to the newest steps its room allows (`Folding` is `Folded | Unfolded(hidden)
+  | Open`). `View.folds` is the list of open fold numbers, most recently opened
+  first; a number is the sequence of the first record the fold holds
+  (`turns.Work.id`), the daemon's number and never session text. The turns
+  held are chosen with every fold closed, so a press never changes where the
+  page is cut or its `Paging`; the rows they leave over, plus a reserve of
+  `fold_budget.fold_rows` (100) that is the folds' own, go to the open folds,
+  most recently opened first, and an older-opened fold that does not fit is
+  closed. The most recent that does not fit draws its newest steps and a line
+  says how many earlier ones are not shown. The running turn is `Open` and is counted
+  by every row of its blocks; when it alone is over the limit (`Overrun`) the
+  page draws its newest blocks but leaves the history window untrimmed, so once it settles it is one divider with its prompt, and `Paging`
+  does not go `Full` because of it. `FoldToggled(fold)` opens or closes a fold
+  (`folded_at`): it acts only on a `Connected` page with a cut, and only on a
+  number that is the id of a fold of a held turn, as `OlderRequested` acts only
+  on a page that is reading. The divider is a button (`lane.divider`) with the
+  fixed `data-loom-fold` marker; both pages draw it with `lane.Folds`, and an
+  observer's socket admits its click at `component.fold_click`'s exact path. `component.older(model)` asks for the rows below the oldest one
   held, as a `history` read on the page's lane; `component.top(model)` is
   the `lane.Top` the lane draws above its oldest row (`Beginning`,
   `Earlier`, `Loading`, `Full(rows)`).
@@ -740,7 +765,8 @@ page keys and nonces, and the relay into the session's gateway.
   `Shared.reviewer_rows`, the terminal's own lines. The board is one line
   until the reader opens it, `Todo · 3 of 5 done · <active task>` (a board whose tasks are all closed is not
   drawn; the closed steps are in the turn's fold), the
-  summary of a `<loom-fold>` (the browser keeps its open state, so a patch
+  summary of a `<loom-fold>` (the one place the element is still used for
+  its own local state: the browser keeps its open state, so a patch
   leaves it alone and an observer's page has it too); the line follows the
   strand the page shows because the board is that strand's. Opened, the phase holding the
   active task (`todo_list.focus`) is expanded with every task, each with the
@@ -1097,10 +1123,13 @@ page keys and nonces, and the relay into the session's gateway.
   (ADR-013, the addendum on event-driven delivery). `component_test` pins
   the reduction; `delivery_test` counts the renders a burst costs on the
   real runtime and watches the timer fire.
-- **The page's rows are bounded.** The page holds at most `live_rows`
-  rows, or `held_rows` once paged, plus at most one block when the newest
+- **The page's rows are bounded.** The page draws at most `live_rows`
+  rows, or `held_rows` once paged, plus `fold_budget.fold_rows` for open folds (a settled turn costs its prompt, answer and
+  divider, and an open fold its steps), plus at most one block when the newest
   turn alone is longer than the limit; loading older rows past the limit
-  is refused (`Full`), never allowed to grow the page. Once rows are cut,
+  is refused (`Full`), never allowed to grow the page. The records of a folded
+  turn stay in the history window, so the model holds them though the runtime
+  retains none of their elements; a read adds at most a hundred records. Once rows are cut,
   the history window is trimmed to the oldest record drawn
   (`history_view.retain_from`), so what a capture projects is in
   proportion to the page. The page starts at a turn's input whenever it
@@ -1126,12 +1155,15 @@ page keys and nonces, and the relay into the session's gateway.
   the list, and the composer's element puts it back in the editor.
 - **Which application runs is which commands exist.** An observer's page is
   `component.app()`, whose message type holds no command and whose view
-  attaches the lane's "Load older" click (`OlderRequested`, a read) and one
+  attaches the lane's "Load older" click (`OlderRequested`, a read), one
   click per strip chip (`FocusRequested`, a change of what the page shows,
-  built from the name the strip was drawn with); its bar is a fixed text
+  built from the name the strip was drawn with) and one per settled turn's
+  divider (`FoldToggled`, which draws or drops steps of records the page
+  already holds); its bar is a fixed text
   node. The page socket admits from an observer only a click at
-  `component.older_path` or beneath `component.strip_path`
-  (protocol-change/051, the addenda on history paging and strand focus), and
+  `component.older_path`, beneath `component.strip_path` or at a divider's
+  exact path (`component.fold_click`; protocol-change/051, the addenda on
+  history paging and strand focus, and 070), and
   `page_events_test` pins that the observer's handlers are exactly those.
   The sidebar and every other region add none. The strand panel is the
   frame's last child, so a region added after it does not move an admitted

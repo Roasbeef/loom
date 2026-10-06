@@ -162,6 +162,7 @@ fn report(text: String) -> Element(Nil) {
     fn(line) { element.text(line.text) },
     lane.NoReplies,
     lane.no_marks(),
+    lane.NoFolds,
     "",
   )
 }
