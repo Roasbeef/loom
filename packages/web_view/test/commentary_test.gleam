@@ -63,7 +63,7 @@ pub fn the_commentary_adds_no_handler_test() {
   let model = page([lane_fixture.forked(None, [])])
 
   // An observer's page still holds only the strand cards' clicks.
-  let keys = handlers(component.view(model))
+  let keys = lane_fixture.beyond_dividers(handlers(component.view(model)))
   let clicks = list.filter(keys, fn(key) { string.ends_with(key, "\nclick") })
   assert list.length(clicks) == 4
     as "main, the reviewer, the tester and the advisor"

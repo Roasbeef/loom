@@ -300,7 +300,9 @@ pub fn an_observer_can_focus_but_not_act_test() {
   let chips = list.length(string.split(drawn, "class=\"chip-hit\"")) - 1
   let markers = marker_buttons(drawn)
   assert markers >= 2
-  assert buttons == chips + markers
+  let dividers = list.length(string.split(drawn, "data-loom-fold")) - 1
+  assert dividers >= 1
+  assert buttons == chips + markers + dividers
 }
 
 // How many buttons carry the marker that the shell relays, read from the

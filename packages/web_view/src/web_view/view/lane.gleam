@@ -134,7 +134,7 @@ import web_view/view/strip
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies, component.marks(model), component.session_id(model))
+/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies, component.marks(model), lane.Folds(FoldToggled), component.session_id(model))
 /// ```
 pub fn view(
   pieces: List(turns.Piece),
@@ -143,9 +143,19 @@ pub fn view(
   load: message,
   replies: Replies(message),
   marks: Marks,
+  folds: Folds(message),
   session: String,
 ) -> Element(message) {
-  rows(pieces, live, boundary(top, load), line_element, replies, marks, session)
+  rows(
+    pieces,
+    live,
+    boundary(top, load),
+    line_element,
+    replies,
+    marks,
+    folds,
+    session,
+  )
 }
 
 /// What the lane needs to mark a piece as belonging to a strand: which strand
@@ -206,6 +216,24 @@ pub type Replies(message) {
   )
 }
 
+/// Whether a settled turn's divider opens its work, and what pressing it sends.
+///
+/// The work of a settled turn is not drawn until the reader opens it: the
+/// divider is a button whose press asks the page to draw the steps, and the
+/// page draws them from the records it holds. The message carries the fold's
+/// number (`turns.Work.id`) and nothing from the browser, so both pages draw
+/// the button and an observer's socket admits its click at one path
+/// (`component.fold_click`, protocol-change/068).
+pub type Folds(message) {
+  /// The dividers carry no handler: pressing one does nothing. A lane drawn
+  /// for a test that does not open folds has no message to send.
+  NoFolds
+
+  /// Each divider that names a fold sends this message, given the fold's
+  /// number.
+  Folds(toggle: fn(Int) -> message)
+}
+
 /// Another session a peer message's card may open: the words the button
 /// carries, from the catalogue, and the message pressing it sends.
 pub type Destination(message) {
@@ -234,6 +262,12 @@ pub type Top {
   Full(rows: Int)
 }
 
+/// The suffix of the attribute that marks a divider (`data-loom-fold`), so
+/// `<loom-follow>` can tell a press of it from any other click in the lane and
+/// take the growth that follows as the reader's own. Its value is empty and
+/// fixed here; nothing from the session is in it.
+pub const fold_marker = "loom-fold"
+
 /// The attribute that marks the "Load older" button, so `<loom-follow>`
 /// can tell a press of it from any other click in the lane and keep the
 /// reader's place while the older rows arrive above it. Its value is fixed
@@ -253,7 +287,7 @@ pub const older_marker = "loom-older"
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) }, lane.NoReplies, lane.no_marks(), "")
+/// // lane.rows(pieces, [], element.none(), fn(line) { html.text(line.text) }, lane.NoReplies, lane.no_marks(), lane.NoFolds, "")
 /// ```
 @internal
 pub fn rows(
@@ -263,6 +297,7 @@ pub fn rows(
   draw: fn(Line) -> Element(message),
   replies: Replies(message),
   marks: Marks,
+  folds: Folds(message),
   session: String,
 ) -> Element(message) {
   let newest = newest_thought(pieces)
@@ -284,7 +319,15 @@ pub fn rows(
               _ ->
                 Ok(#(
                   piece_key(piece),
-                  timeline_row(piece, draw, replies, marks, session, newest),
+                  timeline_row(
+                    piece,
+                    draw,
+                    replies,
+                    marks,
+                    folds,
+                    session,
+                    newest,
+                  ),
                 ))
             }
           }),
@@ -434,6 +477,7 @@ fn timeline_row(
   draw: fn(Line) -> Element(message),
   replies: Replies(message),
   marks: Marks,
+  folds: Folds(message),
   session: String,
   newest: String,
 ) -> Element(message) {
@@ -444,7 +488,7 @@ fn timeline_row(
       [],
     ),
     html.div([attribute.class("tl-body")], [
-      piece_element(piece, draw, replies, marks, session, newest),
+      piece_element(piece, draw, replies, marks, folds, session, newest),
     ]),
   ])
 }
@@ -513,6 +557,7 @@ fn piece_element(
   draw: fn(Line) -> Element(message),
   replies: Replies(message),
   marks: Marks,
+  folds: Folds(message),
   session: String,
   newest: String,
 ) -> Element(message) {
@@ -536,25 +581,33 @@ fn piece_element(
         block_element(block, dict.new(), None, draw, session, newest),
       ])
 
-    // A settled turn's work is a `<loom-fold>` (`packages/web_client`),
-    // collapsed until the reader opens it. The fold opens and closes in the
-    // browser, so it needs no handler here and works on an observer's page,
-    // and the server never renders its state, so a later patch leaves the
-    // reader's choice alone. Every word in it is a child the server renders
-    // and escapes: the divider in the `summary` slot, the work in the
-    // default one.
-    turns.Work(worked:, items:, folding: turns.Folded, ..) ->
-      element.element("loom-fold", [attribute.class("work")], [
-        html.span(
-          [
-            attribute.attribute("slot", "summary"),
-            attribute.class("work-divider"),
-          ],
-          [html.text(turns.divider(worked))],
-        ),
+    // A settled turn's work is its divider, a button, and the steps only
+    // while the reader has the fold open. Opening is the page's own state:
+    // the press goes to the server, which draws the steps from the records it
+    // holds and, to stay within the page's row limit, closes the folds the
+    // reader opened before this one when they do not all fit
+    // (`session_view/fold_budget`). A closed fold has no steps in the piece,
+    // so a turn of two hundred calls is one line here. The words in it are
+    // children the server renders and escapes: the divider's figures, and
+    // the work's items, keyed as an open turn's are.
+    turns.Work(worked:, folding: turns.Folded, id:, ..) ->
+      html.div([attribute.class("work")], [
+        divider(worked, id, folds, Closed),
+      ])
+
+    // An opened fold keeps its divider, which closes it, and shows the
+    // newest steps that fit the page. The earlier ones that did not are
+    // counted in a line of their own, in words, so the reader knows the
+    // fold is not the whole of what the turn did.
+    turns.Work(worked:, items:, folding: turns.Unfolded(hidden:), id:, ..) ->
+      html.div([attribute.class("work")], [
+        divider(worked, id, folds, Opened),
         keyed.div(
           [attribute.class("work-items")],
-          work_items(items, draw, session, newest),
+          list.append(
+            hidden_line(hidden),
+            work_items(items, draw, session, newest),
+          ),
         ),
       ])
 
@@ -753,6 +806,62 @@ fn parsed_card_body(body: String) -> Element(message) {
     [attribute.class("card-body"), attribute.class("markdown")],
     markdown_view.blocks(markdown.parse(body)),
   )
+}
+
+// Whether a fold's work is shown.
+type Shown {
+  Closed
+  Opened
+}
+
+// The divider of a settled turn's work: a button when the fold has a number to
+// be opened by, and plain words when it has none. Its marker, a fixed word,
+// is how `<loom-follow>` tells the press from any other click in the lane, so
+// the growth that follows is the reader's own and does not scroll the page past
+// the divider they pressed. The glyph is drawn by the stylesheet from the
+// button's state, so the button holds one text node and every click lands on
+// the button itself.
+fn divider(
+  worked: turns.Worked,
+  id: Option(Int),
+  folds: Folds(message),
+  shown: Shown,
+) -> Element(message) {
+  let words = html.text(turns.divider(worked))
+  case id, folds {
+    Some(id), Folds(toggle:) ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("work-toggle"),
+          attribute.aria_expanded(shown == Opened),
+          attribute.data(fold_marker, "fold"),
+          event.on_click(toggle(id)),
+        ],
+        [words],
+      )
+    Some(_), NoFolds | None, Folds(_) | None, NoFolds ->
+      html.span([attribute.class("work-toggle")], [words])
+  }
+}
+
+// The line that says how many earlier steps of an opened fold are not
+// drawn, or nothing when every step is.
+fn hidden_line(hidden: Int) -> List(#(String, Element(message))) {
+  case hidden {
+    0 -> []
+    _ -> [
+      #(
+        "hidden",
+        html.p([attribute.class("work-hidden")], [
+          html.text(
+            int.to_string(hidden)
+            <> " earlier steps are not shown, to keep the page small.",
+          ),
+        ]),
+      ),
+    ]
+  }
 }
 
 // A turn's items, keyed by their blocks and calls. The window drops its

@@ -949,6 +949,17 @@
   .fold-glyph{display:inline-block;width:1.2em;flex:0 0 auto;font-size:11px;}
   .fold-body{display:block;}
   .work-divider{min-width:0;overflow-wrap:anywhere;}
+  /* The divider of a settled turn is a button the server draws (web_view/view/
+     lane): its glyph is the stylesheet's, from the state the server renders, so
+     the button holds only the words and every click lands on it. A divider with
+     no number to open it by is plain words in the same column. */
+  .work-toggle{display:flex;align-items:baseline;width:100%;min-width:0;margin:0;padding:2px 0;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);text-align:left;overflow-wrap:anywhere;}
+  button.work-toggle{cursor:pointer;}
+  button.work-toggle::before{content:"▸";display:inline-block;width:1.2em;flex:0 0 auto;font-size:11px;}
+  button.work-toggle[aria-expanded="true"]::before{content:"▾";}
+  button.work-toggle:hover{color:var(--color-fg);}
+  span.work-toggle{padding-left:1.2em;}
+  .work-hidden{margin:0;padding:2px 0;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);}
   .work-items{display:flex;flex-direction:column;gap:1px;padding:2px 0 6px 1.2em;}
   .work.open{display:flex;flex-direction:column;gap:1px;}
   .step{min-width:0;}

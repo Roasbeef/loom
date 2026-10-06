@@ -18,6 +18,7 @@ import web_view/operator_page
 fn page() {
   component.new(page_fixture.start())
   |> component.apply([lane_fixture.pictured()])
+  |> lane_fixture.opened
 }
 
 fn observer() -> String {

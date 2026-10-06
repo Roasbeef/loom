@@ -27,7 +27,9 @@ fn program() -> String {
 }
 
 fn model(update) {
-  component.new(page_fixture.start()) |> component.apply([update])
+  component.new(page_fixture.start())
+  |> component.apply([update])
+  |> lane_fixture.opened
 }
 
 fn observer(update) -> String {

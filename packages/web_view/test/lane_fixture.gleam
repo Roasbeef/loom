@@ -31,6 +31,8 @@ import session_view/snapshot
 import session_view/snapshot_view
 import session_view/strand_framing
 import session_view/transcript_lines
+import session_view/turns
+import web_view/component
 
 /// The reviewer's minted strand name; its slug holds markup.
 pub const child = "sub:main/<b>review-1a2b3c"
@@ -586,6 +588,60 @@ pub fn committed(seq: Int, text: String) -> session_channel.Update {
 /// ```
 pub fn conversation(from: Int, to: Int) -> session_channel.Update {
   capture_of(exchange(from, to), None, [], [])
+}
+
+// The numbers one to `count`, in order.
+fn counted(count: Int) -> List(Int) {
+  int.range(from: count, to: 0, with: [], run: fn(numbers, number) {
+    [number, ..numbers]
+  })
+}
+
+/// A capture of `main` holding the records `from` onward of a conversation
+/// whose turns are as long as `steps` says: each turn is a question, that many
+/// working notes and the answer, so a turn of `n` steps is `n + 2` records and
+/// folds `n` items under one divider. The turns follow one another from the
+/// first record, and a capture that starts after it names a parent it does not
+/// hold, so older history exists below it. The question of turn `t` reads
+/// `question t`, its notes `step t.i` and its answer `answer t`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.weighty(1, [170, 3])
+/// ```
+pub fn weighty(from: Int, steps: List(Int)) -> session_channel.Update {
+  let #(_, _, items) =
+    list.fold(steps, #(1, 1, []), fn(acc, count) {
+      let #(turn, seq, items) = acc
+      let label = int.to_string(turn)
+      let notes =
+        list.map(counted(count), fn(index) {
+          assistant([
+            message.AssistantText(
+              "step " <> label <> "." <> int.to_string(index),
+              None,
+            ),
+          ])
+        })
+      let bodies = [
+        said("question " <> label, None),
+        ..list.append(notes, [
+          assistant([message.AssistantText("answer " <> label, None)]),
+        ])
+      ]
+      let made =
+        list.index_map(bodies, fn(body, index) {
+          item(seq + index, 10_000 + seq + index, body)
+        })
+      #(turn + 1, seq + count + 2, list.append(items, made))
+    })
+  capture_of(
+    list.filter(items, fn(held) { snapshot.sequence(held) >= from }),
+    None,
+    [],
+    [],
+  )
 }
 
 /// A capture of `main` holding a prompt and then the messages a strand of
@@ -1684,4 +1740,51 @@ pub fn without_strand(
       )
     other -> other
   }
+}
+
+/// The handler keys of a page, as `page_events_ffi` lists them (a path, a
+/// newline and the event's name), without the clicks of settled turns'
+/// dividers, which are the lane's and not what a test of another region counts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.beyond_dividers(["0\t2\t1\t0\t0\nclick"])
+/// ```
+pub fn beyond_dividers(keys: List(String)) -> List(String) {
+  list.filter(keys, fn(key) {
+    case string.split_once(key, "\n") {
+      Ok(#(path, _)) -> !component.fold_click(path)
+      Error(Nil) -> True
+    }
+  })
+}
+
+/// The page with every closed fold of work it holds opened, as a reader would
+/// by pressing each divider. A settled turn's steps are drawn only while its
+/// fold is open, so a test that reads a step or a result opens the page first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.opened(component.apply(component.new(page_fixture.start()), [lane_fixture.captured(7, None)]))
+/// ```
+pub fn opened(model: component.Model(socket)) -> component.Model(socket) {
+  list.fold(component.pieces(model), model, fn(page, piece) {
+    case piece {
+      turns.Work(id: Some(id), folding: turns.Folded, ..) ->
+        component.update(page, component.FoldToggled(id)).0
+      turns.Work(..)
+      | turns.Plain(..)
+      | turns.Prompt(..)
+      | turns.Spawned(..)
+      | turns.Returned(..)
+      | turns.Nudged(..)
+      | turns.Peer(..)
+      | turns.Sibling(..)
+      | turns.Missed(..)
+      | turns.Decided(..)
+      | turns.Commentary(..) -> page
+    }
+  })
 }

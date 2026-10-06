@@ -279,22 +279,16 @@ pub fn a_cache_miss_is_a_row_after_the_turn_that_paid_for_it_test() {
 
 pub fn settled_work_folds_under_one_closed_divider_test() {
   let drawn = html(settled())
-  assert string.contains(
-    drawn,
-    "class=\"work\"><span class=\"work-divider\" slot=\"summary\">Worked 48s · 3 steps · 2 files</span>",
-  )
+  assert string.contains(drawn, "Worked 48s · 3 steps · 2 files</button>")
 
-  // The fold's state is the browser's: the server renders no attribute for
-  // it, so a later patch cannot close what the reader opened.
-  assert !string.contains(drawn, "\" open")
-  assert !string.contains(drawn, "aria-expanded")
+  // The fold's state is the page's: a closed fold says so, and draws no step.
+  assert string.contains(drawn, "aria-expanded=\"false\"")
 
   // The divider stands between the prompt and the answer, and the answer
   // stays outside it.
   assert in_order(drawn, [
     "review the &lt;patch&gt; &amp; report",
     "Worked 48s",
-    "</loom-fold>",
     "Done: two files.",
   ])
 }
@@ -454,6 +448,7 @@ pub fn session_markup_arrives_only_as_text_test() {
     |> component.apply([lane_fixture.usage_push("main", 40_000, 0, 0)])
     |> at(clock, 600_000)
     |> component.apply([lane_fixture.usage_push("main", 0, 40_000, 0)])
+    |> lane_fixture.opened
   let pages = [
     html(missed),
     element.to_string(operator_page.view(missed)),
@@ -473,9 +468,10 @@ pub fn session_markup_arrives_only_as_text_test() {
   // An observer's page with every piece drawn holds no control but the
   // strand cards, one button each for the four strands listed, and the tags of
   // the strands the transcript names: the spawn's, the result's and the
-  // nudge's, which carry a marker and no handler.
+  // nudge's, which carry a marker and no handler, and the divider of the one
+  // fold the page has opened.
   let observer = html(missed)
-  assert list.length(string.split(observer, "<button")) == 8
+  assert list.length(string.split(observer, "<button")) == 9
   assert list.length(string.split(observer, "class=\"chip-hit\"")) == 5
   assert list.length(string.split(observer, "class=\"tag\"")) == 4
   assert !string.contains(observer, "<form")

@@ -29,6 +29,7 @@ fn drawn(pieces: List(turns.Piece)) -> String {
     Nil,
     lane.NoReplies,
     lane.no_marks(),
+    lane.Folds(fn(_) { Nil }),
     "",
   )
   |> element.to_string
@@ -39,7 +40,8 @@ fn work(items: List(turns.Item)) -> turns.Piece {
     "work:1.0",
     turns.Worked(Some(22_000), 2, 1, 0, turns.Finished),
     items,
-    turns.Folded,
+    turns.Unfolded(0),
+    Some(2),
   )
 }
 
@@ -416,11 +418,8 @@ pub fn a_reasoning_row_opens_to_the_whole_text_as_markdown_test() {
 pub fn a_fold_is_one_collapsed_line_and_no_rule_test() {
   let html =
     drawn([work([step(Words("Read", Mono("a"), None), turns.Done, [])])])
-  assert string.contains(
-    html,
-    "<span class=\"work-divider\" slot=\"summary\">Worked 22s · 2 steps · 1 file</span>",
-  )
-  assert count(html, "<loom-fold") == 1
+  assert string.contains(html, ">Worked 22s · 2 steps · 1 file</button>")
+  assert count(html, "<loom-fold") == 0
 }
 
 fn prompt(role) -> turns.Piece {
@@ -696,6 +695,7 @@ pub fn an_interrupted_turn_says_so_on_its_divider_test() {
         turns.Worked(Some(12_000), 0, 0, 0, turns.Interrupted),
         [],
         turns.Folded,
+        Some(2),
       ),
     ])
   assert string.contains(html, "Worked 12s · interrupted")

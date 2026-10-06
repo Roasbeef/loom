@@ -18,6 +18,7 @@ import web_view/operator_page
 fn model() {
   component.new(page_fixture.start())
   |> component.apply([lane_fixture.remembered()])
+  |> lane_fixture.opened
 }
 
 fn assert_folded(drawn: String) {

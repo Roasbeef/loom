@@ -35,7 +35,10 @@ renders again just for it:
   `name — Loom`, or `(N) name — Loom` while N strands wait, through a mutation
   observer on both (`ffi_dom.observe_text`, `observe_attribute`, `set_title`). The
   server's document says only `Loom` until then, never the identity.
-- `<loom-fold>` opens and closes a turn's folded work with no round trip.
+- `<loom-fold>` opens and closes a fold with no round trip: the todo board's.
+  A settled turn's divider is not this element: it is a button the server draws,
+  whose press the server answers (protocol-change/068), and `<loom-follow>` tells
+  its click by the fixed `data-loom-fold` marker.
 - `<loom-expand>` is a row of a turn's fold: one line with one chevron, and a
   body behind it. The server draws the line and the body as children
   (`slot="head"` and `slot="body"`); the element holds one button around the
@@ -334,6 +337,8 @@ time builds anything.
   content scrolls to the bottom only while `Following`; a fold's toggle
   event, heard on the slot, sets `Reading`, so opening a fold never scrolls
   past it. A click heard on the slot whose target carries the server's fixed
+  `data-loom-fold` marker, a settled turn's divider, is `Folded` as well. A click
+  heard on the slot whose target carries the server's fixed
   `data-loom-older` marker is `Paged`: it sets `Reading` and holds the
   lane's first row and its place on screen (`follow.Anchor`, `None` when
   the page has no lane row); a scroll by the reader measures it again, and

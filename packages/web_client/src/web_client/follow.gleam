@@ -58,11 +58,16 @@
 ////
 //// A fold the reader opens also grows the lane. Scrolling to the bottom
 //// then would carry the transcript past the divider they just pressed, to
-//// the end of the work it revealed. So `<loom-fold>` announces each toggle
-//// with an event that bubbles to this element's slot, and the element
-//// takes it as the reader's own move: it becomes `Reading`, the growth
-//// that follows scrolls nothing, and the reader's next scroll to the
-//// bottom resumes following.
+//// the end of the work it revealed. A fold of the todo board announces each
+//// toggle with an event that bubbles to this element's slot
+//// (`fold.toggled_event`). A settled turn's divider is the server's and
+//// announces nothing: it is a button whose press the server answers by
+//// drawing the steps, and it carries the fixed `data-loom-fold` marker. The
+//// element tells a click on it from any other click in the lane by that
+//// marker, as it does the "Load older" button. Either way it takes the press
+//// as the reader's own move: it becomes `Reading`, the growth that follows
+//// scrolls nothing, and the reader's next scroll to the bottom resumes
+//// following.
 ////
 //// A message the reader sends from the composer is the one event after which
 //// the transcript always returns to the tail. The composer is in the dock,
@@ -230,6 +235,13 @@ pub type Msg {
 
   /// The server drew the transcript of the strand with this numeric key.
   Keyed(key: Int)
+}
+
+// A click whose target carries the marker `name` (a `dataset` key), whatever
+// its value, is `message`; any other click fails the decoder.
+fn marked(name: String, message: Msg) -> decode.Decoder(Msg) {
+  use _ <- decode.subfield(["target", "dataset", name], decode.string)
+  decode.success(message)
 }
 
 /// Registers the element with the browser.
@@ -607,10 +619,11 @@ fn keep(watching: Option(Watching), anchor: Anchor) -> Effect(Msg) {
 }
 
 // The slot is where an event from a slotted `<loom-fold>` passes on its
-// way up, so the fold's toggle is heard here, and so is a click on the
-// lane's "Load older" button. The click is told apart by the button's
-// marker, whose value the server writes from a constant; any other click
-// in the lane fails the decoder and dispatches nothing.
+// way up, so the fold's toggle is heard here, and so are a click on the
+// lane's "Load older" button and a click on a settled turn's divider. A click
+// is told apart by the button's marker, whose value the server writes from a
+// constant; any other click in the lane fails both decoders and dispatches
+// nothing.
 //
 // The button after the slot is drawn only while the reader is reading and
 // the bottom is further than `slack` away. Its wrapper has no height and
@@ -622,13 +635,10 @@ fn view(model: Model) -> Element(Msg) {
     component.default_slot(
       [
         event.on(fold.toggled_event, decode.success(Folded)),
-        event.on("click", {
-          use _ <- decode.subfield(
-            ["target", "dataset", "loomOlder"],
-            decode.string,
-          )
-          decode.success(Paged)
-        }),
+        event.on(
+          "click",
+          decode.one_of(marked("loomOlder", Paged), [marked("loomFold", Folded)]),
+        ),
       ],
       [],
     )

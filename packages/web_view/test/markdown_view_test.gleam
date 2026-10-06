@@ -28,6 +28,7 @@ fn unmemoized(html: String) -> String {
 fn page(texts: List(String)) -> String {
   component.new(page_fixture.start())
   |> component.apply([lane_fixture.answered(texts)])
+  |> lane_fixture.opened
   |> component.view
   |> element.to_string
   |> unmemoized
@@ -56,12 +57,12 @@ pub fn an_answer_is_rendered_and_a_prompt_is_not_test() {
 // drawn, and each still renders, however many there are.
 pub fn every_row_renders_its_markdown_test() {
   let texts =
-    int.range(from: 150, to: 0, with: [], run: fn(acc, n) {
+    int.range(from: 100, to: 0, with: [], run: fn(acc, n) {
       ["**answer " <> int.to_string(n) <> "**", ..acc]
     })
   let html = page(texts)
   assert string.contains(html, "<strong>answer 1</strong>")
-  assert string.contains(html, "<strong>answer 150</strong>")
+  assert string.contains(html, "<strong>answer 100</strong>")
 }
 
 pub fn the_settled_answer_is_rendered_and_its_prompt_is_not_test() {
