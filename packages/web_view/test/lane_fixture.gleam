@@ -1930,6 +1930,69 @@ pub fn batched(batches: List(List(Int))) -> List(snapshot.Item) {
   items
 }
 
+/// `items` (oldest first) and then `count` records of the `advisor` strand,
+/// which the session writes after the turn settles: a review of it. The advisor's
+/// records hang off one another from the first record of the conversation, so
+/// none of them is on `main`'s ancestry, and they take the sequences after
+/// `main`'s.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.advised(lane_fixture.batched([[55]]), 60)
+/// ```
+pub fn advised(items: List(snapshot.Item), count: Int) -> List(snapshot.Item) {
+  let last =
+    list.fold(items, 0, fn(newest, held) {
+      int.max(newest, snapshot.sequence(held))
+    })
+  let review =
+    list.map(counted(count), fn(index) {
+      let seq = last + index
+      let parent = case index {
+        1 -> id(1)
+        _ -> id(seq - 1)
+      }
+      snapshot.Loaded(
+        entry.MessageEntry(
+          id(seq),
+          Some(parent),
+          seq,
+          10_000 + seq * 10,
+          assistant([
+            message.AssistantText("review " <> int.to_string(index), None),
+          ]),
+          False,
+        ),
+        100,
+      )
+    })
+  list.append(items, review)
+}
+
+/// A capture holding the newest `count` of `items` (oldest first), as a
+/// gateway's cut holds the newest records of the whole session whichever strand
+/// wrote them, with each of `leaves` naming the last record of a strand's
+/// ancestry by its sequence, and every strand idle.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.newest_by(items, 50, [#("main", 59), #("advisor", 119)])
+/// ```
+pub fn newest_by(
+  items: List(snapshot.Item),
+  count: Int,
+  leaves: List(#(String, Int)),
+) -> session_channel.Update {
+  let held = list.drop(items, list.length(items) - count)
+  let newest =
+    list.fold(held, 0, fn(newest, item) {
+      int.max(newest, snapshot.sequence(item))
+    })
+  capture_leaves(held, newest, leaves, None, [], [])
+}
+
 /// `items` (oldest first) and then what a strand does when it resumes the turn
 /// it was in with no new input: `steps` more calls, each with its result, and a
 /// last answer (`answer resumed`). The records continue the sequence, so the
