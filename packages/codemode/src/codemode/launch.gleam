@@ -1,6 +1,6 @@
-//// The production satellite launcher — the `codemode/satellite.Launcher`
-//// that turns a `LaunchSpec` into a real jailed `erl` node on the far end
-//// of a real AF_UNIX capability socket (design §6.3 "Layer two: the
+//// Production local satellite placement: foreground whole Launch and the
+//// persistent `codemode/satellite.Launcher` both create a real jailed `erl`
+//// node on the far end of a real AF_UNIX capability socket (design §6.3 "Layer two: the
 //// satellite node", `docs/architecture/code-mode.md`).
 ////
 //// The host's module doc states the contract; this module realizes it,
@@ -20,7 +20,14 @@
 ////    *same* `{op_id, step_id}` the host uses. That is what makes
 ////    `broker.abort_step` on the host's deadline actually kill it.
 ////
-//// # Two processes, one ordering guarantee
+//// Foreground `foreground_launcher` owns one resource state machine plus leaf
+//// reader/writer owners under a weft drain run. It returns a paused typed channel.
+//// The reader charges a four-byte declaration before exact bounded body reads;
+//// the writer admits the host's exact already-charged reservation before delivery.
+//// Original socket close uses zero linger, independently of a blocked writer,
+//// and actual joins remain separate from native settlement and report evidence.
+////
+//// # Persistent compatibility: two processes, one ordering guarantee
 ////
 //// The socket is served by two unlinked processes. The **reader** accepts
 //// the connection, owns it, and blocks in `recv`, pushing every chunk to
@@ -90,10 +97,20 @@
 ////
 //// ## Flow
 ////
+//// Foreground: `foreground_launcher` → `foreground_launch` → `foreground_owned`
+//// → `foreground_step` → `read_reserved_frame` / `foreground_write_step` →
+//// `begin_original_close` → `finish_original_close` → `publish_original_close`.
+//// `foreground_refusal` and `foreground_requirements` preserve pure local approval
+//// projection. `prepare_original_connection` keeps inbound delivery paused until
+//// original custody installation; `offer_original` rejects copied reservations.
+//// `foreground_node` keeps actual native settlement separate from child drains.
+////
+//// Persistent compatibility:
+////
 //// `launcher` → `launch` → `start_channel` → `start_reader` → `spawn_node` →
 //// `run_node` → `collect_node_result` → `destroy`
 ////
-//// 1. `launcher` closes over the config and hands `satellite.run` a function
+//// 1. `launcher` closes over the config and hands persistent hosting a function
 ////    from `LaunchSpec` to a `CapConnection`.
 //// 2. `launch` refuses before anything exists: `check_budget`,
 ////    `composed_policy` and `path_reachable` all run before `ffi_unix.listen`
@@ -113,7 +130,7 @@
 
 import broker/broker.{type CallSpec}
 import broker/budget.{type Budget}
-import broker/exec.{type EnforcementDemand}
+import broker/exec.{type EnforcementDemand} as broker_exec
 import broker/policy.{type Grant, type Mount, type Narrowing, type SandboxPolicy}
 import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
@@ -121,6 +138,7 @@ import codemode/identity
 import codemode/internal/ffi_unix.{type Listener, type Socket}
 import codemode/native_command
 import codemode/physical
+import codemode/run_channel
 import codemode/satellite.{type CapConnection, type LaunchSpec}
 import core/clock.{type Clock}
 import core/remote_tool
@@ -134,6 +152,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import tools/tool.{type Collected}
+import weft
 import weft/poll
 import weft/state_machine as sm
 
@@ -215,10 +234,27 @@ pub type LaunchConfig {
   )
 }
 
+/// Local foreground placement, supplied only to the selected local adapter.
+/// The generic whole-Launch request carries neither of these physical paths.
+pub type ForegroundLaunchConfig {
+  ForegroundLaunchConfig(
+    /// Original physical clearance, toolchain, clock and accept configuration.
+    local: LaunchConfig,
+    /// Exact original local token placement expected from its private writer.
+    token_path: String,
+    /// Exact original local Unix listener placement.
+    cap_socket_path: String,
+    /// Creates the private original token and returns that same configured path.
+    write_token_file: fn(BitArray) -> Result(String, String),
+    /// Removes the original local token after actual resource teardown.
+    unlink_token_file: fn(String) -> Nil,
+  )
+}
+
 /// Builds the production `satellite.Launcher`.
 ///
-/// The returned function is what `satellite.run` calls: it creates the
-/// cap socket, dispatches the jailed node, and hands back the
+/// The returned function serves persistent hosting: it creates the cap socket,
+/// dispatches the jailed node, and hands back the
 /// `CapConnection` the host writes frames to and destroys the node with.
 /// Executor artifacts are refused before local resource creation.
 ///
@@ -230,6 +266,1093 @@ pub type LaunchConfig {
 /// ```
 pub fn launcher(config: LaunchConfig) -> satellite.Launcher {
   fn(spec) { launch(config, spec) }
+}
+
+/// Derives local node requirements without writing token/listener resources.
+/// A remote artifact refuses before any local path can become an effect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // launch.foreground_requirements(local_config, original_request, now_ms)
+/// ```
+pub fn foreground_requirements(
+  config: ForegroundLaunchConfig,
+  request: run_channel.LaunchRequest,
+  now_ms: Int,
+) -> Result(SandboxPolicy, String) {
+  let #(artifact, phase, base, _demand, env, _cwd) =
+    run_channel.execution(request)
+  use beam_dir <- result.try(local_beam_dir(artifact))
+  let remaining_ms =
+    int.max(identity.pooled_budget(phase).deadline_ms - now_ms, 0)
+  Ok(
+    native_command.node_requirements(native_command.NodeAccess(
+      beam_dir:,
+      socket_path: config.cap_socket_path,
+      token_path: config.token_path,
+      base:,
+      mounts: config.local.host_mounts,
+      env:,
+      wall_s: bound_wall(
+        base.limits.wall_s,
+        int.max({ remaining_ms + 999 } / 1000, 1),
+      ),
+    )),
+  )
+}
+
+/// Preserves approval-widening refusal checks without inventing owner paths.
+/// This pure projection precedes all local token, listener and native effects.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // launch.foreground_refusal(local_config, original_request, now_ms)
+/// ```
+pub fn foreground_refusal(
+  config: ForegroundLaunchConfig,
+  request: run_channel.LaunchRequest,
+  now_ms: Int,
+) -> Result(Nil, String) {
+  let #(_artifact, phase, base, _demand, _env, _cwd) =
+    run_channel.execution(request)
+  use Nil <- result.try(check_budget(identity.pooled_budget(phase)))
+  use Nil <- result.try(
+    case identity.pooled_budget(phase).deadline_ms > now_ms {
+      True -> Ok(Nil)
+      False -> Error("the original Launch deadline has expired")
+    },
+  )
+  use requirements <- result.try(foreground_requirements(
+    config,
+    request,
+    now_ms,
+  ))
+  use effective <- result.try(composed_policy(
+    base,
+    requirements,
+    identity.grants(phase),
+  ))
+  use Nil <- result.try(path_reachable(
+    effective,
+    config.cap_socket_path,
+    "the cap socket",
+  ))
+  use Nil <- result.try(path_reachable(
+    effective,
+    config.token_path,
+    "the cap token file",
+  ))
+  case socket_path_bytes(config.cap_socket_path) <= max_socket_path_bytes {
+    True -> Ok(Nil)
+    False ->
+      Error("the original cap socket path exceeds the 100-byte local limit")
+  }
+}
+
+/// Builds the original local whole-Launch adapter; persistent hosts keep `launcher`.
+/// The selected adapter owns token/listener/native preparation and real drains.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let whole_launch = launch.foreground_launcher(local_foreground_config)
+/// // whole_launch(original_request) returns a paused, owned connection.
+/// ```
+pub fn foreground_launcher(
+  config: ForegroundLaunchConfig,
+) -> run_channel.Launcher {
+  fn(request) { foreground_launch(config, request) }
+}
+
+// All placement/authority checks precede the first original physical resource.
+fn foreground_launch(
+  config: ForegroundLaunchConfig,
+  request: run_channel.LaunchRequest,
+) -> Result(run_channel.Connection, run_channel.LaunchFailure) {
+  let #(now, _clock) = clock.read(config.local.clock)
+  use Nil <- result.try(
+    foreground_refusal(config, request, now)
+    |> result.map_error(fn(reason) {
+      run_channel.LaunchRefused(reason, run_channel.ResourcesReleased)
+    }),
+  )
+  use requirements <- result.try(
+    foreground_requirements(config, request, now)
+    |> result.map_error(fn(reason) {
+      run_channel.LaunchRefused(reason, run_channel.ResourcesReleased)
+    }),
+  )
+  use Nil <- result.try(
+    private_directory(directory_of(config.cap_socket_path))
+    |> result.map_error(fn(reason) {
+      run_channel.LaunchRefused(reason, run_channel.ResourcesReleased)
+    }),
+  )
+  use token_path <- result.try(
+    config.write_token_file(run_channel.token(request))
+    |> result.map_error(fn(reason) {
+      // The trusted writer is synchronous and confined to configured placement.
+      // A failed permission/write step may already have created that exact file.
+      config.unlink_token_file(config.token_path)
+      run_channel.LaunchRefused(reason, run_channel.ResourcesReleased)
+    }),
+  )
+  case token_path == config.token_path {
+    False -> {
+      config.unlink_token_file(token_path)
+      Error(run_channel.LaunchRefused(
+        "the token writer changed original placement",
+        run_channel.ResourcesReleased,
+      ))
+    }
+    True ->
+      case ffi_unix.listen(config.cap_socket_path) {
+        Error(reason) -> {
+          config.unlink_token_file(token_path)
+          Error(run_channel.LaunchRefused(reason, run_channel.ResourcesReleased))
+        }
+        Ok(listener) ->
+          foreground_owned(config, request, requirements, listener, now)
+      }
+  }
+}
+
+// The owner serializes copied reservations and independently closes a blocked
+// writer's socket. Its close result remains available for duplicate observations.
+type ForegroundPhase {
+  OriginalOpen
+  OriginalClosing
+  OriginalClosed(result: run_channel.CloseResult)
+}
+
+type ForegroundEvent {
+  PrepareConnection(reply: Subject(run_channel.Connection))
+  ActivateOriginal(reply: Subject(Result(Nil, run_channel.ChannelFailure)))
+  OfferOriginal(
+    reservation: run_channel.Reservation,
+    payload: run_channel.Payload,
+    reply: Subject(Result(Nil, run_channel.ChannelFailure)),
+  )
+  SocketAccepted(socket: Socket)
+  WriterConsumed(frame: run_channel.FrameRef)
+  NativeCleared(handle: physical.RunningCall)
+  NativeSettled(node: Report, resources: run_channel.ResourceDrain)
+  OriginalClose(reply: Subject(run_channel.CloseResult))
+  HostDied
+  OriginalDeadline
+  CleanupDeadline
+  CheckCleanup
+  ReleaseObservation
+  Children(event: weft.Pulled(Nil, Nil))
+}
+
+type ForegroundOwned {
+  ForegroundOwned(
+    config: ForegroundLaunchConfig,
+    request: run_channel.LaunchRequest,
+    listener: Listener,
+    incarnation: run_channel.Incarnation,
+    commands: Subject(ForegroundEvent),
+    reader: Subject(ForegroundRead),
+    writer: Subject(ForegroundWrite),
+    socket: Option(Socket),
+    outbound: run_channel.Window,
+    native: Option(physical.RunningCall),
+    settlement: Option(#(Report, run_channel.ResourceDrain)),
+    joined: Option(run_channel.TransportDrain),
+    close_reply: Option(Subject(run_channel.CloseResult)),
+  )
+}
+
+fn foreground_owned(
+  config: ForegroundLaunchConfig,
+  request: run_channel.LaunchRequest,
+  requirements: SandboxPolicy,
+  listener: Listener,
+  now: Int,
+) -> Result(run_channel.Connection, run_channel.LaunchFailure) {
+  let incarnation = run_channel.new_incarnation()
+  let #(host, _) = run_channel.endpoint(run_channel.host(request))
+  let #(_artifact, phase, _base, _demand, _env, _cwd) =
+    run_channel.execution(request)
+  let lifetime = int.max(identity.pooled_budget(phase).deadline_ms - now, 0)
+  let started =
+    sm.new_with_initialiser(handoff_timeout_ms, fn(commands) {
+      let monitor = process.monitor(host)
+      let drains = process.new_subject()
+      let selector =
+        process.new_selector()
+        |> process.select(commands)
+        |> process.select_map(drains, Children)
+        |> process.select_specific_monitor(monitor, fn(_) { HostDied })
+      use reader <- result.try(start_foreground_reader(
+        listener,
+        config.local.accept_timeout_ms,
+        lifetime,
+        request,
+        incarnation,
+        commands,
+      ))
+      use writer <- result.try(
+        start_foreground_writer(request, incarnation, commands)
+        |> result.map_error(fn(reason) {
+          // This reader is still paused and owns no accepted body/native work.
+          // Its stop prevents a failed sibling start from leaving an idle leaf.
+          process.send(reader.data, ReadStop)
+          reason
+        }),
+      )
+      let reader_cancel = fn() {
+        ffi_unix.close_listener(listener)
+        process.send(reader.data, ReadStop)
+      }
+      let writer_cancel = fn() { process.send(writer.data, WriteStop) }
+      let tasks = [
+        weft.prepared_leaf(
+          owner: reader.pid,
+          cancel: reader_cancel,
+          begin: fn() { Ok(Nil) },
+        ),
+        weft.prepared_leaf(
+          owner: writer.pid,
+          cancel: writer_cancel,
+          begin: fn() { Ok(Nil) },
+        ),
+        weft.task(fn() {
+          foreground_node(
+            config,
+            request,
+            requirements,
+            commands,
+            lifetime + settle_margin_ms,
+          )
+          Ok(Nil)
+        }),
+      ]
+      let _scope =
+        weft.new_prepared(tasks)
+        |> weft.deadline(lifetime + settle_margin_ms)
+        |> weft.cancel_grace(node_report_wait_ms)
+        |> weft.start_relayed(to: drains)
+      let outbound =
+        run_channel.prepare_direction(incarnation, run_channel.ToNode)
+      let owned =
+        ForegroundOwned(
+          config:,
+          request:,
+          listener:,
+          incarnation:,
+          reader: reader.data,
+          writer: writer.data,
+          commands:,
+          socket: None,
+          outbound:,
+          native: None,
+          settlement: None,
+          joined: None,
+          close_reply: None,
+        )
+      sm.initialised(OriginalOpen, owned)
+      |> sm.selecting(selector)
+      |> sm.returning(commands)
+      |> Ok
+    })
+    |> sm.on_event(foreground_step)
+    |> sm.on_enter(foreground_enter)
+    |> sm.unlinked
+    |> sm.start
+  case started {
+    Error(_) -> {
+      ffi_unix.close_listener(listener)
+      Error(run_channel.LaunchOutcomeUnknown(
+        "original preparation owner did not initialise",
+      ))
+    }
+    Ok(owner) -> {
+      let reply = process.new_subject()
+      process.send(owner.data, PrepareConnection(reply))
+      case process.receive(reply, handoff_timeout_ms) {
+        Ok(connection) -> Ok(connection)
+        Error(Nil) ->
+          Error(run_channel.LaunchOutcomeUnknown(
+            "original prepared connection was not observed",
+          ))
+      }
+    }
+  }
+}
+
+// Entering open arms the original authority, while closing gets only cleanup
+// observation time. Neither transition renews a launch or capability deadline.
+fn foreground_enter(
+  _previous: ForegroundPhase,
+  phase: ForegroundPhase,
+  owned: ForegroundOwned,
+) -> sm.Enter(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  case phase {
+    OriginalOpen -> {
+      let #(_artifact, identity, _base, _demand, _env, _cwd) =
+        run_channel.execution(owned.request)
+      let #(now, _clock) = clock.read(owned.config.local.clock)
+      sm.keep(owned)
+      |> sm.with_state_timeout(
+        after: int.max(identity.pooled_budget(identity).deadline_ms - now, 0),
+        sending: OriginalDeadline,
+      )
+    }
+    OriginalClosing ->
+      sm.keep(owned)
+      |> sm.with_state_timeout(
+        after: settle_margin_ms + node_report_wait_ms,
+        sending: CleanupDeadline,
+      )
+    OriginalClosed(_) ->
+      sm.keep(owned)
+      |> sm.with_state_timeout(
+        after: node_report_wait_ms,
+        sending: ReleaseObservation,
+      )
+  }
+}
+
+fn foreground_step(
+  phase: ForegroundPhase,
+  owned: ForegroundOwned,
+  event: ForegroundEvent,
+) -> sm.Next(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  case phase, event {
+    OriginalOpen, PrepareConnection(reply) ->
+      prepare_original_connection(owned, reply)
+    OriginalOpen, ActivateOriginal(reply) -> activate_original(owned, reply)
+    OriginalOpen, OfferOriginal(reservation, payload, reply) ->
+      offer_original(owned, reservation, payload, reply)
+    OriginalOpen, SocketAccepted(socket) -> {
+      process.send(owned.writer, WriteAttach(socket))
+      sm.keep(ForegroundOwned(..owned, socket: Some(socket)))
+    }
+    OriginalClosing, SocketAccepted(socket)
+    | OriginalClosed(_), SocketAccepted(socket)
+    -> {
+      ffi_unix.close_now(socket)
+      sm.keep(owned)
+    }
+    OriginalOpen, WriterConsumed(frame) ->
+      original_writer_consumed(owned, frame)
+    OriginalClosing, WriterConsumed(_) | OriginalClosed(_), WriterConsumed(_) ->
+      sm.keep(owned)
+    OriginalOpen, NativeCleared(handle) ->
+      sm.keep(ForegroundOwned(..owned, native: Some(handle)))
+    OriginalClosing, NativeCleared(handle)
+    | OriginalClosed(_), NativeCleared(handle)
+    -> {
+      handle.cancel()
+      sm.keep(ForegroundOwned(..owned, native: Some(handle)))
+    }
+    OriginalOpen, NativeSettled(node, resources) ->
+      sm.keep(ForegroundOwned(..owned, settlement: Some(#(node, resources))))
+    OriginalClosing, NativeSettled(node, resources) ->
+      finish_original_close(
+        ForegroundOwned(..owned, settlement: Some(#(node, resources))),
+      )
+    OriginalClosed(_), NativeSettled(..) -> sm.keep(owned)
+    OriginalOpen, Children(event) -> sm.keep(record_children(owned, event))
+    OriginalClosing, Children(event) ->
+      finish_original_close(record_children(owned, event))
+    OriginalClosed(_), Children(_) -> sm.keep(owned)
+    OriginalOpen, OriginalClose(reply) ->
+      begin_original_close(owned, Some(reply))
+    OriginalClosing, OriginalClose(_) -> sm.keep(owned) |> sm.postpone
+    OriginalClosed(result), OriginalClose(reply) -> {
+      process.send(reply, result)
+      sm.keep(owned)
+    }
+    OriginalOpen, HostDied | OriginalOpen, OriginalDeadline ->
+      begin_original_close(owned, None)
+    OriginalClosing, HostDied
+    | OriginalClosed(_), HostDied
+    | OriginalClosing, OriginalDeadline
+    | OriginalClosed(_), OriginalDeadline
+    -> sm.keep(owned)
+    OriginalClosing, CheckCleanup -> finish_original_close(owned)
+    OriginalOpen, CheckCleanup | OriginalClosed(_), CheckCleanup ->
+      sm.keep(owned)
+    OriginalClosing, CleanupDeadline -> publish_original_close(owned)
+    OriginalOpen, CleanupDeadline | OriginalClosed(_), CleanupDeadline ->
+      sm.keep(owned)
+    OriginalClosed(_), ReleaseObservation -> sm.stop()
+    OriginalOpen, ReleaseObservation | OriginalClosing, ReleaseObservation ->
+      sm.keep(owned)
+    OriginalClosing, PrepareConnection(_)
+    | OriginalClosed(_), PrepareConnection(_)
+    -> sm.keep(owned)
+    OriginalClosing, ActivateOriginal(reply)
+    | OriginalClosed(_), ActivateOriginal(reply)
+    -> {
+      process.send(reply, Error(run_channel.ChannelRetired))
+      sm.keep(owned)
+    }
+    OriginalClosing, OfferOriginal(_, _, reply)
+    | OriginalClosed(_), OfferOriginal(_, _, reply)
+    -> {
+      process.send(reply, Error(run_channel.ChannelRetired))
+      sm.keep(owned)
+    }
+  }
+}
+
+fn prepare_original_connection(
+  owned: ForegroundOwned,
+  reply: Subject(run_channel.Connection),
+) -> sm.Next(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  let active =
+    run_channel.activate_direction(owned.outbound)
+    |> result.try(run_channel.write_grant)
+  case active {
+    Error(_) -> begin_original_close(owned, None)
+    Ok(grant) -> {
+      let commands = owned.commands
+      let connection =
+        run_channel.Connection(
+          incarnation: owned.incarnation,
+          initial_write_grant: grant,
+          offer: fn(reservation, payload) {
+            let reply = process.new_subject()
+            process.send(commands, OfferOriginal(reservation, payload, reply))
+            process.receive(reply, handoff_timeout_ms)
+            |> result.unwrap(
+              Error(run_channel.TransportFailed(
+                "writer admission was not observed",
+              )),
+            )
+          },
+          activate: fn() {
+            let reply = process.new_subject()
+            process.send(commands, ActivateOriginal(reply))
+            process.receive(reply, handoff_timeout_ms)
+            |> result.unwrap(
+              Error(run_channel.TransportFailed("activation was not observed")),
+            )
+          },
+          close: fn() {
+            let reply = process.new_subject()
+            process.send(commands, OriginalClose(reply))
+            process.receive(
+              reply,
+              settle_margin_ms + node_report_wait_ms + handoff_timeout_ms,
+            )
+            |> result.unwrap(run_channel.CloseResult(
+              node: enforcement.Unreported(
+                "original cleanup observation was lost",
+              ),
+              transport: run_channel.TransportUnresolved(
+                "original joins were not observed",
+              ),
+              resources: run_channel.ResourcesUnresolved(
+                "original resource release was not observed",
+              ),
+            ))
+          },
+        )
+      process.send(reply, connection)
+      sm.keep(owned)
+    }
+  }
+}
+
+fn activate_original(
+  owned: ForegroundOwned,
+  reply: Subject(Result(Nil, run_channel.ChannelFailure)),
+) -> sm.Next(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  case run_channel.activate_direction(owned.outbound) {
+    Error(error) -> {
+      process.send(reply, Error(error))
+      sm.keep(owned)
+    }
+    Ok(outbound) -> {
+      process.send(owned.reader, ReadActivate)
+      process.send(reply, Ok(Nil))
+      sm.keep(ForegroundOwned(..owned, outbound:))
+    }
+  }
+}
+
+// The adapter spends its independent mirror before publishing to the writer.
+// Exact reservation equality rejects copied callbacks after first admission.
+fn offer_original(
+  owned: ForegroundOwned,
+  reservation: run_channel.Reservation,
+  payload: run_channel.Payload,
+  reply: Subject(Result(Nil, run_channel.ChannelFailure)),
+) -> sm.Next(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  let #(_frame, length) = run_channel.reservation(reservation)
+  let checked = {
+    use #(reserved, original) <- result.try(run_channel.reserve_frame(
+      owned.outbound,
+      length,
+    ))
+    use Nil <- result.try(case original == reservation {
+      True -> Ok(Nil)
+      False -> Error(run_channel.StaleReservation)
+    })
+    use _payload <- result.try(run_channel.finish_payload(
+      reservation,
+      run_channel.payload(payload),
+    ))
+    run_channel.publish_frame(reserved, reservation)
+  }
+  case checked {
+    Error(error) -> {
+      process.send(reply, Error(error))
+      case error {
+        run_channel.AllowanceExhausted -> begin_original_close(owned, None)
+        run_channel.InvalidFrame
+        | run_channel.WindowUnavailable
+        | run_channel.ChannelRetired
+        | run_channel.StaleReservation
+        | run_channel.TransportFailed(_) -> sm.keep(owned)
+      }
+    }
+    Ok(outbound) -> {
+      process.send(owned.writer, WriteFrame(reservation, payload))
+      process.send(reply, Ok(Nil))
+      sm.keep(ForegroundOwned(..owned, outbound:))
+    }
+  }
+}
+
+fn original_writer_consumed(
+  owned: ForegroundOwned,
+  frame: run_channel.FrameRef,
+) -> sm.Next(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  let #(outbound, consumed) =
+    run_channel.consume_frame(owned.outbound, frame, run_channel.Continue)
+  case consumed {
+    run_channel.Ignored -> sm.keep(owned)
+    run_channel.Consumed -> {
+      let #(_host, events) =
+        run_channel.endpoint(run_channel.host(owned.request))
+      process.send(events, run_channel.WriteConsumed(frame))
+      sm.keep(ForegroundOwned(..owned, outbound:))
+    }
+  }
+}
+
+// Socket closure is independent of either blocked child's mailbox. Closing
+// the listener also wakes accept; no native or resource proof is inferred.
+fn begin_original_close(
+  owned: ForegroundOwned,
+  reply: Option(Subject(run_channel.CloseResult)),
+) -> sm.Next(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  let #(_artifact, phase, _base, _demand, _env, _cwd) =
+    run_channel.execution(owned.request)
+  owned.config.local.runner.abort_step(
+    identity.op_id(phase),
+    identity.step_id(phase),
+  )
+  option.map(owned.native, fn(handle) { handle.cancel() })
+  option.map(owned.socket, ffi_unix.close_now)
+  ffi_unix.close_listener(owned.listener)
+  process.send(owned.reader, ReadStop)
+  process.send(owned.writer, WriteStop)
+  sm.transition(
+    to: OriginalClosing,
+    data: ForegroundOwned(
+      ..owned,
+      outbound: run_channel.retire_direction(owned.outbound),
+      close_reply: reply,
+    ),
+  )
+  |> sm.then_handle(CheckCleanup)
+}
+
+fn record_children(
+  owned: ForegroundOwned,
+  event: weft.Pulled(Nil, Nil),
+) -> ForegroundOwned {
+  case event {
+    weft.AllDelivered ->
+      case owned.joined {
+        Some(run_channel.TransportUnresolved(_)) -> owned
+        None | Some(run_channel.TransportJoined) ->
+          ForegroundOwned(..owned, joined: Some(run_channel.TransportJoined))
+      }
+    weft.RunLost(_) ->
+      ForegroundOwned(
+        ..owned,
+        joined: Some(run_channel.TransportUnresolved(
+          "original child scope was lost",
+        )),
+      )
+    weft.PulledOutcome(weft.Completed(..)) | weft.NotYet -> owned
+    weft.PulledOutcome(_) ->
+      ForegroundOwned(
+        ..owned,
+        joined: Some(run_channel.TransportUnresolved(
+          "an original child did not settle normally",
+        )),
+      )
+  }
+}
+
+fn finish_original_close(
+  owned: ForegroundOwned,
+) -> sm.Next(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  case owned.joined, owned.settlement {
+    Some(_), Some(_) -> publish_original_close(owned)
+    None, _ | Some(_), None -> sm.keep(owned)
+  }
+}
+
+fn publish_original_close(
+  owned: ForegroundOwned,
+) -> sm.Next(ForegroundPhase, ForegroundOwned, ForegroundEvent) {
+  let #(node, resources) =
+    option.unwrap(owned.settlement, #(
+      enforcement.Unreported("original native settlement was not observed"),
+      run_channel.ResourcesUnresolved(
+        "original native settlement was not observed",
+      ),
+    ))
+  let transport =
+    option.unwrap(
+      owned.joined,
+      run_channel.TransportUnresolved("original children were not joined"),
+    )
+  let resources = case resources, transport {
+    run_channel.ResourcesReleased, run_channel.TransportJoined -> {
+      unlink(owned.config.cap_socket_path)
+      owned.config.unlink_token_file(owned.config.token_path)
+      run_channel.ResourcesReleased
+    }
+    run_channel.ResourcesReleased, run_channel.TransportUnresolved(reason) ->
+      run_channel.ResourcesUnresolved(reason)
+    run_channel.ResourcesUnresolved(_), _ -> resources
+  }
+  let closed = run_channel.CloseResult(node:, transport:, resources:)
+  option.map(owned.close_reply, fn(reply) { process.send(reply, closed) })
+  sm.transition(
+    to: OriginalClosed(closed),
+    data: ForegroundOwned(..owned, close_reply: None),
+  )
+}
+
+// The node collector retains actual settlement separately from enforcement.
+// A lost/failed observation never turns into physical release through DOWN.
+fn foreground_node(
+  config: ForegroundLaunchConfig,
+  request: run_channel.LaunchRequest,
+  requirements: SandboxPolicy,
+  commands: Subject(ForegroundEvent),
+  waiting: Int,
+) -> Nil {
+  let #(artifact, phase, base, demand, env, cwd) =
+    run_channel.execution(request)
+  let wire = process.new_subject()
+  let spec =
+    satellite.LaunchSpec(
+      artifact:,
+      token_path: config.token_path,
+      cap_socket_path: config.cap_socket_path,
+      identity: phase,
+      base_policy: base,
+      env:,
+      cwd:,
+      wire:,
+    )
+  let prepared = {
+    use origin <- result.try(identity.command_origin(phase))
+    use call <- result.try(node_call(
+      LaunchConfig(..config.local, demand:),
+      spec,
+      requirements,
+    ))
+    Ok(#(origin, call))
+  }
+  case prepared {
+    Error(reason) ->
+      process.send(
+        commands,
+        NativeSettled(
+          enforcement.Unreported(reason),
+          run_channel.ResourcesReleased,
+        ),
+      )
+    Ok(#(origin, call)) ->
+      foreground_collect(config, origin, call, commands, waiting)
+  }
+}
+
+// Only original native settlement can supply this resource disposition.
+fn foreground_collect(
+  config: ForegroundLaunchConfig,
+  origin: Option(remote_tool.ChildOrigin),
+  call: CallSpec,
+  commands: Subject(ForegroundEvent),
+  waiting: Int,
+) -> Nil {
+  let events = process.new_subject()
+  case config.local.runner.clear(origin, call, events) {
+    Error(refusal) ->
+      process.send(
+        commands,
+        NativeSettled(
+          enforcement.Unreported(refusal_text(refusal)),
+          foreground_refusal_resources(refusal),
+        ),
+      )
+    Ok(handle) -> {
+      process.send(commands, NativeCleared(handle))
+      case tool.collect_events(events, waiting:) {
+        Error(Nil) ->
+          process.send(
+            commands,
+            NativeSettled(
+              enforcement.Unreported("no original native settlement"),
+              run_channel.ResourcesUnresolved("no original native settlement"),
+            ),
+          )
+        Ok(collected) -> {
+          let resources = case collected.outcome {
+            broker.CallExited(_)
+            | broker.CallFailed(broker_exec.DegradedExecution(_)) ->
+              run_channel.ResourcesReleased
+            broker.CallFailed(_) ->
+              run_channel.ResourcesUnresolved(
+                "native failure did not prove original physical release",
+              )
+          }
+          process.send(
+            commands,
+            NativeSettled(enforcement.of_call(collected.outcome), resources),
+          )
+        }
+      }
+    }
+  }
+}
+
+// A lost clearance reply may leave the original ClearCall queued in the broker.
+// Its asynchronous abort is not a joined native observation, so original files
+// remain in custody even though this observer can finish and transport can join.
+fn foreground_refusal_resources(
+  refusal: broker.Refusal,
+) -> run_channel.ResourceDrain {
+  case refusal {
+    broker.BrokerUnavailable ->
+      run_channel.ResourcesUnresolved(
+        "original native clearance was not observed",
+      )
+    broker.PolicyRefused(_)
+    | broker.InvalidPolicy(_)
+    | broker.BudgetRefused(_)
+    | broker.MintRefused(_)
+    | broker.NoHelper(_)
+    | broker.OperationAborted -> run_channel.ResourcesReleased
+  }
+}
+
+// One passive reader, with exact chunks and no pre-activation body buffer.
+type ForegroundReadPhase {
+  ReadPrepared
+  ReadHeader
+  ReadHeld
+}
+
+type ForegroundRead {
+  ReadActivate
+  ReadNext
+  ReadConsumed(
+    frame: run_channel.FrameRef,
+    disposition: run_channel.Consumption,
+  )
+  ReadStop
+}
+
+type ForegroundReader {
+  ForegroundReader(
+    listener: Listener,
+    socket: Option(Socket),
+    accept_ms: Int,
+    authority_ms: Int,
+    events: Subject(run_channel.Event),
+    owner: Subject(ForegroundEvent),
+    commands: Subject(ForegroundRead),
+    window: run_channel.Window,
+    incarnation: run_channel.Incarnation,
+  )
+}
+
+fn start_foreground_reader(
+  listener: Listener,
+  accept_ms: Int,
+  authority_ms: Int,
+  request: run_channel.LaunchRequest,
+  incarnation: run_channel.Incarnation,
+  owner: Subject(ForegroundEvent),
+) -> Result(sm.Started(Subject(ForegroundRead)), String) {
+  let #(_host, events) = run_channel.endpoint(run_channel.host(request))
+  sm.new_with_initialiser(handoff_timeout_ms, fn(commands) {
+    sm.initialised(
+      ReadPrepared,
+      ForegroundReader(
+        listener:,
+        socket: None,
+        accept_ms:,
+        authority_ms:,
+        events:,
+        owner:,
+        commands:,
+        window: run_channel.prepare_direction(incarnation, run_channel.ToHost),
+        incarnation:,
+      ),
+    )
+    |> sm.returning(commands)
+    |> Ok
+  })
+  |> sm.on_event(foreground_read_step)
+  // Passive OTP recv waits for the original socket's EXIT on independent
+  // close. Trapping that port signal wakes the blocked read instead of
+  // silently ignoring a normal port exit until its authority timeout.
+  |> sm.trapping_exits(True)
+  |> sm.unlinked
+  |> sm.start
+  |> result.map_error(fn(_) { "original reader did not initialise" })
+}
+
+fn foreground_read_step(
+  phase: ForegroundReadPhase,
+  reader: ForegroundReader,
+  event: ForegroundRead,
+) -> sm.Next(ForegroundReadPhase, ForegroundReader, ForegroundRead) {
+  case phase, event {
+    ReadPrepared, ReadActivate -> {
+      let accepted =
+        ffi_unix.accept(
+          reader.listener,
+          int.min(reader.accept_ms, reader.authority_ms),
+        )
+      case accepted, run_channel.activate_direction(reader.window) {
+        Ok(socket), Ok(window) -> {
+          process.send(reader.owner, SocketAccepted(socket))
+          sm.transition(
+            to: ReadHeader,
+            data: ForegroundReader(..reader, socket: Some(socket), window:),
+          )
+          |> sm.then_handle(ReadNext)
+        }
+        Error(error), _ ->
+          reader_fault(reader, case error {
+            ffi_unix.AcceptTimeout -> "the original satellite did not connect"
+            ffi_unix.AcceptFailed(reason) -> reason
+          })
+        Ok(socket), Error(_) -> {
+          ffi_unix.close_now(socket)
+          reader_fault(reader, "original reader activation failed")
+        }
+      }
+    }
+    ReadHeader, ReadNext -> read_reserved_frame(reader)
+    ReadHeld, ReadConsumed(frame, disposition) -> {
+      let #(window, consumed) =
+        run_channel.consume_frame(reader.window, frame, disposition)
+      case consumed, disposition {
+        run_channel.Ignored, _ -> sm.keep(reader)
+        run_channel.Consumed, run_channel.Final -> sm.stop()
+        run_channel.Consumed, run_channel.Continue ->
+          sm.transition(
+            to: ReadHeader,
+            data: ForegroundReader(..reader, window:),
+          )
+          |> sm.then_handle(ReadNext)
+      }
+    }
+    _, ReadStop -> sm.stop()
+    ReadPrepared, ReadNext
+    | ReadHeld, ReadNext
+    | ReadHeader, ReadActivate
+    | ReadHeld, ReadActivate
+    | ReadPrepared, ReadConsumed(..)
+    | ReadHeader, ReadConsumed(..)
+    -> sm.keep(reader)
+  }
+}
+
+// The fixed four-byte declaration charges the lifetime before any body read.
+fn read_reserved_frame(
+  reader: ForegroundReader,
+) -> sm.Next(ForegroundReadPhase, ForegroundReader, ForegroundRead) {
+  case reader.socket {
+    None -> reader_fault(reader, "original reader has no accepted socket")
+    Some(socket) -> {
+      let read = {
+        use prefix <- result.try(ffi_unix.recv_exact(
+          socket,
+          4,
+          reader.authority_ms,
+        ))
+        use length <- result.try(case prefix {
+          <<size:32>> ->
+            run_channel.payload_length(size)
+            |> result.map_error(fn(_) {
+              "frame declaration exceeds original bound"
+            })
+          _ -> Error("invalid exact frame prefix")
+        })
+        use #(window, reservation) <- result.try(
+          run_channel.reserve_frame(reader.window, length)
+          |> result.map_error(fn(_) { "inbound lifetime allowance exhausted" }),
+        )
+        use bytes <- result.try(
+          read_exact_body(
+            socket,
+            run_channel.length_bytes(length),
+            reader.authority_ms,
+            [],
+          ),
+        )
+        use payload <- result.try(
+          run_channel.finish_payload(reservation, bytes)
+          |> result.map_error(fn(_) { "frame body length changed" }),
+        )
+        use window <- result.try(
+          run_channel.publish_frame(window, reservation)
+          |> result.map_error(fn(_) { "original frame reservation was lost" }),
+        )
+        Ok(#(window, reservation, payload))
+      }
+      case read {
+        Error(reason) -> reader_fault(reader, reason)
+        Ok(#(window, reservation, payload)) -> {
+          let #(frame, _) = run_channel.reservation(reservation)
+          let commands = reader.commands
+          let delivery =
+            run_channel.delivery(reservation, payload, fn(disposition) {
+              process.send(commands, ReadConsumed(frame, disposition))
+            })
+          case delivery {
+            Error(_) -> reader_fault(reader, "original delivery failed")
+            Ok(delivery) -> {
+              process.send(reader.events, run_channel.Frame(delivery))
+              sm.transition(
+                to: ReadHeld,
+                data: ForegroundReader(..reader, window:),
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// This is a bounded data fold, at most 257 exact chunks, not a phase loop.
+fn read_exact_body(
+  socket: Socket,
+  remaining: Int,
+  timeout_ms: Int,
+  chunks: List(BitArray),
+) -> Result(BitArray, String) {
+  case remaining {
+    0 -> Ok(bit_array.concat(list.reverse(chunks)))
+    _ -> {
+      let count = int.min(remaining, run_channel.max_chunk_bytes)
+      use bytes <- result.try(ffi_unix.recv_exact(socket, count, timeout_ms))
+      read_exact_body(socket, remaining - count, timeout_ms, [bytes, ..chunks])
+    }
+  }
+}
+
+fn reader_fault(
+  reader: ForegroundReader,
+  reason: String,
+) -> sm.Next(ForegroundReadPhase, ForegroundReader, ForegroundRead) {
+  let incarnation = reader.incarnation
+  process.send(reader.events, run_channel.Fault(incarnation, reason))
+  option.map(reader.socket, ffi_unix.close_now)
+  sm.stop()
+}
+
+// One writer process; the owner admits exact reservations before its mailbox.
+type ForegroundWrite {
+  WriteAttach(socket: Socket)
+  WriteFrame(reservation: run_channel.Reservation, payload: run_channel.Payload)
+  WriteStop
+}
+
+type ForegroundWriter {
+  ForegroundWriter(
+    socket: Option(Socket),
+    events: Subject(run_channel.Event),
+    owner: Subject(ForegroundEvent),
+    incarnation: run_channel.Incarnation,
+  )
+}
+
+fn start_foreground_writer(
+  request: run_channel.LaunchRequest,
+  incarnation: run_channel.Incarnation,
+  owner: Subject(ForegroundEvent),
+) -> Result(sm.Started(Subject(ForegroundWrite)), String) {
+  let #(_host, events) = run_channel.endpoint(run_channel.host(request))
+  sm.new_with_initialiser(handoff_timeout_ms, fn(commands) {
+    sm.initialised(
+      Nil,
+      ForegroundWriter(socket: None, events:, owner:, incarnation:),
+    )
+    |> sm.returning(commands)
+    |> Ok
+  })
+  |> sm.on_event(foreground_write_step)
+  |> sm.unlinked
+  |> sm.start
+  |> result.map_error(fn(_) { "original writer did not initialise" })
+}
+
+fn foreground_write_step(
+  _phase: Nil,
+  writer: ForegroundWriter,
+  event: ForegroundWrite,
+) -> sm.Next(Nil, ForegroundWriter, ForegroundWrite) {
+  case event {
+    WriteAttach(socket) ->
+      sm.keep(ForegroundWriter(..writer, socket: Some(socket)))
+    WriteStop -> sm.stop()
+    WriteFrame(reservation, payload) -> {
+      let wrote = case writer.socket {
+        None -> Error("the original writer has no socket")
+        Some(socket) ->
+          write_exact_chunks(socket, run_channel.wire_bytes(payload))
+      }
+      case wrote {
+        Error(reason) -> {
+          process.send(
+            writer.events,
+            run_channel.Fault(writer.incarnation, reason),
+          )
+          sm.stop()
+        }
+        Ok(Nil) -> {
+          let #(frame, _length) = run_channel.reservation(reservation)
+          process.send(writer.owner, WriterConsumed(frame))
+          sm.keep(writer)
+        }
+      }
+    }
+  }
+}
+
+fn write_exact_chunks(socket: Socket, bytes: BitArray) -> Result(Nil, String) {
+  let chunk_bytes = run_channel.max_chunk_bytes
+  case bytes {
+    <<>> -> Ok(Nil)
+    <<chunk:bytes-size(chunk_bytes), rest:bits>> -> {
+      use Nil <- result.try(ffi_unix.send(socket, chunk))
+      write_exact_chunks(socket, rest)
+    }
+    _ -> ffi_unix.send(socket, bytes)
+  }
 }
 
 fn launch(

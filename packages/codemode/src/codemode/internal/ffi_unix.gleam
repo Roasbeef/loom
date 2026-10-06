@@ -70,6 +70,22 @@ pub fn accept(
 @external(erlang, "codemode_ffi", "socket_recv")
 pub fn recv(socket: Socket) -> Result(BitArray, String)
 
+/// Reads exactly the admitted byte count, at most 65536, within a finite wait.
+/// `recv/2` cannot express a fixed bounded header/chunk read; stock `gen_tcp`
+/// has no Gleam binding with this count and timeout. The shim adds no buffering.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_unix.recv_exact(original_socket, 4, remaining_authority_ms)
+/// ```
+@external(erlang, "codemode_ffi", "socket_recv_exact")
+pub fn recv_exact(
+  socket: Socket,
+  count: Int,
+  timeout_ms: Int,
+) -> Result(BitArray, String)
+
 /// Writes all of `bytes` to the socket.
 ///
 /// Uses `gen_tcp:send/2`; a closed or faulted socket settles in-band so
@@ -82,6 +98,19 @@ pub fn send(socket: Socket, bytes: BitArray) -> Result(Nil, String)
 /// Uses `gen_tcp:close/1`.
 @external(erlang, "codemode_ffi", "socket_close")
 pub fn close(socket: Socket) -> Nil
+
+/// Closes original foreground transport without waiting to flush pending output.
+/// Stock `gen_tcp:close` otherwise waits on an unread writer queue. No Gleam
+/// socket binding can set zero linger; the shim only sets that stock option and
+/// closes, while weft separately supplies actual child join observations.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_unix.close_now(original_socket)
+/// ```
+@external(erlang, "codemode_ffi", "socket_close_now")
+pub fn close_now(socket: Socket) -> Nil
 
 /// Closes a listener, unblocking any accept in flight. Idempotent from
 /// the caller's view; does not unlink the socket file.
