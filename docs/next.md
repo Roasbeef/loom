@@ -1,147 +1,93 @@
 # Current handoff
 
-This edition records the distributed runtime integration through `b58370ce5`
-on October 6, 2026, checked against source, command receipts and live PR state.
-Rewrite it when the next integration milestone changes those facts. The branch
-includes `origin/main` at `552e44033`; no merge into main is authorized.
+This edition records the distributed runtime integration through `81c7c83f7`
+on October 6, 2026. Source packets, independent command exits and live GitHub
+state were checked for this milestone. Rewrite this file when the next
+integration milestone changes those facts.
 
-The previous edition left the owner consumer in its implementation worktree.
-It is now committed after the recovery correction, independent review and a
-complete client gate. This does not complete the distributed runtime acceptance
-criteria: associated-native retirement and ordinary registered assembly remain
-open.
+The previous edition left exact-helper retirement and immutable Compile rewrite
+identities in progress. Both are now implemented and committed. Ordinary
+registered session assembly and remote LSP remain unbuilt, so this milestone
+does not complete distributed runtime acceptance.
 
 ## Where the tree is
 
-[PR #819](https://github.com/Roasbeef/loom/pull/819) remains the draft integration
-review for open [issue #697](https://github.com/Roasbeef/loom/issues/697). The
-[integration guide](design-notes/distributed-runtime-integration.md) is the
-component map and acceptance checklist. The local rebase and subsequent work
-have not been pushed. GitHub still names `b3bc47efdb2be7df421287aa437debdd034af9e5`
-as the PR head, with no reported checks. That head is also retained by the
-pre-rebase recovery branch. Main's CI run `37426538781` passed at `552e44033`;
-this is evidence for the base, not for the integration candidate.
+[PR #819](https://github.com/Roasbeef/loom/pull/819) remains draft and
+[issue #697](https://github.com/Roasbeef/loom/issues/697) remains open. The local
+integration commits have not been pushed. GitHub still names
+`b3bc47efdb2be7df421287aa437debdd034af9e5` as the PR head and reports no checks.
+The integration branch includes `origin/main` at `552e44033`; current main must
+be incorporated again before final validation. The latest observed main runs
+`37474395428` and `37447150575` failed at `5a9619d5e`. These runs are not evidence
+about this local candidate. No push or merge is authorized.
 
 | Boundary | Current integration state |
 | --- | --- |
-| Catalogue | Main's subtitle, credential-kind and browser-login migrations remain versions 5 through 7. Typed workspace binding is version 8. The migration regression checks display metadata, owner authentication, browser logins and reopen. |
-| Daemon | Control and home-page creation share the current server helper. Typed workspace selections and retained bindings coexist with main's authorization, subtitles and browser login behavior. |
-| Code mode | Whole foreground Launch owns physical preparation and consumed channel windows. The client propagates cleanup custody before deleting its local directories. Main's unused-import rewrite and call-ledger prechecks remain present. |
-| LSP | The extracted physical host retains main's canonical dependency inventory hashing and method-receiver lookup behavior. Registered remote default assembly remains pending. |
-| Generated sources | Storage SQL and the capability prelude were regenerated during rebase. The Launch resource SQL was regenerated from its source after the format-3 change. |
-| Executor resource custody | Closed Launch completions, role-specific native association and the atomic refusal fence are committed. Resource format 3 rejects old formats before interpreting their rows. Compile retains its separate completion contract. |
-| Launch model | The bounded P model and source correspondence are committed. Root replay and independent review do not claim implementation refinement or unbounded liveness. |
-| Remote Launch | The whole owner, finite TLS BEAM controls, duplex bridge and finite stream binding are committed. The owner consumer now passes real satellite and owner-journal reopen controls. Associated-native retirement and default assembly are pending. |
-| Preserved work | The unrelated client owner-binding runner and main checkout files remain outside this change. |
+| Owner custody and transport | Retained inputs/results, finite TLS BEAM controls, native forwarding and semantic workspace consumers are implemented. |
+| Compile | Exactly Original and UnusedImportRewrite identities preserve immutable inputs, checked predecessor evidence and the original authority/deadline. Protocol 071 and `85fa75c20` implement the approved contract. |
+| Launch | The consumed stream, original satellite, owner consumer and exact-helper retirement now compose. `23c6fabd9`, `a57c907f0` and `81c7c83f7` complete this component milestone. |
+| Ordinary daemon path | Registered default assembly, deployment configuration, enrollment pinning and full executor activation still need their proposed APIs approved and implemented. |
+| LSP | The physical host exists. The bounded registered LSP contract has completed source review but still requires owner approval and implementation. |
+| Distributed orchestration | C1 ownership, C2 routing, C3 durable cross-node messaging and M1 controlled movement remain required and unimplemented. |
+| Preserved work | The unrelated owner-binding test runner and main checkout changes remain outside this work. |
+
+The [integration guide](design-notes/distributed-runtime-integration.md) maps the
+components and full acceptance criteria. The
+[Compile and retirement review](review/distributed-compile-retirement.md) records
+the final source, corrected review findings, execution evidence and limits.
+Earlier review records remain evidence for their stated revisions.
 
 ## Verification and its limits
 
-The earlier rebase baseline passed client with 3,067 tests and fifteen explicit
-optional skips, executor with 314, storage with 224, code mode with 459, tools
-with 748 and cap with 189. Core, broker, runtime and conformance also compiled
-warning-free. Those counts belong to that baseline. Rebuilding the offline seed
-corrected its initial Rebar home-directory fixture failure before the final
-code-mode gate.
+Independent complete package gates passed core with 189 tests plus JavaScript
+checks, storage with 224, code mode with 483, broker with 444, executor with 370
+and client with 3,084. The final combined client gate returned exit zero.
+Fifteen explicit optional controls remain skipped: one Linux `/proc` witness,
+thirteen shipped-server controls and one rust-analyzer control. All 59 final
+source paths matched between integration and verification checkouts before
+these documentation updates.
 
-The new executor resource slice passed an independent complete executor gate:
-335 tests, followed by executor lint and documentation checks. Its review covered
-role confusion, original producer readback, the association-versus-refusal race,
-native readback outside the resource writer and format-3 reopening policy.
+Final formatting, the six changed-package lint targets, documentation and
+prelude checks passed with exit zero. Documentation reported 186 warnings and
+zero errors.
 
-The frozen foreground source passed the root's separate code-mode, tools and
-client package gates: 482, 749 and 3,073 tests respectively. Client has fifteen
-explicit skips: one Linux `/proc` witness, thirteen shipped-server controls and
-one rust-analyzer control. Changed-package lint and documentation checks pass.
-Independent review found and then closed a capability-drain gap: transport
-closure alone did not join already admitted work. The
-[foreground review](review/distributed-foreground-launch.md) records the
-correction, real socket and jailed controls, mutation evidence and exact limits.
+The real executor control completes three Launches through one active slot.
+The composed owner controls require exact retained native/outer receipts,
+Released resource custody and physical path removal for both Original and
+Rewrite builds. Five Compile and two retirement mutants compile and fail their
+runtime assertions. Source review and bounded correction reviews are complete.
+Earlier failed test runs remain recorded separately; focused passes and observed
+host load do not establish that every failure was a flake.
 
-The whole Launch owner and finite controls passed the root's assembled executor
-gate with 357 tests, executor lint and documentation checks. Review and actual
-transport composition found and corrected historical admission-slot retention,
-Refused-phase termination and a cancellation message that erased the original
-close reply. The [owner review](review/distributed-launch-owner.md) records
-those paths, deterministic controls, mutation evidence and the known missing
-associated-native retirement witness.
-
-The final live stream and finite binding passed the independent combined
-executor gate with 364 tests, followed by executor lint and documentation checks.
-Nine compiling mutations were killed across these two slices. The Final check
-monitors the original executor reader before cancellation, closing a blind spot
-where the owner reducer could hide an incorrectly continuing reader. Independent
-review found no correctness blocker. The
-[stream review](review/distributed-launch-stream.md) records the exact limits.
-
-The remote Launch consumer passed the independent complete client gate with
-3,082 tests, client lint and documentation checks. Fifteen explicit optional
-controls remain skipped, as in the foreground baseline. Nine real controls
-cover satellite capability traffic, Final, original scope loss, owner-journal
-reopen, changed inputs and definite versus unknown clearance. Three compiling
-mutations fail their runtime assertions. The
-[client review](review/distributed-launch-client.md) records the corrected
-missing-native-receipt recovery path and the failed setup attempts separately
-from the canonical passing gate. Native resource retirement is still unresolved.
-
-The full repository gate, registered remote default path, separate-host tests
-and hosted CI have not run on this candidate. Passing component tests do not
-establish those results.
+Full repository gates, ordinary registered tools, separate-host acceptance and
+hosted CI have not passed on this candidate. Component results do not establish
+those outcomes. The new SSH user promised for host testing has not been supplied;
+the earlier rejected transfer created no remote checkout. Wait for that new
+destination identity before transferring source.
 
 ## What to do next
 
-1. Finish the remote half of the accepted [Launch channel plan](design-notes/distributed-launch-channel.md)
-   for **#697**. The original stream, finite binding and owner consumer are now
-   integrated. Complete exact-helper native retirement and composed cleanup.
-   **Exit:** more sequential Launches than the active limit complete in one
-   live session; each retains exact native, transport and resource witnesses.
-   The [additive retirement API](design-notes/distributed-launch-native-retirement.md)
-   was approved on October 6 and is being implemented.
-   Do not infer that witness from terminal history or close the shared session
-   pool for each Launch.
-2. Wire registered remote Compile/Launch and LSP into ordinary session assembly.
-   **Exit:** the normal tool path uses the selected executor, with the workspace
-   absent from the owner. Resolve the unused-import rewrite interaction before
-   enabling remote Compile: the rewrite changes source under the same managed
-   identity, while the remote consumer retains exact original input. Production
-   still selects the local compile service, so this remains an integration
-   obligation.
-3. Complete the remaining **#697** acceptance in the integration guide: executor
-   pools, orchestrator ownership/routing, durable cross-node messaging, controlled
-   session movement and retained-report lifecycle across archive/restore/compaction.
-   **Exit:** separate-host cancellation, partition, restart and lost-reply tests,
-   applicable model gates, full repository gates and assembled-system review.
-   Automatic failover and workspace snapshot migration remain deferred.
-
-## Approved next work and host access
-
-The [native retirement proposal](design-notes/distributed-launch-native-retirement.md)
-is saved for review. The native service returns helpers to its pool after
-terminal publication.
-Its per-execution path has no retirement witness; only scoped pool closure does.
-The reviewed proposal retires the exact borrowed Launch helper through the
-existing pool's native and owner-exit observations, keeping Compile and ordinary
-command reuse unchanged. It costs one helper restart per Launch. That additive
-API was approved on October 6. Implementation and the sequential-Launch
-retirement gate are in progress.
-
-The [Compile rewrite proposal](design-notes/distributed-compile-rewrite.md)
-adds exactly Original and UnusedImportRewrite attempts under the same ToolKey,
-with immutable inputs and checked predecessor evidence. It preserves the
-existing single rewrite while avoiding changed-source reuse of one remote
-Compile identity. The owner approved this design on October 6; the exact
-protocol amendment and implementation are in progress.
-
-The owner will provide a new SSH user for separate-host testing. The earlier
-archive copy was rejected before transfer, and no remote checkout was created.
-Wait for the new destination identity before transferring private source.
-Local implementation and two-node TLS controls continue.
-
-Distributed orchestrators and cross-machine strand messaging remain required
-under C1 through C3. Each session retains one authoritative owner. The sender
-retains a durable message intent; the recipient stores admission under the same
-message ID before acknowledging. Admission does not claim model consumption.
-These phases remain unimplemented, and remote executor transport alone does not
-establish their acceptance.
+1. Finish and obtain approval for the concrete registered administration and LSP
+   contracts for **#697**. Ordinary close/reopen must define owner-process
+   lifetime and exact registration generations. The current permanent endpoint
+   fence cannot become a reusable idle witness. **Exit:** reviewed APIs cover
+   fresh work after close/reopen and archive/restore, with bounded capacity and
+   no automatic replacement after uncertainty.
+2. Implement those contracts through ordinary daemon assembly. Preserve one
+   original owner Broker/custodian, executor-only physical paths, full report
+   admission, jobs, hooks, guidance, Git and LSP. **Exit:** default tools and
+   code mode work with the checkout absent from the owner, including complete
+   report retention and lifecycle controls. Historical query alone is not the
+   fresh-work acceptance criterion.
+3. Complete executor pools, C1-C3 and M1 from the API plan. Each session has one
+   authoritative owner; cross-node acknowledgement follows recipient durable
+   admission under the same message ID, not model consumption. **Exit:** the
+   separate-host cancellation, partition, restart, lost-reply and controlled
+   movement controls pass. Automatic failover and workspace snapshot migration
+   remain deferred.
+4. Incorporate current main, run applicable model and full repository gates,
+   then review the assembled system. **Exit:** exact candidate results justify
+   the remaining integration checklist before requesting publication or merge.
 
 ## Rulings already made
 
@@ -153,28 +99,40 @@ physical service traffic. Satellites remain jailed and distribution-disabled;
 executor membership does not grant Raft voting membership. See the
 [integration guide](design-notes/distributed-runtime-integration.md).
 
-**Cleanup has distinct witnesses.** Endpoint retirement, native close,
-capability-channel consumption and complete-report COMMIT discharge different
-obligations. A receipt or lost reply cannot stand in for another boundary's
-proof. The [scoped host review](review/distributed-scoped-host.md),
-[Launch plan](design-notes/distributed-launch-channel.md) and
-[report model review](review/distributed-report-custody-model.md) retain the
-specific claims and their limits.
+**Compile has two fixed attempts.** The approved
+[protocol 071](../protocol-change/071-remote-compile-attempts.md) permits one
+Original and one deterministic UnusedImportRewrite. It does not grant a retry
+framework, renewed deadline, new budget or new grants.
 
-**Component evidence is not product acceptance.** The
-[live retained-report review](review/distributed-report-live.md),
-[Launch binding review](review/distributed-launch-command.md) and
-[foreground review](review/distributed-foreground-launch.md) cover their stated
-paths and revisions. Remote deployment, resource retirement and whole-system
-recovery still require the integrated tests above.
+**Launch retires its exact borrowed helper.** The approved
+[protocol-067 addendum](../protocol-change/067-remote-workspace-services.md#addendum-exact-original-helper-retirement-for-launch)
+costs one helper restart per Launch. It preserves ordinary command/Compile
+reuse and never closes the shared pool for each Launch.
+
+**Cleanup witnesses remain separate.** Original native retirement, transport
+join, capability drain, resource removal and complete-report COMMIT discharge
+different obligations. Terminal history, actor death, absence and receipt cannot
+replace another boundary's witness. See the
+[retirement architecture](architecture/launch-native-retirement.md).
+
+## Deliberately open
+
+Registered administration and LSP are proposed contracts, not approved public
+APIs. The lifecycle amendment must account for the current sixteen lifetime
+endpoint rows and immutable owner doors before implementation. Full filesystem
+quota policy is also distinct from bounding new LSP allocations. These are known
+design decisions; C1-C3 and M1 are known unbuilt scope. None is unfinished work
+somebody forgot.
 
 ## How to verify
 
-Use `make check-<package>` for a changed package, `make lint`, `make doc-check`
-and `make prelude-check` for shared gates, and `make check` for the complete
-candidate. Regenerate the offline seed after changing its source or compiler;
-`make e2e-codemode` checks it through the actual jail. Read each command's own
-exit status. Keep checkout-backed acceptance worktrees outside `/tmp`, which
-the jail replaces. Keep Unix socket test roots short enough for the platform's
-path ceiling. Do not run two Make targets that package the same generated TUI
-shipment concurrently. See [execution](execution.md) for the remaining rules.
+Use `make check-<package>` for affected packages, `make fmt-check`, changed-package
+lint, `make doc-check` and `make prelude-check` for shared gates, then `make check`
+for the complete candidate. Regenerate the offline code-mode seed when its
+source or compiler changes. Capture each command's own exit status.
+
+Keep checkout-backed tests outside `/tmp`, which the jail replaces, and Unix
+socket roots short enough for the platform. Serialize heavy real-helper suites
+and tests that package the same generated TUI shipment. Preserve red receipts
+and investigate the actual failure before changing a timeout or calling it a
+flake. See [execution](execution.md) for the remaining rules.
