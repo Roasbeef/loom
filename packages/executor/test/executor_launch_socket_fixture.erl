@@ -13,7 +13,11 @@
     find_executable/1,
     now_ms/0,
     get_env/1,
-    closer_waiting/1
+    closer_waiting/1,
+    retiring_adapter/2,
+    native_control_count/1,
+    journal_owner/1,
+    confirmation_worker/2
 ]).
 
 %% The same connect the real satellite makes (cap_ffi:connect_unix/1):
@@ -76,6 +80,89 @@ closer_waiting(Pid) ->
         [{status, waiting}, {current_stacktrace, Frames}] ->
             lists:any(fun
                 ({'executor@remote@launch_channel', _, _, _}) -> true;
+                (_) -> false
+            end, Frames);
+        _ -> false
+    end.
+
+
+%% This bounded probe couples only these fixtures to the private service Row.
+%% sys returns weft's user state. Exact key/record/monitor validation prevents
+%% killing a relay, helper, foreign actor, or a reconstructed historical owner.
+retiring_adapter(Service, Key) when is_pid(Service), node(Service) =:= node() ->
+    try sys:get_state(Service, 1000) of
+        {state, _Config, _Generation, _Tickets, Rows, _Covered, _Subject,
+         _Sequence, _Gate, _Close} when is_map(Rows) ->
+            case maps:find(Key, Rows) of
+                {ok, {row, _Digest, _Deadline,
+                      {running, {subject, Pid, _Ref}, Pid}, _Stdin, _Bytes,
+                      {awaiting_native, _Observer}, running_control,
+                      {some, Monitor}, _ControlLost, _Confirmation}}
+                  when is_pid(Pid), node(Pid) =:= node(), is_reference(Monitor) ->
+                    case is_process_alive(Pid) of
+                        true -> {ok, Pid};
+                        false -> {error, nil}
+                    end;
+                _ -> {error, nil}
+            end;
+        _ -> {error, nil}
+    catch _:_ -> {error, nil} end;
+retiring_adapter(_, _) -> {error, nil}.
+
+native_control_count(Service) when is_pid(Service), node(Service) =:= node() ->
+    try sys:get_state(Service, 1000) of
+        {state, _Config, _Generation, _Tickets, Rows, _Covered, _Subject,
+         _Sequence, _Gate, _Close} when is_map(Rows) -> {ok, map_size(Rows)};
+        _ -> {error, nil}
+    catch _:_ -> {error, nil} end;
+native_control_count(_) -> {error, nil}.
+
+
+%% Identity-only projection of this fixture's original opened Journal term.
+journal_owner({journal, {subject, Pid, _Ref}, _Scope})
+  when is_pid(Pid), node(Pid) =:= node() -> {ok, Pid};
+journal_owner(_) -> {error, nil}.
+
+%% The original Row keeps its managed relay, which owns the scope and workers.
+%% Walk only that bounded ownership chain and require the actual journal wait
+%% stack before terminating a worker. No unrelated process is a candidate.
+confirmation_worker(Service, Key) when is_pid(Service), node(Service) =:= node() ->
+    try sys:get_state(Service, 1000) of
+        {state, _Config, _Generation, _Tickets, Rows, _Covered, _Subject,
+         _Sequence, _Gate, _Close} when is_map(Rows) ->
+            case maps:find(Key, Rows) of
+                {ok, {row, _Digest, _Deadline, _Running, _Stdin, _Bytes,
+                      {positive_native, _Observer}, _Control, _Monitor, _Lost,
+                      {confirming, _Reports, _Cancel, none, _Attempt, Relay}}}
+                  when is_pid(Relay), node(Relay) =:= node() ->
+                    waiting_worker([Relay], [Service], 4);
+                _ -> {error, nil}
+            end;
+        _ -> {error, nil}
+    catch _:_ -> {error, nil} end;
+confirmation_worker(_, _) -> {error, nil}.
+
+waiting_worker(_, _, 0) -> {error, nil};
+waiting_worker([], _, _) -> {error, nil};
+waiting_worker(Pids, Seen, Depth) when length(Pids) =< 32, length(Seen) =< 64 ->
+    Candidates = [Pid || Pid <- lists:usort(Pids), is_pid(Pid),
+                         node(Pid) =:= node(), not lists:member(Pid, Seen)],
+    case lists:dropwhile(fun(Pid) -> not journal_waiting(Pid) end, Candidates) of
+        [Worker | _] -> {ok, Worker};
+        [] ->
+            Next = lists:append([case process_info(Pid, links) of
+                {links, Links} -> Links;
+                _ -> []
+            end || Pid <- Candidates]),
+            waiting_worker(Next, Candidates ++ Seen, Depth - 1)
+    end;
+waiting_worker(_, _, _) -> {error, nil}.
+
+journal_waiting(Pid) ->
+    case process_info(Pid, [status, current_stacktrace]) of
+        [{status, waiting}, {current_stacktrace, Frames}] ->
+            lists:any(fun
+                ({'executor@remote@journal', _, _, _}) -> true;
                 (_) -> false
             end, Frames);
         _ -> false
