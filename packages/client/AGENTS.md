@@ -6161,3 +6161,46 @@ checks exact subprocess exits and final witnesses. Component evidence does not
 establish shipped registered-session deployment or separate-host filesystem
 isolation. See [remote custody](../../docs/architecture/remote-custody.md)
 for assembly ownership and remaining acceptance.
+
+## Original remote Launch consumer
+
+`client/remote/launch_client` projects a trusted local `Config` into the existing
+`run_channel.Launcher` inside the original Fresh custodian body. It validates
+the complete original Compile producer and canonical artifact/enrollment facts
+before reserving one Launch service child. The original token commitment, Run
+phase, finite owner deadline and exact SatelliteCommand offer remain immutable.
+Challenge/PlaceToken and Ready precede original bridge binding; binding and
+installation precede native Broker clearance and the paused socket handoff.
+Historical `recover` only observes original retained completion and ACK custody;
+it never reconstructs a Connection, token placement, deadline or live command.
+
+`launch_execution` owns the original native event Subject and CallHandle after
+the Launcher returns. Normal connection close joins observation; abandonment
+cancels the original handle. Satellite Final still aborts the original Run step
+before close, so the dispatcher's collector can lose its initial receipt. Within
+the one fixed original deadline plus six-second observation grace,
+`launch_receipt.collect` reads strict contiguous native outputs from cursor zero
+and the exact terminal through historical command Query. It enforces native
+count, chunk and aggregate bounds before accumulation and calls the existing
+`command_binding.receive` for canonical/full-identity COMMIT. The outer Launch
+completion must name the same native terminal; owner COMMIT precedes outer ACK.
+No historical read replays output to the host or dispatches native work. Native
+Broker uncertainty, transport join and resource retirement remain independent;
+associated native resources remain unresolved without an approved retirement
+witness. The real component control exercises TLS membership, actual Compile,
+Launch, capability response, Final and repeated original receipt observation.
+Default daemon assembly and separate-host acceptance remain separate work.
+
+Historical Launch recovery captures one configured endpoint observation budget
+at entry and spends its remaining allowance on outer Query, exact native history
+collection and ACK. This is a read-only budget, independent of the original
+execution deadline. It can repair missing native and outer child receipts after
+the original observer dies and the owner store reopens. It cannot reconstruct
+a missing final ToolOutcome, native retirement or a live Connection. Live
+observation continues to use only the original execution deadline plus the
+one fixed six-second grace. The real scope-loss control monitors the original
+companion before terminating its actual linked native scope; abnormal-link
+death remains unresolved and bounded. It exercises actual owner reopen with
+Prepared retained, both owner receipts absent and executor originals retained.
+Weft's declared Joined/Lost relay accounting is a separate source invariant;
+the scope-loss control does not manufacture a RunLost message.
