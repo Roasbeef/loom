@@ -10,8 +10,8 @@ Administrative assembly publishes this checked row after its concrete owners.
 Route four carries the closed `LLQ` version-one operations: ChallengeRequest,
 PlaceToken, Query, Cancel, Acknowledge and RefuseBeforeNative. First admission and
 placement use Data; the remaining operations use Control. Existing route bytes
-are unchanged, and route five is rejected until the separate finite stream bind
-is implemented. RefuseBeforeNative carries canonical original input and maps to
+are unchanged. Route five admits the finite installation of the original stream
+host through a Control credit. RefuseBeforeNative carries canonical original input and maps to
 one fixed diagnostic. Only a definite original owner clearance refusal can
 justify invoking it; a lost reply or timeout cannot.
 
@@ -43,5 +43,39 @@ Query, a missing Claim's physical-command refusal, all six requests queued at a
 suspended Launch owner, and loss of that owner with a retained finite assignment.
 It preserves the existing native and workspace controls. Codec controls vary
 namespace, budget, canonical framing, full identity, enrollment scope, Ready role,
-and completion digest. These component controls do not establish live streaming
-or complete remote product assembly.
+and completion digest. Those metadata controls precede the separate route-five fixture; they do not
+establish complete remote product assembly.
+
+Route five carries only bounded canonical binding bytes and an unnamed stream
+message door. Both sides reconstruct those values through the bridge's checked
+constructors; the executor checks the original row, owner peer and full binding,
+and the owner checks the executor peer and exact original binding before ACK.
+The registration still supplies all service authority. No callback, Connection
+or Claim crosses distribution.
+
+The existing fixed credit actor waits only for the bridge's bounded local
+Installed acknowledgement. Socket acceptance, paused Ready, activation and live
+frame flow belong to the separate original bridge actor. The transport retains
+its exact acceptance until ACK, and credit reuse requires transport AllDelivered.
+A definite pre-install refusal preserves that distinction and can restore the
+credit after retirement. An installation timeout or uncertain service custody stops
+the credit, retaining its original assignment. A lost transport answer after a
+known successful installation remains uncertain for the caller, but actual
+network retirement can return its finite credit without releasing stream custody. There is no bind retry, remint or
+replay cache; a duplicate original installation cannot create a fresh channel.
+Finite Drained continues to say nothing about stream or native drain.
+
+The route-five fixture composes real Compile, token placement and original Unix
+listener preparation with two pinned TLS nodes. It checks peer, scope,
+generation, missing key, foreign door and duplicate original installation,
+including restored finite capacity after definite refusal. Successful bind
+returns before socket acceptance; paused Ready, activation and actual duplex
+frames then run while all six metadata credits are free. A deliberately withheld
+acceptance ACK permits finite reuse only after the known Installed answer and
+managed transport retirement; it does not adopt or release original stream
+resources. A separate held original install and caller timeout retain uncertain
+finite custody. The worker component gate pinned its provisional bridge packet.
+The final stream and binding sources subsequently passed the independent combined
+executor gate with 364 tests, plus format, build, package lint and documentation
+checks. The [stream review](distributed-launch-stream.md) records the final
+source checks and their limits.
