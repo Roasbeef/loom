@@ -5,6 +5,7 @@
 //// the observation instead of presenting an empty context.
 
 import client/daemon/transfer
+import core/ids.{type OpId}
 import core/json
 import core/message
 import core/register
@@ -12,7 +13,7 @@ import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import machine/codec as machine_codec
@@ -60,6 +61,31 @@ pub fn reader(
   window_for: fn(strand.ModelIdentity) -> Int,
   settings: operation.CompactionSettings,
 ) -> fn(String) -> Result(json.JsonValue, String) {
+  reader_with_operation(
+    session,
+    system,
+    registry,
+    fn(_, identity) { Ok(window_for(identity)) },
+    settings,
+  )
+}
+
+/// Captures the active operation alongside its configuration and branch.
+/// Active observations use that operation's revision; idle reads use publication.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // context_view.reader_with_operation(session, system, registry, window, settings)
+/// ```
+@internal
+pub fn reader_with_operation(
+  session: session.Session,
+  system: String,
+  registry: tool.Registry,
+  window_for: fn(Option(OpId), strand.ModelIdentity) -> Result(Int, String),
+  settings: operation.CompactionSettings,
+) -> fn(String) -> Result(json.JsonValue, String) {
   let descriptions = definitions(registry)
   fn(name) {
     read_projected(session, name, system, descriptions, window_for, settings)
@@ -99,7 +125,7 @@ pub fn read(
     name,
     system,
     definitions(registry),
-    window_for,
+    fn(_, identity) { Ok(window_for(identity)) },
     settings,
   )
 }
@@ -109,7 +135,7 @@ fn read_projected(
   name: String,
   system: String,
   descriptions: Dict(String, Definition),
-  window_for: fn(strand.ModelIdentity) -> Int,
+  window_for: fn(Option(OpId), strand.ModelIdentity) -> Result(Int, String),
   settings: operation.CompactionSettings,
 ) -> Result(json.JsonValue, String) {
   use cut <- result.try(
@@ -118,6 +144,7 @@ fn read_projected(
         [
           snapshot.ExactKey(register.StrandConfig, name),
           snapshot.ExactKey(register.StrandLeaf, name),
+          snapshot.ExactKey(register.StrandState, name),
         ],
         [],
         0,
@@ -128,6 +155,11 @@ fn read_projected(
   )
   use config_cell <- result.try(cell(cut.cells, register.StrandConfig))
   use leaf_cell <- result.try(cell(cut.cells, register.StrandLeaf))
+  use state_cell <- result.try(cell(cut.cells, register.StrandState))
+  use state <- result.try(
+    machine_codec.decode_strand_state(state_cell.register.value.payload)
+    |> result.replace_error("context operation is unreadable"),
+  )
   use config <- result.try(
     machine_codec.decode_configuration(config_cell.register.value.payload)
     |> result.replace_error("context configuration is unreadable"),
@@ -159,11 +191,12 @@ fn read_projected(
       config.active_tool_names,
       projected.messages,
     )
+  use window <- result.try(window_for(state.current_operation, config.model))
   board(
     name,
     cut.next_seq - 1,
     config.model,
-    window_for(config.model),
+    window,
     settings,
     projected,
     items,

@@ -2730,16 +2730,17 @@ pub fn explicit_file_edits_reload_existing_turns_with_operation_snapshots_test()
         provider_http.ComputedExchange(
           provider_http.AwaitPrompt("first"),
           fn(_observed) {
-            let assert Some(_holder) = actor.call(rig.data, 1000, FetchReload)
+            let assert Some(holder) = actor.call(rig.data, 1000, FetchReload)
               as "assembly publishes the watcher before the first provider request"
             let assert Ok(candidate) = simplifile.read(path <> ".next")
               as "the next endpoint document was prepared"
             let assert Ok(_) = simplifile.write(path, candidate)
               as "a real save occurs during the active turn"
+            await_reload(holder, 8192)
             provider_http.ReplyToolUse(
               "wait",
               "bash",
-              json.Object([#("command", json.String("sleep 2"))]),
+              json.Object([#("command", json.String("true"))]),
             )
           },
         ),

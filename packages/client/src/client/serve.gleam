@@ -1758,13 +1758,10 @@ fn load_config(
       ))
     Some(path) -> {
       use text <- result.try(
-        simplifile.read(path)
-        |> result.map_error(fn(error) {
-          "the config file "
-          <> path
-          <> " is unreadable: "
-          <> string.inspect(error)
-        }),
+        config_reload.read(path)
+        |> result.replace_error(
+          "the config file " <> path <> " is unreadable or exceeds 1 MiB",
+        ),
       )
       parse_config(text)
       |> result.map_error(fn(reason) { path <> ": " <> reason })
@@ -4496,18 +4493,21 @@ fn assemble_in(
   // Context observations need the immutable tool descriptions, while the hub's
   // execution surface owns the registry. Build the reader before retaining the
   // service start callback so observations carry neither executors nor Settings.
-  let context_window = settings.context_window
   let context_reader =
-    context_view.reader(
+    context_view.reader_with_operation(
       opened,
       assembled.text,
       tool_registry,
-      fn(identity) {
-        config_reload.current(models)
+      fn(operation, identity) {
+        let revision = case operation {
+          Some(operation) -> config_reload.capture(models, operation)
+          None -> config_reload.current(models)
+        }
+        revision
         |> result.map(fn(revision) {
           wiring.revision_identity_window(revision, identity)
         })
-        |> result.unwrap(context_window)
+        |> result.replace_error("the session configuration is unavailable")
       },
       settings.compaction,
     )

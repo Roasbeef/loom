@@ -7,6 +7,7 @@
 
 import argv
 import client/catalog
+import client/config_reload
 import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
@@ -39,7 +40,6 @@ import host/bootstrap
 import host/build_identity
 import host/endpoint
 import mist
-import simplifile
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
@@ -374,13 +374,10 @@ pub fn prepare_startup(
     "" -> Ok(dict.new())
     path -> {
       use text <- result.try(
-        simplifile.read(path)
-        |> result.map_error(fn(error) {
-          "the daemon config file "
-          <> path
-          <> " is unreadable: "
-          <> string.inspect(error)
-        }),
+        config_reload.read(path)
+        |> result.replace_error(
+          "the daemon config file " <> path <> " is unreadable or exceeds 1 MiB",
+        ),
       )
       tom.parse(text)
       |> result.map_error(fn(error) {
