@@ -43,6 +43,7 @@ pub fn retained_tool(
             ),
             refusal: shell.NothingRefused,
             calls: call_record.empty(),
+            edits: [],
           )
       }
     })
