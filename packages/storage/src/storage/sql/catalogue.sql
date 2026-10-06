@@ -95,3 +95,19 @@ INSERT INTO catalogue_session_archives (session_id) VALUES (?);
 
 -- name: RestoreSession :exec
 DELETE FROM catalogue_session_archives WHERE session_id = ?;
+
+-- name: RecentFolders :many
+SELECT seq, workspace FROM catalogue_recent_folders ORDER BY seq DESC;
+
+-- name: InsertRecentFolder :exec
+INSERT INTO catalogue_recent_folders (workspace) VALUES (?);
+
+-- name: DeleteRecentFolder :exec
+DELETE FROM catalogue_recent_folders WHERE workspace = ?;
+
+-- name: ForgetRecentFolder :exec
+DELETE FROM catalogue_recent_folders WHERE seq = ?;
+
+-- name: TrimRecentFolders :exec
+DELETE FROM catalogue_recent_folders
+WHERE seq NOT IN (SELECT seq FROM catalogue_recent_folders ORDER BY seq DESC LIMIT ?);
