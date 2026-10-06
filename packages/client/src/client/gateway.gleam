@@ -341,6 +341,8 @@ pub type Options {
     /// supplies the bus the effect wiring publishes on.
     bus: Option(bus.Bus),
     catalog: Option(catalog.Catalog),
+    /// Published catalogue read by listings and by-name selection.
+    catalog_reader: Option(fn() -> Result(catalog.Catalog, Nil)),
     registry: Option(Registry),
     /// Skills captured by this daemon, shared with the model load tool.
     skills: skill.Catalogue,
@@ -473,7 +475,7 @@ type State {
     // The advisor actor's abort notice, when the host wired an advisor.
     goal_abort: Option(fn(OpId) -> Nil),
     // The model catalogue, when the host configured one.
-    catalog: Option(catalog.Catalog),
+    catalog: fn() -> Result(catalog.Catalog, Nil),
     // Operator configuration needs registered names, never tool executors.
     // Absence still refuses active-set changes; a configured empty set permits
     // clearing the selection without retaining execution authority in this slot.
@@ -508,6 +510,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     recent_entries: 50,
     bus: None,
     catalog: None,
+    catalog_reader: None,
     registry: None,
     skills: skill.empty(),
     code_mode_issue: None,
@@ -630,6 +633,31 @@ pub fn with_live_jobs(
   read_jobs: fn(String) -> Result(JsonValue, String),
 ) -> Options {
   Options(..options, live_jobs: Some(read_jobs))
+}
+
+/// Uses the same published catalogue as provider routing for UI reads.
+/// A vanished owner yields an unavailable catalogue instead of a stale copy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_catalog_reader(options, reader)
+/// ```
+pub fn with_catalog_reader(
+  options: Options,
+  reader: fn() -> Result(catalog.Catalog, Nil),
+) -> Options {
+  Options(..options, catalog_reader: Some(reader))
+}
+
+fn catalogue_reader(options: Options) -> fn() -> Result(catalog.Catalog, Nil) {
+  case options.catalog_reader {
+    Some(reader) -> reader
+    None -> {
+      let catalogue = options.catalog
+      fn() { option.to_result(catalogue, Nil) }
+    }
+  }
 }
 
 /// Supplies the model catalogue the hub serves and switches by name.
@@ -1094,7 +1122,7 @@ fn start_with_delivery(
         effect_abort: options.effect_abort,
         goal_control: options.goal_control,
         goal_abort: options.goal_abort,
-        catalog: options.catalog,
+        catalog: catalogue_reader(options),
         registered_tools:,
         skills: options.skills,
         code_mode_issue: options.code_mode_issue,
@@ -6590,7 +6618,7 @@ fn entry_in_force(
   state: State,
   provider: String,
 ) -> Result(catalog.CatalogModel, Nil) {
-  use catalogue <- result.try(option.to_result(state.catalog, Nil))
+  use catalogue <- result.try(state.catalog())
   catalog.find(catalogue, provider)
 }
 
@@ -6793,9 +6821,9 @@ fn read_notes(state: State, connection: Int, id: Int, strand: String) -> State {
 }
 
 fn list_models(state: State, connection: Int, id: Int) -> State {
-  let models = case state.catalog {
-    None -> []
-    Some(catalogue) -> catalog_listing(catalogue)
+  let models = case state.catalog() {
+    Error(Nil) -> []
+    Ok(catalogue) -> catalog_listing(catalogue)
   }
   reply(
     state,
@@ -7296,7 +7324,7 @@ fn model_name_change(
   name: String,
 ) -> Result(ConfigChange, String) {
   use catalogue <- result.try(option.to_result(
-    state.catalog,
+    option.from_result(state.catalog()),
     "no model catalogue is configured",
   ))
   use entry <- result.try(
@@ -7554,9 +7582,9 @@ fn catalog_name_of(
   state: State,
   identity: machine_strand.ModelIdentity,
 ) -> List(#(String, JsonValue)) {
-  case state.catalog {
-    None -> []
-    Some(catalogue) ->
+  case state.catalog() {
+    Error(Nil) -> []
+    Ok(catalogue) ->
       case catalog.find(catalogue, identity.provider) {
         Ok(entry) if entry.model_id == identity.model_id -> [
           #("model_name", json.String(entry.name)),

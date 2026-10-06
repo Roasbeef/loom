@@ -976,3 +976,43 @@ pub fn held_run_without_a_holder_fails_in_band_test() {
     as "a missing holder is an in-band failure in the usual shape"
   assert string.contains(text, "configuration is gone")
 }
+
+/// An endpoint revert does not restore authority over ambiguous durable names.
+pub fn summary_source_history_survives_endpoint_reverts_test() {
+  let assert Ok(boot) =
+    catalog.parse(
+      "
+[models.acme]
+dialect = \"anthropic\"
+base_url = \"https://service-a.test\"
+api_key_env = \"ACME_KEY\"
+model_id = \"loom-1\"
+context_window = 100000
+max_output_tokens = 4096
+[roles]
+main = [\"acme\"]
+",
+    )
+    as "the boot catalogue is valid"
+  let assert Ok(entry) = catalog.find(boot, "acme")
+    as "the configured provider exists"
+  let initial = wiring.model_revision(config(), boot)
+  let limits_only =
+    catalog.Catalog(..boot, models: [
+      catalog.CatalogModel(..entry, max_output_tokens: 8192),
+    ])
+  let limits = wiring.model_revision_after(config(), limits_only, initial)
+  assert wiring.revision_summary_source_allowed(limits, "acme")
+    as "output limits do not change the source service"
+
+  let moved =
+    catalog.Catalog(..limits_only, models: [
+      catalog.CatalogModel(..entry, base_url: "https://service-b.test"),
+    ])
+  let changed = wiring.model_revision_after(config(), moved, limits)
+  assert !wiring.revision_summary_source_allowed(changed, "acme")
+    as "a name reused at another endpoint cannot authorize stored summaries"
+  let reverted = wiring.model_revision_after(config(), boot, changed)
+  assert !wiring.revision_summary_source_allowed(reverted, "acme")
+    as "reverting the endpoint does not identify the source of older messages"
+}

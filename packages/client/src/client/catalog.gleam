@@ -405,6 +405,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
+      "retry",
     ],
     "the top level",
   ))

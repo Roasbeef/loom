@@ -21,6 +21,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import host/bootstrap
+import simplifile
 import telemetry/field
 import telemetry/log.{type Logger}
 import weft
@@ -41,7 +42,7 @@ pub opaque type Holder(config) {
 /// Trusted source and complete-document validator, installed by assembly.
 pub type Source(config) {
   Source(
-    /// Exact explicit path, without workspace discovery.
+    /// Real path resolved once from the explicit selection.
     path: String,
     /// Bytes used to assemble the initial value, closing the startup race.
     initial: String,
@@ -204,6 +205,40 @@ pub fn stop(holder: Holder(config)) -> Result(Nil, String) {
 /// // config_reload.read(path)
 /// ```
 pub fn read(path: String) -> Result(String, Nil) {
+  bounded(fn() { read_regular(path) })
+}
+
+/// Resolves operator authority once, before reading the initial document.
+///
+/// Watch and protect this same real path. Retargeting an original symlink
+/// cannot select a different trusted source after startup.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // config_reload.selected_source(explicit_path)
+/// ```
+@internal
+pub fn selected_source(path: String) -> Result(#(String, String), Nil) {
+  bounded(fn() {
+    use selected <- result.try(
+      bootstrap.canonical_path(path) |> result.replace_error(Nil),
+    )
+    use text <- result.try(read_regular(selected))
+    Ok(#(selected, text))
+  })
+}
+
+// Check the type before open as well as on the opened handle: opening a FIFO
+// can wait for a writer before the handle-based regular-file check runs.
+fn read_regular(path: String) -> Result(String, Nil) {
+  use info <- result.try(
+    simplifile.file_info(path) |> result.replace_error(Nil),
+  )
+  use Nil <- result.try(case simplifile.file_info_type(info) {
+    simplifile.File -> Ok(Nil)
+    _ -> Error(Nil)
+  })
   use bytes <- result.try(
     bootstrap.read_bounded(path, max_file_bytes) |> result.replace_error(Nil),
   )
@@ -244,7 +279,7 @@ fn poll(state: State(config)) -> State(config) {
     Some(source) -> {
       // One worker at a time, bounded by bytes and wall time. Owner death
       // cancels it through weft even when custody kills this actor.
-      case bounded(fn() { read(source.path) }) {
+      case read(source.path) {
         Ok(text) -> observe(state, source, text)
         Error(Nil) -> {
           case state.seen {

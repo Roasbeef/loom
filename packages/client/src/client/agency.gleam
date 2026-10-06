@@ -240,6 +240,11 @@ pub type Config {
     /// The host catalogue's explicit choices, keyed by identity.provider.
     /// Selecting one seeds both identity and thinking before the child runs.
     models: List(#(machine_strand.ModelIdentity, machine_strand.ThinkingLevel)),
+    /// Published choices for new child selection; None retains the fixed host list.
+    model_choices: Option(
+      fn() ->
+        List(#(machine_strand.ModelIdentity, machine_strand.ThinkingLevel)),
+    ),
   )
 }
 
@@ -293,6 +298,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     // fills this from the gateway.
     subagent_model: fn() { Error(Nil) },
     models: [],
+    model_choices: None,
   )
 }
 
@@ -1164,7 +1170,13 @@ fn child_configuration(
   case selection {
     Some(name) -> {
       use selected <- result.try(
-        list.find(config.models, fn(entry) { entry.0.provider == name })
+        list.find(
+          case config.model_choices {
+            None -> config.models
+            Some(read) -> read()
+          },
+          fn(entry) { entry.0.provider == name },
+        )
         |> result.map_error(fn(_) {
           agent.InvalidArgument(reason: "unknown model name: " <> name)
         }),

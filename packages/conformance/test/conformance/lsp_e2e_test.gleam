@@ -1056,6 +1056,7 @@ fn settings(
   name: String,
 ) -> serve.Settings {
   serve.Settings(
+    configuration_source: None,
     peer_directory: None,
     first_prompt: None,
     secrets: secret.env(),

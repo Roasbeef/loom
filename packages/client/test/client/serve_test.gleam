@@ -9,6 +9,7 @@ import broker/policy
 import client/advisor
 import client/catalog
 import client/codemode
+import client/config_reload
 import client/daemon/domain as domain_service
 import client/daemon/limits
 import client/daemon/main as daemon_main
@@ -28,6 +29,7 @@ import client/serve
 import client/server
 import client/session_socket_test as transfer
 import client/system_prompt
+import client/wiring
 import core/clock
 import core/ids
 import core/json
@@ -60,6 +62,8 @@ import storage/sqlite
 import support/addresses
 import support/internal/ffi_ws
 import support/provider as provider_test
+import support/provider_http
+import telemetry/field as telemetry_field
 import telemetry/level
 import telemetry/log
 import telemetry/record
@@ -68,6 +72,7 @@ import tui/connection
 import tui/inbound
 import tui/workspace
 import weft
+import weft/actor
 import weft/poll
 import weft/registry as address
 
@@ -166,6 +171,7 @@ fn settings_under(root: String) -> serve.Settings {
   // no tool call could ever run under.
   let root = absolute(root)
   serve.Settings(
+    configuration_source: None,
     peer_directory: None,
     first_prompt: None,
     codemode_sockets: None,
@@ -2641,4 +2647,294 @@ pub fn a_session_that_can_write_the_runtime_root_binds_in_its_workspace_test() {
       "/home/o/.loom",
     )
     == None
+}
+
+// The provider fixture's computed first answer edits a real explicit file
+// while the first operation is active. Its next generation must still reach
+// A; the following operator turn must reach B with B's admitted facts.
+type ReloadRigMessage {
+  RegisterReload(config_reload.Holder(wiring.ModelRevision))
+  FetchReload(
+    Subject(option.Option(config_reload.Holder(wiring.ModelRevision))),
+  )
+}
+
+fn reload_document(url: String, output: Int) -> String {
+  "[models.acme]\ndialect = \"anthropic\"\nbase_url = \""
+  <> url
+  <> "\"\napi_key_env = \"ACME_KEY\"\nmodel_id = \"fixture\"\ncontext_window = 200000\nmax_output_tokens = "
+  <> int.to_string(output)
+  <> "\n[roles]\nmain = [\"acme\"]\n[memory]\ndistill = \"off\"\n[schedules]\nmodel_created = \"off\"\n"
+}
+
+fn await_reload(
+  holder: config_reload.Holder(wiring.ModelRevision),
+  output: Int,
+) -> Nil {
+  let assert poll.Answered(Nil) =
+    poll.until(within: 5000, every: 20, attempt: fn() {
+      case config_reload.current(holder) {
+        Ok(revision) -> {
+          case catalog.find(wiring.revision_catalogue(revision), "acme") {
+            Ok(entry) if entry.max_output_tokens == output -> poll.Done(Nil)
+            Ok(_) | Error(Nil) -> poll.Retry
+          }
+        }
+        Error(Nil) -> poll.Retry
+      }
+    })
+    as "the watcher publishes the actual file edit within its bounded poll cadence"
+  Nil
+}
+
+fn reload_turn(instance: serve.Instance, text: String) -> Nil {
+  let assert Ok(operation) =
+    api.prompt(instance.runtime, [
+      message.UserMessage(
+        content: [message.UserText(text, None)],
+        timestamp: 0,
+        origin: None,
+      ),
+    ])
+    as "an existing session accepts another operator turn"
+  let assert Ok(operation.RunLastResult(outcome: completion, ..)) =
+    api.await_result(instance.runtime, operation, within_ms: 20_000)
+    as "the real provider turn completes"
+  assert completion == operation.RunCompleted(operation.CompletedByAssistant)
+    as "the provider result is successful"
+}
+
+pub fn explicit_file_edits_reload_existing_turns_with_operation_snapshots_test() {
+  let root = fresh_instance_root()
+  let settings = settings_under(root)
+  let path = settings.session_path <> ".toml"
+  let assert Ok(_) = simplifile.create_directory_all(absolute(root))
+    as "the config directory exists"
+  let assert Ok(rig) =
+    actor.new(None)
+    |> actor.on_message(fn(state, message) {
+      case message {
+        RegisterReload(holder) -> actor.continue(Some(holder))
+        FetchReload(reply) -> {
+          process.send(reply, state)
+          actor.continue(state)
+        }
+      }
+    })
+    |> actor.start
+    as "the fixture's handoff actor starts"
+
+  let #(first_count, first_report) =
+    provider_http.with_server(
+      [
+        provider_http.ComputedExchange(
+          provider_http.AwaitPrompt("first"),
+          fn(_observed) {
+            let assert Some(_holder) = actor.call(rig.data, 1000, FetchReload)
+              as "assembly publishes the watcher before the first provider request"
+            let assert Ok(candidate) = simplifile.read(path <> ".next")
+              as "the next endpoint document was prepared"
+            let assert Ok(_) = simplifile.write(path, candidate)
+              as "a real save occurs during the active turn"
+            provider_http.ReplyToolUse(
+              "wait",
+              "bash",
+              json.Object([#("command", json.String("sleep 2"))]),
+            )
+          },
+        ),
+        provider_http.ComputedExchange(
+          provider_http.AwaitToolResult("wait"),
+          fn(_observed) {
+            provider_http.ReplyToolUse(
+              "window",
+              "context_remaining",
+              json.Object([]),
+            )
+          },
+        ),
+        provider_http.ComputedExchange(
+          provider_http.AwaitToolResult("window"),
+          fn(observed) {
+            let assert Ok(last) = list.last(observed)
+              as "the old endpoint receives the next generation"
+            let assert provider_http.SuccessfulToolResult(text:, ..) =
+              last.latest
+              as "the context tool succeeds under the active operation"
+            assert string.contains(text, "100000")
+              as "the tool still reports the captured old window"
+            provider_http.ReplyText("first finished on A")
+          },
+        ),
+      ],
+      fn(first_url) {
+        let #(count, report) =
+          provider_http.with_server(
+            [
+              provider_http.Exchange("next", "next finished on B"),
+              provider_http.Exchange("invalid", "last valid B"),
+              provider_http.Exchange("atomic", "atomic B"),
+            ],
+            fn(next_url) {
+              let initial =
+                reload_document(first_url, 4096)
+                |> string.replace(
+                  "context_window = 200000",
+                  "context_window = 100000",
+                )
+              let next = reload_document(next_url, 8192)
+              let assert Ok(_) = simplifile.write(path, initial)
+                as "the trusted initial file is written"
+              let assert Ok(_) = simplifile.write(path <> ".next", next)
+                as "the callback's file edit is prepared"
+              let assert Ok(catalogue) = catalog.parse(initial)
+                as "the complete initial document validates"
+              let store =
+                secret.from_list([#("ACME_KEY", provider_http.dummy_key)])
+              let records = process.new_subject()
+              let assert Ok(instance) =
+                serve.open_instance(
+                  serve.Settings(
+                    ..settings,
+                    configuration_source: Some(#(path, initial)),
+                    catalog: catalogue,
+                    gateway: catalog.gateway(
+                      catalogue,
+                      transport: http.httpc_transport(),
+                      secrets: store,
+                      clock: clock.from_function(ffi_os.system_time_ms),
+                    ),
+                    secrets: store,
+                    model: machine_strand.ModelIdentity("acme", "fixture"),
+                  ),
+                  log.new(log.to_subject(records), level.Info),
+                )
+                as "production assembly starts the actual watcher and runtime"
+              process.send(rig.data, RegisterReload(instance.models))
+              let assert Ok(active) =
+                api.prompt(instance.runtime, [
+                  message.UserMessage(
+                    content: [message.UserText("first", None)],
+                    timestamp: 0,
+                    origin: None,
+                  ),
+                ])
+                as "the first operation is accepted before its configuration changes"
+              await_reload(instance.models, 8192)
+              let assert Ok(operation.RunLastResult(outcome: first_outcome, ..)) =
+                api.await_result(instance.runtime, active, within_ms: 20_000)
+                as "the active turn completes after the file reload"
+              assert first_outcome
+                == operation.RunCompleted(operation.CompletedByAssistant)
+
+              await_reload(instance.models, 8192)
+              reload_turn(instance, "next")
+
+              let assert Ok(_) =
+                simplifile.write(
+                  path,
+                  "[models.acme]\napi_key_env = \"DO_NOT_LOG_SECRET",
+                )
+                as "a malformed partial save occurs"
+              let invalid =
+                await_reload_record(records, "config.reload_invalid")
+              assert invalid.fields == []
+                as "parser diagnostics never quote secrets or configuration bytes"
+              await_reload(instance.models, 8192)
+              reload_turn(instance, "invalid")
+
+              let atomic =
+                reload_document(next_url, 16_384)
+                <> "[tools]\nnetwork = \"full\"\n"
+              let assert Ok(_) =
+                simplifile.write(path <> ".replacement", atomic)
+                as "an atomic save writes a fresh inode"
+              let assert Ok(_) = simplifile.rename(path <> ".replacement", path)
+                as "the watched path is replaced atomically"
+              await_reload(instance.models, 16_384)
+              reload_turn(instance, "atomic")
+              let notice = await_reload_record(records, "config.reloaded")
+              assert list.contains(
+                notice.fields,
+                telemetry_field.text(
+                  "restart_required",
+                  "background-models,tools",
+                ),
+              )
+                as "the unchanged boot tool policy is reported as requiring restart"
+              let assert Ok(_) = simplifile.delete(path)
+                as "the operator removes the config file"
+              let missing =
+                await_reload_record(records, "config.reload_unreadable")
+              assert missing.fields == []
+                as "unreadable edits log no source bytes"
+              await_reload(instance.models, 16_384)
+              let assert Ok(_) = simplifile.write(path, atomic)
+                as "the watched path is recreated"
+              await_reload(instance.models, 16_384)
+
+              let watch = process.monitor(config_reload.pid(instance.models))
+              serve.close_instance(instance)
+              let assert Ok(Nil) =
+                process.new_selector()
+                |> process.select_specific_monitor(watch, fn(_) { Nil })
+                |> process.selector_receive(5000)
+                as "runtime close retires the watcher through custody"
+              3
+            },
+          )
+        let assert Ok(observed) = report
+          as "the new endpoint receives all three exact turns"
+        assert list.length(observed) == count
+          as "no extra or old-endpoint request substitutes for a turn"
+        let assert Ok(next) = list.first(observed)
+          as "the first new turn was observed"
+        let assert Ok(atomic) = list.last(observed)
+          as "the atomic replacement turn was observed"
+        assert reload_json_field(next.body, "max_tokens") == Ok(json.Int(8192))
+          as "new turns use the newly admitted output ceiling"
+        assert reload_json_field(atomic.body, "max_tokens")
+          == Ok(json.Int(16_384))
+          as "atomic saves change real provider requests"
+        3
+      },
+    )
+  let assert Ok(first_observed) = first_report
+    as "the captured endpoint served the whole active turn"
+  assert list.length(first_observed) == first_count
+    as "both generations reached A while later turns reached B"
+  process.unlink(rig.pid)
+  let _ = process.kill(rig.pid)
+}
+
+fn reload_json_field(
+  value: json.JsonValue,
+  name: String,
+) -> Result(json.JsonValue, Nil) {
+  case value {
+    json.Object(fields) -> list.key_find(fields, name)
+    _ -> Error(Nil)
+  }
+}
+
+fn await_reload_record(
+  records: Subject(record.Record),
+  event: String,
+) -> record.Record {
+  let assert poll.Answered(value) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case process.receive(records, within: 10) {
+        Ok(value) -> {
+          assert !string.contains(string.inspect(value), "DO_NOT_LOG_SECRET")
+            as "reload logs never expose configuration text"
+          case value.event == event {
+            True -> poll.Done(value)
+            False -> poll.Retry
+          }
+        }
+        Error(Nil) -> poll.Retry
+      }
+    })
+    as "the requested reload diagnostic is surfaced within a bounded wait"
+  value
 }

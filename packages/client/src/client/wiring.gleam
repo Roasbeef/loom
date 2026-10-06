@@ -155,6 +155,7 @@ import broker/exec.{type EnforcementDemand}
 import broker/policy.{type Grant, type SandboxPolicy}
 import client/catalog
 import client/checkpoint
+import client/config_reload
 import client/directories
 import client/escalate.{type Escalations}
 import client/grants
@@ -339,6 +340,227 @@ fn provider_configuration(config: Config) -> ProviderConfiguration {
     system: config.system,
     definitions: tool_definitions(config.registry),
   )
+}
+
+/// The reloadable provider projections, kept together with their UI catalogue.
+/// Executable tools and boot services stay in their existing owners.
+pub opaque type ModelRevision {
+  ModelRevision(
+    provider: ProviderConfiguration,
+    hooks: effects.Hooks,
+    catalogue: catalog.Catalog,
+    changed_summary_sources: List(String),
+  )
+}
+
+/// Projects one validated catalogue into coherent routing, admission and hooks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.model_revision(config, catalogue)
+/// ```
+pub fn model_revision(
+  config: Config,
+  catalogue: catalog.Catalog,
+) -> ModelRevision {
+  ModelRevision(
+    provider_configuration(config),
+    compaction_hooks(config),
+    catalogue,
+    [],
+  )
+}
+
+/// Carries endpoint history across publications for settled-summary admission.
+///
+/// Durable assistant messages name a provider but do not record its endpoint.
+/// Once a name changes service, that historical name cannot safely authorize
+/// sending its stored text to the boot summarizer, even if the operator reverts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.model_revision_after(config, catalogue, previous)
+/// ```
+pub fn model_revision_after(
+  config: Config,
+  catalogue: catalog.Catalog,
+  previous: ModelRevision,
+) -> ModelRevision {
+  let changed =
+    previous.catalogue.models
+    |> list.filter(fn(old) {
+      case catalog.find(catalogue, old.name) {
+        Ok(next) ->
+          old.base_url != next.base_url
+          || old.dialect != next.dialect
+          || old.api_key_env != next.api_key_env
+        Error(Nil) -> True
+      }
+    })
+    |> list.map(fn(entry) { entry.name })
+  ModelRevision(
+    ..model_revision(config, catalogue),
+    changed_summary_sources: list.unique(list.append(
+      previous.changed_summary_sources,
+      changed,
+    )),
+  )
+}
+
+/// Whether durable text still has an unambiguous boot endpoint for this name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.revision_summary_source_allowed(revision, "acme")
+/// ```
+pub fn revision_summary_source_allowed(
+  revision: ModelRevision,
+  provider: String,
+) -> Bool {
+  !list.contains(revision.changed_summary_sources, provider)
+}
+
+/// Reads the exact catalogue behind a published provider revision.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.revision_catalogue(revision)
+/// ```
+pub fn revision_catalogue(revision: ModelRevision) -> catalog.Catalog {
+  revision.catalogue
+}
+
+/// The selected strand's window from the same snapshot admission uses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.revision_window(revision, session, "main")
+/// ```
+pub fn revision_window(
+  revision: ModelRevision,
+  opened: Session,
+  strand: String,
+) -> Int {
+  let routing = revision.provider.routing
+  strand_window(
+    opened,
+    routing.facts,
+    strand,
+    fallback: routing.fallback_context_window,
+  )
+}
+
+/// The current identity window for a client context inspection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.revision_identity_window(revision, identity)
+/// ```
+pub fn revision_identity_window(
+  revision: ModelRevision,
+  identity: ModelIdentity,
+) -> Int {
+  model_facts(revision.provider.routing, identity).context_window
+}
+
+/// Resolves a role from a published snapshot for new child selection.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.revision_role(revision, model.Subagent)
+/// ```
+pub fn revision_role(
+  revision: ModelRevision,
+  role: Role,
+) -> Result(ResolvedModel, Nil) {
+  gateway.resolve(revision.provider.routing.gateway, role)
+  |> result.replace_error(Nil)
+}
+
+/// Adds operation snapshots beneath the host's existing hooks and stream taps.
+///
+/// The first hook or provider fetch pins a revision. Later requests, retries,
+/// admission and compaction all read that pin. Tools remain boot-configured.
+/// Resolution has no operation identity, but production dispatch refuses both
+/// deferred polls and summary generation, the only paths which consult it.
+/// Supporting either path requires adding an operation to that hook first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.with_model_reloads(built, revisions)
+/// ```
+pub fn with_model_reloads(
+  built: Effects,
+  revisions: config_reload.Holder(ModelRevision),
+) -> Effects {
+  let original = built.hooks
+  let prepare = fn(spec: effects.RequestSpec) {
+    let operation = case spec {
+      effects.GenerationRequest(operation:, ..)
+      | effects.PollRequest(operation:, ..)
+      | effects.SummaryRequest(operation:, ..) -> operation
+    }
+    case config_reload.capture(revisions, operation) {
+      Ok(revision) -> prepare_dispatch(revision.provider, spec)
+      Error(Nil) ->
+        prepared_unsupported("the session configuration is unavailable")
+    }
+  }
+  effects.Effects(
+    ..built,
+    provider: effects.PreparedProviderSurface(
+      request: fn(spec) { prepare(spec) |> stream.start_prepared },
+      prepare:,
+      timeout_ms: provider_timeout(built.provider),
+    ),
+    hooks: effects.Hooks(
+      ..original,
+      admission: fn(query: effects.AdmissionQuery) {
+        case config_reload.capture(revisions, query.operation) {
+          Ok(revision) -> revision.hooks.admission(query)
+          Error(Nil) ->
+            planner.AdmissionUnavailable(OperationError(
+              code: "config_unavailable",
+              message: "the session configuration is unavailable",
+              details: None,
+            ))
+        }
+      },
+      threshold: fn(query: effects.ThresholdQuery) {
+        case config_reload.capture(revisions, query.operation) {
+          Ok(revision) -> revision.hooks.threshold(query)
+          Error(Nil) -> ThresholdNotExceeded
+        }
+      },
+      overflow_preparation: fn(query: effects.OverflowQuery) {
+        case config_reload.capture(revisions, query.operation) {
+          Ok(revision) -> revision.hooks.overflow_preparation(query)
+          Error(Nil) -> planner.EmptyPreparation
+        }
+      },
+      context: fn(operation, messages) {
+        case config_reload.capture(revisions, operation) {
+          Ok(revision) -> revision.hooks.context(operation, messages)
+          Error(Nil) -> messages
+        }
+      },
+    ),
+  )
+}
+
+fn provider_timeout(surface: effects.ProviderSurface) -> Int {
+  case surface {
+    effects.ProviderSurface(timeout_ms:, ..)
+    | effects.PreparedProviderSurface(timeout_ms:, ..) -> timeout_ms
+  }
 }
 
 /// An observer resolver that watches nothing: every execution's output

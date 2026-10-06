@@ -125,3 +125,59 @@ pub fn validator_timeout_retains_the_last_value_and_pins_the_active_operation_te
   let _ = address.stop(namespace)
   let _ = simplifile.delete(file)
 }
+
+/// The same resolved source survives retargeting both kinds of alias.
+pub fn source_authority_ignores_retargeted_file_and_parent_symlinks_test() {
+  let selected_directory = path() <> "-directory"
+  let other_directory = path() <> "-other"
+  let assert Ok(_) = simplifile.create_directory_all(selected_directory)
+    as "the selected directory exists"
+  let assert Ok(_) = simplifile.create_directory_all(other_directory)
+    as "the other directory exists"
+  let real = selected_directory <> "/loom.toml"
+  let other = other_directory <> "/loom.toml"
+  let assert Ok(_) = simplifile.write(real, "selected")
+    as "the selected source exists"
+  let assert Ok(_) = simplifile.write(other, "other") as "another source exists"
+  let alias = path()
+  let parent_alias = path() <> "-parent"
+  let assert Ok(_) = simplifile.create_symlink(real, alias)
+    as "the explicit file alias exists"
+  let assert Ok(_) = simplifile.create_symlink(selected_directory, parent_alias)
+    as "the explicit parent alias exists"
+  let assert Ok(file_source) = config_reload.selected_source(alias)
+    as "the operator may explicitly select a file alias"
+  let assert Ok(parent_source) =
+    config_reload.selected_source(parent_alias <> "/loom.toml")
+    as "the operator may explicitly select a parent alias"
+  assert file_source == parent_source
+    as "all aliases select the same real path and boot bytes"
+  let assert Ok(_) = simplifile.delete(alias) as "the old alias is removed"
+  let assert Ok(_) = simplifile.create_symlink(other, alias)
+    as "the original alias now names another source"
+  let assert Ok(_) = simplifile.delete(parent_alias)
+    as "the old parent alias is removed"
+  let assert Ok(_) = simplifile.create_symlink(other_directory, parent_alias)
+    as "the original parent alias now names another directory"
+  assert config_reload.read(file_source.0) == Ok("selected")
+    as "watching and protection retain the original authority"
+  assert config_reload.read(parent_source.0) == Ok("selected")
+    as "a parent alias cannot retarget a trusted source either"
+}
+
+/// A FIFO has no writer: opening it before checking its type would block.
+pub fn startup_and_periodic_reads_refuse_a_fifo_within_the_deadline_test() {
+  let fifo = path() <> "-fifo"
+  let assert Ok(mkfifo) = ffi_os.find_executable("mkfifo")
+    as "the Unix fixture provides mkfifo"
+  let assert Ok(#(0, _)) = ffi_os.run_capture(mkfifo, [fifo], 2000)
+    as "the blocked-open fixture exists"
+  let started = ffi_os.system_time_ms()
+  assert config_reload.selected_source(fifo) == Error(Nil)
+    as "startup refuses nonregular configuration before opening it"
+  assert config_reload.read(fifo) == Error(Nil)
+    as "periodic reads refuse the same nonregular configuration"
+  assert ffi_os.system_time_ms() - started < 2000
+    as "both refusal paths finish within a bounded wall time"
+  let _ = simplifile.delete(fifo)
+}
