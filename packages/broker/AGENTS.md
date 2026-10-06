@@ -1158,3 +1158,25 @@ before allocating the outcome tree. It preserves the existing transport header
 semantics, including arbitrary field order and nonminimal encodings. Body
 semantics remain the caller's obligation. Ordinary capability frames retain
 their existing typed decoder.
+
+## Exact original Launch helper retirement
+
+`exec.prepare_borrowed_retirement(pool, helper, completed)` registers one original
+Borrowed inventory entry before dispatch. Its opaque `BorrowedRetirement` carries
+the same pool, helper and registration door into `exec.retire_borrowed`. Missing,
+foreign, stale and duplicate registration refuses; a lost registration reply
+withdraws the original borrow without dispatch or checkin. The completion
+callback runs only after the existing positive native boundary and the original
+helper owner's normal monitor exit. Abnormal exit retains uncertainty.
+
+`executor.start_with_retirement(config, seam)` supplies this additive seam without
+changing `ExecutorConfig`. `dispatcher_retiring_with_native_deadline` selects it
+for validated Launch; ordinary and Compile dispatch retain reuse. A retiring
+executor Row keeps its exact helper, relay and original caller monitor through
+Release, Abandon, relay loss and caller death. It cannot return that helper to
+Available between settlement and retirement. Pool scope closure preserves the
+same observer and proof grade.
+
+The native protocol is unchanged. Each Launch retires one helper and therefore
+pays for one helper restart. This adds no stronger descendant-containment or
+cgroup guarantee. See [exact-helper retirement](../../docs/architecture/launch-native-retirement.md).
