@@ -172,7 +172,8 @@ pub fn bool(flag: Bool) -> Value {
   msgpack.BoolValue(flag)
 }
 
-/// A list value.
+/// A list value. Each item must be a `report.Value`, so convert strings with
+/// `list.map(strings, report.string)` before passing them here.
 ///
 /// ## Examples
 ///

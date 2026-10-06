@@ -60,6 +60,22 @@ pub type Plan {
   )
 }
 
+/// Infers the configured server and project root from the explicit files.
+///
+/// Every source must still belong to the same server and root. Paths resolve
+/// against the session workspace, so worktree files must name that worktree.
+/// Use `Plan` directly when an exact server/root assertion is required.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let plan = lsp_sql.plan(["src/app.gleam"], [])
+/// // lsp_sql.collect(plan)
+/// ```
+pub fn plan(outlines: List(String), targets: List(Target)) -> Plan {
+  Plan(server: "", root: "", outlines:, targets:)
+}
+
 /// Scope and provenance that survive every SQL projection.
 pub type Metadata {
   Metadata(
@@ -212,11 +228,15 @@ pub type QueryLimit {
 ///
 /// The host admits at most four collections per invocation. Every capture is
 /// complete or refused: no truncation can turn an anti-join into a false claim.
+/// Prefer `plan(outlines, targets)` to infer scope from files. An explicit
+/// `Plan.server` is the configuration key (for example `go`), which may differ
+/// from its executable (`gopls`). Paths are workspace-relative, including files
+/// in nested worktrees; selecting a shell cwd does not move these paths.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// lsp_sql.collect(lsp_sql.Plan("gleam", ".", ["src/app.gleam"], []))
+/// lsp_sql.collect(lsp_sql.plan(["src/app.gleam"], []))
 /// ```
 pub fn collect(plan: Plan) -> Result(Observation, Error) {
   let targets =
@@ -267,6 +287,7 @@ pub fn metadata(observation: Observation) -> Metadata {
 /// quote it. Joining `targets` to `"references"` on `target_id = id` pairs each
 /// requested target with its references, and a LEFT JOIN with `WHERE
 /// r.target_id IS NULL` proves a requested target has none.
+/// File columns are named `path`, never `file`.
 ///
 /// ## Examples
 ///

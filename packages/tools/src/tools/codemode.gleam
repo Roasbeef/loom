@@ -798,7 +798,7 @@ fn lsp_sql_guidance(seams: Seams) -> String {
     })
   {
     True ->
-      "On a seam offering `cap/lsp_sql`, capture a bounded observation once, then join, aggregate or filter its facts with read-only SQL inside the program. "
+      "On a seam offering `cap/lsp_sql`, use lsp_sql.plan(outlines, targets) to infer the configured server and project root from explicit workspace-relative files, including worktree prefixes. Capture the bounded observation once, then query locally; SQL file columns are path, never file. Read cap://lsp_sql for the schema and examples. "
     False -> ""
   }
 }
