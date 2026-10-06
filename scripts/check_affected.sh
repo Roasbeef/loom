@@ -137,7 +137,9 @@ declared="$logs/declared-skips"
 : >"$declared"
 while IFS='|' read -r kind want marker why; do
 	case ${kind:-} in "" | \#*) continue ;; esac
-	if grep -ah 'SKIP' "$logs"/*.log | grep -Fq -- "$marker"; then
+
+	# Read the whole stream so a match cannot SIGPIPE its producer under pipefail.
+	if grep -ah 'SKIP' "$logs"/*.log | grep -F -- "$marker" >/dev/null; then
 		printf '%s|%s|%s|%s\n' "$kind" "$want" "$marker" "$why" >>"$declared"
 	fi
 done <.github/declared-skips
