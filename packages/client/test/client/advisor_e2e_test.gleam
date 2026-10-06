@@ -743,6 +743,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
   let assert Ok(here) = simplifile.current_directory()
     as "the test process must know where it is"
   serve.Settings(
+    evolution_profiles: None,
     peer_directory: None,
     first_prompt: None,
     codemode_sockets: None,

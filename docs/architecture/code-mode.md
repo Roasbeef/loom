@@ -1467,34 +1467,24 @@ Three caveats apply to running this today.
 
 ## Where code mode sits: the promotion ladder
 
-A code-mode program is the bottom rung of a trust ladder that runs from
-throwaway code to a change in Loom itself. The ladder explains why the
-same programming model reappears at every level; `docs/loom-design.md` §7
-covers it in depth.
+A code-mode program is the first draft of a durable capability. The governed
+loop is documented in [evolution](evolution.md), protocol-change 068 and design
+§7. Issue #807 supersedes the original three ladder issues.
 
-```
-L0  code-mode program     ephemeral, satellite-jailed, dies with the call
-L1  session skill         L0 saved as a durable, named, reusable entry;
-                          runs at L0 privileges
-L2  extension candidate   compiled against a wider but still
-                          capability-stubbed prelude; runs its tests in the
-                          sandbox, results attached
-L3  installed extension   after explicit human approval: hot-loaded into
-                          the harness ExtensionZone
-L4  core change           a pull request to Loom; ordinary review and
-                          release; never runtime-loaded
-```
+A named workspace program retains immutable source, its input schema and
+provenance. Each invocation takes fresh JSON, re-vets and recompiles from those
+bytes under the current caller's capabilities, and executes in a private jail.
+The compiler's artifact directory is protected from other sessions; granting
+that directory to the compiler and satellite does not grant it to capability
+calls. A failed author check cannot authorize selection.
 
-L0 is built; the rungs above it are design. Two properties are meant to
-hold all the way up. First, nothing self-promotes: moving a proven
-candidate to an installed extension requires a human decision, recorded
-durably. Second, the code keeps its shape as it climbs. An installed
-extension is an OTP actor implementing a typed behaviour, the same actor
-model `cap/actor` gives a jailed program at L0. A stateful helper
-prototyped as a program-scoped actor and proven against its tests becomes
-a supervised process in the harness when it is promoted, without being
-rewritten. A code-mode program is therefore both the fast path for one
-execution and the first draft of a durable capability.
+Session extensions use the existing typed tool and hook vocabulary. Native
+operator approval and generation-fenced selection publish one jailed generation
+at a time; replacement and rollback wait for witnessed retirement of the old
+native workers. The conversation stays in its original runtime. Exact-model
+prompt profiles are a separate data-only surface with independent rollout
+criteria and immutable session pins. None of these paths loads authored code
+into the harness VM.
 
 ### A satellite kept alive across calls
 

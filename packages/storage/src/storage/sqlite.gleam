@@ -275,6 +275,10 @@ pub fn busy_timeout(config: Config, ms: Int) -> Config {
 
 /// Why `open` refused or failed.
 pub type OpenError {
+  /// SQLite refused the admission write lock before any writer lease was read
+  /// or claimed. A bounded foreground caller may retry this fresh open.
+  AdmissionBusy
+
   /// Another writer holds an unexpired lease on this session file. Retry
   /// after it expires, or shut the other writer down.
   LeaseHeld(owner: String, expires_at_ms: Int)
@@ -414,7 +418,9 @@ fn initialize(
   migrations: List(Migration),
 ) -> Result(Int, OpenError) {
   use Nil <- result.try(set_busy_timeout(conn, config.busy_timeout_ms))
-  use Nil <- result.try(begin_immediate(conn) |> result.map_error(open_failed))
+  use Nil <- result.try(
+    begin_immediate(conn) |> result.map_error(admission_failed),
+  )
   let admitted = case admit(conn, config, now, migrations) {
     Ok(opened) ->
       commit_sql(conn)
@@ -439,6 +445,23 @@ fn initialize(
       let _ = release_lease(conn, config.owner, fence)
       Error(open_error)
     }
+  }
+}
+
+// Only BEGIN IMMEDIATE reaches this classification. Busy after lease claim,
+// migration or commit remains a failure with its original ownership meaning.
+fn admission_failed(fail: Fail) -> OpenError {
+  case fail {
+    FailSql(sqlight.SqlightError(code: sqlight.Busy, ..))
+    | FailSql(sqlight.SqlightError(code: sqlight.BusyRecovery, ..))
+    | FailSql(sqlight.SqlightError(code: sqlight.BusySnapshot, ..))
+    | FailSql(sqlight.SqlightError(code: sqlight.BusyTimeout, ..)) ->
+      AdmissionBusy
+    FailSql(_)
+    | FailCorrupt(_)
+    | FailStale(_)
+    | FailLease(_)
+    | FailUnknownEntry(_) -> open_failed(fail)
   }
 }
 

@@ -1,50 +1,10 @@
-# Only the ordinary Linux gate uses this declaration. The delegated jail job
-# runs the same shipped fixture with its verified enforcement prerequisites
-# and the default strict census, where this marker remains undeclared.
-# The census also rejects this declaration if the skip stops occurring.
-declared|linux|SKIP shipped multiplayer live tool: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated jail job must execute the live-tool subsection without this waiver.
-
-# The shipped background-jobs fixture runs unattended jailed processes and
-# asks the same measured question through the same probe. On a runner whose
-# helper cannot enforce a policy, the scenarios are not weaker — they are
-# different — so the file declines rather than pretending.
-declared|linux|SKIP shipped jobs live tools: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the jail job's "Shipped background jobs with delegated enforcement" step run every jobs scenario for real, the latter under the pid namespace the fixture is written against.
-
-# The state-root masking fixture asks whether a jail actually masks the
-# daemon's secrets while leaving the workspace readable. That is a question
-# only a real jail can answer, so on a runner whose helper cannot enforce a
-# policy the fixture declines rather than asserting against an unenforced
-# execution. Its resolution half — which entries the daemon masks, and the
-# refusal of a workspace inside one — is pure and runs everywhere.
-declared|linux|SKIP daemon state-root masking: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate runs the jailed readings for real, and the pure resolution assertions in the same file run on every runner without this waiver.
-
-# The shipped confinement fixture reads the daemon's own credentials from a
-# jailed `bash` call and asserts the secret did not come back. Without a
-# helper that enforces a policy the reads succeed, which measures the absence
-# of a jail rather than the masking, so the fixture declines. The macOS gate
-# runs it against a real Seatbelt profile. No hosted Linux job runs it under
-# bubblewrap; the local Linux sign-off gate, which has a delegated cgroup
-# base, is where the bwrap half is exercised.
-declared|linux|SKIP shipped confinement: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate runs the jailed readings for real, and the local Linux sign-off gate runs the bwrap half.
-
-# Joined terminal and worktree observations read a real Git workspace through
-# the broker. The dedicated observation steps require every assertion to run
-# with enforced helpers and an empty skip declaration set on both platforms.
-declared|linux|SKIP joined terminal observations: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail and hard macOS terminal-observation steps run the joined queue, worktree, and completion scenario without this waiver.
-declared|linux|SKIP worktree observation: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail and hard macOS terminal-observation steps run every worktree fixture without this waiver.
+# The client bucket now delegates memory/pid controllers and joins the
+# delegated supervisor before testing. Its platform-enforcement waivers
+# are no longer necessary; all client native fixtures must run.
 
 # The ordinary fast bucket does not install bwrap. The jailed Linux lane
 # installs it and runs this exact tools test without a skip declaration.
 declared|linux|SKIP git worktree: helper has no filesystem enforcement|The ordinary tools bucket cannot enforce the outside write; the jailed Linux lane runs the real Git worktree approval fixture with bubblewrap.
-
-# The jailed language-server fixture runs a real `gleam lsp` through the
-# helper under `PlatformEnforcement`, the demand ADR-015 fixes for a lease.
-# The helper reports what it enforced only in the exit report, so on a
-# runner without a delegated cgroup v2 base the whole conversation still
-# runs through the jail's mounts and the enforcement claim is declined at
-# the settlement. The policy, lease-cap and relay assertions in the same
-# file run on every runner without this waiver.
-declared|linux|SKIP lsp jailed gleam lsp: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement (cgroup v2); the conversation, the write containment and the lease release still run, and a runner with a delegated cgroup base exercises the enforced settlement without this waiver.
 
 # The language-server manager's `gopls` fixture drives a real `gopls`
 # through the jail on a two-package Go module. It is feature-detected: a

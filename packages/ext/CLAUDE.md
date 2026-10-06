@@ -270,3 +270,61 @@ harness minted for that invocation.
 - [docs/architecture/code-mode.md](../../docs/architecture/code-mode.md) —
   the three seams and what each confines.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Stateful jailed upgrades
+
+Protocol-change/069 adds the opt-in `ext/live.Definition`: an initial JSON
+state document and an invocation callback returning the next document and
+ordinary reply. A declared `[live]` manifest names the entry, pure migration,
+stable message boundary, current state version, accepted source versions,
+pause deadline and state byte ceiling. Existing extensions keep replacement
+semantics. The generated entry alone imports `ext/internal/live_runtime`;
+authored source cannot import trusted internals, Weft or OTP.
+
+`live_actor` owns current state, callbacks and the stable PID through Weft's
+standard `sys` migration support. Callbacks and migrations run in bounded
+isolated tasks; refused, crashed, timed-out or malformed results cannot
+publish state. `live_runtime` owns prepare/commit/abort custody. Preparation
+holds a temporary compensation bundle while native catalogue publication is
+pending; expiration restores it. Published rollback invokes the target
+migration on current state, retaining work completed since publication.
+
+The trusted satellite-only FFI provides standard `sys` operations, fixed-slot
+export lookup and atomic BEAM loading. It exists because these loader and
+system operations have no Gleam or Weft caller API. Two reusable namespaces
+retain a fixed authored module set, at most sixteen modules and 2 MiB of
+compiled bytes. Both native and satellite parsers bound declared expanded
+literal tables at 8 MiB per module before atomizing APIs. The controller
+reserves a cumulative vocabulary of at most 4096 UTF-8 atom names and
+128 KiB before loading, including failed attempts. Inactive code must pass
+soft-purge checks; forced purge is never used. No authored code loads in the
+harness VM. Ext now depends on pinned Weft, gleam_erlang and gleam_otp for
+this trusted satellite runtime; the safe author surface exposes none of them.
+
+Literal atom accounting includes constructors nested in compressed `LitT`
+terms, not only names in `AtU8`. Host and satellite use byte-identical pure
+ETF walkers, pinned by the client freeze test. The walk admits ordinary
+scalar/list/tuple/map/export literals with at most 8192 entries, 131072 nodes
+and depth 128; unsupported runtime identities and nested compression refuse
+before any atomizing API. Native zlib inflation uses `safeInflate` and checks
+both the actual 8 MiB output ceiling and the declared expanded length.
+No literal term is passed to `binary_to_term`. The only new host FFI entry
+is `codemode_ffi.literal_bytes/1`, reached through
+`codemode/internal/ffi_zlib`; Gleam and Weft expose no bounded zlib wrapper.
+
+The trusted controller keeps a transition in `Cleaning`, `Prepared`, or
+`Resuming(decision)` until the original actor acknowledges its system operations.
+Custody is installed before suspension. Once a publish or compensation reaches
+resumption, a lost acknowledgement retries that same decision; it cannot apply
+a second migration over work the resumed actor has already accepted. Definition
+evaluation and actor inspection use bounded weft preparation as well.
+
+`live_runtime.Controller` and `Sys` are internal trusted capabilities. Production
+`start` supplies the actual OTP operations, and `serving` calls the same `ask`
+entry point that the controller tests drive. The tests execute real system
+operations before dropping acknowledgements, and inspect an actual queued
+invocation in the suspended actor's mailbox. These internal modules remain
+excluded from authored imports. The controller exposes its original PID only to
+trusted callers. Each controller fixture monitors and retires both that process
+and the component before returning, so normal test-process exit cannot leave
+a periodic controller alive.

@@ -1,5 +1,96 @@
 # client
 
+## Governed evolution
+
+`client/evolution/record` defines source-only candidates, content-addressed
+evidence and complete generation-fenced selections. `store` owns a separate
+native catalogue through existing generated storage transactions; caller scope,
+operator authority, current build/seam/evaluator identity, approval sequence and
+revocation sequence all participate in admission. Authored fact writes cannot
+reach this authority. `candidate` captures sources through the caller's jailed
+capability path, and `evaluate` attaches actual author-check observations.
+Canonical catalogue borrowers contend on the existing fenced SQLite lease.
+`store` waits only for typed pre-open lock-busy or held-lease refusal, using bounded `weft/poll`
+and a short native busy timeout. It never replays admitted work or retirement.
+Native selection admission rechecks expiry before CAS and recovers an existing
+exact receipt before applying that check.
+
+`live` serializes the complete promoted hook/tool fold with activation. `hook`
+stages a privately compiled jailed generation and publishes it after native
+retirement of the predecessor. `native` retains failed cleanup capabilities;
+`retirement.Task` carries only the remaining native obligation, so successful
+pool close is not replayed when directory deletion needs another attempt.
+A report, actor exit or deadline is not a worker-exit witness. `control` admits
+bounded queued transitions, while `queue` uses managed tasks and reconstructs
+committed receipts from the durable selection before reporting failure.
+`instance_owner` holds Evolution custody through session retirement. Legacy
+`host.adopt_task` transfers one physical teardown to the host;
+`retire_task` transfers an acknowledged failure's remaining task before HostDown.
+Missing native reports remain unconfirmed.
+
+The model sees stable `evolution_propose`, `evolution_test`,
+`evolution_inspect`, `evolution_catalogue`, `evolution_invoke` and
+`evolution_trace` doors. Native
+operator commands arrive through authenticated `protocol.Evolution` bindings;
+payload fields cannot choose authority or principal. Observers can read only.
+`loomd evolution` and the `loom evolution` forwarder reuse authenticated daemon
+discovery and the resident session websocket; they never open a session.
+`page` fragments large canonical inspections, preserving complete source and
+evidence bytes within the existing control frame.
+
+`prompt` captures exact provider/model/API overlays and `system_prompt` pins
+selected bytes at session assembly. `tasks` retains independently admitted
+fixture and expected-file bytes. `rollout` and `rollout_host` run fresh ordinary
+coding runtimes with native aggregate guards and actual composition digests;
+unknown billing reservations remain debited across both comparison arms.
+`fixture` scores files only after witnessed retirement. `trace` retains bounded,
+scrubbed native branch observations and operator outcomes. Read
+[the evolution architecture](../../docs/architecture/evolution.md) and
+[protocol-change 068](../../protocol-change/068-runtime-evolution.md).
+
+
+## State-preserving component upgrades
+
+`evolution/live.Generation.mode` distinguishes `ReplacementOnly` from
+`Stateful(prepare)`. A `PreparedUpgrade` carries the successor generation,
+publication callback and unpublished compensation callback. The live owner
+serializes the selection transaction with complete invocation folds.
+`evolution/stateful` retains the existing jailed hosting and retirement
+capabilities while compiling the approved successor into an inactive fixed
+namespace. Its reserved control calls prepare, publish or abort the exact
+transition. A published downgrade migrates current state; it cannot restore
+an old snapshot after new work has been acknowledged.
+
+`extension/live_contract` decodes the optional `[live]` table and checks the
+migration module's transitive pure import closure. `extension/install` builds
+the trusted live entry point after normal source admission. Neither authored
+source nor an extension approval grants access to the native core loader.
+
+`upgrade/control` is a supervised sibling of `scratch`. Its native
+`evolution/control.Seam` accepts only `access.Owner`, queues one managed
+operation at a time, and exposes receipts through `core_status`. `serve`
+composes this door with the optional authored-evolution door. Artifact fetching
+and component suspension run outside the gateway actor; an acknowledged
+operation survives the CLI connection that submitted it.
+
+`upgrade/source.Artifact` is opaque. The production resolver accepts only the
+fixed Loom release origin and verifies manifest identity, module size and
+SHA-256 before constructing it. `upgrade/slots` owns the VM-wide fixed module
+namespaces and tracks actual scratch actor PIDs. Different bytes cannot
+replace a slot still used by another actor. `upgrade/controller` retains
+suspend/resume custody and uses weft managed tasks for migration. The typed
+`upgrade/state` ABI preserves scratch entry limits, accounting, mailbox and
+inbox while replacing reviewed callbacks. A fresh `Permit` binds expected and
+target identities to one transition and deadline.
+
+The minimal `internal/ffi_upgrade` boundary supplies verified Gun transport,
+BEAM module loading and OTP system calls that the Gleam libraries do not
+expose. It accepts fixed component slots rather than arbitrary module names.
+Read [component upgrades](../../docs/architecture/live-upgrades.md) and
+[protocol 069](../../protocol-change/069-state-preserving-component-upgrades.md)
+for the authority boundary, operator workflow and acceptance criteria.
+
+
 ## LSP query handle ownership
 
 `lsp/manager.Manager` retains reachability, workspace/server identity,

@@ -205,7 +205,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:4030`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:4056`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -622,7 +622,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:830`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:2912`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:2936`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -650,7 +650,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:5871`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:5938`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -1469,7 +1469,7 @@ by a total tar reader that refuses links, devices, absolute paths, `..`
 and anything outside a printable path alphabet.
 
 Then the tree is *pruned*, and this is the step that reads oddly until
-you see what it prevents. `installed_subset` (`vet/package.gleam:201`)
+you see what it prevents. `installed_subset` (`vet/package.gleam:277`)
 keeps `src/**/*.gleam`, `schema/**`, `skills/**`, `extension.toml`,
 `gleam.toml`, `README*` and `LICENSE*` and drops everything else — the
 tests, the `.gitignore`, the CI workflow, `build/`. A repository is not
@@ -1581,14 +1581,13 @@ processes and lookups are local-speed ETS reads
 (`events/internal/ffi_pg.gleam`). Re-implementing membership as a Gleam
 actor would lose `pg`'s monitor-based crash cleanup.
 
-And two honest omissions. **Hot code loading is not implemented.** The
-design names it as the mechanism for the self-improvement loop; no
-release-upgrade machinery, no upgrade handling, and no extension zone
-exists in the tree. The single `code_change/3` in the source is the
-SIGTERM relay's gen_event boilerplate — a no-op
-`code_change` (`client_ffi.erl:257`). **Distribution is not used
-either**: the bus is a single node's, and the control-plane half of the
-two-channel doctrine has no code behind it yet.
+**Component upgrades use the BEAM system-message boundary.** Weft's opt-in
+migration support changes an actor's state and callbacks together. Loom's
+[component upgrade work](architecture/live-upgrades.md) adds verified code
+loading, bounded suspension and current-state downgrade for jailed extensions
+and a reviewed scratch component. The acceptance record distinguishes that
+work from an arbitrary module or Erlang runtime upgrade. Authored modules
+remain outside the harness VM.
 
 One more thing is deliberately *not* taken from the BEAM. Delayed wakeups
 go through an injected `effects.Timers` seam rather than the VM's timer
@@ -1695,6 +1694,7 @@ For the planes in depth: `docs/architecture/durability.md`,
 `orchestration.md`, `effects.md`, `client.md`, `terminal.md`,
 `web-view.md`, `messaging.md`,
 `events.md`, `models.md`, `code-mode.md`, `mcp.md`, `extensions.md`,
+[governed runtime evolution](architecture/evolution.md),
 `advisor.md`, `simulation.md`. For
 intent,
 `docs/loom-design.md`; for the frozen interfaces and normative

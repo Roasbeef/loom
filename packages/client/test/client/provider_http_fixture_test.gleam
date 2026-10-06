@@ -363,7 +363,7 @@ pub fn provider_http_fixture_rejects_error_wrong_text_and_extra_result_content_t
             json.Bool(True),
           ),
         ],
-        "tool result requires an ID and one successful content block",
+        "tool result failed: fixture-call\ndone",
       ),
       #(
         [

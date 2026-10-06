@@ -435,8 +435,30 @@ constructing a jail or admitting a command. The framed ExecProto is unchanged.
 
 ### WP-M `ext` — skills & extension zone
 
-**Scope**: L1 skill store (named code-mode programs as entries; invoke-by-name re-vets + re-compiles from source); L2 candidate pipeline (extension prelude allowlist; test-in-jail runner attaching results durably); L3: extension behaviours (`ExtTool`, `ExtHook`, `ExtProjection`), harness-side compile, `code:load_binary` under `ext_{name}_{vsn}` names, supervised time-boxed invocation wrappers, unload/rollback, durable load/unload events, org policy for auto-approval of signed sources.
-**Exit**: promotion-ladder integration test (agent-authored fixture tool goes L0→L3 and serves a live tool call; rollback restores prior version mid-session); a hostile L2 candidate (attempts FFI, oversleeps, leaks) is rejected/killed at each defense layer; TCB freeze test — extension API cannot reach StorageWriter/broker internals (compile-time visibility + runtime name checks).
+Protocol-change 067 and ADR-007's 2026-10-04 addendum govern this work
+package. Issue #807 supersedes #30, #31 and #32. Authored execution remains
+outside the harness VM under Rule Zero.
+
+**Scope**: immutable, source-only named workspace programs, session extension
+candidates and exact-model prompt profiles; real jailed author checks with
+content-addressed durable evidence; native operator approval; generation-fenced
+selection, revocation and rollback. Programs re-vet and recompile under each
+caller's current capabilities. Session tools and hooks run in a dedicated jailed
+satellite whose retirement must be witnessed before a replacement is published.
+Prompt profiles are immutable session pins composed only after the actual
+provider, model and API resolve. Independent prompt evaluation runs the ordinary
+coding operation in fresh fixture sessions, against operator-admitted criteria,
+with aggregate model budgets and witnessed cleanup. Storage reuses the existing
+generated SQL API and native-owned FactCustom namespaces.
+
+**Exit**: an agent authors an extension, its tests produce durable evidence, an
+operator approves it, the same running session serves its new behavior, and
+rollback restores the previous version without losing the conversation or
+leaking workers. Real program and prompt fixtures exercise the same native
+production paths. Adversarial tests prove source admission, scope and approval
+fences, stale-generation refusal, native cleanup custody and exact-target
+composition. No authored resident module loader, automatic signed-source
+approval or authored projection behavior is part of this implementation.
 
 ### WP-N `cap/strand` — the orchestration seam *(after J; independent of I's lsp/dap and of M)*
 

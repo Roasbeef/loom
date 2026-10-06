@@ -422,6 +422,24 @@ pub fn put_fact_refuses_the_summary_prefix_test() {
   process.kill(rt.tree.supervisor)
 }
 
+// An authored proposal cannot manufacture an approval or adoption receipt by
+// writing the model-visible blackboard. Both ordinary and conditional writes
+// refuse the native evolution namespace while its native transaction door works.
+pub fn evolution_authority_facts_refuse_model_writes_test() {
+  let rt = fact_runtime()
+  let key = "evolution/approval/candidate"
+  assert api.put_fact(rt, key, json.String("forged"))
+    == Error(api.ReservedFactKey(key))
+  assert api.put_fact_expecting(rt, key, json.String("forged"), expected: None)
+    == Error(api.ReservedFactKey(key))
+  let assert Ok(Nil) = api.put_reserved_fact(rt, key, json.String("native"))
+    as "native approval ownership remains available"
+  let assert Ok(listed) = api.facts(rt, prefix: None)
+    as "the model can still read its ordinary blackboard"
+  assert !list.any(listed, fn(cell) { cell.0 == key })
+  process.kill(rt.tree.supervisor)
+}
+
 // The goal loop's one cell is closed to the model's own door.
 //
 // `goal/state` is the session's persistent objective with its status

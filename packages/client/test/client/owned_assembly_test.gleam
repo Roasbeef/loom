@@ -66,6 +66,7 @@ pub fn settings() -> serve.Settings {
       lsp_servers: [],
     )
   serve.Settings(
+    evolution_profiles: None,
     peer_directory: None,
     first_prompt: None,
     codemode_sockets: None,

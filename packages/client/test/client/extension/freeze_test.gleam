@@ -148,7 +148,7 @@ const gleam_trusted_packages = [
 /// capability prelude, the extension prelude, and the shared vocabulary
 /// `cap` itself depends on. This is the whole of the compile-time
 /// surface an extension author can name.
-const extension_facing_packages = ["cap", "core", "ext"]
+const extension_facing_packages = ["cap", "core", "ext", "weft"]
 
 // --- Mechanism one: the package graph --------------------------------------
 
@@ -194,7 +194,7 @@ pub fn the_resolved_manifest_holds_no_trusted_package_test() {
 }
 
 /// The build root an extension is actually compiled in holds the same
-/// three packages and no fourth.
+/// four reviewed source packages under protocol-change/069.
 ///
 /// `codemode/seed` is the offline seed the jailed toolchain builds
 /// against: whatever is vendored there is what an extension's source can
@@ -203,14 +203,14 @@ pub fn the_resolved_manifest_holds_no_trusted_package_test() {
 ///
 /// It is the last word on the loom surface and not on the whole of it.
 /// `cap` names `gleam_erlang` and `gleam_otp` as runtime dependencies,
-/// so both resolve into the build root beside the three, and a body
+/// so both resolve into the build root beside those packages, and a body
 /// importing `gleam/erlang/process` or `gleam/otp/actor` compiles. What
 /// refuses those names is the closed vetting allowlist, which is
 /// mechanism two — so on the standard-library half of the surface,
 /// mechanism two is the load-bearing gate rather than a second belt.
 /// `a_body_reaching_into_the_base_is_refused_test` carries both names
 /// for that reason.
-pub fn the_offline_build_root_vendors_three_packages_test() {
+pub fn the_offline_build_root_vendors_four_packages_test() {
   let vendored = list.map(seed.default_vendored(), fn(pair) { pair.0 })
   assert list.sort(vendored, string.compare)
     == list.sort(extension_facing_packages, string.compare)
@@ -288,6 +288,9 @@ pub fn the_preludes_ship_only_reviewed_foreign_sources_test() {
   assert list.sort(foreign, string.compare)
     == [
       "cap_ffi.erl",
+      "ext_live_code.erl",
+      "ext_live_definition.erl",
+      "ext_live_sys.erl",
       "loom_cap_lsp_sql.erl",
     ]
 }
@@ -403,11 +406,11 @@ pub fn the_extension_allowlist_is_pinned_test() {
   let expected = [
     "cap/actor", "cap/execution", "cap/peer", "cap/fs", "cap/git", "cap/job",
     "cap/kv", "cap/net", "cap/proc", "cap/report", "cap/schedule", "cap/search",
-    "cap/task", "ext", "ext/hook", "ext/memory", "gleam/bit_array", "gleam/bool",
-    "gleam/dict", "gleam/dynamic", "gleam/dynamic/decode", "gleam/float",
-    "gleam/function", "gleam/int", "gleam/json", "gleam/list", "gleam/option",
-    "gleam/order", "gleam/pair", "gleam/result", "gleam/set", "gleam/string",
-    "gleam/string_tree", "gleam/uri",
+    "cap/task", "ext", "ext/hook", "ext/live", "ext/memory", "gleam/bit_array",
+    "gleam/bool", "gleam/dict", "gleam/dynamic", "gleam/dynamic/decode",
+    "gleam/float", "gleam/function", "gleam/int", "gleam/json", "gleam/list",
+    "gleam/option", "gleam/order", "gleam/pair", "gleam/result", "gleam/set",
+    "gleam/string", "gleam/string_tree", "gleam/uri",
   ]
   assert both_differences(policy.allowed_imports(policy.extension()), expected)
     == #([], [])
@@ -432,7 +435,7 @@ pub fn the_extension_allowlist_is_pinned_test() {
 /// module admissible on the resident seam, which is the actual bug. This
 /// test says which list is wrong.
 ///
-/// Today the answer is `ext/memory`, which reaches
+/// The answer includes `ext/memory`, which reaches
 /// `cap/internal/{channel, dispatch, wire}`; `ext` and `ext/hook` are the
 /// typed vocabulary and import no capability at all.
 pub fn the_authority_list_is_what_the_tree_says_test() {
@@ -661,4 +664,64 @@ fn refused_naming(result: VetResult, rule: vet.Rule, needle: String) -> Bool {
         rejection.rule == rule && string.contains(rejection.detail, needle)
       })
   }
+}
+
+/// Protocol 069 admits only these three satellite-private upgrade bridges.
+/// Their exact exports keep the loader, migration call and sys operations
+/// outside the authored source seam; no generic module-path loader is exposed.
+pub fn live_upgrade_bridges_are_private_and_bounded_test() {
+  let root = repository_root() <> "/packages/ext/src/"
+  assert string.contains(
+    read_file(root <> "ext_live_code.erl"),
+    "-export([load/3, retire/1]).",
+  )
+  assert string.contains(
+    read_file(root <> "ext_live_definition.erl"),
+    "-export([definition/1, change/1, migrate/3]).",
+  )
+  assert string.contains(
+    read_file(root <> "ext_live_sys.erl"),
+    "-export([suspend/2, change/3, resume/2, now/0]).",
+  )
+  assert list.all(
+    [
+      "ext/internal/ffi_live_code",
+      "ext/internal/ffi_live_definition",
+      "ext/internal/ffi_live_sys",
+      "ext/internal/live_actor",
+      "ext/internal/live_runtime",
+      "ext/internal/literal_atoms",
+      "weft/actor",
+      "weft/upgrade",
+    ],
+    fn(module) {
+      case
+        vet.vet(
+          "import " <> module <> "\npub fn run() { Nil }",
+          policy.extension(),
+        )
+      {
+        vet.Rejected(_) -> True
+        vet.Passed(_) -> False
+      }
+    },
+  )
+}
+
+/// Both byte walkers must stay identical without importing harness packages.
+pub fn literal_atom_walkers_have_exact_source_parity_test() {
+  let root = repository_root() <> "/packages/"
+  assert read_file(root <> "codemode/src/codemode/literal_atoms.gleam")
+    == read_file(root <> "ext/src/ext/internal/literal_atoms.gleam")
+    as "host and satellite inspect the exact same ETF byte grammar"
+  assert !string.contains(
+    read_file(root <> "ext/src/ext_live_code.erl"),
+    "binary_to_term(",
+  )
+    as "satellite admission cannot intern literal atoms before reserving them"
+  assert !string.contains(
+    read_file(root <> "codemode/src/codemode_ffi.erl"),
+    "binary_to_term(",
+  )
+    as "host admission cannot intern literal atoms"
 }

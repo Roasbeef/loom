@@ -37,7 +37,7 @@
 ////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
 ////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
 ////   65722a205812d78ae90cfb0f93e804bb2d3da1be02500c88f4607d824964c320  packages/cap/src/cap/proc.gleam
-////   007692391de90b5df269341bf5f6d6393de56c6a95ad2d7cbc4159491f42a976  packages/cap/src/cap/report.gleam
+////   1338296919b1c6fca5bc657f38147f426fbcb631eed6f1a0559348aee42476d0  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   3156b1ffaca196b1fec58975df71e52158b8ee298b2f1b36a4cbe9df72de3f64  packages/cap/src/cap/schedule.gleam
 ////   df1e81353fbcfef3ec434f48869e35070f1ab79d0cc1354f922fd46ccc652a00  packages/cap/src/cap/search.gleam
@@ -46,7 +46,7 @@
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   20e291637a68e2d484bd4a17e9b825c59f2c22f439f00f6482af0d26aafafadd  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): df0f6850afe0b3e6c2094aeb8e8e6400f494016db3b9b65520df7ed6103642a8
+//// Body digest (every line after the marker): c08f754153a75ed5caa3afae2b31ab40245f4c51ac6e9063d9e78ee0dc36fc24
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1374,6 +1374,8 @@ pub type ReportError {
 }
 /// A value's boolean, or `Error(Nil)` when it is not one.
 pub fn as_bool(Value) -> Result(Bool, Nil)
+/// Reads a binary payload without casting an untrusted wire term.
+pub fn as_bytes(Value) -> Result(BitArray, Nil)
 /// A value's floating-point number, or `Error(Nil)` when it is not one.
 /// An int is *not* accepted, the mirror of `as_int`'s refusal of a float:
 /// the two tags are distinct on the wire, and a reader that widened one
@@ -1391,6 +1393,8 @@ pub fn as_list(Value) -> Result(List(Value), Nil)
 pub fn as_string(Value) -> Result(String, Nil)
 /// A boolean value.
 pub fn bool(Bool) -> Value
+/// Wraps compiled artifact bytes for trusted satellite control transport.
+pub fn bytes(BitArray) -> Value
 /// Parses JSON into the same structured value used by notes and child
 /// results. Rejects duplicate object keys, excessive nesting, and
 /// trailing input.

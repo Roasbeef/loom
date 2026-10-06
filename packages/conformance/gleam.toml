@@ -17,7 +17,7 @@ tools = { path = "../tools" }
 client = { path = "../client" }
 prompt = { path = "../prompt" }
 telemetry = { path = "../telemetry" }
-weft = "== 0.4.5"
+weft = { git = "https://github.com/Roasbeef/weft.git", ref = "f076c0661518ce9432cc6ff874b1ece71edbd9b7" }
 simplifile = ">= 2.0.0 and < 3.0.0"
 
 [dev_dependencies]

@@ -186,6 +186,7 @@ import client/blocksummary
 import client/catalog
 import client/daemon/transfer
 import client/directories
+import client/evolution/control as evolution_control
 import client/goal_pending
 import client/goalcommand
 import client/grants
@@ -361,6 +362,9 @@ pub type Options {
     /// commands answer `unsupported`, because no advisor means no
     /// reviewer to judge the goal's completion.
     goal_control: Option(goalcommand.Seam),
+    /// Authenticated evolution inspection and operator transitions. The seam
+    /// rechecks scope before touching the shared catalogue or live owner.
+    evolution: Option(evolution_control.Seam),
     /// The advisor actor's own notice of an aborted primary run, called
     /// by the `abort` command with the operation it just marked
     /// cancelled. An aborted run never reaches the run-end hook the
@@ -470,6 +474,8 @@ type State {
     effect_abort: Option(fn(OpId) -> Nil),
     // The operator's goal commands, when the host wired an advisor.
     goal_control: Option(goalcommand.Seam),
+    // The connection's native identity crosses this seam separately from JSON.
+    evolution: Option(evolution_control.Seam),
     // The advisor actor's abort notice, when the host wired an advisor.
     goal_abort: Option(fn(OpId) -> Nil),
     // The model catalogue, when the host configured one.
@@ -516,6 +522,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     directories: None,
     effect_abort: None,
     goal_control: None,
+    evolution: None,
     goal_abort: None,
     worktree_diff: None,
     live_jobs: None,
@@ -763,6 +770,21 @@ pub fn with_goal_abort(options: Options, notice: fn(OpId) -> Nil) -> Options {
 ///
 pub fn with_goal_control(options: Options, seam: goalcommand.Seam) -> Options {
   Options(..options, goal_control: Some(seam))
+}
+
+/// Supplies the host-owned evolution control door. Socket arguments never
+/// supply the authority passed to this door.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_evolution(options, control)
+/// ```
+pub fn with_evolution(
+  options: Options,
+  seam: evolution_control.Seam,
+) -> Options {
+  Options(..options, evolution: Some(seam))
 }
 
 // Whether a connection has completed the `subscribe` handshake. It gates three
@@ -1093,6 +1115,7 @@ fn start_with_delivery(
         entry_strand: dict.new(),
         effect_abort: options.effect_abort,
         goal_control: options.goal_control,
+        evolution: options.evolution,
         goal_abort: options.goal_abort,
         catalog: options.catalog,
         registered_tools:,
@@ -2110,6 +2133,7 @@ fn network_command(
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
     | protocol.SetConfig(..)
+    | protocol.Evolution(..)
     | protocol.ListSchedules
     | protocol.CancelSchedule(..)
     | protocol.UnknownCommand(..) -> run_command(state, connection, id, command)
@@ -2865,6 +2889,8 @@ fn observer(state: State, connection: Int) {
 
 fn read_only(command: Command) {
   case command {
+    protocol.Evolution(action, _) ->
+      list.contains(["catalogue", "inspect", "evidence", "status"], action)
     protocol.Subscribe(..)
     | protocol.CatchUp(..)
     | protocol.SnapshotNext(..)
@@ -4400,6 +4426,45 @@ fn read_goal(state: State, connection: Int, id: Int) -> State {
 // the reply protocol 044 §7 fixes — and refused worded when the seam is
 // absent: no advisor means no reviewer, and a goal without its judge is
 // not a state the operator can steer.
+// Catalogue transitions receive the binding that passed admission. They never
+// derive an actor or a role from candidate provenance or socket arguments.
+fn evolution_command(
+  state: State,
+  connection: Int,
+  id: Int,
+  action: String,
+  arguments: JsonValue,
+) -> State {
+  let outcome = {
+    use seam <- result.try(
+      state.evolution
+      |> option.to_result("the evolution plane is unavailable"),
+    )
+    use link <- result.try(
+      dict.get(state.connections, connection)
+      |> result.replace_error("evolution connection is unavailable"),
+    )
+    let #(authority, principal) = case link.authentication {
+      Authenticated(binding, ..) -> #(binding.authority, binding.principal.id)
+      HostFixture -> #(access.Owner, "host-fixture")
+    }
+    seam.command(authority, principal, action, arguments)
+  }
+
+  case outcome {
+    Error(reason) ->
+      reply_error(state, connection, id, protocol.code_bad_request, reason)
+    Ok(board) ->
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.EvolutionSnapshot(board)),
+      )
+  }
+  state
+}
+
 fn goal_command(
   state: State,
   connection: Int,
@@ -4623,6 +4688,8 @@ fn run_command(
     protocol.BlockSummariesGet(blocks:), Subscribed ->
       read_block_summaries(state, connection, id, blocks)
     protocol.GoalGet, Subscribed -> read_goal(state, connection, id)
+    protocol.Evolution(action, arguments), Subscribed ->
+      evolution_command(state, connection, id, action, arguments)
     protocol.GoalSet(objective:, token_budget:, check:), Subscribed ->
       goal_command(
         state,

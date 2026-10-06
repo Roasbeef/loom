@@ -163,6 +163,31 @@ gateway enforces the page's role like any other attachment. Without
 `--ui`, every `/ui` path is a 404 and the control `hello` has no `ui`
 field.
 
+## Governed runtime evolution
+
+`client/evolution` owns the authoring-to-publication loop. A model proposes
+immutable source and runs jailed author checks; a native operator inspects
+the retained evidence and approves the exact candidate. The live owner then
+stages a replacement, retires its predecessor's native helpers and commits
+the selection. Rollback selects earlier approved source under a new
+generation while preserving the session's conversation.
+
+The model's tools never confer approval authority. `loomd evolution` and
+the `loom evolution` forwarder attach to an already resident session and
+use the authenticated connection's principal. A queued selection receipt
+requires a status lookup before it can be treated as publication.
+
+This host also selects named workspace programs and pins exact-model prose
+profiles for new sessions. The catalogue, custody rules, module map and
+operator workflow are in [the evolution architecture](../../docs/architecture/evolution.md).
+
+Opted-in components also have a state-preserving upgrade path. Jailed
+extensions use explicit JSON-state migration; reviewed scratch implementations
+use a fixed typed ABI inside the harness. `loom evolution core_status`,
+`core_upgrade` and `core_downgrade` are owner-only controls for the latter.
+See [component upgrades](../../docs/architecture/live-upgrades.md) for the
+contract, current implementation status and acceptance evidence.
+
 ## A tour of the modules
 
 Paths are relative to `src/`; `client/escalate` is
@@ -199,6 +224,8 @@ Paths are relative to `src/`; `client/escalate` is
   `client/distill` is the pipeline that fills that memory.
 - `client/extension/*` is `loom ext`: installing, recording and dispatching
   extensions.
+- `client/evolution/*` retains candidates and evidence, admits native
+  controls, owns live generations and runs independent model trials.
 - `client/daemon/ui_sessions`, `ui_http`, `ui_socket` and `ui_relay` are
   the web view's tickets, request checks, page socket and gateway relay.
 
@@ -232,6 +259,9 @@ The `daemon_shipped_*` and `tui_shipped_*` tests exercise a built
 `scripts/e2e_client_bootstrap.sh` and the signoff set it.
 
 ## Reading further
+
+- [`docs/architecture/evolution.md`](../../docs/architecture/evolution.md):
+  governed authoring, approval, publication, evaluation and rollback.
 
 - [`CLAUDE.md`](CLAUDE.md): key types, real dependency edges, actor and
   wire traffic, and the invariants that break things when violated. Read

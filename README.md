@@ -500,6 +500,16 @@ See the [MCP guide](docs/architecture/mcp.md) and
 [extension guide](docs/architecture/extensions.md) for configuration and the
 extension lifecycle.
 
+For changes authored during a session, [governed runtime evolution](docs/architecture/evolution.md)
+retains source and jailed test evidence before native operator approval.
+The running session can serve the selected tool or hook generation and roll
+back to earlier approved source while preserving its conversation. Named
+workspace programs and exact-model prose profiles use the same catalogue,
+with their own selection boundaries. Authored code stays in satellites;
+new trusted capability backends still require a reviewed release. The
+[state-preserving component upgrade guide](docs/architecture/live-upgrades.md)
+describes explicit state migration, partial upgrades and downgrade evidence.
+
 ### Language server profiles
 
 The agent can ask a language server where a symbol is defined, who uses it,

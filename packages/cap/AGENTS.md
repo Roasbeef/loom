@@ -46,8 +46,8 @@ cannot hide the capability error. This does not grant the program a new effect.
   `to_msgpack` is the marshalling the boot runtime writes as the terminal
   frame, so a strand receives a structured value and never scrapes stdout.
   `Value` is a re-export of the wire's value type plus builders
-  (`string`/`int`/`float`/`bool`/`list`/`object`/`null`) and readers
-  (`field`/`as_string`/`as_int`/`as_float`/`as_bool`/`as_list`), none of
+  (`string`/`int`/`float`/`bool`/`bytes`/`list`/`object`/`null`) and readers
+  (`field`/`as_string`/`as_int`/`as_float`/`as_bool`/`as_bytes`/`as_list`), none of
   which coerces: `as_int` refuses a float and `as_float` refuses an int,
   so the pair still answers which tag arrived. They live here
   because a program cannot name `core/msgpack`: the allowlist omits it and

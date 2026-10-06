@@ -166,11 +166,11 @@ type Launch {
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
-  // `loom ext …` is not a terminal application at all: it is a
-  // passthrough to `loomd`, whose own `ext` subcommand owns every verb.
+  // `loom ext …` and `loom evolution …` forward directly to `loomd`,
+  // whose authenticated command handlers own every verb.
   // Forwarding rather than reimplementing is what stops the launcher and
   // the server disagreeing about what an install did.
-  Forward(arguments: List(String))
+  Forward(command: String, arguments: List(String))
 
   // Updates run before terminal setup and own their daemon restart policy.
   Update(arguments: List(String))
@@ -302,6 +302,7 @@ pub fn main() {
 
       let #(record, arguments) = case raw {
         ["ext", ..]
+        | ["evolution", ..]
         | ["replay", ..]
         | ["sessions", ..]
         | ["claim", ..]
@@ -319,7 +320,7 @@ pub fn main() {
         // The passthrough runs before a single line of terminal setup: this
         // process is a pipe for the duration and then it is gone.
         Version -> print_version()
-        Forward(arguments:) -> forward(arguments)
+        Forward(command:, arguments:) -> forward(command, arguments)
         Update(arguments:) -> run_update(arguments)
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
@@ -424,6 +425,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("sessions") -> Some(sessions_usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
+    Ok("evolution") -> Some(evolution_usage())
     Ok("update") -> Some(update_options.usage())
     Ok("version") -> Some(version_usage())
     Ok("ui") | Ok("--ui") -> Some(ui_usage())
@@ -436,6 +438,7 @@ fn is_topic(word: String) -> Bool {
     "replay"
     | "sessions"
     | "ext"
+    | "evolution"
     | "update"
     | "version"
     | "claim"
@@ -475,22 +478,22 @@ fn take_flag(arguments: List(String), flag: String) -> #(String, List(String)) {
 // output through and exiting with its status. The daemon is located by the
 // same ladder an implicit local launch uses, so `loom ext` and an
 // auto-started session cannot end up talking to two different binaries.
-fn forward(arguments: List(String)) -> Nil {
+fn forward(command: String, arguments: List(String)) -> Nil {
   case bootstrap.server_executable(flag_or_empty(arguments, "--server")) {
     Error(reason) -> {
-      io.println_error("loom ext: " <> reason)
+      io.println_error("loom " <> command <> ": " <> reason)
       ffi_terminal.halt(1)
       Nil
     }
     Ok(server) ->
-      case ffi_terminal.run_forwarding(server, ["ext", ..arguments]) {
+      case ffi_terminal.run_forwarding(server, [command, ..arguments]) {
         Ok(status) -> {
           ffi_terminal.halt(status)
           Nil
         }
         Error(reason) -> {
           io.println_error(
-            "loom ext: could not run " <> server <> ": " <> reason,
+            "loom " <> command <> ": could not run " <> server <> ": " <> reason,
           )
           ffi_terminal.halt(1)
           Nil
@@ -993,9 +996,12 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["--demo"] -> Demo
     ["version"] | ["--version"] -> Version
     ["version", ..] | ["--version", ..] -> Invalid(version_usage())
-    ["ext", ..rest] -> Forward(arguments: rest)
+    ["ext", ..rest] -> Forward(command: "ext", arguments: rest)
+    ["evolution", ..rest] -> Forward(command: "evolution", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
-    ["help", "ext"] -> Forward(arguments: ["--help"])
+    ["help", "ext"] -> Forward(command: "ext", arguments: ["--help"])
+    ["help", "evolution"] ->
+      Forward(command: "evolution", arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
@@ -1735,7 +1741,8 @@ fn launch_usage() -> String {
   <> "  access <command>    Owner access: list, show, invite, rotate, revoke.\n"
   <> "                      Runs against the local daemon, or a remote one\n"
   <> "                      with --addr and --token-file.\n"
-  <> "  ext <command>       Manage daemon extensions.\n\n"
+  <> "  ext <command>       Manage daemon extensions.\n"
+  <> "  evolution <action>  Inspect and select authored candidates.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
@@ -1787,6 +1794,19 @@ fn extension_usage() -> String {
   <> "A source is a local path, an https:// .tar.gz, or an\n"
   <> "https://github.com/<owner>/<repo> URL. Extensions install under\n"
   <> "<home>/.loom/extensions."
+}
+
+// Evolution shares the server command's JSON transport and native owner credential.
+// Keeping help here makes the client-only shipment discoverable without opening
+// terminal state or starting a daemon.
+fn evolution_usage() -> String {
+  "usage: loom evolution [--state-dir PATH] ACTION SESSION [--args FILE]\n"
+  <> "       [--candidate-id ID] [--evidence-id ID] [--request-id ID]\n\n"
+  <> "Actions: catalogue, inspect, evidence, status, approve, revoke, select, "
+  <> "rollback, admit_tasks, mark_outcome, core_status, core_upgrade, core_downgrade.\n"
+  <> "SESSION must already be resident. The private daemon owner credential "
+  <> "authenticates the command. Output is JSON; status=queued means accepted, "
+  <> "not completed. Poll status with the exact request_id for completion."
 }
 
 fn parse_replay(arguments: List(String)) -> Launch {

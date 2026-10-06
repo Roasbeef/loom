@@ -1,162 +1,232 @@
 # Current handoff
 
-This edition is baselined on main `32846807b2678edebb7f07e1969f6047bf0b1692`
-and the optimization source at `34c0db0f0a343a2cf4b41068d3fb001f3bf92317`,
-measured on October 5, 2026 (America/Los_Angeles). The claims below were
-checked against those builds, the actual gate logs and GitHub state.
-The evidence-only commit following that source must receive its own final
-remote-head signoff before merge.
+PR #824 is being rebased onto `origin/main` at
+`552e44033d615675ae670aea784b399105476c60`. The previous PR head,
+`1d2accd0c0dfdef3d18c05ec6e499637646bba7c`, passed local checks, both hosted
+platform gates and independent Linux signoff before this rebase. Those results
+remain historical evidence; the rebased head needs its own verification.
 
-The complete counters, workloads, observation limits and historical failures
-are in [the investigation](review/beam-cpu-2026-10-05.md). Rewrite this handoff
-after another body of work rather than carrying its status forward.
+The merge retains main's escalation controls, queued-input and session
+lifecycle changes, web lazy folds, and measured closure/render optimizations.
+Both current Etui pins remain `7365d4773a3aeba3f394e3d5fd06a77fa7e26fe2`.
+The original evolution head is retained under
+`backup/self-extension-before-main-20261005`. The prior upstream performance
+handoff is superseded here; its measurements and limits remain in
+[the investigation](review/beam-cpu-2026-10-05.md).
 
-## Where the tree is
+The active follow-on is state-preserving component upgrades under
+[protocol 069](../protocol-change/069-state-preserving-component-upgrades.md).
+Weft's actor and state-machine migration primitive is merged in
+[weft #18](https://github.com/Roasbeef/weft/pull/18), commit
+`f076c0661518ce9432cc6ff874b1ece71edbd9b7`. The integrated dependency passed
+198 tests, warning-free build, lint and documentation checks; independent
+Astra review of the upgrade implementation found one scheduling-dependent
+test, corrected and rechecked before merge. Those tests establish callback
+migration, not actual loading of new BEAM modules.
 
-| Body of work | Verified state |
-|---|---|
-| Same-day integration | All 49 other PRs in the owner's October 5 creation window merged before integration began. PR #873 was rebased onto `32846807b`; backup `backup/perf-before-merged-cohort-20261005` preserves the former head. |
-| Web rendering | Leaf memos retain projected editor, answer and report inputs. The editor now also keys on upstream's refusal counter; a real-page regression and a failing mutation control verify draft-restoration invalidation. |
-| Terminal | The growing paragraph no longer trims an already-trimmed parser head. Incremental/full-render tests and complete styled-cell/cursor witnesses pass. Upstream highlighting behavior remains. |
-| Etui | Both pins and generated manifests select `7365d47`, merged through [etui #7](https://github.com/Roasbeef/etui/pull/7). Its ASCII path preserves the whole-string Unicode fallback. |
-| Worker admission | The code-mode wrapper projects the predecessor router before closure construction while preserving upstream strand tools, tool gate and launch custody. The actual admission regression remains in the full client gate. |
-| Warm LSP | Canonical inventory hashing subsumes upstream line sorting. The upstream reordered-inventory test and semantic version, git-commit and membership tests remain. |
-| JSON | Four-byte safe scans and the direct encoder helper preserve total decoding, UTF-8 validation and string ownership. The full core suite passes. |
-| Generated web assets | `make gen-client` regenerated the combined sources; CSS differs from main only in three source digests. Other upstream assets remain intact. |
-| Local validation | Full `make check` returned its own exit 0 on `34c0db0f`: 140 core, 349 session-view, 750 web-view, 2,944 client and 1,241 TUI tests, plus the other package, conformance and Go gates. Lint has zero errors and 2,157 warnings. Separate doc-check returned 0 with zero errors and 190 warnings before this rewrite. |
-| Independent review | A fresh report-only rebase review found no reachable issue in the conflict resolutions, memo inputs, upstream assets or terminal behavior. Earlier work also received separate reviews; these do not replace gates. |
-| Hosted validation | Exact-source Linux client, fast, conformance, runtime/storage/session/events, static, bootstrap, jail, compiler and soak checks pass. Deliverables and the macOS lanes were still running at this edition's verification cut. Containerized Linux signoff remains pending. |
-| Publication | [Loom #873](https://github.com/Roasbeef/loom/pull/873) is open and ready. The owner explicitly authorized rebasing, measuring and admin-merging it after validation. Nothing from this task has been installed into the running daemon or terminal. |
-| Pickglass | The owner-requested [allocation CLI issue #6](https://github.com/Roasbeef/pickglass/issues/6) is now closed. The local allocation command completed a bounded installed-daemon profile with explicit coverage and word/byte counters. |
+Loom now implements two state-preserving upgrade paths: approved authored
+extensions inside the existing jailed satellite, and reviewed scratch-component
+artifacts inside the harness VM. Both load newly compiled BEAM, retain populated
+actors and migrate callbacks with state. Their artifact authorities remain
+separate. The implementation and contract are described in
+[live upgrades](architecture/live-upgrades.md).
 
-The previous edition's blocked client gate and missing Loom merge authorization
-are no longer current. Main fixed the concurrent shareable stop/isolation race;
-the unchanged test now passes locally in 57 ms and hosted Linux client passes.
-The historical failed main control and failed hosted artifact remain in the
-report, rather than being reclassified as a proven load flake.
+The core scratch slice passes nine focused native tests, independently rerun
+with newly compiled BEAM, queued work, current-state downgrade and owner-loss
+cleanup. Astra reproduced delayed Arm admission, delayed slot acquisition and
+a lost slot confirmation acknowledgement. Token-scoped cleanup now survives
+uncertain admission, and confirmation is idempotent without releasing a newer
+reservation. All three regressions plus stale-token isolation pass; Astra's
+correction recheck found no further core findings and also exercised stale
+change-code rejection during a later suspension.
 
-## Measured combination
+The real jailed-session fixture passes seven separately authored, tested and
+approved candidates. It retains the actor PID and original native helper while
+observing new behavior, migration refusal and timeout, incompatible downgrade,
+nonterminating definition refusal and hook-boundary refusal. A separately owned
+code-mode job spans the successful upgrade and failure cases. Current-state
+rollback retains all eight increments, and session closure proves native helper
+retirement. Four controller tests separately inspect a queued invocation and
+exercise real system operations with missing acknowledgements; each explicitly
+retires both original fixture actors.
 
-Fresh single-scheduler main/candidate/main/candidate comparisons used the same
-Gleam 1.19.0 and OTP 29 toolchain. The web fixture removes 83.1% of reductions
-and 78.6% of cumulative allocated words for one hundred unchanged views.
-At 2,048 streamed frames, the terminal removes 65.0% of reductions and 52.5%
-of words per frame. Six-agent paint removes 43.9% of reductions and forty
-scroll events remove 35.8%; the styled-cell and cursor witness is identical.
-JSON codec reductions fall 68.2%/37.5% for plain encode/decode and 25.1%/18.7%
-for escaped strings, with allocation nearly flat. These percentages describe
-the fixtures, not the installed applications. Traced allocation and untraced
-timing were separate passes.
+Astra independently verified seven production corrections: fresh compiler
+budgets, literal-table atom accounting, callback result bounds, uncertain
+catalogue reconciliation, suspension and resumption custody, bounded definition
+evaluation, and fixed hook subscriptions. Its focused actor/runtime, parser and
+client lifecycle gates pass. A lost resume acknowledgement retries resumption
+without applying a second migration over already completed work. The reviewer
+also found an overly short test lease and incomplete fixture retirement; both
+are corrected, and the full extension gate passes all 49 tests.
 
-Natural-memory probes used separate observers, with no forced collection or
-term walks before or between cuts. Web owner capacity after the render fixture
-falls from 385,208 to 318,232 bytes; RSS is essentially flat. The terminal's
-closed 2,048-frame owner capacities are essentially equal, 1,803,768 versus
-1,803,800 bytes. An active one-shot cut gives the candidate a larger heap;
-a longer stream shows phase-dependent capacity rather than monotonic growth.
-Both owners have 2,918,416 bytes at 8,192 frames. Carriers, allocated blocks,
-RSS and physical footprint vary separately and do not establish installed
-resident-memory savings. [Issue #454](https://github.com/Roasbeef/loom/issues/454)
-remains open.
+The offline seed vendors the merged Weft revision. Its macOS standalone
+network-namespace probe is unavailable; actual jailed source compilation runs
+in the production fixture. No official scratch release artifact has been
+published and no installed user daemon was upgraded by these tests. The full
+local `LOOM_EVOLUTION_E2E=1 make check` gate passed with 2,934 client tests,
+1,231 TUI tests, conformance, native Go tests and zero house-lint errors. The
+fixture-retirement correction passed the full 49-test extension suite afterward.
+Formatting and documentation checks pass. After rebuilding the final seed,
+`make e2e-evolution` passed all four production fixtures again, including the
+seven-candidate live upgrade test in 17.1 seconds. Hosted and independent Linux
+release verdicts must still cover the pushed head.
 
-The installed daemon changed release directory through another actor before
-the later Pickglass cut. Its source revision is unavailable in that capture;
-PID 40075 remains an unnamed terminal and PID 5645 is gone. These live cuts
-cannot be used as matched candidate evidence. No production process was
-restarted, hotpatched or forced through GC by this task.
+The governed self-extension implementation is in
+[PR #824](https://github.com/Roasbeef/loom/pull/824), on `runtime/self-extension`
+in `.worktrees/self-extension`. It implements the production loop tracked by
+[#807](https://github.com/Roasbeef/loom/issues/807). The topic started at #805
+(`45218983064f1ddb462a4c6d27b01e2a31ac90ea`) and incorporates main through
+`5ef1e52b44917c67aa68c1fe4efc38ca9ccf6769`, including credential kinds, web
+session creation and subtitles. It is not represented as merged or released.
+The previous handoff's #768 baseline and hosted-run snapshots were older than
+this work's starting tree.
 
-## What to do next
+## Delivered behavior
 
-1. Publish the evidence-only commit, verify its static gates and obtain the
-   repository's exact-remote-head `signoff/linux`. Inspect any actual failure
-   and preserve existing assertions and deadlines. Exit: the latest published
-   head passes the required validation, with no unresolved correctness or
-   performance regression. Historical green checks are insufficient.
-2. Recheck main immediately before merging #873. Rebase and revalidate if a
-   newer main changes the measured combination. The owner authorized
-   `gh pr merge --admin --merge --match-head-commit` at the verified head.
-   Exit: GitHub reports merged and its merge commit is in main's ancestry;
-   then disable the existing integration watcher without archiving the chat.
-3. Installation remains a separate operation. Follow [updating](updating.md)
-   for an approved shipment and graceful daemon transition. Terminals retain
-   their old client tree until reopened. Exit: the chosen installed identities
-   and matched active/idle/released workloads are observed without disrupting
-   busy sessions. Do not infer resident savings from the source fixtures.
-4. Refresh the wider roadmap from current source and GitHub before choosing
-   another feature. This investigation does not establish today's release or
-   workspace-mode rollout state. Exit: any new work has its own current plan
-   and validation boundary.
+The accepted release scenario is concrete: an agent authors an extension;
+real jailed checks produce durable evidence; an operator approves it; the same
+running session serves its selected behavior; rollback restores the previous
+version without losing the conversation or leaking native workers.
 
-## Rulings already made
+The implementation also includes named executable workspace programs and
+exact-model prompt profiles. Model-facing proposal and evaluation never convey
+approval authority. Native operators can inspect, approve, select, revoke,
+rollback, admit independent task fixtures and mark settled outcomes through
+`loom evolution` or `loomd evolution`. These commands attach to an already
+resident authenticated session. The source, authority and retirement boundaries
+are in [evolution](architecture/evolution.md) and
+[protocol-change 068](../protocol-change/068-runtime-evolution.md).
 
-Each of these is settled. Re-open one only with new evidence, and record the
-reopening where the ruling lives.
+The earlier full local gate, `LOOM_EVOLUTION_E2E=1 make check`, passed on the
+integrated tree at `c95200351f2b`, including 2,916 client tests, 1,231 TUI tests, native
+Go tests and house lint with zero errors. All three production lifecycle
+fixtures ran. Documentation checks also passed. These checks used scripted
+HTTP; they do not measure commercial-model quality, cache effects or isolated
+activation latency. Later documentation and portable test changes require
+their own current-head verdicts.
 
-**Render ownership.** Keep memos at leaves and project closure inputs before
-construction. Lustre 5.7.1 discards nested entries when an outer memo hits.
-A model input used inside a memo must participate in its references, including
-the refusal counter. Constructor and patch regressions live in the web-view
-render-memo tests; the [investigation](review/beam-cpu-2026-10-05.md) records
-the cache and mutation evidence.
+A subsequent real Program fixture opens two production sessions with separate
+state and the same canonical workspace catalogue. The second discovers the
+first session's selected program, invokes fresh input, and proves its own
+stricter protected-directory policy governs effects. Both native retirements
+and the helper census are checked.
 
-**Unicode fallback.** An ASCII optimization rejects the whole string if any
-byte is outside printable ASCII. Following combining marks and variation
-selectors can alter an earlier grapheme's width. Preserve the original fallback
-and the boundary regressions in etui #7.
+Linux validation exposed two reachable defects after that local baseline:
+Landlock gave valid file roots directory rights, and concurrent catalogue
+borrowers could receive an immediate held-lease refusal. The corrections
+classify rules in the current jail view and bound pre-open lease admission.
+Admitted work and cleanup run once; transition expiry is checked again before
+a new CAS, while an exact committed receipt remains recoverable. New kernel
+and ownership regressions cover both paths. Do not carry the older local
+verdict onto these corrections; use the final exact-head PR checks.
 
-**Custody and copying.** Worker projection retains only the predecessor router;
-prepared configuration still owns launch inputs. Do not remove a supervisor's
-required executable registry because its flattened size is large. Flat size,
-process capacity, cumulative allocation and OS residency are different metrics,
-as described in [daemon memory evidence](design-notes/daemon-memory.md).
+Astra's independent review found five reachable issues: trial policy inheritance,
+unknown attempt spend, durable selection deduplication, cleanup continuation
+ownership and the advertised prompt-evaluation schema. Each was verified and
+corrected; a fresh correction review found no further source-verified reachable
+problems. Generated Erlang also confirms that resident validation and scoped
+memory closures now retain only their needed capabilities.
 
-**Canonical identity.** Supported inventory keys and values all contribute to
-the fingerprint. Versions, git commits and membership changes invalidate it;
-key order does not. Keep path admission, read bounds, missing-file identity
-and full project/manifest digests. The manager regressions cover these cases.
+Use [the PR's checks](https://github.com/Roasbeef/loom/pull/824/checks) for current
+hosted and exact-head platform verdicts. A local macOS pass cannot establish
+Linux kernel enforcement or measured model quality.
 
-**Codec ownership.** Every chunk checks quote, backslash and C0 bytes. Flushes
-validate UTF-8 at the same boundaries. Preserve copied string ownership; a
-returned subbinary can otherwise retain a much larger backing input.
+## Current validation boundary
 
-**Verification.** [Execution](execution.md) owns the gate and signoff rules.
-Only the repository runner posts the Linux signoff. The rule requires the
-actual published head, and admin merge authorization does not make a failed
-test ready.
+The complete hosted run `37281752001` passed on the previous head
+`1d2accd0c0df`, including both platform aggregate gates. Independent Linux
+signoff also passed all six lanes, release-update verification and the strict
+skip census. The bundled/slim update test completed in 33 seconds, retiring
+both old fixture daemons and accepting new epochs. The earlier full-disk
+installer failure is resolved for that head; no retained evidence was deleted
+and no deadline was increased.
 
-## Deliberately open
+The rebase requires fresh package and production-fixture verification,
+independent review of the conflict resolutions, and exact-pushed-head hosted
+and Linux signoff. Keep those verdicts separate from the earlier green run.
+The owner has authorized this rebase and the Weft merge, not a Loom merge or
+installation into a running user daemon.
 
-- Installed resident-memory savings and the remaining ownership census in
-  **#454** are unmeasured by this source comparison.
-- SQLite bursts remain workload-dependent; this work did not change them.
-- Buffer equality and row-reuse experiments remain excluded because their
-  CPU/allocation tradeoffs were not consistently favorable.
-- Production installation and live workload matching remain separate from
-  the authorized PR integration.
+The evolution architecture now includes the ownership map, activation sequence,
+operator payload examples, failure responses and acceptance fixtures. Ten
+existing package READMEs explain their part of that boundary. This work adds
+modules within existing packages, not a new package.
 
-None of these is unfinished work somebody forgot. The first and last need
-additional measurements and an operational transition, not another claim
-based on flattened term size.
+## Rulings to retain
 
-## How to verify
+Authored execution stays outside the trusted harness VM. The resident-loader
+proposal in #30–#32 is superseded by #807; #100's pi-compatibility scope was
+closed. Native core artifacts still come only from reviewed releases; the new
+scratch controller may load those artifacts in place. Agent-authored revisions
+never cross that authority boundary. Existing TCB freeze tests remain gates.
 
-`make check` is the full local gate; `make doc-check` runs separately.
-Use a clean isolated control and the same compiler/OTP for the bounded
-`web_view_perf.sh`, `json_perf.sh` and `tui_perf.sh` comparisons. Record exact
-build identities and equal-output witnesses; keep timing untraced. The raw
-observations and scripts remain private under `/private/tmp/loom-cpu-20261005`.
+Candidates retain immutable source and native provenance. The catalogue uses
+existing generated SQL storage transactions and reserved FactCustom namespaces;
+there is no handwritten SQL or new storage schema. Whole source and evidence
+inspection is paged within the existing control frame. Callable discovery keeps
+complete schemas and exact candidate/generation tokens.
 
-**Each gate needs its own exit code.** The `cohort-check-full.log` local run
-returned zero. A following `tail` is not evidence of that result.
+Selection is a full generation-fenced CAS, including approval and revocation
+sequences. Its central commit is irreversible; the separate session adoption
+audit is idempotent and recoverable. A queued receipt is not publication. Once
+selection commits, an expired caller wait cannot discard the selected version.
+The exact request ID resolves a missing acknowledgement.
 
-**Darwin skips are not Linux proof.** The local gate explicitly skipped seed,
-shipped-server, Linux enforcement and unavailable rust-analyzer fixtures.
-`make signoff-remote` builds fresh prerequisites and runs the Linux lanes.
-Verify its actual status on the final remote head before merge.
+One live owner serializes the promoted hook/tool fold with replacement. Native
+executor/helper retirement, rather than a BEAM exit or satellite report, is the
+publication boundary. Unconfirmed cleanup retains custody and blocks further
+allocation. Legacy session teardown has one physical host owner and reports its
+actual result; an exited host cannot fabricate a successful retry. Daemon
+sessions keep their existing custody owner.
 
-**Natural capacity is not reachable size.** Do not force GC before a retention
-claim or insert state walks between matched observation cuts. Census allocations
-belong on a separate observer; carrier capacity, allocated blocks, RSS and
-physical footprint must stay separate. Read [execution](execution.md) and
-[BEAM memory review](../skills/beam-memory-review/SKILL.md) for the remaining
-measurement and validation hazards.
+New sessions pin selected prompt maps. Resumed sessions keep those immutable
+bytes. Profiles compose after the actual provider/model/API resolves on every
+attempt, with the unchanged base request on retries. Independent evaluation
+runs ordinary coding operations in fresh native fixtures, with admitted exact
+file criteria scored after retirement. Scripted responses exercise mechanics;
+they do not certify model improvement, noise handling or holdout quality.
+
+## Verification and merge boundary
+
+The PR must satisfy the repository's current hosted gates and `signoff/linux`
+on its exact head before merge. The owner controls merge and the public release.
+Do not carry a green verdict from an older head or treat a queued receipt as a
+published generation. The Linux signoff runs the shipped-daemon fixtures and
+strict enforcement/skip census as well as these evolution tests.
+
+To reproduce the production fixtures locally, use the runtime compiler and an
+offline seed built by that same compiler:
+
+```sh
+PATH=/Users/roasbeef/.local/lib/loom/server/bin:$PATH make codemode-seed
+PATH=/Users/roasbeef/.local/lib/loom/server/bin:$PATH make e2e-evolution
+LOOM_EVOLUTION_E2E=1 PATH=/Users/roasbeef/.local/lib/loom/server/bin:$PATH make check
+make doc-check
+```
+
+Capture each command's own exit status. The seed fingerprint must match the
+runtime compiler; a cold dependency rebuild under a private HOME must not reach
+Hex. Protected-content assertions require a successful public read, existing
+nonempty native targets, zero protected bytes and the platform's exact mask
+outcome. Generic process failures do not count as isolation evidence.
+
+## Deliberate limits and next work
+
+[#236](https://github.com/Roasbeef/loom/issues/236) remains open. The trace door,
+operator outcomes, fixed paired evaluation and durable evidence are implemented;
+multiple-candidate search, GEPA/Pareto selection, noise handling and holdouts
+need live model evaluation and their own design. No automatic promotion,
+family-wide profile inference, runtime dependency download or implicit extension
+state migration is introduced. Rollback restores implementation selection, not
+external filesystem or network effects.
+
+The catalogue's retained-envelope budget does not cap its append-only lifecycle
+journal. Trace scrubbing is heuristic and can retain short unlabelled secrets or
+private prose. Failed legacy native retirement conservatively refuses; resumable
+multi-phase retirement after that host exits remains unsupported. These limits
+must remain explicit in the implementation PR and architecture documentation.
+
+The pre-existing terminal, web workspace, executor and release work remains in
+its own architecture pages and issues. Refresh GitHub before choosing the next
+lane instead of carrying forward the previous handoff's dated open-PR and CI
+lists. The repository owner cuts the public release.

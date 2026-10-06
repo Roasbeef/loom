@@ -47,6 +47,7 @@ import codemode/compile.{type Dependency}
 import gleam/io
 import gleam/list
 import gleam/result
+import gleam/string
 import simplifile
 
 /// Where `main` writes the seed, relative to the `codemode` package
@@ -60,7 +61,12 @@ pub const default_root = "../../build/codemode-seed"
 /// `vendor/` once both are there — and `ext` names `../cap` for the same
 /// reason.
 pub fn default_vendored() -> List(#(String, String)) {
-  [#("cap", "../cap"), #("core", "../core"), #("ext", "../ext")]
+  [
+    #("cap", "../cap"),
+    #("core", "../core"),
+    #("ext", "../ext"),
+    #("weft", "build/packages/weft"),
+  ]
 }
 
 /// The marker `main` prints on success, so a shell script can tell a
@@ -175,6 +181,24 @@ fn vendor(source: String, destination: String) -> Result(Nil, String) {
     source <> "/gleam.toml",
     destination <> "/gleam.toml",
   ))
+  use project <- result.try(
+    simplifile.read(destination <> "/gleam.toml")
+    |> result.map_error(simplifile.describe_error),
+  )
+
+  // The trusted ext prelude's pinned runtime is vendored beside it. The
+  // compiler jail resolves this local path without reaching the network.
+  let project =
+    project
+    |> string.split("\n")
+    |> list.map(fn(line) {
+      case string.starts_with(string.trim(line), "weft = { git = ") {
+        True -> "weft = { path = \"../weft\" }"
+        False -> line
+      }
+    })
+    |> string.join("\n")
+  use _ <- result.try(write(destination <> "/gleam.toml", project))
   use _ <- result.try(copy_tree(source <> "/src", destination <> "/src"))
   use _ <- result.try(copy_optional_tree(
     source <> "/priv",

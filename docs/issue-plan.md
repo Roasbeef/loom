@@ -25,7 +25,7 @@ make M0–M4's partial rows read `done` and stop there. That work is still
 the first thing that happens, but it now *gates* the release instead of
 closing it. M4.5, M5 and M6 are core to the design, and M6 in particular is
 the claim the system exists to make — a harness that writes Gleam, proves
-it in a sandbox, and hot-loads it into itself. A first release without it
+it in a sandbox, and activates approved behavior in the running session. A first release without it
 is not a release of this system.
 
 Four bodies of work, in order.
@@ -81,29 +81,26 @@ the client rather than being stubbed twice.
 **Phase four is the promotion ladder (M6, WP-M).** An agent writes a Gleam
 tool, saves it as a named skill, compiles it against a wider prelude, proves
 it against its tests inside the jail, and — with one recorded human
-decision — the running harness loads it into itself, with unload and
-rollback.
+decision — the running session adopts a jailed generation, with witnessed retirement
+and rollback. Issue #807 consolidates the implementation and acceptance test.
 
 ### Be honest about the size
 
-M6 has changed shape since this was written. The extension architecture
-(`docs/design-notes/extension-architecture.md`, ADR-007) is built through
-its own phase 3: `packages/ext` exists, an extension installs from a
-remote archive, runs jailed, reaches the network through the broker, and
-answers hooks from a session-lived satellite. What the ladder still owes
-is the tier-H loader with rollback and the TCB freeze (#32, #33). That
-remaining part's hard part is not `code:load_binary`, which is one call. The hard part is the **TCB freeze**: proving that the extension
-API cannot reach `StorageWriter` or broker internals, by compile-time
-visibility *and* runtime name checks — both, because either alone fails a
-different attack. Below L3 every defense is a kernel; at L3 the extension
-runs inside the harness VM and the only boundaries left are the package
-graph and what the loader checks by name.
+M6 now follows [#807](https://github.com/Roasbeef/loom/issues/807),
+[protocol-change 068](../protocol-change/068-runtime-evolution.md) and
+[the evolution architecture](architecture/evolution.md). The existing jailed
+extension seam supplies typed tools and hooks. The new work adds immutable
+source and evidence, native approval, generation-fenced activation and rollback,
+named workspace programs, and exact-model prompt profiles with independent
+rollouts. Rule Zero continues to apply at every stage: authored code never
+becomes a resident harness module.
 
-Proving that responsibly means an adversarial review pass of the kind code
-mode got, recorded in `docs/review/`. That pass had three reviewers and the
-central claim still needed correcting. Budget for the same outcome here,
-and treat the review as part of the rung rather than as something that
-happens if there is time.
+The original #30, #31 and #32 are superseded, and #100's pi compatibility scope
+was closed. The TCB freeze tests from #204 remain required. Independent review
+must examine real worker retirement, scope and approval fences, recovery after
+a committed selection, and actual resolved-model composition. A scripted
+provider can demonstrate that loop; it does not demonstrate prompt quality or
+justify automatic promotion.
 
 M5 is roughly a work package and a half of new tool surface, and one of its
 acceptance criteria cannot pass as written (below). M4.5 is the smallest of
@@ -181,10 +178,11 @@ keeps working. #16 is therefore an M6 precondition wearing an M4 label.
 Memory's stage M1 needs the canonical session id (#15) to scope a query at
 all.
 
-**Inside phase 4**, #33 (the TCB freeze) depends on #32 for an API to
-freeze, and #32 does not close until #33 does. The extension zone is built,
-then proven, then shipped — in that order, and the milestone does not close
-on the middle step.
+**Inside phase 4**, #807's release acceptance is the order of work: an
+agent authors an extension; real author checks yield durable evidence; an
+operator approves it; the existing session serves the selected behavior; and
+rollback restores the previous version without losing the conversation or
+leaking workers. #236's wider evaluation/search work remains separately open.
 
 ---
 
@@ -614,30 +612,23 @@ stage M2; spec Part 5 track 8.
 
 ## Phase 4 — the promotion ladder (M6 / WP-M)
 
-The ladder, from `docs/architecture/code-mode.md`:
+Issue #807 is the current design and implementation issue. The original
+#30–#32 below are retained as historical requirements and are superseded by
+#807, protocol-change 068 and ADR-007's 2026-10-04 addendum. Their resident
+loader mechanics are not the current plan.
 
-```
-L0  code-mode program     ephemeral, satellite-jailed, dies with the call
-L1  session skill         L0 saved as a durable, named, reusable entry;
-                          runs at L0 privileges
-L2  extension candidate   compiled against a wider but still
-                          capability-stubbed prelude; runs its tests in the
-                          sandbox, results attached
-L3  installed extension   after explicit human approval: hot-loaded into
-                          the harness ExtensionZone
-L4  core change           a pull request to Loom; ordinary review and
-                          release; never runtime-loaded
-```
+The current surfaces are named workspace programs, session extension tools and
+hooks, and exact-model prompt profiles. Candidates retain source only; actual
+checks and independent evaluations retain content-addressed evidence. Approval
+is native operator authority, selection is a full generation-fenced CAS, and
+live publication waits for witnessed retirement. Session history survives
+replacement and rollback. Prompt changes bind the actual provider/model/API
+and become immutable pins when a session opens.
 
-L0 is built. L1 through L3 are this phase; L4 is a pull request and needs no
-mechanism. There is no `packages/ext` today.
-
-Two properties carry up the ladder and must be true at every rung: **nothing
-self-promotes** — the step from a proven candidate to an installed extension
-requires a human decision, recorded durably — and **the shape of the code
-does not change as it climbs**. An installed extension is an OTP actor
-implementing a typed behaviour, which is the same actor model `cap/actor`
-hands a jailed program at L0.
+Nothing self-promotes. The TCB remains fixed, and every authored execution
+stays kernel-jailed. Code changes to Loom itself continue through an ordinary
+pull request and release. The implementation PR must report the real system
+acceptance, full gates and independent review separately.
 
 ### #30. L1: the skill store
 
@@ -714,6 +705,9 @@ then proven, then shipped.
 `area:ext`, `area:runtime`
 
 ### #33. Freeze the TCB, and have someone attack it
+
+The freeze landed through #204. The text below records the historical threat
+model; #807 retains the tests and does not build the resident loader.
 
 **Problem.** Design §7's hard rule: "The trusted computing base is not
 runtime-extensible. Storage, state machine, broker, sandbox drivers never

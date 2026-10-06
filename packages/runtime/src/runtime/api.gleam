@@ -2572,6 +2572,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, advisor_fact_prefix)
   || string.starts_with(key, goal_fact_prefix)
   || string.starts_with(key, summary_fact_prefix)
+  || string.starts_with(key, "evolution/")
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion

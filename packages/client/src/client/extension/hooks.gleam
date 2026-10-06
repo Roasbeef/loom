@@ -1686,3 +1686,57 @@ fn ran(bus: Bus, outcome: effects.ToolOutcome) -> effects.ToolOutcome {
     effects.ToolFailed(..) -> outcome
   }
 }
+
+/// Delivers one promoted lifecycle notice before the generation owner moves on.
+///
+/// Installed buses retain their asynchronous notification semantics. Promoted
+/// generations use this barrier so replacement cannot retire a node while a
+/// notice from the preceding generation is still queued.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.notice_sync(bus, hooks.AgentEnd(operation))
+/// ```
+///
+pub fn notice_sync(bus: Bus, event: Event) -> Result(Nil, String) {
+  let outcomes =
+    weft.new([
+      fn() {
+        event_manager.sync_notify(bus.notices, event, waiting: fan_out_ms(bus))
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(fan_out_ms(bus) + deadline_ms)
+    |> weft.start
+  case outcomes {
+    [weft.Completed(..)] -> Ok(Nil)
+    _unconfirmed -> Error("the promoted notice did not drain")
+  }
+}
+
+/// Retires the two BEAM managers after their generation has stopped admission.
+///
+/// Native satellite retirement is separately proved by the generation executor;
+/// these managers own no helper. The caller retains its pool custody until that
+/// stronger verdict succeeds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hooks.close(bus)
+/// ```
+///
+pub fn close(bus: Bus) -> Nil {
+  list.each([bus.answers, bus.notices], fn(subject) {
+    case process.subject_owner(subject) {
+      Error(Nil) -> Nil
+      Ok(pid) -> {
+        // Deliberate retirement must not propagate a killed manager back to
+        // the generation owner that still holds native executor custody.
+        process.unlink(pid)
+        process.kill(pid)
+      }
+    }
+  })
+}

@@ -5,8 +5,8 @@ starts the local `loomd`, authenticates on the daemon's control socket,
 lets the operator pick a session, attaches to that session's websocket,
 and draws the session live with etui. The same binary also carries the
 non-interactive commands: `loom sessions`, `loom replay`, `loom update`,
-`loom version`, `loom ext` (passed through to `loomd`) and `loom ui`,
-which prints a link to the daemon's web view of a session.
+`loom version`, `loom ext` and `loom evolution` (passed through to `loomd`),
+and `loom ui`, which prints a link to the daemon's web view of a session.
 
 The package is the terminal's host for the client engine. Session logic
 that does not depend on a terminal (the session lane, the protocol
@@ -200,6 +200,18 @@ opening. Allow once, Allow for session and Deny are chosen explicitly and
 confirmed with Enter, and a decision echoes the exact captured action,
 grants and sequence (`protocol-change/041`); the panel never widens or
 invents authority.
+
+## Evolution controls
+
+`loom evolution` forwards native operator commands to `loomd evolution`.
+It attaches to an already resident authenticated session; it does not start
+a daemon or open a session. The operator can inspect retained candidates and
+evidence, approve an exact identity, select it and roll back to an earlier
+approved version.
+
+A queued response is a receipt, so use `status` with the original request ID
+to observe publication. The command syntax, exit codes and authority rules
+are in [the evolution architecture](../../docs/architecture/evolution.md).
 
 ## Markdown remains data
 

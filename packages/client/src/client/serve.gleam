@@ -68,6 +68,23 @@ import client/directories
 import client/distill
 import client/distillpass
 import client/escalate
+import client/evolution
+import client/evolution/control as evolution_control
+import client/evolution/fixture as evolution_fixture
+import client/evolution/hook as evolution_hook
+import client/evolution/identity as evolution_identity
+import client/evolution/live as evolution_live
+import client/evolution/model_door as evolution_model_door
+import client/evolution/native as evolution_native
+import client/evolution/prompt as evolution_prompt
+import client/evolution/queue as evolution_queue
+import client/evolution/record as evolution_record
+import client/evolution/retirement as evolution_retirement
+import client/evolution/rollout as evolution_rollout
+import client/evolution/rollout_host as evolution_rollout_host
+import client/evolution/store as evolution_store
+import client/evolution/tasks as evolution_tasks
+import client/evolution/trace as evolution_trace
 import client/extension/dispatch as extension_dispatch
 import client/extension/hooks as extension_hooks
 import client/extension/hosts as extension_hosts
@@ -119,12 +136,15 @@ import client/session_git
 import client/skill_tool
 import client/system_prompt
 import client/tool_holder
+import client/upgrade/control as upgrade_control
 import client/wiring
 import client/worktree_diff
 import core/clock.{type Clock}
+import core/entry as evolution_entry
 import core/glance as diagnostic
 import core/ids.{type OpId}
 import core/json
+import core/message
 import events/bus
 import filepath
 import gleam/bit_array
@@ -152,6 +172,7 @@ import provider/adapter/responses
 import provider/gateway as provider_gateway
 import provider/http
 import provider/model
+import provider/profile as evolution_profile
 import provider/secret
 import provider/stream
 import runtime/api
@@ -160,6 +181,7 @@ import runtime/supervisor as runtime_supervisor
 import runtime/writer
 import session/session
 import simplifile
+import storage/access
 import storage/catalogue
 import storage/domain
 import storage/sqlite
@@ -171,6 +193,7 @@ import tom
 import tools/advise
 import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
+import tools/evolution as evolution_tool
 import tools/history as history_tool
 import tools/remember
 import tools/tool
@@ -389,6 +412,8 @@ pub type Settings {
     demand: EnforcementDemand,
     /// The provider gateway, fully routed.
     gateway: provider_gateway.Gateway,
+    /// Exact native evaluator profile override; None uses the session pin.
+    evolution_profiles: Option(List(evolution_profile.Profile)),
     /// The model catalogue behind the gateway's registry.
     catalog: catalog.Catalog,
     /// The one credential seam this session reads every named secret
@@ -541,6 +566,10 @@ pub type Instance {
     /// teardown closes it and it closes the pool, and its death is as fatal
     /// as the pool's.
     executor: executor.Executor,
+    /// Native evolution retirement, including the bounded transition queue.
+    evolution_retire: evolution_retirement.Task,
+    /// The legacy host owns teardown; daemon instances instead use custody.
+    legacy_host: Option(host.Host),
     /// The hub's stable address. Everything that talks to the hub — the
     /// listener, the commit forwarder, the provider tap — holds this
     /// name rather than a pid, which is what lets the hub be restarted
@@ -1491,6 +1520,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     session_id: session_id_of(session_path),
     demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
     gateway:,
+    evolution_profiles: None,
     catalog: catalogue,
     secrets: secret_store,
     secret_failures:,
@@ -2070,16 +2100,10 @@ pub fn boot_with(
 /// namespace. It installs no signal handler and does not choose a daemon
 /// singleton. The caller must close the returned instance.
 ///
-/// The caller's `close_instance` and the host's teardown both run, and
-/// that is safe here only because of order. Nothing the caller's close
-/// stops before the runtime is a fatal child, so the caller captures the
-/// drain witness before any death can start the host, and the caller is
-/// the one that releases the lease before it returns. Two facts carry
-/// that: `hub.drain_held` stops no process, and
-/// `runtime/supervisor.shutdown` monitors the drain ledger before it
-/// terminates the root, whose death is the first the host can see. `boot` has a
-/// listener to stop first and so cannot rely on that; it goes through
-/// `host.retire` instead.
+/// The instance host is the sole teardown owner. `close_instance` requests
+/// that owner's orderly stop; `retire_instance` additionally receives the
+/// explicit runtime drain and native executor retirement result before exit.
+/// Neither caller runs teardown beside the host.
 ///
 /// This is an assembly seam, not daemon admission: the host still lacks
 /// partial-boot and owner-death custody. A manager must not use it until
@@ -2096,10 +2120,15 @@ pub fn open_instance(
   settings: Settings,
   logger: Logger,
 ) -> Result(Instance, String) {
-  host.adopt(
-    boot: fn(stops, _host) { assemble_instance(settings, logger, stops) },
+  host.adopt_task(
+    boot: fn(stops, owner) {
+      assemble_instance(settings, logger, stops)
+      |> result.map(fn(instance) {
+        Instance(..instance, legacy_host: Some(owner))
+      })
+    },
     fatal: instance_children,
-    teardown: close_instance,
+    teardown: instance_retirement_body,
   )
 }
 
@@ -3380,7 +3409,8 @@ pub fn storage_open_refusal(error: session.OpenError) -> String {
       "another writer holds this session's lease until epoch ms "
       <> int.to_string(expires_at_ms)
 
-    session.SqliteOpenFailed(sqlite.CorruptSession(..))
+    session.SqliteOpenFailed(sqlite.AdmissionBusy)
+    | session.SqliteOpenFailed(sqlite.CorruptSession(..))
     | session.SqliteOpenFailed(sqlite.UnsupportedVersion(..))
     | session.SqliteOpenFailed(sqlite.OpenFailed(..))
     | session.MemoryOpenFailed(..) ->
@@ -3435,6 +3465,18 @@ fn assemble_in(
   // a base policy the sandbox cannot enforce is a boot failure, not a
   // surprise waiting in the first tool call. See `base_policy_fault`.
   use Nil <- result.try(base_policy_fault(base_policy))
+
+  // Native storage is prepared only after admission, before any file door
+  // captures the protected artifact and trial roots.
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(evolution_root(settings)),
+  )
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(evolution_scratch(settings)),
+  )
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(evolution_trials(settings)),
+  )
   let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
   use Nil <- result.try(
@@ -3637,6 +3679,8 @@ fn assemble_in(
   // supervisor further down — though the knot here is only ordering,
   // since the store closes over no runtime at all.
   let scratch_name = address.new_address(namespace)
+  let upgrade_name = address.new_address(namespace)
+  let core_control = upgrade_control.seam(upgrade_name)
 
   // The scheduling plane is decided once, here, and reached two ways:
   // the `schedule_*` tools and the `schedule.*` code-mode capabilities.
@@ -3917,6 +3961,17 @@ fn assemble_in(
       field.text(key: "detail", value: warning),
     ])
   })
+  use evolution_wiring <- result.try(evolution_wiring(
+    settings,
+    code_mode_host,
+    base_policy,
+    agency_config,
+    namespace,
+    environment,
+    clock,
+    logger,
+    owner,
+  ))
   use tool_registry <- result.try(
     list.append(
       contributions.built_in(
@@ -3939,6 +3994,14 @@ fn assemble_in(
       // collision message names the *second* claimant as the thing to
       // remove, and the newcomer is the extension.
       [
+        contributions.Contribution(
+          contributions.BuiltIn,
+          case evolution_wiring {
+            None -> []
+            Some(wiring) ->
+              list.append(evolution_tool.tools(wiring.door), wiring.trace_tools)
+          },
+        ),
         contributions.Contribution(
           contributions.BuiltIn,
           list.append(skill_tool.tools(skills), peers.tools(peer_wiring)),
@@ -4070,10 +4133,23 @@ fn assemble_in(
   // published by the observer below and relayed by the hub as pushed
   // `tool_output` frames (`protocol-change/031`).
   let event_bus = bus.start()
+  use evolution_profiles <- result.try(evolution_profiles(
+    settings,
+    opened,
+    evolution_wiring,
+  ))
+  use gateway <- result.try(
+    provider_gateway.with_profiles(
+      settings.gateway,
+      evolution_profiles,
+      evolution_prompt.fingerprint,
+      fn(attempt) { evolution_attempt(agency_config, attempt) },
+    ),
+  )
   let wiring_config =
     wiring.Config(
       observe_output: hub.tool_output_observer(event_bus, opened),
-      gateway: settings.gateway,
+      gateway:,
       role: model.Main,
       facts: catalogue_facts(settings.catalog),
       system: Some(assembled.text),
@@ -4220,6 +4296,10 @@ fn assemble_in(
       logger,
       entropy,
     )
+  let effects_record = case evolution_wiring {
+    None -> effects_record
+    Some(wiring) -> evolution_hook.wire(effects_record, wiring.live)
+  }
   let options = api.default_options(configuration)
   use runtime <- result.try(
     api.open_published(
@@ -4307,6 +4387,18 @@ fn assemble_in(
     settings.demand,
   ))
 
+  use Nil <- result.try(system_prompt.pin_profiles(runtime, evolution_profiles))
+  use Nil <- result.try(case evolution_wiring {
+    None -> Ok(Nil)
+    Some(wiring) ->
+      evolution_live.recover(wiring.live, 120_000)
+      |> result.map_error(fn(error) {
+        // Recovery already retains its failed native continuation before
+        // replying. Rendering that refusal must not add another owner.
+        evolution_store.describe(error)
+      })
+  })
+
   // The advisor strand is seeded here, once the writer that claims its
   // three registers exists. A failure is one warned line rather than a
   // refused boot: a session whose advisor could not be created runs
@@ -4393,6 +4485,9 @@ fn assemble_in(
     // vanished value, so an emptied store costs a running program a
     // cache miss it was already written to handle.
     |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
+    // Accepted upgrades belong to this session service, so a disconnected CLI
+    // cannot strand the scratch actor while its callbacks are suspended.
+    |> sup.add(upgrade_control.supervised(upgrade_name, scratch_name))
     // The satellite registry is in this tier because a restart costs
     // exactly what a satellite crash costs, which extensions are already
     // written to meet: every host it held is `Gone` to its next caller,
@@ -4500,6 +4595,7 @@ fn assemble_in(
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
+            |> with_evolution_control(evolution_wiring, core_control)
             |> hub.with_code_mode_issue(code_mode_issue)
             // The operator's abort reaches the effect plane here, and
             // this is the only place it can: the runtime stops the
@@ -4570,6 +4666,8 @@ fn assemble_in(
     tools: holder,
     pool:,
     executor: plane.executor,
+    evolution_retire: close_evolution(evolution_wiring),
+    legacy_host: None,
     gateway: hub.Gateway(name:),
     worktree: observe_worktree,
     goal: option.map(advisor_wiring, goalcommand.seam),
@@ -4779,44 +4877,13 @@ fn tear_down(booted: Booted) -> Nil {
 /// ```
 @internal
 pub fn close_instance(instance: Instance) -> Nil {
-  hub.drain_held(instance.gateway)
-  let _closed = api.close(instance.runtime)
-
-  // Tools run until the runtime has drained, so the holder they fetch from
-  // retires only after that. An owned session reaches the same ordering
-  // through custody; this is the path which has no custodian.
-  let _retired = tool_holder.stop(instance.tools)
-
-  // The language server stops after the runtime, so no query is still
-  // asking it, and before the services, so its manager is stopped
-  // deliberately (and not replaced) rather than killed with the tree.
-  stop_lsp(instance.lsp, instance.broker)
-  stop_services(instance.services)
-  let _stopped = address.stop(instance.namespace)
-  broker.stop(instance.broker)
-  stop_helpers(instance)
-
-  // Last, and after the runtime: an MCP client owns a child OS process,
-  // and stopping one closes that child's stdin and kills it. Nothing can
-  // still be calling by here — the drivers stopped with the runtime —
-  // and the stop is a cast, so a client that has already died costs
-  // nothing.
-  mcp_wiring.stop(instance.mcp)
-}
-
-// Retires the session's helpers once the broker has stopped, by asking the
-// service to close: it settles anything still live, closes the pool with its
-// verdict and ends the service. A verdict that is not `Ok` leaves the pool
-// and the service alive holding the custody that could not be shown retired,
-// which is what the pool's own `stop_pool` does on the same failure.
-fn stop_helpers(instance: Instance) -> Nil {
-  let _verdict =
-    executor.close(
-      instance.executor,
-      draining: executor.drain_ms,
-      helpers: executor.helpers_ms,
-    )
-  Nil
+  case instance.legacy_host {
+    Some(owner) -> host.retire(owner)
+    None -> {
+      let _outcome = retire_instance_body(instance)
+      Nil
+    }
+  }
 }
 
 // The triggered-rule scanner, and the decision not to start one.
@@ -5776,6 +5843,14 @@ pub fn session_base(
 ) -> policy.SandboxPolicy {
   protecting_index(settings.base_policy, index_path)
   |> protecting_memory(memory_store, memory_digest)
+  |> protecting(
+    always: [
+      evolution_root(settings),
+      evolution_scratch(settings),
+      evolution_trials(settings),
+    ],
+    where_maskable: [],
+  )
   |> allowing_tool_tmpdir
   |> allowing_imported_hook_env
   |> under_tools_config(settings.tools)
@@ -7435,5 +7510,1117 @@ fn mixed_entropy() -> fn() -> Int {
       <<random:size(64)>> -> unique * 18_446_744_073_709_551_616 + random
       _ -> unique
     }
+  }
+}
+
+// Evolution lives under one maskable directory, so future SQLite sidecars and
+// immutable envelopes cannot appear after the session policy was captured.
+fn evolution_root(settings: Settings) -> String {
+  let state = case settings.codemode_sockets {
+    Some(root) -> filepath.directory_name(root)
+    None -> filepath.directory_name(settings.session_path)
+  }
+  state <> "/evolution"
+}
+
+// The artifact mask also covers hosts that keep cap sockets in the workspace.
+// It exists before file-door capture so every native file door sees the same path.
+fn evolution_scratch(settings: Settings) -> String {
+  evolution_root(settings) <> "/run/" <> settings.session_id
+}
+
+// Trials live beside the protected catalogue. A fresh trial can grant its own
+// workspace without removing the original catalogue's enclosing mask.
+fn evolution_trials(settings: Settings) -> String {
+  evolution_root(settings) <> "-trials"
+}
+
+type EvolutionWiring {
+  EvolutionWiring(
+    live: evolution_live.Live,
+    transitions: evolution_queue.Queue,
+    door: evolution_tool.Door,
+    control: evolution_control.Seam,
+    catalogue: evolution_store.Store,
+    trace_tools: List(tool.Tool),
+  )
+}
+
+fn evolution_wiring(
+  settings: Settings,
+  host: Option(codemode_wiring.Config),
+  base: policy.SandboxPolicy,
+  agency_config: agency.Config,
+  namespace: address.Registry,
+  environment: List(#(String, String)),
+  clock: Clock,
+  logger: Logger,
+  owner: Option(custody.Owner),
+) -> Result(Option(EvolutionWiring), String) {
+  case host {
+    None -> Ok(None)
+    Some(host) ->
+      evolution_enabled(
+        settings,
+        host,
+        base,
+        agency_config,
+        namespace,
+        environment,
+        clock,
+        logger,
+        owner,
+      )
+      |> result.map(Some)
+  }
+}
+
+fn evolution_enabled(
+  settings: Settings,
+  host: codemode_wiring.Config,
+  base: policy.SandboxPolicy,
+  agency_config: agency.Config,
+  namespace: address.Registry,
+  environment: List(#(String, String)),
+  clock: Clock,
+  logger: Logger,
+  owner: Option(custody.Owner),
+) -> Result(EvolutionWiring, String) {
+  let root = evolution_root(settings)
+  use identity <- result.try(evolution_identity.current(host))
+  let opener = fn(authority) {
+    evolution_store.open(root, authority, identity, clock)
+  }
+  use catalogue <- result.try(
+    opener(evolution_store.Owner) |> result.map_error(evolution_store.describe),
+  )
+  let scratch = evolution_scratch(settings)
+  use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
+  let config =
+    evolution_native.Config(
+      catalogue:,
+      host:,
+      base:,
+      at: hook_coordinates(
+        settings,
+        base,
+        mixed_entropy()(),
+        clock,
+        environment,
+      ),
+      memory: extension_memory.for_session(agency_config),
+      secrets: fn(name) { secret.lookup(settings.secrets, name) },
+      namespace:,
+      scratch:,
+      logger:,
+      open: fn(policy) {
+        evolution_plane(settings.helper_path, policy, scratch, clock)
+      },
+    )
+  let adopt = fn(selection) { evolution_adopt(agency_config, selection) }
+  use live <- result.try(
+    evolution_live.start(
+      evolution_live.Config(
+        clock:,
+        stage: fn(selection) { evolution_native.stage(config, selection) },
+        adopt:,
+        recover: fn() { evolution_recover(config, settings.session_id, adopt) },
+      ),
+    )
+    |> result.map_error(string.inspect),
+  )
+  use transitions <- result.try(evolution_queue.start(live, clock))
+  use Nil <- result.try(
+    retain(
+      owner,
+      custody.Evolution,
+      fn() {
+        use Nil <- result.try(evolution_queue.close(transitions))
+        evolution_live.close(live, 120_000)
+        |> result.map_error(evolution_store.describe)
+      },
+      fn() {
+        evolution_live.detach(live)
+        evolution_queue.detach(transitions)
+      },
+    ),
+  )
+  let lookup = fn(ctx: tool.Ctx) {
+    opener(evolution_store.Caller(settings.session_id, ctx.workspace))
+  }
+  let failed = fn(error) {
+    evolution_live.retain(live, error)
+    tool.failure(evolution_store.describe(error))
+  }
+  let source = fn(_ctx: tool.Ctx) {
+    agency.borrow_runtime(agency_config)
+    |> result.map(fn(runtime) { runtime.session })
+    |> result.replace_error("the native session is unavailable")
+  }
+  let actual = fn(ctx: tool.Ctx) {
+    evolution_actual_model(settings, agency_config, ctx)
+  }
+  let initial =
+    evolution.door_over_capture_model(
+      lookup,
+      fn(ctx: tool.Ctx) {
+        evolution_record.Origin(
+          settings.session_id,
+          ctx.strand,
+          ctx.workspace,
+          None,
+        )
+      },
+      fn(ctx) { actual(ctx) |> result.map_error(evolution_store.Unavailable) },
+      fn(ctx, directory) {
+        evolution_live.snapshot(live, fn() {
+          evolution_native.snapshot(config, ctx, directory)
+        })
+        |> result.map_error(evolution_owned_refusal)
+      },
+      fn(ctx, catalogue, id, args) {
+        evolution_live.evaluate(live, fn() {
+          use candidate <- result.try(evolution_store.read_candidate(
+            catalogue,
+            id,
+          ))
+          case candidate.kind {
+            evolution_record.Extension | evolution_record.Program ->
+              evolution_native.evaluate_candidate(config, ctx, catalogue, id)
+            evolution_record.Prompt ->
+              evolution_compare(
+                settings,
+                agency_config,
+                catalogue,
+                id,
+                ctx,
+                args,
+              )
+          }
+        })
+        |> result.map_error(evolution_owned_refusal)
+      },
+      fn(ctx, args) {
+        case lookup(ctx) {
+          Error(error) -> failed(error)
+          Ok(visible) ->
+            evolution_invoked(live, visible, config, ctx, args, failed)
+        }
+      },
+      failed,
+    )
+  let door =
+    evolution_tool.Door(..initial, catalogue: fn(ctx, args) {
+      case lookup(ctx) {
+        Error(error) -> failed(error)
+        Ok(visible) -> evolution_catalogue(live, visible, args, failed)
+      }
+    })
+  Ok(EvolutionWiring(
+    live:,
+    transitions:,
+    door:,
+    catalogue:,
+    trace_tools: evolution_model_door.tools(source, actual),
+    control: evolution_operator_controls(
+      agency_config,
+      evolution_control.new(
+        settings.session_id,
+        settings.workspace,
+        opener,
+        live,
+        transitions,
+        clock,
+      ),
+    ),
+  ))
+}
+
+fn evolution_plane(
+  helper: String,
+  base: policy.SandboxPolicy,
+  scratch: String,
+  clock: Clock,
+) -> Result(evolution_native.Plane, evolution_store.Refusal) {
+  use #(pool, broker_actor, service) <- result.try(
+    start_effect_plane(helper, base, scratch, 2, clock)
+    |> result.map_error(evolution_store.Unavailable),
+  )
+  Ok(evolution_native.Plane(
+    broker: broker_actor,
+    inventory: fn() {
+      use snapshot <- result.try(
+        executor.snapshot(service, waiting: 1000)
+        |> result.map_error(string.inspect),
+      )
+      use pool <- result.try(snapshot.pool |> result.map_error(string.inspect))
+      Ok(
+        json.Object([
+          #("capacity", json.Int(pool.census.size)),
+          #("executions", json.Int(list.length(snapshot.live))),
+          #("borrowed", json.Int(pool.census.borrowed)),
+          #("unconfirmed", json.Int(pool.census.unconfirmed)),
+          #("spawned", json.Int(pool.census.spawned)),
+          #("retired", json.Int(pool.census.retired)),
+          #(
+            "helpers",
+            json.Array(
+              list.map(pool.helpers, fn(helper) {
+                json.Object([
+                  #("pid", json.String(string.inspect(helper.pid))),
+                  #("ordinal", json.Int(helper.ordinal)),
+                  #("custody", json.String(string.inspect(helper.custody))),
+                ])
+              }),
+            ),
+          ),
+        ]),
+      )
+    },
+    close: evolution_retirement.first(
+      fn() {
+        broker.stop(broker_actor)
+        executor.close(
+          service,
+          draining: executor.drain_ms,
+          helpers: executor.helpers_ms,
+        )
+        |> result.map_error(string.inspect)
+      },
+      fn() {
+        use Nil <- result.try(
+          exec.close_pool(pool, waiting: executor.helpers_ms)
+          |> result.map_error(string.inspect),
+        )
+
+        // A failed executor stays alive with its frozen verdict. Once the
+        // original pool proves retirement, its empty ledger can be removed.
+        let pid = executor.pid(service)
+        process.unlink(pid)
+        process.kill(pid)
+        Ok(Nil)
+      },
+    ),
+  ))
+}
+
+fn evolution_adopt(
+  agency_config: agency.Config,
+  selection: evolution_record.Selection,
+) -> Result(Nil, evolution_store.Refusal) {
+  use runtime <- result.try(
+    agency.borrow_runtime(agency_config)
+    |> result.replace_error(evolution_store.Unavailable(
+      "runtime unavailable for adoption audit",
+    )),
+  )
+  let key =
+    "evolution/adoption/"
+    <> selection.name
+    <> "/"
+    <> int.to_string(selection.generation)
+  let payload =
+    json.Object([
+      #(
+        "candidate_id",
+        json.String(evolution_record.id_string(selection.candidate_id)),
+      ),
+      #(
+        "evidence_id",
+        json.String(evolution_record.evidence_string(selection.evidence_id)),
+      ),
+      #("generation", json.Int(selection.generation)),
+    ])
+  use cell <- result.try(
+    api.fact_cell(runtime, key)
+    |> result.map_error(fn(error) {
+      evolution_store.Unavailable(string.inspect(error))
+    }),
+  )
+  case cell {
+    Some(cell) ->
+      case cell.value == payload {
+        True -> Ok(Nil)
+        False -> Error(evolution_store.Changed)
+      }
+    None ->
+      api.put_reserved_fact_expecting(runtime, key, payload, None)
+      |> result.replace(Nil)
+      |> result.map_error(fn(error) {
+        evolution_store.Unavailable(string.inspect(error))
+      })
+  }
+}
+
+fn evolution_recover(
+  config: evolution_native.Config,
+  session_id: String,
+  adopt: fn(evolution_record.Selection) -> Result(Nil, evolution_store.Refusal),
+) -> Result(Option(evolution_live.Generation), evolution_store.Refusal) {
+  use candidates <- result.try(evolution_store.catalogue(config.catalogue))
+  let extensions =
+    list.filter(candidates, fn(candidate) {
+      candidate.kind == evolution_record.Extension
+      && candidate.scope == evolution_record.Session(session_id)
+    })
+  use selections <- result.try(
+    list.try_map(extensions, fn(candidate) {
+      evolution_store.selected(
+        config.catalogue,
+        candidate.scope,
+        candidate.name,
+      )
+    }),
+  )
+  let selections =
+    list.unique(
+      list.filter_map(selections, fn(selection) {
+        option.to_result(selection, Nil)
+      }),
+    )
+  case selections {
+    [] -> Ok(None)
+    [selection] -> {
+      use active <- result.try(evolution_native.stage(config, selection))
+      case adopt(selection) {
+        Ok(Nil) -> Ok(Some(active))
+        Error(error) -> {
+          case evolution_retirement.perform(active.retire) {
+            Ok(Nil) -> Error(error)
+            Error(reason) ->
+              Error(evolution_store.CleanupUnconfirmed(
+                reason.reason,
+                reason.retry,
+              ))
+          }
+        }
+      }
+    }
+    [_, _, ..] ->
+      Error(evolution_store.Bounds("one active promoted extension per session"))
+  }
+}
+
+fn evolution_invoked(
+  live: evolution_live.Live,
+  catalogue: evolution_store.Store,
+  config: evolution_native.Config,
+  ctx: tool.Ctx,
+  args: json.JsonValue,
+  failed: fn(evolution_store.Refusal) -> tool.ToolOutcome,
+) -> tool.ToolOutcome {
+  let parsed = fn() {
+    use id <- result.try(
+      tool.required_string(args, "candidate_id")
+      |> result.map_error(evolution_store.Authority),
+    )
+    use candidate_id <- result.try(
+      evolution_record.candidate_id(id)
+      |> result.map_error(evolution_store.Authority),
+    )
+    use generation <- result.try(
+      tool.optional_int(args, "generation")
+      |> result.map_error(evolution_store.Authority),
+    )
+    use generation <- result.try(option.to_result(
+      generation,
+      evolution_store.Authority("generation required"),
+    ))
+    use name <- result.try(
+      tool.required_string(args, "tool")
+      |> result.map_error(evolution_store.Authority),
+    )
+    use arguments <- result.try(
+      tool.optional_value(args, "arguments")
+      |> result.map_error(evolution_store.Authority),
+    )
+    use arguments <- result.try(option.to_result(
+      arguments,
+      evolution_store.Authority("arguments required"),
+    ))
+    use candidate <- result.try(evolution_store.read_candidate(
+      catalogue,
+      candidate_id,
+    ))
+    Ok(#(id, generation, name, arguments, candidate))
+  }
+  case parsed() {
+    Error(error) -> failed(error)
+    Ok(#(id, generation, name, arguments, candidate)) ->
+      case candidate.kind {
+        evolution_record.Extension ->
+          evolution_live.invoke(
+            live,
+            id,
+            generation,
+            name,
+            ctx,
+            arguments,
+            120_000,
+          )
+        evolution_record.Program -> {
+          case
+            evolution_store.selected(catalogue, candidate.scope, candidate.name)
+          {
+            Ok(Some(selected))
+              if selected.candidate_id == candidate.id
+              && selected.generation == generation
+              && name == candidate.name
+            ->
+              evolution_live.execute(live, name, ctx, arguments, fn() {
+                evolution_native.invoke_program(
+                  config,
+                  catalogue,
+                  selected,
+                  ctx,
+                  arguments,
+                )
+                |> result.map(evolution_program_outcome)
+              })
+            Ok(None) | Ok(Some(_)) -> failed(evolution_store.Stale)
+            Error(error) -> failed(error)
+          }
+        }
+        evolution_record.Prompt ->
+          failed(evolution_store.Authority(
+            "prompt profiles are not executable tools",
+          ))
+      }
+  }
+}
+
+fn evolution_catalogue(
+  live: evolution_live.Live,
+  catalogue: evolution_store.Store,
+  args: json.JsonValue,
+  failed: fn(evolution_store.Refusal) -> tool.ToolOutcome,
+) -> tool.ToolOutcome {
+  case evolution_live.catalogue(live) {
+    Error(error) -> failed(evolution_owned_refusal(error))
+    Ok(active) -> {
+      let entries = case active {
+        None -> []
+        Some(active) ->
+          list.map(active.tools, fn(declared) {
+            json.Object([
+              #(
+                "candidate_id",
+                json.String(evolution_record.id_string(
+                  active.selection.candidate_id,
+                )),
+              ),
+              #("generation", json.Int(active.selection.generation)),
+              #("name", json.String(declared.name)),
+              #("description", json.String(declared.description)),
+              #("schema", declared.schema),
+            ])
+          })
+      }
+      case evolution_program_catalogue(catalogue) {
+        Error(error) -> failed(error)
+        Ok(programs) -> {
+          let paged = {
+            use values <- result.try(evolution.catalogue_values(catalogue))
+            evolution.catalogue_page(
+              evolution.CatalogueValues(
+                candidates: values.candidates,
+                active: list.append(entries, programs),
+              ),
+              args,
+            )
+          }
+          case paged {
+            Ok(value) -> tool.success(json.to_string(value))
+            Error(error) -> failed(error)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn with_evolution_control(
+  options: hub.Options,
+  wiring: Option(EvolutionWiring),
+  core: evolution_control.Seam,
+) -> hub.Options {
+  // Core release authority is available independently of authored candidates.
+  // Retain only the two command capabilities in the gateway's service closure.
+  let extensions = option.map(wiring, fn(wiring) { wiring.control })
+  hub.with_evolution(
+    options,
+    evolution_control.Seam(command: fn(authority, principal, action, args) {
+      case action {
+        "core_status" | "core_upgrade" | "core_downgrade" ->
+          core.command(authority, principal, action, args)
+        _ ->
+          case extensions {
+            Some(control) -> control.command(authority, principal, action, args)
+            None -> Error("runtime evolution is unavailable for this session")
+          }
+      }
+    }),
+  )
+}
+
+fn evolution_program_outcome(
+  execution: codemode_tool.Execution,
+) -> tool.ToolOutcome {
+  let value = codemode_tool.execution_value(execution)
+  let outcome = case execution.result {
+    codemode_tool.Ran(codemode_tool.Completed(_), _) ->
+      tool.success(json.to_string(value))
+    codemode_tool.Ran(codemode_tool.Errored(_, _), _)
+    | codemode_tool.VetRejected(_)
+    | codemode_tool.CompileFailed(_)
+    | codemode_tool.RunFailed(_) -> tool.failure(json.to_string(value))
+  }
+  tool.with_details(outcome, value)
+}
+
+fn evolution_profiles(
+  settings: Settings,
+  opened: session.Session,
+  wiring: Option(EvolutionWiring),
+) -> Result(List(evolution_profile.Profile), String) {
+  case settings.evolution_profiles {
+    Some(profiles) -> Ok(profiles)
+    None -> {
+      use pinned <- result.try(system_prompt.pinned_profiles_in(opened))
+      case pinned {
+        Some(profiles) -> Ok(profiles)
+        None ->
+          case wiring {
+            None -> Ok([])
+            Some(wiring) ->
+              evolution_selected_profiles(wiring)
+              |> result.map_error(fn(error) {
+                evolution_live.retain(wiring.live, error)
+                evolution_store.describe(error)
+              })
+          }
+      }
+    }
+  }
+}
+
+fn evolution_selected_profiles(
+  wiring: EvolutionWiring,
+) -> Result(List(evolution_profile.Profile), evolution_store.Refusal) {
+  use candidates <- result.try(evolution_store.catalogue(wiring.catalogue))
+  use profiles <- result.try(
+    list.try_fold(candidates, [], fn(profiles, candidate) {
+      case candidate.kind {
+        evolution_record.Extension | evolution_record.Program -> Ok(profiles)
+        evolution_record.Prompt -> {
+          use selected <- result.try(evolution_store.selected(
+            wiring.catalogue,
+            candidate.scope,
+            candidate.name,
+          ))
+          case selected {
+            None -> Ok(profiles)
+            Some(selection) -> {
+              use selected <- result.try(evolution_store.authorized(
+                wiring.catalogue,
+                selection,
+              ))
+              use profile <- result.try(
+                evolution_prompt.candidate_profile(selected)
+                |> result.map_error(evolution_store.Corrupt),
+              )
+              Ok([profile, ..profiles])
+            }
+          }
+        }
+      }
+    }),
+  )
+  evolution_profile.validate_map(list.unique(profiles))
+  |> result.map_error(evolution_store.Corrupt)
+}
+
+fn evolution_attempt(
+  config: agency.Config,
+  attempt: provider_gateway.ProfileAttempt,
+) -> Result(Nil, String) {
+  use runtime <- result.try(
+    agency.borrow_runtime(config)
+    |> result.replace_error(
+      "runtime unavailable for provider attempt provenance",
+    ),
+  )
+  let key =
+    "evolution/attempt/" <> int.to_string(ffi_os.unique_positive_integer())
+  let value =
+    json.Object([
+      #("provider", json.String(attempt.target.provider)),
+      #("model", json.String(attempt.target.model_id)),
+      #("api", json.String(attempt.api)),
+      #("ordinal", json.Int(attempt.ordinal)),
+      #("digest", json.String(attempt.digest)),
+      #("profile_id", case attempt.profile_id {
+        None -> json.Null
+        Some(id) -> json.String(id)
+      }),
+    ])
+  api.put_reserved_fact_expecting(runtime, key, value, None)
+  |> result.replace(Nil)
+  |> result.map_error(string.inspect)
+}
+
+fn close_evolution(
+  wiring: Option(EvolutionWiring),
+) -> evolution_retirement.Task {
+  case wiring {
+    None -> evolution_retirement.repeat(fn() { Ok(Nil) })
+    Some(wiring) ->
+      evolution_retirement.sequence(
+        evolution_retirement.repeat(fn() {
+          evolution_queue.close(wiring.transitions)
+        }),
+        evolution_retirement.repeat(fn() {
+          evolution_live.close(wiring.live, 120_000)
+          |> result.map_error(evolution_store.describe)
+        }),
+      )
+  }
+}
+
+/// Retires a legacy open_instance evaluator with the native executor witness.
+/// Owned daemon instances retire through their existing custody owner instead.
+///
+/// ## Examples
+///
+/// `serve.retire_instance(instance)` refuses unconfirmed helper retirement.
+pub fn retire_instance(instance: Instance) -> Result(Nil, String) {
+  evolution_retirement.perform(instance_retirement(instance))
+  |> result.map_error(fn(failed) { failed.reason })
+}
+
+/// Retires a legacy evaluator through its sole host and typed continuation.
+/// Acknowledged failures transfer the remaining phases before that host exits.
+///
+/// ## Examples
+///
+/// `instance_retirement(instance)` is a production trial's native close task.
+pub fn instance_retirement(instance: Instance) -> evolution_retirement.Task {
+  case instance.legacy_host {
+    Some(owner) -> host.retire_task(owner)
+    None ->
+      evolution_retirement.repeat(fn() {
+        Error("owned instances retire through their custody owner")
+      })
+  }
+}
+
+// The legacy host is the sole caller. Its failure transfers remaining phases,
+// so neither a consumed queue nor a confirmed pool is asked to close again.
+fn instance_retirement_body(instance: Instance) -> evolution_retirement.Task {
+  let drained =
+    evolution_retirement.repeat(fn() {
+      hub.drain_held(instance.gateway)
+      api.close(instance.runtime) |> result.map_error(string.inspect)
+    })
+  let holder =
+    evolution_retirement.repeat(fn() {
+      let _retired = tool_holder.stop(instance.tools)
+      Ok(Nil)
+    })
+  let services =
+    evolution_retirement.repeat(fn() {
+      stop_lsp(instance.lsp, instance.broker)
+      stop_services(instance.services)
+      let _stopped = address.stop(instance.namespace)
+      broker.stop(instance.broker)
+      Ok(Nil)
+    })
+  let pool =
+    evolution_retirement.first(
+      fn() {
+        executor.close(
+          instance.executor,
+          draining: executor.drain_ms,
+          helpers: executor.helpers_ms,
+        )
+        |> result.map_error(string.inspect)
+      },
+      fn() {
+        use Nil <- result.try(
+          exec.close_pool(instance.pool, waiting: executor.helpers_ms)
+          |> result.map_error(string.inspect),
+        )
+        let pid = executor.pid(instance.executor)
+        process.unlink(pid)
+        process.kill(pid)
+        Ok(Nil)
+      },
+    )
+  let mcp =
+    evolution_retirement.repeat(fn() {
+      mcp_wiring.stop(instance.mcp)
+      Ok(Nil)
+    })
+
+  // Each native plane remains independently retireable when the runtime's
+  // writer or supervisor has already died. Only uncertain phases survive.
+  evolution_retirement.join([
+    drained,
+    holder,
+    instance.evolution_retire,
+    services,
+    pool,
+    mcp,
+  ])
+}
+
+// Legacy callers may render the refusal, while evaluator callers keep its task.
+fn retire_instance_body(instance: Instance) -> Result(Nil, String) {
+  evolution_retirement.perform(instance_retirement_body(instance))
+  |> result.map_error(fn(failed) { failed.reason })
+}
+
+fn evolution_program_catalogue(
+  catalogue: evolution_store.Store,
+) -> Result(List(json.JsonValue), evolution_store.Refusal) {
+  use candidates <- result.try(evolution_store.catalogue(catalogue))
+  use entries <- result.try(
+    list.try_map(candidates, fn(candidate) {
+      case candidate.kind {
+        evolution_record.Extension | evolution_record.Prompt -> Ok([])
+        evolution_record.Program -> {
+          use selected <- result.try(evolution_store.selected(
+            catalogue,
+            candidate.scope,
+            candidate.name,
+          ))
+          case selected {
+            Some(selection) if selection.candidate_id == candidate.id -> {
+              use authorized <- result.try(evolution_store.authorized(
+                catalogue,
+                selection,
+              ))
+              use schema <- result.try(
+                json.parse(authorized.input_schema)
+                |> result.replace_error(evolution_store.Corrupt(
+                  "program schema",
+                )),
+              )
+              Ok([
+                json.Object([
+                  #(
+                    "candidate_id",
+                    json.String(evolution_record.id_string(candidate.id)),
+                  ),
+                  #("generation", json.Int(selection.generation)),
+                  #("name", json.String(candidate.name)),
+                  #("kind", json.String("program")),
+                  #("description", json.String(candidate.description)),
+                  #("schema", schema),
+                  #("origin_session", json.String(candidate.origin.session_id)),
+                ]),
+              ])
+            }
+            Some(_) | None -> Ok([])
+          }
+        }
+      }
+    }),
+  )
+  Ok(list.flatten(entries))
+}
+
+// The model chooses an immutable task-set ID. Native admission owns its fixture,
+// target and scoring bytes, and every arm opens the ordinary session assembly.
+fn evolution_compare(
+  settings: Settings,
+  agency_config: agency.Config,
+  catalogue: evolution_store.Store,
+  candidate_id: evolution_record.CandidateId,
+  ctx: tool.Ctx,
+  arguments: json.JsonValue,
+) -> Result(evolution_record.Evidence, evolution_store.Refusal) {
+  use #(taskset_id, limits) <- result.try(
+    evolution_model_door.evaluation_request(arguments)
+    |> result.map_error(evolution_store.Bounds),
+  )
+  use source <- result.try(
+    agency.borrow_runtime(agency_config)
+    |> result.replace_error(evolution_store.Unavailable(
+      "source runtime is unavailable",
+    )),
+  )
+  use admitted <- result.try(
+    evolution_tasks.load(source.session, taskset_id)
+    |> result.map_error(evolution_store.Authority),
+  )
+  use actual <- result.try(
+    evolution_actual_model(settings, agency_config, ctx)
+    |> result.map_error(evolution_store.Authority),
+  )
+  use target <- result.try(
+    catalog.find(settings.catalog, actual.provider)
+    |> result.map(catalog.resolved)
+    |> result.replace_error(evolution_store.Authority(
+      "actual model catalogue entry is absent",
+    )),
+  )
+  use Nil <- result.try(case target.model_id == actual.model {
+    True -> Ok(Nil)
+    False ->
+      Error(evolution_store.Authority(
+        "actual model differs from its native catalogue",
+      ))
+  })
+  evolution_rollout.evaluate(
+    catalogue,
+    candidate_id,
+    target,
+    actual.api,
+    list.map(admitted.tasks, fn(fixture) { fixture.task }),
+    limits,
+    evolution_rollouts(settings, admitted, ctx.clock, ctx.base_policy),
+  )
+}
+
+fn evolution_rollouts(
+  settings: Settings,
+  admitted: evolution_tasks.TaskSet,
+  clock: Clock,
+  base: policy.SandboxPolicy,
+) -> evolution_rollout.Callbacks {
+  evolution_rollout_host.callbacks(
+    settings.gateway,
+    clock,
+    fn(request, guarded) {
+      evolution_trial(settings, admitted, request, guarded, base)
+    },
+    fn(task, workspace) { evolution_fixture.score(admitted, task, workspace) },
+  )
+}
+
+// A trial has neither the source conversation nor another trial's filesystem.
+// The guarded provider still dispatches through the actual production runtime,
+// whose filesystem, bash and code-mode tools use the ordinary jail and broker.
+fn evolution_trial(
+  settings: Settings,
+  admitted: evolution_tasks.TaskSet,
+  request: evolution_rollout.TrialRequest,
+  guarded: provider_gateway.Gateway,
+  base: policy.SandboxPolicy,
+) -> Result(evolution_rollout_host.Running, String) {
+  use fixture <- result.try(evolution_fixture.find(admitted, request.task))
+  use target <- result.try(case request.target {
+    model.ForResolved(target) -> Ok(target)
+    model.ForRole(..) -> Error("a trial requires its exact admitted model")
+  })
+  let tag = bit_array.base16_encode(token.production_entropy()(8))
+  let private_trials = evolution_trials(settings)
+  let root = private_trials <> "/" <> tag
+  let workspace = root <> "/work"
+  use Nil <- result.try(bootstrap.ensure_private_directory(root))
+  use Nil <- result.try(evolution_fixture.install(fixture, workspace))
+  let sockets = case settings.codemode_sockets {
+    None -> filepath.directory_name(settings.session_path) <> "/run"
+    Some(root) -> root
+  }
+  let profiles = case request.profile {
+    None -> []
+    Some(profile) -> [profile]
+  }
+  let isolated =
+    Settings(
+      ..settings,
+      session_path: root <> "/state/session.db",
+      token_path: root <> "/state/token",
+      workspace:,
+      domain_paths: None,
+      peer_directory: None,
+      codemode_sockets: Some(sockets <> "/trial-" <> tag),
+      base_policy: evolution_trial_policy(base, private_trials, workspace),
+      tools: catalog.ToolsConfig(..settings.tools, network: case base.network {
+        policy.NetworkFull -> catalog.ToolNetworkFull
+        policy.NetworkOff | policy.NetworkProxy(_, _) -> catalog.ToolNetworkOff
+      }),
+      helper_pool_size: 2,
+      session_id: "trial-" <> tag,
+      gateway: guarded,
+      evolution_profiles: Some(profiles),
+      system: None,
+      home: Some(root <> "/home"),
+      model: machine_strand.ModelIdentity(target.provider, target.model_id),
+      context_window: target.context_window,
+      max_output_tokens: target.max_output_tokens,
+      api: request.api,
+      rules: [],
+      schedules: [],
+      schedule_policy: schedule.ModelSchedulesOff,
+      memory: distillpass.no_pass(),
+      advisor: None,
+    )
+  use instance <- result.try(open_instance(isolated, log.discard()))
+  Ok(
+    evolution_rollout_host.Running(
+      runtime: instance.runtime,
+      workspace:,
+      retire: instance_retirement(instance),
+      cleanup: fn() {
+        simplifile.delete(root)
+        |> result.map_error(simplifile.describe_error)
+      },
+    ),
+  )
+}
+
+/// Grants a trial only its fresh fixture while preserving source restrictions.
+///
+/// The native trial directory is the sole mask exception. It holds no retained
+/// criteria or source state, and the replacement read/write roots reach only
+/// this trial's workspace. Boot separately admits the discovered toolchain;
+/// caller mounts and broad host reads cannot expose other trials or the daemon.
+/// Original network, resource, environment and protected-state restrictions
+/// remain in force.
+///
+/// ## Examples
+///
+/// `evolution_trial_policy(base, "/state/evolution-trials", workspace)`.
+@internal
+pub fn evolution_trial_policy(
+  base: policy.SandboxPolicy,
+  private_trials: String,
+  workspace: String,
+) -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    ..base,
+    readable_roots: [workspace],
+    writable_roots: [workspace],
+    mounts: [],
+    scratch: policy.ScratchTmpfs,
+    protected: [
+      workspace <> "/" <> codemode_wiring.blob_directory,
+      ..list.filter(base.protected, fn(path) { path != private_trials })
+    ],
+  )
+}
+
+fn evolution_actual_model(
+  settings: Settings,
+  agency_config: agency.Config,
+  ctx: tool.Ctx,
+) -> Result(evolution_record.ModelScope, String) {
+  use runtime <- result.try(
+    agency.borrow_runtime(agency_config)
+    |> result.replace_error("the native session is unavailable"),
+  )
+  use resolved <- result.try(
+    provider_gateway.resolve(settings.gateway, model.Main)
+    |> result.replace_error("the native model is unavailable"),
+  )
+  use api <- result.try(
+    provider_gateway.api_for(settings.gateway, resolved)
+    |> result.replace_error("the native provider API is unavailable"),
+  )
+  evolution_trace.actual_model(
+    runtime.session,
+    ctx.strand,
+    evolution_record.ModelScope(resolved.provider, resolved.model_id, api),
+  )
+}
+
+// Only the authenticated operator door can admit independent criteria or marks.
+// The source runtime is borrowed natively; JSON never chooses a private session.
+fn evolution_operator_controls(
+  config: agency.Config,
+  lifecycle: evolution_control.Seam,
+) -> evolution_control.Seam {
+  evolution_control.Seam(command: fn(authority, principal, action, arguments) {
+    case action {
+      "admit_tasks" | "mark_outcome" -> {
+        use Nil <- result.try(case authority {
+          access.Owner | access.Participant(access.Operator) -> Ok(Nil)
+          access.Participant(access.Observer) ->
+            Error("Denied: an operator is required")
+        })
+        use runtime <- result.try(
+          agency.borrow_runtime(config)
+          |> result.replace_error("the native source runtime is unavailable"),
+        )
+        case action {
+          "admit_tasks" -> {
+            use admitted <- result.try(evolution_tasks.admit(
+              runtime,
+              authority,
+              principal,
+              arguments,
+            ))
+            Ok(
+              json.Object([
+                #("taskset_id", json.String(admitted.id)),
+                #("tasks", json.Int(list.length(admitted.tasks))),
+              ]),
+            )
+          }
+          _ -> evolution_mark(runtime, principal, arguments)
+        }
+      }
+      _ -> lifecycle.command(authority, principal, action, arguments)
+    }
+  })
+}
+
+fn evolution_mark(
+  runtime: api.Runtime,
+  principal: String,
+  arguments: json.JsonValue,
+) -> Result(json.JsonValue, String) {
+  use text <- result.try(tool.required_string(arguments, "entry_id"))
+  use id <- result.try(
+    ids.parse_entry_id(text)
+    |> result.replace_error("invalid source entry identity"),
+  )
+  use found <- result.try(
+    storage.get_entries(runtime.session.store, [id])
+    |> result.replace_error("source entry is unreadable"),
+  )
+  use entry <- result.try(
+    dict.get(found, id)
+    |> result.replace_error("source entry is absent from this session"),
+  )
+  use Nil <- result.try(case entry {
+    evolution_entry.MessageEntry(message: message.AssistantMessage(..), ..) ->
+      Ok(Nil)
+    _ -> Error("only a settled assistant source may receive a task outcome")
+  })
+  use verdict <- result.try(tool.required_string(arguments, "outcome"))
+  use verdict <- result.try(case verdict {
+    "succeeded" -> Ok(evolution_trace.Succeeded)
+    "failed" -> Ok(evolution_trace.Failed)
+    _ -> Error("outcome must be succeeded or failed")
+  })
+  use Nil <- result.try(evolution_trace.mark(runtime, id, verdict, principal))
+  Ok(
+    json.Object([
+      #("entry_id", json.String(text)),
+      #(
+        "outcome",
+        json.String(case verdict {
+          evolution_trace.Succeeded -> "succeeded"
+          evolution_trace.Failed -> "failed"
+          evolution_trace.Unmarked -> "unmarked"
+        }),
+      ),
+    ]),
+  )
+}
+
+// Live has already retained cleanup authority before answering. Model rendering
+// may keep its named refusal, but must not retain the same retry twice.
+fn evolution_owned_refusal(
+  reason: evolution_store.Refusal,
+) -> evolution_store.Refusal {
+  case reason {
+    evolution_store.CleanupUnconfirmed(..) ->
+      evolution_store.Unavailable(evolution_store.describe(reason))
+    _ordinary -> reason
   }
 }

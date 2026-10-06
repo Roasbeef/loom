@@ -56,17 +56,22 @@
 //// permits and this doc says out loud rather than leaving to be
 //// discovered.
 
+import client/internal/ffi_upgrade as native
+import client/upgrade/state as abi
 import codemode/workspace.{type KvRefusal, EntryTooLarge, StoreUnavailable}
 import gleam/bit_array
+import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
+import host/bootstrap as host
 import runtime/residency
 import weft/actor
 import weft/registry as address
+import weft/upgrade
 
 /// The largest value one key may hold.
 pub const default_max_entry_bytes = 262_144
@@ -103,28 +108,12 @@ pub type Bounds {
 /// What the store is asked. Opaque: a caller reaches it through `seam`,
 /// never by building a message, so there is one place that decides what
 /// a wedged or absent store answers.
-pub opaque type Message {
-  Get(key: String, reply_with: Subject(Option(BitArray)))
-  Set(key: String, value: BitArray, reply_with: Subject(Result(Nil, KvRefusal)))
-  Delete(key: String, reply_with: Subject(Nil))
+pub type Message =
+  abi.Message
 
-  /// How many entries and how many bytes the store holds. For a test and
-  /// for an operator's line; nothing in the capability path reads it.
-  Stat(reply_with: Subject(#(Int, Int)))
-  Stop
-}
-
-type Entry {
-  Entry(key: String, value: BitArray, bytes: Int)
-}
-
-// `entries` is newest-written first, so the eviction victim is the last
-// element and a `set` is a prepend. `total_bytes` and `count` are
-// tracked rather than recomputed: both are asked on every `set`, and
-// `list.length` on every write is the shape lint R5 exists to find.
-type State {
-  State(bounds: Bounds, entries: List(Entry), total_bytes: Int, count: Int)
-}
+/// Stable typed scratch state shared by reviewed implementations only.
+pub type State =
+  abi.State
 
 /// The nearest coherent `Bounds` to the one given.
 ///
@@ -206,8 +195,24 @@ pub fn start(
   bounds: Bounds,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   let bounds = coherent(bounds)
-  actor.new(State(bounds:, entries: [], total_bytes: 0, count: 0))
+  actor.new_with_initialiser(1000, fn(inbox) {
+    Ok(
+      actor.initialised(abi.State(
+        max_entry_bytes: bounds.max_entry_bytes,
+        max_total_bytes: bounds.max_total_bytes,
+        max_entries: bounds.max_entries,
+        entries: [],
+        total_bytes: 0,
+        count: 0,
+        inbox:,
+        identity: abi.builtin(),
+        permit: None,
+      ))
+      |> actor.returning(inbox),
+    )
+  })
   |> actor.on_message(handle)
+  |> actor.with_upgrade(within: 100, migrate: migrate)
   |> actor.addressed(name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
@@ -228,7 +233,7 @@ pub fn supervised(
 
 /// Stops the store and everything in it.
 pub fn stop(name: address.Address(Message)) -> Nil {
-  let _sent = address.send(name, Stop)
+  let _sent = address.send(name, abi.Stop)
   Nil
 }
 
@@ -257,15 +262,15 @@ pub fn seam(
   timeout_ms timeout_ms: Int,
 ) -> Scratch {
   Scratch(
-    get: fn(key) { ask(name, timeout_ms, Get(key, _)) },
+    get: fn(key) { ask(name, timeout_ms, abi.Get(key, _)) },
     // Two `Result`s, because two different things can refuse: the store
     // can be unreachable (the outer one, this module's) and the value can
     // be too large (the inner one, the store's). A program is owed one
     // refusal, so they flatten.
     set: fn(key, value) {
-      ask(name, timeout_ms, Set(key, value, _)) |> result.flatten
+      ask(name, timeout_ms, abi.Set(key, value, _)) |> result.flatten
     },
-    delete: fn(key) { ask(name, timeout_ms, Delete(key, _)) },
+    delete: fn(key) { ask(name, timeout_ms, abi.Delete(key, _)) },
   )
 }
 
@@ -309,59 +314,103 @@ fn ask(
   timeout_ms: Int,
   message: fn(Subject(answer)) -> Message,
 ) -> Result(answer, KvRefusal) {
-  case address.lookup(name) {
-    Error(Nil) -> Error(no_store())
-    Ok(subject) -> {
-      use pid <- result.try(
-        process.subject_owner(subject)
-        |> result.replace_error(no_store()),
-      )
-      let reply = process.new_subject()
-      let monitor = process.monitor(pid)
+  use subject <- result.try(
+    address.lookup(name) |> result.replace_error(no_store()),
+  )
+  ask_subject(subject, timeout_ms, message)
+}
 
-      // Keep delivery on the same process the failure selector monitors. A
-      // second name lookup would turn an ordinary restart into a caller crash.
-      process.send(subject, message(reply))
-      let answered =
-        process.new_selector()
-        |> process.select_map(reply, Some)
-        |> process.select_specific_monitor(monitor, fn(_down) { None })
-        |> process.selector_receive(within: timeout_ms)
-      process.demonitor_process(monitor)
-      case answered {
-        Ok(Some(value)) -> Ok(value)
-        Ok(None) | Error(Nil) -> Error(wedged())
-      }
-    }
+fn ask_subject(
+  subject: Subject(Message),
+  timeout_ms: Int,
+  message: fn(Subject(answer)) -> Message,
+) -> Result(answer, KvRefusal) {
+  use pid <- result.try(
+    process.subject_owner(subject) |> result.replace_error(no_store()),
+  )
+  let reply = process.new_subject()
+  let monitor = process.monitor(pid)
+  process.send(subject, message(reply))
+  let answered =
+    process.new_selector()
+    |> process.select_map(reply, Some)
+    |> process.select_specific_monitor(monitor, fn(_) { None })
+    |> process.selector_receive(within: timeout_ms)
+  process.demonitor_process(monitor)
+  case answered {
+    Ok(Some(value)) -> Ok(value)
+    Ok(None) | Error(Nil) -> Error(wedged())
   }
 }
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  handle_release(state, message, "builtin")
+}
+
+/// Execute the unchanged scratch contract under a reviewed callback version.
+///
+/// Reviewed implementation modules call this typed ABI. The version argument
+/// is compiled into the loaded handler, making inspection evidence of which
+/// implementation actually executes rather than a label copied from a request.
+///
+/// ## Examples
+///
+/// `scratch.handle_release(state, message, "v2")` retains cache semantics.
+pub fn handle_release(
+  state: State,
+  message: Message,
+  reported_version: String,
+) -> actor.Next(State, Message) {
   case message {
-    Get(key:, reply_with:) -> {
+    abi.Get(key:, reply_with:) -> {
       process.send(reply_with, lookup(state.entries, key))
       actor.continue(state)
     }
-    Set(key:, value:, reply_with:) -> {
+    abi.Set(key:, value:, reply_with:) -> {
       let #(state, answer) = store(state, key, value)
       process.send(reply_with, answer)
       actor.continue(state)
     }
-    Delete(key:, reply_with:) -> {
+    abi.Delete(key:, reply_with:) -> {
       process.send(reply_with, Nil)
       actor.continue(remove(state, key))
     }
-    Stat(reply_with:) -> {
+    abi.Stat(reply_with:) -> {
       process.send(reply_with, #(state.count, state.total_bytes))
       actor.continue(state)
     }
-    Stop -> actor.stop()
+    abi.Inspect(reply_with:) -> {
+      process.send(
+        reply_with,
+        abi.Observation(
+          state.identity,
+          reported_version,
+          state.count,
+          state.total_bytes,
+        ),
+      )
+      actor.continue(state)
+    }
+    abi.Arm(permit:, reply_with:) -> {
+      let accepted = admit(state, permit)
+      process.send(reply_with, result.map(accepted, fn(_) { Nil }))
+      actor.continue(result.unwrap(accepted, state))
+    }
+    abi.Disarm(token:, reply_with:) -> {
+      let permit = case state.permit {
+        Some(permit) if permit.token == token -> None
+        other -> other
+      }
+      process.send(reply_with, Nil)
+      actor.continue(abi.State(..state, permit:))
+    }
+    abi.Stop -> actor.stop()
   }
 }
 
 // A read leaves the write order alone: see the module doc on why this is
 // least-recently-written and not least-recently-used.
-fn lookup(entries: List(Entry), key: String) -> Option(BitArray) {
+fn lookup(entries: List(abi.Entry), key: String) -> Option(BitArray) {
   case list.find(entries, fn(entry) { entry.key == key }) {
     Ok(entry) -> Some(entry.value)
     Error(Nil) -> None
@@ -378,17 +427,14 @@ fn store(
   value: BitArray,
 ) -> #(State, Result(Nil, KvRefusal)) {
   let bytes = bit_array.byte_size(value)
-  case bytes > state.bounds.max_entry_bytes {
-    True -> #(
-      state,
-      Error(EntryTooLarge(bytes:, limit: state.bounds.max_entry_bytes)),
-    )
+  case bytes > state.max_entry_bytes {
+    True -> #(state, Error(EntryTooLarge(bytes:, limit: state.max_entry_bytes)))
     False -> {
       let cleared = remove(state, key)
       let admitted =
-        State(
+        abi.State(
           ..cleared,
-          entries: [Entry(key:, value:, bytes:), ..cleared.entries],
+          entries: [abi.Entry(key:, value:, bytes:), ..cleared.entries],
           total_bytes: cleared.total_bytes + bytes,
           count: cleared.count + 1,
         )
@@ -401,7 +447,7 @@ fn remove(state: State, key: String) -> State {
   case list.find(state.entries, fn(entry) { entry.key == key }) {
     Error(Nil) -> state
     Ok(found) ->
-      State(
+      abi.State(
         ..state,
         entries: list.filter(state.entries, fn(entry) { entry.key != key }),
         total_bytes: state.total_bytes - found.bytes,
@@ -419,8 +465,7 @@ fn remove(state: State, key: String) -> State {
 // bound to be the smaller of the two).
 fn evict(state: State) -> State {
   case
-    state.total_bytes > state.bounds.max_total_bytes
-    || state.count > state.bounds.max_entries
+    state.total_bytes > state.max_total_bytes || state.count > state.max_entries
   {
     False -> state
     True ->
@@ -428,7 +473,7 @@ fn evict(state: State) -> State {
         [] -> state
         [oldest, ..newer] ->
           evict(
-            State(
+            abi.State(
               ..state,
               entries: list.reverse(newer),
               total_bytes: state.total_bytes - oldest.bytes,
@@ -449,5 +494,177 @@ pub fn stat(
 ) -> #(Int, Int) {
   // The eager fallback is right here: a bare tuple of two integers is
   // cheaper to build than the guard that would defer it.
-  result.unwrap(ask(name, timeout_ms, Stat), #(0, 0))
+  result.unwrap(ask(name, timeout_ms, abi.Stat), #(0, 0))
+}
+
+/// Inspect an opted-in scratch actor without exposing any stored value.
+///
+/// ## Examples
+///
+/// `scratch.inspect(name, 1000)` returns version, digest and aggregate counts.
+pub fn inspect(
+  name: address.Address(Message),
+  timeout_ms: Int,
+) -> Result(abi.Observation, String) {
+  ask(name, timeout_ms, abi.Inspect)
+  |> result.replace_error("scratch inspection unavailable")
+}
+
+/// Admit one identity-fenced reviewed transaction before suspension.
+///
+/// ## Examples
+///
+/// `scratch.arm(name, permit, 100)` refuses a stale expected identity.
+pub fn arm(
+  name: address.Address(Message),
+  permit: abi.Permit,
+  timeout_ms: Int,
+) -> Result(Nil, String) {
+  ask(name, timeout_ms, abi.Arm(permit, _))
+  |> result.replace_error("scratch admission unavailable")
+  |> result.flatten
+}
+
+/// Retire a matching transaction after the custodian has resumed service.
+///
+/// ## Examples
+///
+/// `scratch.disarm(name, token, 100)` cannot clear a newer permit.
+pub fn disarm(
+  name: address.Address(Message),
+  token: String,
+  timeout_ms: Int,
+) -> Result(Nil, String) {
+  ask(name, timeout_ms, abi.Disarm(token, _))
+  |> result.replace_error("scratch permit retirement unavailable")
+}
+
+fn admit(state: State, permit: abi.Permit) -> Result(State, String) {
+  use _ <- result.try(case host.monotonic_time_ms() < permit.expires_at {
+    True -> Ok(Nil)
+    False -> Error("scratch admission expired before delivery")
+  })
+  use _ <- result.try(case state.permit {
+    None -> Ok(Nil)
+    Some(_) -> Error("scratch already has an admitted upgrade")
+  })
+  use _ <- result.try(case permit.expected == state.identity {
+    True -> Ok(Nil)
+    False -> Error("scratch implementation differs from expected identity")
+  })
+  use _ <- result.try(
+    case
+      permit.target.boundary == "loom.scratch.v1"
+      && permit.target.state_version == "v1"
+    {
+      True -> Ok(Nil)
+      False -> Error("scratch target uses an incompatible typed boundary")
+    },
+  )
+  Ok(abi.State(..state, permit: Some(permit)))
+}
+
+fn migrate(
+  request: upgrade.Request,
+  state: State,
+) -> Result(actor.Migration(State, Message), String) {
+  use permit <- result.try(case state.permit {
+    Some(permit) -> Ok(permit)
+    None -> Error("scratch has no admitted reviewed upgrade")
+  })
+  use token <- result.try(
+    decode.run(request.extra, decode.string)
+    |> result.replace_error("invalid scratch transaction token"),
+  )
+  use _ <- result.try(
+    case
+      token == permit.token
+      && permit.expected == state.identity
+      && host.monotonic_time_ms() < permit.expires_at
+    {
+      True -> Ok(Nil)
+      False -> Error("scratch migration is stale or expired")
+    },
+  )
+  use _ <- result.try(
+    case native.module_matches(request.module, permit.target.slot) {
+      True -> Ok(Nil)
+      False -> Error("scratch migration names a different implementation slot")
+    },
+  )
+
+  // Admission reads the runtime clock; the reviewed state transform below is pure.
+  use candidate <- result.try(case permit.target.slot {
+    abi.Builtin -> Ok(state)
+    abi.SlotA | abi.SlotB -> native.migrate(permit.target.slot, state)
+  })
+  use _ <- result.try(validate_candidate(state, candidate))
+  use _ <- result.try(case host.monotonic_time_ms() < permit.expires_at {
+    True -> Ok(Nil)
+    False -> Error("scratch migration expired before candidate commit")
+  })
+  let candidate = abi.State(..candidate, identity: permit.target, permit: None)
+  let handler = case permit.target.slot {
+    abi.Builtin -> handle
+    abi.SlotA | abi.SlotB -> native.handler(permit.target.slot)
+  }
+  Ok(actor.Migration(
+    state: candidate,
+    on_message: handler,
+    on_shutdown: None,
+    selector: process.new_selector() |> process.select(state.inbox),
+    migrate: migrate,
+  ))
+}
+
+fn validate_candidate(before: State, after: State) -> Result(Nil, String) {
+  // This component's migration changes implementation only, preserving every KV entry.
+  case
+    before.entries == after.entries
+    && before.count == after.count
+    && before.total_bytes == after.total_bytes
+    && before.inbox == after.inbox
+    && before.max_entry_bytes == after.max_entry_bytes
+    && before.max_total_bytes == after.max_total_bytes
+    && before.max_entries == after.max_entries
+  {
+    True -> Ok(Nil)
+    False -> Error("scratch migration changed cache ownership or contents")
+  }
+}
+
+/// Inspect the exact admitted recipient, without following a restarted address.
+/// ## Examples
+/// `observe_subject(subject, 100)` observes the original upgrade target.
+pub fn observe_subject(
+  subject: Subject(Message),
+  timeout_ms: Int,
+) -> Result(abi.Observation, String) {
+  ask_subject(subject, timeout_ms, abi.Inspect)
+  |> result.replace_error("scratch inspection unavailable")
+}
+
+/// Admit a permit on the exact actor whose PID the controller monitors.
+/// ## Examples
+/// `arm_subject(subject, permit, 100)` cannot migrate an address replacement.
+pub fn arm_subject(
+  subject: Subject(Message),
+  permit: abi.Permit,
+  timeout_ms: Int,
+) -> Result(Nil, String) {
+  ask_subject(subject, timeout_ms, abi.Arm(permit, _))
+  |> result.replace_error("scratch admission unavailable")
+  |> result.flatten
+}
+
+/// Clear the matching permit on the original actor after resumption.
+/// ## Examples
+/// `disarm_subject(subject, token, 100)` preserves a newer permit.
+pub fn disarm_subject(
+  subject: Subject(Message),
+  token: String,
+  timeout_ms: Int,
+) -> Result(Nil, String) {
+  ask_subject(subject, timeout_ms, abi.Disarm(token, _))
+  |> result.replace_error("scratch permit retirement unavailable")
 }
