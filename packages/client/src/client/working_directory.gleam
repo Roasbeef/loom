@@ -214,9 +214,8 @@ fn checked_directory(
     simplifile.is_directory(canonical)
     |> result.map_error(fn(_) { "cwd could not be inspected" }),
   )
-  use <- bool.guard(
-    !exists,
-    Error("cwd is not an existing directory: " <> canonical),
-  )
+  use <- bool.lazy_guard(!exists, fn() {
+    Error("cwd is not an existing directory: " <> canonical)
+  })
   Ok(canonical)
 }
