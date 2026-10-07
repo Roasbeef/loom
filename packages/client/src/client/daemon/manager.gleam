@@ -147,6 +147,8 @@ pub type Creation {
     /// Stable across retries, including retries after daemon restart.
     request_key: String,
     /// Canonical workspace selected by the owner, never a collaborator's path.
+    /// When `executor` is set it is instead the name of a workspace registered
+    /// on that executor, which is kept exactly as given.
     workspace: String,
     /// Display label, not a database filename.
     name: String,
@@ -156,6 +158,9 @@ pub type Creation {
     /// configuration's default roles. It is retained with the registration and
     /// resolved again by every open (protocol-change/076).
     profile: Option(String),
+    /// The executor the workspace is registered on, or the empty string for a
+    /// workspace on this host (protocol-change/078).
+    executor: String,
   )
 }
 
@@ -2896,6 +2901,7 @@ fn reserve_creation(
         && record.name == request.name
         && record.configuration == request.configuration
         && record.profile == request.profile
+        && record.executor == request.executor
       {
         True -> {
           use selected <- result.try(domain.for_session(store, record.id))
@@ -2920,7 +2926,7 @@ fn reserve_creation(
           request_key: request.request_key,
           state: catalogue.Reserved,
           profile: request.profile,
-          executor: "",
+          executor: request.executor,
           subtitle: option.None,
         )
       use selected <- result.try(select_creation_domain(

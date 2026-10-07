@@ -58,6 +58,7 @@ main = [\"session_b\"]
       "resolution",
       catalogue.Saved,
       profile: option.None,
+      executor: "",
       subtitle: option.None,
     )
   let selected =
@@ -145,6 +146,7 @@ fn resolve_profiled(
       "profiled-" <> id,
       catalogue.Saved,
       profile:,
+      executor: "",
       subtitle: option.None,
     )
   let selected =
@@ -209,6 +211,7 @@ pub fn a_session_with_a_profile_needs_a_config_file_test() {
       "profiled-" <> id,
       catalogue.Saved,
       profile: option.Some("alt"),
+      executor: "",
       subtitle: option.None,
     )
   let selected =

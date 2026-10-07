@@ -68,6 +68,7 @@ import client/directories
 import client/distill
 import client/distillpass
 import client/escalate
+import client/executors
 import client/extension/dispatch as extension_dispatch
 import client/extension/hooks as extension_hooks
 import client/extension/hosts as extension_hosts
@@ -1124,6 +1125,12 @@ pub fn resolve_managed(
   selected: domain.Domain,
   state_root: String,
 ) -> Result(Settings, String) {
+  // A registered workspace is a name on another machine, which `resolve` would
+  // canonicalize as a local path, so the refusal comes first.
+  use Nil <- result.try(case registration.executor {
+    "" -> Ok(Nil)
+    _ -> Error(executors.unavailable_reason)
+  })
   use flags <- result.try(parse(defaults))
   let configuration = case registration.configuration {
     "" -> flags.config

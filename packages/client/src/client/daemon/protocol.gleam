@@ -4,6 +4,22 @@
 //// canonical workspace policy, epoch fencing, and lifecycle admission belong
 //// to the server and its serialized manager. Conversation frames use a separate
 //// codec; a control connection cannot retarget itself into a session stream.
+////
+//// ## Flow
+////
+//// `decode` → `decode_fields` → `event`
+////
+//// 1. `decode` bounds the text, parses it, checks the envelope's version and
+////    correlation id, and hands the command name and body to `decode_fields`,
+////    which turns every failure into one `Fault` addressed to the request.
+//// 2. `decode_fields` maps each command name to its typed command through the
+////    small field readers below it. A creation reads `executor_field` first,
+////    because whether the workspace is a path (`text_field`) or a registered
+////    name (`created_workspace`), and which scope is the default
+////    (`domain_scope`), both depend on it.
+//// 3. `decode_claim` is the same envelope for the one command the claim socket
+////    accepts, with its own smaller bound.
+//// 4. `event` encodes a reply or a push and refuses one past the outbound bound.
 
 import client/peer_mail
 import core/ids
@@ -209,6 +225,10 @@ pub type Command {
     /// The model profile to create the session under, or `None` for the
     /// configuration's default roles (protocol-change/076).
     profile: Option(String),
+    /// The executor `workspace` is registered on, or `None` when `workspace`
+    /// is a path on this host. When it is present `workspace` is a registered
+    /// workspace name and the scope is session-only (protocol-change/078).
+    executor: Option(String),
     domain_scope: domain.Scope,
   )
 
@@ -537,12 +557,21 @@ fn decode_fields(
     }
     "sessions.create" -> {
       use key <- result.try(text_field(fields, "request_key", 256))
-      use workspace <- result.try(text_field(fields, "workspace", 4096))
+      use executor <- result.try(executor_field(fields))
+      use workspace <- result.try(created_workspace(fields, executor))
       use name <- result.try(text_field(fields, "name", 256))
       use configuration <- result.try(configuration_field(fields))
       use profile <- result.try(profile_field(fields))
-      use scope <- result.map(domain_scope(fields))
-      CreateSession(key, workspace, name, configuration, profile, scope)
+      use scope <- result.map(domain_scope(fields, executor))
+      CreateSession(
+        key,
+        workspace,
+        name,
+        configuration,
+        profile,
+        executor,
+        scope,
+      )
     }
     "sessions.open" -> {
       use id <- result.try(session_id(fields))
@@ -570,12 +599,19 @@ fn decode_fields(
   }
 }
 
-fn domain_scope(fields) {
-  case list.key_find(fields, "domain_scope") {
-    Error(Nil) | Ok(json.String("workspace_private")) ->
+// The scope of a creation. A session on an executor can only be session-only:
+// the workspace aggregate is keyed by a path on this host, and a registered
+// name is not one, so the default for such a creation is the scope that exists
+// and asking for the other is refused rather than quietly changed.
+fn domain_scope(fields, executor: Option(String)) {
+  case list.key_find(fields, "domain_scope"), executor {
+    Error(Nil), None | Ok(json.String("workspace_private")), None ->
       Ok(domain.WorkspacePrivate)
-    Ok(json.String("session_only")) -> Ok(domain.SessionOnly)
-    Ok(_) -> Error("expected workspace_private or session_only domain_scope")
+    Error(Nil), Some(_) -> Ok(domain.SessionOnly)
+    Ok(json.String("session_only")), _ -> Ok(domain.SessionOnly)
+    Ok(json.String("workspace_private")), Some(_) ->
+      Error("domain_scope must be session_only for a session on an executor")
+    Ok(_), _ -> Error("expected workspace_private or session_only domain_scope")
   }
 }
 
@@ -783,6 +819,53 @@ fn profile_field(
         False -> Error(profile_words)
       }
     Ok(_other) -> Error(profile_words)
+  }
+}
+
+const executor_words =
+  "executor must be a name of lowercase letters, numbers, _ and -, starting with a letter"
+
+// The optional executor of a creation. An absent field is a workspace on this
+// host; a field that is present must be an executor name, so a malformed one is
+// refused as a bad request and never read as a local session.
+fn executor_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(String), String) {
+  case list.key_find(fields, "executor") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(name)) ->
+      case catalogue.is_executor_name(name) {
+        True -> Ok(Some(name))
+        False -> Error(executor_words)
+      }
+    Ok(_other) -> Error(executor_words)
+  }
+}
+
+// The workspace of a creation. Without an executor it is a path, as it always
+// was. With one it is the name of a workspace registered there, which is held
+// to its own grammar and to no filesystem rule: the name is never canonicalized
+// on this host, so nothing about it is checked against a disk.
+fn created_workspace(
+  fields: List(#(String, JsonValue)),
+  executor: Option(String),
+) -> Result(String, String) {
+  case executor {
+    None -> text_field(fields, "workspace", 4096)
+    Some(_) -> {
+      use name <- result.try(required(fields, "workspace"))
+      case name {
+        json.String(text) ->
+          case catalogue.is_workspace_name(text) {
+            True -> Ok(text)
+            False ->
+              Error(
+                "workspace must be a registered workspace name of at most 128 bytes with no / or NUL",
+              )
+          }
+        _other -> Error("expected nonempty text field")
+      }
+    }
   }
 }
 

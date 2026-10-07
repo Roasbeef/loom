@@ -2593,7 +2593,7 @@ pub fn create_for(
       |> result.replace_error(creations.TooMany),
     )
     let key = "web-" <> hex_entropy(16)
-    manager.Creation(key, workspace, name, "", profile)
+    manager.Creation(key, workspace, name, "", profile, "")
     |> create(principal, _, scope_of(sharing))
     |> result.map(fn(view) { #(principal, view) })
     |> result.map_error(creation_refusal)
@@ -2771,7 +2771,10 @@ fn known_workspace(
     Error(_) -> Error(creations.Unavailable)
     Ok(#(_, views)) ->
       case
-        list.any(views, fn(view) { view.registration.workspace == workspace })
+        list.any(views, fn(view) {
+          view.registration.workspace == workspace
+          && view.registration.executor == ""
+        })
       {
         True -> Ok(Nil)
         False -> Error(creations.NotKnown)

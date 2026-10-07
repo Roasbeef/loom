@@ -202,6 +202,21 @@ pub fn parse(text: String) -> Result(Option(Config), String) {
   from_document(document)
 }
 
+/// The node names of the configured peers, in the order the file lists them.
+///
+/// Another table that names a peer, such as `[executors.<name>]`, checks its
+/// reference against this list, so the reference means a node the operator
+/// has pinned and nothing else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution.peer_nodes(config) // -> ["executor@10.0.0.2"]
+/// ```
+pub fn peer_nodes(config: Config) -> List(String) {
+  list.map(config.peers, fn(peer) { peer.node })
+}
+
 /// Renders the `ssl_dist_optfile` for a configuration. The text names the
 /// credential paths and the public pins only, so it holds no secret, but
 /// `start` still requires the file to be private and to equal this text.

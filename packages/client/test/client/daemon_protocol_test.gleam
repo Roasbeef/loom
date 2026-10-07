@@ -55,6 +55,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         "name",
         "",
         None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -176,6 +177,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         "/workspace",
         "name",
         "/config",
+        None,
         None,
         domain.WorkspacePrivate,
       ),
@@ -569,6 +571,7 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
         "name",
         "",
         Some("deepseek"),
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -590,6 +593,91 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
           envelope(1, "sessions.create", [#("profile", value), ..fields]),
         )
         as "profile must be a profile name"
+    },
+  )
+}
+
+pub fn creation_executor_is_optional_and_makes_the_workspace_a_name_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+  let create = fn(extra) {
+    protocol.decode(envelope(1, "sessions.create", list.append(extra, fields)))
+  }
+
+  // An executor makes the workspace a registered name, kept as sent, and the
+  // domain defaults to the session-only scope, since a name is no path.
+  assert create([
+      #("executor", json.String("build-box")),
+      #("workspace", json.String("loom checkout")),
+    ])
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "loom checkout",
+        "name",
+        "",
+        None,
+        Some("build-box"),
+        domain.SessionOnly,
+      ),
+    ))
+  let assert Ok(protocol.Request(
+    _,
+    protocol.CreateSession(domain_scope: scope, ..),
+  )) =
+    create([
+      #("executor", json.String("build-box")),
+      #("workspace", json.String("loom")),
+      #("domain_scope", json.String("session_only")),
+    ])
+  assert scope == domain.SessionOnly
+
+  // Without one the workspace is a path and the scope defaults as before.
+  let assert Ok(protocol.Request(
+    _,
+    protocol.CreateSession(
+      workspace: "/work",
+      executor: None,
+      domain_scope: domain.WorkspacePrivate,
+      ..,
+    ),
+  )) = create([#("workspace", json.String("/work"))])
+
+  // A name is held to its own grammar, and an executor to a name's.
+  list.each(
+    [
+      [
+        #("executor", json.String("Not A Name")),
+        #("workspace", json.String("w")),
+      ],
+      [#("executor", json.String("")), #("workspace", json.String("w"))],
+      [#("executor", json.Int(1)), #("workspace", json.String("w"))],
+      [#("executor", json.Null), #("workspace", json.String("w"))],
+      [#("executor", json.String("x")), #("workspace", json.String("a/b"))],
+      [#("executor", json.String("x")), #("workspace", json.String("/abs"))],
+      [
+        #("executor", json.String("x")),
+        #("workspace", json.String("a\u{0}b")),
+      ],
+      [#("executor", json.String("x")), #("workspace", json.String(""))],
+      [
+        #("executor", json.String("x")),
+        #("workspace", json.String(string.repeat("w", 129))),
+      ],
+      [#("executor", json.String("x"))],
+      [
+        #("executor", json.String("x")),
+        #("workspace", json.String("w")),
+        #("domain_scope", json.String("workspace_private")),
+      ],
+    ],
+    fn(extra) {
+      let assert Error(_) = create(extra)
+        as "a malformed executor or registered name is a bad request"
     },
   )
 }

@@ -52,6 +52,7 @@ import client/daemon/ui_login
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
+import client/executors
 import client/peer_mail
 import client/peers
 import core/ids
@@ -90,6 +91,10 @@ pub type Config(instance) {
     peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
     /// Captured owner domain config reference; empty explicitly selects no file.
     domain_configuration: String,
+    /// The `[executors.<name>]` the owner configured, read once at startup. A
+    /// creation that names an executor outside this list is refused before
+    /// anything is reserved (protocol-change/078).
+    executors: List(executors.Executor),
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -2251,10 +2256,10 @@ fn dispatch(
       })
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
     }
-    protocol.CreateSession(_, _, _, configuration, profile, _) ->
+    protocol.CreateSession(_, _, _, configuration, profile, _, _) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(fn(code) {
-        profile_refusal(config, configuration, profile, code)
+        creation_refusal(config, configuration, profile, code)
       })
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
@@ -2270,19 +2275,25 @@ fn control_refusal(code: String) -> #(String, String) {
 /// one its configuration defines.
 pub const unknown_profile_code = "unknown_profile"
 
+/// The code `create_session` answers when a creation names an executor that
+/// the daemon's configuration does not define (protocol-change/078).
+pub const executor_unknown_code = "executor_unknown"
+
 /// The code `create_session` answers when a creation names a profile and the
 /// configuration it would load cannot be read or parsed. The profile was never
 /// looked up, so `unknown_profile` would blame the name for the file.
 pub const unusable_configuration_code = "unusable_configuration"
 
-// A refused creation's code and message. An unknown profile and an unusable
-// configuration are the refusals that say more than "request refused": the
-// owner who mistyped a name needs the names that exist, and the owner whose
-// file does not parse needs the key it names. The caller is the owner because
-// `create_session` checks that first. The message is worded again here, from the same check,
-// rather than carried out of `create_session`, so that function's error stays
-// the single code the home page's creation shares.
-fn profile_refusal(
+// A refused creation's code and message. An unknown profile, an unusable
+// configuration and an unknown executor are the refusals that say more than
+// "request refused": the owner who mistyped a name needs the names that exist,
+// the owner whose file does not parse needs the key it names, and the owner
+// who named an executor needs to know it is the configuration that lacks it.
+// The caller is the owner because `create_session` checks that first. The
+// message is worded again here, from the same check, rather than carried out
+// of `create_session`, so that function's error stays the single code the
+// home page's creation shares.
+fn creation_refusal(
   config: Config(instance),
   configuration: String,
   profile: Option(String),
@@ -2305,6 +2316,12 @@ fn profile_refusal(
       }
       #(code, words)
     }
+
+    "executor_unknown", _ -> #(
+      code,
+      "no executor with that name is configured on this daemon",
+    )
+
     _, _ -> control_refusal(code)
   }
 }
@@ -2741,13 +2758,28 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.map(fn(view) { #("sessions.set_default", view_json(view)) })
     }
-    protocol.CreateSession(key, workspace, name, configuration, profile, scope) ->
+    protocol.CreateSession(
+      key,
+      workspace,
+      name,
+      configuration,
+      profile,
+      executor,
+      scope,
+    ) ->
       create_session(
         config,
         state.registry,
         state.sessions_directory,
         principal,
-        manager.Creation(key, workspace, name, configuration, profile),
+        manager.Creation(
+          key,
+          workspace,
+          name,
+          configuration,
+          profile,
+          option.unwrap(executor, ""),
+        ),
         scope,
       )
       |> result.map(fn(view) { #("sessions.create", view_json(view)) })
@@ -2836,10 +2868,21 @@ pub fn create_session(
   scope: domain.Scope,
 ) -> Result(manager.View, String) {
   use Nil <- result.try(owner(principal))
-  use workspace <- result.try(
-    bootstrap.canonical_directory(request.workspace)
-    |> result.replace_error("invalid_workspace"),
-  )
+
+  // A local workspace is a path on this host and is canonicalized here. A
+  // registered one is a name that only the executor can resolve, so it is kept
+  // exactly as sent and is never statted, canonicalized or created on this
+  // host: the executor must be configured, and nothing more is asked of it.
+  use workspace <- result.try(case request.executor {
+    "" ->
+      bootstrap.canonical_directory(request.workspace)
+      |> result.replace_error("invalid_workspace")
+    executor ->
+      case executors.find(config.executors, executor) {
+        Ok(_) -> Ok(request.workspace)
+        Error(Nil) -> Error(executor_unknown_code)
+      }
+  })
   use configuration <- result.try(
     case request.configuration {
       // Absence is a registration choice, not the daemon's current path.
@@ -2883,7 +2926,11 @@ pub fn create_session(
   // The folder is remembered once the session exists, under the canonical text
   // the catalogue holds, so the home can offer it again after every session in
   // it is gone (protocol-change/074). A creation that failed leaves no trace.
-  manager.remember_folder(registry, workspace)
+  // A registered name is no folder on this host, so it is never offered.
+  case request.executor {
+    "" -> manager.remember_folder(registry, workspace)
+    _ -> Nil
+  }
   created
 }
 
@@ -3022,6 +3069,7 @@ fn owner_view(
           #("created_at", json.Int(view.registration.created_at)),
           #("status", status_json(view.status)),
           #("domain_scope", json.String(scope_text(selected.scope))),
+          ..executor_field(view.registration.executor)
         ]),
       )
     }
@@ -3209,8 +3257,21 @@ pub fn view_json(view: manager.View) -> JsonValue {
     #("name", json.String(view.registration.name)),
     #("created_at", json.Int(view.registration.created_at)),
     #("status", status_json(view.status)),
-    ..subtitle_field(view.registration.subtitle)
+    ..list.append(
+      subtitle_field(view.registration.subtitle),
+      executor_field(view.registration.executor),
+    )
   ])
+}
+
+// The optional `executor` of `protocol-change/078`. A local session omits the
+// field, so its frame is byte-for-byte what a daemon without executors sent,
+// and a client that does not know the field reads the rest as before.
+fn executor_field(executor: String) -> List(#(String, JsonValue)) {
+  case executor {
+    "" -> []
+    name -> [#("executor", json.String(name))]
+  }
 }
 
 // The optional `subtitle` of `protocol-change/067`. A session with none omits

@@ -18,6 +18,7 @@ import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/distribution
+import client/executors
 import client/host
 import client/internal/ffi_os
 import client/peer_defaults
@@ -68,6 +69,9 @@ pub type Config {
     /// Whether sessions are linked to each other without a grant, read from
     /// `[peers]` at startup and never reread (protocol-change/077).
     peer_policy: peer_mail.Policy,
+    /// The executors sessions may be placed on, read from `[executors.<name>]`
+    /// at startup and never reread (protocol-change/078).
+    executors: List(executors.Executor),
   )
 }
 
@@ -229,7 +233,7 @@ fn acquire_launch_lock(paths: endpoint.Paths) {
 @internal
 pub fn parse(arguments: List(String)) -> Result(Config, String) {
   let initial =
-    Config("", "127.0.0.1", 0, 8, "Owner", [], ViewOff, peer_defaults.off)
+    Config("", "127.0.0.1", 0, 8, "Owner", [], ViewOff, peer_defaults.off, [])
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
     "" ->
@@ -437,8 +441,12 @@ pub fn prepare_startup(
     peer_defaults.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+  use executors <- result.try(
+    executors.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   use Nil <- result.try(start_distribution(document, configuration))
-  let config = Config(..config, view:, peer_policy:)
+  let config = Config(..config, view:, peer_policy:, executors:)
   root.start(
     root.Config(
       config.state_root,
@@ -692,6 +700,7 @@ pub fn listen_serving(
       daemon:,
       peer_endpoint:,
       domain_configuration:,
+      executors: config.executors,
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

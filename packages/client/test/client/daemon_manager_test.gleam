@@ -151,6 +151,7 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
         record.name,
         record.configuration,
         option.None,
+        "",
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(at: 1), seed: 1),
@@ -223,6 +224,7 @@ pub fn archive_requires_owner_and_stopped_custody_test() {
         record.name,
         record.configuration,
         option.None,
+        "",
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(1), 1),
@@ -367,6 +369,7 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
             "Session",
             example.2,
             option.None,
+            "",
           ),
           directory: "/domain-selection/sessions",
           generator: ids.generator(clock.fixed(1), example.0),
@@ -676,6 +679,7 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       "first",
       "",
       option.None,
+      "",
     )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 411)
   let assert Ok(manager.View(record, manager.Opening(operation))) =
@@ -756,6 +760,7 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
       "second",
       "",
       option.None,
+      "",
     )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 413)
   assert manager.create(

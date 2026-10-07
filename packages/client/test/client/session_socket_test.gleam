@@ -103,7 +103,14 @@ fn fixture_with(
   let assert Ok(view) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation("socket-fixture", ready.state_root, "socket", "", None),
+      manager.Creation(
+        "socket-fixture",
+        ready.state_root,
+        "socket",
+        "",
+        None,
+        "",
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1_700_000_000_000), 981),
       scope: domain.SessionOnly,
@@ -123,6 +130,7 @@ fn fixture_with(
       daemon,
       fn(_) { None },
       "",
+      [],
       fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

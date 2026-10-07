@@ -69,6 +69,7 @@ fn shared_session(
         name,
         "",
         None,
+        "",
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),

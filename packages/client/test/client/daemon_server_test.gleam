@@ -9,6 +9,7 @@ import client/daemon/manager
 import client/daemon/peer_cli
 import client/daemon/root
 import client/daemon/server
+import client/executors
 import client/gateway_test
 import client/peer_mail
 import client/peers
@@ -57,6 +58,31 @@ fn fixture_with_limits(connection_limits: limits.Limits, run) {
 }
 
 fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
+  fixture_building(
+    connection_limits,
+    peer_endpoint,
+    fn(record, _domain, _services, _owner, _directory) { Ok(record.id) },
+    run,
+  )
+}
+
+/// The wire fixture with a session builder of the test's choosing, for a test
+/// that needs the registry to reach the real resolver. The daemon is
+/// configured with one executor, `build-box`, whose node is a placeholder:
+/// nothing here connects to it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_building(limits.defaults, fn(_) { None }, build, run)
+/// ```
+@internal
+pub fn fixture_building(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -67,7 +93,7 @@ fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
       root.Config(directory, "Owner", 2, connection_limits),
       manager.Assembly(
         domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
-        build: fn(record, _domain, _services, _, _directory) { Ok(record.id) },
+        build:,
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
       ),
@@ -82,6 +108,7 @@ fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
       peer_endpoint:,
       daemon:,
       domain_configuration: "",
+      executors: [executors.Executor("build-box", "executor@10.0.0.2")],
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -399,7 +426,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", "", None),
+        manager.Creation("visible", ready.state_root, "Visible", "", None, ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
@@ -407,7 +434,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(hidden) =
       manager.create(
         ready.registry,
-        manager.Creation("hidden", ready.state_root, "Hidden", "", None),
+        manager.Creation("hidden", ready.state_root, "Hidden", "", None, ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 101),
       )
@@ -803,6 +830,7 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
           "Visible",
           "",
           None,
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 200),
@@ -857,6 +885,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
         "wire-archive",
         catalogue.Reserved,
         profile: option.None,
+        executor: "",
         subtitle: option.None,
       )
     assert catalogue.reserve(store, registration) == Ok(registration)
@@ -1014,7 +1043,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("source", ready.state_root, "Source", "", None),
+        manager.Creation("source", ready.state_root, "Source", "", None, ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 400),
       )
@@ -1022,7 +1051,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("target", ready.state_root, "Target", "", None),
+        manager.Creation("target", ready.state_root, "Target", "", None, ""),
         directory: ready.sessions_directory,
         generator: generator,
       )
@@ -1172,7 +1201,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("cli-source", ready.state_root, "Source", "", None),
+        manager.Creation("cli-source", ready.state_root, "Source", "", None, ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 701),
       )
@@ -1180,7 +1209,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("cli-target", ready.state_root, "Target", "", None),
+        manager.Creation("cli-target", ready.state_root, "Target", "", None, ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 702),
       )
@@ -1354,6 +1383,7 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           "Source",
           "",
           None,
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 703),
@@ -1417,7 +1447,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
       let assert Ok(created) =
         manager.create(
           ready.registry,
-          manager.Creation(pair.0, ready.state_root, pair.0, "", None),
+          manager.Creation(pair.0, ready.state_root, pair.0, "", None, ""),
           directory: ready.sessions_directory,
           generator: ids.generator(clock.fixed(0), pair.1),
         )
@@ -1539,7 +1569,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
     let assert Ok(_) =
       manager.create(
         ready.registry,
-        manager.Creation(other_id, ready.state_root, other_id, "", None),
+        manager.Creation(other_id, ready.state_root, other_id, "", None, ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 804),
       )
@@ -1707,7 +1737,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         let assert Ok(_) =
           manager.create(
             ready.registry,
-            manager.Creation(pair.0, ready.state_root, pair.0, "", None),
+            manager.Creation(pair.0, ready.state_root, pair.0, "", None, ""),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),
           )
@@ -1726,6 +1756,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           peer_endpoint: endpoint,
           daemon:,
           domain_configuration: "",
+          executors: [],
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)
@@ -1877,7 +1908,7 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", "", None),
+        manager.Creation("visible", ready.state_root, "Visible", "", None, ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
