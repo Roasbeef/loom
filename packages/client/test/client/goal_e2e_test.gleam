@@ -1361,6 +1361,7 @@ fn authenticated_as(
         principal,
         role,
         digest,
+        None,
       ),
       fn() { Ok(#(principal, role)) },
       fn(frame) { process.send(inbox, frame) },

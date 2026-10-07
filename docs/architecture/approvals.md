@@ -253,7 +253,11 @@ Every re-open costs a human another answer, and the party that provokes
 re-opens is the model this mechanism constrains. The record therefore counts
 its questions in `asked`, and `claimed` answers `Exhausted` instead of
 re-opening once `asked` reaches `max_asks` (3). An exhausted row stays
-terminal and its claimants settle in band.
+terminal and its claimants settle in band. A record whose last cycle ended in
+`Consumed` does not count: a person said yes and it ran once, so the next raise
+re-opens at `asked: 1`. Without that, the fourth identical allow-once request
+settled with nobody asked, which a person cannot tell from a sandbox failure.
+Denials and approvals set aside for a different action still count.
 
 Two consequences follow from one record per question. Two calls wanting
 the same thing at the same time share one prompt, and so one authorization:

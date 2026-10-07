@@ -482,7 +482,7 @@ pub fn a_claim_moves_a_record_to_the_call_standing_at_the_door_test() {
   assert reopened.status == escalation.Pending
   assert reopened.scope == Some(b)
   assert reopened.grants == []
-  assert reopened.asked == 2
+  assert reopened.asked == 1
 
   // Rejected: likewise a new question, so one "no" is a decision about
   // one call rather than a verdict the session cannot revisit.
@@ -492,7 +492,7 @@ pub fn a_claim_moves_a_record_to_the_call_standing_at_the_door_test() {
     as "a rejected record must re-open"
   assert asked_again.status == escalation.Pending
   assert asked_again.grants == []
-  assert asked_again.asked == 3
+  assert asked_again.asked == 2
 
   // Throughout: one row.
   let assert Ok([_one]) = api.escalations(rt) as "one record, all along"
@@ -506,6 +506,45 @@ pub fn a_claim_moves_a_record_to_the_call_standing_at_the_door_test() {
   // The cheap, bounded question a raiser asks before opening a new row.
   let assert Ok(True) = api.escalations_below(rt, 2) as "one record fits"
   let assert Ok(False) = api.escalations_below(rt, 1) as "one record fills one"
+  process.kill(rt.tree.supervisor)
+}
+
+// An approval that ran once ends its cycle, so a want a person keeps
+// allowing once is asked every time and never reaches the ask cap. Before
+// the count restarted on a spent approval, the fourth raise of the same
+// want under the default cap of three came back `Exhausted`: nobody was
+// asked and the call settled as if the sandbox had refused it. A denial
+// is different and keeps counting, which the last two claims show.
+pub fn a_want_allowed_once_every_time_is_never_exhausted_test() {
+  let rt = quiet_runtime()
+  let call = scope_for("call-a")
+  let same = action("true")
+  let assert Ok(escalation.Claimed(_first)) =
+    claim(rt, denial(), same, call, max_asks: 3)
+    as "the first claim must file the record"
+  list.each([1, 2, 3, 4, 5], fn(_round) {
+    let assert Ok(Nil) = api.approve_escalation(rt, "esc-1", [grant()])
+      as "the approval must commit"
+    let assert Ok([_spent]) = api.consume_escalation(rt, "esc-1")
+      as "the approval must be spent"
+    let assert Ok(escalation.Claimed(again)) =
+      claim(rt, denial(), same, call, max_asks: 3)
+      as "a spent approval must not exhaust the want"
+    assert again.status == escalation.Pending
+    assert again.asked == 1
+    Nil
+  })
+
+  // Denials are still counted: the third refusal's re-opening is the last.
+  let assert Ok(Nil) = api.deny_escalation(rt, "esc-1") as "the denial commits"
+  let assert Ok(escalation.Claimed(second)) =
+    claim(rt, denial(), same, call, max_asks: 2)
+    as "one denial may be asked about again"
+  assert second.asked == 2
+  let assert Ok(Nil) = api.deny_escalation(rt, "esc-1") as "the denial commits"
+  let assert Ok(escalation.Exhausted(_stays)) =
+    claim(rt, denial(), same, call, max_asks: 2)
+    as "a want denied up to the cap stays terminal"
   process.kill(rt.tree.supervisor)
 }
 

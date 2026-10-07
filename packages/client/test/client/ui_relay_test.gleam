@@ -70,6 +70,7 @@ fn attach_under(
       principal: alice(),
       authority: access.Participant(access.Operator),
       digest:,
+      signin: None,
     ),
     check:,
     ceiling:,
