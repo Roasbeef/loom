@@ -1227,6 +1227,310 @@ pub fn domain_page_decoder() -> decode.Decoder(DomainPage) {
   ))
 }
 
+pub type LedgerScope {
+  LedgerScope(
+    session: String,
+    workspace: String,
+    incarnation: Int,
+    state: String,
+    close_outcome: Option(String),
+    attach_token: BitArray,
+  )
+}
+
+pub fn ledger_scope(session session: String) {
+  let sql =
+    "
+SELECT session, workspace, incarnation, state, close_outcome, attach_token
+FROM scope WHERE session = ?"
+  #(sql, [dev.ParamString(session)], ledger_scope_decoder())
+}
+
+pub fn ledger_scope_decoder() -> decode.Decoder(LedgerScope) {
+  use session <- decode.field(0, decode.string)
+  use workspace <- decode.field(1, decode.string)
+  use incarnation <- decode.field(2, decode.int)
+  use state <- decode.field(3, decode.string)
+  use close_outcome <- decode.field(4, decode.optional(decode.string))
+  use attach_token <- decode.field(5, decode.bit_array)
+  decode.success(LedgerScope(
+    session:,
+    workspace:,
+    incarnation:,
+    state:,
+    close_outcome:,
+    attach_token:,
+  ))
+}
+
+pub type LedgerUncleanScopeCount {
+  LedgerUncleanScopeCount(scopes: Int)
+}
+
+pub fn ledger_unclean_scope_count() {
+  let sql =
+    "SELECT COUNT(*) AS scopes FROM scope
+WHERE state != 'closed' OR close_outcome IS NOT 'all_retired'"
+  #(sql, [], ledger_unclean_scope_count_decoder())
+}
+
+pub fn ledger_unclean_scope_count_decoder() -> decode.Decoder(
+  LedgerUncleanScopeCount,
+) {
+  use scopes <- decode.field(0, decode.int)
+  decode.success(LedgerUncleanScopeCount(scopes:))
+}
+
+pub fn insert_ledger_scope(
+  session session: String,
+  workspace workspace: String,
+  incarnation incarnation: Int,
+  attach_token attach_token: BitArray,
+) {
+  let sql =
+    "INSERT INTO scope(session, workspace, incarnation, state, close_outcome, attach_token)
+VALUES (?, ?, ?, 'open', NULL, ?)"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+    dev.ParamInt(incarnation),
+    dev.ParamBitArray(attach_token),
+  ])
+}
+
+pub fn rebind_ledger_scope(
+  attach_token attach_token: BitArray,
+  session session: String,
+  workspace workspace: String,
+) {
+  let sql =
+    "UPDATE scope SET attach_token = ? WHERE session = ? AND workspace = ?"
+  #(sql, [
+    dev.ParamBitArray(attach_token),
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+  ])
+}
+
+pub fn reopen_ledger_scope(
+  incarnation incarnation: Int,
+  attach_token attach_token: BitArray,
+  session session: String,
+  workspace workspace: String,
+) {
+  let sql =
+    "UPDATE scope
+SET incarnation = ?, state = 'open', close_outcome = NULL, attach_token = ?
+WHERE session = ? AND workspace = ?"
+  #(sql, [
+    dev.ParamInt(incarnation),
+    dev.ParamBitArray(attach_token),
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+  ])
+}
+
+pub fn begin_ledger_scope_close(
+  session session: String,
+  workspace workspace: String,
+) {
+  let sql =
+    "UPDATE scope SET state = 'closing' WHERE session = ? AND workspace = ?"
+  #(sql, [dev.ParamString(session), dev.ParamString(workspace)])
+}
+
+pub fn finish_ledger_scope_close(
+  close_outcome close_outcome: Option(String),
+  session session: String,
+  workspace workspace: String,
+) {
+  let sql =
+    "UPDATE scope SET state = 'closed', close_outcome = ?
+WHERE session = ? AND workspace = ?"
+  #(sql, [
+    dev.ParamNullable(option.map(close_outcome, fn(v) { dev.ParamString(v) })),
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+  ])
+}
+
+pub type LedgerCall {
+  LedgerCall(
+    tool: String,
+    state: String,
+    outcome: Option(BitArray),
+    outcome_digest: Option(BitArray),
+    outcome_bytes: Int,
+  )
+}
+
+pub fn ledger_call(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "SELECT tool, state, outcome, outcome_digest, outcome_bytes
+FROM call
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?"
+  #(
+    sql,
+    [
+      dev.ParamString(session),
+      dev.ParamString(op),
+      dev.ParamString(step),
+      dev.ParamInt(source_index),
+    ],
+    ledger_call_decoder(),
+  )
+}
+
+pub fn ledger_call_decoder() -> decode.Decoder(LedgerCall) {
+  use tool <- decode.field(0, decode.string)
+  use state <- decode.field(1, decode.string)
+  use outcome <- decode.field(2, decode.optional(decode.bit_array))
+  use outcome_digest <- decode.field(3, decode.optional(decode.bit_array))
+  use outcome_bytes <- decode.field(4, decode.int)
+  decode.success(LedgerCall(
+    tool:,
+    state:,
+    outcome:,
+    outcome_digest:,
+    outcome_bytes:,
+  ))
+}
+
+pub type LedgerReservedBytes {
+  LedgerReservedBytes(bytes: Int)
+}
+
+pub fn ledger_reserved_bytes() {
+  let sql =
+    "SELECT CAST(COALESCE(SUM(outcome_bytes), 0) AS INTEGER) AS bytes FROM call
+WHERE state IN ('admitted', 'terminal')"
+  #(sql, [], ledger_reserved_bytes_decoder())
+}
+
+pub fn ledger_reserved_bytes_decoder() -> decode.Decoder(LedgerReservedBytes) {
+  use bytes <- decode.field(0, decode.int)
+  decode.success(LedgerReservedBytes(bytes:))
+}
+
+pub fn insert_ledger_call(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+  incarnation incarnation: Int,
+  tool tool: String,
+  outcome_bytes outcome_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO call(
+  session, op, step, source_index, incarnation, tool,
+  state, outcome, outcome_digest, outcome_bytes)
+VALUES (?, ?, ?, ?, ?, ?, 'admitted', NULL, NULL, ?)"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+    dev.ParamInt(incarnation),
+    dev.ParamString(tool),
+    dev.ParamInt(outcome_bytes),
+  ])
+}
+
+pub fn finish_ledger_call(
+  outcome outcome: Option(BitArray),
+  outcome_digest outcome_digest: Option(BitArray),
+  outcome_bytes outcome_bytes: Int,
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "UPDATE call
+SET state = 'terminal', outcome = ?, outcome_digest = ?, outcome_bytes = ?
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?
+  AND state = 'admitted'"
+  #(sql, [
+    dev.ParamNullable(option.map(outcome, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(
+      option.map(outcome_digest, fn(v) { dev.ParamBitArray(v) }),
+    ),
+    dev.ParamInt(outcome_bytes),
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+  ])
+}
+
+pub fn mark_ledger_call_unknown(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "UPDATE call SET state = 'unknown', outcome_bytes = 0
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?
+  AND state = 'admitted'"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+  ])
+}
+
+pub fn ack_ledger_call(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "DELETE FROM call
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?
+  AND state IN ('terminal', 'unknown')"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+  ])
+}
+
+pub fn recover_ledger_calls() {
+  let sql =
+    "UPDATE call SET state = 'unknown', outcome_bytes = 0 WHERE state = 'admitted'"
+  #(sql, [])
+}
+
+pub type LedgerUnackedKeys {
+  LedgerUnackedKeys(op: String, step: String, source_index: Int, state: String)
+}
+
+pub fn ledger_unacked_keys(session session: String) {
+  let sql =
+    "SELECT op, step, source_index, state FROM call
+WHERE session = ? AND state IN ('terminal', 'unknown')
+ORDER BY op, step, source_index"
+  #(sql, [dev.ParamString(session)], ledger_unacked_keys_decoder())
+}
+
+pub fn ledger_unacked_keys_decoder() -> decode.Decoder(LedgerUnackedKeys) {
+  use op <- decode.field(0, decode.string)
+  use step <- decode.field(1, decode.string)
+  use source_index <- decode.field(2, decode.int)
+  use state <- decode.field(3, decode.string)
+  decode.success(LedgerUnackedKeys(op:, step:, source_index:, state:))
+}
+
 pub type HistorySourceHeader {
   HistorySourceHeader(metadata_bytes: Int, next_seq: Option(Int))
 }
