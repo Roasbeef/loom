@@ -792,3 +792,36 @@ Receipt callers retain the existing terminal COMMIT/readback, then compare the
 original generation link before ACK. Full default daemon assembly, activation,
 history transport, physical retirement witness construction and the separate
 protocol-076 LSP owner database remain integration obligations.
+
+
+## Composed catalogue profiles and workspace bindings
+
+The catalogue is version 10. `Registration` retains both the typed
+`core/workspace.Binding` and the optional model-profile name. Profile names use
+`is_profile_name`; malformed stored names refuse reads instead of selecting the
+default roles. Local rows store a NULL `workspace_binding`; registered rows store
+exact canonical binding JSON alongside the matching key. Both insert queries,
+creation-key lookup, owner pages and member pages retain the profile, and a retry
+compares it as immutable creation metadata.
+
+The ordinary migration list installs recent folders at eight, profiles at nine,
+and workspace bindings at ten. Historical version-eight branches had either
+recent folders or bindings, so their special migration installs the missing
+addition and then profiles. Historical version-nine branches had recent folders
+and exactly one of profiles or bindings, so their special migration installs
+only the missing column. The bounded census checks these three named additions:
+folders must be a table, bindings must be nullable TEXT without a default, and
+profiles must be non-null TEXT with the empty-string default. It does not claim
+to validate the complete schema. Mixed, absent or malformed additions refuse;
+the missing DDL and version bump share the existing immediate transaction.
+
+`catalogue_v9_test` uses real SQLite to retain local/registered rows, profiles,
+defaults, domains, authentication and member projections through either version
+nine. Current-version reopen is idempotent. Existing version-eight controls keep
+both branch layouts and refusal assertions. A SQLite column-limit fixture makes
+the second version-eight DDL fail after folder creation; rollback leaves the
+original version and schema counter, with neither added table nor profile.
+`catalogue_profiles_schema` embeds the exact profile SQL input. Normal generation
+must combine profile and binding queries with the other storage SQL surfaces.
+These catalogue migrations do not change the separate owner-custody format or
+enable registered physical runtime assembly.

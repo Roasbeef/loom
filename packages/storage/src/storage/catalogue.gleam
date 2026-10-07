@@ -46,6 +46,7 @@ import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_logins_schema
 import storage/catalogue_names_schema
+import storage/catalogue_profiles_schema
 import storage/catalogue_recent_folders_schema
 import storage/catalogue_subtitles_schema
 import storage/catalogue_workspace_bindings_schema
@@ -84,6 +85,12 @@ pub type Registration {
     name: String,
     /// The host configuration reference, not its secret values.
     configuration: String,
+    /// The model profile the session was created under, by name, or `None`
+    /// for the configuration's default roles. It is part of the immutable
+    /// creation request, so a retry compares it, and it is a name rather than
+    /// the roles it resolved to: the daemon resolves it again each time the
+    /// session opens (protocol-change/076).
+    profile: Option(String),
     /// Creation time in Unix milliseconds.
     created_at: Int,
     /// The immutable creation request key.
@@ -195,6 +202,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
       transaction(connection, fn() {
         use Nil <- result.try(case version {
           8 -> migrate_version_eight(connection)
+          9 -> migrate_version_nine(connection)
           _ -> migrations_after(connection, version)
         })
         execute(connection, user_version_pragma())
@@ -228,7 +236,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 9
+pub const current_version = 10
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -242,28 +250,55 @@ pub fn migrations() -> List(#(Int, String)) {
     #(6, catalogue_credential_kinds_schema.schema),
     #(7, catalogue_logins_schema.schema),
     #(8, catalogue_recent_folders_schema.schema),
-    #(9, catalogue_workspace_bindings_schema.schema),
+    #(9, catalogue_profiles_schema.schema),
+    #(10, catalogue_workspace_bindings_schema.schema),
   ]
 }
 
-// Main and the pre-integration branch both used version eight for different
-// additions. Inspect their actual schema inside the migration transaction, so
-// neither layout can skip its missing addition or rerun an existing ALTER.
-// A mixed or absent layout is not one either branch wrote and is refused.
+// The two version-eight branches wrote different additions. The three named
+// schema facts distinguish those layouts before any DDL, under the same write
+// transaction that installs the missing additions and advances the version.
 fn migrate_version_eight(connection: sqlight.Connection) -> Result(Nil, Error) {
+  use #(folders, bindings, profiles) <- result.try(migration_shape(connection))
+  use Nil <- result.try(case folders, bindings, profiles {
+    1, 0, 0 -> execute(connection, catalogue_workspace_bindings_schema.schema)
+    0, 1, 0 -> execute(connection, catalogue_recent_folders_schema.schema)
+    _, _, _ -> Error(Unsupported)
+  })
+  execute(connection, catalogue_profiles_schema.schema)
+}
+
+// Main version nine added profiles; integration version nine added bindings.
+// Both already had recent folders. Exactly one missing column is installed,
+// preserving the other's original rows rather than guessing from the version.
+fn migrate_version_nine(connection: sqlight.Connection) -> Result(Nil, Error) {
+  use #(folders, bindings, profiles) <- result.try(migration_shape(connection))
+  case folders, bindings, profiles {
+    1, 0, 1 -> execute(connection, catalogue_workspace_bindings_schema.schema)
+    1, 1, 0 -> execute(connection, catalogue_profiles_schema.schema)
+    _, _, _ -> Error(Unsupported)
+  }
+}
+
+// This is a census of three branch additions, not a general schema validator.
+// A present column with another declared type, nullability or default is distinct
+// from absence, so it cannot select a migration that overwrites its meaning.
+fn migration_shape(
+  connection: sqlight.Connection,
+) -> Result(#(Int, Int, Int), Error) {
   use folders <- result.try(number(
     connection,
-    "SELECT COUNT(*) FROM sqlite_schema WHERE name='catalogue_recent_folders'",
+    "SELECT CASE WHEN COUNT(*)=0 THEN 0 WHEN COUNT(*)=1 AND MIN(type)='table' THEN 1 ELSE -1 END FROM sqlite_schema WHERE name='catalogue_recent_folders'",
   ))
   use bindings <- result.try(number(
     connection,
-    "SELECT COUNT(*) FROM pragma_table_info('catalogue_sessions') WHERE name='workspace_binding'",
+    "SELECT CASE WHEN COUNT(*)=0 THEN 0 WHEN COUNT(*)=1 AND MIN(type)='TEXT' AND MIN(\"notnull\")=0 AND MIN(dflt_value) IS NULL THEN 1 ELSE -1 END FROM pragma_table_info('catalogue_sessions') WHERE name='workspace_binding'",
   ))
-  case folders, bindings {
-    1, 0 -> execute(connection, catalogue_workspace_bindings_schema.schema)
-    0, 1 -> execute(connection, catalogue_recent_folders_schema.schema)
-    _, _ -> Error(Unsupported)
-  }
+  use profiles <- result.try(number(
+    connection,
+    "SELECT CASE WHEN COUNT(*)=0 THEN 0 WHEN COUNT(*)=1 AND MIN(type)='TEXT' AND MIN(\"notnull\")=1 AND MIN(dflt_value)=char(39)||char(39) THEN 1 ELSE -1 END FROM pragma_table_info('catalogue_sessions') WHERE name='profile'",
+  ))
+  Ok(#(folders, bindings, profiles))
 }
 
 fn user_version_pragma() -> String {
@@ -363,6 +398,7 @@ fn insert(
         record.configuration,
         record.created_at,
         record.request_key,
+        option.unwrap(record.profile, ""),
       )
     workspace.Registered(_) ->
       sql.insert_registered_registration(
@@ -374,6 +410,7 @@ fn insert(
         record.configuration,
         record.created_at,
         record.request_key,
+        option.unwrap(record.profile, ""),
       )
   }
   use Nil <- result.try(statement(catalogue, generated))
@@ -1008,6 +1045,7 @@ fn page_for(
             created_at: row.created_at,
             request_key: row.request_key,
             state: Reserved,
+            profile: stored_profile(row.profile),
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1066,6 +1104,7 @@ pub fn member_page(
             created_at: row.created_at,
             request_key: row.request_key,
             state: Reserved,
+            profile: stored_profile(row.profile),
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1183,6 +1222,7 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
         created_at: row.created_at,
         request_key: row.request_key,
         state: Reserved,
+        profile: stored_profile(row.profile),
         subtitle: None,
       ),
       row.state,
@@ -1338,11 +1378,69 @@ fn validate(record: Registration) -> Result(Nil, Error) {
     && record.request_key != ""
     && record.created_at >= 0
   {
-    True -> Ok(Nil)
+    True ->
+      case record.profile {
+        None -> Ok(Nil)
+        Some(name) ->
+          case is_profile_name(name) {
+            True -> Ok(Nil)
+            False ->
+              Error(Invalid("registration profile is not a profile name"))
+          }
+      }
     False ->
       Error(Invalid(
         "registration needs an absolute conversation path, a request key and a nonnegative creation time",
       ))
+  }
+}
+
+/// The longest profile name, in bytes.
+pub const profile_name_limit = 32
+
+/// Whether text is a model profile name: one to `profile_name_limit` characters
+/// of lowercase ASCII letters, digits, `_` and `-`, beginning with a letter. It
+/// is the one grammar for a `[profiles.<name>]` table key, a `--profile`
+/// argument and a stored registration, so the same word means the same thing
+/// in the configuration file, on the wire and in the catalogue.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_profile_name("deepseek")
+/// assert catalogue.is_profile_name("glm-5_3")
+/// assert !catalogue.is_profile_name("")
+/// assert !catalogue.is_profile_name("9lives")
+/// assert !catalogue.is_profile_name("Deep Seek")
+/// ```
+pub fn is_profile_name(text: String) -> Bool {
+  case string.to_graphemes(text) {
+    [first, ..rest] ->
+      string.length(text) <= profile_name_limit
+      && is_letter(first)
+      && list.all(rest, fn(grapheme) {
+        is_letter(grapheme)
+        || grapheme == "_"
+        || grapheme == "-"
+        || list.contains(string.to_graphemes("0123456789"), grapheme)
+      })
+    [] -> False
+  }
+}
+
+fn is_letter(grapheme: String) -> Bool {
+  list.contains(string.to_graphemes("abcdefghijklmnopqrstuvwxyz"), grapheme)
+}
+
+// The column's default, the empty string, means no profile. Any other text is
+// kept as it was stored and judged by `validate`, so a value that is not a
+// profile name fails the read with `Invalid` instead of reading as no profile:
+// a session that was created under a profile must not quietly open under the
+// default roles because its row was damaged.
+fn stored_profile(text: String) -> Option(String) {
+  case text {
+    "" -> None
+    name -> Some(name)
   }
 }
 
