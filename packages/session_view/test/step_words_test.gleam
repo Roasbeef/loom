@@ -387,3 +387,17 @@ pub fn a_skipped_longer_name_does_not_reorder_the_calls_test() {
     )
     == Some("fs.read a")
 }
+
+// A call still running is worded in the present tense, since "Ran sleep 70"
+// claims a command that has not finished. The subject and change stay as
+// they were, and a verb the table does not know stays as it is.
+pub fn a_pending_step_uses_the_present_tense_test() {
+  let ran = words("bash", [#("command", text("sleep 70"))])
+  assert step_words.pending(ran) == Words("Running", Mono("sleep 70"), None)
+
+  let read = words("fs_read", [#("path", text("calc.py"))])
+  assert step_words.pending(read).verb == "Reading"
+
+  let other = Words("custom_tool", Unnamed, None)
+  assert step_words.pending(other) == other
+}

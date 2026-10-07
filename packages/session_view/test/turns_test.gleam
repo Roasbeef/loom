@@ -1457,10 +1457,16 @@ pub fn a_running_call_carries_the_time_of_its_record_test() {
       ],
       turns.Skip,
     )
-  let assert [_, turns.Work(items: [turns.Step(standing:, since:, ..)], ..)] =
-    running
+  let assert [
+    _,
+    turns.Work(items: [turns.Step(standing:, since:, words:, ..)], ..),
+  ] = running
   assert standing == turns.Pending
   assert since == Some(14_000)
+
+  // The verb is in the present tense while the call runs, and returns to the
+  // past tense once the result lands.
+  assert words.verb == "Reading"
 
   let settled =
     laid_out(
@@ -1471,8 +1477,11 @@ pub fn a_running_call_carries_the_time_of_its_record_test() {
       ],
       turns.Skip,
     )
-  let assert [_, turns.Work(items: [turns.Step(standing:, since:, ..)], ..)] =
-    settled
+  let assert [
+    _,
+    turns.Work(items: [turns.Step(standing:, since:, words:, ..)], ..),
+  ] = settled
   assert standing == turns.Done
   assert since == None
+  assert words.verb == "Read"
 }
