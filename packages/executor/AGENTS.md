@@ -122,6 +122,57 @@ closed application messages do not contain a compromised member. Executor
 membership does not make it a Raft voter, and model-authored satellites must
 remain outside distribution.
 
+## Durable original generation scope plans
+
+`generation_scope_plan.Plan` retains metadata for an exact original association:
+full canonical SessionEnrollment, configured owner Peer, native journal path and
+actual admission Capacity, workspace/resource paths and their selected existing
+Limits, and closed DisabledLsp or exact enabled LSP custody path/limits/contract/
+ordered profile metadata. The deployment loader accepts an empty LSP table;
+DisabledLsp preserves that choice and projects no LSP recovery inputs. EnabledLsp
+uses core's unchanged one-through-sixteen enrolled-profile constructor.
+
+`new` checks full scope and canonical enrollment hash against the association,
+checks canonical lexical paths and distinct journal files, and constructs the
+actual existing checked quota values from the supplied selections. Trusted
+executor assembly must first validate real canonical/private placement. This
+module performs no filesystem access and retains no executable preparation
+recipe, credential, callback, SQLite connection, service or startup claim.
+Recovery must check each original DAL's stored binding as well as this metadata.
+
+The canonical header and complete enrollment are separate bodies, each capped
+at 262144 bytes and independently decoded under the existing bounded codecs.
+They cannot be nested in the ordinary MessagePack binary profile, whose 131072
+byte ceiling would reject valid larger enrollment. A domain-separated SHA-256
+binds both lengths and bodies. Their actual bytes plus the 32-byte digest add at
+most 524320 logical bytes per planned identity, excluding the parent's existing
+future-record reservation, SQLite/WAL storage and VM overhead.
+
+`generation_registry.admit_planned` sends AdmissionWork to the actual original
+Store writer. Parent claim and immutable same-database `generation_scope_plan`
+child share BEGIN IMMEDIATE, complete permanent capacity reservation, exact
+readback and COMMIT before Fresh StartupClaim can escape. Duplicate admission
+compares the complete original plan/association/doors; it grants no replacement
+claim or provenance backfill. Observation-only `scope_plan` sends PlanWork and
+returns checked original metadata after retirement/removal. Legacy `admit` and
+native component behavior remain valid with no plan. NeverStarted retains none.
+
+Format two uses bounded child scalar inventories, orphan checks and exact
+parent charges before loading either body. Recovering format one first validates
+its original scalar inventory and every bounded canonical row inside the same
+transaction; only then does the additive migration replace the metadata format
+constraint and add the empty child table. Old reservations remain unchanged,
+missing provenance stays unavailable, and no claim is recreated. Corruption or
+an unknown format refuses before logical migration/uncertainty mutation.
+
+`generation_scope_plan_test` exercises actual SQLite original/duplicate and
+independent-writer admission, both-body quota refusal, rollback/readback/COMMIT
+failure, retained charges across thirty-two clean component removals, pinned v1
+migration without backfill, scalar/body/orphan corruption and empty/full LSP
+inventories. Its named synthetic retirement verifier establishes no physical
+cleanup. Managed DAL acquisition/join, full-host assembly, scope_admin/history
+transport and shipped registered deployment remain separate obligations.
+
 ## Managed endpoint publication and removal
 
 Protocol [077](../../protocol-change/077-registered-generations.md) adds the closed

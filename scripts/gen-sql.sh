@@ -111,6 +111,9 @@ gleam format packages/executor/src/executor/resource_schema.gleam
 python3 scripts/embed-sql-schema.py packages/executor/sql/generations.sql \
   packages/executor/src/executor/generation_registry_schema.gleam
 gleam format packages/executor/src/executor/generation_registry_schema.gleam
+python3 scripts/embed-sql-schema.py packages/executor/sql/generations_v2.sql \
+  packages/executor/src/executor/generation_scope_plan_migration.gleam
+gleam format packages/executor/src/executor/generation_scope_plan_migration.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/schema.sql \
   packages/storage/src/storage/sql_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/session.sql \

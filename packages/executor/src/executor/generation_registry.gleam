@@ -27,7 +27,8 @@
 //// ## Flow
 ////
 //// `fresh` and `recover` enter `open`; `validate_path` refuses unsafe opens.
-//// `admit` checks exact originals and `check_lineage` before insertion; `original`
+//// `admit` and `admit_planned` enter `admit_original`; `scope_plan` observes
+//// immutable charged provenance. Admission checks exact originals and `check_lineage` before insertion; `original`
 //// projects only its original claim. `prepare_publication` and `published`
 //// serialize against `close_generation`. `validate_publication` checks original
 //// Store and intent; `validate_removal` checks exact committed endpoint evidence.
@@ -41,7 +42,9 @@
 //// `read_row` checks canonical history and `validate_owner_envelope` checks its
 //// predecessor association. `claim_row`, `exact_original`, `find_header` and
 //// `required_header` and `inserted_row` compare original custody. `available`
-//// accounts capacity;
+//// accounts capacity. `validate_plan_inventory`, `read_plan_header`,
+//// `plan_header_charge`, `read_plan`, `insert_plan`, `exact_plan` and
+//// `plan_reservation` bind immutable child bytes to their original parent;
 //// `endpoint_matches` checks immutable endpoint provenance. `record`,
 //// `kind_value`, `decode_record` and `decode_kind` share the retirement codec.
 //// `decode_phase`, `validate_doors`, `validate_owner_bytes`, `key_bytes`,
@@ -55,6 +58,8 @@ import core/ids
 import core/msgpack as mp
 import core/workspace
 import executor/generation_registry_schema
+import executor/generation_scope_plan as scope_plan
+import executor/generation_scope_plan_migration
 import executor/sql
 import gleam/bit_array
 import gleam/crypto
@@ -272,6 +277,7 @@ type Context {
     connection: sqlight.Connection,
     incarnation: ids.EntryId,
     limits: Limits,
+    format: Int,
   )
 }
 
@@ -287,6 +293,7 @@ type Row {
     doors: BitArray,
     retired: Option(RetirementRecord),
     owner_close: BitArray,
+    plan: Option(scope_plan.Plan),
   )
 }
 
@@ -297,6 +304,10 @@ type Inventory {
     live: Int,
     bytes: Int,
   )
+}
+
+type PlanHeader {
+  PlanHeader(header_size: Int, enrollment_size: Int, digest: g.Digest)
 }
 
 type State {
@@ -328,6 +339,10 @@ type Message {
   NilWork(
     fn(Context, Inventory) -> Result(Nil, Error),
     process.Subject(Result(Nil, Error)),
+  )
+  PlanWork(
+    fn(Context, Inventory) -> Result(Option(scope_plan.Plan), Error),
+    process.Subject(Result(Option(scope_plan.Plan), Error)),
   )
   Release(process.Subject(Result(Nil, Error)))
   Stop
@@ -430,6 +445,68 @@ pub fn admit(
   configured_first: Int,
   predecessor: Option(PredecessorProof),
 ) -> Result(Admission, Error) {
+  admit_original(store, associated, doors, configured_first, predecessor, None)
+}
+
+/// Admits exact original journal provenance in the first claim transaction.
+/// Both bodies and their digest stay permanently charged through removal.
+/// Missing legacy provenance cannot be backfilled by a duplicate admission.
+///
+/// ## Examples
+///
+/// `admit_planned(store, original, doors, 1, None, plan)` issues Fresh only once.
+@internal
+pub fn admit_planned(
+  store: Store,
+  associated: g.GenerationAssociation,
+  doors: BitArray,
+  configured_first: Int,
+  predecessor: Option(PredecessorProof),
+  plan: scope_plan.Plan,
+) -> Result(Admission, Error) {
+  use Nil <- result.try(case scope_plan.original(plan) == associated {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  })
+  admit_original(
+    store,
+    associated,
+    doors,
+    configured_first,
+    predecessor,
+    Some(plan),
+  )
+}
+
+/// Observes immutable original provenance without returning startup authority.
+/// No plan on a legacy or no-claim row remains unavailable, never reconstructed.
+///
+/// ## Examples
+///
+/// `scope_plan(store, key)` still returns exact original metadata after Removed.
+@internal
+pub fn scope_plan(
+  store: Store,
+  key: g.GenerationKey,
+) -> Result(Option(scope_plan.Plan), Error) {
+  use bytes <- result.try(key_bytes(key))
+  transaction(store, PlanWork, fn(store, inventory) {
+    case find_header(inventory, bytes) {
+      None -> Ok(None)
+      Some(header) ->
+        read_row(store, header) |> result.map(fn(row) { row.plan })
+    }
+  })
+}
+
+fn admit_original(
+  store: Store,
+  associated: g.GenerationAssociation,
+  doors: BitArray,
+  configured_first: Int,
+  predecessor: Option(PredecessorProof),
+  plan: Option(scope_plan.Plan),
+) -> Result(Admission, Error) {
   let issuer = store
   use Nil <- result.try(validate_doors(doors))
   use key <- result.try(key_bytes(g.association_key(associated)))
@@ -438,6 +515,7 @@ pub fn admit(
       Some(header) -> {
         use row <- result.try(read_row(store, header))
         use Nil <- result.try(exact_original(row, associated, doors))
+        use Nil <- result.try(exact_plan(row.plan, plan))
         use phase <- result.try(decode_phase(header.phase))
         case row.association {
           None -> Error(Fenced)
@@ -454,7 +532,7 @@ pub fn admit(
         use association <- result.try(
           g.encode_association(associated) |> result.replace_error(Corrupt),
         )
-        let charge = reservation(key)
+        let charge = reservation(key) + plan_reservation(plan)
         use Nil <- result.try(available(store, inventory, charge, 1))
         let #(scope, _, number) = g.key_fields(g.association_key(associated))
         use scope <- result.try(scope_bytes(scope))
@@ -494,9 +572,16 @@ pub fn admit(
           ),
         ))
 
-        // Readback catches suppressed insertion before a live claim can escape.
-        use row <- result.try(inserted_row(store, key))
+        // Parent and child share this transaction. A suppressed child insert or
+        // altered readback rolls back the parent before live authority can escape.
+        use Nil <- result.try(insert_plan(store, key, plan))
+        use row <- result.try(
+          inserted_row(store, key) |> result.replace_error(Uncertain),
+        )
         use Nil <- result.try(exact_original(row, associated, doors))
+        use Nil <- result.try(
+          exact_plan(row.plan, plan) |> result.replace_error(Uncertain),
+        )
         use Nil <- result.try(
           case
             row.header.phase == 0
@@ -960,19 +1045,24 @@ fn open(
     _, _ -> Ok(Nil)
   })
   use connection <- result.try(sqlight.open(path) |> sql_error)
-  let store = Context(connection, incarnation, limits)
+  let provisional = Context(connection, incarnation, limits, 2)
   let opened = {
-    // Recovery refuses an incompatible scalar format before journal mutation.
-    use Nil <- result.try(case mode {
-      Create -> Ok(Nil)
+    // Unknown versions refuse before even journal-profile mutation. Version one
+    // is validated under its original scalar/body rules before any DDL upgrade.
+    use format <- result.try(case mode {
+      Create -> Ok(2)
       Recover -> {
-        use formats <- result.try(query(store, sql.generation_format()))
+        use formats <- result.try(
+          query(provisional, sql.generation_format())
+          |> result.replace_error(Corrupt),
+        )
         case formats {
-          [value] if value.format == 1 -> Ok(Nil)
+          [value] if value.format == 1 || value.format == 2 -> Ok(value.format)
           _ -> Error(Corrupt)
         }
       }
     })
+    let store = Context(..provisional, format: format)
     use modes <- result.try(
       sqlight.query(
         "PRAGMA journal_mode=WAL",
@@ -1023,15 +1113,26 @@ fn open(
         }
         Recover -> Ok(Nil)
       })
-      use inventory <- result.try(inventory(store))
+      use original_inventory <- result.try(inventory(store))
       use Nil <- result.try(
-        list.try_each(inventory.headers, fn(header) {
+        list.try_each(original_inventory.headers, fn(header) {
           read_row(store, header) |> result.replace(Nil)
         }),
       )
+      use Nil <- result.try(case mode, format {
+        Recover, 1 ->
+          sqlight.exec(generation_scope_plan_migration.schema, connection)
+          |> sql_error
+        Create, _ | Recover, _ -> Ok(Nil)
+      })
+
+      // The upgrade retains every old reservation and intentionally inserts no
+      // provenance. Validate its new scalar shape before uncertainty changes.
+      let upgraded = Context(..store, format: 2)
+      use _ <- result.try(inventory(upgraded))
       case mode {
         Create -> Ok(Nil)
-        Recover -> statement(store, sql.recover_generation_uncertainty(<<>>))
+        Recover -> statement(upgraded, sql.recover_generation_uncertainty(<<>>))
       }
     }
     complete_transaction(store, initialized)
@@ -1039,7 +1140,7 @@ fn open(
   case opened {
     Ok(Nil) -> {
       case
-        actor.new(Open(store))
+        actor.new(Open(provisional))
         |> actor.on_message(handle)
         |> actor.on_shutdown(shutdown)
         |> actor.start
@@ -1124,9 +1225,11 @@ fn complete_transaction(
 }
 
 fn inventory(store: Context) -> Result(Inventory, Error) {
-  use formats <- result.try(query(store, sql.generation_format()))
+  use formats <- result.try(
+    query(store, sql.generation_format()) |> result.replace_error(Corrupt),
+  )
   use Nil <- result.try(case formats {
-    [value] if value.format == 1 -> Ok(Nil)
+    [value] if value.format == store.format -> Ok(Nil)
     _ -> Error(Corrupt)
   })
   use metadata <- result.try(query(store, sql.generation_metadata()))
@@ -1163,6 +1266,10 @@ fn inventory(store: Context) -> Result(Inventory, Error) {
     },
   )
 
+  // Child scalars, orphans and exact parent charges are checked without loading
+  // either body. Legacy version-one custody has no child table to inspect yet.
+  use Nil <- result.try(validate_plan_inventory(store, total.rows))
+
   // The permanent row bound limits the complete immutable header inventory.
   use headers <- result.try(query(
     store,
@@ -1184,11 +1291,13 @@ fn read_row(
   )
   let #(scope, _, number) = g.key_fields(key)
   use scope <- result.try(scope_bytes(scope))
+  use plan_header <- result.try(read_plan_header(store, header.key))
   use Nil <- result.try(
     case
       scope == header.scope
       && number == header.generation
-      && header.reservation == reservation(header.key)
+      && header.reservation
+      == reservation(header.key) + plan_header_charge(plan_header)
     {
       True -> Ok(Nil)
       False -> Error(Corrupt)
@@ -1298,7 +1407,165 @@ fn read_row(
     associated,
     retired,
   ))
-  Ok(Row(header, associated, body.doors, retired, body.owner_close))
+  use plan <- result.try(read_plan(store, header.key, associated, plan_header))
+  Ok(Row(header, associated, body.doors, retired, body.owner_close, plan))
+}
+
+fn validate_plan_inventory(
+  store: Context,
+  parent_rows: Int,
+) -> Result(Nil, Error) {
+  case store.format {
+    1 -> Ok(Nil)
+    2 -> {
+      use totals <- result.try(query(store, sql.generation_plan_inventory()))
+      use total <- result.try(case totals {
+        [total] -> Ok(total)
+        _ -> Error(Corrupt)
+      })
+      use invalid <- result.try(decoded_scalar(total.invalid))
+      use Nil <- result.try(
+        case total.rows >= 0 && total.rows <= parent_rows && invalid == 0 {
+          True -> Ok(Nil)
+          False -> Error(Corrupt)
+        },
+      )
+      use charges <- result.try(query(store, sql.generation_plan_charges()))
+      use charge <- result.try(case charges {
+        [charge] -> Ok(charge)
+        _ -> Error(Corrupt)
+      })
+      use invalid <- result.try(decoded_scalar(charge.invalid))
+      case invalid == 0 {
+        True -> Ok(Nil)
+        False -> Error(Corrupt)
+      }
+    }
+    _ -> Error(Corrupt)
+  }
+}
+
+fn read_plan_header(
+  store: Context,
+  key: BitArray,
+) -> Result(Option(PlanHeader), Error) {
+  case store.format {
+    1 -> Ok(None)
+    2 -> {
+      use headers <- result.try(query(store, sql.generation_plan_header(key)))
+      case headers {
+        [] -> Ok(None)
+        [header] -> {
+          use size <- result.try(option.to_result(header.header_size, Corrupt))
+          use enrollment_size <- result.try(option.to_result(
+            header.enrollment_size,
+            Corrupt,
+          ))
+          use digest <- result.try(
+            g.digest(header.digest) |> result.replace_error(Corrupt),
+          )
+          case
+            size > 0
+            && size <= scope_plan.max_body_bytes
+            && enrollment_size > 0
+            && enrollment_size <= scope_plan.max_body_bytes
+          {
+            True -> Ok(Some(PlanHeader(size, enrollment_size, digest)))
+            False -> Error(Corrupt)
+          }
+        }
+        _ -> Error(Corrupt)
+      }
+    }
+    _ -> Error(Corrupt)
+  }
+}
+
+fn plan_header_charge(header: Option(PlanHeader)) -> Int {
+  case header {
+    None -> 0
+    Some(header) -> header.header_size + header.enrollment_size + 32
+  }
+}
+
+fn read_plan(
+  store: Context,
+  key: BitArray,
+  associated: Option(g.GenerationAssociation),
+  header: Option(PlanHeader),
+) -> Result(Option(scope_plan.Plan), Error) {
+  case header {
+    None -> Ok(None)
+    Some(header) -> {
+      use associated <- result.try(option.to_result(associated, Corrupt))
+      use bodies <- result.try(query(store, sql.generation_plan_body(key)))
+      use body <- result.try(case bodies {
+        [body] -> Ok(body)
+        _ -> Error(Corrupt)
+      })
+      use Nil <- result.try(
+        case
+          bit_array.byte_size(body.header) == header.header_size
+          && bit_array.byte_size(body.enrollment) == header.enrollment_size
+        {
+          True -> Ok(Nil)
+          False -> Error(Corrupt)
+        },
+      )
+      use plan <- result.try(
+        scope_plan.decode(body.header, body.enrollment, header.digest)
+        |> result.replace_error(Corrupt),
+      )
+      case scope_plan.original(plan) == associated {
+        True -> Ok(Some(plan))
+        False -> Error(Corrupt)
+      }
+    }
+  }
+}
+
+fn insert_plan(
+  store: Context,
+  key: BitArray,
+  plan: Option(scope_plan.Plan),
+) -> Result(Nil, Error) {
+  case plan {
+    None -> Ok(Nil)
+    Some(plan) -> {
+      let #(header, enrollment, digest) = scope_plan.encoded(plan)
+      statement(
+        store,
+        sql.insert_generation_scope_plan(
+          key,
+          header,
+          enrollment,
+          g.digest_bytes(digest),
+        ),
+      )
+    }
+  }
+}
+
+fn exact_plan(
+  retained: Option(scope_plan.Plan),
+  proposed: Option(scope_plan.Plan),
+) -> Result(Nil, Error) {
+  case proposed {
+    None -> Ok(Nil)
+    Some(proposed) -> {
+      case retained {
+        Some(retained) if retained == proposed -> Ok(Nil)
+        None | Some(_) -> Error(Conflict)
+      }
+    }
+  }
+}
+
+fn plan_reservation(plan: Option(scope_plan.Plan)) -> Int {
+  case plan {
+    None -> 0
+    Some(plan) -> scope_plan.reservation(plan)
+  }
 }
 
 fn validate_owner_envelope(
@@ -1780,6 +2047,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     RetirementWork(work, reply) -> handle_work(state, work, reply)
     PredecessorWork(work, reply) -> handle_work(state, work, reply)
     NilWork(work, reply) -> handle_work(state, work, reply)
+    PlanWork(work, reply) -> handle_work(state, work, reply)
     Release(reply) -> {
       case state {
         Open(context) -> {
