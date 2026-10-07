@@ -117,6 +117,12 @@ pub type Reason {
   /// holds a control, zero-width or direction-changing character.
   InvalidName
 
+  /// The profile the form chose is not one the daemon's configuration defines
+  /// now. The page offers only profiles it read when it opened, so this is a
+  /// configuration that changed under the person or a frame the page did not
+  /// draw (protocol-change/076).
+  UnknownProfile
+
   /// This credential has created as many sessions as it may recently. The
   /// count is the daemon's and is kept for the credential and not for the page,
   /// so opening another page does not reset it.
@@ -153,6 +159,8 @@ pub fn reason_words(reason: Reason) -> String {
       "Choose a folder inside your home directory. The home directory itself and hidden folders are not allowed."
     InvalidName ->
       "Use a name of up to 256 bytes with no control or invisible characters."
+    UnknownProfile ->
+      "That model profile is not in the configuration now. Reload the page."
     TooMany -> "You have created many sessions this hour. Try again later."
     Full -> "The daemon has no room for another session. Stop one first."
     NotOpened ->

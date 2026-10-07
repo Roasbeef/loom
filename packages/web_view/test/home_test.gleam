@@ -77,6 +77,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     manage: None,
     create: None,
     folders: None,
+    profiles: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,
@@ -1169,6 +1170,7 @@ fn creator(
     creations.Place,
     String,
     creations.Sharing,
+    option.Option(String),
     fn(creations.Answer) -> Nil,
   ) -> Nil,
 ) -> home.Start {
@@ -1177,9 +1179,16 @@ fn creator(
 
 fn recording(
   asked: Subject(#(creations.Place, String, creations.Sharing)),
-) -> fn(creations.Place, String, creations.Sharing, fn(creations.Answer) -> Nil) ->
-  Nil {
-  fn(place, name, sharing, _) { process.send(asked, #(place, name, sharing)) }
+) -> fn(
+  creations.Place,
+  String,
+  creations.Sharing,
+  option.Option(String),
+  fn(creations.Answer) -> Nil,
+) -> Nil {
+  fn(place, name, sharing, _, _) {
+    process.send(asked, #(place, name, sharing))
+  }
 }
 
 // A member's page and an observer-ceiling page have no capability, so they draw
@@ -1195,7 +1204,7 @@ pub fn a_page_without_the_capability_draws_no_creation_control_test() {
 
   let model = run(model, home.Choosing("/src/loom"))
   let model =
-    run(model, home.Creating("/src/loom", "name", creations.Shareable))
+    run(model, home.Creating("/src/loom", "name", creations.Shareable, None))
   assert drawn(model) == html
   assert list.length(handlers(home.view(model))) == 8
 }
@@ -1253,7 +1262,7 @@ pub fn a_submit_asks_once_and_the_page_waits_test() {
   let #(model, _) = opened(creator(recording(asked)))
   let model = run(model, home.Choosing("/src/loom"))
   let model =
-    run(model, home.Creating("/src/loom", "review", creations.Shareable))
+    run(model, home.Creating("/src/loom", "review", creations.Shareable, None))
   assert process.receive(asked, 0)
     == Ok(#(creations.Drawn("/src/loom"), "review", creations.Shareable))
   let html = drawn(model)
@@ -1261,9 +1270,10 @@ pub fn a_submit_asks_once_and_the_page_waits_test() {
   assert string.contains(html, "disabled")
 
   let again =
-    run(model, home.Creating("/src/loom", "second", creations.Private))
+    run(model, home.Creating("/src/loom", "second", creations.Private, None))
   let elsewhere = run(model, home.Choosing("/src/weft"))
-  let _ = run(elsewhere, home.Creating("/src/weft", "third", creations.Private))
+  let _ =
+    run(elsewhere, home.Creating("/src/weft", "third", creations.Private, None))
   assert process.receive(asked, 0) == Error(Nil)
   assert drawn(again) == html
 }
@@ -1273,9 +1283,9 @@ pub fn a_submit_asks_once_and_the_page_waits_test() {
 pub fn a_submit_for_a_form_that_is_not_open_asks_nothing_test() {
   let asked = process.new_subject()
   let #(model, _) = opened(creator(recording(asked)))
-  let _ = run(model, home.Creating("/src/loom", "x", creations.Private))
+  let _ = run(model, home.Creating("/src/loom", "x", creations.Private, None))
   let open = run(model, home.Choosing("/src/loom"))
-  let _ = run(open, home.Creating("/src/weft", "x", creations.Private))
+  let _ = run(open, home.Creating("/src/weft", "x", creations.Private, None))
   assert process.receive(asked, 0) == Error(Nil)
 }
 
@@ -1286,10 +1296,11 @@ pub fn the_answer_departs_or_words_the_refusal_test() {
   let ticket = "/ui/sessions/N?ticket=t"
   let #(model, _) =
     opened(
-      creator(fn(_, _, _, deliver) { deliver(creations.Ticketed(ticket)) }),
+      creator(fn(_, _, _, _, deliver) { deliver(creations.Ticketed(ticket)) }),
     )
   let model = run(model, home.Choosing("/src/loom"))
-  let model = run(model, home.Creating("/src/loom", "", creations.Private))
+  let model =
+    run(model, home.Creating("/src/loom", "", creations.Private, None))
   let html = drawn(model)
   assert string.contains(html, "to=\"" <> ticket <> "\"")
   assert !string.contains(html, "<form")
@@ -1297,10 +1308,10 @@ pub fn the_answer_departs_or_words_the_refusal_test() {
   let refuse = fn(reason) {
     let #(model, _) =
       opened(
-        creator(fn(_, _, _, deliver) { deliver(creations.Declined(reason)) }),
+        creator(fn(_, _, _, _, deliver) { deliver(creations.Declined(reason)) }),
       )
     let model = run(model, home.Choosing("/src/loom"))
-    run(model, home.Creating("/src/loom", "", creations.Private))
+    run(model, home.Creating("/src/loom", "", creations.Private, None))
   }
   let invalid = drawn(refuse(creations.InvalidName))
   assert string.contains(invalid, creations.reason_words(creations.InvalidName))
@@ -1370,7 +1381,7 @@ pub fn the_form_draws_the_workspace_only_as_text_test() {
   let hostile = "/src/<script>alert(1)</script>"
   let #(model, _) =
     opened(
-      home.Start(..creator(fn(_, _, _, _) { Nil }), sessions: fn(deliver) {
+      home.Start(..creator(fn(_, _, _, _, _) { Nil }), sessions: fn(deliver) {
         deliver(home.Listed([entry("Z", "x", hostile, 1, Live)]))
       }),
     )
@@ -1419,7 +1430,7 @@ pub fn the_rename_and_creation_forms_cannot_be_confused_test() {
   assert string.contains(drawn(after_rename), "named <b>weft</b>.")
 
   let after_create =
-    run(model, home.Creating("/src/weft", "made", creations.Private))
+    run(model, home.Creating("/src/weft", "made", creations.Private, None))
   assert process.receive(asked, 0)
     == Ok(#(creations.Drawn("/src/weft"), "made", creations.Private))
   assert process.receive(renamed, 0) == Error(Nil)
@@ -2123,7 +2134,10 @@ pub fn only_a_page_that_may_create_draws_the_folder_section_test() {
 
   let model = run(plain, home.OpeningElsewhere)
   let model =
-    run(model, home.CreatingElsewhere("~/code/app", "", creations.Private))
+    run(
+      model,
+      home.CreatingElsewhere("~/code/app", "", creations.Private, None),
+    )
   let model = run(model, home.Forgetting(1))
   let model = run(model, home.FoldersRead([recent(1, "/home/o/app")]))
   assert drawn(model) == html
@@ -2189,7 +2203,7 @@ pub fn a_remembered_folder_opens_the_usual_form_test() {
   let model =
     run(
       model,
-      home.Creating("/home/o/archived-app", "again", creations.Shareable),
+      home.Creating("/home/o/archived-app", "again", creations.Shareable, None),
     )
   assert process.receive(asked, 0)
     == Ok(#(
@@ -2209,7 +2223,10 @@ pub fn the_typed_folder_form_asks_once_test() {
   let forgotten = process.new_subject()
   let #(model, _) = opened(folder_keeper([], asked, forgotten, []))
   let _ =
-    run(model, home.CreatingElsewhere("~/code/app", "", creations.Private))
+    run(
+      model,
+      home.CreatingElsewhere("~/code/app", "", creations.Private, None),
+    )
   assert process.receive(asked, 0) == Error(Nil)
 
   let model = run(model, home.OpeningElsewhere)
@@ -2225,20 +2242,26 @@ pub fn the_typed_folder_form_asks_once_test() {
   assert list.all(submits, string.starts_with(_, home.table_path <> "\t"))
 
   let sent =
-    run(model, home.CreatingElsewhere("~/code/app", "app", creations.Shareable))
+    run(
+      model,
+      home.CreatingElsewhere("~/code/app", "app", creations.Shareable, None),
+    )
   assert process.receive(asked, 0)
     == Ok(#(creations.Typed("~/code/app"), "app", creations.Shareable))
   assert string.contains(drawn(sent), "Creating</button>")
 
   let again =
-    run(sent, home.CreatingElsewhere("~/code/other", "", creations.Private))
+    run(
+      sent,
+      home.CreatingElsewhere("~/code/other", "", creations.Private, None),
+    )
   assert process.receive(asked, 0) == Error(Nil)
   assert drawn(again) == drawn(sent)
 
   // A workspace's form closes the typed one, and its submit is the only one.
   let moved = run(model, home.Choosing("/src/loom"))
   assert !string.contains(drawn(moved), "name=\"path\"")
-  let _ = run(moved, home.CreatingElsewhere("~/x", "", creations.Private))
+  let _ = run(moved, home.CreatingElsewhere("~/x", "", creations.Private, None))
   assert process.receive(asked, 0) == Error(Nil)
 }
 
@@ -2248,10 +2271,10 @@ pub fn the_typed_folder_form_asks_once_test() {
 pub fn a_refused_folder_says_why_and_never_the_path_test() {
   let typed = "~/<script>alert(1)</script>/secret-folder"
   let refuse = fn(reason) {
-    let ask = fn(_, _, _, deliver) { deliver(creations.Declined(reason)) }
+    let ask = fn(_, _, _, _, deliver) { deliver(creations.Declined(reason)) }
     let #(model, _) = opened(creator(ask))
     let model = run(model, home.OpeningElsewhere)
-    run(model, home.CreatingElsewhere(typed, "", creations.Private))
+    run(model, home.CreatingElsewhere(typed, "", creations.Private, None))
   }
   let outside = drawn(refuse(creations.OutsideHome))
   assert string.contains(outside, creations.reason_words(creations.OutsideHome))
@@ -2272,7 +2295,7 @@ pub fn a_refused_folder_says_why_and_never_the_path_test() {
 // has no group to put it beside.
 pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
   let rows = [recent(7, "/home/o/gone")]
-  let ask = fn(_, _, _, deliver) {
+  let ask = fn(_, _, _, _, deliver) {
     deliver(creations.Declined(creations.NotAFolder))
   }
   let start =
@@ -2286,7 +2309,8 @@ pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
     )
   let #(model, _) = opened(start)
   let model = run(model, home.Choosing("/home/o/gone"))
-  let model = run(model, home.Creating("/home/o/gone", "", creations.Private))
+  let model =
+    run(model, home.Creating("/home/o/gone", "", creations.Private, None))
   let html = drawn(model)
   assert string.contains(html, creations.reason_words(creations.NotAFolder))
   assert string.contains(html, "<form")
@@ -2379,4 +2403,80 @@ pub fn the_typed_folder_fields_decode_totally_test() {
 
   // The workspace form still takes no path, so a forged `path` on it is refused.
   assert create.fields([#("name", "x"), #("path", "/etc")]) == Error(Nil)
+}
+
+// --- model profiles (protocol-change/076) -----------------------------------
+
+// A page that may create, with the profile names the daemon listed, whose every
+// creation is heard with the profile it carried.
+fn profiled(
+  profiles: List(String),
+  asked: Subject(#(creations.Place, option.Option(String))),
+) -> home.Start {
+  home.Start(
+    ..creator(fn(place, _, _, profile, _) {
+      process.send(asked, #(place, profile))
+    }),
+    profiles:,
+  )
+}
+
+pub fn the_forms_offer_a_profile_select_only_when_profiles_exist_test() {
+  let asked = process.new_subject()
+  let #(plain, _) = opened(profiled([], asked))
+  let plain = run(plain, home.OpeningElsewhere)
+  assert !string.contains(drawn(plain), "<select")
+  let plain = run(plain, home.Choosing("/src/loom"))
+  assert !string.contains(drawn(plain), "<select")
+
+  let #(listed, _) = opened(profiled(["deepseek", "gemini"], asked))
+  let workspace = run(listed, home.Choosing("/src/loom"))
+  assert string.contains(drawn(workspace), "<select")
+  assert string.contains(drawn(workspace), ">deepseek</option>")
+  let elsewhere = run(listed, home.OpeningElsewhere)
+  assert string.contains(drawn(elsewhere), "<select")
+
+  // A page that may not create offers no select whatever the daemon listed.
+  let #(member, _) = opened(home.Start(..start(), profiles: ["deepseek"]))
+  assert !string.contains(drawn(member), "<select")
+}
+
+pub fn a_creation_carries_the_profile_the_form_chose_test() {
+  let asked = process.new_subject()
+  let #(model, _) = opened(profiled(["deepseek"], asked))
+  let model = run(model, home.Choosing("/src/loom"))
+  let _ =
+    run(
+      model,
+      home.Creating("/src/loom", "", creations.Private, option.Some("deepseek")),
+    )
+  assert process.receive(asked, 0)
+    == Ok(#(creations.Drawn("/src/loom"), option.Some("deepseek")))
+
+  // The typed folder's form carries it too, and the default roles are None.
+  let #(model, _) = opened(profiled(["deepseek"], asked))
+  let model = run(model, home.OpeningElsewhere)
+  let _ =
+    run(model, home.CreatingElsewhere("~/app", "", creations.Private, None))
+  assert process.receive(asked, 0) == Ok(#(creations.Typed("~/app"), None))
+}
+
+// The page asks only for a profile it was told of, so a message that names any
+// other asks nothing and leaves the form open.
+pub fn a_profile_the_daemon_did_not_list_asks_nothing_test() {
+  let asked = process.new_subject()
+  let #(model, _) = opened(profiled(["deepseek"], asked))
+  let model = run(model, home.Choosing("/src/loom"))
+  let model =
+    run(
+      model,
+      home.Creating("/src/loom", "", creations.Private, option.Some("other")),
+    )
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "home-create")
+}
+
+pub fn an_unknown_profile_refusal_has_fixed_words_test() {
+  assert creations.reason_words(creations.UnknownProfile)
+    == "That model profile is not in the configuration now. Reload the page."
 }
