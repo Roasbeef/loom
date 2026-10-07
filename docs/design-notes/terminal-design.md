@@ -582,8 +582,8 @@ New `F` keys wait on a check of what Herdr and common terminals pass through
 | Picker rows and preview | `Session`, `Activity`, `GlanceLine` (section 1) | None |
 | Workspace and strip rows | `Row`, `Line` (section 2) | None |
 | Strand cards, status line | `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:45`) (`status_line`) | None |
-| Gutter hue | `turns.hue` (`packages/session_view/src/session_view/turns.gleam:288`) (`hue`) | None |
-| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1323`) (`divider`), plus a count from the steps' results | None |
+| Gutter hue | `turns.hue` (`packages/session_view/src/session_view/turns.gleam:294`) (`hue`) | None |
+| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1405`) (`divider`), plus a count from the steps' results | None |
 | Sent messages | `agent_messages.observe` | None |
 | Received strand messages | A strand origin on the admitted message | **protocol-change 059** |
 | Peer messages | `PeerOrigin` | None |
