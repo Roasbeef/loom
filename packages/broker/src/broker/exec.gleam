@@ -1130,6 +1130,39 @@ pub fn native_wall_fits(
   }
 }
 
+/// Checks the original elapsed authority without rewriting a cleared policy.
+/// ServerProtocol's Session policy keeps zero wall time; its trusted original
+/// deadline must still leave at most twelve hours. Finite collection retains
+/// positive native wall time and its sixty-second protocol policy ceiling.
+/// Both the scoped executor and the original helper Run use this same check.
+///
+/// ## Examples
+/// A zero-wall ServerProtocol with 1000ms remaining is bounded; a zero deadline is refused.
+@internal
+pub fn protocol_native_wall_fits(
+  request: ExecRequest,
+  mode: framing.ProtocolMode,
+  clock: clock.Clock,
+  deadline_ms: Int,
+) -> Bool {
+  case request.policy, mode {
+    Some(policy), framing.ServerProtocol if policy.limits.wall_s == 0 -> {
+      let #(now, _) = clock.read(clock)
+      let remaining = deadline_ms - now
+      deadline_ms != 0 && remaining > 0 && remaining <= 43_200_000
+    }
+    Some(policy), framing.ServerProtocol ->
+      policy.limits.wall_s > 0
+      && policy.limits.wall_s <= 43_200
+      && native_wall_fits(request, clock, deadline_ms)
+    Some(policy), framing.FiniteCollected ->
+      policy.limits.wall_s > 0
+      && policy.limits.wall_s <= 60
+      && native_wall_fits(request, clock, deadline_ms)
+    None, _ -> False
+  }
+}
+
 /// Sends a chunk of stdin to the running execution; `eof: True` closes
 /// the child's stdin after `data`. Ignored when nothing is running.
 pub fn stdin(helper: Helper, data data: BitArray, eof eof: Bool) -> Nil {
@@ -4288,7 +4321,7 @@ fn handle_protocol_run(
         machine.data.reserved_protocol == Some(id)
         && list.contains(features, framing.protocol_credit_feature)
         && protocol_policy_fits(request, mode)
-        && native_wall_fits(request, clock, deadline)
+        && protocol_native_wall_fits(request, mode, clock, deadline)
         && events_owner_alive(events)
       case ready, request.demand, degraded_features(features) {
         False, _, _ -> {
@@ -4788,7 +4821,11 @@ fn protocol_policy_fits(
         framing.ServerProtocol -> 43_200
         framing.FiniteCollected -> 60
       }
-      admitted_policy.limits.wall_s > 0
+      {
+        admitted_policy.limits.wall_s > 0
+        || mode == framing.ServerProtocol
+        && admitted_policy.limits.wall_s == 0
+      }
       && admitted_policy.limits.wall_s <= maximum_wall
       && admitted_policy.limits.output_bytes > 0
       && admitted_policy.limits.output_bytes <= 67_108_864
