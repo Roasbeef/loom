@@ -406,7 +406,7 @@ silences its programs too, withholding `bash` or `fs_write` makes a
 read-only reviewer read-only from `code_mode` as well, and withholding
 `agent_spawn` remains the depth cap on either path.
 
-The check runs in the call's own worker (`SatelliteConfig.precheck`), after
+The check runs in the call's own worker (`RunConfig.precheck`), after
 admission and before the plan is served or cleared, so it covers served
 and jailed capabilities alike and a slow answer delays one call rather than
 the host actor. It asks the Agency's `holds` on every call, reading the
@@ -841,27 +841,33 @@ but it is jailed in three ways:
   the operation and closes the socket, which kills the node and every
   executor it fanned out.
 
-Teardown does not depend on the host surviving to run it. The host
-cleans up on every exit path it takes itself. The launcher also spawns an
-unlinked janitor that monitors the host process and runs the same
-teardown when the host dies, however it died; the broker's own fd-3
-safety net has the same shape. A host killed from outside therefore still
-leaves no node running, no socket bound, and no token file on disk.
+Foreground teardown belongs to the original whole-Launch resource owner. The
+host installs the paused connection and acknowledges ownership before the
+adapter reads or dispatches capability frames. Each direction keeps one window
+until the original consumer acknowledges its complete frame. Completed replies
+still retain call capacity while their socket writes are pending; computation
+completion alone settles the call ledger without returning that capacity.
 
-Teardown also collects the node's **enforcement report**, the sandbox
-helper's account of which layers it enforced, and the ordering is
-deliberate. `CapConnection.destroy` aborts the operation, waits for the
-node's own settlement, and *returns* what the helper reported. The host
-destroys the node before it reports the execution's outcome, so the
-report travels out in `satellite.Run` together with the outcome. The
-abort is what makes the report reachable: a cancelled execution still
-answers with `exec_exit`, carrying the same enforcement list. The launcher holds the
-node's clearance handle, so teardown cancels it whichever of the two
-arrives first. A stage that genuinely never reported carries an
-`Unreported` naming the reason, which is a different value from a lost
-report. Previously the report was published on a callback that the abort
-usually beat, so a healthy run reported the build's layers and nothing at
-all for the node (issue #5, spec-gaps WP-J 14).
+The foreground owner closes the original socket independently of writer work,
+cancels the original native call, and joins transport within its bounded cleanup
+observation. `CloseResult` carries the native enforcement report, transport
+drain and resource drain separately. Joined transport and witnessed released
+resources permit unlinking local token and socket paths only when the host has
+also observed every admitted capability drain. Cancellation requests are not
+join witnesses. The host accounts for pending work independently of reply slots
+and retains an unresolved drain after an unsettled response is consumed. A lost clearance reply
+or unobserved native settlement stays unresolved even if cancellation was sent.
+The persistent extension host retains its existing janitor and report holder.
+
+A validated terminal outcome is retained before Final consumption, and Final is
+published before close joins the reader. `Run.custody` and pipeline
+`Execution.custody` carry that cleanup observation independently of the valid
+program outcome. At the existing client directory owner,
+`cleanup_local_execution` deletes only this client's two roots after safe Launch
+custody, and retains unresolved roots with their original owner. No placement
+reference becomes a local deletion path. `NoLaunchResources` says only that
+Launch acquired no remaining resources; it strengthens no separate Compile
+lifetime or durable complete-report COMMIT claim.
 
 A hostile `.beam` that slipped past vetting and the compiler lands here,
 in a jail whose only reachable effect is the one broker channel. It is

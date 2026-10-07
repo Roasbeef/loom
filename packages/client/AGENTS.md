@@ -1,3 +1,24 @@
+## Foreground Launch directory custody
+
+`codemode.exec_config_for` supplies `satellite.RunConfig` authority and the
+original caller precheck to the foreground host. `foreground_launch_config`
+selects this client's token and socket paths once, and `launch.foreground_launcher`
+owns their preparation, transport and native cleanup. `watched_launcher` watches
+only witnessed Launch refusal through the same pure requirement projection.
+`LaunchOutcomeUnknown` remains typed through translation and never becomes a
+policy refusal or a fresh approval opportunity.
+
+`execute_after_vetting` passes `pipeline.Execution.custody` to
+`cleanup_local_execution`. Original joined transport and released Launch
+resources permit deleting the client's two execution roots. An unresolved
+close retains them even if the program returned a valid result or native
+admission refused after preparation. The deletion helper interprets only the
+client's own local paths, never executor references. Launch custody does not
+replace separate Compile lifetime evidence. File-based controls in
+`codemode_cleanup_test` observe both roots and an unrelated sibling through the
+production helper; the codemode host controls preserve known outcomes with an
+unresolved close. Extension dispatch keeps its persistent launcher.
+
 # client
 
 ## Physical service ownership
@@ -1316,7 +1337,7 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/codemode.launch_refusal` — what policy composition would
   refuse a satellite launch for: `tools/codemode.RunRefused` carrying the
   exact grants that would satisfy it, or `NothingRefused`. `execute`
-  wraps the pipeline's `satellite.Launcher` with it and reports the
+  wraps the pipeline's `run_channel.Launcher` with it and reports the
   answer outward beside the outcome, which is the whole of what makes an
   escalation record *mintable* from inside code mode (#97). Public
   because it is the wrapper's entire decision and the only part of it a
@@ -4403,7 +4424,7 @@ these forks because they define the same modules.
 - **Both jailed stages' enforcement reports travel in the outcome.**
   `pipeline.execute` returns them beside the outcome — the build's from
   `compile.Compiled`, the node's from `satellite.Run`, whose report is
-  what `CapConnection.destroy` returns — so this module does not wait on
+  the original foreground `CloseResult.node` — so this module does not wait on
   a mailbox and has no grace period to lose. It only restates them as
   `tools/codemode.Report`, splitting the helper's `skip:` entries out of
   the applied list so no renderer can present a skipped layer as an

@@ -16,8 +16,8 @@ capture_credit({subject, Pid, _} = Subject) ->
     State = sys:get_state(Pid),
     credit = element(1, State),
     RequestDoor = element(6, State),
-    {native_hello, Envelope, Reply} = element(13, State),
-    {some, Correlation} = element(15, State),
+    {native_hello, Envelope, Reply} = element(14, State),
+    {some, Correlation} = element(16, State),
     {Subject, RequestDoor, Correlation, {native_request, Envelope, Reply}}.
 
 head(Server) ->
@@ -29,8 +29,8 @@ inject_idle(Probe, Subject) ->
         {_, Door, Old, Request} = matching(Probe, Subject),
         {subject, Pid, _} = Subject,
         Before = sys:get_state(Pid),
-        none = element(15, Before),
-        no_ask = element(13, Before),
+        none = element(16, Before),
+        no_ask = element(14, Before),
         send(Door, {Old, Request}),
         %% A same-sender sys barrier follows the injected handoff. No receive/0
         %% assumption is needed to establish that this test injection landed.
@@ -45,9 +45,9 @@ inject_active(Probe, Subject) ->
         {_, Door, Old, Request} = matching(Probe, Subject),
         {subject, Pid, _} = Subject,
         Before = sys:get_state(Pid),
-        {some, Current} = element(15, Before),
+        {some, Current} = element(16, Before),
         true = Current =/= Old,
-        {native_hello, _, _} = element(13, Before),
+        {native_hello, _, _} = element(14, Before),
         send(Door, {Old, Request}),
         _ = erlang:process_info(Pid, current_function),
         After = sys:get_state(Pid),
@@ -89,12 +89,12 @@ retire_busy(Server) ->
 
 answer_waiting(Server) ->
     custody_matches(Server, fun(State) ->
-        element(11, State) =/= none andalso element(13, State) =:= no_ask
+        element(12, State) =/= none andalso element(14, State) =:= no_ask
     end).
 
 joined_waiting(Server) ->
     custody_matches(Server, fun(State) ->
-        element(11, State) =:= none andalso element(13, State) =/= no_ask
+        element(12, State) =:= none andalso element(14, State) =/= no_ask
     end).
 
 custody_matches(Server, Predicate) ->

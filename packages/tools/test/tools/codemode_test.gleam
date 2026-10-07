@@ -1001,6 +1001,39 @@ pub fn a_deadline_says_what_died_and_how_to_fix_it_test() {
   assert list.contains(fields, #("kind", json.String("deadline_exceeded")))
 }
 
+// A lost Launch reply does not grant a fresh execution or a no-effect claim.
+pub fn an_unknown_launch_keeps_possible_execution_visible_test() {
+  let reason = "original endpoint stopped answering"
+  let outcome =
+    call(
+      scripted(
+        codemode.Execution(
+          result: codemode.RunFailed(codemode.LaunchOutcomeUnknown(reason:)),
+          enforcement: codemode.Enforcement(
+            build: enforced(),
+            node: codemode.Unreported(
+              "original native custody remains unresolved",
+            ),
+          ),
+          refusal: codemode.NothingRefused,
+          calls: call_record.empty(),
+          edits: [],
+        ),
+      ),
+      [#("program", json.String("..."))],
+    )
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), "may have launched")
+  assert string.contains(text_of(outcome), "Reconcile the original execution")
+  assert !string.contains(text_of(outcome), "could not start")
+  assert !string.contains(text_of(outcome), "no node was launched")
+
+  let assert Some(json.Object(fields)) = outcome.details
+    as "unknown Launch must preserve its structured discriminator"
+  assert list.contains(fields, #("kind", json.String("launch_outcome_unknown")))
+  assert list.contains(fields, #("detail", json.String(reason)))
+}
+
 // --- what actually ran -----------------------------------------------------
 
 pub fn an_unreported_jail_is_never_implied_test() {

@@ -98,6 +98,7 @@ pub fn the_build_clearance_is_never_widened_test() {
       identity.build_phase(widened_identity()),
       "/work/build",
     )
+
   // Composition applies grants *after* the meet, so a grant arriving here
   // would be able to undo the build's own `network: NetworkOff`
   // requirement — which is the one property a hermetic build has.
@@ -184,6 +185,7 @@ pub fn a_widened_execution_says_so_in_the_record_test() {
   let assert codemode.Ran(..) = execution.outcome
     as "the faked pipeline must run to an outcome"
   assert execution.widening == enforcement.Widened(grants: approved())
+
   // Legible without knowing the grant vocabulary, which is what an
   // operator reading a record actually has.
   assert list.map(approved(), enforcement.grant_label)
@@ -383,22 +385,19 @@ fn pipeline_config(
     )),
     broker: started_broker(),
     identity: id,
-    satellite: satellite.SatelliteConfig(
+    satellite: satellite.RunConfig(
       base_policy: policy.workspace_default("/work"),
       demand: exec.BestEffort,
       env: [#("PATH", "/usr/bin")],
       cwd: "/work",
-      cap_socket_path: dir <> "/sock",
       entropy: token.production_entropy(),
       clock: clock.fixed(at: t),
-      write_token_file: satellite.private_token_writer(dir),
-      unlink_token_file: satellite.unlink_token_file,
       router: satellite.default_router,
       precheck: satellite.no_precheck,
       ceilings: [],
       call_timeout_ms: 3000,
     ),
-    launch: satellite_peer.launcher(finish_peer),
+    launch: satellite_peer.foreground_launcher(finish_peer),
   )
 }
 
