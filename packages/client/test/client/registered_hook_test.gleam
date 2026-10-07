@@ -14,6 +14,7 @@ import client/hookrunner
 import client/hookserve
 import client/hooktrust
 import client/hookwire
+import client/internal/instance_owner as instance_custody
 import client/protocol
 import client/registered_system_work as work
 import client/remote/custodian
@@ -36,6 +37,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/system
 import gleam/result
 import gleam/string
 import gleam/time/timestamp
@@ -45,6 +47,7 @@ import machine/strand
 import provider/stream
 import runtime/api
 import runtime/effects
+import runtime/supervisor
 import session/session
 import simplifile
 import sqlight
@@ -885,6 +888,15 @@ fn serving(
   text: String,
   entropy: fn() -> Int,
 ) -> hookserve.RegisteredServing {
+  serving_with_facts(api.fact_handle(f.runtime), r, text, entropy)
+}
+
+fn serving_with_facts(
+  facts: api.FactHandle,
+  r: hookrunner.RegisteredContext,
+  text: String,
+  entropy: fn() -> Int,
+) -> hookserve.RegisteredServing {
   let located =
     hookserve.Located(
       "already-acquired",
@@ -911,7 +923,7 @@ fn serving(
         "/work",
       ),
       r,
-      api.fact_handle(f.runtime),
+      facts,
       entropy,
     )
     as "Private registered join preserves public Wiring and Context shapes."
@@ -1605,4 +1617,374 @@ pub fn original_deadline_expires_during_real_broker_congestion_without_second_di
     == 2
   assert scalar(f.owner_path, "SELECT COUNT(*) FROM owner_custody_children")
     == 1
+}
+
+// Construction uses the actual registered custodian and Broker over SQLite.
+// NotStarted dispatch makes no helper claim; the occurrence is still real data.
+pub fn fact_effects_prepared_gate_binds_original_writer_and_is_not_rebuilt_test() {
+  let f = fixture("prepared-gate")
+  let b = plain_broker()
+  let runner = context(f, b)
+  let base = f.runtime.effects
+  assert api.close(f.runtime) == Ok(Nil)
+  assert f.retire() == Ok(Nil)
+  let assert Ok(#(opened, retire)) =
+    session.open_sqlite_owned(f.path, "prepared", 30_000, clock.fixed(1000))
+    as "Only after the old writer retires does this original runtime open."
+  let assert Ok(prepared) = hookserve.prepare_registered_gate()
+    as "One actual counter is acquired before opening."
+  let gate_pid = hookserve.registered_gate_owner(prepared)
+  let captured = process.new_subject()
+  let assert Ok(runtime) =
+    api.open_fact_effects_published(
+      opened,
+      base,
+      api.default_options(
+        strand.StrandConfiguration(
+          strand.ModelIdentity("test", "test"),
+          strand.ThinkingOff,
+          [],
+        ),
+      ),
+      fn(facts) {
+        process.send(captured, facts)
+        let selected =
+          serving_with_facts(
+            facts,
+            runner,
+            "{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"start\",\"timeout\":5}]}]}",
+            fn() { 700 },
+          )
+        Ok(hookserve.wire_registered_prepared(
+          base,
+          selected,
+          clock.fixed(1000),
+          fn(_) { True },
+          prepared,
+        ))
+      },
+      fn(parked) {
+        assert registry.lookup(parked.tree.writer) == Error(Nil)
+        assert process.is_alive(gate_pid)
+        Ok(Nil)
+      },
+    )
+    as "Pure binding starts no replacement actor or writer."
+  let assert Ok(facts) = process.receive(captured, 1000)
+    as "The actual binder's writer capability is captured."
+  assert runtime.effects.hooks.run_start(operation()) == []
+  let event_key =
+    address(ids.mint_entry(ids.generator(clock.fixed(1000), 700)).0)
+  let assert Ok(Some(committed)) = api.fact_cell_with(facts, event_key)
+    as "The hook occurrence commits through the bound original writer."
+  assert api.fact_cell(runtime, event_key) == Ok(Some(committed))
+  let assert Ok(original_writer) = registry.lookup(runtime.tree.writer)
+    as "The actual writer can be replaced beneath the same root."
+  let assert Ok(writer_pid) = process.subject_owner(original_writer)
+    as "Exact original writer PID."
+  process.kill(writer_pid)
+  assert poll.until(within: 1000, every: 5, attempt: fn() {
+      case registry.lookup(runtime.tree.writer) {
+        Ok(current) if current != original_writer -> poll.Done(Nil)
+        Ok(_) | Error(Nil) -> poll.Retry
+      }
+    })
+    == poll.Answered(Nil)
+  assert runtime.effects.hooks.run_start(operation()) == []
+  assert api.fact_cell_with(facts, event_key) == Ok(Some(committed))
+  assert process.is_alive(gate_pid)
+  assert api.close(runtime) == Ok(Nil)
+  assert hookserve.release_registered_gate(prepared, within_ms: 1000) == Ok(Nil)
+  assert !process.is_alive(gate_pid)
+  assert retire() == Ok(Nil)
+  broker.stop(b)
+  let owner_monitor = process.monitor(f.owner_pid)
+  assert custodian.stop(f.owner) == Ok(Nil)
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(owner_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "Original registered custody retires normally."
+  assert scalar(
+      f.path,
+      "SELECT COUNT(*) FROM registers WHERE key LIKE 'session/hook-occurrence/%'",
+    )
+    == 1
+}
+
+pub fn fact_effects_counter_is_retired_on_publication_refusal_with_owner_alive_test() {
+  let f = fixture("prepared-refusal")
+  let base = f.runtime.effects
+  assert api.close(f.runtime) == Ok(Nil)
+  assert f.retire() == Ok(Nil)
+  let assert Ok(#(opened, retire)) =
+    session.open_sqlite_owned(f.path, "refused", 30_000, clock.fixed(1000))
+    as "The refusal control has one actual writer lease."
+  let observations = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      process.trap_exits(True)
+      let release_owner = process.new_subject()
+      let assert Ok(prepared) = hookserve.prepare_registered_gate()
+        as "The same live owner acquires its original counter."
+      let outcome =
+        api.open_fact_effects_published(
+          opened,
+          base,
+          api.default_options(
+            strand.StrandConfiguration(
+              strand.ModelIdentity("test", "test"),
+              strand.ThinkingOff,
+              [],
+            ),
+          ),
+          fn(_) { Ok(base) },
+          fn(parked) {
+            process.send(observations, #(
+              parked,
+              hookserve.registered_gate_owner(prepared),
+              release_owner,
+            ))
+            Error("original publication refused")
+          },
+        )
+      assert result.is_error(outcome)
+      let closed = hookserve.release_registered_gate(prepared, within_ms: 1000)
+      let assert Ok(Nil) = closed
+        as "The original counter stop ACK and Normal are required."
+      process.send(observations, #(
+        f.runtime,
+        hookserve.registered_gate_owner(prepared),
+        release_owner,
+      ))
+      process.receive_forever(release_owner)
+    })
+  let assert Ok(#(parked, counter_pid, release_owner)) =
+    process.receive(observations, 1000)
+    as "Actual refused root and acquired counter are retained."
+  let assert Ok(_) = process.receive(observations, 1000)
+    as "Explicit stop ACK and original Normal are consumed before the owner waits."
+  assert process.is_alive(owner)
+  assert !process.is_alive(counter_pid)
+  assert !process.is_alive(registry.owner(parked.tree.namespace))
+  assert !process.is_alive(parked.tree.supervisor)
+  assert session.close(opened) == Ok(Nil)
+  assert retire() == Ok(Nil)
+  process.send(release_owner, Nil)
+  let watch = process.monitor(f.owner_pid)
+  assert custodian.stop(f.owner) == Ok(Nil)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "The original custodian also retires."
+}
+
+pub fn fact_effects_original_services_custody_handles_lost_open_reply_test() {
+  let f = fixture("prepared-custody")
+  let base = f.runtime.effects
+  assert api.close(f.runtime) == Ok(Nil)
+  assert f.retire() == Ok(Nil)
+  let assert Ok(#(opened, retire)) =
+    session.open_sqlite_owned(f.path, "custodied", 30_000, clock.fixed(1000))
+    as "One new original writer lease follows confirmed old disposal."
+  let ready = process.new_subject()
+  let observed = process.new_subject()
+  let order = process.new_subject()
+  let builder =
+    process.spawn_unlinked(fn() {
+      process.trap_exits(True)
+      let begin = process.new_subject()
+      process.send(ready, begin)
+      let owner = process.receive_forever(begin)
+      let assert Ok(prepared) = hookserve.prepare_registered_gate()
+        as "The original builder acquires one actual counter."
+      let counter_pid = hookserve.registered_gate_owner(prepared)
+      let assert Ok(Nil) =
+        instance_custody.publish(owner, instance_custody.Services, fn() {
+          process.send(order, "Services")
+          hookserve.release_registered_gate(prepared, within_ms: 1000)
+        })
+        as "Services retains counter release before runtime opening."
+      process.unlink(counter_pid)
+      let assert Ok(runtime) =
+        api.open_fact_effects_published(
+          opened,
+          base,
+          api.default_options(
+            strand.StrandConfiguration(
+              strand.ModelIdentity("test", "test"),
+              strand.ThinkingOff,
+              [],
+            ),
+          ),
+          fn(_) { Ok(base) },
+          fn(runtime) {
+            let tree = runtime.tree
+            instance_custody.publish(owner, instance_custody.Runtime, fn() {
+              assert process.is_alive(counter_pid)
+              process.send(order, "Runtime")
+              supervisor.shutdown(tree, grace_ms: 1000)
+              |> result.replace_error(
+                "Original runtime drain remains unconfirmed",
+              )
+            })
+          },
+        )
+        as "The original root and direct drain are retained before writer startup."
+      let assert Ok(Nil) =
+        instance_custody.publish(owner, instance_custody.Storage, fn() {
+          let assert Ok(Nil) = session.close(opened)
+            as "Drain precedes original lease release."
+          retire()
+          |> result.replace_error("Original session connection remains live")
+        })
+        as "The final connection retirement belongs to original custody."
+      process.send(observed, #(runtime, counter_pid))
+
+      // The finite open result is deliberately never returned to its consumer.
+      // These independently published capabilities still own the actual resources.
+      process.receive_forever(process.new_subject())
+    })
+  let assert Ok(begin) = process.receive(ready, 1000)
+    as "The resource-free builder parks with its own receiver."
+  let assert Ok(owner) =
+    instance_custody.start(
+      builder,
+      fn() { process.kill(builder) },
+      consumer: process.self(),
+      failures: process.new_subject(),
+    )
+    as "Actual Weft custody retains the original builder before acquisition."
+  process.send(begin, owner)
+  let assert Ok(#(runtime, counter_pid)) = process.receive(observed, 1000)
+    as "Opening completed after publication but its final result is lost."
+  assert process.is_alive(counter_pid)
+  assert instance_custody.close(owner, within_ms: 5000)
+    == instance_custody.Closed
+  let assert Ok("Runtime") = process.receive(order, 1000)
+    as "The original runtime drains first."
+  let assert Ok("Services") = process.receive(order, 1000)
+    as "The exact counter retires only after that drain."
+  assert !process.is_alive(builder)
+  assert !process.is_alive(counter_pid)
+  assert !process.is_alive(runtime.tree.supervisor)
+  assert !process.is_alive(registry.owner(runtime.tree.namespace))
+  let watch = process.monitor(f.owner_pid)
+  assert custodian.stop(f.owner) == Ok(Nil)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "Actual original registered custodian also retires."
+}
+
+pub fn fact_effects_counter_is_retired_on_bind_refusal_with_owner_alive_test() {
+  let f = fixture("prepared-bind-refusal")
+  let base = f.runtime.effects
+  assert api.close(f.runtime) == Ok(Nil)
+  assert f.retire() == Ok(Nil)
+  let assert Ok(#(opened, retire)) =
+    session.open_sqlite_owned(f.path, "refused-bind", 30_000, clock.fixed(1000))
+    as "The original lease is acquired without a replacement writer."
+  let observations = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      process.trap_exits(True)
+      let release = process.new_subject()
+      let assert Ok(prepared) = hookserve.prepare_registered_gate()
+        as "Exactly one actual counter is acquired before binding."
+      let outcome =
+        api.open_fact_effects_published(
+          opened,
+          base,
+          api.default_options(
+            strand.StrandConfiguration(
+              strand.ModelIdentity("test", "test"),
+              strand.ThinkingOff,
+              [],
+            ),
+          ),
+          fn(facts) {
+            assert api.fact_cell_with(facts, "session/bind-refusal")
+              == Error(api.RuntimeUnavailable)
+            Error("original bind refused")
+          },
+          fn(_) { Error("publication must never run after refused binding") },
+        )
+      assert result.is_error(outcome)
+      assert hookserve.release_registered_gate(prepared, within_ms: 1000)
+        == Ok(Nil)
+      process.send(observations, #(
+        hookserve.registered_gate_owner(prepared),
+        release,
+      ))
+      process.receive_forever(release)
+    })
+  let assert Ok(#(counter_pid, release)) = process.receive(observations, 1000)
+    as "Explicit counter stop and join complete even though opening refused."
+  assert process.is_alive(owner)
+  assert !process.is_alive(counter_pid)
+  assert session.close(opened) == Ok(Nil)
+  assert retire() == Ok(Nil)
+  process.send(release, Nil)
+  let watch = process.monitor(f.owner_pid)
+  assert custodian.stop(f.owner) == Ok(Nil)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "Original registered custodian also retires."
+}
+
+pub fn fact_effects_missing_stop_ack_cannot_be_reconstructed_from_later_normal_test() {
+  let assert Ok(prepared) = hookserve.prepare_registered_gate()
+    as "One real actor supplies the stop proof."
+  let original = hookserve.registered_gate_owner(prepared)
+  let monitor = process.monitor(original)
+  system.suspend(original)
+  assert result.is_error(hookserve.release_registered_gate(
+    prepared,
+    within_ms: 0,
+  ))
+  assert process.is_alive(original)
+  system.resume(original)
+  let assert Ok(process.ProcessDown(reason: process.Normal, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "The original stop happens later, after the requesting observer lost its ACK."
+  assert result.is_error(hookserve.release_registered_gate(
+    prepared,
+    within_ms: 1000,
+  ))
+}
+
+pub fn fact_effects_abnormal_counter_loss_refuses_release_proof_test() {
+  let observed = process.new_subject()
+  let owner =
+    process.spawn_unlinked(fn() {
+      process.trap_exits(True)
+      let permit = process.new_subject()
+      let assert Ok(prepared) = hookserve.prepare_registered_gate()
+        as "Original counter acquisition succeeds."
+      let original = hookserve.registered_gate_owner(prepared)
+      let monitor = process.monitor(original)
+      process.kill(original)
+      let assert Ok(process.ProcessDown(reason: process.Killed, ..)) =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(down) { down })
+        |> process.selector_receive(1000)
+        as "The actual original actor dies abnormally."
+      assert result.is_error(hookserve.release_registered_gate(
+        prepared,
+        within_ms: 1000,
+      ))
+      process.send(observed, permit)
+      process.receive_forever(permit)
+    })
+  let assert Ok(permit) = process.receive(observed, 1000)
+    as "Original actor loss remains uncertain while its assembly owner stays alive."
+  assert process.is_alive(owner)
+  process.send(permit, Nil)
 }

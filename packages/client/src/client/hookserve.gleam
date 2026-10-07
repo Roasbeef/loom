@@ -25,6 +25,10 @@
 ////
 //// Registered assembly uses `load_registered` → `registered_serving` →
 //// `wire_registered`, over already acquired source bytes and the same gates.
+//// Original assembly can instead `prepare_registered_gate` before opening, then
+//// use `wire_registered_prepared` inside pure binding. `start_counters` acquires
+//// their one shared actor; `compose` builds the same wrappers without I/O.
+//// `release_registered_gate` requires the original stop ACK and normal exit.
 //// `registered_outcomes` indexes the original declaration inventory, and
 //// `run_occurrence` fixes every handler plan before one ordinary CAS/readback.
 //// Its actual managed worker allocates original one-use system permissions;
@@ -76,6 +80,7 @@
 //// arguments upstream approved and the arguments that run are the
 //// same arguments.
 
+import broker/internal/call
 import client/hookcompat
 import client/hookdecisions
 import client/hookrunner
@@ -87,7 +92,7 @@ import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import gleam/dict
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -98,6 +103,49 @@ import runtime/residency
 import simplifile
 import weft
 import weft/actor
+import weft/poll
+
+/// The one acquired counter behind pure registered Effects construction.
+///
+/// It owns no writer or execution authority. Keep its startup link until the
+/// original combined Services cleanup has acknowledged custody, then unlink
+/// its projected owner. Retire it only after the original runtime has drained.
+@internal
+pub opaque type PreparedRegisteredGate {
+  PreparedRegisteredGate(pid: Pid, counter: Subject(CounterMessage))
+}
+
+// The two questions the composed slots ask the one small actor that
+// owns their state. Both are calls rather than casts because the slot
+// is about to decide on the answer, and a decision on a count it has
+// not read is not a decision.
+type CounterMessage {
+  // How many follow-ups the gate has placed for this operation so far,
+  // incrementing as it answers.
+  Tally(operation: String, reply: Subject(Int))
+
+  // Whether this run start is the session's first, flipping the flag
+  // as it answers.
+  Position(reply: Subject(RunPosition))
+
+  // The original supporting-services owner retires this exact counter.
+  StopCounter(reply: Subject(Nil))
+}
+
+// What the counter actor holds: the per-operation continuation tally
+// the `Stop` cap binds on, and whether a run start has been seen yet.
+type Counters {
+  Counters(placed: dict.Dict(String, Int), started: RunPosition)
+}
+
+// Where one run start sits in the session's life. `SessionStart` is a
+// session event in the contract, and the harness's only per-session
+// moment on this path is "the first time the per-run slot is called",
+// so the question is named rather than carried as a boolean.
+type RunPosition {
+  FirstRun
+  LaterRun
+}
 
 /// One discovered source file, before parsing: where it is and which
 /// precedence class it belongs to.
@@ -721,40 +769,19 @@ fn wire_with(
   clock: Clock,
   stops: fn(OpId) -> Bool,
 ) -> Result(Effects, String) {
-  let counters =
-    actor.new(Counters(placed: dict.new(), started: FirstRun))
-    |> actor.on_message(fn(counters, message) {
-      case message {
-        Tally(operation, reply) -> {
-          let count = dict.get(counters.placed, operation) |> result.unwrap(0)
-          process.send(reply, count)
-          actor.continue(
-            Counters(
-              ..counters,
-              placed: dict.insert(counters.placed, operation, count + 1),
-            ),
-          )
-        }
+  use counters <- result.try(start_counters())
+  Ok(compose(effects, serving, clock, stops, counters.data))
+}
 
-        // The first run start of this composed `Effects` is the
-        // session's own start, and every later one is a turn. The flag
-        // flips as it is read, so two run starts racing on separate
-        // driver processes still see one `FirstRun` between them.
-        Position(reply) -> {
-          process.send(reply, counters.started)
-          actor.continue(Counters(..counters, started: LaterRun))
-        }
-      }
-    })
-    |> actor.hibernate_after(residency.hibernate_after_ms)
-    |> actor.start
-    |> result.map(fn(started) { started.data })
-  use counters <- result.try(
-    counters
-    |> result.map_error(fn(_reason) {
-      "the stop-gate counter would not start; imported Stop hooks are off"
-    }),
-  )
+// Both legacy and prepared assembly use exactly these wrappers. Construction
+// retains existing gate state but starts no actor and reads no writer.
+fn compose(
+  effects: Effects,
+  serving: GateServing,
+  clock: Clock,
+  stops: fn(OpId) -> Bool,
+  counters: Subject(CounterMessage),
+) -> Effects {
   let built = effects.hooks
   let tools = effects.tools
 
@@ -766,95 +793,64 @@ fn wire_with(
   let compaction_note = built.compaction_note
   let clear = tools.clear
   let run = tools.run
-  Ok(
-    effects.Effects(
-      ..effects,
-      hooks: effects.Hooks(
-        ..built,
-        run_start: fn(operation) {
-          list.append(
-            run_start(operation),
-            started_context(serving, clock, counters),
-          )
-        },
-        run_end: fn(operation) {
-          // A notification beside the existing slot, never instead of
-          // it, and the continuation gate asked only when the harness
-          // itself had no follow-up to place: a harness follow-up and a
-          // hook continuation are the same slot, and the harness's own
-          // wins.
-          //
-          // The nesting is what makes that true. Gleam evaluates both
-          // subjects of a two-subject `case` before it matches, so
-          // asking the two questions side by side spawned every
-          // matching `Stop` hook — side effects, cap counter and all —
-          // on runs whose answer was thrown away before it was read.
-          case run_end(operation) {
-            Some(_harness) as placed -> placed
+  effects.Effects(
+    ..effects,
+    hooks: effects.Hooks(
+      ..built,
+      run_start: fn(operation) {
+        list.append(
+          run_start(operation),
+          started_context(serving, clock, counters),
+        )
+      },
+      run_end: fn(operation) {
+        // A notification beside the existing slot, never instead of
+        // it, and the continuation gate asked only when the harness
+        // itself had no follow-up to place: a harness follow-up and a
+        // hook continuation are the same slot, and the harness's own
+        // wins.
+        //
+        // The nesting is what makes that true. Gleam evaluates both
+        // subjects of a two-subject `case` before it matches, so
+        // asking the two questions side by side spawned every
+        // matching `Stop` hook — side effects, cap counter and all —
+        // on runs whose answer was thrown away before it was read.
+        case run_end(operation) {
+          Some(_harness) as placed -> placed
 
-            None -> {
-              // A run end on a strand the `Stop` hooks were not written
-              // for finishes without asking them, so none of their side
-              // effects run and the continuation cap is not spent.
-              let continuation = case stops(operation) {
-                True ->
-                  stop_block(ids.op_id_to_string(operation), serving, counters)
-                False -> hookdecisions.Finish
-              }
-              case continuation {
-                hookdecisions.Continue(reason) ->
-                  Some(hook_message(hookcompat.Stop, reason, clock))
-                hookdecisions.Finish -> None
-              }
+          None -> {
+            // A run end on a strand the `Stop` hooks were not written
+            // for finishes without asking them, so none of their side
+            // effects run and the continuation cap is not spent.
+            let continuation = case stops(operation) {
+              True ->
+                stop_block(ids.op_id_to_string(operation), serving, counters)
+              False -> hookdecisions.Finish
+            }
+            case continuation {
+              hookdecisions.Continue(reason) ->
+                Some(hook_message(hookcompat.Stop, reason, clock))
+              hookdecisions.Finish -> None
             }
           }
-        },
-        compaction_note: fn(operation, cue) {
-          list.append(
-            compaction_note(operation, cue),
-            case hookserve_compaction_note(serving, cue) {
-              Some(note) -> [note]
-              None -> []
-            },
-          )
-        },
-      ),
-      tools: effects.ToolSurface(
-        ..tools,
-        clear: fn(query) { cleared(serving, clear, query) },
-        run: fn(query) { ran(serving, run(query), query) },
-      ),
+        }
+      },
+      compaction_note: fn(operation, cue) {
+        list.append(
+          compaction_note(operation, cue),
+          case hookserve_compaction_note(serving, cue) {
+            Some(note) -> [note]
+            None -> []
+          },
+        )
+      },
+    ),
+    tools: effects.ToolSurface(
+      ..tools,
+      clear: fn(query) { cleared(serving, clear, query) },
+      run: fn(query) { ran(serving, run(query), query) },
     ),
   )
-}
-
-// The two questions the composed slots ask the one small actor that
-// owns their state. Both are calls rather than casts because the slot
-// is about to decide on the answer, and a decision on a count it has
-// not read is not a decision.
-type CounterMessage {
-  // How many follow-ups the gate has placed for this operation so far,
-  // incrementing as it answers.
-  Tally(operation: String, reply: Subject(Int))
-
-  // Whether this run start is the session's first, flipping the flag
-  // as it answers.
-  Position(reply: Subject(RunPosition))
-}
-
-// What the counter actor holds: the per-operation continuation tally
-// the `Stop` cap binds on, and whether a run start has been seen yet.
-type Counters {
-  Counters(placed: dict.Dict(String, Int), started: RunPosition)
-}
-
-// Where one run start sits in the session's life. `SessionStart` is a
-// session event in the contract, and the harness's only per-session
-// moment on this path is "the first time the per-run slot is called",
-// so the question is named rather than carried as a boolean.
-type RunPosition {
-  FirstRun
-  LaterRun
 }
 
 // The Stop gate with the cap applied: the count is read (and
@@ -1219,6 +1215,152 @@ pub fn wire_registered(
   stops: fn(OpId) -> Bool,
 ) -> Result(Effects, String) {
   wire_with(effects, RegisteredServingMode(serving), clock, stops)
+}
+
+/// Acquires one original gate counter before pure runtime binding.
+///
+/// Publish its complete release alongside the other original Services cleanups
+/// before opening. Failed publication or opening must explicitly release it;
+/// merely leaving the original assembly owner alive retains its startup link.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let prepared = hookserve.prepare_registered_gate()
+/// ```
+@internal
+pub fn prepare_registered_gate() -> Result(PreparedRegisteredGate, String) {
+  start_counters()
+  |> result.map(fn(started) {
+    PreparedRegisteredGate(started.pid, started.data)
+  })
+}
+
+/// Projects the actual counter owner for custody handoff and observation.
+///
+/// This projection proves no custody. The trusted assembler may unlink this
+/// PID only after actual acknowledged combined Services publication. A finite
+/// opener must never become its permanent owner.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // process.unlink(hookserve.registered_gate_owner(prepared))
+/// // The preceding Services publication must already have succeeded.
+/// ```
+@internal
+pub fn registered_gate_owner(prepared: PreparedRegisteredGate) -> Pid {
+  prepared.pid
+}
+
+/// Purely composes the five existing gates over an already-owned counter.
+///
+/// Build `serving` with `registered_serving` and the binder's actual original
+/// FactHandle. Neither step starts an actor or invokes a handler. Every strand
+/// and restart receives these finished wrappers over the same counter.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hookserve.wire_registered_prepared(base, serving, clock, stops, prepared)
+/// ```
+@internal
+pub fn wire_registered_prepared(
+  effects: Effects,
+  serving: RegisteredServing,
+  clock: Clock,
+  stops: fn(OpId) -> Bool,
+  prepared: PreparedRegisteredGate,
+) -> Effects {
+  compose(
+    effects,
+    RegisteredServingMode(serving),
+    clock,
+    stops,
+    prepared.counter,
+  )
+}
+
+/// Retires the original counter with both its stop ACK and normal exit.
+///
+/// One monotonic budget covers acknowledgement and join. Missing ACK, timeout,
+/// abnormal exit or an already-dead counter leaves disposal unconfirmed. Keep
+/// this release in the original Services cleanup after runtime drainage.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // hookserve.release_registered_gate(prepared, within_ms: 5000)
+/// ```
+@internal
+pub fn release_registered_gate(
+  prepared: PreparedRegisteredGate,
+  within_ms within_ms: Int,
+) -> Result(Nil, String) {
+  let clock = poll.monotonic()
+  let deadline = clock.now() + int.max(0, within_ms)
+  let monitor = process.monitor(prepared.pid)
+  let acknowledgement =
+    call.try_call(
+      prepared.counter,
+      waiting: int.max(0, deadline - clock.now()),
+      sending: StopCounter,
+    )
+    |> result.replace_error(
+      "the original gate counter stop was not acknowledged",
+    )
+  let outcome =
+    result.try(acknowledgement, fn(_acknowledged) {
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(down) {
+        case down.reason {
+          process.Normal -> Ok(Nil)
+          process.Killed | process.Abnormal(_) ->
+            Error("the original gate counter did not exit normally")
+        }
+      })
+      |> process.selector_receive(int.max(0, deadline - clock.now()))
+      |> result.unwrap(Error(
+        "the original gate counter exit remains unconfirmed",
+      ))
+    })
+  process.demonitor_process(monitor)
+  outcome
+}
+
+// Legacy startup and prepared startup acquire the same small actor. Stop is
+// available only through the opaque prepared handle's supporting-owner release.
+fn start_counters() -> Result(actor.Started(Subject(CounterMessage)), String) {
+  actor.new(Counters(placed: dict.new(), started: FirstRun))
+  |> actor.on_message(fn(counters, message) {
+    case message {
+      Tally(operation, reply) -> {
+        let count = dict.get(counters.placed, operation) |> result.unwrap(0)
+        process.send(reply, count)
+        actor.continue(
+          Counters(
+            ..counters,
+            placed: dict.insert(counters.placed, operation, count + 1),
+          ),
+        )
+      }
+
+      // One FirstRun answer is shared across racing drivers and restarts.
+      Position(reply) -> {
+        process.send(reply, counters.started)
+        actor.continue(Counters(..counters, started: LaterRun))
+      }
+      StopCounter(reply) -> {
+        process.send(reply, Nil)
+        actor.stop()
+      }
+    }
+  })
+  |> actor.hibernate_after(residency.hibernate_after_ms)
+  |> actor.start
+  |> result.map_error(fn(_reason) {
+    "the stop-gate counter would not start; imported Stop hooks are off"
+  })
 }
 
 fn wiring_of(serving: GateServing) -> hookwire.Wiring {
