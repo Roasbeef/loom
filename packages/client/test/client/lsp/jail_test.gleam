@@ -941,7 +941,8 @@ fn connected(
   launch: jail.Launch,
 ) -> #(transport.Connection, Subject(transport.TransportEvent)) {
   let inbound = process.new_subject()
-  let transport.ChannelTransport(connect:) = jail.transport(launch)
+  let assert transport.ChannelTransport(connect:) = jail.transport(launch)
+    as "The ordinary local jail retains its channel transport."
   let connection = connect(inbound)
 
   #(connection, inbound)
