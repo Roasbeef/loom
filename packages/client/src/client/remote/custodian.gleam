@@ -33,9 +33,17 @@
 //// `retain_intent` and `admit_system_child` preserve durable system ordinals.
 //// `reconciliation_intent` prevents fresh allocation by a fenced original owner.
 //// `receipt_readback` verifies exact original receipt and generation before ACK.
+//// `allocate_system` stores the actual opaque pending value under a fresh Ref.
+//// `consume_system_reservation` closes it before exact cleared-envelope checks;
+//// `handle_system_reservation` shares this actor's existing bounded selector.
+//// `resolve_semantic_parent` → `reserve_workspace_command` retains the original
+//// semantic parent beside each fixed native phase; `semantic_evidence` is history.
 
+import broker/dispatch
 import broker/enrollment
 import broker/internal/call
+import broker/policy
+import client/remote/native_envelope
 import client/remote/outcome
 import codemode/service_input
 import core/command
@@ -49,9 +57,11 @@ import executor/remote/compile_completion
 import executor/remote/compile_wire
 import executor/remote/identity
 import executor/remote/registration
+import executor/remote/wire
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process
+import gleam/erlang/reference
 import gleam/list
 import gleam/option
 import gleam/otp/supervision
@@ -107,7 +117,10 @@ pub opaque type Handle {
 // External history follows the registry; an admitted runner retains one incarnation.
 type Destination {
   Reclaimable
-  Pinned(process.Subject(Message))
+  Pinned(
+    process.Subject(Message),
+    process.Subject(dispatch.SystemReservationMessage),
+  )
 }
 
 /// Original ready custody, with no claim about executor activation acknowledgement.
@@ -137,6 +150,39 @@ pub type RegisteredBoot {
   )
 }
 
+/// A fresh local permission is distinct from durable allocation history.
+pub type SystemReservationAllocation {
+  /// The only original live allocation may enter Broker clearance.
+  SystemPermission(ref: dispatch.SystemReservationRef)
+
+  /// Historical allocation grants no clearance or native send.
+  SystemObservation(
+    /// Complete original once-allocated system origin.
+    origin: remote_tool.ChildOrigin,
+    /// Original immutable work UUID.
+    request_id: ids.EntryId,
+    /// Closed historical state, never a replacement pending permission.
+    stage: custody.SystemChildStage,
+  )
+}
+
+type PendingAuthority {
+  LivePending(custody.PendingSystemChild)
+  SpentPending
+}
+
+type OriginalSystemPending {
+  OriginalSystemPending(
+    intent: custody.IntentReadback,
+    declaration: dispatch.SystemCommandDeclaration,
+    caller: process.Pid,
+    association: generation.GenerationAssociation,
+    origin: remote_tool.ChildOrigin,
+    request_id: ids.EntryId,
+    permission: PendingAuthority,
+  )
+}
+
 type ExistingCompanion {
   NewCompanion
   ExistingCompanion
@@ -159,6 +205,49 @@ type GenerationCustody {
 
 /// Closed actor vocabulary; no caller can submit a query closure.
 pub opaque type Message {
+  /// The one auxiliary typed subject joins this existing actor selector.
+  SystemReservation(dispatch.SystemReservationMessage)
+
+  /// Original declaration and caller accompany the original retained intent.
+  AllocateSystem(
+    custody.IntentReadback,
+    dispatch.SystemCommandDeclaration,
+    process.Pid,
+    process.Subject(Result(SystemReservationAllocation, custody.Error)),
+  )
+
+  /// Cancellation of an intent whose allocation reply was lost uses original data only.
+  CancelSystemIntent(
+    custody.IntentReadback,
+    process.Subject(Result(Nil, custody.Error)),
+  )
+
+  /// Reads an exact admitted semantic parent under the original live association.
+  ReadSemanticEvidence(
+    remote_tool.ChildOrigin,
+    process.Subject(
+      Result(
+        #(ids.EntryId, BitArray, BitArray, generation.GenerationAssociation),
+        custody.Error,
+      ),
+    ),
+  )
+
+  ResolveSemanticParent(
+    ids.EntryId,
+    BitArray,
+    process.Subject(Result(custody.SemanticParent, custody.Error)),
+  )
+
+  /// Commits full native bytes with a same-transaction original semantic check.
+  ReserveWorkspaceCommand(
+    custody.SemanticParent,
+    remote_tool.ChildOrigin,
+    ids.EntryId,
+    BitArray,
+    process.Subject(Result(#(ids.EntryId, BitArray), custody.Error)),
+  )
+
   /// Readiness retains only this actor's actual original connection disposition.
   ReadRegistered(process.Subject(Result(RegisteredBoot, custody.Error)))
 
@@ -379,6 +468,8 @@ type State {
     admission: AdmissionState,
     owner: Handle,
     self: process.Subject(Message),
+    system_subject: process.Subject(dispatch.SystemReservationMessage),
+    live_system: Dict(reference.Reference, OriginalSystemPending),
   )
 }
 
@@ -571,6 +662,391 @@ pub fn retain_system_intent(
   })
 }
 
+/// Allocates original system custody while pinning its actual event-subject owner.
+/// Reclaimable handles cannot mint a local permission for a replacement actor.
+///
+/// ## Examples
+///
+/// `allocate_system_reservation(owner, intent, declaration, events)` may return history.
+pub fn allocate_system_reservation(
+  owner: Handle,
+  intent: custody.IntentReadback,
+  declaration: dispatch.SystemCommandDeclaration,
+  events: process.Subject(event),
+) -> Result(SystemReservationAllocation, custody.Error) {
+  use Nil <- result.try(case owner.destination {
+    Pinned(_, _) -> Ok(Nil)
+    Reclaimable -> Error(custody.Frozen)
+  })
+  use caller <- result.try(
+    process.subject_owner(events) |> result.replace_error(custody.Conflict),
+  )
+  use Nil <- result.try(exact(fn() { caller == process.self() }))
+  use Nil <- result.try(declaration_bound(declaration))
+  ask(owner, fn(reply) { AllocateSystem(intent, declaration, caller, reply) })
+}
+
+/// Checks that a local ref targets this exact original typed subject.
+/// Equality of the owner PID alone would confuse subjects owned by one actor.
+///
+/// ## Examples
+///
+/// `system_ref_matches(owner, ref)` never resolves a reclaimable address.
+pub fn system_ref_matches(
+  owner: Handle,
+  ref: dispatch.SystemReservationRef,
+) -> Result(Nil, custody.Error) {
+  let #(subject, _, origin, _) = dispatch.system_reservation_fields(ref)
+  use Nil <- result.try(case owner.destination {
+    Pinned(_, expected) -> exact(fn() { expected == subject })
+    Reclaimable -> Error(custody.Frozen)
+  })
+  case remote_tool.child_fields(origin) {
+    remote_tool.SystemFields(_, _, _) -> Ok(Nil)
+    remote_tool.ToolFields(_, _) | remote_tool.WorkspaceCommandFields(_, _) ->
+      Error(custody.Conflict)
+  }
+}
+
+/// Cancels original retained work when allocation never returned a live ref.
+///
+/// ## Examples
+///
+/// `cancel_system_intent(owner, intent)` permanently allocates an unallocated ordinal.
+pub fn cancel_system_intent(
+  owner: Handle,
+  intent: custody.IntentReadback,
+) -> Result(Nil, custody.Error) {
+  ask(owner, fn(reply) { CancelSystemIntent(intent, reply) })
+}
+
+/// Resolves original semantic custody from its exact UUID and full input bytes.
+///
+/// ## Examples
+///
+/// `resolve_semantic_parent(owner, uuid, input)` refuses cancelled parents.
+pub fn resolve_semantic_parent(
+  owner: Handle,
+  request_id: ids.EntryId,
+  bytes: BitArray,
+) -> Result(custody.SemanticParent, custody.Error) {
+  use Nil <- result.try(input_bound(bytes, 33_554_432))
+  ask(owner, fn(reply) { ResolveSemanticParent(request_id, bytes, reply) })
+}
+
+/// Reserves a workspace-native envelope after exact retained-parent comparison.
+/// Only the original actual Fresh insertion can return a sendable result.
+///
+/// ## Examples
+///
+/// `reserve_workspace_command(owner, parent, origin, uuid, bytes)` refuses replay.
+pub fn reserve_workspace_command(
+  owner: Handle,
+  parent: custody.SemanticParent,
+  origin: remote_tool.ChildOrigin,
+  request_id: ids.EntryId,
+  bytes: BitArray,
+) -> Result(#(ids.EntryId, BitArray), custody.Error) {
+  use Nil <- result.try(input_bound(bytes, 131_072))
+  ask(owner, fn(reply) {
+    ReserveWorkspaceCommand(parent, origin, request_id, bytes, reply)
+  })
+}
+
+fn original_live(
+  state: State,
+) -> Result(custody.LiveGeneration, custody.Error) {
+  case state.generation, state.admission {
+    OriginalGeneration(live), Admitting -> Ok(live)
+    _, _ -> Error(custody.Frozen)
+  }
+}
+
+fn declaration_bound(
+  declaration: dispatch.SystemCommandDeclaration,
+) -> Result(Nil, custody.Error) {
+  use _ <- result.try(
+    workspace.step(declaration.step) |> result.replace_error(custody.Conflict),
+  )
+  use Nil <- result.try(
+    exact(fn() {
+      declaration.deadline_ms > 0
+      && string.byte_size(declaration.owner) > 0
+      && string.byte_size(declaration.owner) <= 128
+      && declaration.argv != []
+      && list.length(declaration.argv) <= 256
+      && list.length(declaration.env) <= 256
+      && string.byte_size(declaration.cwd) <= 8192
+    }),
+  )
+  let size =
+    list.fold(
+      declaration.argv,
+      string.byte_size(declaration.cwd)
+        + string.byte_size(declaration.owner)
+        + string.byte_size(declaration.step),
+      fn(size, value) { size + string.byte_size(value) },
+    )
+  let size =
+    list.fold(declaration.env, size, fn(size, pair) {
+      size + string.byte_size(pair.0) + string.byte_size(pair.1)
+    })
+  exact(fn() { size <= 8192 })
+}
+
+fn allocate_system(
+  state: State,
+  intent: custody.IntentReadback,
+  declaration: dispatch.SystemCommandDeclaration,
+  caller: process.Pid,
+) -> #(State, Result(SystemReservationAllocation, custody.Error)) {
+  let allocated = {
+    use _ <- result.try(original_live(state))
+    use Nil <- result.try(declaration_bound(declaration))
+    use associated <- result.try(current_association(state))
+    let fields = custody.system_intent_fields(intent)
+    use Nil <- result.try(
+      exact(fn() {
+        fields.0 == associated
+        && fields.3 == declaration.operation
+        && fields.4 == declaration.step
+      }),
+    )
+    custody.allocate_native_system(state.store, intent)
+  }
+  case allocated {
+    Error(error) -> #(state, Error(error))
+    Ok(custody.RetainedPending(origin, request_id, stage)) -> #(
+      state,
+      Ok(SystemObservation(origin, request_id, stage)),
+    )
+    Ok(custody.FreshPending(pending)) -> {
+      let #(origin, request_id, associated) =
+        custody.pending_system_fields(pending)
+      let reference = reference.new()
+      let original =
+        OriginalSystemPending(
+          intent,
+          declaration,
+          caller,
+          associated,
+          origin,
+          request_id,
+          LivePending(pending),
+        )
+      let ref =
+        dispatch.system_reservation_ref(
+          state.system_subject,
+          reference,
+          origin,
+          request_id,
+        )
+      #(
+        State(
+          ..state,
+          live_system: dict.insert(state.live_system, reference, original),
+        ),
+        Ok(SystemPermission(ref)),
+      )
+    }
+  }
+}
+
+fn handle_system_reservation(
+  state: State,
+  message: dispatch.SystemReservationMessage,
+) -> actor.Next(State, Message) {
+  case message {
+    dispatch.ReserveSystem(ref, cleared, bytes, reply) -> {
+      let #(state, outcome) =
+        consume_system_reservation(state, ref, cleared, bytes)
+      process.send(reply, outcome |> result.replace_error(Nil))
+      resume(state)
+    }
+    dispatch.CancelSystem(ref, reply) -> {
+      let #(subject, reference, origin, request_id) =
+        dispatch.system_reservation_fields(ref)
+      let original = {
+        use Nil <- result.try(exact(fn() { subject == state.system_subject }))
+        use original <- result.try(
+          dict.get(state.live_system, reference)
+          |> result.replace_error(custody.Missing),
+        )
+        use Nil <- result.try(
+          exact(fn() {
+            original.origin == origin && original.request_id == request_id
+          }),
+        )
+        Ok(original)
+      }
+      case original {
+        Error(_) -> {
+          process.send(reply, Error(Nil))
+          resume(state)
+        }
+        Ok(original) -> {
+          let state =
+            State(
+              ..state,
+              live_system: dict.insert(
+                state.live_system,
+                reference,
+                OriginalSystemPending(..original, permission: SpentPending),
+              ),
+            )
+          process.send(
+            reply,
+            custody.cancel_native_system(state.store, original.intent)
+              |> result.replace_error(Nil),
+          )
+          resume(state)
+        }
+      }
+    }
+  }
+}
+
+fn consume_system_reservation(
+  state: State,
+  ref: dispatch.SystemReservationRef,
+  cleared: dispatch.ClearedSystemCommand,
+  bytes: BitArray,
+) -> #(State, Result(#(ids.EntryId, BitArray), custody.Error)) {
+  let #(subject, reference, origin, request_id) =
+    dispatch.system_reservation_fields(ref)
+  let found = {
+    use Nil <- result.try(exact(fn() { subject == state.system_subject }))
+    dict.get(state.live_system, reference)
+    |> result.replace_error(custody.Missing)
+  }
+  case found {
+    Error(error) -> #(state, Error(error))
+    Ok(original) -> {
+      // Consumption precedes validation and persistence, and survives every Result arm.
+      let consumed =
+        State(
+          ..state,
+          live_system: dict.insert(
+            state.live_system,
+            reference,
+            OriginalSystemPending(..original, permission: SpentPending),
+          ),
+        )
+      let admitted = {
+        use _ <- result.try(original_live(consumed))
+        use pending <- result.try(case original.permission {
+          LivePending(pending) -> Ok(pending)
+          SpentPending -> Error(custody.Frozen)
+        })
+        use Nil <- result.try(
+          exact(fn() {
+            original.origin == origin && original.request_id == request_id
+          }),
+        )
+        use associated <- result.try(current_association(consumed))
+        use Nil <- result.try(
+          exact(fn() { associated == original.association }),
+        )
+        use Nil <- result.try(check_system_envelope(
+          consumed,
+          original,
+          cleared,
+          bytes,
+        ))
+        use payload <- result.try(custody.payload(consumed.config.limits, bytes))
+        use stored <- result.try(custody.admit_pending_system(
+          consumed.store,
+          pending,
+          payload,
+        ))
+        use Nil <- result.try(
+          exact(fn() {
+            stored.admission == custody.Fresh
+            && stored.origin == origin
+            && stored.request_id == request_id
+          }),
+        )
+        use actual <- result.try(custody.child(consumed.store, origin))
+        use Nil <- result.try(
+          exact(fn() {
+            actual.0 == request_id && custody.bytes(actual.1) == bytes
+          }),
+        )
+        Ok(#(request_id, bytes))
+      }
+      #(consumed, admitted)
+    }
+  }
+}
+
+fn check_system_envelope(
+  state: State,
+  original: OriginalSystemPending,
+  cleared: dispatch.ClearedSystemCommand,
+  bytes: BitArray,
+) -> Result(Nil, custody.Error) {
+  use Nil <- result.try(input_bound(bytes, 131_072))
+  let declared = original.declaration
+  use Nil <- result.try(
+    exact(fn() {
+      cleared.operation == declared.operation
+      && cleared.step == declared.step
+      && cleared.deadline_ms == declared.deadline_ms
+      && cleared.caller == option.Some(original.caller)
+      && cleared.request.argv == declared.argv
+      && cleared.request.env == declared.env
+      && cleared.request.cwd == declared.cwd
+    }),
+  )
+  let #(scope, _, _) =
+    generation.key_fields(generation.association_key(original.association))
+  use scope <- result.try(executor_scope(scope))
+  use decoded <- result.try(
+    native_envelope.decode_cleared(declared.owner, scope, bytes)
+    |> result.replace_error(custody.Conflict),
+  )
+  use Nil <- result.try(
+    exact(fn() {
+      decoded.0 == cleared.operation
+      && decoded.1.step == cleared.step
+      && decoded.1.request == cleared.request
+      && decoded.2 == cleared.deadline_ms
+    }),
+  )
+  use enrolled <- result.try(case state.config.placement {
+    RegisteredPlacement(pin, _, _) ->
+      enrollment.decode(custody.enrollment_fields(pin).4)
+      |> result.replace_error(custody.Conflict)
+    OrdinaryPlacement -> Error(custody.Frozen)
+  })
+  let registration = enrollment.digests(enrolled).0
+  let native = enrollment.native_facts(enrolled)
+  use actual_policy <- result.try(option.to_result(
+    cleared.request.policy,
+    custody.Conflict,
+  ))
+  let #(composed, narrowings) =
+    policy.compose(native.ceiling, actual_policy, [])
+  use Nil <- result.try(case decoded.1.lifetime {
+    wire.Finite(ms)
+      if ms > 0
+      && actual_policy.limits.wall_s > 0
+      && actual_policy.limits.wall_s * 1000 <= ms
+    -> Ok(Nil)
+    wire.Finite(_) | wire.Session -> Error(custody.Conflict)
+  })
+  exact(fn() {
+    string.lowercase(
+      bit_array.base16_encode(identity.digest_bytes(decoded.1.registration)),
+    )
+    == registration
+    && cleared.request.demand == native.demand
+    && composed == actual_policy
+    && narrowings == []
+    && decoded.1.stream == wire.Logs
+  })
+}
+
 /// Allocates through the existing serialized child/link/counter transaction.
 /// The trusted encoder constructs closed native/workspace payloads and performs no I/O.
 /// History retries return Retained; an unallocated historical intent is Frozen.
@@ -698,17 +1174,25 @@ fn builder(owner: Handle, config: Config) {
       -> Admitting
       custody.Unreleased, _ | _, HistoricalGeneration(_) -> RecoveryOnly
     }
-    let pinned = Handle(..owner, destination: Pinned(subject))
+    let system_subject = process.new_subject()
+    let pinned = Handle(..owner, destination: Pinned(subject, system_subject))
     Ok(
       actor.initialised(State(
         config:,
         store:,
         generation:,
         live: dict.new(),
+        live_system: dict.new(),
+        system_subject:,
         admission:,
         owner: pinned,
         self: subject,
       ))
+      |> actor.selecting(
+        process.new_selector()
+        |> process.select(subject)
+        |> process.select_map(system_subject, SystemReservation),
+      )
       |> actor.returning(subject),
     )
   })
@@ -1151,7 +1635,7 @@ pub fn retain_report(
 ) -> Result(report_value.ReportRef, custody.Error) {
   case owner.destination {
     Reclaimable -> Error(custody.Conflict)
-    Pinned(_) -> {
+    Pinned(_, _) -> {
       let retained = ask(owner, fn(reply) { RetainReport(key, report, reply) })
       case retained {
         Ok(reference) -> Ok(reference)
@@ -1185,7 +1669,7 @@ fn ask(
   use subject <- result.try(
     case owner.destination {
       Reclaimable -> registry.lookup(owner.address)
-      Pinned(subject) -> Ok(subject)
+      Pinned(subject, _) -> Ok(subject)
     }
     |> result.replace_error(custody.Unavailable(
       "owner not supervised or unavailable",
@@ -1197,6 +1681,53 @@ fn ask(
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
+    SystemReservation(message) -> handle_system_reservation(state, message)
+    AllocateSystem(intent, declaration, caller, reply) -> {
+      let #(state, outcome) =
+        allocate_system(state, intent, declaration, caller)
+      process.send(reply, outcome)
+      resume(state)
+    }
+    CancelSystemIntent(intent, reply) -> {
+      process.send(reply, custody.cancel_native_system(state.store, intent))
+      resume(state)
+    }
+    ReadSemanticEvidence(origin, reply) -> {
+      process.send(reply, custody.semantic_evidence(state.store, origin))
+      resume(state)
+    }
+    ResolveSemanticParent(id, bytes, reply) -> {
+      let outcome = {
+        use live <- result.try(original_live(state))
+        custody.semantic_parent(state.store, live, id, bytes)
+      }
+      process.send(reply, outcome)
+      resume(state)
+    }
+    ReserveWorkspaceCommand(parent, origin, id, bytes, reply) -> {
+      let outcome = {
+        use _ <- result.try(original_live(state))
+        use request <- result.try(custody.payload(state.config.limits, bytes))
+        use admitted <- result.try(custody.admit_workspace_command(
+          state.store,
+          parent,
+          origin,
+          id,
+          request,
+        ))
+        use Nil <- result.try(case admitted {
+          custody.Fresh -> Ok(Nil)
+          custody.Retained -> Error(custody.Frozen)
+        })
+        use readback <- result.try(custody.child(state.store, origin))
+        use Nil <- result.try(
+          exact(fn() { readback.0 == id && custody.bytes(readback.1) == bytes }),
+        )
+        Ok(#(id, bytes))
+      }
+      process.send(reply, outcome)
+      resume(state)
+    }
     ReadRegistered(reply) -> {
       process.send(reply, registered_readback(state))
       resume(state)
@@ -1401,7 +1932,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
         Error(Nil) -> {
           process.send(reply, Error(custody.Missing))
-          State(..state, admission: RecoveryOnly)
+          State(
+            ..state,
+            admission: RecoveryOnly,
+            live_system: dict.map_values(state.live_system, fn(_, original) {
+              OriginalSystemPending(..original, permission: SpentPending)
+            }),
+          )
         }
       }
       resume(state)
@@ -1539,7 +2076,9 @@ fn resume(state: State) -> actor.Next(State, Message) {
   let selector =
     list.fold(
       dict.to_list(state.live),
-      process.new_selector() |> process.select(state.self),
+      process.new_selector()
+        |> process.select(state.self)
+        |> process.select_map(state.system_subject, SystemReservation),
       fn(selector, row) {
         let #(address, held) = row
         process.select_map(selector, held.reports, fn(report) {
@@ -2140,4 +2679,19 @@ fn exact(agrees: fn() -> Bool) -> Result(Nil, custody.Error) {
     True -> Ok(Nil)
     False -> Error(custody.Conflict)
   }
+}
+
+/// Reads the original semantic envelope and digest after cancellation as evidence.
+///
+/// ## Examples
+///
+/// `semantic_evidence(owner, origin)` cannot create new reserve permission.
+pub fn semantic_evidence(
+  owner: Handle,
+  origin: remote_tool.ChildOrigin,
+) -> Result(
+  #(ids.EntryId, BitArray, BitArray, generation.GenerationAssociation),
+  custody.Error,
+) {
+  ask(owner, fn(reply) { ReadSemanticEvidence(origin, reply) })
 }

@@ -607,11 +607,13 @@ its opaque `CommittedResult` authorizes `collect`, which freezes immutable
 identity and UUID fences permanently. Broker release grants no collection
 authority. Frozen rows continue to consume bounded capacity.
 
-The owner journal is format version 6. Format 5 receives only the transactional
-additive registered-metadata migration; session/limit mismatch, malformed retained
-headers and unavailable report hashing refuse inside that transaction, preserving
-the old version and rows. Earlier unshipped formats are refused: they lack a run
-discharge proof and cannot safely be migrated to `Released`.
+The owner journal is format version 7. Formats 5 and 6 migrate transactionally
+only after validating their old closed vocabulary and direct child families.
+Format 5 retains its additive registered-metadata migration. Existing columns
+carry the new pending/cancelled native stages; migration performs no backfill.
+Malformed headers, new tags in an old format, scope/limit mismatch or unavailable
+report hashing refuse without advancing the old version. Earlier unshipped
+formats remain refused because they lack a run-discharge proof.
 `admit_fresh` atomically returns `Fresh` with `run_custody = 'unreleased'`
 only when the reservation was inserted; `Retained` is never dispatch permission.
 `RunCustody` separates `Unreleased` and `Released` from retained/frozen recovery
@@ -750,16 +752,36 @@ address, original operation/phase, once-retained UUID, full intent bytes and exa
 generation. Providers supply none of these identities. `retain_system_intent`
 reserves its eventual child count and 2048 bytes for the eventual child link plus
 intent-child association, including counter metadata. `admit_system_child` uses
-one serialized transaction to build the native/workspace payload through a pure
-trusted encoder, transfer the pending slot and metadata allowance, retain child
-and generation link, associate the intent, and advance its fixed service counter.
-The actual child-address/origin/profile bytes remain charged in the intent after
-transfer. Exact repeated calls compare every field and return Retained with the
-original UUID and ordinal. Historical intent construction withholds live custody,
-so an unallocated historical intent can never allocate a child. The service
-counter survives successors, permits ordinals 0..4095 and refuses at 4096; the
-existing 64 children per parent and companion count/byte/result bounds still hold.
-There is no reset, eviction or replacement UUID on an unknown COMMIT outcome.
+one serialized transaction for a pure `WorkspaceSystem` payload, its child and
+generation link, intent association and once-advanced service counter. A fresh
+pure `NativeSystem` builder now refuses; old admitted native rows remain history.
+The actual child-address/origin/profile bytes remain charged after transfer.
+Counters survive successors, permit ordinals 0..4095 and refuse at 4096.
+
+`allocate_native_system` reserves an original native ordinal without creating a
+child or generation link. Only its known Fresh result carries opaque
+`PendingSystemChild`; a retry returns `RetainedPending` observation. The
+`native_pending` and `native_cancelled` stages retain their complete 2048-byte
+allowance and child slot. `admit_pending_system` compares the exact original
+intent, origin and association, then transfers that allowance into the final
+native child/link transaction and reads back complete payload bytes. An error
+rolls back final admission while the already allocated ordinal stays spent.
+`cancel_native_system` allocates-and-cancels an unallocated original occurrence,
+or closes its pending/admitted state. It can close an already reserved occurrence
+after generation closure, yielding only cancelled history. Repeated cancellation
+releases no capacity. Future ordinal accounting counts only unallocated intents;
+all unadmitted stages still count toward companion and 64-child group limits.
+
+`semantic_parent` resolves a retained semantic child by exact original UUID and
+full input bytes, checks its original association/live generation, and retains
+its content digest in opaque `SemanticParent`. `admit_workspace_command` uses
+that parent in the same transaction as the native child/link, comparing exact
+UUID, bytes, digest, generation and direct wrapper or admitted capability pair.
+A system semantic parent must be the actual allocated `workspace` intent row;
+session equality cannot substitute for that evidence. Parent cancellation blocks
+fresh commands. `semantic_evidence` permits exact historical receipt checks
+after cancellation and yields no live authority. Derived commands share the
+original parent's quota group; pending system slots remain charged there.
 
 Startup runs a scalar-only type/size/reservation census over all added tables
 before reading their BLOB inventory. It then walks indexed keys one at a time,

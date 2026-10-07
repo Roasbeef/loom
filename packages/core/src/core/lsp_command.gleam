@@ -511,7 +511,8 @@ pub fn lsp_capture(
   use Nil <- result.try(case r.child_fields(origin) {
     r.ToolFields(_, _) -> Ok(Nil)
     r.SystemFields(_, "lsp", _) if input.tag == 8 -> Ok(Nil)
-    r.SystemFields(_, _, _) -> Error(InvalidIdentity)
+    r.SystemFields(_, _, _) | r.WorkspaceCommandFields(_, _) ->
+      Error(InvalidIdentity)
   })
   let child = controlled_child(parent)
   use <- bool.guard(
@@ -1148,6 +1149,7 @@ fn origin_matches(
       Ok(Nil)
     }
     r.SystemFields(_, _, _) -> Ok(Nil)
+    r.WorkspaceCommandFields(_, _) -> Error(ParentMismatch)
   }
 }
 

@@ -934,6 +934,7 @@ fn dispatched(
   let #(_, op, step) =
     command.coordinates(command.service(offer.reference(proposal)))
   dispatch.Dispatch(
+    None,
     dispatch.CallContext(
       op,
       workspace.step_string(step),

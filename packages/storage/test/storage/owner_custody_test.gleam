@@ -755,6 +755,19 @@ pub fn generated_owner_queries_match_named_sql_source_test() {
     named(sql.owner_next_tool_generation("").0, ["address"]),
     named(sql.owner_next_child_generation("").0, ["address"]),
     named(sql.owner_next_system_intent("").0, ["intent_address"]),
+    named(sql.owner_unadmitted_system_count("").0, ["service"]),
+    named(sql.allocate_owner_native_system_child(None, None, None, "").0, [
+      "child_address",
+      "canonical_origin",
+      "child_profile",
+      "intent_address",
+    ]),
+    named(sql.admit_owner_native_system_child("").0, ["intent_address"]),
+    named(sql.cancel_owner_native_system_child("").0, ["intent_address"]),
+    sql.owner_old_six_invalid_stages().0,
+    named(sql.owner_child_origin_by_request("").0, ["request_id"]),
+    named(sql.owner_system_intent_by_child(None).0, ["child_address"]),
+    named(sql.owner_next_child_address("").0, ["origin"]),
   ]
   assert normalized(source) == normalized(string.join(generated, "\n"))
 }

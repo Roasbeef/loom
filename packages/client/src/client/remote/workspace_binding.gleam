@@ -253,7 +253,9 @@ fn provenance(
       use key <- result.try(remote_tool.child_tool(child) |> conflict)
       use role <- result.try(remote_tool.child_role(child) |> conflict)
       use Nil <- result.try(case role {
-        remote_tool.Workspace(_) -> Ok(Nil)
+        remote_tool.Workspace(_)
+        | remote_tool.AdmittedCapability(_, _, remote_tool.SemanticWorkspace) ->
+          Ok(Nil)
         remote_tool.Compile
         | remote_tool.CompileRewrite
         | remote_tool.CompileRewriteCommand
@@ -261,7 +263,8 @@ fn provenance(
         | remote_tool.CompileCommand
         | remote_tool.SatelliteCommand
         | remote_tool.Capability(_)
-        | remote_tool.AdmittedCapability(_, _, _) -> Error(custody.Conflict)
+        | remote_tool.AdmittedCapability(_, _, remote_tool.NativeCommand) ->
+          Error(custody.Conflict)
       })
       let #(index, digest) = workspace.tool_origin_fields(source)
       let hex = digest |> bit_array.base16_encode |> string.lowercase
@@ -272,9 +275,10 @@ fn provenance(
       })
     }
     workspace.System(caller) -> {
-      use Nil <- result.try(case remote_tool.child_tool(child) {
-        Error(Nil) -> Ok(Nil)
-        Ok(_) -> Error(custody.Conflict)
+      use Nil <- result.try(case remote_tool.child_fields(child) {
+        remote_tool.SystemFields(_, _, _) -> Ok(Nil)
+        remote_tool.ToolFields(_, _)
+        | remote_tool.WorkspaceCommandFields(_, _) -> Error(custody.Conflict)
       })
       use expected <- result.try(
         remote_tool.system_child(session, system_service(caller), 0)
