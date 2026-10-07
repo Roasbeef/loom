@@ -29,9 +29,10 @@
 #                        catalogue_profiles_schema.gleam. Each catalogue version
 #                        after the first has its own migration schema;
 #                        runtime catalogue creation never embeds session tables.
-#   packages/executor — sql/schema.sql, sql/workspace.sql and named queries
+#   packages/executor — native, workspace, resource and generation schemas; named queries
 #                     under src/executor/sql/ -> src/executor/sql.gleam,
-#                     custody_schema.gleam and workspace_schema.gleam.
+#                     custody_schema.gleam, workspace_schema.gleam,
+#                     resource_schema.gleam and generation_registry_schema.gleam.
 #
 # Known parrot 2.3.0 constraints (discovered by the WP-K pilot; keep in
 # mind when editing the .sql files):
@@ -73,6 +74,7 @@ gen_package() {
   if [[ "$pkg" == executor ]]; then
     sqlite3 "$tmpdb" < packages/executor/sql/workspace.sql
     sqlite3 "$tmpdb" < packages/executor/sql/resources.sql
+    sqlite3 "$tmpdb" < packages/executor/sql/generations.sql
   fi
   # Parrot 2.3.0 prints generation errors but returns zero. Its success marker
   # follows sqlc, code generation and formatting; require it as well as the
@@ -107,6 +109,9 @@ gleam format packages/executor/src/executor/workspace_schema.gleam
 python3 scripts/embed-sql-schema.py packages/executor/sql/resources.sql \
   packages/executor/src/executor/resource_schema.gleam
 gleam format packages/executor/src/executor/resource_schema.gleam
+python3 scripts/embed-sql-schema.py packages/executor/sql/generations.sql \
+  packages/executor/src/executor/generation_registry_schema.gleam
+gleam format packages/executor/src/executor/generation_registry_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/schema.sql \
   packages/storage/src/storage/sql_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/session.sql \
