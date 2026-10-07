@@ -16,6 +16,7 @@ gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_time = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
+tom = ">= 2.1.0 and < 3.0.0"
 weft = "== 0.4.5"
 gun = ">= 2.6.0 and < 3.0.0"
 

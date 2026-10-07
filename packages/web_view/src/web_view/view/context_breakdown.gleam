@@ -14,8 +14,9 @@
 ////
 //// `panel` draws the whole body. `actions_row` is the row of its two buttons,
 //// `bar` and `legend` are the stacked bar and the rows beneath it,
-//// `inventory` is the collapsible item list, and `kinds` and `tools` are the
-//// two groupings it is made of. `split` is the arithmetic every figure
+//// `inventory` owns the leaf memo; `inventory_list` draws its collapsible
+//// item list. `message_items` and `tool_items` group the referenced items,
+//// and `kinds` and `tools` expose those groupings for a complete board. `split` is the arithmetic every figure
 //// shares: the window cut into the segments the bar draws.
 ////
 //// ## What the numbers mean
@@ -405,11 +406,28 @@ fn percent(tokens: Int, window: Int) -> String {
 // items the board lists, which is a prefix, so a board that omitted some says
 // so and the totals above stay the whole.
 fn inventory(board: context_view.Board) -> Element(message) {
+  let items = board.items
+  let omitted = board.omitted
+
+  // The item list changes only with these two inputs. Stream arrivals and
+  // freshness updates redraw the heading, but need no regrouping of the same
+  // labels. This is a leaf: it holds no handlers or nested memo entries.
+  element.memo([element.ref(items), element.ref(omitted)], fn() {
+    inventory_list(items, omitted)
+  })
+}
+
+// Grouping belongs inside the leaf memo, including normalization of every
+// untrusted label. Its references cover every value the callback reads.
+fn inventory_list(
+  items: List(context_view.Item),
+  omitted: Int,
+) -> Element(message) {
   html.details([attribute.class("ctx-items")], [
     html.summary([], [html.text("What is in the context")]),
-    group("Tools", tools(board)),
-    group("Messages", kinds(board)),
-    case board.omitted {
+    group("Tools", tool_items(items)),
+    group("Messages", message_items(items)),
+    case omitted {
       0 -> element.none()
       omitted ->
         html.p([attribute.class("ctx-note")], [
@@ -470,7 +488,12 @@ fn count_suffix(count: Int) -> String {
 /// // context_breakdown.tools(board)
 /// ```
 pub fn tools(board: context_view.Board) -> List(#(String, Int, Int)) {
-  board.items
+  tool_items(board.items)
+}
+
+// Tool rows read only the item inventory, independent of the board headline.
+fn tool_items(items: List(context_view.Item)) -> List(#(String, Int, Int)) {
+  items
   |> list.filter(fn(item) { item.category == "Tools" })
   |> list.map(fn(item) {
     #(text_hygiene.single_line(item.name), item.tokens, 1)
@@ -491,7 +514,12 @@ pub fn tools(board: context_view.Board) -> List(#(String, Int, Int)) {
 /// // context_breakdown.kinds(board)
 /// ```
 pub fn kinds(board: context_view.Board) -> List(#(String, Int, Int)) {
-  board.items
+  message_items(board.items)
+}
+
+// Message groups read only the same inventory the leaf references.
+fn message_items(items: List(context_view.Item)) -> List(#(String, Int, Int)) {
+  items
   |> list.filter(fn(item) { item.category == "Messages" })
   |> list.fold(dict.new(), fn(groups, item) {
     let kind = text_hygiene.single_line(without_place(item.name))

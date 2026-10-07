@@ -2,7 +2,7 @@
 %% A private trace session observes this test process alone and is always
 %% stopped, including when the rendering callback raises an exception.
 -module(render_memo_ffi).
--export([counted/1, work_counted/1]).
+-export([counted/1, work_counted/1, context_counted/1]).
 
 %% Observe preprocessing as well as Markdown construction. Inlining the Gleam
 %% wrapper leaves these OTP trim calls intact, so the counter catches work
@@ -20,6 +20,23 @@ work_counted(Run) ->
         {call_memory, Rows} = tprof:collect(Session),
         {Value, calls(string, trim, Rows),
                 calls('session_view@markdown', parse, Rows)}
+    after
+        tprof:stop(Session)
+    end.
+
+%% The live profile identified this label parser inside message grouping.
+%% Count its local calls while the real cache reuses the inventory leaf.
+context_counted(Run) ->
+    Module = 'web_view@view@context_breakdown',
+    {module, Module} = code:ensure_loaded(Module),
+    {ok, Session} = tprof:start(#{type => call_memory, session => context_work_test}),
+    try
+        tprof:set_pattern(Session, Module, without_place, 1),
+        tprof:enable_trace(Session, self(), #{set_on_spawn => false}),
+        Value = Run(),
+        tprof:pause(Session),
+        {call_memory, Rows} = tprof:collect(Session),
+        {Value, calls(Module, without_place, Rows)}
     after
         tprof:stop(Session)
     end.

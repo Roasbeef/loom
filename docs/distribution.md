@@ -1038,3 +1038,20 @@ GitHub; only then will normal updater release discovery see it. Authentication
 for private GHCR pulls is confined to the Linux runner, outside the build
 container. Bump the workflow's Linux image digest when its committed toolchain
 recipe changes, and keep the macOS version inputs aligned with regular CI.
+
+## Opt-in profiling at launch
+
+`[daemon] profile = true` in the selected `loom.toml` enables local profiling
+for both long-lived daemon and terminal-client launches. The client reads
+`--config`, otherwise `<state-dir>/loom.toml`, otherwise `~/.loom/loom.toml`,
+using the same TOML parser as the daemon. The client reads only the typed
+profiling setting; the daemon still owns validation of its whole catalogue.
+`--profile` also enables it explicitly, including when the setting is false.
+Help, version and other exit-only subcommands create no profiling node.
+
+The setting adds a loopback Erlang node and allocator tagging; sampling and
+call tracing still require an attached profiler. The reader boots a short-lived
+VM when the config may name the setting, so configured launches pay its startup
+cost. A file that cannot name the key avoids that VM. Profiling cookies remain
+owner-only below the state root and are removed after exit. A holder of the
+cookie has full access to the profiled VM, so distribution stays on loopback.

@@ -18,6 +18,21 @@ import web_view/view/heading
 @external(erlang, "page_events_ffi", "handlers")
 fn every_handler(view: Element(message)) -> List(String)
 
+type Cache
+
+@external(erlang, "lane_memo_ffi", "first")
+fn first(view: Element(message)) -> Cache
+
+@external(erlang, "lane_memo_ffi", "patch_text")
+fn patch(
+  cache: Cache,
+  old: Element(message),
+  new: Element(message),
+) -> #(String, Cache)
+
+@external(erlang, "render_memo_ffi", "context_counted")
+fn counted(run: fn() -> value) -> #(value, Int)
+
 fn board(items: List(context_view.Item)) -> context_view.Board {
   context_view.Board(
     request_id: 4,
@@ -84,7 +99,7 @@ pub fn compaction_off_draws_no_reserve_test() {
 // The window is cut into the three rows, the reserve and what is free, and
 // what the provider counted beyond the rows is its own part, so the parts
 // always add up to the window.
-pub fn the_window_splits_into_rows_reserve_and_free_space_test() {
+pub fn the_window_labels_into_rows_reserve_and_free_space_test() {
   let split = context_breakdown.split(board([]))
   assert split.system == 12_000
   assert split.tools == 20_000
@@ -232,4 +247,118 @@ pub fn the_buttons_are_at_the_paths_the_socket_names_test() {
   let operator = every_handler(bar(Some(Nil)))
   assert list.sort(operator, string.compare)
     == list.sort([refresh, compact], string.compare)
+}
+
+// Stream-driven headings reuse the inventory while unrelated state changes.
+pub fn unchanged_inventory_does_no_label_grouping_work_test() {
+  let initial =
+    observed(
+      board([
+        context_view.Item("Messages", "1. Assistant", 100),
+        context_view.Item("Tools", "read", 200),
+      ]),
+    )
+  let actions = context_breakdown.Actions(refresh: "refresh", compact: None)
+  let #(#(view, cache), labels) =
+    counted(fn() {
+      let view = context_breakdown.panel(initial, actions)
+      #(view, first(view))
+    })
+  assert labels > 0
+
+  let next =
+    observed(
+      context_view.Board(
+        ..board([
+          context_view.Item("Messages", "1. Assistant", 100),
+          context_view.Item("Tools", "read", 200),
+        ]),
+        used: 600_000,
+        as_of: 43,
+      ),
+    )
+  let #(#(next_view, text, cache), labels) =
+    counted(fn() {
+      let next_view =
+        context_breakdown.panel(
+          next,
+          context_breakdown.Actions(
+            refresh: "refresh",
+            compact: Some("compact"),
+          ),
+        )
+      let #(text, next_cache) = patch(cache, view, next_view)
+      #(next_view, text, next_cache)
+    })
+  assert list.length(every_handler(view)) == 1
+  assert list.length(every_handler(next_view)) == 2
+  assert labels == 0
+  assert string.contains(text, "600.0k")
+
+  let #(#(_, _), labels) =
+    counted(fn() {
+      patch(cache, next_view, context_breakdown.panel(next, actions))
+    })
+  assert labels == 0
+}
+
+// Every inventory input invalidates the leaf; text stays escaped after reuse.
+pub fn inventory_changes_refresh_labels_tokens_and_omissions_test() {
+  let original =
+    observed(
+      board([
+        context_view.Item("Messages", "1. Assistant", 100),
+      ]),
+    )
+  let actions = context_breakdown.Actions(refresh: "refresh", compact: None)
+  let old = context_breakdown.panel(original, actions)
+  let cache = first(old)
+  let changed =
+    context_breakdown.panel(
+      observed(
+        board([
+          context_view.Item("Messages", "2. Tool result: <script>", 900),
+        ]),
+      ),
+      actions,
+    )
+  let #(#(text, cache), labels) = counted(fn() { patch(cache, old, changed) })
+  assert labels > 0
+  assert string.contains(text, "Tool result: <script>")
+  assert string.contains(element.to_string(changed), "&lt;script&gt;")
+  assert !string.contains(element.to_string(changed), "<script>")
+  assert string.contains(text, "900")
+
+  let repriced =
+    context_breakdown.panel(
+      observed(
+        board([
+          context_view.Item("Messages", "2. Tool result: <script>", 1900),
+        ]),
+      ),
+      actions,
+    )
+  let #(#(text, cache), labels) =
+    counted(fn() { patch(cache, changed, repriced) })
+  assert labels > 0
+  assert string.contains(text, "1.9k")
+
+  let omitted =
+    context_breakdown.panel(
+      observed(
+        context_view.Board(
+          ..board([
+            context_view.Item("Messages", "2. Tool result: <script>", 1900),
+          ]),
+          omitted: 7,
+        ),
+      ),
+      actions,
+    )
+  let #(text, cache) = patch(cache, repriced, omitted)
+  assert string.contains(text, "7 items are left out")
+  let empty = context_breakdown.panel(observed(board([])), actions)
+  let #(text, _) = patch(cache, omitted, empty)
+  assert !string.contains(element.to_string(empty), "&lt;script&gt;")
+  assert string.length(text) > 0
 }
