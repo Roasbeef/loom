@@ -402,11 +402,31 @@ fn start_executor_node(
           here,
           distribution.bootstrap_home(fixture.executor_config),
         )
+        |> retain_role_output(fixture.directory, "executor")
       },
     ])
     |> weft.deadline(300_000)
     |> weft.start_relayed(to: reports)
   reports
+}
+
+// Role output survives an owner assertion before the relayed report is consumed.
+// This observation keeps the original exit/output tuple and lifecycle unchanged.
+fn retain_role_output(
+  outcome: Result(#(Int, String), String),
+  directory: String,
+  role: String,
+) -> Result(#(Int, String), String) {
+  let bytes = case outcome {
+    Ok(#(exit, output)) -> int.to_string(exit) <> "\n" <> output
+    Error(error) -> "RUN_NODE_ERROR\n" <> error
+  }
+  case simplifile.write(directory <> "/role-" <> role <> ".log", bytes) {
+    Ok(Nil) -> Nil
+    Error(error) ->
+      io.println("Role output persistence failed: " <> string.inspect(error))
+  }
+  outcome
 }
 
 fn executor_finished(
@@ -590,6 +610,7 @@ pub fn live_control(control: Int) -> Nil {
           here,
           distribution.bootstrap_home(fixture.owner_config),
         )
+        |> retain_role_output(fixture.directory, "owner")
       },
     ])
     |> weft.deadline(300_000)
