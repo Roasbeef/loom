@@ -592,15 +592,18 @@ pub type Claim {
 ///   and it is not silently kept either: the record re-opens as a fresh
 ///   `Pending` question bound to the new action, with no grants, and the
 ///   claimant settles in band exactly as a first refusal would.
-/// - **Rejected** or **Consumed** — the previous cycle is over, and a
-///   new raise re-opens the question, so one approval stays worth
-///   exactly one execution and one denial stays a decision about one
-///   call rather than a session-lifetime verdict on the want.
+/// - **Rejected** — the previous cycle is over, and a new raise re-opens the
+///   question, so one denial stays a decision about one call rather than
+///   a session-lifetime verdict on the want. The re-opening is counted.
+/// - **Consumed** — the previous cycle ended with an approval that ran
+///   once, so a new raise opens a fresh question and the count starts
+///   again at one. One approval stays worth exactly one execution.
 ///
-/// Every re-opening is a question a human has to answer, and the party
-/// provoking them is the party this mechanism exists to constrain, so a
-/// row that has already asked `max_asks` times refuses to ask again
-/// (`Exhausted`) rather than re-opening for a fourth.
+/// Every counted re-opening is a question a human has to answer, and the
+/// party provoking them is the party this mechanism exists to constrain,
+/// so a row that has already asked `max_asks` times without an approval
+/// being spent refuses to ask again (`Exhausted`) rather than re-opening
+/// for a fourth.
 ///
 /// ## Examples
 ///
@@ -632,7 +635,21 @@ pub fn claimed(
         True -> Claimed(Escalation(..record, scope: Some(scope)))
         False -> reopened(record, denial, action, scope, max_asks)
       }
-    Rejected | Consumed -> reopened(record, denial, action, scope, max_asks)
+    Rejected -> reopened(record, denial, action, scope, max_asks)
+
+    // A spent approval ends the cycle with a person's yes that ran once, so
+    // the next raise opens a fresh question and its count starts again. The
+    // cap bounds questions that were never answered favourably; counting the
+    // answered ones as well made the fourth allow-once of the same want
+    // settle in band with no prompt, which a person cannot tell from a
+    // sandbox failure.
+    Consumed ->
+      Claimed(raised(
+        record.id,
+        denial,
+        action: Some(action),
+        scope: Some(scope),
+      ))
   }
 }
 

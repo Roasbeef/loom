@@ -275,7 +275,9 @@ extended by the M3 runtime wave.
   rejection, a consumption — re-opens as a fresh pending question with
   no grants. Re-opening costs a human an answer, so a record counts its
   `asked` questions and `claimed` answers `Exhausted` past the caller's
-  `max_asks` rather than re-opening again (#66). `bound_to` is
+  `max_asks` rather than re-opening again (#66). A re-opening after a
+  consumption restarts the count at one, since an approval that ran once is
+  not a question the model is wearing down. `bound_to` is
   `scoped_to`'s sibling and fails the same way: a record naming no
   action matches nothing.
 - `runtime/api.{escalations, escalation, escalation_cell,
