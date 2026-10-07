@@ -300,6 +300,8 @@ pub fn server_terminal_and_reusable_cannot_advance_slot_test() {
     let assert Ok(j.FreshServer(claim)) =
       j.start_command(rig.store, associated, None)
       as "First server startup commits one closed claim."
+    assert j.verify_server_claim(rig.store, rig.binding, claim, rig.clock.era)
+      == Ok(Nil)
     let assert Ok(serving) = j.serving(claim)
       as "Only the original server claim can announce Serving."
     let assert Ok(started) =
@@ -331,6 +333,8 @@ pub fn server_terminal_and_reusable_cannot_advance_slot_test() {
       == Error(j.Fenced)
     let assert Ok(closing) = j.close_lease(rig.store, serving)
       as "The durable close fence precedes physical cleanup."
+    assert j.verify_server_claim(rig.store, rig.binding, claim, rig.clock.era)
+      == Error(j.Fenced)
     let evidence = raw(mp.ArrayValue([mp.IntValue(6)]))
     assert j.retire_lease(rig.store, closing, evidence, fn(_, _) {
         Error(j.Fenced)
@@ -353,6 +357,55 @@ pub fn server_terminal_and_reusable_cannot_advance_slot_test() {
       as "Verified exact original retirement permits one new charged incarnation."
     assert j.lease_disposition(replacement) == j.Reserved
     let _ = original
+    Nil
+  })
+}
+
+pub fn first_lease_reservation_never_reconstructs_startup_custody_test() {
+  fixture("lease-live", 20, 100_000_000, fn(rig) {
+    let #(_, lease, input) = identity(rig, 1, wire.Diagnostics(None))
+    let assert Ok(j.FreshLease(claim)) =
+      j.reserve_lease_live(rig.store, lease, input, "gleam", "/workspace")
+      as "Only the first successful COMMIT issues original startup custody."
+    let #(binding, key, deadline, era) = j.lease_startup_fields(claim)
+    assert binding == rig.binding
+    assert key == lease
+    assert deadline == 43_199_000
+    assert era == rig.clock.era
+    assert j.verify_lease_startup(rig.store, binding, claim, era) == Ok(Nil)
+    let assert Ok(j.RetainedLease(original)) =
+      j.reserve_lease_live(rig.store, lease, input, "gleam", "/workspace")
+      as "An exact retry returns only original history."
+    assert j.reserve_lease(rig.store, lease, input, "gleam", "/workspace")
+      == Ok(original)
+    let assert Ok(other_era) =
+      id.clock_era("00000000-0000-4000-8000-000000000002")
+      as "A different clock incarnation remains distinct at identical ticks."
+    assert j.verify_lease_startup(rig.store, binding, claim, other_era)
+      == Error(j.Conflict)
+
+    // Even an identical supplied DAL-use UUID cannot replace its original owner.
+    let assert Ok(second) =
+      j.recover(
+        rig.path,
+        rig.binding,
+        rig.contract,
+        rig.incarnation,
+        rig.limits,
+        rig.clock,
+        rig.profiles,
+      )
+      as "Recovery retains the first reservation without recreating its token."
+    assert j.verify_lease_startup(second, binding, claim, era)
+      == Error(j.Conflict)
+    let assert Ok(j.RetainedLease(_)) =
+      j.reserve_lease_live(second, lease, input, "gleam", "/workspace")
+      as "Recovery with reused ticks and era still returns only history."
+    let assert Ok(Nil) = j.release(second)
+      as "The recovered connection owner releases its own door."
+    process.send(rig.time, SetTick(deadline))
+    assert j.verify_lease_startup(rig.store, binding, claim, era)
+      == Error(j.Fenced)
     Nil
   })
 }

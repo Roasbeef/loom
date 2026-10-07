@@ -18,6 +18,7 @@
     native_control_count/1,
     journal_owner/1,
     confirmation_worker/2,
+    lsp_credit_signals/1,
     adoption_gate/2,
     cancel_adoption_gate/1,
     continue_adoption_gate/1,
@@ -100,7 +101,7 @@ closer_waiting(Pid) ->
 retiring_adapter(Service, Key) when is_pid(Service), node(Service) =:= node() ->
     try sys:get_state(Service, 1000) of
         {state, _Config, _Generation, _Tickets, Rows, _Covered, _Subject,
-         _Sequence, _Gate, _Close} when is_map(Rows) ->
+         _Sequence, _Gate, _Close, _LspRows} when is_map(Rows) ->
             case maps:find(Key, Rows) of
                 {ok, {row, _Digest, _Deadline,
                       {running, {subject, Pid, _Ref}, Pid}, _Stdin, _Bytes,
@@ -120,7 +121,7 @@ retiring_adapter(_, _) -> {error, nil}.
 native_control_count(Service) when is_pid(Service), node(Service) =:= node() ->
     try sys:get_state(Service, 1000) of
         {state, _Config, _Generation, _Tickets, Rows, _Covered, _Subject,
-         _Sequence, _Gate, _Close} when is_map(Rows) -> {ok, map_size(Rows)};
+         _Sequence, _Gate, _Close, _LspRows} when is_map(Rows) -> {ok, map_size(Rows)};
         _ -> {error, nil}
     catch _:_ -> {error, nil} end;
 native_control_count(_) -> {error, nil}.
@@ -137,7 +138,7 @@ journal_owner(_) -> {error, nil}.
 confirmation_worker(Service, Key) when is_pid(Service), node(Service) =:= node() ->
     try sys:get_state(Service, 1000) of
         {state, _Config, _Generation, _Tickets, Rows, _Covered, _Subject,
-         _Sequence, _Gate, _Close} when is_map(Rows) ->
+         _Sequence, _Gate, _Close, _LspRows} when is_map(Rows) ->
             case maps:find(Key, Rows) of
                 {ok, {row, _Digest, _Deadline, _Running, _Stdin, _Bytes,
                       {positive_native, _Observer}, _Control, _Monitor, _Lost,
@@ -351,3 +352,40 @@ kill_channel_owner_and_join_leaves({owner, {subject, Owner, _Ref}}) ->
     end, Watches),
     lists:foreach(fun({_Pid, Watch}) -> demonitor(Watch, [flush]) end, Watches),
     case Result of true -> {ok, nil}; false -> {error, nil} end.
+
+
+%% Only this exact attachment's original Service row supplies task signal PIDs.
+%% No process census or replacement lookup can select a different incarnation.
+lsp_credit_signals({lsp_protocol_attachment, Subject = {subject, Service, _Ref},
+                    Address, Nonce})
+  when is_pid(Service), node(Service) =:= node(), is_reference(Nonce) ->
+    try sys:get_state(Service, 1000) of
+        {state, _Config, _Generation, _Tickets, _Rows, _Covered, Subject,
+         _Sequence, _Gate, _Close, LspRows} when is_map(LspRows) ->
+            case maps:find(Address, LspRows) of
+                {ok, {lsp_row, _Store, _Binding, _Lease, _Startup, _Plan, _Era,
+                      _Deadline, Nonce, _Owner, _Monitor, _Permission, _Begun,
+                      _InputGate, _Native, _Execution, _Sink, _Events, Start,
+                      Input, Output, _Frames, _Bytes, _LastInput, _OutputOrdinal,
+                      _Terminal, _Retirement, _Drain}} ->
+                    InTask = case Input of
+                        none -> none;
+                        {some, {lsp_input, _, _, _, _, _, _, Task}} -> {some, Task}
+                    end,
+                    OutTask = case Output of
+                        none -> none;
+                        {some, {lsp_output, _, TaskOut}} -> {some, TaskOut}
+                    end,
+                    {ok, {lsp_task_signal(Start, Service),
+                          lsp_task_signal(InTask, Service),
+                          lsp_task_signal(OutTask, Service)}};
+                _ -> {error, nil}
+            end;
+        _ -> {error, nil}
+    catch _:_ -> {error, nil} end;
+lsp_credit_signals(_) -> {error, nil}.
+
+lsp_task_signal(none, _) -> none;
+lsp_task_signal({some, {lsp_task, {subject, Service, Ref}, {cancel, Signal},
+                       _Outcome, _Drain}}, Service)
+  when is_reference(Ref), is_pid(Signal), node(Signal) =:= node() -> {some, Signal}.
