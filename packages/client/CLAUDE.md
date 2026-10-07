@@ -6224,3 +6224,41 @@ death remains unresolved and bounded. It exercises actual owner reopen with
 Prepared retained, both owner receipts absent and executor originals retained.
 Weft's declared Joined/Lost relay accounting is a separate source invariant;
 the scope-loss control does not manufacture a RunLost message.
+
+
+## Original registered goal checks
+
+`advisor.start_registered` is an internal assembly seam over an original ready
+custodian and Broker. `registered_system_work.transition` performs the sole
+Checking CAS from the observed full goal cell, reads back its exact Register
+sequence and frozen goal value, then writes and reads back an immutable
+`goal/check/<CheckingSeq>` record. The record retains the full ordered goal,
+command, UUID, original actor identity, generation, declaration coordinates,
+policy, demand, environment, cwd and fixed deadlines. Its bounded SystemIntent
+metadata points to the complete canonical ordinary bytes by address, digest and
+size; it does not truncate the goal into the existing intent bound.
+
+`goalcheck.retain_registered` retains that original intent before any task starts.
+The advisor keeps its exact readback beside the witnessed task; replacing or
+clearing the goal cancels both. The task creates its own native event Subject and
+allocates the actual SystemPermission through the original custodian. It compares
+work, intent and declaration before claiming cancellation authority and sends the
+result to the original advisor Subject with the exact Checking sequence and
+deadline. A replacement actor or historical Checking value carries no live
+in-progress entry. Lost Checking COMMIT replies, failed exact ordinary readbacks
+and uncertain retention grant no work or launch. No latest lookup reconstructs
+a Fresh reference, and the original backstop loses elapsed retention time before
+the managed task starts.
+
+Registered clearance retries only an actual nondispatched OutstandingCapReached,
+using the same reference, events receiver and CallSpec within the original wall
+and existing slot allowance. Owner COMMIT/readback before native send remains the
+existing registered dispatcher gate. Local Wiring, start, supervised and frozen
+Goal encoding retain their behavior. This implements the approved ordinary caller
+mechanics now recorded in protocol-change/079 (originally approved as 077); its
+image compatibility label remains 077. The dedicated controls use actual SQLite,
+original custodian, Broker budget/token clearance and dispatcher admission,
+including lost replies, cancellation, late exact receipts and history refusal.
+Their deliberately held or NotStarted transport does not claim physical helper
+execution or shipped full-host assembly. Default serve selection remains an
+assembly obligation.

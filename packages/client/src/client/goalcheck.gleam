@@ -42,23 +42,42 @@
 //// runs inside a deadline-bounded weft task, and `client/advisor` owns
 //// that.
 ////
+//// # Registered ordinary work
+////
+//// `retain_registered` obtains the one real Checking CAS/readback and complete
+//// immutable ordinary work record before retaining its original SystemIntent.
+//// `run_registered` checks that exact pair and declaration, creates its own
+//// events receiver, then asks the original custodian for a one-use permission.
+//// The fixed CallSpec enters `clear_system_call_from`; only nondispatched
+//// outstanding-cap refusals can retry within the remaining original deadline.
+//// History has no constructor for either fresh CheckingWork or RegisteredRunner.
+////
 //// Purity: this module reads a clock and clears a call, so it is an effect
 //// module. It holds no state between calls and nothing it returns depends
 //// on anything but its arguments and the process it ran.
 
 import broker/broker
 import broker/budget
+import broker/dispatch
 import broker/exec.{type EnforcementDemand}
 import broker/policy
 import client/goalstate
+import client/registered_system_work as work
+import client/remote/custodian
 import core/clock.{type Clock}
+import core/generation
 import core/ids.{type OpId}
 import core/message
+import core/workspace
 import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
+import runtime/api
+import storage/owner_custody as custody
 import tools/tool
 import weft/poll
 
@@ -191,6 +210,26 @@ pub type Runner {
     op_id: OpId,
     /// How long a clearance may spend waiting out a congested helper pool.
     clearance_ms: Int,
+  )
+}
+
+/// Original registered doors and immutable command coordinates selected by assembly.
+/// This contains no runtime supplier or origin lookup capable of replacing custody.
+@internal
+pub opaque type RegisteredRunner {
+  RegisteredRunner(
+    broker: broker.Broker,
+    owner: custodian.Handle,
+    owner_name: String,
+    association: generation.GenerationAssociation,
+    base_policy: policy.SandboxPolicy,
+    demand: EnforcementDemand,
+    env: List(#(String, String)),
+    workspace: String,
+    clock: Clock,
+    op_id: OpId,
+    clearance_ms: Int,
+    timeout_ms: Int,
   )
 }
 
@@ -469,5 +508,309 @@ fn refused(refusal: broker.Refusal) -> String {
   {
     [] -> "the sandbox refused the check"
     blocks -> string.join(blocks, " ")
+  }
+}
+
+/// Captures actual ready owner custody and its original Broker before any task.
+/// HistoryOnly has no argument of this type and cannot select this constructor.
+///
+/// ## Examples
+///
+/// `registered_runner(ready, broker, owner, policy, demand, env, cwd, clock, op, clearance, timeout)` performs no path probe.
+@internal
+pub fn registered_runner(
+  ready: custodian.RegisteredOwner,
+  broker_actor: broker.Broker,
+  owner_name: String,
+  base_policy: policy.SandboxPolicy,
+  demand: EnforcementDemand,
+  env: List(#(String, String)),
+  cwd: String,
+  clock: Clock,
+  operation: OpId,
+  clearance_ms: Int,
+  timeout_ms: Int,
+) -> Result(RegisteredRunner, work.Error) {
+  let #(owner, _, association) = custodian.registered_fields(ready)
+  case owner_name != "" && clearance_ms > 0 && timeout_ms > 0 {
+    True ->
+      Ok(RegisteredRunner(
+        broker_actor,
+        owner,
+        owner_name,
+        association,
+        base_policy,
+        demand,
+        env,
+        cwd,
+        clock,
+        operation,
+        clearance_ms,
+        timeout_ms,
+      ))
+    False -> Error(work.Refused)
+  }
+}
+
+/// Returns the original configured wall used by the pure goal loop.
+///
+/// ## Examples
+///
+/// `registered_timeout(runner)` does not refresh the Checking deadline.
+@internal
+pub fn registered_timeout(runner: RegisteredRunner) -> Int {
+  runner.timeout_ms
+}
+
+/// Returns existing clearance, slot and settlement room around the original wall.
+///
+/// ## Examples
+///
+/// `registered_backstop(runner)` is captured once before durable retention.
+@internal
+pub fn registered_backstop(runner: RegisteredRunner) -> Int {
+  runner.clearance_ms + slot_wait_ms + runner.timeout_ms + settle_grace_ms
+}
+
+/// Creates the one original Checking transition and retains its cancellation intent.
+/// No worker starts if either ordinary readback or the original intent is uncertain.
+///
+/// ## Examples
+///
+/// `retain_registered(runner, runtime, before, moved, command, id, actor, cap)` does not call the legacy store_goal.
+@internal
+pub fn retain_registered(
+  runner: RegisteredRunner,
+  runtime: api.Runtime,
+  before: goalstate.Goal,
+  moved: goalstate.Goal,
+  command: String,
+  id: ids.EntryId,
+  actor: Subject(message),
+  backstop: Int,
+) -> Result(#(work.CheckingWork, custody.IntentReadback), work.Error) {
+  let #(session, _) =
+    workspace.scope_fields(
+      generation.key_scope(generation.association_key(runner.association)),
+    )
+  use Nil <- result.try(case session == api.session_id(runtime) {
+    True -> Ok(Nil)
+    False -> Error(work.Refused)
+  })
+  use deadline <- result.try(case moved.phase {
+    goalstate.Checking(deadline_ms) -> Ok(deadline_ms)
+    _ -> Error(work.Refused)
+  })
+  let spec = registered_spec(runner, command, deadline)
+  use retained <- result.try(work.transition(
+    runtime,
+    before,
+    moved,
+    command,
+    id,
+    spec,
+    runner.owner_name,
+    runner.association,
+    actor,
+    backstop,
+  ))
+  let #(address, bytes) = work.manifest(retained)
+  use intent <- result.try(
+    custodian.retain_system_intent(
+      runner.owner,
+      address,
+      custody.CommandPreparation,
+      spec.op_id,
+      spec.step_id,
+      id,
+      bytes,
+    )
+    |> result.replace_error(work.Refused),
+  )
+  Ok(#(retained, intent))
+}
+
+/// Cancels the exact original retained intent, including a lost allocation reply.
+///
+/// ## Examples
+///
+/// `cancel_registered(runner, intent)` never recovers a fresh local ref from SQL.
+@internal
+pub fn cancel_registered(
+  runner: RegisteredRunner,
+  intent: custody.IntentReadback,
+) -> Nil {
+  let _ = custodian.cancel_system_intent(runner.owner, intent)
+  Nil
+}
+
+/// Runs one retained occurrence through actual original system reservation clearance.
+/// The events receiver is created on this actual worker, never on the advisor actor.
+///
+/// ## Examples
+///
+/// `run_registered(runner, retained, intent)` cannot send through historical allocation.
+@internal
+pub fn run_registered(
+  runner: RegisteredRunner,
+  retained: work.CheckingWork,
+  intent: custody.IntentReadback,
+) -> goalstate.CheckResult {
+  let #(_, _, command, uuid, spec, owner, association, _, _) =
+    work.fields(retained)
+  let #(now, _) = clock.read(runner.clock)
+  let #(address, bytes) = work.manifest(retained)
+
+  // A copied work paired with somebody else's intent owns no cancellation
+  // authority. Validate that immutable pair before touching either owner row.
+  use <- bool.lazy_guard(
+    when: custody.system_intent_fields(intent)
+      != #(
+      association,
+      address,
+      custody.CommandPreparation,
+      spec.op_id,
+      spec.step_id,
+      uuid,
+      bytes,
+    )
+      || owner != runner.owner_name
+      || association != runner.association
+      || spec != registered_spec(runner, command, spec.budget.deadline_ms),
+    return: fn() {
+      unfinished(command, "the original goal work and intent do not match", now)
+    },
+  )
+  let events = process.new_subject()
+  let result = {
+    use Nil <- result.try(case now < spec.budget.deadline_ms {
+      True -> Ok(Nil)
+      False -> Error("the original goal check is no longer admissible")
+    })
+    let declared =
+      dispatch.SystemCommandDeclaration(
+        owner,
+        spec.op_id,
+        spec.step_id,
+        spec.argv,
+        spec.env,
+        spec.cwd,
+        spec.budget.deadline_ms,
+      )
+    use allocation <- result.try(
+      custodian.allocate_system_reservation(
+        runner.owner,
+        intent,
+        declared,
+        events,
+      )
+      |> result.replace_error("the original goal allocation was uncertain"),
+    )
+    use ref <- result.try(case allocation {
+      custodian.SystemPermission(ref) -> Ok(ref)
+      custodian.SystemObservation(..) ->
+        Error("the goal check is retained history")
+    })
+    admitted_registered(runner, ref, spec, events)
+  }
+  case result {
+    Error(reason) -> {
+      cancel_registered(runner, intent)
+      unfinished(command, reason, now)
+    }
+    Ok(call) -> {
+      broker.stdin(runner.broker, call, <<>>, True)
+      let #(current, _) = clock.read(runner.clock)
+      case
+        tool.collect_events(
+          events,
+          waiting: int.max(spec.budget.deadline_ms - current, 0)
+            + settle_grace_ms,
+        )
+      {
+        Ok(collected) -> settled(command, collected, now)
+        Error(Nil) -> {
+          broker.cancel(runner.broker, call)
+          cancel_registered(runner, intent)
+          unfinished(command, "the sandbox did not settle the check", now)
+        }
+      }
+    }
+  }
+}
+
+fn registered_spec(
+  runner: RegisteredRunner,
+  command: String,
+  deadline: Int,
+) -> broker.CallSpec {
+  let base = runner.base_policy
+  let requirements =
+    policy.SandboxPolicy(
+      ..base,
+      env_allow: list.map(runner.env, fn(pair) { pair.0 }),
+      limits: policy.Limits(
+        ..base.limits,
+        wall_s: { runner.timeout_ms + 999 } / 1000,
+        output_bytes: output_bytes,
+      ),
+    )
+  broker.CallSpec(
+    runner.op_id,
+    step_id,
+    base,
+    requirements,
+    [],
+    broker.RefuseNarrowed,
+    runner.demand,
+    ["bash", "-o", "pipefail", "-c", command],
+    runner.env,
+    runner.workspace,
+    budget.Budget(1, deadline),
+  )
+}
+
+fn admitted_registered(
+  runner: RegisteredRunner,
+  ref: dispatch.SystemReservationRef,
+  spec: broker.CallSpec,
+  events: Subject(broker.CallEvent),
+) -> Result(broker.CallHandle, String) {
+  let #(now, _) = clock.read(runner.clock)
+  let attempt = fn() {
+    let #(current, _) = clock.read(runner.clock)
+    case current >= spec.budget.deadline_ms {
+      True -> poll.Fail("the original goal check deadline expired")
+      False ->
+        case
+          broker.clear_system_call_from(
+            runner.broker,
+            ref,
+            spec,
+            events: events,
+            waiting: int.min(
+              runner.clearance_ms,
+              spec.budget.deadline_ms - current,
+            ),
+          )
+        {
+          Ok(call) -> poll.Done(call)
+          Error(broker.BudgetRefused(refusal: budget.OutstandingCapReached(
+            cap: _,
+          ))) -> poll.Retry
+          Error(error) -> poll.Fail(refused(error))
+        }
+    }
+  }
+  case
+    poll.until(
+      within: int.min(slot_wait_ms, int.max(spec.budget.deadline_ms - now, 0)),
+      every: slot_retry_ms,
+      attempt: attempt,
+    )
+  {
+    poll.Answered(call) -> Ok(call)
+    poll.Failed(error) -> Error(error)
+    poll.Expired -> Error(slot_never_came_free)
   }
 }

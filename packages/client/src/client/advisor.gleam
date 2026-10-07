@@ -2,6 +2,15 @@
 //// primary strand did, and turns the reviewer's verdict back into
 //// something the primary sees.
 ////
+//// # Registered goal custody
+////
+//// `start_registered` selects an original ready custodian and Broker once.
+//// `run_registered_check` performs the sole Checking CAS, retains immutable
+//// work and its exact SystemIntent, then starts a witnessed worker within the
+//// remaining original backstop. The worker receives its own native events and
+//// sends the checked sequence and deadline to this original actor Subject.
+//// Reopening Checking history restores no live intent or witnessed worker.
+////
 //// ## Flow
 ////
 //// `hooks` → `serve` → `feed` → `attempt_feed` → `deliver_feed` → `judge` → `outcome`
@@ -150,7 +159,9 @@
 //// ## Flow
 ////
 //// `handle` dispatches the actor messages; `evaluate` applies the goal policy.
-//// For goal persistence, read `store_goal`, then `write_cell` and `goal_written`.
+//// Registered checks use `run_registered_check`; `without_check` cancels its
+//// exact retained intent and original witnessed worker.
+//// For local goal persistence, read `store_goal`, then `write_cell` and `goal_written`.
 //// For clearing, read `clear_goal`, then `delete_cell` and `goal_written`.
 //// Both persistence paths publish only after the reserved writer replies.
 //// The policy and the durable goal shape live in separate domain modules.
@@ -163,6 +174,7 @@ import client/goalloop
 import client/goalstate
 import client/internal/session_owner
 import client/notes
+import client/registered_system_work as registered_work
 import core/clock.{type Clock}
 import core/entry.{type Entry}
 import core/ids.{type EntryId, type OpId, type Seq}
@@ -187,6 +199,7 @@ import runtime/api.{type Runtime}
 import runtime/effects
 import runtime/residency
 import session/session.{type Session}
+import storage/owner_custody as custody
 import storage/storage
 import telemetry/field
 import telemetry/log.{type Logger}
@@ -512,6 +525,16 @@ pub type Message {
   /// evaluation rather than the goal.
   CheckFinished(deadline_ms: Int, result: goalstate.CheckResult)
 
+  /// Registered results address only their actual original actor and Checking seq.
+  RegisteredCheckFinished(
+    /// Actual COMMIT sequence of the original Checking transition.
+    seq: Seq,
+    /// Its original immutable admission deadline.
+    deadline_ms: Int,
+    /// Settlement evidence from the original registered worker.
+    result: goalstate.CheckResult,
+  )
+
   /// The operator cleared the goal, whatever its status.
   ClearGoal(reply: Subject(Result(Nil, String)))
 
@@ -597,6 +620,8 @@ type Memory {
     /// whenever the stored goal leaves that phase, which is every way a
     /// check can be abandoned.
     checking: Option(weft.Witnessed),
+    // Exact live occurrence and cancellation intent; never reconstructed on recall.
+    registered_check: Option(RegisteredChecking),
   )
 }
 
@@ -643,12 +668,28 @@ type Recall {
 // now, not deliver verdicts about the past one slice of five hundred
 // entries per run end; a fresh session's primary has no leaf at boot, so
 // its first run is still reviewed from its first entry.
+type CheckMode {
+  LocalChecks
+  RegisteredChecks(goalcheck.RegisteredRunner)
+}
+
+type RegisteredChecking {
+  RegisteredChecking(
+    seq: Seq,
+    deadline: Int,
+    runner: goalcheck.RegisteredRunner,
+    intent: custody.IntentReadback,
+  )
+}
+
 type State {
   State(
     wiring: Wiring,
     policy: advisorguard.Policy,
     recall: Recall,
     origin: Option(Seq),
+    check_mode: CheckMode,
+    original: Subject(Message),
   )
 }
 
@@ -749,6 +790,27 @@ reacting to."
 /// ```
 ///
 pub fn start(wiring: Wiring) -> actor.StartResult(Subject(Message)) {
+  start_with_checks(wiring, LocalChecks)
+}
+
+/// Starts the original advisor with actual registered native doors.
+/// Existing local construction and the frozen Wiring remain unchanged.
+///
+/// ## Examples
+///
+/// `start_registered(wiring, runner)` does not claim that FullHost is assembled.
+@internal
+pub fn start_registered(
+  wiring: Wiring,
+  runner: goalcheck.RegisteredRunner,
+) -> actor.StartResult(Subject(Message)) {
+  start_with_checks(wiring, RegisteredChecks(runner))
+}
+
+fn start_with_checks(
+  wiring: Wiring,
+  check_mode: CheckMode,
+) -> actor.StartResult(Subject(Message)) {
   let policy =
     advisorguard.Policy(
       ..advisorguard.default_policy,
@@ -766,6 +828,8 @@ pub fn start(wiring: Wiring) -> actor.StartResult(Subject(Message)) {
       policy:,
       recall: Unread,
       origin: present_seq(wiring.session),
+      check_mode: check_mode,
+      original: subject,
     ))
     |> actor.returning(subject)
     |> Ok
@@ -852,7 +916,8 @@ fn unavailable(state: State, message: Message) -> Nil {
     | PrimarySpent
     | ReevaluateTick
     | PrimaryAborted(..)
-    | CheckFinished(..) -> Nil
+    | CheckFinished(..)
+    | RegisteredCheckFinished(..) -> Nil
   }
 }
 
@@ -1027,16 +1092,48 @@ fn serve(state: State, runtime: Runtime, message: Message) -> State {
     // A check reported back. It is an ordinary occasion: the event carries
     // the result, the loop decides whether it is the one it was waiting
     // for, and a stale one falls through to the level read.
-    CheckFinished(deadline_ms:, result:) ->
-      remembering(
-        state,
-        evaluate(
-          state,
-          runtime,
-          memory,
-          goalloop.Checked(deadline_ms:, result:),
-        ),
-      )
+    CheckFinished(deadline_ms:, result:) -> {
+      case state.check_mode {
+        LocalChecks ->
+          remembering(
+            state,
+            evaluate(
+              state,
+              runtime,
+              memory,
+              goalloop.Checked(deadline_ms:, result:),
+            ),
+          )
+        RegisteredChecks(_) -> state
+      }
+    }
+
+    RegisteredCheckFinished(seq:, deadline_ms:, result: checked) -> {
+      let checked_command = checked.command
+      case memory.registered_check, memory.goal {
+        Some(RegisteredChecking(seq: held_seq, deadline: held_deadline, ..)),
+          Some(goal)
+          if held_seq == seq
+          && held_deadline == deadline_ms
+          && goal.phase == goalstate.Checking(deadline_ms)
+          && goal.check == Some(checked_command)
+        -> {
+          // The command already settled. Clear its cancellation intent before
+          // the phase transition retires the ordinary witnessed task handle.
+          let matched = Memory(..memory, registered_check: None)
+          remembering(
+            state,
+            evaluate(
+              state,
+              runtime,
+              matched,
+              goalloop.Checked(deadline_ms:, result: checked),
+            ),
+          )
+        }
+        _, _ -> state
+      }
+    }
 
     ClearGoal(reply:) ->
       commanded(state, runtime, reply, clear_goal(state, runtime, memory))
@@ -1162,6 +1259,7 @@ fn recall(state: State, runtime: Runtime) -> Memory {
         ending: None,
         goal: read_goal(state, runtime),
         checking: None,
+        registered_check: None,
       )
   }
 }
@@ -1724,8 +1822,23 @@ fn evaluate(
       let fresh = accounted(state, goal)
       let #(moved, action) =
         goalloop.next_action(fresh, observe(state, memory, event))
-      let memory = stored_if_moved(state, runtime, memory, goal, moved)
-      let #(performed, memory) = perform(state, runtime, memory, moved, action)
+      let #(performed, memory) = case state.check_mode, action {
+        RegisteredChecks(runner), goalloop.RunCheck(command:) ->
+          run_registered_check(
+            state,
+            runtime,
+            memory,
+            goal,
+            moved,
+            command,
+            runner,
+          )
+
+        _, _ -> {
+          let memory = stored_if_moved(state, runtime, memory, goal, moved)
+          perform(state, runtime, memory, moved, action)
+        }
+      }
 
       report(state, performed)
       memory
@@ -1774,7 +1887,10 @@ fn observe(
     woken_ending: woken_ending(state, memory),
     event:,
     now_ms: now(state.wiring),
-    check_timeout_ms: state.wiring.check.timeout_ms,
+    check_timeout_ms: case state.check_mode {
+      LocalChecks -> state.wiring.check.timeout_ms
+      RegisteredChecks(runner) -> goalcheck.registered_timeout(runner)
+    },
   )
 }
 
@@ -2007,6 +2123,92 @@ fn run_check(
   #(GoalChecking, Memory(..without_check(memory), checking: Some(witnessed)))
 }
 
+// Fresh registered work bypasses the logging-only legacy goal writer. Failure
+// spends this evaluation in Checking without launching or repeating its CAS.
+fn run_registered_check(
+  state: State,
+  runtime: Runtime,
+  memory: Memory,
+  before: goalstate.Goal,
+  moved: goalstate.Goal,
+  command: String,
+  runner: goalcheck.RegisteredRunner,
+) -> #(Performed, Memory) {
+  let original = state.original
+  let cap = now(state.wiring) + goalcheck.registered_backstop(runner)
+  let #(id, _) =
+    ids.mint_entry(ids.generator(
+      state.wiring.clock,
+      seed: runtime.effects.entropy(),
+    ))
+  let outcome =
+    goalcheck.retain_registered(
+      runner,
+      runtime,
+      before,
+      moved,
+      command,
+      id,
+      original,
+      cap,
+    )
+  let memory = Memory(..without_check(memory), goal: Some(moved))
+  case outcome {
+    Error(error) -> #(
+      GoalRefused(
+        "the original registered check could not be retained: "
+        <> string.inspect(error),
+      ),
+      memory,
+    )
+    Ok(#(retained, intent)) -> {
+      // The Checking cell and immutable occurrence have both been read back.
+      // Live goal readers need their existing invalidation before work starts.
+      goal_written(runtime, goal_key)
+      let #(seq, _, _, _, _, _, _, _, _) = registered_work.fields(retained)
+      let deadline_ms = checking_deadline(moved)
+      let remaining = cap - now(state.wiring)
+      case remaining > 0 {
+        False -> {
+          goalcheck.cancel_registered(runner, intent)
+          #(
+            GoalRefused("the original registered check backstop expired"),
+            memory,
+          )
+        }
+        True -> {
+          let task = fn() {
+            let result = goalcheck.run_registered(runner, retained, intent)
+            process.send(
+              original,
+              RegisteredCheckFinished(seq:, deadline_ms:, result:),
+            )
+            Ok(Nil)
+          }
+          let witnessed =
+            weft.new([task])
+            |> weft.deadline(remaining)
+            |> weft.cancel_when_exits(process.self())
+            |> weft.start_witnessed
+          #(
+            GoalChecking,
+            Memory(
+              ..memory,
+              checking: Some(witnessed),
+              registered_check: Some(RegisteredChecking(
+                seq,
+                deadline_ms,
+                runner,
+                intent,
+              )),
+            ),
+          )
+        }
+      }
+    }
+  }
+}
+
 // The check in flight, dropped unless the goal is still in the phase it was
 // started for.
 //
@@ -2031,6 +2233,12 @@ fn only_while_checking(memory: Memory) -> Memory {
 // idempotent and harmless once the scope has exited, so a handle for a check
 // that already reported needs no test of its own.
 fn without_check(memory: Memory) -> Memory {
+  case memory.registered_check {
+    None -> Nil
+    Some(RegisteredChecking(runner:, intent:, ..)) ->
+      goalcheck.cancel_registered(runner, intent)
+  }
+  let memory = Memory(..memory, registered_check: None)
   case memory.checking {
     None -> memory
 
