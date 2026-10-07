@@ -73,6 +73,7 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/executor/sql/workspace.sql
     sqlite3 "$tmpdb" < packages/executor/sql/resources.sql
     sqlite3 "$tmpdb" < packages/executor/sql/generations.sql
+    sqlite3 "$tmpdb" < packages/executor/sql/lsp_custody.sql
   fi
   # Parrot 2.3.0 prints generation errors but returns zero. Its success marker
   # follows sqlc, code generation and formatting; require it as well as the
@@ -146,4 +147,7 @@ gleam format packages/storage/src/storage/catalogue_workspace_bindings_schema.gl
 python3 scripts/embed-sql-schema.py packages/storage/sql/owner_command_offers.sql \
   packages/storage/src/storage/owner_command_offers_schema.gleam
 gleam format packages/storage/src/storage/owner_command_offers_schema.gleam
+python3 scripts/embed-sql-schema.py packages/executor/sql/lsp_custody.sql \
+  packages/executor/src/executor/lsp_custody_schema.gleam
+gleam format packages/executor/src/executor/lsp_custody_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"
