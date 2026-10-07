@@ -12,7 +12,9 @@ import core/ids
 import core/json
 import core/remote_tool
 import core/workspace
+import gleam/bool
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -37,6 +39,8 @@ pub type CommandRole {
 /// A complete original service identity, containing no execution authority.
 pub opaque type ServiceKey {
   ServiceKey(
+    /// Immutable predecessor of the sole rewrite; absent for old Original keys.
+    predecessor: Option(ServiceKey),
     /// Original runtime parent, including its reserved result entry.
     parent: remote_tool.ToolKey,
     /// Closed whole-service purpose.
@@ -107,6 +111,7 @@ pub fn service_key(
   }
   use origin <- result.try(remote_tool.tool_child(parent, child_role))
   Ok(ServiceKey(
+    predecessor: None,
     parent:,
     role:,
     origin:,
@@ -120,6 +125,48 @@ pub fn service_key(
   ))
 }
 
+/// Derives the sole rewrite service from its exact Original predecessor.
+/// Scope, parent and budget coordinates cannot change through this constructor.
+///
+/// ## Examples
+///
+/// `rewrite_service_key(original, rewrite_id, rewritten_digest)` refuses nesting.
+pub fn rewrite_service_key(
+  original: ServiceKey,
+  request_id: ids.EntryId,
+  input_digest: String,
+) -> Result(ServiceKey, String) {
+  use Nil <- result.try(digest(input_digest))
+  use <- bool.guard(
+    original.role != CompileService
+      || original.predecessor != None
+      || request_id == original.request_id,
+    Error("rewrite requires a distinct UUID and Original Compile predecessor"),
+  )
+  use origin <- result.try(remote_tool.tool_child(
+    original.parent,
+    remote_tool.CompileRewrite,
+  ))
+  Ok(
+    ServiceKey(
+      ..original,
+      predecessor: Some(original),
+      origin:,
+      request_id:,
+      input_digest:,
+    ),
+  )
+}
+
+/// Projects immutable lineage without granting another compilation attempt.
+///
+/// ## Examples
+///
+/// `compile_predecessor(original)` is `None` for all version-1 keys.
+pub fn compile_predecessor(key: ServiceKey) -> Option(ServiceKey) {
+  key.predecessor
+}
+
 /// Accepts only the fixed outer/native pair, without minting another identity.
 ///
 /// ## Examples
@@ -130,7 +177,12 @@ pub fn command_ref(
   role: CommandRole,
 ) -> Result(CommandRef, String) {
   use child_role <- result.try(case service.role, role {
-    CompileService, CompileCommand -> Ok(remote_tool.CompileCommand)
+    CompileService, CompileCommand -> {
+      case service.predecessor {
+        None -> Ok(remote_tool.CompileCommand)
+        Some(_) -> Ok(remote_tool.CompileRewriteCommand)
+      }
+    }
     LaunchService, SatelliteCommand -> Ok(remote_tool.SatelliteCommand)
     CompileService, SatelliteCommand | LaunchService, CompileCommand ->
       Error("command role differs from original service purpose")
@@ -250,6 +302,20 @@ pub fn digest(value: String) -> Result(Nil, String) {
 ///
 /// `decode_service(encode_service(service)) == Ok(service)`.
 pub fn encode_service(service: ServiceKey) -> json.JsonValue {
+  case service.predecessor {
+    Some(original) ->
+      json.Array([
+        json.Int(2),
+        encode_original_service(original),
+        json.String(ids.entry_id_to_string(service.request_id)),
+        json.String(service.input_digest),
+      ])
+    None -> encode_original_service(service)
+  }
+}
+
+// Version-one bytes stay literal so existing durable addresses remain valid.
+fn encode_original_service(service: ServiceKey) -> json.JsonValue {
   let key = service.parent
   let #(index, arguments) = remote_tool.provenance(key)
   let #(session, binding) = workspace.scope_fields(service.scope)
@@ -306,6 +372,23 @@ pub fn decode_service(
 }
 
 fn decode_service_value(value: json.JsonValue) -> Result(ServiceKey, String) {
+  case value {
+    json.Array([json.Int(2), original, json.String(id), json.String(input)]) -> {
+      use predecessor <- result.try(decode_original_service(original))
+      use id <- result.try(
+        ids.parse_entry_id(id)
+        |> result.replace_error("invalid rewrite UUID"),
+      )
+      rewrite_service_key(predecessor, id, input)
+    }
+    _ -> decode_original_service(value)
+  }
+}
+
+// Only a version-one predecessor is admitted, before any recursive decoding.
+fn decode_original_service(
+  value: json.JsonValue,
+) -> Result(ServiceKey, String) {
   case value {
     json.Array([
       json.Int(1),

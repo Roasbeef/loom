@@ -231,6 +231,7 @@ pub opaque type Executor {
     pid: Pid,
     incarnation: Int,
     custody: fn() -> Result(exec.PoolCustody, exec.CheckoutError),
+    retirement: Option(RetirementSeam),
   )
 }
 
@@ -252,6 +253,7 @@ pub opaque type Msg {
   Start(
     request: dispatch.Dispatch,
     window: StartWindow,
+    disposition: StartDisposition,
     reply: Subject(Result(dispatch.Execution, dispatch.StartRefusal)),
   )
   Cancel(id: dispatch.ExecutionId)
@@ -274,6 +276,29 @@ pub opaque type Msg {
     reply: Subject(Result(Nil, exec.RetirementFailure)),
   )
   DrainDeadline
+  OriginalRetired(
+    id: dispatch.ExecutionId,
+    outcome: Result(Nil, exec.RetirementFailure),
+  )
+}
+
+/// Pre-dispatch registration on the exact pool supplying the helper.
+/// The callback must only send; uncertain registration withdraws its original borrow.
+pub type RetirementSeam =
+  fn(Helper, fn(Result(Nil, exec.RetirementFailure)) -> Nil) ->
+    Result(exec.BorrowedRetirement, exec.RetirementFailure)
+
+type StartDisposition {
+  Reuse
+  RetireOriginal(
+    completed: fn(dispatch.ExecutionId, Result(Nil, exec.RetirementFailure)) ->
+      Nil,
+  )
+}
+
+type RowDisposition {
+  ReuseHelper
+  RetireHelper(original: exec.BorrowedRetirement)
 }
 
 // The service's lifecycle. `Closing` carries the closer because it is
@@ -301,6 +326,7 @@ type Closer {
 type State {
   State(
     config: ExecutorConfig,
+    retirement: Option(RetirementSeam),
     subject: Subject(Msg),
     rows: Dict(Int, Row),
     // Counters and rings for the snapshot. Bounded; see `executor_view`.
@@ -316,9 +342,13 @@ type Row {
     helper: Helper,
     relay: relay.Relay,
     relay_monitor: process.Monitor,
+    owner_monitor: Option(process.Monitor),
+    original_owner: Option(Pid),
     settle: fn(dispatch.Terminal) -> Nil,
     started_at_ms: Int,
     status: Status,
+    disposition: RowDisposition,
+    retirement: Option(Result(Nil, exec.RetirementFailure)),
     // What an observer reads of the row. None of it is a request: the
     // service keeps the demand and the deadline and drops argv, environment,
     // working directory, policy and token as soon as the helper has them.
@@ -346,6 +376,9 @@ type Status {
   // recorded when the broker releases the row and not before: a granted
   // relay that then dies unreported is abandoned and settles lost instead.
   Granted(closure: Closure)
+
+  // Settlement is already accounted; exact helper custody has not drained.
+  Retiring
 }
 
 // How an execution ended, as far as the service can say, and when.
@@ -412,6 +445,26 @@ const close_slack_ms = 1000
 /// ```
 ///
 pub fn start(config: ExecutorConfig) -> Result(Executor, actor.StartError) {
+  start_service(config, None)
+}
+
+/// Starts the existing service with an exact original pool-registration seam.
+/// Compile and ordinary dispatch continue to reuse helpers.
+///
+/// ## Examples
+///
+/// `start_with_retirement(config, fn(helper, done) { exec.prepare_borrowed_retirement(pool, helper, done) })`
+pub fn start_with_retirement(
+  config: ExecutorConfig,
+  retirement: RetirementSeam,
+) -> Result(Executor, actor.StartError) {
+  start_service(config, Some(retirement))
+}
+
+fn start_service(
+  config: ExecutorConfig,
+  retirement: Option(RetirementSeam),
+) -> Result(Executor, actor.StartError) {
   state_machine.new_with_initialiser(1000, fn(subject) {
     // Relay deaths arrive as monitor messages, and the service takes a
     // monitor for each relay it starts, so one selector for all of them.
@@ -421,7 +474,13 @@ pub fn start(config: ExecutorConfig) -> Result(Executor, actor.StartError) {
       |> process.select_monitors(RelayDown)
     state_machine.initialised(
       Serving,
-      State(config:, subject:, rows: dict.new(), books: executor_view.new()),
+      State(
+        config:,
+        retirement:,
+        subject:,
+        rows: dict.new(),
+        books: executor_view.new(),
+      ),
     )
     |> state_machine.selecting(selector)
     |> state_machine.returning(subject)
@@ -435,6 +494,7 @@ pub fn start(config: ExecutorConfig) -> Result(Executor, actor.StartError) {
       pid: started.pid,
       incarnation: config.incarnation,
       custody: config.custody,
+      retirement:,
     )
   })
 }
@@ -463,7 +523,7 @@ pub fn pid(executor: Executor) -> Pid {
 /// ```
 ///
 pub fn dispatcher(executor: Executor) -> Dispatcher {
-  dispatcher_window(executor, RelayOwned)
+  dispatcher_window(executor, RelayOwned, Reuse)
 }
 
 /// Requires the cleared native policy to fit its frozen remote admission budget.
@@ -476,15 +536,37 @@ pub fn dispatcher(executor: Executor) -> Dispatcher {
 /// // executor.dispatcher_with_native_deadline(service).start(remote_request)
 /// ```
 pub fn dispatcher_with_native_deadline(executor: Executor) -> Dispatcher {
-  dispatcher_window(executor, NativeDeadline)
+  dispatcher_window(executor, NativeDeadline, Reuse)
 }
 
-fn dispatcher_window(executor: Executor, window: StartWindow) -> Dispatcher {
+/// Selects exact-helper retirement before checkout or any native effect.
+/// A service without the seam refuses before dispatch. Completion reports the
+/// original ExecutionId only after both pool retirement boundaries.
+///
+/// ## Examples
+///
+/// `dispatcher_retiring_with_native_deadline(service, retired).start(request)`
+pub fn dispatcher_retiring_with_native_deadline(
+  executor: Executor,
+  retired: fn(dispatch.ExecutionId, Result(Nil, exec.RetirementFailure)) -> Nil,
+) -> Dispatcher {
+  case executor.retirement {
+    None -> dispatch.Dispatcher(start: fn(_) { Error(dispatch.NotStarted) })
+    Some(_) ->
+      dispatcher_window(executor, NativeDeadline, RetireOriginal(retired))
+  }
+}
+
+fn dispatcher_window(
+  executor: Executor,
+  window: StartWindow,
+  disposition: StartDisposition,
+) -> Dispatcher {
   let subject = executor.subject
   dispatch.Dispatcher(start: fn(request) {
     let asked =
       call.try_call(subject, waiting: start_budget_ms(), sending: fn(reply) {
-        Start(request:, window:, reply:)
+        Start(request:, window:, disposition:, reply:)
       })
     case asked {
       Ok(answer) -> answer
@@ -618,8 +700,9 @@ fn handle(
   message: Msg,
 ) -> state_machine.Next(Phase, State, Msg) {
   case phase, message {
-    Serving, Start(request:, window:, reply:) -> {
-      let #(state, answer) = begin_execution(state, request, window)
+    Serving, Start(request:, window:, disposition:, reply:) -> {
+      let #(state, answer) =
+        begin_execution(state, request, window, disposition)
       process.send(reply, answer)
       state_machine.keep(state)
     }
@@ -678,6 +761,8 @@ fn handle(
     _phase, Progress(id:, progress:) -> {
       state_machine.keep(observe_progress(state, id, progress))
     }
+    phase, OriginalRetired(id, outcome) ->
+      conclude(phase, original_retired(state, id, outcome))
     phase, Release(id:) -> conclude(phase, release_row(state, id))
     phase, Abandon(id:) -> conclude(phase, abandon_row(state, id))
     phase, RelayDown(down:) -> conclude(phase, relay_gone(state, down))
@@ -736,9 +821,10 @@ fn begin_execution(
   state: State,
   request: dispatch.Dispatch,
   window: StartWindow,
+  disposition: StartDisposition,
 ) -> #(State, Result(dispatch.Execution, dispatch.StartRefusal)) {
   let entered = now_ms()
-  case dispatch_execution(state, request, window) {
+  case dispatch_execution(state, request, window, disposition) {
     Ok(#(state, execution)) -> {
       let books =
         executor_view.record_start(state.books, launch_ms: now_ms() - entered)
@@ -763,6 +849,7 @@ fn dispatch_execution(
   state: State,
   request: dispatch.Dispatch,
   window: StartWindow,
+  disposition: StartDisposition,
 ) -> Result(#(State, dispatch.Execution), dispatch.StartRefusal) {
   // A sequence number still in the table is a late `start` the broker gave
   // up on (see the module doc); taking it would overwrite a live row.
@@ -770,6 +857,12 @@ fn dispatch_execution(
     when: dict.has_key(state.rows, request.seq),
     return: Error(dispatch.NotStarted),
   )
+
+  // Retirement requires the actual original owner, before borrowing a helper.
+  use Nil <- result.try(case disposition, request.caller {
+    RetireOriginal(_), None -> Error(dispatch.NotStarted)
+    _, _ -> Ok(Nil)
+  })
   use helper <- result.try(
     state.config.checkout() |> result.map_error(dispatch.NoHelper(error: _)),
   )
@@ -799,10 +892,26 @@ fn dispatch_execution(
       seq: request.seq,
     )
 
+  // Registration precedes dispatch and owns uncertainty on a lost reply. The
+  // pool callback is send-only and survives executor scope closure.
+  use disposition <- result.try(case disposition, state.retirement {
+    Reuse, _ -> Ok(ReuseHelper)
+    RetireOriginal(completed), Some(prepare) -> {
+      let subject = state.subject
+      prepare(helper, fn(outcome) {
+        completed(id, outcome)
+        process.send(subject, OriginalRetired(id, outcome))
+      })
+      |> result.map(RetireHelper)
+      |> result.replace_error(dispatch.NotStarted)
+    }
+    RetireOriginal(_), None -> Error(dispatch.NotStarted)
+  })
+
   // The relay is started before the helper is dispatched: it owns the
   // subject the helper's events arrive on, and nothing is sent to the
   // helper until that subject has a listener.
-  use started <- result.try(start_relay(state, request, helper, id))
+  use started <- result.try(start_relay(state, request, helper, id, disposition))
   let #(started_at_ms, _clock) = clock.read(request.clock)
   let row =
     Row(
@@ -810,9 +919,19 @@ fn dispatch_execution(
       helper:,
       relay: started,
       relay_monitor: process.monitor(started.pid),
+      owner_monitor: case disposition {
+        ReuseHelper -> None
+        RetireHelper(_) -> option.map(request.caller, process.monitor)
+      },
+      original_owner: case disposition {
+        ReuseHelper -> None
+        RetireHelper(_) -> request.caller
+      },
       settle: request.settle,
       started_at_ms:,
       status: Live,
+      disposition:,
+      retirement: None,
       session_clock: request.clock,
       deadline_ms: request.deadline_ms,
       demand: request.request.demand,
@@ -863,6 +982,7 @@ fn start_relay(
   request: dispatch.Dispatch,
   helper: Helper,
   id: dispatch.ExecutionId,
+  disposition: RowDisposition,
 ) -> Result(relay.Relay, dispatch.StartRefusal) {
   let link = link_over(state.subject, id)
   let config =
@@ -882,7 +1002,7 @@ fn start_relay(
     Error(actor.InitTimeout)
     | Error(actor.InitFailed(_))
     | Error(actor.InitExited(_)) -> {
-      state.config.checkin(helper)
+      return_unstarted(state, helper, disposition)
       Error(dispatch.NotStarted)
     }
   }
@@ -1037,7 +1157,9 @@ fn cancel_row(state: State, id: dispatch.ExecutionId) -> State {
         )
       State(..state, rows:)
     }
-    Ok(Row(status: Granted(..), ..)) | Error(Nil) -> state
+    Ok(Row(status: Granted(..), ..))
+    | Ok(Row(status: Retiring, ..))
+    | Error(Nil) -> state
   }
 }
 
@@ -1058,7 +1180,9 @@ fn feed_row(
       }
       exec.stdin(helper, data:, eof: closes_stdin)
     }
-    Ok(Row(status: Granted(..), ..)) | Error(Nil) -> Nil
+    Ok(Row(status: Granted(..), ..))
+    | Ok(Row(status: Retiring, ..))
+    | Error(Nil) -> Nil
   }
 }
 
@@ -1088,7 +1212,9 @@ fn grant_settlement(
         )
       State(..state, rows:)
     }
-    Ok(Row(status: Granted(..), ..)) | Error(Nil) -> {
+    Ok(Row(status: Granted(..), ..))
+    | Ok(Row(status: Retiring, ..))
+    | Error(Nil) -> {
       process.send(reply, relay.AlreadySettled)
       state
     }
@@ -1111,12 +1237,11 @@ fn grant_settlement(
 fn release_row(state: State, id: dispatch.ExecutionId) -> State {
   case find_row(state, id) {
     Ok(row) -> {
-      state.config.checkin(row.helper)
       let state = case row.status {
         Granted(closure:) -> record_settlement(state, row, closure)
-        Live -> state
+        Live | Retiring -> state
       }
-      remove_row(state, row)
+      return_row(state, row)
     }
     Error(Nil) -> state
   }
@@ -1136,6 +1261,7 @@ fn release_row(state: State, id: dispatch.ExecutionId) -> State {
 // does not try (`relay_gone`).
 fn abandon_row(state: State, id: dispatch.ExecutionId) -> State {
   case find_row(state, id) {
+    Ok(Row(status: Retiring, ..)) -> state
     Ok(row) -> lose_row(state, row, exec.RelayDown)
     Error(Nil) -> state
   }
@@ -1156,9 +1282,27 @@ fn relay_gone(state: State, down: process.Down) -> State {
         // or it died between the grant and the report. Either way the
         // broker decides: it sends `Release` for a settlement it saw and
         // `Abandon` for one it did not.
-        Ok(Row(status: Granted(..), ..)) | Error(Nil) -> state
+        Ok(Row(status: Granted(..), ..)) | Ok(Row(status: Retiring, ..)) ->
+          state
+        Error(Nil) -> original_owner_gone(state, pid)
       }
   }
+}
+
+// The direct native adapter has no Broker guarantor. Its original monitor
+// closes a retiring borrow even if its Release reply or continuation was lost.
+fn original_owner_gone(state: State, pid: Pid) -> State {
+  list.fold(dict.values(state.rows), state, fn(state, row) {
+    case row.original_owner, row.status {
+      Some(original), Live if original == pid ->
+        lose_row(state, row, exec.RelayDown)
+      Some(original), Granted(_) if original == pid -> {
+        exec.cancel(row.helper)
+        return_row(state, row)
+      }
+      _, _ -> state
+    }
+  })
 }
 
 // An execution whose relay is gone before it reported. The helper is told
@@ -1167,7 +1311,6 @@ fn relay_gone(state: State, down: process.Down) -> State {
 // before the settlement so a message the settlement provokes finds no row.
 fn lose_row(state: State, row: Row, cause: exec.LossCause) -> State {
   exec.cancel(row.helper)
-  state.config.checkin(row.helper)
 
   // The loss is recorded against the row's last known progress. A granted
   // row that is abandoned is recorded here as lost too, and not as the
@@ -1178,13 +1321,71 @@ fn lose_row(state: State, row: Row, cause: exec.LossCause) -> State {
       progress: row.progress,
       at_mono: now_ms(),
     )
-  let state = record_settlement(state, row, closure) |> remove_row(row)
+  let state = record_settlement(state, row, closure) |> return_row(row)
   row.settle(dispatch.Failed(failure: exec.ExecutionLost(cause:)))
   state
 }
 
+fn return_unstarted(
+  state: State,
+  helper: Helper,
+  disposition: RowDisposition,
+) -> Nil {
+  case disposition {
+    ReuseHelper -> state.config.checkin(helper)
+    RetireHelper(original) -> exec.retire_borrowed(original)
+  }
+}
+
+// Settlement closes relay custody first; retiring rows retain their exact helper
+// until its original callback arrives. Duplicate release cannot check it in.
+fn return_row(state: State, row: Row) -> State {
+  case row.status, row.disposition, row.retirement {
+    Retiring, _, _ -> state
+    _, ReuseHelper, _ -> {
+      state.config.checkin(row.helper)
+      remove_row(state, row)
+    }
+    _, RetireHelper(_), Some(_) -> remove_row(state, row)
+    _, RetireHelper(original), None -> {
+      exec.retire_borrowed(original)
+      process.demonitor_process(row.relay_monitor)
+      option.map(row.owner_monitor, process.demonitor_process)
+      State(
+        ..state,
+        rows: dict.insert(
+          state.rows,
+          dispatch.seq(row.id),
+          Row(..row, status: Retiring),
+        ),
+      )
+    }
+  }
+}
+
+fn original_retired(
+  state: State,
+  id: dispatch.ExecutionId,
+  outcome: Result(Nil, exec.RetirementFailure),
+) -> State {
+  case find_row(state, id) {
+    Ok(Row(status: Retiring, ..) as row) -> remove_row(state, row)
+    Ok(row) ->
+      State(
+        ..state,
+        rows: dict.insert(
+          state.rows,
+          dispatch.seq(id),
+          Row(..row, retirement: Some(outcome)),
+        ),
+      )
+    Error(Nil) -> state
+  }
+}
+
 fn remove_row(state: State, row: Row) -> State {
   process.demonitor_process(row.relay_monitor)
+  option.map(row.owner_monitor, process.demonitor_process)
   State(..state, rows: dict.delete(state.rows, dispatch.seq(row.id)))
 }
 
@@ -1230,7 +1431,7 @@ fn expire_live_rows(state: State) -> State {
         process.kill(row.relay.pid)
         lose_row(state, row, exec.ExecutorClosing)
       }
-      Granted(..) -> state
+      Granted(..) | Retiring -> state
     }
   })
 }
@@ -1245,6 +1446,7 @@ fn finish_closing(
 ) -> state_machine.Next(Phase, State, Msg) {
   list.each(dict.values(state.rows), fn(row) {
     process.demonitor_process(row.relay_monitor)
+    option.map(row.owner_monitor, process.demonitor_process)
   })
 
   // A granted row still held now will never be released, so its granted
@@ -1253,7 +1455,7 @@ fn finish_closing(
     list.fold(dict.values(state.rows), state, fn(state, row) {
       case row.status {
         Granted(closure:) -> record_settlement(state, row, closure)
-        Live -> state
+        Live | Retiring -> state
       }
     })
   let outcome = state.config.close_helpers(closer.helpers_ms)
@@ -1275,7 +1477,7 @@ fn has_live_row(state: State) -> Bool {
   list.any(dict.values(state.rows), fn(row) {
     case row.status {
       Live -> True
-      Granted(..) -> False
+      Granted(..) | Retiring -> False
     }
   })
 }
@@ -1296,7 +1498,9 @@ fn observe_progress(
         dict.insert(state.rows, dispatch.seq(id), Row(..row, progress:))
       State(..state, rows:)
     }
-    Ok(Row(status: Granted(..), ..)) | Error(Nil) -> state
+    Ok(Row(status: Granted(..), ..))
+    | Ok(Row(status: Retiring, ..))
+    | Error(Nil) -> state
   }
 }
 
@@ -1343,7 +1547,7 @@ fn live_view(row: Row, now: Int) -> executor_view.LiveView {
   executor_view.LiveView(
     id: row.id,
     status: case row.status {
-      Live -> executor_view.Running
+      Live | Retiring -> executor_view.Running
       Granted(closure:) -> executor_view.Granted(outcome: closure.outcome)
     },
     mode: row.progress.mode,

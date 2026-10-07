@@ -259,6 +259,7 @@ pub fn the_local_service_prepares_before_the_existing_builder_test() {
     )
   let compiled =
     configured.compile(compile.CompileRequest(
+      compile.Original,
       vetted: vetted(source),
       dependencies: configured.dependencies,
       generated: configured.generated,

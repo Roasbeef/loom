@@ -25,8 +25,10 @@
 //// a checked exact outer completion retained by the owner permits outer ACK.
 //// Recovery observes original identities and never reconstructs live permission.
 ////
-//// Service custody uses Compile; the native command uses CompileCommand. Their
-//// receipts, cancellation, executor collection and resource cleanup are separate.
+//// Original custody uses Compile and CompileCommand. The one checked unused-import
+//// rewrite uses CompileRewrite and CompileRewriteCommand while retaining the original
+//// Build phase. Each service/native pair retains separate receipts, cancellation,
+//// executor collection and resource cleanup.
 //// A timeout ends observation and cannot retract a queued write or prove that a
 //// peer consumed an ask. Consumer-detected uncertain custody invokes the existing
 //// mandatory fatal fence, while production lifetime fencing remains assembly's
@@ -57,6 +59,7 @@ import codemode/service_command
 import codemode/service_input as input
 import codemode/service_resources as resources
 import codemode/vet
+import codemode/vet/policy as vet_policy
 import core/clock
 import core/command
 import core/ids
@@ -98,6 +101,8 @@ pub type Facts {
     generated: List(#(String, String)),
     /// Original configured owner quotas; the actual custodian rechecks them.
     owner_limits: custody.Limits,
+    /// Actual fixed owner vetting policy, used for predecessor re-vetting.
+    effective_policy: vet_policy.VetPolicy,
   )
 }
 
@@ -107,6 +112,8 @@ pub opaque type Config {
   Config(
     /// The existing durable owner and its already configured finite quotas.
     owner: custodian.Handle,
+    /// Derived once from fixed enrollment, seam, policy and facade catalogue.
+    contract: input.CompilationContract,
     /// Exact administrative enrollment; advertisements never replace it.
     enrolled: enrollment.SessionEnrollment,
     /// Original session Broker; this module constructs no second authority.
@@ -267,8 +274,18 @@ pub fn new(
     },
     Error(InvalidConfiguration),
   )
+  use contract <- result.try(
+    input.trusted_contract(
+      enrolled,
+      facts.seam,
+      facts.effective_policy,
+      facts.generated,
+    )
+    |> result.replace_error(InvalidConfiguration),
+  )
   Ok(Config(
     owner,
+    contract,
     enrolled,
     original_broker,
     endpoint,
@@ -406,7 +423,7 @@ fn cancel_original(
 
 fn invoke(config: Config, request: compile.CompileRequest) -> compile.Compiled {
   let result = {
-    use original <- result.try(live_identity(request.identity))
+    use original <- result.try(live_identity(request.identity, request.attempt))
     use parent <- result.try(remote_tool.child_tool(original) |> invalid)
     use deadline <- result.try(original_deadline(config, request.identity))
     use original_input <- result.try(
@@ -466,6 +483,7 @@ fn invoke(config: Config, request: compile.CompileRequest) -> compile.Compiled {
 
 fn live_identity(
   identity: phase.PhaseIdentity,
+  attempt: compile.CompileAttempt,
 ) -> Result(remote_tool.ChildOrigin, Error) {
   use <- bool.guard(
     phase.phase(identity) != phase.Build,
@@ -483,7 +501,11 @@ fn live_identity(
     remote_tool.child_tool(native)
     |> result.replace_error(Invalid("missing original tool parent")),
   )
-  remote_tool.tool_child(parent, remote_tool.Compile) |> invalid
+  let role = case attempt {
+    compile.Original -> remote_tool.Compile
+    compile.UnusedImportRewrite -> remote_tool.CompileRewrite
+  }
+  remote_tool.tool_child(parent, role) |> invalid
 }
 
 fn original_deadline(
@@ -579,22 +601,40 @@ fn reserve_original(
         workspace.step(phase.step_id(request.identity)) |> invalid,
       )
       let #(registration, contract) = enrollment.digests(config.enrolled)
-      use key <- result.try(
-        command.service_key(
-          parent,
-          command.CompileService,
-          enrollment.native_facts(config.enrolled).scope,
-          phase.op_id(request.identity),
-          step,
-          config.mint(),
-          hash(bytes),
-          registration,
-          contract,
-        )
-        |> invalid,
-      )
+      use key <- result.try(case request.attempt {
+        compile.Original ->
+          command.service_key(
+            parent,
+            command.CompileService,
+            enrollment.native_facts(config.enrolled).scope,
+            phase.op_id(request.identity),
+            step,
+            config.mint(),
+            hash(bytes),
+            registration,
+            contract,
+          )
+          |> invalid
+        compile.UnusedImportRewrite -> {
+          use previous_origin <- result.try(
+            remote_tool.tool_child(parent, remote_tool.Compile) |> invalid,
+          )
+          use previous <- result.try(historical(config, previous_origin))
+          command.rewrite_service_key(
+            previous.0.outbound.key,
+            config.mint(),
+            hash(bytes),
+          )
+          |> invalid
+        }
+      })
       use retained <- result.try(
-        owner(custodian.reserve_service_child(config.owner, key, bytes)),
+        owner(custodian.reserve_compile_child(
+          config.owner,
+          key,
+          bytes,
+          config.contract,
+        )),
       )
       Ok(Fresh(Reservation(retained, body, journal.Input(key, bytes))))
     }
@@ -647,7 +687,7 @@ fn historical(
 
 fn compile_origin(origin: remote_tool.ChildOrigin) -> Result(Nil, Error) {
   case remote_tool.child_role(origin) {
-    Ok(remote_tool.Compile) -> Ok(Nil)
+    Ok(remote_tool.Compile) | Ok(remote_tool.CompileRewrite) -> Ok(Nil)
     Ok(_) | Error(_) ->
       Error(Invalid("outer receipt requires Compile service origin"))
   }
@@ -809,7 +849,10 @@ fn accepted_command(
   original: phase.PhaseIdentity,
   wall: Int,
 ) -> Result(AcceptedCompileCommand, Error) {
-  use origin <- result.try(live_identity(original))
+  use origin <- result.try(live_identity(
+    original,
+    attempt_of(reserved.outbound.key),
+  ))
   use Nil <- result.try(same_live_request(reserved, reserved.body, original))
   use <- bool.guard(
     custody.service_identity(reserved.original) != reserved.outbound.key
@@ -869,7 +912,8 @@ fn accepted_command(
     Invalid("missing original native origin"),
   ))
   use <- bool.guard(
-    native_origin != command.native_origin(ref),
+    remote_tool.child_tool(native_origin)
+      != remote_tool.child_tool(command.native_origin(ref)),
     Error(Invalid("native command parent differs")),
   )
   Ok(AcceptedCompileCommand(
@@ -886,7 +930,7 @@ fn accepted_command(
       cwd: data.cwd,
       budget: phase.pooled_budget(original),
     ),
-    native_origin,
+    command.native_origin(ref),
   ))
 }
 
@@ -1230,5 +1274,13 @@ fn receipt_binary(
   case body {
     <<value:size(size)-bytes, rest:bits>> -> Ok(#(value, rest))
     _ -> Error(Invalid("truncated native receipt member"))
+  }
+}
+
+// Lineage is immutable; command acceptance never guesses from invocation order.
+fn attempt_of(key: command.ServiceKey) -> compile.CompileAttempt {
+  case command.compile_predecessor(key) {
+    None -> compile.Original
+    Some(_) -> compile.UnusedImportRewrite
   }
 }

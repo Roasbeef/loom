@@ -1076,6 +1076,7 @@ pub fn admit_service_child(
   store: Store,
   request: ServiceRequest,
 ) -> Result(Nil, Error) {
+  use Nil <- result.try(check_compile_predecessor(store, request.key))
   admit_workspace_child(
     store,
     command.service_origin(request.key),
@@ -1094,6 +1095,7 @@ pub fn service_child(
   store: Store,
   key: command.ServiceKey,
 ) -> Result(#(ServiceRequest, Option(Payload)), Error) {
+  use Nil <- result.try(check_compile_predecessor(store, key))
   use Nil <- result.try(same_session(
     store,
     remote_tool.session(command.parent(key)),
@@ -1190,7 +1192,7 @@ pub fn admit_offer(
         use count <- result.try(
           one(query(store, sql.owner_command_offer_count(parent))),
         )
-        use <- bool.guard(when: count.offers >= 2, return: Error(Capacity))
+        use <- bool.guard(when: count.offers >= 3, return: Error(Capacity))
         let identity = ref_bytes(offer.ref)
         let reserved =
           offer_reservation(
@@ -1266,6 +1268,7 @@ pub fn command_offer_for_origin(
   )
   use <- bool.guard(
     when: role != remote_tool.CompileCommand
+      && role != remote_tool.CompileRewriteCommand
       && role != remote_tool.SatelliteCommand,
     return: Error(Invalid("origin is not a physical command")),
   )
@@ -1661,7 +1664,7 @@ fn check_offer_count(store: Store, parent: String) -> Result(Nil, Error) {
     one(query(store, sql.owner_command_offer_count(parent))),
   )
   use <- bool.guard(
-    when: count.offers < 0 || count.offers > 2,
+    when: count.offers < 0 || count.offers > 3,
     return: Error(Invalid("command offer count exceeds fixed service purposes")),
   )
   Ok(Nil)
@@ -1790,6 +1793,10 @@ fn collection_ready(store: Store, key: ToolKey) -> Result(Nil, Error) {
     remote_tool.tool_child(key, remote_tool.Compile)
     |> result.map_error(Invalid),
   )
+  use rewrite <- result.try(
+    remote_tool.tool_child(key, remote_tool.CompileRewrite)
+    |> result.map_error(Invalid),
+  )
   use launch <- result.try(
     remote_tool.tool_child(key, remote_tool.Launch) |> result.map_error(Invalid),
   )
@@ -1801,10 +1808,19 @@ fn collection_ready(store: Store, key: ToolKey) -> Result(Nil, Error) {
     store,
     sql.owner_child_header(remote_tool.child_address(launch)),
   ))
+  use rewrite_rows <- result.try(query(
+    store,
+    sql.owner_child_header(remote_tool.child_address(rewrite)),
+  ))
   use offers <- result.try(
     one(query(store, sql.owner_command_offer_count(remote_tool.address(key)))),
   )
-  case compile_rows == [] && launch_rows == [] && offers.offers == 0 {
+  case
+    compile_rows == []
+    && rewrite_rows == []
+    && launch_rows == []
+    && offers.offers == 0
+  {
     True -> Ok(Nil)
     False -> Error(CollectionPending)
   }
@@ -2663,5 +2679,20 @@ fn parameter(value: dev.Param) -> Result(sqlight.Value, Error) {
     | dev.ParamList(_)
     | dev.ParamDynamic(_) ->
       Error(Invalid("unsupported owner custody query parameter"))
+  }
+}
+
+// Structural lineage is independently enforced without a code-mode dependency.
+// Semantic diagnostic and vetting checks belong to the checked owner custodian.
+fn check_compile_predecessor(
+  store: Store,
+  key: command.ServiceKey,
+) -> Result(Nil, Error) {
+  case command.compile_predecessor(key) {
+    None -> Ok(Nil)
+    Some(previous) -> {
+      use retained <- result.try(service_child(store, previous))
+      option.to_result(retained.1, Conflict) |> result.replace(Nil)
+    }
   }
 }
