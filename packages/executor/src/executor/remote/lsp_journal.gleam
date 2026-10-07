@@ -6,6 +6,16 @@
 //// timed transition COMMIT issues a finite claim; recovery fences unfinished
 //// originals regardless of whether a host repeats the clock era or tick.
 ////
+//// Permanent assembly uses `park_fresh` under its own linked parent, retains
+//// the resource-free original ACK, then calls `initialise_fresh`. Acquired owns
+//// the actual connection before shared setup runs in the next actor turn.
+//// A queued parent exit does not preempt that already admitted bounded turn.
+//// Temporary `recover_owned` self-adopts before ACK or SQL and has no Clock,
+//// incarnation, Store projector or admission door. History preserves original
+//// era, nonce, E0 and deadlines while sharing the existing canonical reducers.
+//// Owned release requires explicit close ACK and the same original normal DOWN;
+//// the managed caller separately joins its Outcome, AllDelivered and scope DOWN.
+////
 //// Lease, finite and command rows share a permanent reservation ledger. Exact
 //// receipt does not free capacity or a lease slot. Only original physical
 //// retirement verification followed by exact Retired COMMIT clears that slot.
@@ -37,6 +47,14 @@
 //// `inspect_lease`, `inspect_finite`, `inspect_command` and `inventory` enter
 //// guarded `lookup` and `read_row`; `validate_row` checks complete canonical parent equality.
 //// `exchange`, `handle`, `transact` and `complete` own actor replies and COMMIT.
+//// `fresh_input`, `park_fresh`, `initialise_fresh` and `live_store` retain one
+//// original live endpoint. `recovery_input` and `recover_owned` install a closed
+//// historical door. `inspect_lease_owned`, `inspect_finite_owned`,
+//// `inspect_command_owned` and `acknowledge_exact_owned` share `read_lease`,
+//// `read_finite`, `read_command` and `write_exact_receipt`. `acquire_input`,
+//// `handle_setup` and `setup` install Acquired before SQL. `handle_release`,
+//// `release_subject`, `close_connection` and `shutdown` retain exact close proof.
+//// `clear_probe` spends a synthetic refusal while retaining its original observer.
 
 import core/bounded_msgpack
 import core/generation as g
@@ -58,6 +76,7 @@ import gleam/string
 import parrot/dev
 import simplifile
 import sqlight
+import weft
 import weft/actor
 
 /// Maximum permanent identities across all three families.
@@ -104,6 +123,153 @@ pub opaque type Store {
     binding: Binding,
     /// The already retained original DAL-use UUID.
     incarnation: ids.EntryId,
+  )
+}
+
+/// Immutable originals selected by permanent full-host assembly, before SQL.
+@internal
+pub opaque type FreshInput {
+  FreshInput(
+    /// Original absolute selected database path.
+    path: String,
+    /// Complete generation and enrollment association.
+    binding: Binding,
+    /// Original semantic contract commitment.
+    contract: g.Digest,
+    /// Original DAL-use incarnation, never reconstructed from history.
+    incarnation: ids.EntryId,
+    /// Immutable reduced permanent ceilings.
+    limits: Limits,
+    /// Actual original trusted clock construction.
+    clock: Clock,
+    /// Exact enrolled profile order and roots.
+    profiles: id.EnrolledProfiles,
+  )
+}
+
+/// Resource-free acknowledged writer directly linked to its permanent parent.
+@internal
+pub opaque type ParkedFresh {
+  ParkedFresh(
+    /// Original private endpoint retained before initialization.
+    subject: process.Subject(Message),
+    /// Original acknowledged writer PID.
+    pid: process.Pid,
+  )
+}
+
+/// Original live endpoint returned once, after original setup COMMIT.
+@internal
+pub opaque type LiveStore {
+  LiveStore(
+    /// Same original Store used by existing admission and claim checks.
+    store: Store,
+  )
+}
+
+/// Historical selection contains no live clock or incarnation authority.
+@internal
+pub opaque type RecoveryInput {
+  RecoveryInput(
+    /// Original absolute selected database path.
+    path: String,
+    /// Complete historical generation and enrollment association.
+    binding: Binding,
+    /// Original semantic contract commitment.
+    contract: g.Digest,
+    /// Immutable reduced permanent ceilings.
+    limits: Limits,
+    /// Exact enrolled profile order and roots.
+    profiles: id.EnrolledProfiles,
+  )
+}
+
+/// Adopted original history writer exposes only checked query and exact receipt.
+@internal
+pub opaque type OwnedRecovery {
+  OwnedRecovery(
+    /// Original private closed history message door.
+    subject: process.Subject(Message),
+    /// Original acknowledged adopted writer PID.
+    pid: process.Pid,
+    /// Retained input binding, never selected anew by a history query.
+    binding: Binding,
+  )
+}
+
+/// Closed finite observations for deterministic original custody controls.
+@internal
+pub type Checkpoint {
+
+  /// No resource exists and the original ledger has not adopted this writer.
+  BeforeAdopt
+
+  /// Original ownership is installed before the resource-free startup ACK.
+  BeforeAck
+
+  /// Actual connection is retained in Acquired before shared SQL setup.
+  AfterAcquire
+
+  /// Original setup COMMIT succeeded before the readiness reply.
+  AfterCommitBeforeReady
+
+  /// Original connection is retained before an explicit close attempt.
+  BeforeCloseAck
+
+  /// Successful explicit close ACK precedes original normal DOWN.
+  AfterCloseAckBeforeExit
+}
+
+/// A checkpoint changes observation only, except its labelled synthetic refusal.
+@internal
+pub type Permit {
+
+  /// Continue the original bounded operation and reply.
+  Proceed
+
+  /// Retain the actual result but deliberately lose its reply.
+  SuppressReply
+
+  /// Refuse one explicit close without claiming an actual SQLite close fault.
+  RefuseClose
+}
+
+/// A closed probe never receives a connection or replacement owner.
+@internal
+pub type Probe {
+
+  /// Production construction has no checkpoint or callback.
+  Unobserved
+
+  /// One selected finite ordering point reports the actual original.
+  Observed(
+    /// Selected closed ordering point.
+    selected: Checkpoint,
+    /// Exact original observations and successful or failed actual close.
+    observations: process.Subject(OwnershipEvent),
+  )
+}
+
+/// Exact writer identity and close evidence used only by custody controls.
+@internal
+pub type OwnershipEvent {
+
+  /// One gate retains the same original writer and its one permit subject.
+  CheckpointReached(
+    /// Closed selected ordering point.
+    stage: Checkpoint,
+    /// Actual original writer PID.
+    owner: process.Pid,
+    /// One finite gate, never SQL or claim authority.
+    permit: process.Subject(Permit),
+  )
+
+  /// The original writer attempted actual SQL close, including shutdown cleanup.
+  ConnectionClosed(
+    /// Actual original writer PID.
+    owner: process.Pid,
+    /// Actual sqlight close outcome, never synthetic RefuseClose.
+    outcome: Result(Nil, Error),
   )
 }
 
@@ -353,18 +519,36 @@ pub type Error {
 type Context {
   Context(
     connection: sqlight.Connection,
-    store: Store,
+    authority: Authority,
     scope: workspace.Scope,
     contract: g.Digest,
     limits: Limits,
-    clock: Clock,
     profiles: id.EnrolledProfiles,
   )
 }
 
+type Authority {
+  OriginalLive(Store, Clock)
+  HistoryOnly
+}
+
+type Disposition {
+  Legacy
+  ParentOwned
+  HistoryOwned
+}
+
+type Input {
+  LiveInput(FreshInput, Store)
+  HistoricalInput(RecoveryInput)
+}
+
 type State {
-  Open(Context)
-  Closed
+  Waiting(Input, Disposition, Probe)
+  Acquired(Context, Mode, Disposition, Probe)
+  Open(Context, Disposition, Probe)
+  FailedClose(Context, Disposition, Probe)
+  Released(Disposition, Probe)
 }
 
 type Mode {
@@ -383,10 +567,35 @@ type Reply {
   RetirementReply(RetirementReceipt)
   CountReply(Int)
   PlacementReply(StartupPlacement)
+  ReadyReply(Store)
   NilReply
 }
 
 type Message {
+  Initialise(process.Subject(Result(Reply, Error)))
+  Setup(process.Subject(Result(Reply, Error)))
+  InspectLease(id.LspServiceKey, Binding, process.Subject(Result(Reply, Error)))
+  InspectFinite(
+    id.FiniteCapture,
+    wire.Request,
+    Binding,
+    process.Subject(Result(Reply, Error)),
+  )
+  InspectCommand(
+    id.LspCommandRef,
+    wire.Request,
+    Option(id.SelectedProject),
+    Binding,
+    process.Subject(Result(Reply, Error)),
+  )
+  AcknowledgeExact(
+    id.FiniteCapture,
+    wire.Request,
+    g.Digest,
+    Binding,
+    process.Subject(Result(Reply, Error)),
+  )
+  CloseAck(Probe, Permit, process.Subject(Result(Reply, Error)))
   Work(
     fn(Context) -> Result(Reply, Error),
     process.Subject(Result(Reply, Error)),
@@ -412,6 +621,275 @@ pub fn limits(rows: Int, bytes: Int) -> Result(Limits, Error) {
 /// Historical callers retain the old binding rather than selecting latest.
 pub fn binding(key: g.GenerationKey, enrollment: g.Digest) -> Binding {
   Binding(key, enrollment)
+}
+
+/// Retains immutable live inputs without filesystem access or SQL acquisition.
+///
+/// ## Examples
+/// Permanent assembly passes its checked original plan and trusted clock once.
+@internal
+pub fn fresh_input(
+  path: String,
+  binding: Binding,
+  contract: g.Digest,
+  incarnation: ids.EntryId,
+  limits: Limits,
+  clock: Clock,
+  profiles: id.EnrolledProfiles,
+) -> Result(FreshInput, Error) {
+  use Nil <- result.try(valid_path(path))
+  Ok(FreshInput(path, binding, contract, incarnation, limits, clock, profiles))
+}
+
+/// Starts a resource-free linked writer under its actual permanent parent.
+///
+/// ## Examples
+/// Retain this original ACK and PID before requesting initialization.
+@internal
+pub fn park_fresh(input: FreshInput) -> Result(ParkedFresh, Error) {
+  park_fresh_observed(input, Unobserved)
+}
+
+/// Adds one closed finite checkpoint to the same production live construction.
+///
+/// ## Examples
+/// An AfterAcquire control retains the actual connection before shared setup.
+@internal
+pub fn park_fresh_observed(
+  input: FreshInput,
+  probe: Probe,
+) -> Result(ParkedFresh, Error) {
+  use started <- result.try(
+    actor.new_with_initialiser(1000, fn(subject) {
+      use _ <- result.try(
+        checkpoint(probe, BeforeAck)
+        |> result.replace_error("Original LSP parent unavailable before ACK"),
+      )
+      let store = Store(subject, input.binding, input.incarnation)
+      Ok(
+        actor.initialised(Waiting(LiveInput(input, store), ParentOwned, probe))
+        |> actor.returning(subject),
+      )
+    })
+    |> actor.trapping_exits(True)
+    |> actor.on_message(handle)
+    |> actor.on_shutdown(shutdown)
+    |> actor.start
+    |> result.replace_error(Uncertain),
+  )
+  Ok(ParkedFresh(started.data, started.pid))
+}
+
+/// Projects only the acknowledged original writer for its parent's monitor.
+///
+/// ## Examples
+/// Monitoring this PID never resolves a replacement process.
+@internal
+pub fn fresh_owner(original: ParkedFresh) -> process.Pid {
+  original.pid
+}
+
+/// Initializes this already retained original once; retries grant no readiness.
+///
+/// ## Examples
+/// A lost post-COMMIT result retains the same writer and cleanup obligation.
+@internal
+pub fn initialise_fresh(original: ParkedFresh) -> Result(LiveStore, Error) {
+  use reply <- result.try(exchange_subject(original.subject, Initialise))
+  case reply {
+    ReadyReply(store) -> Ok(LiveStore(store))
+    LeaseReply(_)
+    | LeaseReservationReply(_)
+    | FiniteReply(_)
+    | CommandReply(_)
+    | AdmissionReply(_)
+    | StartReply(_)
+    | ReceiptReply(_)
+    | RetirementReply(_)
+    | CountReply(_)
+    | PlacementReply(_)
+    | NilReply -> Error(Corrupt)
+  }
+}
+
+/// Projects the exact original live endpoint for existing LSP admission.
+///
+/// ## Examples
+/// reserve_lease_live retains this Store in its sole first-reservation claim.
+@internal
+pub fn live_store(ready: LiveStore) -> Store {
+  ready.store
+}
+
+/// Requires original successful close ACK followed by the same normal DOWN.
+///
+/// ## Examples
+/// This also releases a retained parked writer whose readiness reply was lost.
+@internal
+pub fn release_fresh(original: ParkedFresh) -> Result(Nil, Error) {
+  release_subject(original.subject, original.pid)
+}
+
+/// Selects exact history without creating a live clock or Store.
+///
+/// ## Examples
+/// Recovery retains the historical binding supplied by admitted plan assembly.
+@internal
+pub fn recovery_input(
+  path: String,
+  binding: Binding,
+  contract: g.Digest,
+  limits: Limits,
+  profiles: id.EnrolledProfiles,
+) -> Result(RecoveryInput, Error) {
+  use Nil <- result.try(valid_path(path))
+  Ok(RecoveryInput(path, binding, contract, limits, profiles))
+}
+
+/// Self-adopts into the original finite managed ledger before ACK or SQL.
+///
+/// ## Examples
+/// This exposes only retained evidence and exact receipt operations.
+@internal
+pub fn recover_owned(
+  input: RecoveryInput,
+  ledger: weft.Ledger,
+) -> Result(OwnedRecovery, Error) {
+  recover_owned_observed(input, ledger, Unobserved)
+}
+
+/// Adds one closed finite checkpoint to actual original managed construction.
+///
+/// ## Examples
+/// BeforeAdopt permits testing worker loss before any file acquisition.
+@internal
+pub fn recover_owned_observed(
+  input: RecoveryInput,
+  ledger: weft.Ledger,
+  probe: Probe,
+) -> Result(OwnedRecovery, Error) {
+  use started <- result.try(
+    actor.new_with_initialiser(1000, fn(subject) {
+      use _ <- result.try(
+        checkpoint(probe, BeforeAdopt)
+        |> result.replace_error("LSP history checkpoint expired"),
+      )
+      let cancel = fn() {
+        process.send(subject, Release(process.new_subject()))
+      }
+      use Nil <- result.try(
+        case weft.adopt(ledger, owner: process.self(), cancel:) {
+          weft.Refused -> Error("Original LSP history adoption refused")
+          weft.Adopted -> Ok(Nil)
+        },
+      )
+      use _ <- result.try(
+        checkpoint(probe, BeforeAck)
+        |> result.replace_error("Original LSP history unavailable before ACK"),
+      )
+      Ok(
+        actor.initialised(Waiting(HistoricalInput(input), HistoryOwned, probe))
+        |> actor.returning(subject),
+      )
+    })
+    |> actor.trapping_exits(True)
+    |> actor.on_message(handle)
+    |> actor.on_shutdown(shutdown)
+    |> actor.unlinked
+    |> actor.start
+    |> result.replace_error(Uncertain),
+  )
+  let original = OwnedRecovery(started.data, started.pid, input.binding)
+  case exchange_subject(original.subject, Initialise) |> result.try(as_nil) {
+    Ok(Nil) -> Ok(original)
+    Error(error) -> {
+      process.send(original.subject, Release(process.new_subject()))
+      Error(error)
+    }
+  }
+}
+
+/// Reads an exact original lease using the immutable history input binding.
+///
+/// ## Examples
+/// Matching retained evidence grants no startup or retirement authority.
+@internal
+pub fn inspect_lease_owned(
+  original: OwnedRecovery,
+  key: id.LspServiceKey,
+) -> Result(LeaseReadback, Error) {
+  exchange_subject(original.subject, InspectLease(key, original.binding, _))
+  |> result.try(as_lease)
+}
+
+/// Reads the full original capture and request without renewing its anchor.
+///
+/// ## Examples
+/// The historical era, nonce, E0 and deadline remain byte-exact.
+@internal
+pub fn inspect_finite_owned(
+  original: OwnedRecovery,
+  capture: id.FiniteCapture,
+  request: wire.Request,
+) -> Result(FiniteReadback, Error) {
+  exchange_subject(original.subject, InspectFinite(
+    capture,
+    request,
+    original.binding,
+    _,
+  ))
+  |> result.try(as_finite)
+}
+
+/// Checks the complete original parent, request and enrolled command profile.
+///
+/// ## Examples
+/// A changed request or full parent cannot substitute for the retained command.
+@internal
+pub fn inspect_command_owned(
+  original: OwnedRecovery,
+  ref: id.LspCommandRef,
+  request: wire.Request,
+  selected: Option(id.SelectedProject),
+) -> Result(CommandReadback, Error) {
+  exchange_subject(original.subject, InspectCommand(
+    ref,
+    request,
+    selected,
+    original.binding,
+    _,
+  ))
+  |> result.try(as_command)
+}
+
+/// Commits only an exact result receipt through the existing checked reducer.
+///
+/// ## Examples
+/// Receipt commits retain permanent charges and never release a lease slot.
+@internal
+pub fn acknowledge_exact_owned(
+  original: OwnedRecovery,
+  capture: id.FiniteCapture,
+  request: wire.Request,
+  digest: g.Digest,
+) -> Result(Nil, Error) {
+  exchange_subject(original.subject, AcknowledgeExact(
+    capture,
+    request,
+    digest,
+    original.binding,
+    _,
+  ))
+  |> result.try(as_nil)
+}
+
+/// Joins this exact adopted writer after its successful explicit close reply.
+///
+/// ## Examples
+/// The managed caller must separately join its original Outcome and scope drain.
+@internal
+pub fn release_owned(original: OwnedRecovery) -> Result(Nil, Error) {
+  release_subject(original.subject, original.pid)
 }
 
 /// Creates a fresh scoped LSP store without replacing existing history.
@@ -526,6 +1004,7 @@ pub fn reserve_lease_live(
   let slot = slot_scope(store.binding.key, configured_name, canonical_root)
   use reply <- result.try(
     exchange(store, fn(context) {
+      use #(_, clock) <- result.try(live_authority(context))
       case lookup(context, id.lease_address(key)) {
         Ok(row) -> {
           use Nil <- result.try(exact(row, store.binding, bytes, input))
@@ -540,7 +1019,7 @@ pub fn reserve_lease_live(
             !list.any(slots, fn(old) { old.slot == slot }),
             Fenced,
           ))
-          let tick = context.clock.now()
+          let tick = clock.now()
           let deadline = tick + 43_200_000
           use Nil <- result.try(check(
             signed_tick(tick) && signed_tick(deadline) && deadline != 0,
@@ -562,7 +1041,7 @@ pub fn reserve_lease_live(
               id.lease_address(key),
               slot,
               deadline,
-              id.era_string(context.clock.era),
+              id.era_string(clock.era),
               bytes,
               input,
               generation,
@@ -579,7 +1058,7 @@ pub fn reserve_lease_live(
           use history <- result.try(lease_history(row))
           Ok(
             LeaseReservationReply(
-              FreshLease(LeaseStartupClaim(store, history, context.clock.era)),
+              FreshLease(LeaseStartupClaim(store, history, clock.era)),
             ),
           )
         }
@@ -629,13 +1108,14 @@ pub fn verify_lease_startup(
   ))
   use reply <- result.try(
     exchange(store, fn(context) {
+      use #(_, clock) <- result.try(live_authority(context))
       use Nil <- result.try(admission_open(context))
       use row <- result.try(lookup(context, claim.original.row.address))
       use Nil <- result.try(same_original(row, claim.original.row))
       use Nil <- result.try(exact_binding(row, binding))
-      let now = context.clock.now()
+      let now = clock.now()
       use Nil <- result.try(check(
-        context.clock.era == era
+        clock.era == era
           && row.clock_era == id.era_string(era)
           && row.deadline_tick == claim.original.row.deadline_tick
           && row.phase >= 0
@@ -682,13 +1162,9 @@ pub fn inspect_lease(
   binding: Binding,
   key: id.LspServiceKey,
 ) -> Result(LeaseReadback, Error) {
-  use bytes <- result.try(wire.encode_lease(key) |> invalid)
+  use _ <- result.try(wire.encode_lease(key) |> invalid)
   use reply <- result.try(
-    exchange(store, fn(context) {
-      use row <- result.try(lookup(context, id.lease_address(key)))
-      use Nil <- result.try(exact_header(row, binding, bytes))
-      lease_reply(row)
-    }),
+    exchange(store, fn(context) { read_lease(context, binding, key) }),
   )
   as_lease(reply)
 }
@@ -709,6 +1185,7 @@ pub fn capture_finite(
   use Nil <- result.try(validate_identity(store.binding, value, input, None))
   use reply <- result.try(
     exchange(store, fn(context) {
+      use #(_, clock) <- result.try(live_authority(context))
       case lookup(context, id.capture_address(capture)) {
         Ok(row) -> {
           use Nil <- result.try(exact(row, store.binding, bytes, input))
@@ -716,13 +1193,13 @@ pub fn capture_finite(
         }
         Error(Missing) -> {
           use Nil <- result.try(admission_open(context))
-          let tick = context.clock.now()
+          let tick = clock.now()
           use Nil <- result.try(check(signed_tick(tick), Invalid))
-          use nonce <- result.try(g.digest(context.clock.nonce()) |> invalid)
+          use nonce <- result.try(g.digest(clock.nonce()) |> invalid)
           use parent <- result.try(
             wire.parent_digest(id.capture_parent(capture)) |> invalid,
           )
-          let anchor = id.finite_anchor(context.clock.era, nonce, parent)
+          let anchor = id.finite_anchor(clock.era, nonce, parent)
           use anchor <- result.try(wire.encode_anchor(anchor) |> invalid)
           let reservation = charge(bytes, input, "", result_capacity)
           use Nil <- result.try(insert(
@@ -740,7 +1217,7 @@ pub fn capture_finite(
               id.capture_address(capture),
               anchor,
               tick,
-              id.era_string(context.clock.era),
+              id.era_string(clock.era),
               bytes,
               input,
               generation,
@@ -794,6 +1271,7 @@ pub fn accept_finite(
   use input <- result.try(wire.encode_request(request) |> invalid)
   use reply <- result.try(
     exchange(store, fn(context) {
+      use #(_, clock) <- result.try(live_authority(context))
       use row <- result.try(lookup(context, id.capture_address(capture)))
       use Nil <- result.try(exact(row, store.binding, bytes, input))
       case row.timing_proposal {
@@ -806,8 +1284,8 @@ pub fn accept_finite(
               anchor,
               id.invocation_proposal(invocation),
               row.anchor_tick,
-              context.clock.now(),
-              context.clock.era,
+              clock.now(),
+              clock.era,
               digest,
             )
           {
@@ -881,13 +1359,11 @@ pub fn inspect_finite(
   capture: id.FiniteCapture,
   request: wire.Request,
 ) -> Result(FiniteReadback, Error) {
-  use bytes <- result.try(wire.encode_capture(capture, request) |> invalid)
-  use input <- result.try(wire.encode_request(request) |> invalid)
+  use _ <- result.try(wire.encode_capture(capture, request) |> invalid)
+  use _ <- result.try(wire.encode_request(request) |> invalid)
   use reply <- result.try(
     exchange(store, fn(context) {
-      use row <- result.try(lookup(context, id.capture_address(capture)))
-      use Nil <- result.try(exact(row, binding, bytes, input))
-      finite_reply(row)
+      read_finite(context, binding, capture, request)
     }),
   )
   as_finite(reply)
@@ -981,19 +1457,10 @@ pub fn inspect_command(
   request: wire.Request,
   selected: Option(id.SelectedProject),
 ) -> Result(CommandReadback, Error) {
-  use bytes <- result.try(wire.encode_command(ref) |> invalid)
+  use _ <- result.try(wire.encode_command(ref) |> invalid)
   use reply <- result.try(
     exchange(store, fn(context) {
-      use checked <- result.try(
-        wire.decode_command(bytes, request, context.profiles, selected)
-        |> invalid,
-      )
-      use Nil <- result.try(check(checked == ref, Conflict))
-      use row <- result.try(lookup(context, id.command_address(ref)))
-      use parent <- result.try(parent_row(context, ref, request))
-      use Nil <- result.try(exact(row, binding, bytes, parent.input))
-      use Nil <- result.try(exact_binding(parent, binding))
-      command_reply(context, row, ref)
+      read_command(context, binding, ref, request, selected)
     }),
   )
   as_command(reply)
@@ -1048,6 +1515,7 @@ fn retain_offer_mode(
   use Nil <- result.try(verify(history.ref, offer))
   use reply <- result.try(
     exchange(store, fn(context) {
+      use #(_, clock) <- result.try(live_authority(context))
       use row <- result.try(lookup(context, history.row.address))
       use Nil <- result.try(same_original(row, history.row))
       use Nil <- result.try(exact_binding(row, store.binding))
@@ -1065,9 +1533,9 @@ fn retain_offer_mode(
           check(
             parent.phase >= 0
               && parent.phase <= 2
-              && context.clock.era == claim.era
+              && clock.era == claim.era
               && parent.deadline_tick == claim.original.row.deadline_tick
-              && context.clock.now() < parent.deadline_tick,
+              && clock.now() < parent.deadline_tick,
             Fenced,
           )
         }
@@ -1153,12 +1621,13 @@ pub fn start_command(
 ) -> Result(CommandAdmission, Error) {
   use reply <- result.try(
     exchange(store, fn(context) {
+      use #(_, clock) <- result.try(live_authority(context))
       use row <- result.try(lookup(context, history.row.address))
       use Nil <- result.try(same_original(row, history.row))
       case row.phase {
         2 -> {
           use Nil <- result.try(admission_open(context))
-          let now = context.clock.now()
+          let now = clock.now()
           use Nil <- result.try(check(signed_tick(now), Invalid))
           use Nil <- result.try(check_dispatch(
             context,
@@ -1231,6 +1700,7 @@ pub fn verify_server_claim(
   ))
   use reply <- result.try(
     exchange(store, fn(context) {
+      use #(_, clock) <- result.try(live_authority(context))
       use Nil <- result.try(admission_open(context))
       use lease <- result.try(lookup(context, claim.lease.row.address))
       use command <- result.try(lookup(
@@ -1240,14 +1710,14 @@ pub fn verify_server_claim(
       use Nil <- result.try(same_original(lease, claim.lease.row))
       use Nil <- result.try(same_original(command, claim.claim.original.row))
       use Nil <- result.try(exact_binding(lease, binding))
-      let now = context.clock.now()
+      let now = clock.now()
 
       // Dispatch remains tied to both original rows, including immutable native
       // association and deadline, rather than possession of a matching digest.
       use Nil <- result.try(check(
         command.phase == 3
           && { lease.phase == 3 || lease.phase == 4 }
-          && context.clock.era == era
+          && clock.era == era
           && lease.clock_era == id.era_string(era)
           && lease.deadline_tick == claim.lease.row.deadline_tick
           && command.deadline_tick == claim.claim.original.row.deadline_tick
@@ -1474,38 +1944,7 @@ pub fn retained_result(
 /// Wrong digest or generation is a permanent conflict, never successful ACK.
 pub fn acknowledge(store: Store, receipt: ResultReceipt) -> Result(Nil, Error) {
   use reply <- result.try(
-    exchange(store, fn(context) {
-      use row <- result.try(lookup(context, receipt.address))
-      use Nil <- result.try(exact_binding(row, receipt.binding))
-      use Nil <- result.try(check(
-        row.kind == 1
-          && row.projected_result != <<>>
-          && hash(row.projected_result) == receipt.digest,
-        Conflict,
-      ))
-      case row.phase {
-        6 -> {
-          use Nil <- result.try(update(
-            context,
-            sql.LspRead(
-              ..row,
-              phase: 7,
-              receipt: g.digest_bytes(receipt.digest),
-            ),
-            6,
-          ))
-          Ok(NilReply)
-        }
-        7 -> {
-          use Nil <- result.try(check(
-            row.receipt == g.digest_bytes(receipt.digest),
-            Conflict,
-          ))
-          Ok(NilReply)
-        }
-        _ -> Error(Fenced)
-      }
-    }),
+    exchange(store, fn(context) { write_receipt(context, receipt) }),
   )
   as_nil(reply)
 }
@@ -1744,98 +2183,33 @@ fn open(
   profiles: id.EnrolledProfiles,
   mode: Mode,
 ) -> Result(Store, Error) {
-  use Nil <- result.try(check(
-    string.starts_with(path, "/")
-      && string.byte_size(path) <= 4096
-      && !string.contains(path, "\u{0000}"),
-    Invalid,
-  ))
-  use exists <- result.try(simplifile.exists(path, False) |> invalid)
-  use Nil <- result.try(case mode, exists {
-    Create, True -> Error(AlreadyExists)
-    Recover, False -> Error(Missing)
-    _, _ -> Ok(Nil)
-  })
-  use connection <- result.try(sqlight.open(path) |> sql_error)
+  use Nil <- result.try(valid_path(path))
+  use connection <- result.try(acquire(path, mode))
   let placeholder = Store(process.new_subject(), binding, incarnation)
   let context =
     Context(
       connection,
-      placeholder,
+      OriginalLive(placeholder, clock),
       g.key_scope(binding.key),
       contract,
       limits,
-      clock,
       profiles,
     )
-  let outcome = {
-    use Nil <- result.try(case mode {
-      Create ->
-        sqlight.exec(
-          "PRAGMA page_size=4096; PRAGMA journal_mode=DELETE",
-          connection,
-        )
-        |> sql_error
-      Recover -> {
-        use sizes <- result.try(pragma_int(connection, "PRAGMA page_size"))
-        use modes <- result.try(pragma_string(connection, "PRAGMA journal_mode"))
-        check(sizes == [4096] && modes == ["delete"], UnsupportedProfile)
-      }
-    })
-    use Nil <- result.try(
-      sqlight.exec(
-        "PRAGMA max_page_count=131072; PRAGMA temp_store=MEMORY; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000",
-        connection,
-      )
-      |> sql_error,
-    )
-    use Nil <- result.try(profile(connection))
-    use Nil <- result.try(
-      sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
-    )
-    let prepared = {
-      use Nil <- result.try(case mode {
-        Create -> {
-          use Nil <- result.try(
-            sqlight.exec(lsp_custody_schema.schema, connection) |> sql_error,
-          )
-          use scope <- result.try(scope_bytes(context.scope))
-          statement(
-            context,
-            sql.initialize_lsp(
-              scope,
-              g.digest_bytes(contract),
-              limits.rows,
-              limits.bytes,
-            ),
-          )
-        }
-        Recover -> Ok(Nil)
-      })
-      use Nil <- result.try(inventory(context))
-      use headers <- result.try(query(context, sql.lsp_headers()))
-      use Nil <- result.try(
-        list.try_each(headers, fn(header) {
-          lookup(context, header.address) |> result.replace(Nil)
-        }),
-      )
-      case mode {
-        Create -> Ok(Nil)
-        Recover -> {
-          use Nil <- result.try(statement(context, sql.lsp_recover_lease()))
-          use Nil <- result.try(statement(context, sql.lsp_recover_finite()))
-          statement(context, sql.lsp_recover_command())
-        }
-      }
-    }
-    complete(context, prepared)
-  }
+  let outcome = setup(context, mode)
   case outcome {
     Ok(Nil) -> {
       case
         actor.new_with_initialiser(5000, fn(subject) {
           actor.initialised(Open(
-            Context(..context, store: Store(subject, binding, incarnation)),
+            Context(
+              ..context,
+              authority: OriginalLive(
+                Store(subject, binding, incarnation),
+                clock,
+              ),
+            ),
+            Legacy,
+            Unobserved,
           ))
           |> actor.returning(subject)
           |> Ok
@@ -1857,6 +2231,188 @@ fn open(
       Error(error)
     }
   }
+}
+
+fn valid_path(path: String) -> Result(Nil, Error) {
+  check(
+    string.starts_with(path, "/")
+      && string.byte_size(path) <= 4096
+      && !string.contains(path, "\u{0000}"),
+    Invalid,
+  )
+}
+
+fn acquire(path: String, mode: Mode) -> Result(sqlight.Connection, Error) {
+  use exists <- result.try(simplifile.exists(path, False) |> invalid)
+  use Nil <- result.try(case mode, exists {
+    Create, True -> Error(AlreadyExists)
+    Recover, False -> Error(Missing)
+    _, _ -> Ok(Nil)
+  })
+  sqlight.open(path) |> sql_error
+}
+
+fn setup(context: Context, mode: Mode) -> Result(Nil, Error) {
+  use Nil <- result.try(case mode {
+    Create ->
+      sqlight.exec(
+        "PRAGMA page_size=4096; PRAGMA journal_mode=DELETE",
+        context.connection,
+      )
+      |> sql_error
+    Recover -> {
+      use sizes <- result.try(pragma_int(context.connection, "PRAGMA page_size"))
+      use modes <- result.try(pragma_string(
+        context.connection,
+        "PRAGMA journal_mode",
+      ))
+      check(sizes == [4096] && modes == ["delete"], UnsupportedProfile)
+    }
+  })
+  use Nil <- result.try(
+    sqlight.exec(
+      "PRAGMA max_page_count=131072; PRAGMA temp_store=MEMORY; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000",
+      context.connection,
+    )
+    |> sql_error,
+  )
+  use Nil <- result.try(profile(context.connection))
+  use Nil <- result.try(
+    sqlight.exec("BEGIN IMMEDIATE", context.connection) |> sql_error,
+  )
+  let prepared = {
+    use Nil <- result.try(case mode {
+      Create -> {
+        use Nil <- result.try(
+          sqlight.exec(lsp_custody_schema.schema, context.connection)
+          |> sql_error,
+        )
+        use scope <- result.try(scope_bytes(context.scope))
+        statement(
+          context,
+          sql.initialize_lsp(
+            scope,
+            g.digest_bytes(context.contract),
+            context.limits.rows,
+            context.limits.bytes,
+          ),
+        )
+      }
+      Recover -> Ok(Nil)
+    })
+    use Nil <- result.try(inventory(context))
+    use headers <- result.try(query(context, sql.lsp_headers()))
+    use Nil <- result.try(
+      list.try_each(headers, fn(header) {
+        lookup(context, header.address) |> result.replace(Nil)
+      }),
+    )
+    case mode {
+      Create -> Ok(Nil)
+      Recover -> {
+        use Nil <- result.try(statement(context, sql.lsp_recover_lease()))
+        use Nil <- result.try(statement(context, sql.lsp_recover_finite()))
+        statement(context, sql.lsp_recover_command())
+      }
+    }
+  }
+  complete(context, prepared)
+}
+
+fn live_authority(context: Context) -> Result(#(Store, Clock), Error) {
+  case context.authority {
+    OriginalLive(store, clock) -> Ok(#(store, clock))
+    HistoryOnly -> Error(Fenced)
+  }
+}
+
+fn read_lease(
+  context: Context,
+  binding: Binding,
+  key: id.LspServiceKey,
+) -> Result(Reply, Error) {
+  use bytes <- result.try(wire.encode_lease(key) |> invalid)
+  use row <- result.try(lookup(context, id.lease_address(key)))
+  use Nil <- result.try(exact_header(row, binding, bytes))
+  lease_reply(row)
+}
+
+fn read_finite(
+  context: Context,
+  binding: Binding,
+  capture: id.FiniteCapture,
+  request: wire.Request,
+) -> Result(Reply, Error) {
+  use bytes <- result.try(wire.encode_capture(capture, request) |> invalid)
+  use input <- result.try(wire.encode_request(request) |> invalid)
+  use row <- result.try(lookup(context, id.capture_address(capture)))
+  use Nil <- result.try(exact(row, binding, bytes, input))
+  finite_reply(row)
+}
+
+fn read_command(
+  context: Context,
+  binding: Binding,
+  ref: id.LspCommandRef,
+  request: wire.Request,
+  selected: Option(id.SelectedProject),
+) -> Result(Reply, Error) {
+  use bytes <- result.try(wire.encode_command(ref) |> invalid)
+  use checked <- result.try(
+    wire.decode_command(bytes, request, context.profiles, selected) |> invalid,
+  )
+  use Nil <- result.try(check(checked == ref, Conflict))
+  use row <- result.try(lookup(context, id.command_address(ref)))
+  use parent <- result.try(parent_row(context, ref, request))
+  use Nil <- result.try(exact(row, binding, bytes, parent.input))
+  use Nil <- result.try(exact_binding(parent, binding))
+  command_reply(context, row, ref)
+}
+
+fn write_receipt(
+  context: Context,
+  receipt: ResultReceipt,
+) -> Result(Reply, Error) {
+  use row <- result.try(lookup(context, receipt.address))
+  use Nil <- result.try(exact_binding(row, receipt.binding))
+  use Nil <- result.try(check(
+    row.kind == 1
+      && row.projected_result != <<>>
+      && hash(row.projected_result) == receipt.digest,
+    Conflict,
+  ))
+  case row.phase {
+    6 -> {
+      use Nil <- result.try(update(
+        context,
+        sql.LspRead(..row, phase: 7, receipt: g.digest_bytes(receipt.digest)),
+        6,
+      ))
+      Ok(NilReply)
+    }
+    7 -> {
+      use Nil <- result.try(check(
+        row.receipt == g.digest_bytes(receipt.digest),
+        Conflict,
+      ))
+      Ok(NilReply)
+    }
+    _ -> Error(Fenced)
+  }
+}
+
+fn write_exact_receipt(
+  context: Context,
+  binding: Binding,
+  capture: id.FiniteCapture,
+  request: wire.Request,
+  digest: g.Digest,
+) -> Result(Reply, Error) {
+  use reply <- result.try(read_finite(context, binding, capture, request))
+  use history <- result.try(as_finite(reply))
+  use receipt <- result.try(result_receipt(history))
+  use Nil <- result.try(check(receipt.digest == digest, Conflict))
+  write_receipt(context, receipt)
 }
 
 fn profile(connection: sqlight.Connection) -> Result(Nil, Error) {
@@ -2597,6 +3153,7 @@ fn check_dispatch(
   finite: Option(FiniteClaim),
   now: Int,
 ) -> Result(Nil, Error) {
+  use #(original_store, clock) <- result.try(live_authority(context))
   case is_server(ref), finite {
     True, _ -> {
       case id.command_parent(ref) {
@@ -2604,7 +3161,7 @@ fn check_dispatch(
           use lease <- result.try(lookup(context, id.lease_address(key)))
           check(
             lease.phase == 2
-              && lease.clock_era == id.era_string(context.clock.era)
+              && lease.clock_era == id.era_string(clock.era)
               && now < lease.deadline_tick,
             Fenced,
           )
@@ -2614,7 +3171,7 @@ fn check_dispatch(
     }
     False, Some(claim) -> {
       use Nil <- result.try(check(
-        claim.store.subject == context.store.subject,
+        claim.store.subject == original_store.subject,
         Fenced,
       ))
       use parent <- result.try(lookup(context, claim.original.row.address))
@@ -2622,7 +3179,7 @@ fn check_dispatch(
       let #(era, _, _, deadline, _) = id.control_fields(claim.control)
       use Nil <- result.try(check(
         parent.phase == 2
-          && era == context.clock.era
+          && era == clock.era
           && now < deadline
           && parent.deadline_tick == deadline,
         Fenced,
@@ -2878,13 +3435,42 @@ fn exchange_message(
   store: Store,
   make: fn(process.Subject(Result(Reply, Error))) -> Message,
 ) -> Result(Reply, Error) {
+  exchange_subject(store.subject, make)
+}
+
+fn release_subject(
+  subject: process.Subject(Message),
+  owner: process.Pid,
+) -> Result(Nil, Error) {
+  let watch = process.monitor(owner)
+  let outcome = {
+    use reply <- result.try(exchange_subject(subject, Release))
+    use Nil <- result.try(as_nil(reply))
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) {
+      case down {
+        process.ProcessDown(reason: process.Normal, ..) -> Ok(Nil)
+        process.ProcessDown(..) | process.PortDown(..) -> Error(Uncertain)
+      }
+    })
+    |> process.selector_receive(5000)
+    |> result.unwrap(Error(Uncertain))
+  }
+  process.demonitor_process(watch)
+  outcome
+}
+
+fn exchange_subject(
+  subject: process.Subject(Message),
+  make: fn(process.Subject(Result(Reply, Error))) -> Message,
+) -> Result(Reply, Error) {
   use owner <- result.try(
-    process.subject_owner(store.subject) |> result.replace_error(Uncertain),
+    process.subject_owner(subject) |> result.replace_error(Uncertain),
   )
   use Nil <- result.try(check(process.is_alive(owner), Uncertain))
   let reply = process.new_subject()
   let watch = process.monitor(owner)
-  process.send(store.subject, make(reply))
+  process.send(subject, make(reply))
   let answer =
     process.new_selector()
     |> process.select_map(reply, fn(value) { value })
@@ -2895,33 +3481,349 @@ fn exchange_message(
 }
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
-  case message, state {
-    Stop, _ -> actor.stop()
-    Release(reply), Open(context) -> {
+  case message {
+    Initialise(reply) -> handle_initialise(state, reply)
+    Setup(reply) -> handle_setup(state, reply)
+    Work(work, reply) -> handle_work(state, work, reply)
+    InspectLease(key, binding, reply) ->
+      handle_history(
+        state,
+        fn(context) { read_lease(context, binding, key) },
+        reply,
+      )
+    InspectFinite(capture, request, binding, reply) ->
+      handle_history(
+        state,
+        fn(context) { read_finite(context, binding, capture, request) },
+        reply,
+      )
+    InspectCommand(ref, request, selected, binding, reply) ->
+      handle_history(
+        state,
+        fn(context) { read_command(context, binding, ref, request, selected) },
+        reply,
+      )
+    AcknowledgeExact(capture, request, digest, binding, reply) ->
+      handle_history(
+        state,
+        fn(context) {
+          write_exact_receipt(context, binding, capture, request, digest)
+        },
+        reply,
+      )
+    Release(reply) -> handle_release(state, reply)
+    CloseAck(probe, permit, reply) -> {
+      // The prior turn installed connection-free Released before this ACK.
+      reply_permit(permit, reply, Ok(NilReply))
+      use _ <- or_stop(checkpoint(probe, AfterCloseAckBeforeExit))
+      actor.stop()
+    }
+    Stop -> handle_stop(state)
+  }
+}
+
+fn handle_initialise(
+  state: State,
+  reply: process.Subject(Result(Reply, Error)),
+) -> actor.Next(State, Message) {
+  case state {
+    Waiting(input, disposition, probe) -> {
+      case acquire_input(input) {
+        Ok(#(context, mode)) ->
+          // Shutdown retains the actual connection before any SQL setup turn.
+          actor.continue(Acquired(context, mode, disposition, probe))
+          |> actor.then_handle(Setup(reply))
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(Released(disposition, probe))
+          |> actor.then_handle(Stop)
+        }
+      }
+    }
+    Acquired(_, _, _, _)
+    | Open(_, _, _)
+    | FailedClose(_, _, _)
+    | Released(_, _) -> {
+      process.send(reply, Error(Uncertain))
+      actor.continue(state)
+    }
+  }
+}
+
+fn acquire_input(input: Input) -> Result(#(Context, Mode), Error) {
+  case input {
+    LiveInput(input, store) -> {
+      use connection <- result.try(acquire(input.path, Create))
+      Ok(#(
+        Context(
+          connection,
+          OriginalLive(store, input.clock),
+          g.key_scope(input.binding.key),
+          input.contract,
+          input.limits,
+          input.profiles,
+        ),
+        Create,
+      ))
+    }
+    HistoricalInput(input) -> {
+      use connection <- result.try(acquire(input.path, Recover))
+      Ok(#(
+        Context(
+          connection,
+          HistoryOnly,
+          g.key_scope(input.binding.key),
+          input.contract,
+          input.limits,
+          input.profiles,
+        ),
+        Recover,
+      ))
+    }
+  }
+}
+
+fn handle_setup(
+  state: State,
+  reply: process.Subject(Result(Reply, Error)),
+) -> actor.Next(State, Message) {
+  case state {
+    Acquired(context, mode, disposition, probe) -> {
+      use _ <- or_stop(checkpoint(probe, AfterAcquire))
+      settle_setup(context, disposition, probe, reply, setup(context, mode))
+    }
+    Waiting(_, _, _) | Open(_, _, _) | FailedClose(_, _, _) | Released(_, _) -> {
+      process.send(reply, Error(Uncertain))
+      actor.continue(state)
+    }
+  }
+}
+
+fn settle_setup(
+  context: Context,
+  disposition: Disposition,
+  probe: Probe,
+  reply: process.Subject(Result(Reply, Error)),
+  outcome: Result(Nil, Error),
+) -> actor.Next(State, Message) {
+  case outcome {
+    Ok(Nil) -> {
+      use permit <- or_stop(checkpoint(probe, AfterCommitBeforeReady))
+      let ready = case context.authority {
+        OriginalLive(store, _) -> ReadyReply(store)
+        HistoryOnly -> NilReply
+      }
+      reply_permit(permit, reply, Ok(ready))
+      actor.continue(Open(context, disposition, probe))
+    }
+    Error(error) -> {
+      process.send(reply, Error(error))
+      stop_context(context, disposition, probe)
+    }
+  }
+}
+
+fn handle_work(
+  state: State,
+  work: fn(Context) -> Result(Reply, Error),
+  reply: process.Subject(Result(Reply, Error)),
+) -> actor.Next(State, Message) {
+  case state {
+    Open(context, Legacy, probe) | Open(context, ParentOwned, probe) ->
+      execute_work(context, state, probe, work, reply)
+    Open(_, HistoryOwned, _) -> {
+      process.send(reply, Error(Fenced))
+      actor.continue(state)
+    }
+    Waiting(_, _, _)
+    | Acquired(_, _, _, _)
+    | FailedClose(_, _, _)
+    | Released(_, _) -> {
+      process.send(reply, Error(Uncertain))
+      actor.continue(state)
+    }
+  }
+}
+
+fn handle_history(
+  state: State,
+  work: fn(Context) -> Result(Reply, Error),
+  reply: process.Subject(Result(Reply, Error)),
+) -> actor.Next(State, Message) {
+  case state {
+    Open(context, HistoryOwned, probe) ->
+      execute_work(context, state, probe, work, reply)
+    Open(_, Legacy, _)
+    | Open(_, ParentOwned, _)
+    | Waiting(_, _, _)
+    | Acquired(_, _, _, _)
+    | FailedClose(_, _, _)
+    | Released(_, _) -> {
+      process.send(reply, Error(Fenced))
+      actor.continue(state)
+    }
+  }
+}
+
+fn execute_work(
+  context: Context,
+  state: State,
+  probe: Probe,
+  work: fn(Context) -> Result(Reply, Error),
+  reply: process.Subject(Result(Reply, Error)),
+) -> actor.Next(State, Message) {
+  let outcome = transact(context, work)
+  process.send(reply, outcome)
+  case outcome, state {
+    Error(Uncertain), Open(_, disposition, _)
+    | Error(Corrupt), Open(_, disposition, _)
+    | Error(UnsupportedProfile), Open(_, disposition, _)
+    -> stop_context(context, disposition, probe)
+    _, _ -> actor.continue(state)
+  }
+}
+
+fn handle_release(
+  state: State,
+  reply: process.Subject(Result(Reply, Error)),
+) -> actor.Next(State, Message) {
+  case state {
+    Open(context, Legacy, _) -> {
       process.send(
         reply,
         sqlight.close(context.connection)
           |> sql_error
           |> result.map(fn(_) { NilReply }),
       )
-      actor.continue(Closed) |> actor.then_handle(Stop)
+      actor.continue(Released(Legacy, Unobserved)) |> actor.then_handle(Stop)
     }
-    Work(work, reply), Open(context) -> {
-      let outcome = transact(context, work)
-      process.send(reply, outcome)
-      case outcome {
-        Error(Uncertain) | Error(Corrupt) | Error(UnsupportedProfile) -> {
-          let _ = sqlight.close(context.connection)
-          actor.continue(Closed) |> actor.then_handle(Stop)
-        }
-        _ -> actor.continue(state)
-      }
+    Acquired(context, _, disposition, probe)
+    | Open(context, disposition, probe)
+    | FailedClose(context, disposition, probe) -> {
+      use permit <- or_stop(checkpoint(probe, BeforeCloseAck))
+      release_context(context, disposition, probe, permit, reply)
     }
-    Release(reply), Closed | Work(_, reply), Closed -> {
+    Waiting(_, disposition, probe) ->
+      actor.continue(Released(disposition, probe))
+      |> actor.then_handle(CloseAck(probe, Proceed, reply))
+    Released(_, _) -> {
       process.send(reply, Error(Uncertain))
-      actor.continue(Closed)
+      actor.continue(state)
     }
   }
+}
+
+fn release_context(
+  context: Context,
+  disposition: Disposition,
+  probe: Probe,
+  permit: Permit,
+  reply: process.Subject(Result(Reply, Error)),
+) -> actor.Next(State, Message) {
+  let outcome = case permit {
+    RefuseClose -> Error(Uncertain)
+    Proceed | SuppressReply -> close_connection(context.connection, probe)
+  }
+  case outcome {
+    Ok(Nil) ->
+      actor.continue(Released(disposition, probe))
+      |> actor.then_handle(CloseAck(probe, permit, reply))
+    Error(error) -> {
+      process.send(reply, Error(error))
+
+      // A synthetic refusal is one-shot; the same failed original stays owned.
+      actor.continue(FailedClose(context, disposition, clear_probe(probe)))
+    }
+  }
+}
+
+fn clear_probe(probe: Probe) -> Probe {
+  case probe {
+    Unobserved -> Unobserved
+    Observed(_, subject) -> Observed(BeforeAdopt, subject)
+  }
+}
+
+fn stop_context(
+  context: Context,
+  disposition: Disposition,
+  probe: Probe,
+) -> actor.Next(State, Message) {
+  case disposition {
+    Legacy -> {
+      let _ = sqlight.close(context.connection)
+      actor.continue(Released(Legacy, Unobserved)) |> actor.then_handle(Stop)
+    }
+    ParentOwned | HistoryOwned -> {
+      case close_connection(context.connection, probe) {
+        Ok(Nil) ->
+          actor.continue(Released(disposition, probe))
+          |> actor.then_handle(Stop)
+        Error(_) ->
+          actor.continue(FailedClose(context, disposition, probe))
+          |> actor.then_handle(Stop)
+      }
+    }
+  }
+}
+
+fn handle_stop(state: State) -> actor.Next(State, Message) {
+  case state {
+    Released(_, _) -> actor.stop()
+    Waiting(_, _, _)
+    | Acquired(_, _, _, _)
+    | Open(_, _, _)
+    | FailedClose(_, _, _) ->
+      actor.stop_abnormal("Original LSP SQL custody incomplete")
+  }
+}
+
+fn or_stop(
+  outcome: Result(a, Error),
+  then: fn(a) -> actor.Next(State, Message),
+) -> actor.Next(State, Message) {
+  case outcome {
+    Ok(value) -> then(value)
+    Error(_) -> actor.stop_abnormal("Original LSP custody checkpoint expired")
+  }
+}
+
+fn checkpoint(probe: Probe, stage: Checkpoint) -> Result(Permit, Error) {
+  case probe {
+    Observed(selected, observations) if selected == stage -> {
+      let permit = process.new_subject()
+      process.send(
+        observations,
+        CheckpointReached(stage, process.self(), permit),
+      )
+      process.new_selector()
+      |> process.select_map(permit, Ok)
+      |> process.select_trapped_exits(fn(_) { Error(Uncertain) })
+      |> process.selector_receive(1000)
+      |> result.unwrap(Error(Uncertain))
+    }
+    Unobserved | Observed(_, _) -> Ok(Proceed)
+  }
+}
+
+fn reply_permit(permit: Permit, reply: process.Subject(a), value: a) -> Nil {
+  case permit {
+    Proceed | RefuseClose -> process.send(reply, value)
+    SuppressReply -> Nil
+  }
+}
+
+fn close_connection(
+  connection: sqlight.Connection,
+  probe: Probe,
+) -> Result(Nil, Error) {
+  let outcome = sqlight.close(connection) |> sql_error
+  case probe {
+    Unobserved -> Nil
+    Observed(_, subject) ->
+      process.send(subject, ConnectionClosed(process.self(), outcome))
+  }
+  outcome
 }
 
 fn transact(
@@ -2960,11 +3862,20 @@ fn complete(context: Context, outcome: Result(a, Error)) -> Result(a, Error) {
 
 fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
   case state {
-    Open(context) -> {
+    Waiting(_, _, _) | Released(_, _) -> Nil
+    Open(context, Legacy, _) -> {
       let _ = sqlight.close(context.connection)
       Nil
     }
-    Closed -> Nil
+    Acquired(context, _, _, probe)
+    | Open(context, _, probe)
+    | FailedClose(context, _, probe) -> {
+      // No original owned normal exit may hide a failed actual SQL close.
+      case close_connection(context.connection, probe) {
+        Ok(Nil) -> Nil
+        Error(_) -> process.kill(process.self())
+      }
+    }
   }
 }
 
