@@ -68,7 +68,9 @@ page keys and nonces, and the relay into the session's gateway.
   `<details>` whose body is `view/context_breakdown.panel(state, Actions(refresh,
   compact))`: headline, basis words, stacked bar (`split`: system prompt, tools,
   messages, what the provider counted beyond them, reserve, free), the tokens until
-  auto-compact and a closed, bounded item list (`tools`, `kinds`). Everything is a
+  auto-compact and a closed, bounded item list (`tools`, `kinds`). The inventory
+  is a leaf memo keyed by the item list and omitted count, so stream arrivals
+  reuse grouping without caching actions, freshness or usage figures. Everything is a
   text node over `context_view.State`. Refresh is `component.ContextRefreshRequested`
   at `component.context_refresh_path`, which the observer's socket admits;
   Compact now is `component.CompactStrand` (a `Control`, `/compact` through the
