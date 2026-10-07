@@ -1,6 +1,7 @@
 //// Real SQLite owner pin, lifetime generation links and system intent controls.
 //// Hash injection uses a deterministic content-sensitive test double here;
-//// production SHA-256 remains the trusted host assembly's responsibility.
+//// The pure-family fixture now uses WorkspaceSystem; native staged controls are
+//// separate below and do not claim actual Broker execution. Production SHA-256 remains the trusted host assembly's responsibility.
 
 import core/clock
 import core/command
@@ -13,6 +14,7 @@ import core/workspace
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/int
+import gleam/list
 import gleam/option.{Some}
 import gleam/result
 import gleam/string
@@ -208,7 +210,11 @@ fn build(
 ) -> Result(custody.SystemReservationPayload, custody.Error) {
   let text =
     remote_tool.child_address(origin) <> ids.entry_id_to_string(request_id)
-  Ok(custody.NativeSystem(payload(text)))
+  use request <- result.try(custody.workspace_request(
+    limits(),
+    bit_array.from_string(text),
+  ))
+  Ok(custody.WorkspaceSystem(request))
 }
 
 pub fn immutable_pin_retries_and_changed_bytes_conflict_test() {
@@ -268,7 +274,7 @@ pub fn format_five_additive_migration_preserves_local_final_and_fence_test() {
   assert custody.admit_child(store, origin, id(20), payload("late"))
     == Error(custody.Frozen)
   assert custody.read_enrollment(store) == Error(custody.Missing)
-  assert scalar(path, "PRAGMA user_version") == 6
+  assert scalar(path, "PRAGMA user_version") == 7
   assert scalar(path, "SELECT COUNT(*) FROM owner_generation_associations") == 0
   assert custody.close(store) == Ok(Nil)
 }
@@ -554,7 +560,7 @@ pub fn intent_reserves_and_transfers_one_slot_stably_test() {
     + bit_array.byte_size(
       remote_tool.encode_child(first.origin) |> result.unwrap(<<>>),
     )
-    + string.byte_size("native")
+    + string.byte_size("workspace")
   assert scalar(
       path,
       "SELECT next_ordinal FROM owner_system_ordinal WHERE service='worktree-observation'",
@@ -574,7 +580,7 @@ pub fn intent_reserves_and_transfers_one_slot_stably_test() {
       Ok(custody.NativeSystem(payload("changed input")))
     })
     == Error(custody.Conflict)
-  let assert Ok(workspace_payload) =
+  let assert Ok(_workspace_payload) =
     custody.workspace_request(
       limits(),
       custody.bytes(payload(
@@ -584,7 +590,14 @@ pub fn intent_reserves_and_transfers_one_slot_stably_test() {
     )
     as "Identical bytes fit workspace profile."
   assert custody.admit_system_child(store, retained, fn(_, _) {
-      Ok(custody.WorkspaceSystem(workspace_payload))
+      use native <- result.try(custody.payload(
+        limits(),
+        custody.bytes(payload(
+          remote_tool.child_address(first.origin)
+          <> ids.entry_id_to_string(id(10)),
+        )),
+      ))
+      Ok(custody.NativeSystem(native))
     })
     == Error(custody.Conflict)
   assert custody.close(store) == Ok(Nil)
@@ -1045,4 +1058,548 @@ pub fn system_workspace_profile_retains_the_full_result_allowance_test() {
   assert custody.child_generation(store, child.origin)
     == Ok(custody.live_association(live))
   assert custody.close(store) == Ok(Nil)
+}
+
+pub fn native_pending_allocates_once_and_history_never_rearms_test() {
+  let #(path, store, live) = opened("native-pending")
+  let assert Ok(intent) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "native", id(20), "original command declaration"),
+    )
+    as "Synthetic ordinary work retains its original slot."
+  assert custody.admit_system_child(store, intent, fn(_, _) {
+      Ok(custody.NativeSystem(payload("uncleared dummy")))
+    })
+    == Error(custody.Invalid("fresh native system requires pending allocation"))
+  let charge = scalar(path, "SELECT reserved_bytes FROM owner_system_intent")
+  let assert Ok(custody.FreshPending(pending)) =
+    custody.allocate_native_system(store, intent)
+    as "Only the original allocation supplies pending authority."
+  let #(origin, uuid, associated) = custody.pending_system_fields(pending)
+  assert uuid == id(20)
+  assert associated == custody.live_association(live)
+  assert scalar(path, "SELECT reserved_bytes FROM owner_system_intent")
+    == charge
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert scalar(path, "SELECT COUNT(*) FROM owner_child_generation") == 0
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert custody.allocate_native_system(store, intent)
+    == Ok(custody.RetainedPending(origin, uuid, custody.NativePending))
+  let request =
+    payload("synthetic complete post-clearance bytes; not a Broker fixture")
+  let assert Ok(admitted) =
+    custody.admit_pending_system(store, pending, request)
+    as "Final payload admission transfers the original reserved slot."
+  assert admitted.admission == custody.Fresh
+  assert admitted.origin == origin
+  let assert Ok(again) = custody.admit_pending_system(store, pending, request)
+    as "Duplicate storage observation cannot grant a second send."
+  assert again.admission == custody.Retained
+  assert custody.admit_pending_system(store, pending, payload("altered bytes"))
+    == Error(custody.Conflict)
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+  assert custody.child_generation(store, origin) == Ok(associated)
+  assert custody.cancel_native_system(store, intent) == Ok(Nil)
+  assert custody.receive_child(
+      store,
+      origin,
+      uuid,
+      payload("matching late terminal"),
+    )
+    == Ok(Nil)
+  assert custody.close(store) == Ok(Nil)
+  let #(session, _, _) = coordinates()
+  let assert Ok(reopened) =
+    custody.open_with_reports(path, session, limits(), hash)
+    as "Format seven retains original native history after reopen."
+  assert custody.allocate_native_system(reopened, intent)
+    == Ok(custody.RetainedPending(origin, uuid, custody.NativeAdmitted))
+  assert custody.child_generation(reopened, origin) == Ok(associated)
+  assert custody.close(reopened) == Ok(Nil)
+}
+
+pub fn native_cancelled_pending_keeps_ordinal_slot_and_allowance_test() {
+  let assert Ok(single) = custody.limits(8, 1, 1_048_576, 1024)
+    as "One original pending slot bounds the inventory."
+  let #(path, store, live) = opened_with_limits("native-cancel", single)
+  let assert Ok(retained) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "native", id(20), "declaration"),
+    )
+    as "Unallocated native work retains."
+  let charge = scalar(path, "SELECT reserved_bytes FROM owner_system_intent")
+  assert custody.cancel_native_system(store, retained) == Ok(Nil)
+  let assert Ok(custody.RetainedPending(origin, uuid, custody.NativeCancelled)) =
+    custody.allocate_native_system(store, retained)
+    as "Unallocated cancellation allocates and cancels the original once."
+  assert uuid == id(20)
+  assert scalar(path, "SELECT reserved_bytes FROM owner_system_intent")
+    == charge
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert custody.retain_system_intent(
+      store,
+      intent(live, "second", id(21), "declaration"),
+    )
+    == Error(custody.Capacity)
+  assert custody.cancel_native_system(store, retained) == Ok(Nil)
+  assert custody.allocate_native_system(store, retained)
+    == Ok(custody.RetainedPending(origin, uuid, custody.NativeCancelled))
+  assert custody.close(store) == Ok(Nil)
+  let #(session, _, _) = coordinates()
+  let assert Ok(store) = custody.open_with_reports(path, session, single, hash)
+    as "Cancelled pending retains its full charge across reopen."
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn final_native_rollback_keeps_the_previously_spent_ordinal_test() {
+  let #(path, store, live) = opened("native-admission-rollback")
+  let assert Ok(retained) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "native", id(20), "declaration"),
+    )
+    as "Native work retains."
+  let assert Ok(custody.FreshPending(pending)) =
+    custody.allocate_native_system(store, retained)
+    as "Original allocation commits before clearance."
+  mutate(
+    path,
+    "CREATE TRIGGER suppress_native_link BEFORE INSERT ON owner_child_generation BEGIN SELECT RAISE(IGNORE); END",
+  )
+  assert custody.admit_pending_system(store, pending, payload("actual bytes"))
+    |> result.is_error
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert scalar(
+      path,
+      "SELECT COUNT(*) FROM owner_system_intent WHERE child_profile='native_pending'",
+    )
+    == 1
+  mutate(path, "DROP TRIGGER suppress_native_link")
+  assert custody.cancel_native_system(store, retained) == Ok(Nil)
+  assert custody.admit_pending_system(store, pending, payload("actual bytes"))
+    == Error(custody.Frozen)
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn format_six_rejects_pending_without_advancing_its_header_test() {
+  let #(path, store, live) = opened("native-old-six")
+  let assert Ok(retained) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "native", id(20), "declaration"),
+    )
+    as "Native work retains."
+  let assert Ok(custody.FreshPending(_)) =
+    custody.allocate_native_system(store, retained)
+    as "Format-seven pending is structurally valid."
+  assert custody.close(store) == Ok(Nil)
+  mutate(path, "PRAGMA user_version=6")
+  let #(session, _, _) = coordinates()
+  assert custody.open_with_reports(path, session, limits(), hash)
+    |> result.is_error
+  assert scalar(path, "PRAGMA user_version") == 6
+  mutate(path, "PRAGMA user_version=7")
+  let assert Ok(store) =
+    custody.open_with_reports(path, session, limits(), hash)
+    as "Its actual format remains valid without invented generation links."
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn allocated_pending_does_not_spend_future_ordinals_twice_test() {
+  let #(path, store, live) = opened("pending-inventories")
+  list.each(
+    list.index_map(list.repeat(Nil, 63), fn(_, index) { index }),
+    fn(index) {
+      let assert Ok(retained) =
+        custody.retain_system_intent(
+          store,
+          intent(
+            live,
+            "work-" <> int.to_string(index),
+            id(100 + index),
+            "declaration",
+          ),
+        )
+        as "Each distinct synthetic occurrence reserves one child slot."
+      let assert Ok(custody.FreshPending(_)) =
+        custody.allocate_native_system(store, retained)
+        as "Allocated pending spends its ordinal exactly once."
+      assert custody.cancel_native_system(store, retained) == Ok(Nil)
+    },
+  )
+  mutate(path, "UPDATE owner_system_ordinal SET next_ordinal=4095")
+  let assert Ok(last) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "last", id(200), "declaration"),
+    )
+    as "Sixty-three allocated pending rows do not count as future ordinals."
+  assert custody.retain_system_intent(
+      store,
+      intent(live, "overflow", id(201), "declaration"),
+    )
+    == Error(custody.Capacity)
+  let assert Ok(custody.FreshPending(pending)) =
+    custody.allocate_native_system(store, last)
+    as "Ordinal 4095 remains available to its original reserved slot."
+  let #(origin, _, _) = custody.pending_system_fields(pending)
+  let assert remote_tool.SystemFields(_, _, 4095) =
+    remote_tool.child_fields(origin)
+    as "The lifetime counter reaches its actual representation ceiling."
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 4096
+  assert scalar(path, "SELECT COUNT(*) FROM owner_system_intent") == 64
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert custody.close(store) == Ok(Nil)
+  let #(session, _, _) = coordinates()
+  let assert Ok(store) =
+    custody.open_with_reports(path, session, limits(), hash)
+    as "Both distinct bounded inventories validate after reopen."
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn derived_workspace_native_checks_retained_parent_and_cancellation_test() {
+  let #(path, store, live) = opened("derived-workspace")
+  assert custody.admit_registered_fresh_with_profile(
+      store,
+      live,
+      tool(0),
+      payload("args"),
+      payload("request"),
+      custody.OrdinaryFinal,
+    )
+    == Ok(custody.Fresh)
+  let assert Ok(parent) =
+    remote_tool.tool_child(tool(0), remote_tool.Workspace(0))
+    as "Original semantic parent preserves the actual ToolKey."
+  let assert Ok(semantic) =
+    custody.workspace_request(limits(), <<"synthetic Invocation envelope">>)
+    as "The storage component uses opaque bytes rather than claiming real Git execution."
+  assert custody.admit_registered_workspace_child(
+      store,
+      live,
+      parent,
+      id(30),
+      semantic,
+    )
+    == Ok(custody.Fresh)
+  let assert Ok(checked) =
+    custody.semantic_parent(store, live, id(30), <<
+      "synthetic Invocation envelope",
+    >>)
+    as "The owner resolves exact original retained input."
+  assert custody.semantic_parent(store, live, id(30), <<"altered input">>)
+    == Error(custody.Conflict)
+  let assert Ok(native) =
+    remote_tool.workspace_command_child(parent, remote_tool.GitStatus)
+    as "Native identity is deterministic and disjoint."
+  assert custody.admit_registered_child(
+      store,
+      live,
+      native,
+      id(31),
+      payload("bytes"),
+    )
+    == Error(custody.Invalid(
+      "workspace command requires retained semantic parent",
+    ))
+  assert custody.admit_workspace_command(
+      store,
+      checked,
+      native,
+      id(31),
+      payload("bytes"),
+    )
+    == Ok(custody.Fresh)
+  assert custody.admit_workspace_command(
+      store,
+      checked,
+      native,
+      id(31),
+      payload("bytes"),
+    )
+    == Ok(custody.Retained)
+  assert custody.admit_workspace_command(
+      store,
+      checked,
+      native,
+      id(32),
+      payload("bytes"),
+    )
+    == Error(custody.Conflict)
+  assert custody.child_generation(store, native)
+    == Ok(custody.live_association(live))
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 2
+  assert custody.cancel_child(store, parent) == Ok(Nil)
+  let assert Ok(later) =
+    remote_tool.workspace_command_child(parent, remote_tool.GitRevision)
+    as "Another fixed phase does not escape parent cancellation."
+  assert custody.admit_workspace_command(
+      store,
+      checked,
+      later,
+      id(32),
+      payload("later"),
+    )
+    == Error(custody.Frozen)
+  assert custody.cancel_child(store, native) == Ok(Nil)
+  assert custody.receive_child(
+      store,
+      native,
+      id(31),
+      payload("matching late native"),
+    )
+    == Ok(Nil)
+  assert custody.semantic_evidence(store, parent) |> result.is_ok
+  assert custody.close(store) == Ok(Nil)
+  mutate(path, "PRAGMA user_version=6")
+  let #(session, _, _) = coordinates()
+  assert custody.open_with_reports(path, session, limits(), hash)
+    |> result.is_error
+  assert scalar(path, "PRAGMA user_version") == 6
+  mutate(path, "PRAGMA user_version=7")
+  let assert Ok(store) =
+    custody.open_with_reports(path, session, limits(), hash)
+    as "Whole immutable derivation survives legitimate reopen."
+  assert custody.child_generation(store, native)
+    == Ok(custody.live_association(live))
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn derived_system_workspace_requires_the_actual_allocated_semantic_row_test() {
+  let #(path, store, live) = opened("derived-system")
+  let assert Ok(intent) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "semantic", id(30), "original semantic work"),
+    )
+    as "Semantic ordinary work retains."
+  let assert Ok(semantic) = custody.admit_system_child(store, intent, build)
+    as "The original pure workspace family allocates the actual SystemChild."
+  let assert Ok(parent) =
+    custody.semantic_parent(
+      store,
+      live,
+      semantic.request_id,
+      bit_array.from_string(
+        remote_tool.child_address(semantic.origin)
+        <> ids.entry_id_to_string(semantic.request_id),
+      ),
+    )
+    as "Exact original system semantic bytes resolve."
+  let assert Ok(native) =
+    remote_tool.workspace_command_child(semantic.origin, remote_tool.GitStatus)
+    as "Derivation does not allocate another system ordinal."
+  assert custody.admit_workspace_command(
+      store,
+      parent,
+      native,
+      id(31),
+      payload("actual native bytes"),
+    )
+    == Ok(custody.Fresh)
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  let assert Ok(fabricated) =
+    remote_tool.system_child(
+      remote_tool.child_session(semantic.origin),
+      "worktree-observation",
+      1,
+    )
+    as "Pure identity syntax alone does not prove system allocation."
+  let assert Ok(forged) =
+    remote_tool.workspace_command_child(fabricated, remote_tool.GitStatus)
+    as "Pure derivation alone supplies no storage permission."
+  assert custody.admit_workspace_command(
+      store,
+      parent,
+      forged,
+      id(32),
+      payload("bytes"),
+    )
+    == Error(custody.Conflict)
+  assert custody.child_generation(store, native)
+    == Ok(custody.live_association(live))
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn unallocated_native_cancellation_after_generation_close_spends_once_test() {
+  let #(path, store, live) = opened("native-cancel-after-close")
+  let assert Ok(retained) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "native", id(20), "original declaration"),
+    )
+    as "Original occurrence retains before owner closure."
+  let charge = scalar(path, "SELECT reserved_bytes FROM owner_system_intent")
+  assert custody.retain_generation_close(store, close_record(live), fn(_) {
+      Ok(Nil)
+    })
+    |> result.is_ok
+  assert custody.allocate_native_system(store, retained)
+    == Error(custody.Frozen)
+  assert custody.cancel_native_system(store, retained) == Ok(Nil)
+  assert custody.cancel_native_system(store, retained) == Ok(Nil)
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert scalar(path, "SELECT reserved_bytes FROM owner_system_intent")
+    == charge
+  assert scalar(
+      path,
+      "SELECT COUNT(*) FROM owner_system_intent WHERE child_profile='native_cancelled'",
+    )
+    == 1
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn allocated_and_cancelled_pending_share_derived_system_quota_group_test() {
+  let assert Ok(mixed) = custody.limits(8, 96, 1_048_576, 1024)
+    as "The companion limit exceeds 64, so it cannot hide a broken parent-group check."
+  let #(path, store, live) =
+    opened_with_limits("mixed-system-derived-quota", mixed)
+  let assert Ok(retained) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "semantic", id(20), "original semantic declaration"),
+    )
+    as "Original system workspace occurrence retains."
+  let assert Ok(request) =
+    custody.workspace_request(limits(), <<
+      "synthetic semantic input; no Broker fixture",
+    >>)
+    as "Storage compares complete bytes while the client owns typed semantics."
+  let assert Ok(parent) =
+    custody.admit_system_child(store, retained, fn(_, _) {
+      Ok(custody.WorkspaceSystem(request))
+    })
+    as "Actual allocated workspace intent becomes the semantic parent."
+  let assert Ok(semantic) =
+    custody.semantic_parent(store, live, parent.request_id, <<
+      "synthetic semantic input; no Broker fixture",
+    >>)
+    as "Actual retained semantic origin supplies the checked parent."
+  let assert Ok(derived) =
+    remote_tool.workspace_command_child(parent.origin, remote_tool.GitStatus)
+    as "Derived command stays in the actual original system quota group."
+  let pending =
+    list.map(
+      list.index_map(list.repeat(Nil, 63), fn(_, index) { index }),
+      fn(index) {
+        let assert Ok(value) =
+          custody.retain_system_intent(
+            store,
+            intent(
+              live,
+              "pending:" <> int.to_string(index),
+              id(100 + index),
+              "declaration",
+            ),
+          )
+          as "Pending native slots fill the same original service group."
+        assert custody.cancel_native_system(store, value) == Ok(Nil)
+        value
+      },
+    )
+  assert list.length(pending) == 63
+  let charge =
+    scalar(path, "SELECT SUM(reserved_bytes) FROM owner_system_intent")
+  assert custody.admit_workspace_command(
+      store,
+      semantic,
+      derived,
+      id(300),
+      payload("native"),
+    )
+    == Error(custody.Capacity)
+  assert custody.cancel_child(store, derived) == Error(custody.Capacity)
+  list.each(pending, fn(value) {
+    assert custody.cancel_native_system(store, value) == Ok(Nil)
+  })
+  assert scalar(path, "SELECT SUM(reserved_bytes) FROM owner_system_intent")
+    == charge
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 64
+  assert custody.admit_workspace_command(
+      store,
+      semantic,
+      derived,
+      id(300),
+      payload("native"),
+    )
+    == Error(custody.Capacity)
+  assert custody.close(store) == Ok(Nil)
+  let #(session, _, _) = coordinates()
+  let assert Ok(reopened) =
+    custody.open_with_reports(path, session, mixed, hash)
+    as "All permanent pending charges reopen without a fake child link."
+  assert custody.close(reopened) == Ok(Nil)
+}
+
+pub fn pending_charge_corruption_refuses_before_reopen_without_backfill_test() {
+  let #(path, store, live) = opened("pending-undercharge")
+  let assert Ok(intent) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "native", id(20), "original declaration"),
+    )
+    as "Original occurrence retains its full allowance."
+  let assert Ok(custody.FreshPending(_)) =
+    custody.allocate_native_system(store, intent)
+    as "Actual fresh pending stage allocates no child."
+  assert custody.close(store) == Ok(Nil)
+  mutate(path, "UPDATE owner_system_intent SET reserved_bytes=reserved_bytes-1")
+  let #(session, _, _) = coordinates()
+  assert custody.open_with_reports(path, session, limits(), hash)
+    |> result.is_error
+  assert scalar(path, "PRAGMA user_version") == 7
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+}
+
+pub fn format_six_admitted_native_history_migrates_without_new_permission_test() {
+  let #(path, store, live) = opened("six-native-history")
+  let original = intent(live, "native", id(20), "old declaration")
+  let assert Ok(retained) = custody.retain_system_intent(store, original)
+    as "The original complete intent retains."
+  let assert Ok(custody.FreshPending(pending)) =
+    custody.allocate_native_system(store, retained)
+    as "The test prepares an admitted native row with the unchanged old representation."
+  let request = payload("old complete native envelope")
+  let assert Ok(admitted) =
+    custody.admit_pending_system(store, pending, request)
+    as "No pending stage remains in the old-format fixture."
+  let before =
+    scalar(path, "SELECT SUM(reserved_bytes) FROM owner_system_intent")
+  assert custody.close(store) == Ok(Nil)
+  mutate(path, "PRAGMA user_version=6")
+  let #(session, _, _) = coordinates()
+  let assert Ok(reopened) =
+    custody.open_with_reports(path, session, limits(), hash)
+    as "An exact old admitted native vocabulary migrates transactionally without backfill."
+  assert scalar(path, "PRAGMA user_version") == 7
+  assert scalar(path, "SELECT SUM(reserved_bytes) FROM owner_system_intent")
+    == before
+  let assert Ok(history) = custody.read_system_intent(reopened, original)
+    as "Original work identity remains historical evidence."
+  assert custody.allocate_native_system(reopened, history)
+    == Ok(custody.RetainedPending(
+      admitted.origin,
+      id(20),
+      custody.NativeAdmitted,
+    ))
+  let assert Ok(old) =
+    custody.admit_system_child(reopened, history, fn(_, _) {
+      Ok(custody.NativeSystem(request))
+    })
+    as "Old pure native readback remains supported without Fresh allocation."
+  assert old.admission == custody.Retained
+  assert old.origin == admitted.origin
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+  assert scalar(path, "SELECT COUNT(*) FROM owner_child_generation") == 1
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert custody.close(reopened) == Ok(Nil)
 }
