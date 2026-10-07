@@ -1,17 +1,17 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `7178cf937` on
-October 6, 2026. The isolated `runtime/main-refresh` branch includes the approved
-LSP and generation contracts and main at `3644b0790`. Component source, local
-receipts and hosted state were checked for this edition. Runtime assembly and
+This edition records the registered-runtime integration through `f055709f0` on
+October 6, 2026. The isolated `runtime/main-refresh` branch includes approved
+protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
+hosted PR/main state were checked for this edition. Runtime assembly and
 separate-host acceptance remain in progress.
 
-The previous edition's statement that no authorized SSH destination was available
-is obsolete. Linux component tests have run on the supplied test VM. Those tests
-used an earlier source snapshot plus seven portability fixes; they do not prove
-the two requested physical owner/executor placements on the current candidate.
-The foundation codecs, registry, helper credits and owner generation DAL are also
-implemented now. Their presence does not enable ordinary registered sessions.
+The previous edition left the render/transfer main series unintegrated and the
+combined executor/code-mode check pending. Both statements are obsolete: the
+branch is rebased, the combined pre-rebase gates passed, and the affected
+post-rebase checks below passed. A Launch readiness timeout during those checks
+remains unresolved despite a passing diagnostic retry. The managed endpoint is
+now implemented; it does not by itself enable ordinary registered sessions.
 
 ## Where the tree is
 
@@ -19,14 +19,15 @@ implemented now. Their presence does not enable ordinary registered sessions.
 `b3bc47efdb2be7df421287aa437debdd034af9e5`, with no hosted checks on that head.
 [Issue #697](https://github.com/Roasbeef/loom/issues/697) remains open. The local
 integration work has not been pushed; publication and merge remain unauthorized.
-Main has since advanced to `8facdb0ea`, whose
-[CI run passed](https://github.com/Roasbeef/loom/actions/runs/37565157383).
-That render/transfer optimization series is not yet integrated into this branch.
+The integrated main commit `3ffb0bf52` has a
+[passing CI run](https://github.com/Roasbeef/loom/actions/runs/37580150259).
+That status belongs to main, not this unpublished integration candidate.
 
 | Boundary | Current integration state |
 | --- | --- |
 | Owner custody and semantic transport | Original inputs, results, finite TLS BEAM controls, native forwarding and semantic workspace consumers are implemented. |
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
+| Managed endpoint | `5733967e9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
 | Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
 | Generation history | `0e06673d6` and `cc668b1f2` retain bounded node claims, publication fences and retirement metadata. `cce28b4af` retains original owner generations and atomic child/system links. Actual physical join validation remains an assembly obligation. |
 | LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. Physical native and ordinary assembly joins remain pending. |
@@ -42,12 +43,32 @@ candidate.
 
 ## Verification and its limits
 
+The current endpoint integration passes all 429 executor tests, all ten focused
+Launch controls and all 866 web-view tests. The full executor command exited zero
+in 171.75 seconds, including build time. Changed-source formatting, executor and
+client lint, documentation checking and the prelude gate pass. The latest
+documentation receipt has zero errors and 193 warnings. Independent endpoint
+review found no actionable issue; two removed-check mutants separately failed
+the intended original-writer and absent-row assertions before source restoration.
+
+An earlier post-rebase Launch run passed nine controls and failed its unused-import
+Compile/Launch control because the owner expired waiting for executor readiness.
+The executor output was lost when the owner failed before consuming the managed
+report. `f055709f0` persists returned role results without changing their Result,
+deadlines, assertions or lifecycle. The single diagnostic retry and subsequent
+full Launch module pass. The original cause remains unknown; those passing runs
+are not a startup fix. The original failed artifacts are retained.
+
+The remaining receipts in this section predate the latest main rebase. They
+establish component coverage at their stated source revisions, not a full gate
+on the current candidate.
+
 The committed helper-credit integration passed broker with 458 tests, executor
 with 400, code mode with 483 and client with 3,130. The owner-generation DAL then
 passed storage with 253 tests. The client gate retains fifteen explicit optional
 skips: one Linux `/proc` witness, thirteen shipped-server controls and one
 rust-analyzer control. Formatting, affected lint and documentation checks passed;
-the latest integrated documentation receipt has zero errors and 195 warnings.
+that documentation receipt had zero errors and 195 warnings.
 
 Adding the LSP custody DAL exposed a recurring Launch shutdown failure in the
 combined executor gate: 411 passed and one failed because a node logged
@@ -95,9 +116,9 @@ numeric ranges. The correction checks LSP unsigned/signed integer ranges before
 retention, settlement or consumption acknowledgement. Its bounded recheck is
 clean; Standard transport behavior stays unchanged. Integration updates two local
 transport test patterns to assert their existing ordinary variant explicitly.
-Root core and LSP gates each pass all 211 tests; affected lint reports zero
-errors. Executor/code-mode verification against this final combined source is
-in progress. An extra large-array JavaScript probe
+Root core and LSP gates each passed all 211 tests; affected lint reported zero
+errors. The combined pre-rebase executor and code-mode checks subsequently passed
+all 422 and 483 tests respectively. An extra large-array JavaScript probe
 exposes the same existing sibling-recursion stack limit in both parser profiles;
 no exact-limit JavaScript runtime success is claimed.
 
@@ -106,11 +127,11 @@ placements, container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Finish the current integration wave for **#697**: complete the executor and
-   code-mode checks against the committed deployment and consumed-LSP changes.
-   Core, LSP and client checks pass. **Exit:** affected combined gates pass
-   with the short scratch prerequisite, and every verified finding is resolved.
-   Preserve ordinary local transport behavior and every existing test.
+1. Finish the native LSP and registered owner-custodian slices for **#697**.
+   Both remain isolated, uncommitted implementation work. **Exit:** exact source
+   passes meaningful failure controls, full affected package gates, independent
+   review and integrated verification. Preserve every existing test and ordinary
+   local behavior; earlier worker receipts do not certify later fixes.
 2. Build the approved ordinary registered path from protocols 076 and 077.
    Preserve one original owner Broker/custodian, exact-generation publication,
    executor-only physical paths, full reports, jobs, hooks, cwd, guidance, Git and
@@ -122,7 +143,7 @@ placements, container execution and hosted CI have not passed on this candidate.
    cancellation, partition, restart, lost-reply, routing, durable messaging and
    controlled-movement controls. Automatic failover and workspace snapshot
    migration remain deferred.
-4. Integrate current main, run applicable model and full repository gates, and
+4. Check for later main changes, run applicable model and full repository gates, and
    review the assembled system. **Exit:** exact candidate evidence closes the
    integration checklist before publication or merge is requested.
 
@@ -165,7 +186,10 @@ The approved [LSP contract](../protocol-change/076-registered-lsp.md) and
 [administration contract](../protocol-change/077-registered-generations.md) define
 required implementation work. Full activation, original physical retirement and
 normal daemon assembly are unbuilt, not accepted limitations of the final
-feature. C1-C3 and M1 also remain required by **#697**.
+feature. The next assembly prerequisites are durable original journal/enrollment
+provenance and managed acquisition of recovered writers, followed by the sole
+scope administrator and authenticated bounded history transport. C1-C3 and M1
+also remain required by **#697**.
 
 The owner accepted inherited workspace/cache filesystem policy without an
 aggregate disk quota. New LSP transport and retained-state inventories keep their
