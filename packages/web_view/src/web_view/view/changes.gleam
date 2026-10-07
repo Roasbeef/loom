@@ -274,7 +274,10 @@ fn file(
         html.text(" " <> changes_view.counts_words(file)),
       ]),
     ]),
-    diff.view(diff_view.of_lines(diff_lines(file)), file.cut),
+    diff.view(
+      diff_view.of_lines(list.map(file.rows, fn(row) { row.text })),
+      file.cut,
+    ),
   ])
 }
 
@@ -294,20 +297,6 @@ fn relative(path: String, workspace: Option(String)) -> String {
       }
     }
     None -> path
-  }
-}
-
-// The lines the shared diff reader is given. An edit's rows are headerless
-// hunks, which the reader takes as they are. A file the session only wrote has
-// no hunk header at all, and the reader reads lines before the first hunk as
-// plain context, so its added lines would be drawn uncoloured; a header that
-// opens the new file at line one puts them inside a hunk, in green and with
-// their line numbers.
-fn diff_lines(file: File) -> List(String) {
-  let rows = list.map(file.rows, fn(row) { row.text })
-  case file.origin {
-    changes_view.Written -> ["@@ -0,0 +1 @@", ..rows]
-    changes_view.Edited -> rows
   }
 }
 

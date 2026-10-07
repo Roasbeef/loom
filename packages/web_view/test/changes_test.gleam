@@ -50,7 +50,10 @@ pub fn a_written_file_says_written_where_the_counts_go_test() {
       origin: changes_view.Written,
       added: 23,
       removed: 0,
-      rows: [row(changes_view.Added, "+a = 1")],
+      rows: [
+        row(changes_view.Hunk, "@@ -0,0 +1,23 @@"),
+        row(changes_view.Added, "+a = 1"),
+      ],
       cut: 22,
     )
   let html = drawn(board([written, file("b.gleam", [])]))
@@ -84,6 +87,29 @@ pub fn a_written_files_lines_are_numbered_and_added_test() {
   assert string.contains(html, "<span class=\"diff-num\">1</span>")
   assert string.contains(html, "<span class=\"diff-num\">2</span>")
   assert !string.contains(html, "diff-row diff-context")
+}
+
+// The fold's header is the only one: the page adds none of its own, so a new
+// file's diff opens with a single hunk line carrying the true count.
+pub fn a_written_file_draws_exactly_one_hunk_header_test() {
+  let written =
+    changes_view.File(
+      path: "calc.py",
+      origin: changes_view.Written,
+      added: 2,
+      removed: 0,
+      rows: [
+        row(changes_view.Hunk, "@@ -0,0 +1,2 @@"),
+        row(changes_view.Added, "+a = 1"),
+        row(changes_view.Added, "+b = 2"),
+      ],
+      cut: 0,
+    )
+  let html = drawn(board([written]))
+
+  assert list.length(string.split(html, "diff-row diff-hunk")) == 2
+  assert string.contains(html, "@@ -0,0 +1,2 @@")
+  assert !string.contains(html, "@@ -0,0 +1 @@")
 }
 
 fn board(files: List(changes_view.File)) -> changes_view.Board {
