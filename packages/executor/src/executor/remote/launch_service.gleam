@@ -355,6 +355,7 @@ type Message {
     process.Subject(run_channel.Connection),
     process.Subject(Result(Installation, Error)),
   )
+  NativeControlLost(command.ServiceKey)
   LocalCancel(command.ServiceKey)
 
   Operation(
@@ -619,6 +620,15 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       retain_channel(state, key, channel, reply)
     InstallHost(key, host, handoff, reply) ->
       install_original_host(state, key, host, handoff, reply)
+    NativeControlLost(key) -> {
+      // An actual original adapter loss cannot retain its publication sink.
+      // Stop only this managed observer; ordinary Final/close still collects.
+      case dict.get(state.active, key) {
+        Ok(active) -> weft.cancel(active.cancel)
+        Error(Nil) -> Nil
+      }
+      local_cancel(state, key)
+    }
     LocalCancel(key) -> local_cancel(state, key)
     Report(key, report) -> reported(state, key, report)
     ControlReport(id, report) -> control_reported(state, id, report)
@@ -1283,12 +1293,24 @@ fn route_active(
 ) -> State {
   case phase_claim(active.phase), state.gate {
     Some(claim), Serving -> {
+      let channel = active.channel
+      let key = active.original.key
+      let subject = state.subject
       case
-        native.live_command_context(
+        native.live_launch_command_context(
           state.config.native,
           claim,
           ref,
           active.deadline,
+          fn() { process.send(subject, NativeControlLost(key)) },
+          fn() {
+            option.map(channel, launch_channel.retirement_expected)
+            |> fn(_) { Nil }
+          },
+          fn() {
+            option.map(channel, launch_channel.native_retired)
+            |> fn(_) { Nil }
+          },
         )
       {
         Ok(context) -> {
@@ -1615,7 +1637,7 @@ fn maybe_release(
         resources: run_channel.ResourcesReleased,
         ..,
       )),
-      Some(Ok(_))
+      Some(_)
     -> State(..state, active: dict.delete(state.active, key))
     _, _, _ -> State(..state, active: dict.insert(state.active, key, active))
   }

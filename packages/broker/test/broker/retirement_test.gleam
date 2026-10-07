@@ -1,10 +1,12 @@
 import broker/exec
 import broker/framing
+import broker/support/bench_host
 import broker/support/fake_helper
 import core/msgpack
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None}
+import weft
 import weft/poll
 
 // Whether the helper's hello announces a bwrap jail. It is the one fact the
@@ -881,4 +883,136 @@ pub fn pool_slot_of_a_kill_with_no_exit_ends_unconfirmed_test() {
   assert view.custody == exec.ProofLost
   assert view.lending == exec.Withdrawn
   assert exec.close_pool(pool, waiting: 1000) == Error(exec.RetirementProofLost)
+}
+
+// Targeted observers bind to one originally inventoried borrow. The controlled
+// wire lets native proof and the original owner monitor be held independently.
+fn targeted_pool() -> #(exec.Pool, exec.Helper, process.Subject(BitArray)) {
+  let sent = process.new_subject()
+  let closed = process.new_subject()
+  let assert Ok(pool) =
+    exec.start_pool(1, fn() {
+      Ok(open_controlled(sent, closed, NoBwrap, fn(config) { config }))
+    })
+    as "Original controlled pool."
+  let assert Ok(helper) = exec.checkout(pool, waiting: 1000)
+    as "Exact original borrow."
+  let assert Ok(_) = process.receive(sent, 1000) as "Original hello written."
+  #(pool, helper, sent)
+}
+
+pub fn targeted_retirement_requires_native_and_original_owner_boundaries_test() {
+  let #(pool, helper, sent) = targeted_pool()
+  let retired = process.new_subject()
+
+  // A different live inventory cannot observe this original borrow, even when
+  // the supplied helper is itself valid and still owned by its actual pool.
+  let assert Ok(foreign) =
+    exec.start_pool(1, fn() { Error(exec.PortOpenFailed) })
+    as "Foreign original pool, with no native effects."
+  assert exec.prepare_borrowed_retirement(foreign, helper, fn(result) {
+      process.send(retired, result)
+    })
+    == Error(exec.RetirementProofLost)
+  assert process.receive(retired, 0) == Error(Nil)
+  assert exec.close_pool(foreign, waiting: 1000) == Ok(Nil)
+
+  let assert Ok(original) =
+    exec.prepare_borrowed_retirement(pool, helper, fn(result) {
+      process.send(retired, result)
+    })
+    as "Observer installed before effects."
+  exec.retire_borrowed(original)
+  let assert Ok(_) = process.receive(sent, 1000) as "Original shutdown written."
+  assert process.receive(retired, 0) == Error(Nil)
+  let assert Ok(census) = exec.pool_census(pool, waiting: 1000)
+    as "Original inventory remains held."
+  assert census.draining == 1
+  assert exec.checkout(pool, waiting: 1000) == Error(exec.AllBusy(1))
+
+  // The pool is paused before the native event. The helper processes that event
+  // and answers status, then is paused before the pool can send ForgetRetired.
+  bench_host.suspend(exec.pool_pid(pool))
+  process.send(exec.wire(helper), exec.WireClosed(0))
+  let assert exec.StatusDead(_) = exec.status(helper, waiting: 1000)
+    as "Native exit processed by the original helper."
+  bench_host.suspend(exec.pid(helper))
+  bench_host.resume(exec.pool_pid(pool))
+  let assert poll.Answered(Nil) =
+    poll.until(1000, 5, fn() {
+      case exec.pool_census(pool, waiting: 1000) {
+        Ok(exec.PoolCensus(retiring: 1, ..)) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "Native boundary reached while owner Down remains held."
+  assert process.is_alive(exec.pid(helper))
+  assert process.receive(retired, 0) == Error(Nil)
+  assert exec.checkout(pool, waiting: 1000) == Error(exec.AllBusy(1))
+
+  bench_host.resume(exec.pid(helper))
+  assert process.receive(retired, 1000) == Ok(Ok(Nil))
+  assert !process.is_alive(exec.pid(helper))
+  exec.retire_borrowed(original)
+  assert exec.prepare_borrowed_retirement(pool, helper, fn(result) {
+      process.send(retired, result)
+    })
+    == Error(exec.RetirementProofLost)
+  assert process.receive(retired, 0) == Error(Nil)
+  assert exec.close_pool(pool, waiting: 1000) == Ok(Nil)
+}
+
+pub fn targeted_retirement_keeps_original_observer_across_scope_close_test() {
+  let #(pool, helper, sent) = targeted_pool()
+  let retired = process.new_subject()
+  let assert Ok(original) =
+    exec.prepare_borrowed_retirement(pool, helper, fn(result) {
+      process.send(retired, result)
+    })
+    as "One original observer."
+  assert exec.prepare_borrowed_retirement(pool, helper, fn(result) {
+      process.send(retired, result)
+    })
+    == Error(exec.RetirementProofLost)
+  let pool_monitor = process.monitor(exec.pool_pid(pool))
+  exec.stop_pool(pool)
+  exec.retire_borrowed(original)
+  let assert Ok(_) = process.receive(sent, 1000)
+    as "Scope withdraws same helper."
+  process.send(exec.wire(helper), exec.WireClosed(0))
+  assert process.receive(retired, 1000) == Ok(Ok(Nil))
+  assert process.receive(retired, 0) == Error(Nil)
+  let assert Ok(process.ProcessDown(_, _, process.Normal)) =
+    process.new_selector()
+    |> process.select_specific_monitor(pool_monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "Original pool closes normally after exact retirement."
+}
+
+pub fn targeted_registration_lost_reply_withdraws_without_dispatch_permission_test() {
+  let #(pool, helper, sent) = targeted_pool()
+  let retired = process.new_subject()
+  bench_host.suspend(exec.pool_pid(pool))
+  let answer =
+    weft.new([
+      fn() {
+        Ok(
+          exec.prepare_borrowed_retirement(pool, helper, fn(result) {
+            process.send(retired, result)
+          }),
+        )
+      },
+    ])
+    |> weft.deadline(2000)
+    |> weft.start
+  let assert [weft.Completed(_, Error(exec.RetirementPending))] = answer
+    as "Lost registration reply grants no original door or dispatch."
+  assert process.receive(retired, 0) == Error(Nil)
+  bench_host.resume(exec.pool_pid(pool))
+  let assert Ok(_) = process.receive(sent, 1000)
+    as "Same lost-reply door withdraws borrow."
+  assert exec.checkout(pool, waiting: 1000) == Error(exec.AllBusy(1))
+  process.send(exec.wire(helper), exec.WireClosed(0))
+  assert process.receive(retired, 1000) == Ok(Ok(Nil))
+  assert exec.close_pool(pool, waiting: 1000) == Ok(Nil)
 }

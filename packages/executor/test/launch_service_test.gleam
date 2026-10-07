@@ -42,6 +42,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/system
 import gleam/result
 import gleam/string
 import gleam/time/timestamp
@@ -58,13 +59,14 @@ type Fixture {
     journal: journal.Journal,
     service: service.Service,
     whole: whole.Service,
+    pool: exec.Pool,
   )
 }
 
 fn native_executor(
   path: String,
   before_checkout: fn() -> Nil,
-) -> local.Executor {
+) -> #(local.Executor, exec.Pool) {
   let assert Ok(here) = simplifile.current_directory() as "Helper fixture root."
   let helper = here <> "/../sandbox/loom-exec"
   assert simplifile.is_file(helper) == Ok(True)
@@ -83,19 +85,24 @@ fn native_executor(
   let assert Ok(pool) = exec.start_pool(1, fn() { exec.prepare_helper(spawn) })
     as "Real helper pool."
   let assert Ok(native) =
-    local.start(local.ExecutorConfig(
-      fn() {
-        before_checkout()
-        exec.checkout(pool, waiting: 3000)
+    local.start_with_retirement(
+      local.ExecutorConfig(
+        fn() {
+          before_checkout()
+          exec.checkout(pool, waiting: 3000)
+        },
+        fn(helper) { exec.checkin(pool, helper) },
+        fn() { exec.pool_custody(pool, waiting: 1000) },
+        fn(ms) { exec.close_pool(pool, waiting: ms) },
+        23,
+        log.discard(),
+      ),
+      fn(helper, completed) {
+        exec.prepare_borrowed_retirement(pool, helper, completed)
       },
-      fn(helper) { exec.checkin(pool, helper) },
-      fn() { exec.pool_custody(pool, waiting: 1000) },
-      fn(ms) { exec.close_pool(pool, waiting: ms) },
-      23,
-      log.discard(),
-    ))
+    )
     as "Existing scoped native executor."
-  native
+  #(native, pool)
 }
 
 fn enrolled(path: String) -> enrollment.SessionEnrollment {
@@ -162,13 +169,36 @@ fn executable(name: String) -> #(String, String) {
 // Its actual build allocation stays in the workspace, outside the jail's /tmp.
 
 fn channel(path: String) -> String {
-  let assert Ok(name) = list.last(string.split(path, "/"))
-    as "Unique fixture name."
-  let tmp = case simplifile.is_directory("/private/tmp") {
-    Ok(True) -> "/private/tmp"
-    _ -> "/tmp"
-  }
-  tmp <> "/" <> name <> "/ch"
+  let assert Ok(root) = simplifile.read(path <> "/channel-root")
+    as "Original canonical socket custody witness."
+  root
+}
+
+// Only fixture allocation retries names. Original Launch directories never do.
+fn allocate_channel(here: String, candidate: Int) -> String {
+  let parent =
+    result.unwrap(envoy.get("LOOM_TEST_SCRATCH"), here <> "/../../build")
+  assert simplifile.create_directory_all(parent) == Ok(Nil)
+  let assert Ok(parent) = fs.resolve_real(fs.real_filesystem(), "/", parent)
+    as "Canonical channel parent."
+  let allocated =
+    poll.fold_until(
+      within: 2000,
+      every: poll.Fixed(1),
+      clock: poll.monotonic(),
+      from: candidate % 1296,
+      attempt: fn(index) {
+        let path = parent <> "/n" <> int.to_base36(index)
+        case simplifile.create_directory(path) {
+          Ok(Nil) -> poll.Settled(path)
+          Error(simplifile.Eexist) -> poll.Pending({ index + 1 } % 1296)
+          Error(error) -> poll.Broken(error)
+        }
+      },
+    )
+  let assert poll.Answer(path) = allocated
+    as "Exclusive short channel custody root."
+  path
 }
 
 fn toolchain_root(directory: String) -> String {
@@ -184,7 +214,7 @@ fn base(path: String) -> policy.SandboxPolicy {
     writable_roots: [path <> "/work", path <> "/build", channel(path)],
     protected: [],
     limits: policy.Limits(30, 30, 536_870_912, 64, 16_777_216, 262_144),
-    env_allow: ["PATH", "TMPDIR"],
+    env_allow: ["PATH", "TMPDIR", "LOOM_CAP_SOCK", "LOOM_CAP_TOKEN_FILE"],
   )
 }
 
@@ -340,6 +370,9 @@ fn clock_fixture(now: fn() -> Int, run: fn(Fixture) -> Nil) -> Nil {
     <> "-"
     <> int.to_string(nanos)
   assert simplifile.create_directory_all(path <> "/build") == Ok(Nil)
+  assert simplifile.create_directory_all(path <> "/work") == Ok(Nil)
+  let socket_root = allocate_channel(here, nanos)
+  assert simplifile.write(path <> "/channel-root", socket_root) == Ok(Nil)
   let enrolled = enrolled(path)
   let assert Ok(capacity) = admission.capacity(16) as "Finite native capacity."
   let assert Ok(book) =
@@ -348,7 +381,7 @@ fn clock_fixture(now: fn() -> Int, run: fn(Fixture) -> Nil) -> Nil {
   let assert Ok(resources) =
     j.fresh(path <> "/resources.sqlite", enrolled, limits(), book)
     as "Real resource journal."
-  let native = native_executor(path, fn() { Nil })
+  let #(native, pool) = native_executor(path, fn() { Nil })
   let assert Ok(server) =
     service.start(service.Config(
       "owner",
@@ -377,7 +410,7 @@ fn clock_fixture(now: fn() -> Int, run: fn(Fixture) -> Nil) -> Nil {
   let assert Ok(config) = whole.configure(resources, server, contract, 1)
     as "Pinned assembly."
   let assert Ok(whole) = whole.start(config) as "Temporary whole Compile actor."
-  run(Fixture(path, enrolled, resources, book, server, whole))
+  run(Fixture(path, enrolled, resources, book, server, whole, pool))
   let closed = whole.close(whole)
   assert closed == Ok(Nil) || closed == Error(whole.Uncertain)
   case process.is_alive(service.pid(server)) {
@@ -388,7 +421,9 @@ fn clock_fixture(now: fn() -> Int, run: fn(Fixture) -> Nil) -> Nil {
   }
   assert j.release_endpoint(resources) == Ok(Nil)
   assert journal.release(book) == Ok(Nil)
-  assert simplifile.delete(path) == Ok(Nil)
+  // Preserve original journals and path witnesses even after uncertain close.
+  assert simplifile.write(path <> "/fixture-finished", "observations complete")
+    == Ok(Nil)
 }
 
 fn caller() -> whole.Caller {
@@ -1153,4 +1188,308 @@ fn place_available(
   let assert launch.Challenge(_, nonce, _) = reply
     as "Successful challenge has its exact reply role."
   launch_ask(owner, launch.PlaceToken(original, nonce, 30_000, token))
+}
+
+// Three distinct original parents reuse one open service with one active slot.
+// Each actual native Launch must retire its helper and join original transport.
+pub fn sequential_launches_retire_exact_helpers_and_release_original_capacity_test() {
+  fixture(fn(f) {
+    assert simplifile.create_directory_all(channel(f.path)) == Ok(Nil)
+    let assert Ok(config) = launch.configure(f.resources, f.service, 1)
+      as "One active Launch slot."
+    let assert Ok(owner) = launch.start(config) as "One open original service."
+    list.each([1, 2, 3], fn(number) {
+      retired_launch(f, owner, number, KeepAdapter)
+    })
+    assert launch.close(owner) == Ok(Nil)
+  })
+}
+
+type AdapterLifetime {
+  KeepAdapter
+  LoseAdapter
+  LoseConfirmation
+  CloseDuringConfirmation
+}
+
+fn retired_launch(
+  f: Fixture,
+  owner: launch.Service,
+  number: Int,
+  lifetime: AdapterLifetime,
+) -> Nil {
+  let producer =
+    original(f, 30 + number, "retirement:" <> int.to_string(number))
+  let #(producer, artifact) = produce_original(f, producer, 40 + number)
+  let token = <<number:size(256)>>
+  let original = launch_original(f, producer, artifact, token, 50 + number)
+  let admitted =
+    poll.until(within: 3000, every: 10, attempt: fn() {
+      case place(owner, original, token) {
+        Ok(launch.Observed(_, _)) -> poll.Done(Nil)
+        Error(launch.Capacity) -> poll.Retry
+        answer -> poll.Fail(answer)
+      }
+    })
+  assert admitted == poll.Answered(Nil)
+  let ready = launch_prepared(f, original)
+  let events = process.new_subject()
+  let handoff = process.new_subject()
+  let assert Ok(launch.Installed(_)) =
+    launch.install_host(
+      owner,
+      original.key,
+      run_channel.host_endpoint(process.self(), events),
+      handoff,
+    )
+    as "Original callbacks precede native accept."
+  let #(prepared, dispatch, broker, broker_pid) =
+    cleared_launch(f, original, ready)
+  let hash = digest(prepared)
+  let native_key = key(original, 60 + number)
+  let ref = launch_ref(original)
+  let assert Ok(wire.Challenge(_, _, nonce, _)) =
+    launch_routed(owner, ref, wire.ChallengeRequest(native_key, hash))
+    as "Exact live native challenge."
+  let assert Ok(_) =
+    launch_routed(
+      owner,
+      ref,
+      wire.Submit(native_key, hash, prepared, nonce, 20_000),
+    )
+    as "Original SatelliteCommand dispatch."
+  let assert Ok(connection) = process.receive(handoff, 5000)
+    as "Actual satellite accepted original Unix socket."
+  case lifetime {
+    KeepAdapter | LoseConfirmation | CloseDuringConfirmation -> {
+      case lifetime {
+        LoseConfirmation | CloseDuringConfirmation ->
+          system.suspend(exec.pool_pid(f.pool))
+        KeepAdapter | LoseAdapter -> Nil
+      }
+      assert connection.activate() == Ok(Nil)
+      let assert Ok(run_channel.Frame(delivery)) = process.receive(events, 5000)
+        as "Actual program Final."
+      let #(_, payload) = run_channel.delivered(delivery)
+      assert bit_array.byte_size(run_channel.payload(payload)) > 0
+      run_channel.consume(delivery, run_channel.Final)
+      case lifetime {
+        LoseConfirmation | CloseDuringConfirmation ->
+          lose_confirmation(f, native_key, hash, lifetime)
+        KeepAdapter | LoseAdapter -> Nil
+      }
+      let closed = connection.close()
+      assert closed.transport == run_channel.TransportJoined
+      assert closed.resources == run_channel.ResourcesReleased
+
+      // Retained terminal association and physical retirement are independent facts.
+      let observed =
+        poll.until(within: 6000, every: 20, attempt: fn() {
+          case j.inspect_launch(f.resources, original) {
+            Ok(j.LaunchRetained(retained, _)) -> poll.Done(retained)
+            Ok(j.LaunchPending) -> poll.Retry
+            Error(error) -> poll.Fail(error)
+          }
+        })
+      let assert poll.Answered(retained) = observed
+        as "Original completion retained independently of retirement."
+      let assert Some(launch_completion.NativeAssociation(
+        exact,
+        exact_digest,
+        terminal,
+      )) =
+        launch_completion.native_association(j.retained_launch_value(retained))
+        as "Immutable exact native association."
+      assert exact == native_key
+      assert exact_digest == hash
+      let assert Ok(settled) = native.decode_terminal(terminal)
+        as "Actual retained native terminal."
+      dispatch.settle(settled)
+      stop_broker(broker, broker_pid)
+    }
+    LoseAdapter -> {
+      let assert Ok(adapter) =
+        retiring_adapter(service.pid(f.service), native_key)
+        as "Exact original live adapter after actual native dispatch."
+      let monitor = process.monitor(adapter)
+      process.kill(adapter)
+      let assert Ok(process.ProcessDown(_, same, process.Killed)) =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(down) { down })
+        |> process.selector_receive(1000)
+        as "Actual original adapter death."
+      assert same == adapter
+      let retired =
+        poll.until(within: 6000, every: 10, attempt: fn() {
+          case journal.inspect(f.journal, native_key, hash) {
+            Ok(evidence) ->
+              case admission.phase(evidence) {
+                admission.LaunchIntent(admission.NativeRetired)
+                | admission.Terminal(_, admission.NativeRetired, _)
+                | admission.Retired(_) -> poll.Done(Nil)
+                _ -> poll.Retry
+              }
+            Error(error) -> poll.Fail(error)
+          }
+        })
+      assert retired == poll.Answered(Nil)
+      let closed = connection.close()
+      assert closed.transport == run_channel.TransportJoined
+      assert closed.resources == run_channel.ResourcesReleased
+      let controls =
+        poll.until(within: 2000, every: 10, attempt: fn() {
+          case native_control_count(service.pid(f.service)) {
+            Ok(0) -> poll.Done(Nil)
+            Ok(_) -> poll.Retry
+            Error(error) -> poll.Fail(error)
+          }
+        })
+      assert controls == poll.Answered(Nil)
+      let assert Ok(evidence) = journal.inspect(f.journal, native_key, hash)
+        as "Original native proof survives adapter death."
+      case admission.phase(evidence) {
+        admission.LaunchIntent(admission.NativeRetired)
+        | admission.Terminal(_, admission.NativeRetired, _)
+        | admission.Retired(_) -> Nil
+        _ -> panic as "Exact original native retirement was not committed."
+      }
+      dispatch.settle(dispatch.Failed(exec.ExecutionLost(exec.ExecutorClosing)))
+      stop_broker(broker, broker_pid)
+    }
+  }
+  assert simplifile.is_directory(resources.launch_paths(ready).0) == Ok(False)
+}
+
+// Only the original fixture-owned adapter can be terminated by this probe.
+// Gleam cannot inspect opaque actor state; the test Erlang helper checks the
+// exact local Row, native key, Running identity and original monitor shape.
+@external(erlang, "executor_launch_socket_fixture", "retiring_adapter")
+fn retiring_adapter(
+  service: process.Pid,
+  key: identity.RequestKey,
+) -> Result(process.Pid, Nil)
+
+@external(erlang, "executor_launch_socket_fixture", "native_control_count")
+fn native_control_count(service: process.Pid) -> Result(Int, Nil)
+
+// A dead adapter cannot supply ControlDone. Actual Row monitoring must preserve
+// positive native proof while releasing finite native and whole-Launch capacity.
+pub fn original_adapter_death_retains_retirement_and_releases_admission_test() {
+  fixture(fn(f) {
+    assert simplifile.create_directory_all(channel(f.path)) == Ok(Nil)
+    let assert Ok(config) = launch.configure(f.resources, f.service, 1)
+      as "One active original slot."
+    let assert Ok(owner) = launch.start(config) as "Original owner."
+    retired_launch(f, owner, 1, LoseAdapter)
+    retired_launch(f, owner, 2, KeepAdapter)
+    assert launch.close(owner) == Ok(Nil)
+  })
+}
+
+@external(erlang, "executor_launch_socket_fixture", "journal_owner")
+fn journal_owner(original: journal.Journal) -> Result(process.Pid, Nil)
+
+@external(erlang, "executor_launch_socket_fixture", "confirmation_worker")
+fn confirmation_worker(
+  service: process.Pid,
+  key: identity.RequestKey,
+) -> Result(process.Pid, Nil)
+
+fn lose_confirmation(
+  f: Fixture,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+  lifetime: AdapterLifetime,
+) -> Nil {
+  // Pool retirement is held while the real terminal commits. The same original
+  // writer is then held, so no confirmation can precede its positive helper proof.
+  let terminal =
+    poll.until(within: 2000, every: 10, attempt: fn() {
+      case journal.inspect(f.journal, key, digest) {
+        Ok(evidence) ->
+          case admission.phase(evidence) {
+            admission.Terminal(_, admission.NativeUnconfirmed, _) ->
+              poll.Done(Nil)
+            _ -> poll.Retry
+          }
+        Error(error) -> poll.Fail(error)
+      }
+    })
+  assert terminal == poll.Answered(Nil)
+  let assert Ok(writer) = journal_owner(f.journal)
+    as "Original native journal owner."
+  system.suspend(writer)
+  system.resume(exec.pool_pid(f.pool))
+  let first =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case confirmation_worker(service.pid(f.service), key) {
+        Ok(worker) -> poll.Done(worker)
+        Error(_) -> poll.Retry
+      }
+    })
+  let assert poll.Answered(first) = first
+    as "First original managed confirmation is waiting on its queued journal ask."
+  // The real confirmation worker is blocked in its original writer. Closure must
+  // answer conservatively without joining or writing through that continuation.
+  case lifetime {
+    CloseDuringConfirmation -> {
+      assert service.exchange(f.service, envelope(wire.CloseScope))
+        == Error(service.Uncertain)
+    }
+    KeepAdapter | LoseAdapter | LoseConfirmation -> Nil
+  }
+  let monitor = process.monitor(first)
+  process.kill(first)
+  let assert Ok(process.ProcessDown(_, same, process.Killed)) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+    as "Actual first confirmation worker loss."
+  assert same == first
+  let retried =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case confirmation_worker(service.pid(f.service), key) {
+        Ok(worker) if worker != first -> poll.Done(worker)
+        Ok(_) | Error(_) -> poll.Retry
+      }
+    })
+  let assert poll.Answered(second) = retried
+    as "Actual first task drain permits one original-proof retry."
+  assert process.is_alive(second)
+  system.resume(writer)
+  let committed =
+    poll.until(within: 2000, every: 5, attempt: fn() {
+      case journal.inspect(f.journal, key, digest) {
+        Ok(evidence) ->
+          case admission.phase(evidence) {
+            admission.Terminal(_, admission.NativeRetired, _) -> poll.Done(Nil)
+            _ -> poll.Retry
+          }
+        Error(error) -> poll.Fail(error)
+      }
+    })
+  assert committed == poll.Answered(Nil)
+}
+
+pub fn positive_native_proof_survives_lost_confirmation_without_redispatch_test() {
+  fixture(fn(f) {
+    assert simplifile.create_directory_all(channel(f.path)) == Ok(Nil)
+    let assert Ok(config) = launch.configure(f.resources, f.service, 1)
+      as "Original one-slot owner."
+    let assert Ok(owner) = launch.start(config) as "Original owner."
+    retired_launch(f, owner, 1, LoseConfirmation)
+    retired_launch(f, owner, 2, KeepAdapter)
+    assert launch.close(owner) == Ok(Nil)
+  })
+}
+
+pub fn scope_close_does_not_bypass_original_confirmation_drain_test() {
+  fixture(fn(f) {
+    assert simplifile.create_directory_all(channel(f.path)) == Ok(Nil)
+    let assert Ok(config) = launch.configure(f.resources, f.service, 1)
+      as "Original one-slot owner."
+    let assert Ok(owner) = launch.start(config) as "Original owner."
+    retired_launch(f, owner, 1, CloseDuringConfirmation)
+    assert launch.close(owner) == Ok(Nil)
+  })
 }

@@ -70,7 +70,7 @@ handshake, the frame loop, the deadline ladder, the settlement — knows
 which one it has.
 
 **The pool is where a VM lifecycle would live, and its callers do not
-watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:3233`)
+watch it.** `start_pool` (`packages/broker/src/broker/exec.gleam:3254`)
 takes a `spawn` closure and hands helpers out through `checkout`
 (`packages/broker/src/broker/exec.gleam:2550`) and `checkin`
 (`packages/broker/src/broker/exec.gleam:2562`). "One microVM per helper"
@@ -413,7 +413,7 @@ two tracks composed rather than two separate projects.
 **6. Snapshot-boot warm pools.** Track 3's own words, and the answer to
 the one cost lazy spawning still carries. The production pool is no
 longer a literal: it is the node's scheduler count clamped to `[4, 16]`
-(`pool_size_for`, `packages/broker/src/broker/exec.gleam:3179`), wired
+(`pool_size_for`, `packages/broker/src/broker/exec.gleam:3229`), wired
 through `LOOM_HELPER_POOL`
 (`packages/client/src/client/serve.gleam:848`) into `start_pool`
 (`packages/client/src/client/serve.gleam:411`), which means there are
