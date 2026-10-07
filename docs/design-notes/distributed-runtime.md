@@ -94,14 +94,14 @@ step, source index, strand, the call, its arguments, the persisted replay
 policy and the consumed grants going out; a finished `AgentMessage` or a
 failure reason coming back. No closure, port or local handle crosses.
 
-`wiring.run_tool` (`client/wiring.gleam:1751`) does two things today: it reads
-the call's authority from SQLite (directory additions and standing grants,
-`wiring.gleam:1752-1766`), then builds a `tool.Ctx` and dispatches the tool.
-For a session whose workspace lives on an executor those two halves split
-along the machine line. The orchestrator's `run` slot reads the authority
+`wiring.run_tool` (`client/wiring.gleam:1763`) is two functions in sequence.
+`read_authority` reads the call's authority from SQLite (directory additions
+and standing grants, no filesystem), then `run_workspace_tool` builds a
+`tool.Ctx` and dispatches the tool. For a session whose workspace lives on an
+executor those two halves split along the machine line. The orchestrator's `run` slot reads the authority
 snapshot from its own store and sends it, with the `ToolRun`, to the session's
 workspace host. The host validates the stored directory roots against its own
-filesystem (the stat that `directories.validate_live` does today), builds the
+filesystem (the stat that `directories.revalidate` and `permissions.revalidate` do), builds the
 `Ctx` with the executor's broker, pool and filesystem, and runs `tool.dispatch`.
 Every tool body (`fs_read`, `fs_edit`, `bash`, `grep`, `working_directory`,
 `code_mode`, the job tools) runs unchanged. One round trip per tool call,

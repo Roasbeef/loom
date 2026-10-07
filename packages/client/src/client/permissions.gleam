@@ -69,6 +69,43 @@ pub fn read_for(
   arguments: json.JsonValue,
 ) -> Result(List(policy.Grant), String) {
   use standing <- result.try(read(opened))
+  with_action(opened, standing, strand, tool_name, arguments)
+}
+
+/// `read_for` without the live revalidation of the standing grants.
+///
+/// The result is what the store holds for this invocation: the standing
+/// filesystem and network grants plus any remembered wall-clock consent for
+/// exactly this action. Nothing here touches the filesystem, so the session
+/// owner can run it on a machine which has no copy of the workspace.
+/// `revalidate` is the other half, run beside the paths. Remembered action
+/// consent is a `GrantLimit`, which `revalidate` passes through, so
+/// revalidating the whole list checks exactly the standing grants.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // permissions.read_for_stored(opened, "main", "bash", arguments)
+/// ```
+pub fn read_for_stored(
+  opened: session.Session,
+  strand: String,
+  tool_name: String,
+  arguments: json.JsonValue,
+) -> Result(List(policy.Grant), String) {
+  use standing <- result.try(read_stored(opened))
+  with_action(opened, standing, strand, tool_name, arguments)
+}
+
+// The action half of `read_for`, shared by the fused read and the stored
+// read so the two cannot disagree about what consent for one action means.
+fn with_action(
+  opened: session.Session,
+  standing: List(policy.Grant),
+  strand: String,
+  tool_name: String,
+  arguments: json.JsonValue,
+) -> Result(List(policy.Grant), String) {
   let action = escalate.action_digest(arguments)
   use cell <- result.try(
     storage.get_register(
@@ -259,13 +296,27 @@ pub fn remembering_action(
 /// // permissions.read(opened)
 /// ```
 pub fn read(opened: session.Session) -> Result(List(policy.Grant), String) {
+  read_stored(opened) |> result.try(revalidate)
+}
+
+/// Reads the standing authority from the store without touching the
+/// filesystem.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // permissions.read_stored(opened)
+/// ```
+pub fn read_stored(
+  opened: session.Session,
+) -> Result(List(policy.Grant), String) {
   use cell <- result.try(
     storage.get_register(opened.store, register.FactCustom, key)
     |> result.map_error(fn(_) { "session permissions could not be read" }),
   )
   case cell {
     None -> Ok([])
-    Some(cell) -> decode(cell.value.payload) |> result.try(validate_live)
+    Some(cell) -> decode(cell.value.payload)
   }
 }
 
@@ -326,9 +377,18 @@ fn canonical(path: String) -> Bool {
   && !string.contains(path, "\u{0}")
 }
 
-// A renamed path must not silently become authority over a new symlink
-// target. Missing writable leaves remain valid beneath their canonical parent.
-fn validate_live(
+/// Checks stored grants against the filesystem of the node it runs on.
+///
+/// A renamed path must not silently become authority over a new symlink
+/// target. Missing writable leaves remain valid beneath their canonical
+/// parent. Grants which name no path pass through unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert permissions.revalidate([]) == Ok([])
+/// ```
+pub fn revalidate(
   values: List(policy.Grant),
 ) -> Result(List(policy.Grant), String) {
   let filesystem = fs.real_filesystem()
@@ -381,7 +441,7 @@ pub fn remembering(
     Error("there are no permissions to remember"),
   )
   use _ <- result.try(list.try_map(approved, validate))
-  use _ <- result.try(validate_live(approved))
+  use _ <- result.try(revalidate(approved))
   use cell <- result.try(
     api.fact_cell(runtime, key)
     |> result.map_error(fn(_) { "session permissions could not be read" }),

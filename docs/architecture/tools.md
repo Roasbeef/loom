@@ -138,7 +138,7 @@ The rule is enforced in four places, from the tool outward:
    tool is unavailable, `is_error` set, and no `details`. The
    registry does not invent a value for a tool's details contract.
 3. **The wiring always answers `ToolCompleted`.** The function
-   `run_tool` (`client/wiring.gleam:1745`) wraps whatever dispatch
+   `run_tool` (`client/wiring.gleam:1763`) wraps whatever dispatch
    returned as a result message. A failure to read the session's
    directory access or standing permissions also becomes an in-band
    failure outcome.

@@ -40,6 +40,12 @@ pub type Admin {
 
 /// Reads only explicit additions, never the jail's broad host-read policy.
 ///
+/// This is the stored read followed by the live revalidation, in that order,
+/// for callers which hold the session and the workspace on one machine. A
+/// caller which does not (the owner of a session whose files live on another
+/// node) uses `read_stored` and leaves `revalidate` to the node that can
+/// stat the paths.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -51,9 +57,35 @@ pub fn read(
   read_store(opened.store)
 }
 
+/// Reads the committed additions from the store without touching the
+/// filesystem.
+///
+/// The value is stored authority, not yet trusted: a canonical name recorded
+/// before a restart may now resolve through a different symlink. `revalidate`
+/// is the check which makes it usable, and it runs wherever the paths live.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // directories.read_stored(session)
+/// ```
+pub fn read_stored(
+  opened: session.Session,
+) -> Result(directory_access.Access, String) {
+  stored(opened.store)
+}
+
 // Directory readback needs the durable store, not the lease-renewal callback
 // or the rest of Session. Both readers still validate live canonical targets.
 fn read_store(
+  store: storage.Storage(Nil),
+) -> Result(directory_access.Access, String) {
+  stored(store) |> result.try(revalidate)
+}
+
+// The store half of every reader: a read fault or a malformed record refuses,
+// a missing record is the empty set.
+fn stored(
   store: storage.Storage(Nil),
 ) -> Result(directory_access.Access, String) {
   use cell <- result.try(
@@ -65,13 +97,23 @@ fn read_store(
     Some(cell) ->
       decode(cell.value.payload)
       |> result.map_error(fn(_) { "session directory access is malformed" })
-      |> result.try(validate_live)
   }
 }
 
-// A stored canonical name must not become authority over a new symlink
-// target after restart. Validate before both jail and native policy capture.
-fn validate_live(
+/// Checks stored additions against the filesystem of the node it runs on.
+///
+/// A stored canonical name must not become authority over a new symlink
+/// target after restart. Validate before both jail and native policy capture.
+/// Every path must still resolve to itself and still be a directory; the
+/// first that does not refuses the whole set.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert directories.revalidate(directory_access.none())
+///   == Ok(directory_access.none())
+/// ```
+pub fn revalidate(
   access: directory_access.Access,
 ) -> Result(directory_access.Access, String) {
   let filesystem = fs.real_filesystem()

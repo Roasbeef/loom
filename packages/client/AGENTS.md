@@ -196,7 +196,17 @@ described below. `gateway` validates the displayed action,
 sequence and echoed subset before preparing a union of those echoed grants.
 The runtime atomically commits that fact and approval under both expectations.
 
-`wiring.run_tool` validates and snapshots remembered grants once. Their path
+`wiring.run_tool` is `read_authority` followed by `run_workspace_tool`.
+`read_authority` reads the stored directory additions, standing grants and
+exact-action consent from the session store and never touches the filesystem
+(`directories.read_stored`, `permissions.read_for_stored`); the result is the
+plain-data `wiring.Authority`. `run_workspace_tool` revalidates it against the
+local filesystem (`directories.revalidate`, `permissions.revalidate`), then
+widens the policy and dispatches, taking only a `WorkspaceView` of the `Config`
+plus the two owner functions (`refused`, `output`). The fused `directories.read`
+and `permissions.read_for` remain as compositions for other callers. The
+split is what lets a workspace on another node run the second half. It
+validates and snapshots remembered grants once. Their path
 component joins explicit native access; their path and network component joins
 the jail policy. Protected writes remain denied. Reopening the session restores
 this authority, while a paused call resumes with its consumed call approval and
