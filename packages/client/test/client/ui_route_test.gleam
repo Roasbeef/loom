@@ -4473,7 +4473,8 @@ pub fn a_typed_folder_creates_a_session_and_is_remembered_test() {
 
     // The session is in the canonical folder, not in the text that was typed.
     let assert Ok(view) = manager.get(ready.registry, session_of(asked.body))
-    assert view.registration.workspace == home <> "/proj"
+    assert view.registration.workspace
+      == workspace.LocalBinding(home <> "/proj")
     assert view.registration.name == "typed one"
 
     // The folder is remembered, once, as the newest.
@@ -4586,7 +4587,7 @@ pub fn a_remembered_folder_is_judged_again_at_the_press_test() {
     manager.remember_folder(ready.registry, folder)
     let assert creations.Ticketed(_) = attempt(folder)
     let assert Ok(creation) = process.receive(asked, 0)
-    assert creation.workspace == folder
+    assert creation.workspace == workspace.LocalBinding(folder)
 
     // The directory is removed: the entry is still listed but the press is
     // refused in plain words, and nothing is asked of the registry.

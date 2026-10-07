@@ -18,6 +18,7 @@ import tools/grep
 import tools/job
 import tools/permissions
 import tools/tool
+import tools/working_directory
 import tools/workspace
 import tools/workspace_local
 
@@ -150,8 +151,8 @@ pub fn registered_bash_modes_refuse_before_jobs_or_broker_test() {
   let jobs =
     job.Jobs(
       ..job.unavailable(),
-      start: fn(_, _, _, _) { panic as "registered local bash started a job" },
-      attend: fn(_, _, _) { panic as "registered local bash attended a job" },
+      start: fn(_, _, _, _, _) { panic as "registered local bash started a job" },
+      attend: fn(_, _, _, _) { panic as "registered local bash attended a job" },
     )
   let ctx = registered()
   let default =
@@ -169,6 +170,28 @@ pub fn registered_bash_modes_refuse_before_jobs_or_broker_test() {
       ]),
     ))
   })
+}
+
+pub fn registered_shell_directory_refuses_before_host_store_or_owner_io_test() {
+  let ctx = registered()
+  let door =
+    working_directory.Door(
+      read: fn(_) { panic as "registered directory read the local host store" },
+      write: fn(_, _) {
+        panic as "registered directory wrote the local host store"
+      },
+    )
+  assert working_directory.workspace_only().read(ctx)
+    == Error("working directory requires a local workspace")
+  assert working_directory.select(door, ctx, None)
+    == Error("working directory requires a local workspace")
+  assert working_directory.select(door, ctx, Some("/owner/blobs"))
+    == Error("working directory requires a local workspace")
+  assert is_local_refusal(working_directory.tool(door).run(ctx, json.Object([])))
+  assert is_local_refusal(working_directory.tool(door).run(
+    ctx,
+    arguments("/owner/blobs"),
+  ))
 }
 
 pub fn registered_grep_and_path_permissions_refuse_before_effects_test() {
@@ -299,7 +322,7 @@ pub fn local_bash_spill_recovery_reads_owner_blobs_not_workspace_test() {
   let jobs =
     job.Jobs(
       ..job.unavailable(),
-      attend: fn(_, _, _) { Ok(job.Started("retained-job", 10_000, 1000)) },
+      attend: fn(_, _, _, _) { Ok(job.Started("retained-job", 10_000, 1000)) },
       poll: fn(_, _, _, _) {
         Ok(job.Polled(
           "retained-job",

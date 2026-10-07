@@ -3550,7 +3550,7 @@ fn directory_case(rig: Rig) -> Nil {
   let ctx =
     tool.Ctx(
       ..live_ctx(rig.workspace, rig.base_policy, wall_clock()),
-      filesystem: fs.real_filesystem(),
+      workspace: tool.LocalWorkspace(rig.workspace, fs.real_filesystem()),
     )
   let remembered =
     directory.tool(working_directory.door(supplier)).run(
