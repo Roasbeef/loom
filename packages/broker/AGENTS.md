@@ -1244,3 +1244,16 @@ bounded consumed transport, commit/read back terminal and matching reusable
 under the original native/command association before consuming the witness,
 and retain exact retirement separately. This foundation supplies no owner
 checkout fallback and does not establish registered LSP end-to-end acceptance.
+
+## Registered ServerProtocol elapsed authority
+
+`exec.protocol_native_wall_fits` checks both scoped pre-dispatch and the actual
+original helper Run. A ServerProtocol Session keeps its owner-cleared zero CPU
+and wall policy. Zero wall requires a nonzero original elapsed deadline with
+positive remaining time no greater than twelve hours; it never rewrites policy
+or derives a fresh deadline. Positive ServerProtocol wall policies retain their
+existing maximum of twelve hours and enough original remaining time. Finite
+collection still requires positive wall time no greater than sixty seconds.
+Ordinary `native_wall_fits` behavior remains unchanged. Output, network,
+enforcement demand, original token and exact retirement checks still apply.
+The helper frame has no clock authority, so the broker owns the elapsed check.

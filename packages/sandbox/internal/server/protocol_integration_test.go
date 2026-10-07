@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -314,4 +315,81 @@ func TestRealProtocolOverflowBeforeOriginalAttachmentCancels(t *testing.T) {
 	}
 	writer.abort()
 	<-writer.done
+}
+
+// Policy controls cross the actual negotiated helper reader before any child starts.
+func TestRealProtocolPolicyBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		mode    string
+		wall    uint64
+		output  uint64
+		network policy.NetworkMode
+		message string
+	}{
+		{"finite-zero", framing.ProtocolFinite, 0, 64 << 20, policy.NetworkOff, "bounded original"},
+		{"finite-over", framing.ProtocolFinite, 61, 64 << 20, policy.NetworkOff, "bounded original"},
+		{"server-over", framing.ProtocolServer, 43201, 64 << 20, policy.NetworkOff, "bounded original"},
+		{"server-output-zero", framing.ProtocolServer, 0, 0, policy.NetworkOff, "bounded original"},
+		{"server-output-over", framing.ProtocolServer, 0, (64 << 20) + 1, policy.NetworkOff, "bounded original"},
+		{"server-network", framing.ProtocolServer, 0, 64 << 20, policy.NetworkFull, "network off"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := protocolHarnessFor(t)
+			pol := h.server.basePol
+			pol.Limits.WallSeconds, pol.Limits.OutputBytes = tc.wall, tc.output
+			pol.Network.Mode = tc.network
+			encoded, err := policy.Encode(pol)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.write(t, 20, framing.KindProtocolStart, framing.ProtocolStart{Argv: []string{"/bin/sh", "-c", "exit 0"}, Env: map[string]string{"PATH": "/usr/bin:/bin"}, Cwd: "/", Token: bytes.Repeat([]byte{1}, 32), Mode: tc.mode, Policy: encoded})
+			f := h.read(t)
+			var refused framing.ErrorBody
+			if f.Kind != framing.KindError || framing.DecodeBody(f.Body, &refused) != nil || !strings.Contains(refused.Msg, tc.message) {
+				t.Fatalf("exact pre-start policy refusal: %+v %+v", f, refused)
+			}
+			if h.server.running != nil {
+				t.Fatal("refused policy started a child")
+			}
+		})
+	}
+}
+
+// A server with zero policy wall time reaches the existing jailed child path.
+func TestRealProtocolServerZeroWall(t *testing.T) {
+	h := protocolHarnessFor(t)
+	pol := h.server.basePol
+	pol.Limits.CPUSeconds, pol.Limits.WallSeconds = 0, 0
+	encoded, err := policy.Encode(pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.write(t, 20, framing.KindProtocolStart, framing.ProtocolStart{Argv: []string{"/bin/sh", "-c", "printf zero-wall"}, Env: map[string]string{"PATH": "/usr/bin:/bin"}, Cwd: "/", Token: bytes.Repeat([]byte{1}, 32), Mode: framing.ProtocolServer, Policy: encoded})
+	var output bytes.Buffer
+	for {
+		f := h.read(t)
+		switch f.Kind {
+		case framing.KindProtocolOutput:
+			var out framing.ProtocolOutput
+			if err := framing.DecodeBody(f.Body, &out); err != nil {
+				t.Fatal(err)
+			}
+			output.Write(out.Data)
+			h.write(t, 20, framing.KindProtocolOutputConsumed, framing.ProtocolOutputConsumed{ExecutionID: 20, Ordinal: out.Ordinal})
+		case framing.KindExecExit:
+			var exit framing.ProtocolExit
+			if err := framing.DecodeBody(f.Body, &exit); err != nil {
+				t.Fatal(err)
+			}
+			if exit.Code != 0 || exit.Protocol != "complete" || output.String() != "zero-wall" {
+				t.Fatalf("original zero-wall server failed: %+v output=%q", exit, output.String())
+			}
+			h.write(t, 40, framing.KindShutdown, map[string]any{})
+			return
+		default:
+			t.Fatalf("zero-wall server did not reach normal credited execution: %+v", f)
+		}
+	}
 }
