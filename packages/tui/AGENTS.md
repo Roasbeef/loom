@@ -1,5 +1,14 @@
 # tui
 
+## Local profiling at launch
+
+The developer shipment and bundled client carry `tom` for their launch-time
+reader of `[daemon] profile`. The shell launcher consumes that setting from the
+selected catalogue before booting the client VM; enabled launches use a named
+loopback node and an owner-only, exit-cleaned cookie. This reads only the typed
+profiling setting, while the daemon keeps whole-catalogue validation. No profiler
+sampling or call tracing starts merely because a client is named.
+
 ## Operator startup diagnostics
 
 Protocol 055 uses the existing daemon error envelope and credited snapshot.

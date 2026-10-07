@@ -116,6 +116,27 @@ loom_profile_consume daemon --state-dir "$state/default-config"
 [[ "$LOOM_PROFILE_ENABLED" == 1 ]]
 [[ "${LOOM_PROFILE_ARGS[*]}" == "--state-dir $state/default-config" ]]
 
+# The same validated setting names a client node without a command-line flag.
+loom_profile_consume client --state-dir "$state/default-config"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ "$LOOM_PROFILE_NODE" == loom_client_profile_*@127.0.0.1 ]]
+[[ "$(cat "$PROFILE_READER_PATH")" == "$state/default-config/loom.toml" ]]
+[[ "${LOOM_PROFILE_ARGS[*]}" == "--state-dir $state/default-config" ]]
+
+loom_profile_consume client --config "$profile_config" --state-dir "$state/client-configured"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ "${LOOM_PROFILE_ARGS[*]}" == "--config $profile_config --state-dir $state/client-configured" ]]
+
+cat > "$profile_config" <<'EOF'
+[daemon]
+profile = false
+EOF
+loom_profile_consume client --config "$profile_config" --state-dir "$state/client-disabled"
+[[ "$LOOM_PROFILE_ENABLED" == 0 ]]
+[[ ! -e "$state/client-disabled/tokens" ]]
+loom_profile_consume client --profile --config "$profile_config" --state-dir "$state/client-explicit"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+
 unset LOOM_PROFILE_CONFIG_READER PROFILE_READER_PATH
 
 loom_profile_consume daemon --config --profile
@@ -138,11 +159,49 @@ for command in version --version; do
   [[ ! -e "$state/version-home" ]]
 done
 
+# Exercise the generated reader with the actual bundled parser before the
+# fake emulator below takes over launcher argument inspection.
+real_reader="$ROOT/build/tui-erlang-shipment/bin/loom-profile-config"
+"$real_reader" "$state/default-config/loom.toml"
+cat > "$profile_config" <<'EOF'
+[ "daemon" ]
+"profile" = true
+EOF
+"$real_reader" "$profile_config"
+
+# The existing parser preserves Unicode escapes in keys. Match the daemon
+# reader's conservative result rather than interpreting the key in shell.
+cat > "$profile_config" <<'EOF'
+["daemon"]
+"\u0070rofile" = true
+EOF
+if "$real_reader" "$profile_config"; then exit 1; fi
+cat > "$profile_config" <<'EOF'
+[daemon]
+profile = false
+EOF
+if "$real_reader" "$profile_config"; then exit 1; fi
+cat > "$profile_config" <<'EOF'
+[daemon]
+profile = "invalid"
+EOF
+if "$real_reader" "$profile_config"; then exit 1; fi
+cat > "$profile_config" <<'EOF'
+[daemon
+profile = true
+EOF
+if "$real_reader" "$profile_config"; then exit 1; fi
+
 mkdir -p "$state/bin"
 
 cat > "$state/bin/erl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$*" == *'tom:get_bool'* ]]; then
+  config="${!#}"
+  if rg -q 'profile[[:space:]]*=[[:space:]]*true' "$config"; then exit 0; fi
+  exit 1
+fi
 printf '%s\n' "$@" > "$FAKE_ERL_ARGS"
 printf '%s\n' "$HOME" > "$FAKE_ERL_HOME"
 printf '%s\n' "${LOOM_DAEMON_PROFILE:-}" > "$FAKE_ERL_DAEMON_PROFILE"
@@ -165,6 +224,11 @@ export FAKE_ERL_DAEMON_PROFILE="$state/erl.daemon-profile"
 ! rg -F -- '--profile' "$FAKE_ERL_ARGS"
 [[ "$(cat "$FAKE_ERL_HOME")" == "$state/slim/tokens"/* ]]
 [[ "$(cat "$FAKE_ERL_DAEMON_PROFILE")" == 1 ]]
+
+/bin/bash "$ROOT/bin/loom" --state-dir "$state/default-config"
+rg -Fx -- -name "$FAKE_ERL_ARGS"
+[[ "$(cat "$FAKE_ERL_DAEMON_PROFILE")" == 1 ]]
+[[ "$(cat "$FAKE_ERL_HOME")" == "$state/default-config/tokens"/* ]]
 
 /bin/bash "$ROOT/bin/loom" --token --profile
 rg -Fx -- --profile "$FAKE_ERL_ARGS"
@@ -209,7 +273,8 @@ for invocation in \
   "daemon ext list" "daemon access --help" "daemon --state-dir $exit_state --help" \
   "client --help" "client -h" "client help" "client --profile --help" \
   "client access list" "client claim --profile" "client enroll" "client update" \
-  "client sessions" "client replay x.jsonl"; do
+  "client sessions" "client replay x.jsonl" "client ui" "client --ui" \
+  "client --state-dir $exit_state --ui"; do
   read -r -a words <<< "$invocation"
   role="${words[0]}"
   banner="$(loom_profile_consume "$role" "${words[@]:1}" --state-dir "$exit_state" --config "$profile_config" 2>&1)"
