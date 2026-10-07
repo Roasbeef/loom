@@ -28,6 +28,13 @@
 //// shared SQL recovery. `release_owned` observes successful explicit close and
 //// the original DOWN; `shutdown_owned` cannot turn failed close into normal proof.
 ////
+//// `park_fresh` links a resource-free original to its permanent starter.
+//// `initialise_fresh` installs acquired SQL before shared setup; `release_fresh`
+//// requires checked close ACK and original normal DOWN. `handle` preserves that
+//// custody through all live operations and failed setup cleanup.
+//// `shutdown_live_connection` prevents failed SQL close from yielding normal exit.
+//// Parent-death cleanup is best effort, never complete physical retirement proof.
+////
 //// ## Flow
 ////
 //// `fresh` and `recover` enter `setup` then `load`. Calls enter `exchange` and
@@ -123,12 +130,126 @@ type Snapshot {
   Snapshot(book: admission.Book, version: Int, bytes: Int)
 }
 
+/// Checked immutable live creation inputs, without an open connection.
+@internal
+pub opaque type FreshInput {
+  /// The exact configuration retained before the original actor starts.
+  FreshInput(
+    /// Absolute original path, full scope and checked lifetime ceilings.
+    config: Config,
+  )
+}
+
+/// The original linked, resource-free child recorded by its permanent parent.
+@internal
+pub opaque type ParkedFresh {
+  /// This exact original endpoint, PID, parent and input cannot be replaced.
+  ParkedFresh(
+    /// The same original serialized business endpoint.
+    subject: process.Subject(Message),
+    /// The original connection-owning child, never a replacement lookup.
+    pid: process.Pid,
+    /// The actual process that called linked construction.
+    parent: process.Pid,
+    /// The immutable inputs retained before startup.
+    input: FreshInput,
+  )
+}
+
+/// Successful initialization of that same original child, with live operations.
+@internal
+pub opaque type LiveFresh {
+  /// Readiness binds the original parked handle to its one business endpoint.
+  LiveFresh(
+    /// The same recorded original child and immutable parent binding.
+    original: ParkedFresh,
+    /// Its live business endpoint after successful metadata COMMIT.
+    journal: Journal,
+  )
+}
+
+/// Closed original boundaries for parent-owned live construction controls.
+@internal
+pub type FreshCheckpoint {
+  /// Resource-free startup has not yet acknowledged the actual parent.
+  BeforeFreshStartAck
+
+  /// The recorded original is about to open its immutable Fresh path.
+  BeforeFreshSqlOpen
+
+  /// The actual SQL connection is installed before the fallible setup turn.
+  AfterFreshOpen
+
+  /// Schema and immutable metadata committed before live readiness publication.
+  BeforeFreshReadyReply
+
+  /// The actual connection is about to close before its explicit reply.
+  BeforeFreshCloseReply
+
+  /// Successful explicit close precedes the original normal DOWN.
+  AfterFreshCloseBeforeExit
+}
+
+/// Production has no deterministic checkpoint or injected close failure.
+@internal
+pub type FreshProbe {
+  /// Production immediately continues the actual operation.
+  FreshUnobserved
+
+  /// A test observes only a closed original boundary and its one permit.
+  FreshObserved(
+    /// The test-owned observer of closed original boundaries.
+    subject: process.Subject(FreshObservation),
+  )
+}
+
+/// One original live actor reports before awaiting its closed test permit.
+@internal
+pub type FreshObservation {
+  /// The exact original actor owns the fresh single-boundary permit subject.
+  FreshObservation(
+    /// The closed original operation boundary.
+    checkpoint: FreshCheckpoint,
+    /// The actual original actor at that boundary.
+    owner: process.Pid,
+    /// Its one-boundary permit, never an arbitrary callback.
+    permit: process.Subject(RecoveryPermit),
+  )
+}
+
+type LiveCustody {
+  LegacyCustody
+  ParentCustody(parent: process.Pid, probe: FreshProbe)
+}
+
 type State {
-  Waiting(config: Config)
-  Ready(config: Config, connection: sqlight.Connection, snapshot: Snapshot)
+  Waiting(config: Config, custody: LiveCustody)
+  Ready(
+    config: Config,
+    connection: sqlight.Connection,
+    snapshot: Snapshot,
+    custody: LiveCustody,
+  )
+
+  // This state owns the connection before setup can fail or commit.
+  AcquiredFresh(
+    config: Config,
+    connection: sqlight.Connection,
+    custody: LiveCustody,
+    reply: process.Subject(Result(Nil, Error)),
+  )
+
+  // Normal final exit can only follow successful explicit SQL close.
+  ReleasedFresh(probe: FreshProbe)
+
+  // Failed close preserves the real connection for abnormal shutdown cleanup.
+  FailedCloseFresh(connection: sqlight.Connection)
 }
 
 type Message {
+  InitialiseFresh(process.Subject(Result(Nil, Error)))
+  FinishFresh
+  StopFresh
   Initialise(mode: Mode, reply: process.Subject(Result(Nil, Error)))
   Change(
     command: codec.Command,
@@ -431,6 +552,128 @@ pub fn release(journal: Journal) -> Result(Nil, Error) {
   case exchange(journal, Release) {
     Error(Closed) -> Ok(Nil)
     outcome -> outcome
+  }
+}
+
+/// Checks exact live creation inputs without opening SQLite.
+///
+/// ## Examples
+/// `fresh_input` alone grants no live Journal or execution claim.
+@internal
+pub fn fresh_input(
+  path: String,
+  scope: identity.Scope,
+  capacity: admission.Capacity,
+) -> Result(FreshInput, Error) {
+  use Nil <- result.try(valid_owned_path(path))
+  Ok(FreshInput(Config(path, scope, capacity)))
+}
+
+/// Starts a linked resource-free child from the actual permanent parent.
+///
+/// ## Examples
+/// The host records `park_fresh(input)` before asking it to initialize.
+@internal
+pub fn park_fresh(input: FreshInput) -> Result(ParkedFresh, Error) {
+  park_fresh_observed(input, FreshUnobserved)
+}
+
+/// Adds closed original checkpoints for real SQLite lifecycle controls.
+///
+/// ## Examples
+/// Production uses `park_fresh` without a test probe.
+@internal
+pub fn park_fresh_observed(
+  input: FreshInput,
+  probe: FreshProbe,
+) -> Result(ParkedFresh, Error) {
+  let parent = process.self()
+  use started <- result.try(
+    actor.new_with_initialiser(1000, fn(subject) {
+      let _ = fresh_checkpoint(probe, BeforeFreshStartAck)
+      Ok(
+        actor.initialised(Waiting(input.config, ParentCustody(parent, probe)))
+        |> actor.returning(subject),
+      )
+    })
+    |> actor.trapping_exits(True)
+    |> actor.on_message(handle)
+    |> actor.on_shutdown(shutdown)
+    |> actor.start
+    |> result.replace_error(StartFailed),
+  )
+  Ok(ParkedFresh(started.data, started.pid, parent, input))
+}
+
+/// Names this exact original child for the host's bounded staged ownership.
+///
+/// ## Examples
+/// `fresh_owner(parked)` never performs a registry or replacement lookup.
+@internal
+pub fn fresh_owner(original: ParkedFresh) -> process.Pid {
+  original.pid
+}
+
+/// Initializes only the original recorded child and exposes one live endpoint.
+///
+/// ## Examples
+/// Duplicate initialization cannot mint another `LiveFresh`.
+@internal
+pub fn initialise_fresh(original: ParkedFresh) -> Result(LiveFresh, Error) {
+  let book = Journal(original.subject, original.input.config.scope)
+  use Nil <- result.try(exchange(book, InitialiseFresh))
+  Ok(LiveFresh(original, book))
+}
+
+/// Projects the original business Journal only from successful live readiness.
+///
+/// ## Examples
+/// Services use `fresh_journal(ready)` with their existing execution methods.
+@internal
+pub fn fresh_journal(ready: LiveFresh) -> Journal {
+  ready.journal
+}
+
+/// Requires explicit close acknowledgement and the original normal DOWN.
+///
+/// ## Examples
+/// Lost reply, late monitoring and abnormal close remain Uncertain.
+@internal
+pub fn release_fresh(original: ParkedFresh) -> Result(Nil, Error) {
+  let watch = process.monitor(original.pid)
+  let outcome = {
+    use Nil <- result.try(exchange(
+      Journal(original.subject, original.input.config.scope),
+      Release,
+    ))
+    owned_down(watch)
+  }
+  process.demonitor_process(watch)
+  outcome |> result.replace_error(Uncertain)
+}
+
+/// Validates the original full scope and actual permanent starter identity.
+///
+/// ## Examples
+/// Resource calls this before park and again before opening its own SQL.
+@internal
+pub fn validate_fresh_dependency(
+  ready: LiveFresh,
+  expected_scope: identity.Scope,
+  expected_parent: process.Pid,
+) -> Result(Journal, Error) {
+  use Nil <- result.try(
+    case
+      ready.original.parent == expected_parent
+      && ready.journal.scope == expected_scope
+    {
+      True -> Ok(Nil)
+      False -> Error(BindingMismatch)
+    },
+  )
+  case process.is_alive(ready.original.pid) {
+    True -> Ok(ready.journal)
+    False -> Error(Closed)
   }
 }
 
@@ -913,7 +1156,7 @@ fn start(config: Config, mode: Mode) -> Result(Journal, Error) {
     },
   )
   use started <- result.try(
-    actor.new(Waiting(config))
+    actor.new(Waiting(config, LegacyCustody))
     |> actor.on_message(handle)
     |> actor.on_shutdown(shutdown)
     |> actor.unlinked
@@ -975,13 +1218,215 @@ fn require_decision(
   }
 }
 
+// Acquired state is installed before an injected setup turn. The admitted setup
+// may finish or COMMIT before a queued parent exit; this is not preemption.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  case state, message {
+    Waiting(config, custody), InitialiseFresh(reply) -> {
+      case custody {
+        LegacyCustody -> reject_live_message(state, message)
+        ParentCustody(..) -> {
+          let _ = fresh_checkpoint(live_probe(custody), BeforeFreshSqlOpen)
+          case open_fresh(config, custody) {
+            Ok(connection) ->
+              actor.continue(AcquiredFresh(config, connection, custody, reply))
+              |> actor.then_handle(FinishFresh)
+            Error(error) -> {
+              process.send(reply, Error(error))
+              actor.continue(ReleasedFresh(live_probe(custody)))
+              |> actor.then_handle(StopFresh)
+            }
+          }
+        }
+      }
+    }
+    AcquiredFresh(config, connection, custody, reply), FinishFresh -> {
+      let _ = fresh_checkpoint(live_probe(custody), AfterFreshOpen)
+      case setup(connection, config, Fresh) {
+        Ok(snapshot) -> {
+          let permit =
+            fresh_checkpoint(live_probe(custody), BeforeFreshReadyReply)
+          recovery_reply(permit, reply, Ok(Nil))
+          actor.continue(Ready(config, connection, snapshot, custody))
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          stop_live_connection(connection, custody)
+        }
+      }
+    }
+    ReleasedFresh(probe), StopFresh -> {
+      let _ = fresh_checkpoint(probe, AfterFreshCloseBeforeExit)
+      actor.stop()
+    }
+    FailedCloseFresh(_), StopFresh ->
+      actor.stop_abnormal("live Fresh SQL close failed")
+    Waiting(..), FinishFresh
+    | Ready(..), FinishFresh
+    | ReleasedFresh(_), FinishFresh
+    | FailedCloseFresh(_), FinishFresh
+    | Waiting(..), StopFresh
+    | Ready(..), StopFresh
+    | AcquiredFresh(..), StopFresh
+    -> actor.stop_abnormal("live Fresh invalid lifecycle turn")
+    _, _ -> handle_business(state, message)
+  }
+}
+
+/// Reports one closed live boundary; production immediately continues.
+///
+/// ## Examples
+/// A test permits the exact original actor through its reported subject.
+@internal
+pub fn fresh_checkpoint(
+  probe: FreshProbe,
+  checkpoint: FreshCheckpoint,
+) -> RecoveryPermit {
+  case probe {
+    FreshUnobserved -> Proceed
+    FreshObserved(subject) -> {
+      let permit = process.new_subject()
+      process.send(
+        subject,
+        FreshObservation(checkpoint, process.self(), permit),
+      )
+      process.new_selector()
+      |> process.select(permit)
+      |> process.selector_receive_forever()
+    }
+  }
+}
+
+fn live_probe(custody: LiveCustody) -> FreshProbe {
+  case custody {
+    LegacyCustody -> FreshUnobserved
+    ParentCustody(_, probe) -> probe
+  }
+}
+
+fn open_fresh(
+  config: Config,
+  _custody: LiveCustody,
+) -> Result(sqlight.Connection, Error) {
+  use exists <- result.try(
+    simplifile.exists(config.path, False) |> result.replace_error(Uncertain),
+  )
+  use Nil <- result.try(case exists {
+    True -> Error(AlreadyExists)
+    False -> Ok(Nil)
+  })
+  sqlight.open(config.path) |> sql_error
+}
+
+fn release_live_connection(
+  connection: sqlight.Connection,
+  custody: LiveCustody,
+  reply: process.Subject(Result(Nil, Error)),
+) -> actor.Next(State, Message) {
+  case custody {
+    LegacyCustody -> {
+      process.send(reply, sqlight.close(connection) |> sql_error)
+      actor.stop()
+    }
+    ParentCustody(..) -> {
+      let probe = live_probe(custody)
+      let permit = fresh_checkpoint(probe, BeforeFreshCloseReply)
+      let closed = close_owned_connection(connection, permit)
+      recovery_reply(permit, reply, closed)
+      finish_live_close(connection, probe, closed)
+    }
+  }
+}
+
+fn stop_live_connection(
+  connection: sqlight.Connection,
+  custody: LiveCustody,
+) -> actor.Next(State, Message) {
+  case custody {
+    LegacyCustody -> {
+      actor.stop()
+    }
+    ParentCustody(..) -> {
+      let probe = live_probe(custody)
+      let permit = fresh_checkpoint(probe, BeforeFreshCloseReply)
+      finish_live_close(
+        connection,
+        probe,
+        close_owned_connection(connection, permit),
+      )
+    }
+  }
+}
+
+// Legacy settlement completes rollback and close before publishing its error.
+// Owned settlement publishes first, then retains checked original close custody.
+fn stop_settlement_connection(
+  connection: sqlight.Connection,
+  custody: LiveCustody,
+  error: Error,
+  reply: process.Subject(Result(a, Error)),
+) -> actor.Next(State, Message) {
+  case custody {
+    LegacyCustody -> {
+      let _ = sqlight.exec("ROLLBACK", connection)
+      let _ = sqlight.close(connection)
+      process.send(reply, Error(error))
+      actor.stop()
+    }
+    ParentCustody(..) -> {
+      process.send(reply, Error(error))
+      stop_live_connection(connection, custody)
+    }
+  }
+}
+
+fn finish_live_close(
+  connection: sqlight.Connection,
+  probe: FreshProbe,
+  closed: Result(Nil, Error),
+) -> actor.Next(State, Message) {
+  case closed {
+    Ok(Nil) ->
+      actor.continue(ReleasedFresh(probe)) |> actor.then_handle(StopFresh)
+    Error(_) ->
+      actor.continue(FailedCloseFresh(connection))
+      |> actor.then_handle(StopFresh)
+  }
+}
+
+fn shutdown_live_connection(connection: sqlight.Connection) -> Nil {
+  case sqlight.close(connection) {
+    Ok(Nil) -> Nil
+    Error(_) -> process.kill(process.self())
+  }
+}
+
+fn reject_live_message(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
+  case message {
+    Initialise(_, reply) | InitialiseFresh(reply) | Release(reply) ->
+      process.send(reply, Error(Closed))
+    Change(_, reply) -> process.send(reply, Error(Closed))
+    Inspect(_, _, reply) -> process.send(reply, Error(Closed))
+    PutPayload(_, _, _, reply) -> process.send(reply, Error(Closed))
+    ReadPayload(_, _, reply) -> process.send(reply, Error(Closed))
+    FinishFresh | StopFresh -> Nil
+  }
+  actor.continue(state)
+}
+
+fn handle_business(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
   case message, state {
-    Initialise(mode, reply), Waiting(config) -> {
+    Initialise(mode, reply), Waiting(config, LegacyCustody) -> {
       case initialise(config, mode) {
         Ok(#(connection, snapshot)) -> {
           process.send(reply, Ok(Nil))
-          actor.continue(Ready(config, connection, snapshot))
+          actor.continue(Ready(config, connection, snapshot, LegacyCustody))
         }
         Error(error) -> {
           process.send(reply, Error(error))
@@ -989,59 +1434,70 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
       }
     }
-    Change(command, reply), Ready(config, connection, snapshot) -> {
+    Change(command, reply), Ready(config, connection, snapshot, custody) -> {
       let outcome = transact(connection, config, snapshot, command)
-      settle_change(outcome, config, connection, snapshot, reply)
+      settle_change(outcome, config, connection, snapshot, custody, reply)
     }
-    Inspect(key, digest, reply), Ready(config, connection, snapshot) -> {
+    Inspect(key, digest, reply), Ready(config, connection, snapshot, custody) -> {
       let outcome = read_current(connection, config, snapshot)
-      settle_inspect(outcome, config, connection, key, digest, reply)
+      settle_inspect(outcome, config, connection, custody, key, digest, reply)
     }
-    PutPayload(key, digest, item, reply), Ready(config, connection, snapshot) -> {
+    PutPayload(key, digest, item, reply),
+      Ready(config, connection, snapshot, custody)
+    -> {
       let outcome =
         payload_write(connection, config, snapshot, key, digest, item)
       process.send(reply, outcome)
       case outcome {
         Ok(_) | Error(Rejected(_)) -> actor.continue(state)
-        Error(_) -> actor.stop()
+        Error(_) -> stop_live_connection(connection, custody)
       }
     }
-    ReadPayload(key, digest, reply), Ready(config, connection, _) -> {
+    ReadPayload(key, digest, reply), Ready(config, connection, _, custody) -> {
       let outcome = read_payload(connection, config, key, digest)
       process.send(reply, outcome)
       case outcome {
         Ok(_) | Error(Rejected(_)) -> actor.continue(state)
-        Error(_) -> actor.stop()
+        Error(_) -> stop_live_connection(connection, custody)
       }
     }
-    PutPayload(_, _, _, reply), Waiting(_) -> {
+    PutPayload(_, _, _, reply), Waiting(_, _) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    ReadPayload(_, _, reply), Waiting(_) -> {
+    ReadPayload(_, _, reply), Waiting(_, _) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    Release(reply), Ready(_, connection, _) -> {
-      process.send(reply, sqlight.close(connection) |> sql_error)
-      actor.stop()
+    Release(reply), Ready(_, connection, _, custody) -> {
+      release_live_connection(connection, custody, reply)
     }
-    Release(reply), Waiting(_) -> {
+    Release(reply), Waiting(_, custody) -> {
       process.send(reply, Ok(Nil))
-      actor.stop()
+      case custody {
+        LegacyCustody -> actor.stop()
+        ParentCustody(_, probe) ->
+          actor.continue(ReleasedFresh(probe)) |> actor.then_handle(StopFresh)
+      }
     }
-    Initialise(_, reply), Ready(_, _, _) -> {
+    Initialise(_, reply), Ready(_, _, _, _) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    Change(_, reply), Waiting(_) -> {
+    Change(_, reply), Waiting(_, _) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    Inspect(_, _, reply), Waiting(_) -> {
+    Inspect(_, _, reply), Waiting(_, _) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
+    Initialise(_, _), Waiting(_, ParentCustody(..)) ->
+      reject_live_message(state, message)
+    _, AcquiredFresh(..) | _, ReleasedFresh(_) | _, FailedCloseFresh(_) ->
+      reject_live_message(state, message)
+    InitialiseFresh(_), _ | FinishFresh, _ | StopFresh, _ ->
+      reject_live_message(state, message)
   }
 }
 
@@ -1360,25 +1816,23 @@ fn settle_change(
   config: Config,
   connection: sqlight.Connection,
   previous: Snapshot,
+  custody: LiveCustody,
   reply: process.Subject(Result(Option(Decision), Error)),
 ) -> actor.Next(State, Message) {
   case outcome {
     Ok(#(snapshot, decision)) -> {
       process.send(reply, Ok(decision))
-      actor.continue(Ready(config, connection, snapshot))
+      actor.continue(Ready(config, connection, snapshot, custody))
     }
     Error(Rejected(reason)) -> {
       process.send(reply, Error(Rejected(reason)))
 
       // A reducer rejection rolled back safely. A cached older version stays
       // valid: the next transaction reloads if another connection advanced it.
-      actor.continue(Ready(config, connection, previous))
+      actor.continue(Ready(config, connection, previous, custody))
     }
     Error(error) -> {
-      let _ = sqlight.exec("ROLLBACK", connection)
-      let _ = sqlight.close(connection)
-      process.send(reply, Error(error))
-      actor.stop()
+      stop_settlement_connection(connection, custody, error, reply)
     }
   }
 }
@@ -1387,6 +1841,7 @@ fn settle_inspect(
   outcome: Result(Snapshot, Error),
   config: Config,
   connection: sqlight.Connection,
+  custody: LiveCustody,
   key: identity.RequestKey,
   digest: identity.Digest,
   reply: process.Subject(Result(admission.Evidence, Error)),
@@ -1398,13 +1853,10 @@ fn settle_inspect(
         admission.inspect(snapshot.book, key, digest)
           |> result.map_error(Rejected),
       )
-      actor.continue(Ready(config, connection, snapshot))
+      actor.continue(Ready(config, connection, snapshot, custody))
     }
     Error(error) -> {
-      let _ = sqlight.exec("ROLLBACK", connection)
-      let _ = sqlight.close(connection)
-      process.send(reply, Error(error))
-      actor.stop()
+      stop_settlement_connection(connection, custody, error, reply)
     }
   }
 }
@@ -1453,11 +1905,18 @@ fn sql_error(value: Result(a, sqlight.Error)) -> Result(a, Error) {
 
 fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
   case state {
-    Ready(_, connection, _) -> {
-      let _ = sqlight.close(connection)
-      Nil
+    Ready(_, connection, _, custody) -> {
+      case custody {
+        LegacyCustody -> {
+          let _ = sqlight.close(connection)
+          Nil
+        }
+        ParentCustody(..) -> shutdown_live_connection(connection)
+      }
     }
-    Waiting(_) -> Nil
+    AcquiredFresh(_, connection, _, _) | FailedCloseFresh(connection) ->
+      shutdown_live_connection(connection)
+    Waiting(_, _) | ReleasedFresh(_) -> Nil
   }
 }
 
