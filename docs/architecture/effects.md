@@ -328,6 +328,75 @@ Five names are refused from both lists: `PATH`, `HOME`, `TMPDIR`,
 taking them from a config file could select a different compiler or
 source the operator's dotfiles inside the jail.
 
+### Go caches
+
+A jailed tool's `HOME` is `<workspace>/.codemode/home`, so Go's default
+caches (`go-build` under the home's cache directory, and `go/pkg/mod`)
+landed inside the operator's checkout. One checkout held 20 GB of build
+cache and 2.4 GB of module cache there, a Docker build context reached
+23 GB, nothing trimmed them by size, and every module was downloaded
+again although the host module cache held it.
+
+The session now sets `GOCACHE`, `GOMODCACHE` and `GOLANGCI_LINT_CACHE`
+to directories under `<cache>/loom/workspace/<sha256 of the workspace
+path>`, where `<cache>` is the per-user cache directory the language
+servers' private caches use (`~/Library/Caches` on macOS, `$XDG_CACHE_HOME`
+or `~/.cache` elsewhere). The directory is a writable root of the session
+base, granted exactly as a linked worktree's git directories are: the
+sandbox profile on macOS and a bubblewrap bind on Linux, both derived from
+`writable_roots`. Sessions in one workspace share it, and workspaces never
+share one. Existing `.codemode/home/...` caches are not deleted; an
+operator may remove them. Without a per-user cache directory the variables
+are not set and Go writes under the tool `HOME` as before.
+
+The build cache is never the host's own `GOCACHE`. `go build` trusts the
+entries it finds there and does not re-verify that an object matches the
+inputs its key names, so a jailed tool that could write the host cache
+could plant an object that the operator's next unjailed build links into
+a binary. The language servers' caches are private for the same reason
+(ADR-016). The module cache is private too, though modules are checked
+against `go.sum`, so one rule covers both and the host's module directory
+is never writable from the jail.
+
+`[workspace] go_module_mirror` names the host's module cache. Its
+`cache/download` directory is already a module proxy tree, so it is
+mounted read-only and `GOPROXY` becomes
+`file://<mirror>/cache/download,https://proxy.golang.org,direct`. Go
+falls through to the next entry when a module is not found; a module
+taken from the mirror is verified against `go.sum` and the checksum
+database and extracted into the private module cache. At boot the path
+must exist, hold `cache/download`, and not overlap the workspace, a masked
+path or the private directory. `[tools]` may not name `GOCACHE`,
+`GOMODCACHE`, `GOLANGCI_LINT_CACHE`, or `GOPROXY` when a mirror is set.
+
+`[workspace] go_cache_limit_mib` (default 10240) bounds the build cache.
+Go itself only drops entries unused for about five days. At session start
+a weft task measures the cache with `du -sk` and, when it is over the
+limit, renames it to `<root>.trash-<unique>`, a sibling of the root in its non-writable parent, creates
+an empty replacement and deletes the renamed tree. The rename is atomic,
+so another live session in the workspace sees either the old cache or an
+empty one, never a half-deleted one: files it holds open stay readable and
+new opens find the replacement, a bare directory made with a
+non-recursive `mkdir` (a recursive one would follow a link the jail
+planted there) that Go fills in at its next open. The residual case is a
+build that held the old cache open, or wrote an entry just before the
+rename and reads it back by path just after; that build fails once with
+a missing-file error and a retry succeeds. The trim only runs when the cache is already over the limit at
+session start. The tree leaves the root before it is deleted, because
+the root is writable from the jail and `del_dir_r` is path based: a
+jailed process could swap a directory for a link mid-delete and the
+daemon would delete the link target. The sweep lists the parent, never
+reads inside the root, and `rename` moves a planted link rather than
+following it. The residual is a jailed process that held a directory
+descriptor inside `go-build` across the rename, which can disturb the
+deletion but not redirect it. A task cut short leaves a `.trash-*`
+directory that the next session start sweeps. When the workspace
+contains the cache directory (a workspace of `$HOME`), the root would be
+jail-replaceable, so no private caches are set and Go keeps its old
+location. Only the build cache is
+trimmed: module-cache files are read-only by design, and the mirror
+refills the set.
+
 The helper supplies `LOOM_SCRATCH_DIR` after allocating scratch, and the
 variable passes through the same environment allowlist. On macOS it
 names the private scratch directory. On Linux it names `/tmp` only when

@@ -82,6 +82,7 @@ import client/glancepace
 import client/goalcheck
 import client/goalcommand
 import client/goalloop
+import client/gocache
 import client/history
 import client/hookcompat
 import client/hookrunner
@@ -499,6 +500,10 @@ pub type Settings {
     /// `schedules` take: a server nobody configured an advisor for runs
     /// exactly the strands it ran before advisors existed.
     advisor: Option(advisor.Settings),
+    /// The workspace's private Go caches (`client/gocache`), or `None`
+    /// when the daemon has no per-user cache directory to hold them. Go
+    /// then keeps writing under the tool `HOME`, as it did before.
+    go_caches: Option(gocache.GoCaches),
   )
 }
 
@@ -1525,6 +1530,12 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       network: option.unwrap(flags.network, tools.network),
     ),
     advisor: advisor_settings(gateway, advisor_config),
+    go_caches: gocache.locate(
+      lsp_places().cache,
+      workspace,
+      workspace_config.go_module_mirror,
+      workspace_config.go_cache_limit_mib,
+    ),
   ))
 }
 
@@ -3476,14 +3487,29 @@ fn assemble_in(
   // a base policy the sandbox cannot enforce is a boot failure, not a
   // surprise waiting in the first tool call. See `base_policy_fault`.
   use Nil <- result.try(base_policy_fault(base_policy))
+  use Nil <- result.try(go_cache_fault(settings, base_policy))
   let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
   let tmp_dir = settings.session_path <> ".tmp"
-  use Nil <- result.try(
-    prepare_directories(settings, blob_root, tmp_dir, [
-      tool_tmp_directory(settings.workspace),
-      tool_home_directory(settings.workspace),
-    ]),
-  )
+  let go_directories =
+    option.map(settings.go_caches, gocache.directories) |> option.unwrap([])
+  use Nil <- result.try(prepare_directories(
+    settings,
+    blob_root,
+    tmp_dir,
+    list.append(
+      [
+        tool_tmp_directory(settings.workspace),
+        tool_home_directory(settings.workspace),
+      ],
+      go_directories,
+    ),
+  ))
+
+  // The trim and the sweep of retired caches run beside the session, not
+  // before it, so a large cache costs the first prompt nothing. See
+  // `client/gocache` for why the retire is a rename.
+  let _maintenance =
+    option.map(settings.go_caches, gocache.start_maintenance(_, logger))
 
   // One clock function, therefore one era, across session, broker,
   // tools, and provider — the shared-clock requirement the M2
@@ -3813,6 +3839,7 @@ fn assemble_in(
     tool_environment(
       settings.workspace,
       option.map(code_mode_host, fn(config) { config.toolchain_path }),
+      settings.go_caches,
       settings.tools,
       reading: fn(name) { secret.lookup(settings.secrets, name) },
     )
@@ -3822,6 +3849,20 @@ fn assemble_in(
   // reported the same way and at the same moment: the name and why, and
   // never the command's output.
   log_secret_failures(settings.secret_failures, logger)
+
+  // Logged once per session, after storage has accepted the identity, so a
+  // refused assembly stays silent.
+  case settings.go_caches {
+    Some(_) -> Nil
+    None ->
+      log.info(logger, "go_cache.disabled", [
+        field.text(
+          key: "reason",
+          value: "no per-user cache directory, or the workspace contains it;"
+            <> " Go caches stay under the tool HOME",
+        ),
+      ])
+  }
 
   // A routed advisor the gateway could not resolve is the same class of
   // event, and the same treatment: one warned line, and a session that
@@ -5177,10 +5218,24 @@ const hook_step_id = "extension-hooks"
 ///   the helper replaces it with its actual scratch path, or omits it
 ///   when no scratch exists. `TMPDIR` remains the writable fallback.
 ///
+/// When `go_caches` is set the environment also carries `GOCACHE`,
+/// `GOMODCACHE` and `GOLANGCI_LINT_CACHE`, which point at the workspace's
+/// private directory outside the checkout, and `GOPROXY` when a module
+/// mirror is configured. Without them Go would write both caches under the
+/// `HOME` above, inside the operator's tree. `client/gocache` says why the
+/// build cache is never the host's.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// assert serve.session_environment("/work", option.None)
+/// // With go_caches rooted at /c/loom/workspace/ab, the list ends:
+/// //   #("GOCACHE", "/c/loom/workspace/ab/go-build"),
+/// //   #("GOMODCACHE", "/c/loom/workspace/ab/gomod"),
+/// //   #("GOLANGCI_LINT_CACHE", "/c/loom/workspace/ab/golangci-lint"),
+/// ```
+///
+/// ```gleam
+/// assert serve.session_environment("/work", option.None, option.None)
 ///   == [
 ///     #("PATH", "/usr/local/bin:/usr/bin:/bin"),
 ///     #("HOME", "/work/.codemode/home"),
@@ -5194,17 +5249,22 @@ const hook_step_id = "extension-hooks"
 pub fn session_environment(
   workspace: String,
   toolchain_path: Option(String),
+  go_caches: Option(gocache.GoCaches),
 ) -> List(#(String, String)) {
-  [
-    #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
-    #("HOME", tool_home_directory(workspace)),
-    #(
-      git_identity.environment_name,
-      tool_home_directory(workspace) <> "/gitconfig",
-    ),
-    #("TMPDIR", tool_tmp_directory(workspace)),
-    #("LOOM_SCRATCH_DIR", ""),
-  ]
+  let go = option.map(go_caches, gocache.environment) |> option.unwrap([])
+  list.append(
+    [
+      #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
+      #("HOME", tool_home_directory(workspace)),
+      #(
+        git_identity.environment_name,
+        tool_home_directory(workspace) <> "/gitconfig",
+      ),
+      #("TMPDIR", tool_tmp_directory(workspace)),
+      #("LOOM_SCRATCH_DIR", ""),
+    ],
+    go,
+  )
 }
 
 /// Where a jailed tool's `HOME` points: a directory of its own beneath
@@ -5254,6 +5314,7 @@ pub fn tool_home_directory(workspace: String) -> String {
 pub fn tool_environment(
   workspace: String,
   toolchain_path: Option(String),
+  go_caches: Option(gocache.GoCaches),
   tools: catalog.ToolsConfig,
   reading reading: fn(String) -> Result(String, Nil),
 ) -> #(List(#(String, String)), List(String)) {
@@ -5267,7 +5328,7 @@ pub fn tool_environment(
     |> result.unwrap([])
     |> list.filter(fn(path) { path != "" })
   let owned =
-    session_environment(workspace, toolchain_path)
+    session_environment(workspace, toolchain_path, go_caches)
     |> extending_path(list.append(tools.path, inherited_path))
 
   // A pass-through name settles one of two ways, so the fold carries
@@ -5832,6 +5893,7 @@ pub fn session_base(
   |> allowing_imported_hook_env
   |> under_tools_config(settings.tools)
   |> widening_linked_worktree(settings.workspace)
+  |> gocache.admitting(settings.go_caches)
   |> admitting_codemode(toolchain)
   |> merging_mounts
 }
@@ -6076,6 +6138,29 @@ fn await_death(pid: Pid, remaining_ms: Int) -> Nil {
 
     // The probe never fails outright; the arm is exhaustiveness.
     poll.Failed(Nil) -> Nil
+  }
+}
+
+// The Go caches' boot refusals against the composed base, so the masked
+// paths of this session are all known. Absent caches have nothing to
+// refuse.
+fn go_cache_fault(
+  settings: Settings,
+  base: policy.SandboxPolicy,
+) -> Result(Nil, String) {
+  case settings.go_caches {
+    None -> Ok(Nil)
+    Some(caches) ->
+      gocache.fault(
+        caches,
+        settings.workspace,
+        base.protected,
+        base.mounts,
+        tools_naming: list.append(
+          settings.tools.env,
+          list.map(settings.tools.set, fn(pair) { pair.0 }),
+        ),
+      )
   }
 }
 

@@ -542,7 +542,7 @@ fn assembled(
       step_id: "hookserve-fixture",
       workspace: ground.workspace,
       env: serve.hook_environment(
-        serve.session_environment(ground.workspace, None),
+        serve.session_environment(ground.workspace, None, None),
         Some(ground.home),
         ground.workspace,
       ),

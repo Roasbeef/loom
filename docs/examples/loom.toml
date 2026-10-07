@@ -496,6 +496,15 @@ model_created = "steer"
 read_scope = "host"
 # read_scope = "workspace"
 # mounts = [{ path = "/absolute/shared/data", access = "ro" }]
+#
+# Go's build and module caches for jailed tools live in a private
+# per-workspace directory under the user cache directory, never in the
+# checkout and never the host's own GOCACHE. The build cache is retired
+# (renamed away and deleted) at session start when it exceeds this size.
+# go_cache_limit_mib = 10240
+# Offer the host module cache as a read-only module proxy, so modules are
+# not downloaded again. Must hold cache/download (`go env GOMODCACHE`).
+# go_module_mirror = "/home/me/go/pkg/mod"
 
 # network = "full" is the default, including when [tools] is absent.
 # network = "off" disables shell egress. Native search is always offline.

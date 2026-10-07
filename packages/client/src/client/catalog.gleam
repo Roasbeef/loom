@@ -112,6 +112,8 @@
 ////
 //// [workspace]                        # optional; see `parse_workspace`
 //// mounts = [{ path = "/srv/data", access = "ro" }]
+//// go_cache_limit_mib = 10240         # Go build cache size that triggers a retire
+//// go_module_mirror = "/home/me/go/pkg/mod"   # host module cache, read-only
 //// ```
 ////
 //// The `[[rule]]` tables are the triggered project rules and are parsed
@@ -1272,15 +1274,30 @@ pub type ReadScope {
   WorkspaceReads
 }
 
-/// The `[workspace]` table selects read scope and explicit additional mounts.
+/// The `[workspace]` table selects read scope, explicit additional mounts,
+/// and how a workspace's private Go caches are bounded and seeded.
 pub type WorkspaceConfig {
   WorkspaceConfig(
     /// Host reads by default; workspace reads select a restricted view.
     read_scope: ReadScope,
     /// Additional operator-authorized read-only or writable regions.
     mounts: List(WorkspaceMount),
+    /// The size, in MiB, above which a starting session retires the
+    /// workspace's Go build cache (`client/gocache`).
+    /// `default_go_cache_limit_mib` when the key is omitted.
+    go_cache_limit_mib: Int,
+    /// The operator's own Go module cache, offered to the jail read-only as
+    /// a module proxy. `None` when the key is omitted, and every module is
+    /// then downloaded into the private cache.
+    go_module_mirror: Option(String),
   )
 }
+
+/// The Go build cache size, in MiB, above which a session start retires
+/// the cache: 10 GiB. One busy checkout measured twice that, and a cold
+/// rebuild of the same checkout takes minutes, so the default bounds the
+/// disk cost without making the common case slow.
+pub const default_go_cache_limit_mib = 10_240
 
 /// The `[workspace]` table a file that omits it means: no mounts beyond
 /// what the harness derives.
@@ -1292,7 +1309,12 @@ pub type WorkspaceConfig {
 /// ```
 ///
 pub fn default_workspace() -> WorkspaceConfig {
-  WorkspaceConfig(read_scope: HostReads, mounts: [])
+  WorkspaceConfig(
+    read_scope: HostReads,
+    mounts: [],
+    go_cache_limit_mib: default_go_cache_limit_mib,
+    go_module_mirror: None,
+  )
 }
 
 /// Parses the optional `[workspace]` table out of the same `loom.toml`
@@ -1304,7 +1326,16 @@ pub fn default_workspace() -> WorkspaceConfig {
 ///   { path = "/srv/datasets", access = "ro" },
 ///   { path = "/var/cache/shared", access = "rw" },
 /// ]
+/// go_cache_limit_mib = 10240
+/// go_module_mirror = "/home/me/go/pkg/mod"
 /// ```
+///
+/// `go_cache_limit_mib` and `go_module_mirror` belong to the private Go
+/// caches of `client/gocache`. The limit is a positive integer. The mirror
+/// is an absolute path made only of characters a `GOPROXY` URL list carries
+/// unescaped. Whether it exists, is a module cache, and stays clear of the
+/// workspace and every masked path is judged at session boot, where the
+/// composed policy is known.
 ///
 /// Strict for the reason `parse_tools` is: every line here widens what a
 /// jailed shell can reach, so a relative path, an unrecognised access
@@ -1339,9 +1370,22 @@ fn workspace_table(
 ) -> Result(WorkspaceConfig, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["read_scope", "mounts"],
+    ["read_scope", "mounts", "go_cache_limit_mib", "go_module_mirror"],
     "[workspace]",
   ))
+  use go_cache_limit_mib <- result.try(
+    case dict.has_key(fields, "go_cache_limit_mib") {
+      True -> positive_int(fields, "workspace", "go_cache_limit_mib")
+      False -> Ok(default_go_cache_limit_mib)
+    },
+  )
+  use go_module_mirror <- result.try(
+    case optional_string(fields, "workspace", "go_module_mirror") {
+      Ok(Ok(path)) -> mirror_path(path) |> result.map(Some)
+      Ok(Error(Nil)) -> Ok(None)
+      Error(reason) -> Error(reason)
+    },
+  )
   use read_scope <- result.try(
     case optional_string(fields, "workspace", "read_scope") {
       Ok(Ok(word)) -> parse_read_scope(word)
@@ -1375,8 +1419,69 @@ fn workspace_table(
     })
     |> result.replace(Nil),
   )
-  Ok(WorkspaceConfig(read_scope:, mounts:))
+  Ok(WorkspaceConfig(
+    read_scope:,
+    mounts:,
+    go_cache_limit_mib:,
+    go_module_mirror:,
+  ))
 }
+
+// The mirror path is spliced into a `GOPROXY` value, a comma and pipe
+// separated list of URLs, as `file://<path>/cache/download`. Go parses
+// that as a URL, so a path with a separator, a `%`, a `?`, a `#` or a
+// space would be read as something other than the directory the operator
+// named. Refusing those characters here costs an operator with an unusual
+// path a worded error, and avoids writing a URL escaper whose mistakes
+// would send Go to a different directory. A trailing slash is dropped so
+// the same directory has one spelling, and the root itself is refused: it
+// is never a module cache and would make the read-only mount cover the
+// whole host.
+fn mirror_path(path: String) -> Result(String, String) {
+  let place = "[workspace] go_module_mirror"
+  let trimmed = case string.ends_with(path, "/") {
+    True -> string.drop_end(path, 1)
+    False -> path
+  }
+  let dotted =
+    list.any(string.split(trimmed, "/"), fn(segment) {
+      segment == ".." || segment == "."
+    })
+  case
+    string.starts_with(trimmed, "/"),
+    trimmed,
+    dotted,
+    mirror_path_clean(trimmed)
+  {
+    False, _, _, _ ->
+      Error(place <> " = \"" <> path <> "\" must be an absolute path")
+    True, "", _, _ -> Error(place <> " may not be the root directory")
+    True, _, True, _ ->
+      Error(
+        place
+        <> " = \""
+        <> path
+        <> "\" has a . or .. segment; name the directory itself",
+      )
+    True, _, False, False ->
+      Error(
+        place
+        <> " = \""
+        <> path
+        <> "\" may use only letters, digits and the characters . _ - + @ ~ /"
+        <> " because it becomes part of the GOPROXY URL list",
+      )
+    True, _, False, True -> Ok(trimmed)
+  }
+}
+
+fn mirror_path_clean(path: String) -> Bool {
+  string.to_graphemes(path)
+  |> list.all(fn(grapheme) { string.contains(mirror_path_alphabet, grapheme) })
+}
+
+const mirror_path_alphabet =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-+@~/"
 
 /// Decodes the same filesystem scope in configuration and daemon flags.
 ///

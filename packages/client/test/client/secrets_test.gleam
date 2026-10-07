@@ -297,7 +297,7 @@ pub fn a_resolved_value_reaches_a_jailed_tool_environment_test() {
     catalog.ToolsConfig(..catalog.default_tools(), env: ["GH_TOKEN", "ABSENT"])
 
   let #(environment, unset) =
-    serve.tool_environment("/work", None, tools, reading: fn(name) {
+    serve.tool_environment("/work", None, None, tools, reading: fn(name) {
       secret.lookup(store, name)
     })
   assert list.key_find(environment, "GH_TOKEN") == Ok("resolved-value")

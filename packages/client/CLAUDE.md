@@ -3931,6 +3931,40 @@ these forks because they define the same modules.
   Seatbelt system view grants `/Library` but not `/Applications`, so an
   Xcode.app toolchain's Git is unreadable there; it was already unreachable
   through the shim, which execs the same binary.
+- **A jailed Go tool's caches live outside the checkout, per workspace.**
+  `client/gocache` locates `<cache>/loom/workspace/<sha256 of the
+  workspace path>` (`<cache>` as `lsp_places` resolves it) and
+  `serve.session_environment` points `GOCACHE`, `GOMODCACHE` and
+  `GOLANGCI_LINT_CACHE` beneath it; they used to land under the tool
+  `HOME` inside the operator's checkout (20 GB measured). The root joins
+  `writable_roots` through `gocache.admitting` in `session_base`, the same
+  path a linked worktree's git directories take, and the bash tool asks
+  for the base's roots so the grant reaches macOS and Linux alike. The
+  build cache is never the host's: `go build` trusts `GOCACHE` entries
+  unverified, so a shared one lets a jailed tool plant an object the
+  operator's own build links. `[workspace] go_module_mirror` mounts the
+  host module cache's `cache/download` read-only, optional so a vanished
+  mirror degrades to the public proxy, and sets `GOPROXY` to
+  `file://<mirror>/cache/download,https://proxy.golang.org,direct`;
+  `[tools]` may not name the owned names (`GOPROXY` only with a mirror),
+  checked by `serve.go_cache_fault` at boot together with the mirror's
+  existence and its non-overlap with the workspace, protected paths and
+  the root. `[workspace] go_cache_limit_mib` (default 10240) bounds the
+  build cache: at session start a weft task measures it with `du -sk`,
+  renames it out of the jail-writable root to the sibling
+  `<root>.trash-<unique>` when over the limit, creates an empty
+  bare replacement with a non-recursive `mkdir` (Go fills it in; a
+  recursive create would follow a planted link), and sweeps the parent's
+  `<digest>.trash-*` entries (never reading inside the root, since
+  `del_dir_r` is path based and the jail could swap a directory for a link
+  mid-delete). `locate` returns `None` when the workspace covers the cache
+  place, so the root is never inside a jail-writable tree, and
+  `gocache.fault` refuses a read-write `[workspace] mounts` entry covering
+  the root's parent, which would make the retired trees writable again. A
+  rename keeps a live session's open files and fresh opens consistent; a
+  build that held the old cache open fails once and a retry clears it. The caches are absent, and
+  Go falls back to the tool `HOME`, when the daemon has no cache
+  directory. Existing `.codemode/home/...` caches are not deleted.
 - **The `[tools]` table selects network and extra environment.**
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
   (full is the default and what an absent table means) plus `env` names
