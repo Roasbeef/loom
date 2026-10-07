@@ -47,6 +47,12 @@
 //// exact generation links in the same transaction as the original admission.
 //// `retain_system_intent` reserves a pending child slot and link allowance;
 //// `admit_system_child` transfers it and advances the fixed lifetime counter.
+//// `allocate_native_system` retains opaque pending custody before Broker clearance;
+//// `admit_pending_system` transfers the same slot only after actual clearance.
+//// `cancel_native_system` permanently closes the original allocated occurrence.
+//// `semantic_parent` → `admit_workspace_command` compares complete original
+//// semantic custody in the native admission transaction. `semantic_evidence`
+//// permits late receipt verification without reconstructing live authority.
 //// `validate_registered_rows` checks headers before indexed canonical readback.
 
 import core/bounded_msgpack
@@ -374,6 +380,66 @@ pub opaque type IntentReadback {
   IntentReadback(
     /// Full trusted work intent whose UUID must survive all retries.
     intent: SystemIntent,
+  )
+}
+
+/// An original fresh allocation kept only by its live serialized custodian.
+/// No readback or codec can reconstruct this permission.
+pub opaque type PendingSystemChild {
+  /// The original successful allocation's complete retained association.
+  PendingSystemChild(
+    /// Immutable ordinary work occurrence held by its original writer.
+    intent: SystemIntent,
+    /// The original once-allocated ordinal.
+    origin: ChildOrigin,
+  )
+}
+
+/// Observes the closed durable stage without renewing live permission.
+pub type SystemChildStage {
+  /// An allocated original with no admitted payload.
+  NativePending
+
+  /// A permanently cancelled allocation whose capacity remains charged.
+  NativeCancelled
+
+  /// An original complete native payload and generation link.
+  NativeAdmitted
+
+  /// An original complete workspace payload and generation link.
+  WorkspaceAdmitted
+}
+
+/// Allocation distinguishes the sole fresh permission from historical evidence.
+pub type SystemAllocation {
+  /// Only the original known COMMIT and readback supplies this value.
+  FreshPending(pending: PendingSystemChild)
+
+  /// History preserves coordinates and stage but supplies no pending permission.
+  RetainedPending(
+    /// Original canonical allocation, never a new child identity.
+    origin: ChildOrigin,
+    /// The once-retained UUID from its immutable intent.
+    request_id: EntryId,
+    /// Current closed durable stage, carrying no permission.
+    stage: SystemChildStage,
+  )
+}
+
+/// Original admitted semantic data, verified again during native admission.
+pub opaque type SemanticParent {
+  /// Full semantic evidence, rechecked within the native transaction.
+  SemanticParent(
+    /// Original connection-bound generation capability.
+    live: LiveGeneration,
+    /// Exact direct Workspace/System or admitted semantic capability identity.
+    origin: ChildOrigin,
+    /// Original semantic invocation UUID.
+    request_id: EntryId,
+    /// Complete canonical retained semantic invocation.
+    request: BitArray,
+    /// Host SHA-256 of that complete original input.
+    input_digest: BitArray,
   )
 }
 
@@ -1256,6 +1322,8 @@ fn registered_child(
     remote_tool.ToolFields(_, _) -> Ok(Nil)
     remote_tool.SystemFields(_, _, _) ->
       Error(Invalid("registered system child requires retained intent"))
+    remote_tool.WorkspaceCommandFields(_, _) ->
+      Error(Invalid("workspace command requires retained semantic parent"))
   })
   use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
   transaction(store, fn() {
@@ -1367,6 +1435,11 @@ fn check_parent_generation(
 ) -> Result(Nil, Error) {
   case remote_tool.child_fields(origin) {
     remote_tool.SystemFields(session, _, _) -> same_session(store, session)
+    remote_tool.WorkspaceCommandFields(parent, _) -> {
+      use retained <- result.try(child_generation_inside(store, parent))
+      use Nil <- result.try(semantic_origin(store, parent))
+      same_association(retained, association)
+    }
     remote_tool.ToolFields(key, _) -> {
       use retained <- result.try(tool_generation_inside(store, key))
       same_association(retained, association)
@@ -1691,6 +1764,9 @@ pub fn retain_system_intent(
             remote_tool.system_child(store.session, service, 0)
             |> result.map_error(Invalid),
           )
+          use slots <- result.try(
+            one(query(store, sql.owner_unadmitted_system_count(service))),
+          )
           use count <- result.try(
             one(query(
               store,
@@ -1698,7 +1774,7 @@ pub fn retain_system_intent(
             )),
           )
           use <- bool.guard(
-            when: count.children < 0 || count.children + pending.pending >= 64,
+            when: count.children < 0 || count.children + slots.pending >= 64,
             return: Error(Capacity),
           )
           use key <- result.try(
@@ -1791,8 +1867,8 @@ fn system_intent_exists(
         one(query(store, sql.owner_system_child_header(address))),
       )
       use Nil <- result.try(check_intent_child_header(child))
-      let link_charge = case child.child_address {
-        "" -> 2048
+      let link_charge = case child.child_profile {
+        "" | "native_pending" | "native_cancelled" -> 2048
         _ ->
           string.byte_size(child.child_address)
           + child.origin_size
@@ -1839,6 +1915,556 @@ fn system_intent_exists(
       Ok(True)
     }
     [_, _, ..] -> Error(Invalid("duplicate owner system intent"))
+  }
+}
+
+/// Allocates and reads back the original system identity before Broker clearance.
+/// Historical allocation returns observation and never recreates pending permission.
+///
+/// ## Examples
+///
+/// `allocate_native_system(store, intent)` returns FreshPending only once.
+pub fn allocate_native_system(
+  store: Store,
+  readback: IntentReadback,
+) -> Result(SystemAllocation, Error) {
+  let intent = readback.intent
+  use allocated <- result.try(
+    transaction(store, fn() {
+      use _ <- result.try(read_system_intent(store, intent))
+      use header <- result.try(
+        one(query(
+          store,
+          sql.owner_system_child_header(system_intent_address(intent)),
+        )),
+      )
+      use Nil <- result.try(check_intent_child_header(header))
+      case header.child_address {
+        "" -> {
+          use origin <- result.try(allocate_native_inside(
+            store,
+            intent,
+            NativePending,
+          ))
+          Ok(FreshPending(PendingSystemChild(intent, origin)))
+        }
+        _ -> {
+          use origin <- result.try(system_origin_inside(store, intent))
+          use stage <- result.try(system_stage(header.child_profile))
+          Ok(RetainedPending(origin, intent.request_id, stage))
+        }
+      }
+    }),
+  )
+
+  // A failed readback loses the live permission even if allocation committed.
+  use _ <- result.try(read_system_intent(store, intent))
+  use actual <- result.try(system_origin_inside(store, intent))
+  let original = case allocated {
+    FreshPending(pending) -> pending.origin
+    RetainedPending(origin, _, _) -> origin
+  }
+  use Nil <- result.try(equal_origin(actual, original))
+  Ok(allocated)
+}
+
+/// Projects fresh coordinates without exposing the retained intent constructor.
+///
+/// ## Examples
+///
+/// `pending_system_fields(pending)` preserves its original UUID and association.
+pub fn pending_system_fields(
+  pending: PendingSystemChild,
+) -> #(ChildOrigin, EntryId, generation.GenerationAssociation) {
+  #(pending.origin, pending.intent.request_id, pending.intent.association)
+}
+
+fn allocate_native_inside(
+  store: Store,
+  intent: SystemIntent,
+  stage: SystemChildStage,
+) -> Result(ChildOrigin, Error) {
+  // Cancellation spends an already reserved occurrence without granting authority.
+  // A fenced owner may close that occurrence, while only a live owner allocates
+  // a pending execution permission. No admitted stage can reach this allocator.
+  use profile <- result.try(case stage {
+    NativePending -> {
+      use live <- result.try(option.to_result(intent.live, Frozen))
+      use Nil <- result.try(require_live(store, live))
+      Ok("native_pending")
+    }
+    NativeCancelled -> Ok("native_cancelled")
+    NativeAdmitted | WorkspaceAdmitted -> Error(Conflict)
+  })
+  let service = system_service_name(intent.service)
+  use ordinal <- result.try(system_ordinal(store, service))
+  use <- bool.guard(when: ordinal >= 4096, return: Error(Capacity))
+  use origin <- result.try(
+    remote_tool.system_child(store.session, service, ordinal)
+    |> result.map_error(Invalid),
+  )
+  use canonical <- result.try(
+    remote_tool.encode_child(origin)
+    |> result.replace_error(Invalid("invalid system origin")),
+  )
+  use key <- result.try(
+    encoded_key(generation.association_key(intent.association)),
+  )
+  let transfer =
+    2
+    * {
+      string.byte_size(remote_tool.child_address(origin))
+      + bit_array.byte_size(canonical)
+    }
+    + bit_array.byte_size(key)
+    + 234
+  use <- bool.guard(when: transfer > 2048, return: Error(Capacity))
+  use children <- result.try(query(
+    store,
+    sql.owner_child_header(remote_tool.child_address(origin)),
+  ))
+  use links <- result.try(query(
+    store,
+    sql.owner_child_generation_header(remote_tool.child_address(origin)),
+  ))
+  use <- bool.guard(
+    when: children != [] || links != [],
+    return: Error(Conflict),
+  )
+  use Nil <- result.try(statement(
+    store,
+    sql.allocate_owner_native_system_child(
+      Some(remote_tool.child_address(origin)),
+      Some(canonical),
+      Some(profile),
+      system_intent_address(intent),
+    ),
+  ))
+  use Nil <- result.try(statement(
+    store,
+    sql.advance_owner_system_ordinal(ordinal + 1, service, ordinal),
+  ))
+  use next <- result.try(system_ordinal(store, service))
+  use <- bool.guard(when: next != ordinal + 1, return: Error(Conflict))
+  use actual <- result.try(system_origin_inside(store, intent))
+  use Nil <- result.try(equal_origin(actual, origin))
+  Ok(origin)
+}
+
+fn system_origin_inside(
+  store: Store,
+  intent: SystemIntent,
+) -> Result(ChildOrigin, Error) {
+  use header <- result.try(
+    one(query(
+      store,
+      sql.owner_system_child_header(system_intent_address(intent)),
+    )),
+  )
+  use Nil <- result.try(check_intent_child_header(header))
+  use body <- result.try(
+    one(query(store, sql.owner_system_child_body(system_intent_address(intent)))),
+  )
+  use bytes <- result.try(option.to_result(body.canonical_origin, Missing))
+  use origin <- result.try(
+    remote_tool.decode_child(bytes)
+    |> result.replace_error(Invalid("invalid original system identity")),
+  )
+  use Nil <- result.try(equal_string(
+    remote_tool.child_address(origin),
+    header.child_address,
+  ))
+  use Nil <- result.try(case remote_tool.child_fields(origin) {
+    remote_tool.SystemFields(session, service, ordinal) -> {
+      use Nil <- result.try(same_session(store, session))
+      use Nil <- result.try(equal_string(
+        service,
+        system_service_name(intent.service),
+      ))
+      use next <- result.try(system_ordinal(store, service))
+      case ordinal < next {
+        True -> Ok(Nil)
+        False -> Error(Invalid("system ordinal was not allocated"))
+      }
+    }
+    remote_tool.ToolFields(_, _) | remote_tool.WorkspaceCommandFields(_, _) ->
+      Error(Conflict)
+  })
+  Ok(origin)
+}
+
+fn system_stage(profile: String) -> Result(SystemChildStage, Error) {
+  case profile {
+    "native_pending" -> Ok(NativePending)
+    "native_cancelled" -> Ok(NativeCancelled)
+    "native" -> Ok(NativeAdmitted)
+    "workspace" -> Ok(WorkspaceAdmitted)
+    _ -> Error(Invalid("closed system child stage"))
+  }
+}
+
+/// Admits complete post-clearance native bytes using the original pending value.
+/// The live custodian consumes its permission before entering this transaction.
+///
+/// ## Examples
+///
+/// Exact durable retries return Retained and never another send permission.
+pub fn admit_pending_system(
+  store: Store,
+  pending: PendingSystemChild,
+  request: Payload,
+) -> Result(SystemReservationReadback, Error) {
+  use Nil <- result.try(check_payload(store, request))
+  let intent = pending.intent
+  use admission <- result.try(
+    transaction(store, fn() {
+      use _ <- result.try(read_system_intent(store, intent))
+      use origin <- result.try(system_origin_inside(store, intent))
+      use Nil <- result.try(equal_origin(origin, pending.origin))
+      use header <- result.try(
+        one(query(
+          store,
+          sql.owner_system_child_header(system_intent_address(intent)),
+        )),
+      )
+      case header.child_profile {
+        "native_pending" -> {
+          use live <- result.try(option.to_result(intent.live, Frozen))
+          use Nil <- result.try(require_live(store, live))
+
+          // Transfer the held slot and allowance before insertion; rollback restores them.
+          use Nil <- result.try(statement(
+            store,
+            sql.admit_owner_native_system_child(system_intent_address(intent)),
+          ))
+          use Nil <- result.try(admit_child_inside(
+            store,
+            origin,
+            intent.request_id,
+            request,
+          ))
+          use Nil <- result.try(retain_child_generation(
+            store,
+            origin,
+            intent.request_id,
+            request,
+            intent.association,
+            Fresh,
+          ))
+          Ok(Fresh)
+        }
+        "native" -> {
+          use _ <- result.try(
+            retained_system_child(store, intent, header.child_address, fn(_, _) {
+              Ok(NativeSystem(request))
+            }),
+          )
+          Ok(Retained)
+        }
+        "native_cancelled" -> Error(Frozen)
+        _ -> Error(Conflict)
+      }
+    }),
+  )
+  use retained <- result.try(
+    retained_system_child(
+      store,
+      intent,
+      remote_tool.child_address(pending.origin),
+      fn(_, _) { Ok(NativeSystem(request)) },
+    ),
+  )
+  Ok(SystemReservationReadback(
+    admission,
+    retained.origin,
+    retained.request_id,
+    retained.payload,
+    retained.generation,
+  ))
+}
+
+/// Cancels the original system intent while preserving its ordinal and slot.
+/// Unallocated cancellation allocates and cancels in this same transaction.
+///
+/// ## Examples
+///
+/// `cancel_native_system(store, original)` never creates a placeholder child.
+pub fn cancel_native_system(
+  store: Store,
+  readback: IntentReadback,
+) -> Result(Nil, Error) {
+  let intent = readback.intent
+  transaction(store, fn() {
+    use _ <- result.try(read_system_intent(store, intent))
+    use header <- result.try(
+      one(query(
+        store,
+        sql.owner_system_child_header(system_intent_address(intent)),
+      )),
+    )
+    use Nil <- result.try(check_intent_child_header(header))
+    case header.child_profile {
+      "" ->
+        allocate_native_inside(store, intent, NativeCancelled)
+        |> result.replace(Nil)
+      "native_pending" ->
+        statement(
+          store,
+          sql.cancel_owner_native_system_child(system_intent_address(intent)),
+        )
+      "native_cancelled" -> Ok(Nil)
+      "native" -> {
+        use origin <- result.try(system_origin_inside(store, intent))
+        statement(
+          store,
+          sql.cancel_owner_allocated_child(remote_tool.child_address(origin)),
+        )
+      }
+      "workspace" -> Error(Conflict)
+      _ -> Error(Invalid("closed system cancellation stage"))
+    }
+  })
+}
+
+fn pending_child_slots(
+  store: Store,
+  origin: ChildOrigin,
+) -> Result(Int, Error) {
+  case remote_tool.child_fields(origin) {
+    remote_tool.ToolFields(_, _) -> Ok(0)
+    remote_tool.SystemFields(_, service, _) -> {
+      use count <- result.try(
+        one(query(store, sql.owner_unadmitted_system_count(service))),
+      )
+      Ok(count.pending)
+    }
+    remote_tool.WorkspaceCommandFields(parent, _) ->
+      pending_child_slots(store, parent)
+  }
+}
+
+/// Resolves original semantic custody by UUID and compares complete input bytes.
+/// Scope, generation and enrollment remain those of the original live association.
+///
+/// ## Examples
+///
+/// `semantic_parent(store, live, uuid, input)` never infers a parent from an address.
+pub fn semantic_parent(
+  store: Store,
+  live: LiveGeneration,
+  request_id: EntryId,
+  request: BitArray,
+) -> Result(SemanticParent, Error) {
+  transaction(store, fn() {
+    use Nil <- result.try(require_live(store, live))
+    use rows <- result.try(query(
+      store,
+      sql.owner_child_origin_by_request(ids.entry_id_to_string(request_id)),
+    ))
+    use row <- result.try(required_metadata_header(rows))
+    use Nil <- result.try(header_size(row.origin_size, 8192))
+    use origin <- result.try(
+      remote_tool.decode_child(row.canonical_origin)
+      |> result.replace_error(Invalid("invalid semantic parent identity")),
+    )
+    use Nil <- result.try(semantic_origin(store, origin))
+    use associated <- result.try(child_generation_inside(store, origin))
+    use Nil <- result.try(same_association(associated, live.association))
+    use retained <- result.try(child_row(store, origin))
+    use #(header, body) <- result.try(option.to_result(retained, Missing))
+    use <- bool.guard(when: header.state != "retained", return: Error(Frozen))
+    use Nil <- result.try(equal_string(
+      header.request_id,
+      ids.entry_id_to_string(request_id),
+    ))
+    use Nil <- result.try(equal(body.request, request))
+    use digest <- result.try(content_digest(store, request))
+    Ok(SemanticParent(live, origin, request_id, request, digest))
+  })
+}
+
+/// Projects the checked original identity, UUID and input digest for the envelope.
+///
+/// ## Examples
+///
+/// `semantic_parent_fields(parent)` preserves the whole semantic ancestor.
+pub fn semantic_parent_fields(
+  parent: SemanticParent,
+) -> #(ChildOrigin, EntryId, BitArray, generation.GenerationAssociation) {
+  #(
+    parent.origin,
+    parent.request_id,
+    parent.input_digest,
+    parent.live.association,
+  )
+}
+
+/// Commits a distinct native row after exact same-transaction semantic comparison.
+/// An existing native row remains observation even after parent cancellation.
+///
+/// ## Examples
+///
+/// `admit_workspace_command(store, parent, origin, uuid, payload)` uses the original group.
+pub fn admit_workspace_command(
+  store: Store,
+  parent: SemanticParent,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  request: Payload,
+) -> Result(Admission, Error) {
+  use Nil <- result.try(check_payload(store, request))
+  transaction(store, fn() {
+    use Nil <- result.try(workspace_command_parent(parent.origin, origin))
+    use associated <- result.try(child_generation_inside(store, parent.origin))
+    use Nil <- result.try(same_association(associated, parent.live.association))
+    use retained <- result.try(child_row(store, parent.origin))
+    use #(header, body) <- result.try(option.to_result(retained, Missing))
+    use Nil <- result.try(equal_string(
+      header.request_id,
+      ids.entry_id_to_string(parent.request_id),
+    ))
+    use Nil <- result.try(equal(body.request, parent.request))
+    use digest <- result.try(content_digest(store, body.request))
+    use Nil <- result.try(equal(digest, parent.input_digest))
+    use existing <- result.try(child_row(store, origin))
+    use admission <- result.try(case existing {
+      None -> {
+        use <- bool.guard(
+          when: header.state != "retained",
+          return: Error(Frozen),
+        )
+        require_live(store, parent.live) |> result.replace(Fresh)
+      }
+      Some(_) -> Ok(Retained)
+    })
+    use Nil <- result.try(admit_child_inside(store, origin, request_id, request))
+    use Nil <- result.try(retain_child_generation(
+      store,
+      origin,
+      request_id,
+      request,
+      parent.live.association,
+      admission,
+    ))
+    Ok(admission)
+  })
+}
+
+fn workspace_command_parent(
+  parent: ChildOrigin,
+  origin: ChildOrigin,
+) -> Result(Nil, Error) {
+  case remote_tool.child_fields(parent), remote_tool.child_fields(origin) {
+    _, remote_tool.WorkspaceCommandFields(actual, _) ->
+      equal_origin(actual, parent)
+    remote_tool.ToolFields(
+      key,
+      remote_tool.AdmittedCapability(
+        name,
+        ordinal,
+        remote_tool.SemanticWorkspace,
+      ),
+    ),
+      remote_tool.ToolFields(
+        actual,
+        remote_tool.AdmittedCapability(
+          actual_name,
+          actual_ordinal,
+          remote_tool.NativeCommand,
+        ),
+      )
+    -> {
+      case key == actual && name == actual_name && ordinal == actual_ordinal {
+        True -> Ok(Nil)
+        False -> Error(Conflict)
+      }
+    }
+    _, _ -> Error(Conflict)
+  }
+}
+
+fn semantic_origin(store: Store, origin: ChildOrigin) -> Result(Nil, Error) {
+  case remote_tool.child_fields(origin) {
+    remote_tool.ToolFields(_, remote_tool.Workspace(_))
+    | remote_tool.ToolFields(
+        _,
+        remote_tool.AdmittedCapability(_, _, remote_tool.SemanticWorkspace),
+      ) -> parent_retained(store, origin)
+    remote_tool.SystemFields(_, _, _) -> {
+      use row <- result.try(
+        one(query(
+          store,
+          sql.owner_system_intent_by_child(
+            Some(remote_tool.child_address(origin)),
+          ),
+        )),
+      )
+      use intent <- result.try(intent_at(store, row.intent_address))
+      use header <- result.try(
+        one(query(store, sql.owner_system_child_header(row.intent_address))),
+      )
+      use <- bool.guard(
+        when: header.child_profile != "workspace",
+        return: Error(Conflict),
+      )
+      use actual <- result.try(system_origin_inside(store, intent))
+      equal_origin(actual, origin)
+    }
+    remote_tool.ToolFields(_, _) | remote_tool.WorkspaceCommandFields(_, _) ->
+      Error(Conflict)
+  }
+}
+
+fn validate_old_six(store: Store) -> Result(Nil, Error) {
+  use Nil <- result.try(check_metadata(store))
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use Nil <- result.try(validate_header_rows(store, "", store.limits.tools))
+  use Nil <- result.try(validate_report_rows(store, "", store.limits.tools))
+  use invalid <- result.try(
+    one(query(store, sql.owner_old_six_invalid_stages())),
+  )
+  use <- bool.guard(
+    when: invalid.invalid != 0,
+    return: Error(Invalid("format six contains a new system stage")),
+  )
+  use Nil <- result.try(validate_old_child_addresses(
+    store,
+    "",
+    store.limits.children,
+  ))
+  use Nil <- result.try(validate_old_child_origins(
+    store,
+    "",
+    store.limits.children,
+  ))
+  validate_registered_rows(store)
+}
+
+fn validate_old_child_origins(
+  store: Store,
+  after: String,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(store, sql.owner_next_child_generation(after)))
+  case rows {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 -> {
+      use body <- result.try(
+        one(query(store, sql.owner_child_generation_body(row.address))),
+      )
+      use origin <- result.try(
+        remote_tool.decode_child(body.canonical_origin)
+        |> result.replace_error(Invalid("invalid old complete child identity")),
+      )
+      use Nil <- result.try(case remote_tool.child_fields(origin) {
+        remote_tool.ToolFields(_, _) | remote_tool.SystemFields(_, _, _) ->
+          Ok(Nil)
+        remote_tool.WorkspaceCommandFields(_, _) ->
+          Error(Invalid("format six contains a derived workspace command"))
+      })
+      validate_old_child_origins(store, row.address, remaining - 1)
+    }
+    _ -> Error(Invalid("old child inventory exceeds bound"))
   }
 }
 
@@ -1901,6 +2527,11 @@ fn insert_system_child(
   use existing <- result.try(child_row(store, origin))
   use <- bool.guard(when: existing != None, return: Error(Conflict))
   use built <- result.try(build(origin, intent.request_id))
+  use Nil <- result.try(case built {
+    NativeSystem(_) ->
+      Error(Invalid("fresh native system requires pending allocation"))
+    WorkspaceSystem(_) -> Ok(Nil)
+  })
   use request <- result.try(system_request(store, built))
   use canonical <- result.try(
     remote_tool.encode_child(origin)
@@ -1997,7 +2628,8 @@ fn retained_system_child(
         False -> Error(Invalid("system child ordinal is not allocated"))
       }
     }
-    remote_tool.ToolFields(_, _) -> Error(Conflict)
+    remote_tool.ToolFields(_, _) | remote_tool.WorkspaceCommandFields(_, _) ->
+      Error(Conflict)
   })
   use associated <- result.try(child_generation_inside(store, origin))
   use Nil <- result.try(same_association(associated, intent.association))
@@ -2059,6 +2691,8 @@ fn check_intent_child_header(
           || {
           header.child_profile != "native"
           && header.child_profile != "workspace"
+          && header.child_profile != "native_pending"
+          && header.child_profile != "native_cancelled"
         },
         return: Error(Invalid("missing system intent origin")),
       )
@@ -2625,7 +3259,11 @@ fn admit_child_inside(
     None -> {
       let parent = remote_tool.child_parent(origin)
       use count <- result.try(one(query(store, sql.owner_child_count(parent))))
-      use <- bool.guard(when: count.children >= 64, return: Error(Capacity))
+      use pending <- result.try(pending_child_slots(store, origin))
+      use <- bool.guard(
+        when: count.children + pending >= 64,
+        return: Error(Capacity),
+      )
       let address = remote_tool.child_address(origin)
       let reserved =
         string.byte_size(address)
@@ -2687,7 +3325,11 @@ fn cancel_child_inside(
           sql.owner_child_count(remote_tool.child_parent(origin)),
         )),
       )
-      use <- bool.guard(when: count.children >= 64, return: Error(Capacity))
+      use pending <- result.try(pending_child_slots(store, origin))
+      use <- bool.guard(
+        when: count.children + pending >= 64,
+        return: Error(Capacity),
+      )
       reserve(store, 0, 1, cancellation_bytes(origin))
     }
     [_] -> Ok(Nil)
@@ -3757,7 +4399,12 @@ fn initialize(store: Store) -> Result(Nil, Error) {
   use application <- result.try(pragma(store, "PRAGMA application_id"))
   use version <- result.try(pragma(store, "PRAGMA user_version"))
   use Nil <- result.try(case application, version {
-    1_281_253_199, 6 -> Ok(Nil)
+    1_281_253_199, 7 -> Ok(Nil)
+    1_281_253_199, 6 ->
+      transaction(store, fn() {
+        use Nil <- result.try(validate_old_six(store))
+        execute(store, "PRAGMA user_version=7")
+      })
     1_281_253_199, 5 ->
       transaction(store, fn() {
         use Nil <- result.try(check_metadata(store))
@@ -3781,7 +4428,8 @@ fn initialize(store: Store) -> Result(Nil, Error) {
           "",
           store.limits.tools,
         ))
-        execute(store, "PRAGMA user_version=6")
+        use Nil <- result.try(validate_old_six(store))
+        execute(store, "PRAGMA user_version=7")
       })
     0, 0 -> {
       use tables <- result.try(pragma(store, "PRAGMA schema_version"))
@@ -3803,7 +4451,7 @@ fn initialize(store: Store) -> Result(Nil, Error) {
         ))
         execute(
           store,
-          "PRAGMA application_id=1281253199; PRAGMA user_version=6",
+          "PRAGMA application_id=1281253199; PRAGMA user_version=7",
         )
       })
     }
@@ -4423,9 +5071,12 @@ fn retained_tool(
 }
 
 fn parent_retained(store: Store, origin: ChildOrigin) -> Result(Nil, Error) {
-  case remote_tool.child_tool(origin) {
-    Error(Nil) -> Ok(Nil)
-    Ok(key) -> retained_tool(store, key) |> result.replace(Nil)
+  case remote_tool.child_fields(origin) {
+    remote_tool.ToolFields(key, _) ->
+      retained_tool(store, key) |> result.replace(Nil)
+    remote_tool.SystemFields(_, _, _) -> Ok(Nil)
+    remote_tool.WorkspaceCommandFields(parent, _) ->
+      semantic_origin(store, parent)
   }
 }
 
@@ -4845,6 +5496,9 @@ fn validate_system_intent_link(
   use pending <- result.try(
     one(query(store, sql.owner_pending_system_count(service))),
   )
+  use slots <- result.try(
+    one(query(store, sql.owner_unadmitted_system_count(service))),
+  )
   use template <- result.try(
     remote_tool.system_child(store.session, service, 0)
     |> result.map_error(Invalid),
@@ -4855,7 +5509,7 @@ fn validate_system_intent_link(
   use <- bool.guard(
     when: pending.pending < 0
       || count.children < 0
-      || count.children + pending.pending > 64
+      || count.children + slots.pending > 64
       || next + pending.pending > 4096,
     return: Error(Invalid("invalid system intent slot accounting")),
   )
@@ -4884,7 +5538,8 @@ fn validate_system_intent_link(
         child.child_address,
       ))
       use Nil <- result.try(case remote_tool.child_fields(origin) {
-        remote_tool.ToolFields(_, _) -> Error(Conflict)
+        remote_tool.ToolFields(_, _)
+        | remote_tool.WorkspaceCommandFields(_, _) -> Error(Conflict)
         remote_tool.SystemFields(session, family, ordinal) -> {
           use Nil <- result.try(same_session(store, session))
           use Nil <- result.try(equal_string(family, service))
@@ -4894,17 +5549,50 @@ fn validate_system_intent_link(
           }
         }
       })
-      use association <- result.try(child_generation_inside(store, origin))
-      use Nil <- result.try(same_association(association, intent.association))
-      use link <- result.try(
-        one(query(store, sql.owner_child_generation_header(child.child_address))),
-      )
-      equal_string(
-        link.original_request_id,
-        ids.entry_id_to_string(intent.request_id),
-      )
+      case child.child_profile {
+        "native_pending" | "native_cancelled" -> {
+          use rows <- result.try(query(
+            store,
+            sql.owner_child_generation_header(child.child_address),
+          ))
+          use children <- result.try(query(
+            store,
+            sql.owner_child_header(child.child_address),
+          ))
+          case rows, children {
+            [], [] -> Ok(Nil)
+            _, _ ->
+              Error(Invalid("pending system origin has an admitted child"))
+          }
+        }
+        "native" | "workspace" ->
+          validate_admitted_system_link(
+            store,
+            intent,
+            origin,
+            child.child_address,
+          )
+        _ -> Error(Invalid("invalid system child stage"))
+      }
     }
   }
+}
+
+fn validate_admitted_system_link(
+  store: Store,
+  intent: SystemIntent,
+  origin: ChildOrigin,
+  address: String,
+) -> Result(Nil, Error) {
+  use association <- result.try(child_generation_inside(store, origin))
+  use Nil <- result.try(same_association(association, intent.association))
+  use link <- result.try(
+    one(query(store, sql.owner_child_generation_header(address))),
+  )
+  equal_string(
+    link.original_request_id,
+    ids.entry_id_to_string(intent.request_id),
+  )
 }
 
 fn decode_system_service(value: String) -> Result(SystemService, Error) {
@@ -4968,4 +5656,51 @@ pub fn decode_owner_close_record(
   bytes: BitArray,
 ) -> Result(OwnerCloseRecord, Error) {
   decode_owner_close(bytes)
+}
+
+/// Reads original semantic input and association without granting live authority.
+/// Cancellation preserves the immutable comparison needed for late native receipts.
+///
+/// ## Examples
+///
+/// `semantic_evidence(store, origin)` never supplies a live SemanticParent.
+pub fn semantic_evidence(
+  store: Store,
+  origin: ChildOrigin,
+) -> Result(
+  #(EntryId, BitArray, BitArray, generation.GenerationAssociation),
+  Error,
+) {
+  use Nil <- result.try(semantic_origin(store, origin))
+  use associated <- result.try(child_generation(store, origin))
+  use stored <- result.try(child(store, origin))
+  use digest <- result.try(content_digest(store, stored.1.bytes))
+  Ok(#(stored.0, stored.1.bytes, digest, associated))
+}
+
+fn validate_old_child_addresses(
+  store: Store,
+  after: String,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(store, sql.owner_next_child_address(after)))
+  case rows {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 -> {
+      use value <- result.try(
+        json.parse(row.origin)
+        |> result.replace_error(Invalid("invalid old child address")),
+      )
+      use Nil <- result.try(case value {
+        json.Array([
+          json.String(_),
+          json.Array([json.String("workspace_command"), _, _]),
+        ]) -> Error(Invalid("format six contains a derived workspace fence"))
+        json.Array([json.String(_), json.Array(_)]) -> Ok(Nil)
+        _ -> Error(Invalid("invalid old complete child address"))
+      })
+      validate_old_child_addresses(store, row.origin, remaining - 1)
+    }
+    _ -> Error(Invalid("old child address inventory exceeds bound"))
+  }
 }

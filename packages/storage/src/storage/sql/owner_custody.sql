@@ -8,7 +8,7 @@ VALUES (1, @session_id, @tool_limit, @child_limit, @byte_limit, @payload_limit);
 
 -- name: OwnerCustodyBudget :one
 SELECT CAST((SELECT COUNT(*) FROM owner_custody_tools) AS INTEGER) AS tools,
-  CAST((SELECT COUNT(*) FROM owner_custody_children) + (SELECT COUNT(*) FROM owner_system_intent WHERE child_address IS NULL) AS INTEGER) AS children,
+  CAST((SELECT COUNT(*) FROM owner_custody_children) + (SELECT COUNT(*) FROM owner_system_intent WHERE child_address IS NULL OR child_profile IN ('native_pending','native_cancelled')) AS INTEGER) AS children,
   CAST((SELECT COUNT(*) FROM owner_custody_command_offers) AS INTEGER) AS offers,
   CAST(COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_tools), 0)
     + COALESCE((SELECT SUM(reserved_bytes) FROM owner_custody_children), 0)
@@ -251,7 +251,7 @@ INSERT INTO owner_system_intent(intent_address, generation_key, service, operati
 -- name: OwnerSystemChildHeader :many
 SELECT CASE WHEN child_address IS NULL THEN '' WHEN typeof(child_address) = 'text' AND length(CAST(child_address AS BLOB)) <= 8192 THEN child_address ELSE 'invalid' END AS child_address,
   CAST(CASE WHEN canonical_origin IS NULL THEN 0 WHEN typeof(canonical_origin) = 'blob' THEN length(canonical_origin) ELSE -1 END AS INTEGER) AS origin_size,
-  CASE WHEN child_profile IS NULL THEN '' WHEN child_profile IN ('native', 'workspace') THEN child_profile ELSE 'invalid' END AS child_profile
+  CASE WHEN child_profile IS NULL THEN '' WHEN child_profile IN ('native', 'workspace', 'native_pending', 'native_cancelled') THEN child_profile ELSE 'invalid' END AS child_profile
 FROM owner_system_intent WHERE intent_address = @intent_address LIMIT 2;
 
 -- name: OwnerSystemChildBody :many
@@ -290,7 +290,7 @@ SELECT CAST(
   + (SELECT COUNT(*) FROM owner_generation_closes WHERE typeof(generation_key) != 'blob' OR length(generation_key) < 1 OR length(generation_key) > 1024 OR typeof(close_record) != 'blob' OR length(close_record) < 1 OR length(close_record) > 262144 OR typeof(digest) != 'blob' OR length(digest) != 32 OR typeof(reserved_bytes) != 'integer' OR reserved_bytes < length(generation_key) + length(close_record) + 160)
   + (SELECT COUNT(*) FROM owner_tool_generation WHERE typeof(address) != 'text' OR length(CAST(address AS BLOB)) < 1 OR length(CAST(address AS BLOB)) > 8192 OR typeof(canonical_tool) != 'blob' OR length(canonical_tool) < 1 OR length(canonical_tool) > 8192 OR typeof(generation_key) != 'blob' OR length(generation_key) < 1 OR length(generation_key) > 1024 OR typeof(enrollment_digest) != 'blob' OR length(enrollment_digest) != 32 OR typeof(reserved_bytes) != 'integer' OR reserved_bytes < length(CAST(address AS BLOB)) + length(canonical_tool) + length(generation_key) + 160)
   + (SELECT COUNT(*) FROM owner_child_generation WHERE typeof(address) != 'text' OR length(CAST(address AS BLOB)) < 1 OR length(CAST(address AS BLOB)) > 8192 OR typeof(canonical_origin) != 'blob' OR length(canonical_origin) < 1 OR length(canonical_origin) > 8192 OR typeof(generation_key) != 'blob' OR length(generation_key) < 1 OR length(generation_key) > 1024 OR typeof(enrollment_digest) != 'blob' OR length(enrollment_digest) != 32 OR typeof(original_request_id) != 'text' OR length(CAST(original_request_id AS BLOB)) != 36 OR typeof(input_digest) != 'blob' OR length(input_digest) != 32 OR typeof(reserved_bytes) != 'integer' OR reserved_bytes < length(CAST(address AS BLOB)) + length(canonical_origin) + length(generation_key) + 228)
-  + (SELECT COUNT(*) FROM owner_system_intent WHERE typeof(intent_address) != 'text' OR length(CAST(intent_address AS BLOB)) < 1 OR length(CAST(intent_address AS BLOB)) > 8192 OR typeof(generation_key) != 'blob' OR length(generation_key) < 1 OR length(generation_key) > 1024 OR typeof(service) != 'text' OR service NOT IN ('command-preparation','compiler','satellite-launch','lsp','worktree-observation','workspace-administration') OR typeof(operation) != 'text' OR length(CAST(operation AS BLOB)) != 36 OR typeof(step) != 'text' OR length(CAST(step AS BLOB)) < 1 OR length(CAST(step AS BLOB)) > 128 OR typeof(request_id) != 'text' OR length(CAST(request_id AS BLOB)) != 36 OR typeof(intent_bytes) != 'blob' OR length(intent_bytes) < 1 OR length(intent_bytes) > 8192 OR (child_address IS NULL AND (canonical_origin IS NOT NULL OR child_profile IS NOT NULL)) OR (child_address IS NOT NULL AND (typeof(child_address) != 'text' OR length(CAST(child_address AS BLOB)) < 1 OR length(CAST(child_address AS BLOB)) > 8192 OR typeof(canonical_origin) != 'blob' OR length(canonical_origin) < 1 OR length(canonical_origin) > 8192 OR child_profile IS NULL OR child_profile NOT IN ('native','workspace'))) OR typeof(reserved_bytes) != 'integer' OR reserved_bytes < length(CAST(intent_address AS BLOB)) + length(generation_key) + length(CAST(service AS BLOB)) + 36 + length(CAST(step AS BLOB)) + 36 + length(intent_bytes) + 128 + CASE WHEN child_address IS NULL THEN 2048 ELSE length(CAST(child_address AS BLOB)) + length(canonical_origin) + length(CAST(child_profile AS BLOB)) END)
+  + (SELECT COUNT(*) FROM owner_system_intent WHERE typeof(intent_address) != 'text' OR length(CAST(intent_address AS BLOB)) < 1 OR length(CAST(intent_address AS BLOB)) > 8192 OR typeof(generation_key) != 'blob' OR length(generation_key) < 1 OR length(generation_key) > 1024 OR typeof(service) != 'text' OR service NOT IN ('command-preparation','compiler','satellite-launch','lsp','worktree-observation','workspace-administration') OR typeof(operation) != 'text' OR length(CAST(operation AS BLOB)) != 36 OR typeof(step) != 'text' OR length(CAST(step AS BLOB)) < 1 OR length(CAST(step AS BLOB)) > 128 OR typeof(request_id) != 'text' OR length(CAST(request_id AS BLOB)) != 36 OR typeof(intent_bytes) != 'blob' OR length(intent_bytes) < 1 OR length(intent_bytes) > 8192 OR (child_address IS NULL AND (canonical_origin IS NOT NULL OR child_profile IS NOT NULL)) OR (child_address IS NOT NULL AND (typeof(child_address) != 'text' OR length(CAST(child_address AS BLOB)) < 1 OR length(CAST(child_address AS BLOB)) > 8192 OR typeof(canonical_origin) != 'blob' OR length(canonical_origin) < 1 OR length(canonical_origin) > 8192 OR child_profile IS NULL OR child_profile NOT IN ('native','workspace','native_pending','native_cancelled'))) OR typeof(reserved_bytes) != 'integer' OR reserved_bytes < length(CAST(intent_address AS BLOB)) + length(generation_key) + length(CAST(service AS BLOB)) + 36 + length(CAST(step AS BLOB)) + 36 + length(intent_bytes) + 128 + CASE WHEN child_address IS NULL OR child_profile IN ('native_pending','native_cancelled') THEN 2048 ELSE length(CAST(child_address AS BLOB)) + length(canonical_origin) + length(CAST(child_profile AS BLOB)) END)
   + (SELECT COUNT(*) FROM owner_system_ordinal WHERE typeof(service) != 'text' OR service NOT IN ('command-preparation','compiler','satellite-launch','lsp','worktree-observation','workspace-administration') OR typeof(next_ordinal) != 'integer' OR next_ordinal < 0 OR next_ordinal > 4096 OR typeof(reserved_bytes) != 'integer' OR reserved_bytes < length(CAST(service AS BLOB)) + 144)
   AS INTEGER) AS invalid;
 
@@ -308,3 +308,35 @@ SELECT address FROM owner_child_generation WHERE address > @address ORDER BY add
 
 -- name: OwnerNextSystemIntent :many
 SELECT intent_address FROM owner_system_intent WHERE intent_address > @intent_address ORDER BY intent_address LIMIT 1;
+
+
+-- name: OwnerUnadmittedSystemCount :one
+SELECT CAST(COUNT(*) AS INTEGER) AS pending FROM owner_system_intent WHERE service = @service AND (child_address IS NULL OR child_profile IN ('native_pending','native_cancelled'));
+
+-- name: AllocateOwnerNativeSystemChild :exec
+UPDATE owner_system_intent SET child_address = @child_address, canonical_origin = @canonical_origin, child_profile = @child_profile
+WHERE intent_address = @intent_address AND child_address IS NULL AND canonical_origin IS NULL AND child_profile IS NULL;
+
+-- name: AdmitOwnerNativeSystemChild :exec
+UPDATE owner_system_intent SET child_profile = 'native', reserved_bytes = reserved_bytes - 2048 + length(CAST(child_address AS BLOB)) + length(canonical_origin) + 6
+WHERE intent_address = @intent_address AND child_profile = 'native_pending';
+
+-- name: CancelOwnerNativeSystemChild :exec
+UPDATE owner_system_intent SET child_profile = 'native_cancelled'
+WHERE intent_address = @intent_address AND child_profile = 'native_pending';
+
+-- name: OwnerOldSixInvalidStages :one
+SELECT CAST(COUNT(*) AS INTEGER) AS invalid FROM owner_system_intent WHERE child_profile IS NOT NULL AND child_profile NOT IN ('native','workspace');
+
+-- name: OwnerChildOriginByRequest :many
+SELECT CAST(CASE WHEN typeof(canonical_origin) = 'blob' THEN length(canonical_origin) ELSE -1 END AS INTEGER) AS origin_size,
+ canonical_origin FROM owner_child_generation WHERE original_request_id = @request_id
+ AND typeof(canonical_origin) = 'blob' AND length(canonical_origin) <= 8192 LIMIT 2;
+
+-- name: OwnerSystemIntentByChild :many
+SELECT intent_address FROM owner_system_intent WHERE child_address = @child_address
+ AND typeof(intent_address) = 'text' AND length(CAST(intent_address AS BLOB)) <= 8192 LIMIT 2;
+
+-- name: OwnerNextChildAddress :many
+SELECT CASE WHEN typeof(origin) = 'text' AND length(CAST(origin AS BLOB)) <= 8192 THEN origin ELSE '' END AS origin
+FROM owner_custody_children WHERE origin > @origin ORDER BY origin LIMIT 1;
