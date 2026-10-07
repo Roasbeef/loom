@@ -7,6 +7,66 @@ the preview's existing leaf memo. Three regressions fail against the baseline
 and pass with the narrower work boundaries. This is a source-level CPU and
 allocation result; the candidate has not been installed.
 
+## Remeasurement after rebase
+
+PR [#903](https://github.com/Roasbeef/loom/pull/903) is out of draft at the
+owner's direction. The branch was rebased onto
+`3644b079059570cf7cc3c7fe98add693bb6adbcc`, including the restricted signoff
+driver in #902. This section records the new source and measurements;
+the following original-pass sections retain their earlier source identities
+and validation snapshots.
+
+A separate, clean repository-local checkout compiled that exact main revision.
+The controls below are newly compiled from it; the earlier saved BEAM modules
+were not reused. Candidate dependencies come from the rebased checkout using
+Gleam 1.19.0 and OTP 29.0.5. Control and candidate alternate twice in disposable
+single-scheduler VMs. Builds finished before measurement. Timing and reductions
+are untraced, followed by a separate allocation pass. These remain synthetic
+source fixtures; no candidate application was installed or restarted.
+
+The rebased rendering implementation is `cc1f2e3ee`; generated stylesheet
+sources were rebuilt with `make gen-client`, committed at `1f2fbaaca`.
+All 866 current web-view tests pass, including the upstream reasoning-row
+changes. Each of the three work regressions fails against newly compiled
+main modules. The source review named in the snapshot CPU report found no
+actionable issue and ran thirty concurrent render regressions.
+
+| 100 unchanged renders | Control reductions | Candidate reductions | Control allocated words | Candidate allocated words |
+| --- | ---: | ---: | ---: | ---: |
+| Done | 28,771,286 | 8,454 | 88,522,625 | 12,619 |
+| Pending | 28,770,977 | 8,164 | 88,522,652 | 12,619 |
+| Failed | 57,719,231 | 57,718,101 | 177,068,702 | 177,068,744 |
+| Settled reasoning | 28,804,244 | 72,218 | 88,631,219 | 122,119 |
+| Blank reasoning | 3,766,903 | 72,225 | 132,319 | 122,119 |
+
+Both repetitions reproduce each reduction and allocation count exactly.
+Done/Pending remove about 99.97% of reductions, settled reasoning 99.75%,
+and blank reasoning 98.08%. Failed rendering performs the same work within
+counter overhead. Output fingerprints match for Done, Pending, Failed and
+nonblank reasoning. Blank output retains the previously documented invisible
+20-byte memo placeholder; the blank/text transition regressions pass.
+The fixture keeps settled reasoning text unchanged; upstream work that changes
+that text must invalidate the memo, as covered by the current tests.
+
+The private fresh control is `rebase-control-ebin/`, and raw repetitions are
+`render-{control,candidate}-rebase-{1,2}.log`, under
+`/private/tmp/loom-live-20261006/`. The original-pass sections below retain the
+live attribution and earlier local gate limitations. Fresh exact-head hosted
+checks and Linux signoff are pending at this publication snapshot; follow
+PR #903 for their final verdicts.
+
+The fresh full local affected wrapper returns make status 2
+(underlying 124) in 112 seconds. Static checks and a 64-second fresh server
+preparation pass; the unchanged 20-second aggregate Python-suite deadline
+expires before package tests. Its clean census saw no package skips and does
+not certify those tests. The named reproduction and stack dump reach upstream
+`test_signoff_gate` fixtures. This Mac has no `flock`; the gate waits repeatedly
+when that command is absent. A separate 120-second diagnostic reaches per-test
+30-second lock timeouts and was stopped with status 143. No repository deadline
+or test was changed. These new Linux gate fixtures must run on Linux.
+
+Installed CPU and RSS savings remain unmeasured.
+
 ## Identities and measurement boundaries
 
 The source control is `cc9ec305da544c45609c959ed933d797930cac16`.

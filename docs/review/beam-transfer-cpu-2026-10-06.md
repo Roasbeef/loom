@@ -8,6 +8,75 @@ reductions for many small strings, 91% fewer for a large ASCII value, and
 78% fewer for a large Unicode value. These are source fixture results. The
 candidate has not been installed or measured in the running applications.
 
+## Remeasurement after rebase
+
+PR [#903](https://github.com/Roasbeef/loom/pull/903) is out of draft at the
+owner's direction. The branch was rebased onto
+`3644b079059570cf7cc3c7fe98add693bb6adbcc`, including the restricted signoff
+driver in #902. This section records the new source and measurements;
+the following original-pass sections retain their earlier source identities
+and validation snapshots.
+
+A separate, clean repository-local checkout compiled that exact main revision.
+The controls below are newly compiled from it; the earlier saved BEAM modules
+were not reused. Candidate dependencies come from the rebased checkout using
+Gleam 1.19.0 and OTP 29.0.5. Control and candidate alternate twice in disposable
+single-scheduler VMs. Builds finished before measurement. Timing and reductions
+are untraced, followed by a separate allocation pass. These remain synthetic
+source fixtures; no candidate application was installed or restarted.
+
+The rebased snapshot implementation is `f87ad3333`. All 16 transfer tests pass,
+including all three lineage regressions added upstream. Forty concurrent CPU
+regression executions and exception cleanup leave the trace-session inventory
+unchanged. The independent codepoint-boundary oracle also passes against main;
+the work regression fails there with 81,931 Unicode decoder calls, while the
+candidate makes zero. All sizing and complete-start result fingerprints match
+across both implementations and both repetitions.
+
+| Fixture | Sizing reductions removed | Full start reductions removed | Full start allocated words, control to candidate |
+| --- | ---: | ---: | ---: |
+| 400 small strings | 87.78% | 71.36% | 9,842,695 to 3,005,912 |
+| ASCII, 120 KiB | 95.86% | 90.63% | 50,202,544 to 9,218 |
+| Unicode, 80 KiB | 89.62% | 78.27% | 13,115,419 to 8,273 |
+| C0 controls, 64 KiB | 83.39% | 7.99% to 8.19% | 826,435,417 to 798,157,944 |
+| Refused oversized string | 95.87% | 95.87% | 83,886,359 to 239 |
+
+Untraced complete-start timings repeat at 56.9 to 59.3 ms versus 24.4 to
+24.5 ms for small strings, 246 to 251 ms versus 33.1 to 33.4 ms ASCII,
+88.6 to 89.9 ms versus 22.9 to 23.1 ms Unicode, and 496 to 510 ms versus
+21.1 to 25.9 ms refused strings. Control-heavy metadata takes 3.77 to
+3.99 seconds in the control and 4.11 to 4.20 seconds in the candidate.
+Its reduction saving does not establish a timing improvement: serialization
+still dominates, and allocation and collection cost remain workload-dependent.
+
+A fresh independent review of `3644b079..3a08106fc` found no actionable
+invariant, simplification or nearby variant finding. It also ran twenty
+concurrent transfer regressions, thirty render regressions and all eighteen
+selector/runner tests. Exact-head remote checks and Linux signoff for the
+rebased branch are still pending at this publication snapshot.
+
+The fresh full local affected wrapper returns make status 2
+(underlying 124) in 112 seconds. Static checks and a 64-second fresh server
+preparation pass; the unchanged 20-second aggregate Python-suite deadline
+expires before package tests. Its clean census saw no package skips and does
+not certify those tests. The named reproduction and stack dump reach upstream
+`test_signoff_gate` fixtures. This Mac has no `flock`; the gate waits repeatedly
+when that command is absent. A separate 120-second diagnostic reaches per-test
+30-second lock timeouts and was stopped with status 143. No repository deadline
+or test was changed. These new Linux gate fixtures must run on Linux.
+
+The previous published head `cc52ef8826641184b8b8e168d6650c823f191fcb` passed Linux signoff
+and every hosted test job; its macOS fan-in failed on two existing undeclared
+`/proc` fixture omissions. That old status does not certify the rebased head.
+
+Use `LOOM_SIGNOFF_HOST=gilgamesh-signoff SIGNOFF_PARALLEL=8 make
+signoff-remote` after pushing the exact head. The restricted endpoint accepts
+the data-only signoff request; no arbitrary remote shell or manual status
+posting is needed. Private current-main controls and raw alternating logs
+are under `/private/tmp/loom-live-20261006/rebase-transfer-control-ebin/`
+and `transfer-{control,candidate}-rebase-{1,2}.log`. The original control,
+live attribution and original gate records below remain historical evidence.
+
 ## Source and running identities
 
 The CPU control is `52ebb1a4f`, and the implementation is `8d37bf994`, on
