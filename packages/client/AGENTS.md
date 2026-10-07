@@ -21,6 +21,25 @@ unresolved close. Extension dispatch keeps its persistent launcher.
 
 # client
 
+## Immutable registered deployment table
+
+`daemon/deployment.load` reads a closed protocol-077 owner configuration once.
+Its opaque `Table` supplies both `server.WorkspaceAuthority` and exact
+`Selected` assembly projections. Unknown or duplicate TOML keys, uninstalled
+peers, repeated selectors, invalid epochs/digests and oversized inventories
+refuse startup. Input is capped at eight MiB before TOML parsing; peer and
+workspace inventories each contain one to 32 rows. Retained bindings keep
+both authority epochs and the configured descriptor commitment.
+
+`pinned` verifies companion canonical enrollment bytes, actual SHA-256,
+embedded session scope and recomputed native registration digest before
+constructing `PinnedEnrollment`. Creation must additionally authenticate the
+configured peer's Describe reply and compare its exact Selected metadata before
+retaining that immutable companion row. `revalidate` checks the pin against the
+same Table, with no refresh or peer probing. These loaders do not install
+startup, assembly or activation; the shipped local path remains unchanged.
+
+
 ## Per-strand shell directories
 
 `client/working_directory` stores canonical shell defaults under reserved
