@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "project": "loom-team",
+  "instances": [
+    {
+      "name": "brain-a",
+      "role": "owner",
+      "node": "brain_a@mac.example.invalid",
+      "peers": ["hands-a"],
+      "transport": "native",
+      "workspaces": [
+        {
+          "executor": "hands-a",
+          "workspace": "project-a",
+          "peer": "hands-a",
+          "workspace_epoch": 1,
+          "session_epoch": 1,
+          "first_generation": 1,
+          "descriptor_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ]
+    },
+    {
+      "name": "hands-a",
+      "role": "executor",
+      "node": "hands_a@linux.example.invalid",
+      "peers": ["brain-a"],
+      "transport": "docker",
+      "image": "loom-distributed:validated",
+      "executor_template": "executor.deployment.template.toml",
+      "mounts": [
+        {"source": "/srv/checkouts/project-a", "target": "/work/project-a"}
+      ]
+    }
+  ]
+}
