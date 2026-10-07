@@ -1,0 +1,21 @@
+# Membership fragment, not a complete executor deployment.
+# Append only fields accepted by the shipped executor's strict decoder, including
+# its actual helper/pool, private state, physical descriptors and LSP profiles.
+# The utility preserves those declarations; runtime validation remains pending.
+schema = 1
+endpoint_lifetime = "retired_slots_v1"
+local_node = "@LOOM:LOCAL_NODE@"
+
+[membership]
+ca = "@LOOM:CA@"
+certificate = "@LOOM:CERTIFICATE@"
+key = "@LOOM:KEY@"
+cookie = "@LOOM:COOKIE@"
+options = "@LOOM:OPTIONS@"
+
+[[peers]]
+node = "brain_a@mac.example.invalid"
+leaf_sha256 = "@LOOM:PIN:brain-a@"
+
+# The STATE_ROOT token is a closed string substitution for the selected role's
+# private state root. Use it only in the actual decoder's state-root field.
