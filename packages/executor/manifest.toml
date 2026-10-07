@@ -57,5 +57,6 @@ parrot = { version = ">= 2.3.0 and < 3.0.0" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 sqlight_loom = { version = "== 1.2.1" }
 telemetry = { path = "../telemetry" }
+tom = { version = ">= 2.1.0 and < 3.0.0" }
 tools = { path = "../tools" }
 weft = { git = "https://github.com/Roasbeef/weft.git", ref = "368d01abcaaff3ef986317a89fe8b98e1e4a2ad6" }
