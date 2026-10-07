@@ -3384,6 +3384,14 @@ fn read_frame(
     | framing.ExecStdin(..), _
     | framing.ExecOut(..), _
     | framing.ExecExit(..), _
+    | framing.ProtocolStart(..), _
+    | framing.ProtocolInput(..), _
+    | framing.ProtocolInputAccepted(..), _
+    | framing.ProtocolInputRefused(..), _
+    | framing.ProtocolOutput(..), _
+    | framing.ProtocolOutputConsumed(..), _
+    | framing.ProtocolReusable(..), _
+    | framing.ProtocolExit(..), _
     | framing.CapResult(..), _
     | framing.HookCall(..), _
     | framing.ErrorBody(..), _
