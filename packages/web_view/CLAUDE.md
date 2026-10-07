@@ -72,7 +72,13 @@ page keys and nonces, and the relay into the session's gateway.
   text node over `context_view.State`. Refresh is `component.ContextRefreshRequested`
   at `component.context_refresh_path`, which the observer's socket admits;
   Compact now is `component.CompactStrand` (a `Control`, `/compact` through the
-  shared step) and only the operator's page draws it.
+  shared step) and only the operator's page draws it. The `<details>` carries
+  `data-dismiss="keep"` and is followed by an empty `<loom-dismiss>` sibling
+  (`web_client/dismiss`), which closes it on an outside press or Escape; it is a
+  sibling and not a wrapper so the buttons keep their tree paths. The panel's
+  fixed position stops short of the 340 px strand column from 980 px up. A usage
+  row inside the 30 s pacing window is deferred to the window's end
+  (`context_view.State.deferred_until_ms`), and `rearm` wakes the page for it.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a

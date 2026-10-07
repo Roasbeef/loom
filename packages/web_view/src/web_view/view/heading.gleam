@@ -129,19 +129,30 @@ pub fn view(
           case context {
             "" -> []
             _ -> [
-              html.details([attribute.class("figure"), attribute.class("ctx")], [
-                html.summary(
-                  [
-                    attribute.title(case string.ends_with(context, " —") {
-                      True -> "No turn yet on the strand shown"
-                      False ->
-                        "Estimated context use of the strand shown. Open for the breakdown."
-                    }),
-                  ],
-                  figure_words(context),
-                ),
-                breakdown,
-              ]),
+              html.details(
+                [
+                  attribute.class("figure"),
+                  attribute.class("ctx"),
+                  attribute.attribute("data-dismiss", "keep"),
+                ],
+                [
+                  html.summary(
+                    [
+                      attribute.title(case string.ends_with(context, " —") {
+                        True -> "No turn yet on the strand shown"
+                        False ->
+                          "Estimated context use of the strand shown. Open for the breakdown."
+                      }),
+                    ],
+                    figure_words(context),
+                  ),
+                  breakdown,
+                ],
+              ),
+
+              // Closes the panel on an outside press or Escape. A sibling and
+              // not a wrapper, so the panel's buttons keep their tree paths.
+              element.element("loom-dismiss", [], []),
             ]
           },
 

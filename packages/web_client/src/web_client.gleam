@@ -50,6 +50,8 @@
 ////   document's shape in its place.
 //// - `<loom-popover wanted="open">` (`web_client/popover`) opens and closes
 ////   the home's account panel from the person's name in the bar.
+//// - `<loom-dismiss>` (`web_client/dismiss`) closes the bar's context
+////   disclosure when a press lands outside it or Escape is pressed.
 //// - `<loom-saved>` (`web_client/saved`) folds and unfolds the sidebar's saved
 ////   sessions from its quiet "N saved" line, and keeps the choice in the
 ////   browser's storage.
@@ -76,6 +78,7 @@ import web_client/attach
 import web_client/back
 import web_client/composer
 import web_client/copy
+import web_client/dismiss
 import web_client/drop_guard
 import web_client/elapsed
 import web_client/expand
@@ -107,6 +110,7 @@ pub fn main() -> Nil {
   let _ = back.register()
   let _ = composer.register()
   let _ = copy.register()
+  let _ = dismiss.register()
 
   // A file dropped anywhere else must not navigate the tab away.
   drop_guard.install()

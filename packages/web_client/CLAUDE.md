@@ -210,6 +210,12 @@ renders again just for it:
   other press and Escape close. The server's only input is `wanted="open"`, which
   opens it while a device link is on show; any other word is no message. It
   sends the server nothing and adds no socket admission.
+- `<loom-dismiss>` is the empty sibling after the bar's context `<details>` (it
+  draws nothing). Document listeners for `click` and `keydown` read only the fixed
+  `data-dismiss="keep"` mark on the disclosure (`dismiss_rule.after_click`): a
+  press through it keeps it, any other press and Escape remove its `open`
+  attribute. No state, no attribute read, no server message, no socket admission.
+  Escape is not consumed, so the shell's own Escape still runs.
 - `<loom-copy subject="command|token|link|device|claim-address|bookmark" text="...">`
   (`bookmark` is a remembered login's home address, `http://`, a loopback host,
   `/ui/l/`, 32 lowercase hex digits and `/home`, and nothing else) (`device` is the

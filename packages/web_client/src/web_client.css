@@ -262,6 +262,8 @@
   .session-head details.ctx > summary:hover{color:var(--color-fg);}
   .session-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   .ctx-panel{position:fixed;z-index:40;top:48px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
+  /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is 340px wide, with the page's 12px margin beyond it. */
+  @media (min-width:980px){.ctx-panel{right:352px;width:min(420px,calc(100vw - 364px));}}
   .ctx-actions{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px 0;}
   .ctx-button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;}
   .ctx-button:hover{background:var(--color-bg-sunk);}
