@@ -484,6 +484,8 @@ pub fn ordinary_constructor_has_no_registered_system_authority_test() {
       <<"intent">>,
     )
     as "No effect or ordinal exists without registered original custody."
+  assert custodian.lookup_workspace_administration_intent(owner, "startup")
+    == Error(custody.Invalid("registered owner required"))
   assert invoke(f, 0) == Ok(final())
   assert custodian.tool_generation(owner, invocation(0).key)
     == Error(custody.Missing)
@@ -1934,4 +1936,121 @@ fn composed_workspace_configuration(
     dispatch_binding.with_workspace_commands(binding, enrolled, "/tools/git")
     as "The trusted resolved Git executable supplies no arbitrary recipe."
   config
+}
+
+pub fn indexed_administration_lookup_is_historical_even_on_live_actor_test() {
+  let f = fixture("indexed-admin-live", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "The original actor holds live registered authority."
+  let #(original, _, associated) = custodian.registered_fields(ready)
+  let assert Ok(_discarded) =
+    custodian.retain_system_intent(
+      original,
+      "startup",
+      custody.WorkspaceAdministration,
+      operation(),
+      "source-read",
+      id(20),
+      <<"original metadata">>,
+    )
+    as "Retention precedes deliberately discarded preparation observation."
+  let assert Ok(found) =
+    custodian.lookup_workspace_administration_intent(original, "startup")
+    as "The actor closes service and association without caller regeneration."
+  assert custody.system_intent_fields(found)
+    == #(
+      associated,
+      "startup",
+      custody.WorkspaceAdministration,
+      operation(),
+      "source-read",
+      id(20),
+      <<"original metadata">>,
+    )
+  assert custodian.admit_system_child(original, found, system_payload)
+    == Error(custody.Frozen)
+  assert custodian.lookup_workspace_administration_intent(original, "missing")
+    == Error(custody.Missing)
+  let assert Ok(worktree) =
+    custodian.retain_system_intent(
+      original,
+      "only-worktree",
+      custody.WorktreeObservation,
+      operation(),
+      "source-read",
+      id(21),
+      <<"different service">>,
+    )
+    as "Other system families remain separate indexed namespaces."
+  assert custody.system_intent_fields(worktree).2 == custody.WorktreeObservation
+  assert custodian.lookup_workspace_administration_intent(
+      original,
+      "only-worktree",
+    )
+    == Error(custody.Missing)
+  stop(f)
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert scalar(f.path, "SELECT SUM(next_ordinal) FROM owner_system_ordinal")
+    == 0
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_system_intent") == 2
+}
+
+pub fn indexed_administration_history_preserves_original_identity_and_handle_test() {
+  let f = fixture("indexed-admin-history", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "Capture the original incarnation before retention."
+  let #(original, _, associated) = custodian.registered_fields(ready)
+  let assert Ok(retained) =
+    custodian.retain_system_intent(
+      original,
+      "admitted",
+      custody.WorkspaceAdministration,
+      operation(),
+      "source-read",
+      id(20),
+      <<"original">>,
+    )
+    as "The original live retention returns live readback."
+  let assert Ok(first) =
+    custodian.admit_system_child(original, retained, system_payload)
+    as "Only this original live value admits the child."
+  let assert Ok(_discarded) =
+    custodian.retain_system_intent(
+      original,
+      "pending",
+      custody.WorkspaceAdministration,
+      operation(),
+      "source-read",
+      id(21),
+      <<"pending">>,
+    )
+    as "The second slot remains unadmitted across owner retirement."
+  stop(f)
+  let assert Ok(started) = custodian.start(f.owner, f.config)
+    as "Reopened custody offers history only."
+  let history = Fixture(..f, pid: started.pid)
+  assert custodian.registered(history.owner)
+    == Ok(custodian.HistoryOnly(pin(), associated))
+  let assert Ok(found) =
+    custodian.lookup_workspace_administration_intent(history.owner, "admitted")
+    as "History discovers original identity without the old caller readback."
+  let assert Ok(observed) =
+    custodian.admit_system_child(history.owner, found, system_payload)
+    as "The old allocation remains Retained."
+  assert observed.admission == custody.Retained
+  assert observed.origin == first.origin
+  assert observed.request_id == id(20)
+  let assert Ok(pending) =
+    custodian.lookup_workspace_administration_intent(history.owner, "pending")
+    as "Unadmitted historical metadata is inspectable."
+  assert custodian.admit_system_child(history.owner, pending, system_payload)
+    == Error(custody.Frozen)
+  assert custodian.lookup_workspace_administration_intent(original, "admitted")
+    == Error(custody.Unavailable("owner ask failed"))
+  stop(history)
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_system_intent") == 2
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+  assert scalar(f.path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
 }

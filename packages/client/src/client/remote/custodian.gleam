@@ -31,6 +31,8 @@
 //// `reserve_tool`, `reserve_workspace`, `reserve_service`, `reserve_offer` and
 //// `reserve_command` use its private connection-bound live generation.
 //// `retain_intent` and `admit_system_child` preserve durable system ordinals.
+//// `lookup_workspace_administration_intent` reads historical metadata through
+//// the captured actor association without retaining or allocating a source.
 //// `reconciliation_intent` prevents fresh allocation by a fenced original owner.
 //// `receipt_readback` verifies exact original receipt and generation before ACK.
 //// `allocate_system` stores the actual opaque pending value under a fresh Ref.
@@ -286,6 +288,12 @@ pub opaque type Message {
     String,
     ids.EntryId,
     BitArray,
+    process.Subject(Result(custody.IntentReadback, custody.Error)),
+  )
+
+  /// The actor fixes service and association; lookup reconstructs no live token.
+  LookupWorkspaceAdministrationIntent(
+    String,
     process.Subject(Result(custody.IntentReadback, custody.Error)),
   )
 
@@ -659,6 +667,23 @@ pub fn retain_system_intent(
       bytes,
       reply,
     )
+  })
+}
+
+/// Looks up one WorkspaceAdministration intent owned by this captured actor.
+/// Original and historical registered actors expose their exact evidence; an
+/// ordinary actor refuses. The returned value cannot allocate an unadmitted child.
+///
+/// ## Examples
+///
+/// `lookup_workspace_administration_intent(owner, address)` allocates no UUID.
+@internal
+pub fn lookup_workspace_administration_intent(
+  owner: Handle,
+  work_address: String,
+) -> Result(custody.IntentReadback, custody.Error) {
+  ask(owner, fn(reply) {
+    LookupWorkspaceAdministrationIntent(work_address, reply)
   })
 }
 
@@ -1757,6 +1782,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         reply,
         retain_intent(state, address, service, op, step, id, bytes),
       )
+      resume(state)
+    }
+    LookupWorkspaceAdministrationIntent(address, reply) -> {
+      let readback = {
+        use association <- result.try(current_association(state))
+        custody.lookup_system_intent(
+          state.store,
+          association,
+          address,
+          custody.WorkspaceAdministration,
+        )
+      }
+      process.send(reply, readback)
       resume(state)
     }
     AdmitSystemChild(intent, build, reply) -> {

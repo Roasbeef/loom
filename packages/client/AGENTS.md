@@ -6478,3 +6478,41 @@ Broker. Controlled NotStarted dispatch proves no helper execution. Actual
 instance_owner cleanup covers the lost final opening reply and Runtime-before-
 Services ordering. This preparation seam does not activate registered operation
 in the shipped daemon or supply the executor FullHost.
+
+
+## Fixed registered hook source acquisition
+
+`remote/custodian.lookup_workspace_administration_intent` sends one read-only
+LookupWorkspaceAdministrationIntent message to the captured owner actor. The actor
+fixes WorkspaceAdministration and its own original or historical association.
+OrdinaryCustody refuses; a pinned original Handle cannot follow a reopened actor.
+Storage supplies exact historical metadata rather than fresh preparation custody.
+
+`remote/hook_source_acquisition` captures the actual original RegisteredOwner,
+immutable deployment Table and selected concrete endpoint. Its inventory is the
+existing configured owner user file followed by the two executor project/local
+settings files. Labels derive from the original enrollment and never reach an
+owner workspace filesystem probe. The owner trust directory stays home/hooktrust.
+OwnerBaseline captures configured owner bytes or true absence once and stays
+with assembly outside the observer. Its approved eight-MiB acceptance check
+follows the actual whole-file read and provides no peak allocation guarantee.
+
+FixedBatchPlan is pure canonical metadata with one baseline hash, original IDs
+and the absolute live-incarnation deadline. Its complete manifest and both read
+plans fit the existing 8192-byte intent profiles before any retention. One managed
+acquire performs exact lookup, all-three-intent preparation and sequential reads.
+A lookup hit is historical observation only and cannot fill missing preparation.
+observe grants no preparation or effect authority; original receipt reconciliation
+and ACK remain idempotent through the existing workspace consumer. Only that
+consumer's actual Fresh admission can Submit. Caller death stops its continuation
+while an admitted physical read remains owned by the original semantic service.
+
+Acquisition promotes exact TextRead or genuine FsNotFound only. Other indexed
+file, service, transport and receipt failures prevent a source bundle. The existing
+load_registered preserves absent/refused source positions and trust policy.
+Baseline mismatch, expired metadata or original custodian retirement refuses;
+whole-VM recovery cannot recreate the captured owner body or live authority.
+The fixed inventory consumes three existing charged intent slots, with one
+exchange at a time and the existing assembly ceiling of four consumers. Accepted
+source bodies and parsing intermediates remain distinct from bounded metadata.
+Default daemon selection, runtime Effects and FullHost assembly remain separate.

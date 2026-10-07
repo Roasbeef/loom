@@ -1603,3 +1603,180 @@ pub fn format_six_admitted_native_history_migrates_without_new_permission_test()
   assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
   assert custody.close(reopened) == Ok(Nil)
 }
+
+pub fn indexed_intent_lookup_recovers_exact_metadata_without_live_admission_test() {
+  let #(path, store, live) = opened("indexed-intent")
+  let original = intent(live, "startup", id(10), "fixed original bytes")
+  let assert Ok(_discarded_reply) =
+    custody.retain_system_intent(store, original)
+    as "Original retention commits before its caller discards the reply."
+  let charge = scalar(path, "SELECT reserved_bytes FROM owner_system_intent")
+  let associated = custody.live_association(live)
+  let assert Ok(found) =
+    custody.lookup_system_intent(
+      store,
+      associated,
+      "startup",
+      custody.WorktreeObservation,
+    )
+    as "Indexed lookup discovers original metadata without caller UUID or operation."
+  let #(actual, address, service, operation, step, uuid, bytes) =
+    custody.system_intent_fields(found)
+  assert actual == associated
+  assert address == "startup"
+  assert service == custody.WorktreeObservation
+  assert operation == coordinates().1
+  assert step == "startup-git"
+  assert uuid == id(10)
+  assert bytes == <<"fixed original bytes">>
+  assert custody.admit_system_child(store, found, build)
+    == Error(custody.Frozen)
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 0
+  assert scalar(path, "SELECT reserved_bytes FROM owner_system_intent")
+    == charge
+
+  // Only the original live retained value can allocate. Subsequent discovery
+  // recovers that allocation while retaining its historical disposition.
+  let assert Ok(live_readback) = custody.read_system_intent(store, original)
+    as "Existing live path remains separate from indexed history."
+  let assert Ok(first) = custody.admit_system_child(store, live_readback, build)
+    as "The original live readback admits exactly one child."
+  let assert Ok(history) =
+    custody.lookup_system_intent(
+      store,
+      associated,
+      "startup",
+      custody.WorktreeObservation,
+    )
+    as "Admitted evidence remains discoverable by its exact address."
+  let assert Ok(observed) = custody.admit_system_child(store, history, build)
+    as "Historical discovery returns the existing child, never Fresh."
+  assert first.admission == custody.Fresh
+  assert observed.admission == custody.Retained
+  assert observed.origin == first.origin
+  assert observed.request_id == id(10)
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn indexed_intent_lookup_separates_missing_address_from_association_conflict_test() {
+  let #(path, store, live) = opened("indexed-intent-identity")
+  let assert Ok(_) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "startup", id(10), "intent"),
+    )
+    as "One exact original indexed row."
+  let associated = custody.live_association(live)
+  assert custody.lookup_system_intent(
+      store,
+      associated,
+      "other",
+      custody.WorktreeObservation,
+    )
+    == Error(custody.Missing)
+  assert custody.lookup_system_intent(
+      store,
+      associated,
+      "startup",
+      custody.WorkspaceAdministration,
+    )
+    == Error(custody.Missing)
+  assert custody.lookup_system_intent(
+      store,
+      association(2, 2, generation.FirstGeneration),
+      "startup",
+      custody.WorktreeObservation,
+    )
+    == Error(custody.Missing)
+  assert custody.lookup_system_intent(
+      store,
+      association(1, 2, generation.FirstGeneration),
+      "startup",
+      custody.WorktreeObservation,
+    )
+    == Error(custody.Conflict)
+  let assert Error(custody.Invalid(_)) =
+    custody.lookup_system_intent(
+      store,
+      associated,
+      "",
+      custody.WorktreeObservation,
+    )
+    as "Invalid work address refuses before lookup."
+  let assert Error(custody.Invalid(_)) =
+    custody.lookup_system_intent(
+      store,
+      associated,
+      string.repeat("x", 1025),
+      custody.WorktreeObservation,
+    )
+    as "An oversized address is not absence."
+  assert scalar(path, "SELECT COUNT(*) FROM owner_system_intent") == 1
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 0
+  assert custody.close(store) == Ok(Nil)
+}
+
+pub fn indexed_intent_lookup_rejects_malformed_present_records_test() {
+  list.index_map(
+    [
+      "UPDATE owner_system_intent SET generation_key=zeroblob(1025)",
+      "UPDATE owner_system_intent SET intent_bytes=zeroblob(8193)",
+      "UPDATE owner_system_intent SET intent_bytes='wrong type'",
+      "UPDATE owner_system_intent SET operation='invalid'",
+      "UPDATE owner_system_intent SET request_id='invalid'",
+      "UPDATE owner_system_intent SET step=CAST(zeroblob(129) AS TEXT)",
+      "UPDATE owner_system_intent SET reserved_bytes=0",
+    ],
+    fn(statement, index) {
+      let #(path, store, live) =
+        opened("indexed-intent-corrupt-" <> int.to_string(index))
+      let assert Ok(_) =
+        custody.retain_system_intent(
+          store,
+          intent(live, "startup", id(10), "intent"),
+        )
+        as "A known row precedes each bounded SQL corruption."
+      mutate(path, statement)
+      let assert Error(custody.Invalid(_)) =
+        custody.lookup_system_intent(
+          store,
+          custody.live_association(live),
+          "startup",
+          custody.WorktreeObservation,
+        )
+        as "A malformed present row cannot authorize replacement preparation."
+      assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+      assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 0
+      assert custody.close(store) == Ok(Nil)
+    },
+  )
+}
+
+pub fn indexed_intent_lookup_rejects_corrupted_admitted_child_link_test() {
+  let #(path, store, live) = opened("indexed-intent-link")
+  let assert Ok(retained) =
+    custody.retain_system_intent(
+      store,
+      intent(live, "startup", id(10), "intent"),
+    )
+    as "The original slot commits."
+  let assert Ok(_) = custody.admit_system_child(store, retained, build)
+    as "Actual original child links commit."
+  mutate(
+    path,
+    "UPDATE owner_child_generation SET original_request_id='00000000-0000-7000-8000-000000000000'",
+  )
+  assert custody.lookup_system_intent(
+      store,
+      custody.live_association(live),
+      "startup",
+      custody.WorktreeObservation,
+    )
+    == Error(custody.Conflict)
+  assert scalar(path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert scalar(path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+  assert custody.close(store) == Ok(Nil)
+}

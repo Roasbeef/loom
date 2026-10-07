@@ -837,3 +837,20 @@ original version and schema counter, with neither added table nor profile.
 must combine profile and binding queries with the other storage SQL surfaces.
 These catalogue migrations do not change the separate owner-custody format or
 enable registered physical runtime assembly.
+
+
+## Indexed historical system intents
+
+`owner_custody.lookup_system_intent` projects the existing canonical primary key
+from the complete generation association, bounded work address and closed service.
+It uses the existing indexed header and body queries, checks header sizes before
+loading a body, and compares original metadata, charge, full association and
+child links. A missing header is Missing; malformed present evidence is a refusal
+and cannot authorize replacement preparation. No schema or generated SQL changes.
+
+The returned IntentReadback contains a historical SystemIntent without
+LiveGeneration, even on the original admitting connection. It cannot allocate an
+unadmitted child. An already admitted child remains exact Retained observation.
+Lookup neither retains a row nor advances ordinals, charges or admission state.
+The dedicated owner_generations controls use real SQLite and bounded SQL faults;
+they make no filesystem or transport claim.

@@ -45,6 +45,8 @@
 //// `read_generation_close` exposes history without rebuilding live authority.
 //// `admit_registered_fresh_with_profile` and `registered_child_inside` append
 //// exact generation links in the same transaction as the original admission.
+//// `lookup_system_intent` discovers exact indexed historical metadata without
+//// reconstructing a live generation or changing retained slot accounting.
 //// `retain_system_intent` reserves a pending child slot and link allowance;
 //// `admit_system_child` transfers it and advances the fixed lifetime counter.
 //// `allocate_native_system` retains opaque pending custody before Broker clearance;
@@ -1704,12 +1706,7 @@ fn checked_system_intent(
   request_id: EntryId,
   bytes: BitArray,
 ) -> Result(SystemIntent, Error) {
-  use <- bool.guard(
-    when: string.byte_size(work_address) < 1
-      || string.byte_size(work_address) > 1024
-      || string.contains(work_address, "\u{0000}"),
-    return: Error(Invalid("invalid retained system work address")),
-  )
+  use Nil <- result.try(check_system_work_address(work_address))
   use _ <- result.try(
     workspace.step(step)
     |> result.replace_error(Invalid("invalid system intent phase")),
@@ -1817,6 +1814,64 @@ pub fn read_system_intent(
   case exists {
     True -> Ok(IntentReadback(intent))
     False -> Error(Missing)
+  }
+}
+
+/// Discovers an exact retained intent without reconstructing live authority.
+/// The canonical indexed header bounds loading before full metadata, charges and
+/// generation/child links are checked. Missing identifies an absent header only.
+///
+/// ## Examples
+///
+/// `lookup_system_intent(store, original, address, WorkspaceAdministration)`
+/// returns historical readback; an unadmitted child remains Frozen.
+@internal
+pub fn lookup_system_intent(
+  store: Store,
+  association: generation.GenerationAssociation,
+  work_address: String,
+  service: SystemService,
+) -> Result(IntentReadback, Error) {
+  use Nil <- result.try(check_system_work_address(work_address))
+  let address = system_intent_key(association, work_address, service)
+  use header <- result.try(
+    one(query(store, sql.owner_system_intent_header(address))),
+  )
+  use Nil <- result.try(header_size(header.generation_key_size, 1024))
+  use Nil <- result.try(header_size(header.intent_bytes_size, 8192))
+
+  // Once the header exists, an unavailable body or broken link is corruption,
+  // rather than permission for the caller to prepare a replacement intent.
+  use intent <- result.try(retained_intent_result(intent_at(store, address)))
+  use Nil <- result.try(same_association(intent.association, association))
+  use Nil <- result.try(equal_string(intent.work_address, work_address))
+  use Nil <- result.try(equal_string(
+    system_service_name(intent.service),
+    system_service_name(service),
+  ))
+  use readback <- result.try(
+    retained_intent_result(read_system_intent(store, intent)),
+  )
+  use Nil <- result.try(
+    retained_intent_result(validate_system_intent_link(store, intent)),
+  )
+  Ok(readback)
+}
+
+fn check_system_work_address(work_address: String) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: string.byte_size(work_address) < 1
+      || string.byte_size(work_address) > 1024
+      || string.contains(work_address, "\u{0000}"),
+    return: Error(Invalid("invalid retained system work address")),
+  )
+  Ok(Nil)
+}
+
+fn retained_intent_result(value: Result(a, Error)) -> Result(a, Error) {
+  case value {
+    Error(Missing) -> Error(Invalid("invalid retained system intent"))
+    other -> other
   }
 }
 
@@ -2737,20 +2792,28 @@ fn system_intent_charge(intent: SystemIntent, key_size: Int) -> Int {
 }
 
 fn system_intent_address(intent: SystemIntent) -> String {
+  system_intent_key(intent.association, intent.work_address, intent.service)
+}
+
+fn system_intent_key(
+  association: generation.GenerationAssociation,
+  work_address: String,
+  service: SystemService,
+) -> String {
   let #(scope, descriptor, number) =
-    generation.key_fields(generation.association_key(intent.association))
+    generation.key_fields(generation.association_key(association))
   let #(session, binding) = workspace.scope_fields(scope)
   json.to_string(
     json.Array([
       json.String("owner-system-intent/1"),
-      json.String(intent.work_address),
+      json.String(work_address),
       json.String(ids.session_id_to_string(session)),
       workspace.encode_binding(workspace.Registered(binding)),
       json.String(
         generation.digest_bytes(descriptor) |> bit_array.base16_encode,
       ),
       json.Int(number),
-      json.String(system_service_name(intent.service)),
+      json.String(system_service_name(service)),
     ]),
   )
 }
