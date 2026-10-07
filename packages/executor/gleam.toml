@@ -3,6 +3,7 @@ version = "0.1.0"
 gleam = ">= 1.18.0"
 
 [dependencies]
+tom = ">= 2.1.0 and < 3.0.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 sqlight_loom = "== 1.2.1"
 parrot = ">= 2.3.0 and < 3.0.0"
