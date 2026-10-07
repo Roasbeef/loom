@@ -17,8 +17,10 @@
     listen_unix/1,
     accept_unix/2,
     socket_recv/1,
+    socket_recv_exact/3,
     socket_send/2,
     socket_close/1,
+    socket_close_now/1,
     listener_close/1
 ]).
 
@@ -76,6 +78,21 @@ socket_recv(Socket) ->
         _:Error -> {error, describe(Error)}
     end.
 
+%% Fixed passive reads admit a bounded header or body chunk, never an arbitrary
+%% amount of currently buffered peer data. Count and timeout are checked here
+%% because Erlang's zero-count and infinity modes would violate that contract.
+socket_recv_exact(Socket, Count, TimeoutMs)
+  when is_integer(Count), Count >= 1, Count =< 65536,
+       is_integer(TimeoutMs), TimeoutMs >= 0 ->
+    try gen_tcp:recv(Socket, Count, TimeoutMs) of
+        {ok, Data} when byte_size(Data) =:= Count -> {ok, Data};
+        {ok, _} -> {error, <<"exact receive returned an unequal length">>};
+        {error, Reason} -> {error, describe(Reason)}
+    catch
+        _:Error -> {error, describe(Error)}
+    end;
+socket_recv_exact(_, _, _) -> {error, <<"invalid exact receive bound">>}.
+
 %% gen_tcp:send/2 — write a whole frame. Callable from a process other
 %% than the socket's owner, which is what lets the writer process serve
 %% the host's outbound frames while the reader blocks in recv.
@@ -95,6 +112,19 @@ socket_send(Socket, Bytes) ->
 socket_close(Socket) ->
     try gen_tcp:close(Socket) of
         _ -> nil
+    catch
+        _:_ -> nil
+    end.
+
+%% Original cancellation must not wait for the ordinary TCP close's output
+%% flush (OTP defaults to a three-minute linger loop). Zero linger makes the
+%% same stock close discard pending output and wake a blocked send/recv.
+%% Actual reader/writer joins are observed separately in the Gleam owner.
+socket_close_now(Socket) ->
+    try
+        _ = inet:setopts(Socket, [{linger, {true, 0}}]),
+        _ = gen_tcp:close(Socket),
+        nil
     catch
         _:_ -> nil
     end.

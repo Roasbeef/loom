@@ -325,7 +325,7 @@ pub type CompileFailure {
 }
 
 /// Why a compiled program returned no outcome. Narrows
-/// `codemode/satellite.RunError` to the four cases that read differently
+/// `codemode/satellite.RunError` to the cases that read differently
 /// to a model, keeping the pipeline's own reason text verbatim.
 pub type RunFailure {
   /// The wall deadline passed; the satellite was killed as a unit.
@@ -337,6 +337,10 @@ pub type RunFailure {
   /// The execution never started — the token, the host actor, or the
   /// launch itself.
   StartFailed(reason: String)
+
+  /// Launch may have crossed the physical boundary; reconcile its original
+  /// custody before deciding whether another execution is permissible.
+  LaunchOutcomeUnknown(reason: String)
 
   /// The capability channel or the terminal frame broke protocol.
   ChannelFaulted(reason: String)
@@ -1948,6 +1952,12 @@ fn run_failed_outcome(
       "start_failed",
       "the code-mode execution could not start: " <> reason,
     )
+    LaunchOutcomeUnknown(reason:) -> #(
+      "launch_outcome_unknown",
+      "the satellite may have launched, but its outcome is unknown: "
+        <> reason
+        <> ". Reconcile the original execution before submitting it again.",
+    )
     ChannelFaulted(reason:) -> #(
       "channel_faulted",
       "the satellite's capability channel broke protocol: " <> reason,
@@ -1970,6 +1980,7 @@ fn run_failure_detail(failure: RunFailure) -> String {
     DeadlineExceeded -> "the wall deadline passed"
     SatelliteGone(reason:) -> reason
     StartFailed(reason:) -> reason
+    LaunchOutcomeUnknown(reason:) -> reason
     ChannelFaulted(reason:) -> reason
   }
 }

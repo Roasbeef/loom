@@ -10,23 +10,21 @@
 //// It runs in the harness VM; it never runs model-influenced code (Rule
 //// Zero, `docs/architecture/effects.md`).
 ////
-//// # The satellite launch contract (the Go/sandbox agent's spec, J3c)
+//// # Foreground whole Launch and persistent compatibility
 ////
-//// The host hands a `LaunchSpec` to an injected `Launcher`. Production's
-//// launcher creates and listens on the cap socket, then dispatches a
-//// jailed `erl` through the broker exec path (`broker.clear_call`, the
-//// exec-control channel) with the shape below; a deterministic test
-//// injects an in-process peer instead. The contract:
+//// Foreground `run` passes artifact, original identity, token and actual host
+//// endpoint together to `run_channel.Launcher`. The selected physical adapter
+//// owns token/socket placement and returns a paused connection. The host installs
+//// original close and writer custody before acknowledging and activating it.
+//// One charged frame window per direction replaces pre-connection buffering.
+//// A call remains counted through bounded ReplyReady and ReplySending until the
+//// writer acknowledges actual consumption. One immediate refusal/heartbeat slot
+//// also holds its inbound delivery until its response is consumed.
 ////
-//// - **cap socket first.** Before launching the node the launcher creates
-////   and listens on an AF_UNIX stream socket at `cap_socket_path`
-////   (`gen_tcp` with `{local, Path}`, or an FFI equivalent), then accepts
-////   the satellite's connection. Frames are length-prefixed msgpack
-////   (`u32_be length ++ msgpack`); Gleam owns frame boundaries (packet
-////   raw). The launcher wires the socket's inbound bytes to
-////   `LaunchSpec.wire` and returns a `CapConnection` whose `send` writes
-////   outbound frames and whose `destroy` closes the socket, reaps the
-////   node, and hands back what the kernel enforced on it.
+//// Persistent `start` retains its separate `LaunchSpec`/`CapConnection` contract:
+//// its launcher listens on the cap socket and forwards legacy `WireIn` bytes.
+//// Both physical paths must preserve the native command and jail shape below.
+////
 //// - **argv** launches the compiled artifact's boot entry with Erlang
 ////   distribution OFF and no epmd, e.g.:
 ////   ```
@@ -128,28 +126,26 @@
 //// ## Flow
 ////
 //// One execution: `run` → `run_launched` → `start_host` → `dispatch_launch` →
-//// `handle_bytes` → `route_cap_call` → `dispatch_cap_call` →
+//// `handle_delivery` → `route_cap_call` → `dispatch_cap_call` →
 //// `finish_from_payload` → `terminate`
 ////
 //// Held open: `start` → `start_machine` → `invoke` → `host_step` → `begin` →
 //// `read_frame` → `perish`
 ////
-//// 1. `run` mints the cap token and writes its file; `run_launched` starts the
-////    host actor with `start_host`, and `dispatch_launch` has the injected
-////    `Launcher` create the node and `hand_over` its connection.
-//// 2. `handle` is that actor's one handler. Inbound bytes reach
-////    `handle_bytes`, which splits payloads with `deframe` and passes each to
-////    `handle_payload`; its raw header chooses the terminal report boundary
-////    or the ordinary broker decoder before `handle_frame` dispatches.
-//// 3. `handle_cap_call` checks the token, `route_cap_call` asks the router for a
-////    plan. `admit_cap_call` checks lifetime and outstanding ceilings;
-////    `dispatch_cap_call` uses `admitted_origin` before tally or spawn.
-////    `run_collector` preserves the original origin through owner clearance;
-////    `handle_cap_done` writes the answer with `emit`. Owner callbacks retain
-////    their existing service custody and reserve no native child.
-//// 4. The terminal outcome frame arrives in `finish_from_payload`, and
-////    `terminate` destroys the node and only then reports, so the enforcement
-////    report travels with the outcome; `await_result` is the caller's wait.
+//// 1. `run` mints the original token; `dispatch_launch` calls whole Launch and
+////    `hand_over` installs paused connection custody in `handle_connected`.
+//// 2. `handle_delivery` checks the original directional reservation before
+////    `handle_payload` selects raw terminal preflight or the ordinary decoder.
+////    `consume_current` returns only an exact actual-consumption acknowledgement.
+//// 3. `route_cap_call` and `admit_cap_call` preserve the original authority and
+////    ceilings. `dispatch_cap_call` records admission before starting work.
+////    `handle_cap_done` settles computation once and retains its bounded reply;
+////    `flush_ready` reserves before writer publication, and
+////    `handle_write_consumed` alone releases its call or immediate response slot.
+//// 4. `finish_from_payload` holds a validated terminal outcome. Its final ACK
+////    precedes `terminate` and `cleanup`, which observe original native and
+////    transport/resource drains without replacing that known outcome. `Run.custody`
+////    separately controls whether enclosing preparation directories may be removed.
 //// 5. `start` launches a satellite that outlives one program: `start_machine`
 ////    runs the `Phase` machine `host_step`, and `invoke` asks it for one
 ////    answer under a fresh token.
@@ -178,6 +174,7 @@ import broker/token
 import codemode/compile.{type Artifact}
 import codemode/enforcement.{type Report}
 import codemode/identity.{type PhaseIdentity}
+import codemode/run_channel
 import core/clock.{type Clock}
 import core/msgpack.{type MsgPackValue}
 import core/remote_tool
@@ -227,6 +224,19 @@ pub type Outcome {
   Errored(message: String, details: MsgPackValue)
 }
 
+/// Cleanup observations are independent of program outcome and node report.
+/// Callers may remove physical directories only after cleanup-safe custody.
+pub type RunCustody {
+  /// No native dispatch or still-owned original preparation resources remain.
+  NoLaunchResources
+
+  /// Original native, transport and physical resources actually settled/released.
+  LaunchResourcesReleased
+
+  /// Original preparation/native/resource ownership remains unresolved.
+  LaunchResourcesUnresolved(reason: String)
+}
+
 /// One satellite run: the program's outcome, and what the kernel actually
 /// enforced on the node that produced it.
 ///
@@ -243,7 +253,16 @@ pub type Outcome {
 /// satellite) still says which calls it had made. A run that never
 /// launched carries the empty log.
 pub type Run {
-  Run(outcome: Result(Outcome, RunError), node: Report, calls: CallLog)
+  Run(
+    /// The known program observation is not overwritten by cleanup uncertainty.
+    outcome: Result(Outcome, RunError),
+    /// Original native enforcement evidence, never an inferred cleanup proof.
+    node: Report,
+    /// The host's original admission/completion-time call observations.
+    calls: CallLog,
+    /// Independent original resource custody for enclosing directory cleanup.
+    custody: RunCustody,
+  )
 }
 
 /// Why an execution did not return an `Outcome`. Every variant is a value;
@@ -260,6 +279,9 @@ pub type RunError {
 
   /// The satellite node could not be launched.
   LaunchRejected(reason: String)
+
+  /// The original attempt may have prepared/dispatched resources; custody stays held.
+  LaunchOutcomeUnknown(reason: String)
 
   /// The wall deadline passed before the program finished; the node was
   /// killed as a unit.
@@ -510,13 +532,36 @@ pub type WireIn {
   WireClosed(reason: String)
 }
 
-/// The host's configuration: the session base and the injected effect
-/// seams (entropy, clock, token-file I/O, and the cap router).
-///
-/// Carries no operation, step or budget: the run phase's identity is an
-/// argument to `run`, derived from the execution's one `ExecIdentity`, so
-/// a host cannot be configured to run under coordinates of its own
-/// (`codemode/identity`).
+/// Foreground host facts, independent of physical token/socket placement.
+/// Whole Launch owns those resources after the original artifact is selected.
+pub type RunConfig {
+  RunConfig(
+    /// The session policy admitted for this run.
+    base_policy: SandboxPolicy,
+    /// Original enforcement strictness for physical effects.
+    demand: EnforcementDemand,
+    /// The allowlist-constructed child environment.
+    env: List(#(String, String)),
+    /// The working directory inside the selected physical jail.
+    cwd: String,
+    /// Supplies the original cap token's entropy.
+    entropy: fn(Int) -> BitArray,
+    /// Reads the original run's clock era, without renewing its deadline.
+    clock: Clock,
+    /// Retains authenticated owner capability authority.
+    router: CapRouter,
+    /// Existing invocation-global admission ceilings.
+    ceilings: List(CapCeiling),
+    /// Bounds each original capability operation beneath the run deadline.
+    call_timeout_ms: Int,
+  )
+}
+
+/// The former foreground configuration vocabulary, retained for existing type
+/// references. Whole-Launch `run` accepts `RunConfig`; its selected physical
+/// adapter now owns token-file and socket placement. Neither configuration can
+/// supply another operation, step or budget: those remain original phase facts
+/// derived from the execution's one `ExecIdentity` (`codemode/identity`).
 pub type SatelliteConfig {
   SatelliteConfig(
     base_policy: SandboxPolicy,
@@ -551,25 +596,20 @@ pub type SatelliteConfig {
 // further down, which a session keeps for many invocations. The two are
 // different objects with different lifetimes and the names say so.
 type RunHost {
-  RunHost(pid: Pid, commands: Subject(Msg), wire: Subject(WireIn))
+  RunHost(pid: Pid, commands: Subject(Msg), wire: Subject(run_channel.Event))
 }
 
-/// The host actor's message set. Opaque: only this module constructs it,
-/// so nothing outside can inject a forged capability settlement.
+/// The foreground host's private protocol. Only this module constructs settlements.
 pub opaque type Msg {
-  FromWire(event: WireIn)
-  Connected(
-    send: fn(BitArray) -> Nil,
-    destroy: fn() -> Report,
-    ack: Subject(Nil),
-  )
+  FromChannel(event: run_channel.Event)
+  Connected(connection: run_channel.Connection, ack: Subject(Nil))
   CapStarted(id: Int, handle: broker.CallHandle)
   CapDone(id: Int, outcome: CapOutcome)
   Deadline
   Stop
 }
 
-// One in-flight routed capability call.
+// The persistent host keeps the same computation ownership record.
 type InFlight {
   InFlight(
     handle: Option(broker.CallHandle),
@@ -578,44 +618,51 @@ type InFlight {
   )
 }
 
+// Completion settles the ledger once; consumption alone releases the call slot.
+type ReplyDisposition {
+  Computing
+  ReplyReady(payload: run_channel.Payload)
+  ReplySending(frame: run_channel.FrameRef)
+}
+
+type RunSlot {
+  RunSlot(work: InFlight, ordinal: Int, reply: ReplyDisposition)
+}
+
+// The sole immediate response retains its inbound frame until the writer consumes it.
+type Immediate {
+  EmptyImmediate
+  ImmediateReady(delivery: run_channel.Delivery, payload: run_channel.Payload)
+  ImmediateSending(delivery: run_channel.Delivery, frame: run_channel.FrameRef)
+}
+
+type RunPhase {
+  Preparing
+  Serving
+}
+
 type State {
   State(
     broker: Broker,
-    // The run phase, threaded whole: every clearance the host makes takes
-    // its `{op_id, step_id}` and its budget from here, so the host cannot
-    // drift onto a second ledger part-way through an execution.
     identity: PhaseIdentity,
     base_policy: SandboxPolicy,
     demand: EnforcementDemand,
     env: List(#(String, String)),
     cwd: String,
     router: CapRouter,
-    // The lifetime admission ceilings this execution runs under, and the
-    // tally they are checked against. Both live here rather than in the
-    // router because the host is the one thing there is exactly one of
-    // per execution — see `CapCeiling`.
     ceilings: List(CapCeiling),
     admitted: Dict(String, Int),
     clock: Clock,
     call_timeout_ms: Int,
     vault: token.Vault,
-    token_path: String,
-    unlink_token_file: fn(String) -> Nil,
     commands: Subject(Msg),
-    // Raw carry for the host's own length-prefix deframer over the cap
-    // socket. The host owns frame boundaries so it can extract the
-    // `outcome` frame's body, which `broker/framing` discards.
-    buffer: BitArray,
-    // The outbound writer, once the launcher has connected. Frames emitted
-    // before then buffer in `pending_out` and flush on `Connected`.
-    send: Option(fn(BitArray) -> Nil),
-    destroy: Option(fn() -> Report),
-    pending_out: List(BitArray),
-    inflight: Dict(Int, InFlight),
-    // The record of this execution's calls, and which sequence number each
-    // in-flight frame id was admitted under. Kept beside `inflight` rather
-    // than inside it because the persistent host shares `InFlight` and
-    // records nothing.
+    connection: Option(run_channel.Connection),
+    writer: Option(run_channel.WriteGrant),
+    inbound: Option(run_channel.Window),
+    current: Option(run_channel.Delivery),
+    immediate: Immediate,
+    fault: Option(RunError),
+    inflight: Dict(Int, RunSlot),
     ledger: Ledger,
     seqs: Dict(Int, Int),
     result: Subject(Run),
@@ -629,20 +676,22 @@ type State {
 /// returns the program's structured `Outcome` together with what the
 /// kernel enforced on the node.
 ///
-/// Mints and delivers the cap-channel token, launches the node, owns the
-/// broker end of the cap channel, enforces the wall deadline, and destroys
-/// the node and unlinks the token file on every exit path the host itself
-/// takes — including a launch that outran the deadline, whose connection is
-/// destroyed by `hand_over` when the host has already stopped. What is not
-/// covered is a host actor killed from outside: cleanup runs inside that
-/// actor, so a monitor-based janitor mirroring the broker's fd-3 safety net
-/// is still owed (M4 triage CH-F3(b)).
+/// Whole Launch owns the original token/listener/native placement. This host
+/// installs the paused connection before activation and retains every reply slot
+/// until consumed transport acknowledgement. Cleanup observations are independent
+/// of the program's known outcome and never refresh original execution authority.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // satellite.run(artifact, original_phase, owner_broker, run_config, whole_launch)
+/// ```
 pub fn run(
   artifact: Artifact,
   phase: PhaseIdentity,
   broker: Broker,
-  config: SatelliteConfig,
-  launch: Launcher,
+  config: RunConfig,
+  launch: run_channel.Launcher,
 ) -> Run {
   let vault = token.new(config.entropy)
   let binding =
@@ -653,32 +702,27 @@ pub fn run(
       deadline_ms: identity.pooled_budget(phase).deadline_ms,
     )
   case token.mint(vault, binding) {
-    Error(mint_error) ->
-      never_launched(TokenMintFailed(mint_error_text(mint_error)))
+    Error(error) -> never_launched(TokenMintFailed(mint_error_text(error)))
     Ok(#(vault, minted)) ->
-      case config.write_token_file(token.to_bytes(minted)) {
-        Error(reason) -> never_launched(TokenFileFailed(reason))
-        Ok(token_path) ->
-          run_launched(
-            artifact,
-            phase,
-            broker,
-            config,
-            launch,
-            vault,
-            token_path,
-          )
-      }
+      run_launched(
+        artifact,
+        phase,
+        broker,
+        config,
+        launch,
+        vault,
+        token.to_bytes(minted),
+      )
   }
 }
 
-// A run that never got a node: the failure, and a node report that says
-// outright that nothing was launched rather than leaving a silence.
+// No Launch request was dispatched, so no asynchronous preparation exists.
 fn never_launched(error: RunError) -> Run {
   Run(
     outcome: Error(error),
     node: enforcement.Unreported("no node was launched"),
     calls: call_record.empty(),
+    custody: NoLaunchResources,
   )
 }
 
@@ -686,23 +730,20 @@ fn run_launched(
   artifact: Artifact,
   phase: PhaseIdentity,
   broker: Broker,
-  config: SatelliteConfig,
-  launch: Launcher,
+  config: RunConfig,
+  launch: run_channel.Launcher,
   vault: token.Vault,
-  token_path: String,
+  minted: BitArray,
 ) -> Run {
   let #(now, _clock) = clock.read(config.clock)
   let result_subject = process.new_subject()
-  case start_host(phase, broker, config, vault, token_path, result_subject) {
-    Error(start_error) -> {
-      config.unlink_token_file(token_path)
-      never_launched(HostUnavailable(start_error_text(start_error)))
-    }
+  case start_host(phase, broker, config, vault, result_subject) {
+    Error(error) -> never_launched(HostUnavailable(start_error_text(error)))
     Ok(host) ->
       dispatch_launch(
         artifact,
         phase,
-        token_path,
+        minted,
         config,
         launch,
         host,
@@ -715,114 +756,121 @@ fn run_launched(
 fn dispatch_launch(
   artifact: Artifact,
   phase: PhaseIdentity,
-  token_path: String,
-  config: SatelliteConfig,
-  launch: Launcher,
+  minted: BitArray,
+  config: RunConfig,
+  launch: run_channel.Launcher,
   host: RunHost,
   now: Int,
   result_subject: Subject(Run),
 ) -> Run {
-  let spec =
-    LaunchSpec(
-      artifact:,
-      token_path:,
-      cap_socket_path: config.cap_socket_path,
-      identity: phase,
-      base_policy: config.base_policy,
-      env: config.env,
-      cwd: config.cwd,
-      wire: host.wire,
+  let request =
+    run_channel.request(
+      artifact,
+      phase,
+      config.base_policy,
+      config.demand,
+      config.env,
+      config.cwd,
+      minted,
+      run_channel.host_endpoint(host.pid, host.wire),
     )
-  case launch(spec) {
-    Error(reason) -> {
+  let launched = request |> result.try(launch)
+  case launched {
+    Error(run_channel.LaunchRefused(reason, preparation)) -> {
       process.send(host.commands, Stop)
-      never_launched(LaunchRejected(reason))
+      Run(
+        ..never_launched(LaunchRejected(reason)),
+        custody: preparation_custody(preparation),
+      )
+    }
+    Error(run_channel.LaunchOutcomeUnknown(reason)) -> {
+      process.send(host.commands, Stop)
+      Run(
+        ..never_launched(LaunchOutcomeUnknown(reason)),
+        node: enforcement.Unreported(
+          "the original Launch may have prepared or dispatched resources",
+        ),
+        custody: LaunchResourcesUnresolved(reason),
+      )
     }
     Ok(connection) -> await_result(phase, host, connection, now, result_subject)
   }
 }
 
-// Waits for the host's terminal result, bounded by the wall deadline plus
-// slack for the host's own teardown (`result_margin_ms`). The node's
-// enforcement report comes from whichever side actually ran `destroy`:
-// the host, ordinarily, or `hand_over` here when the host was already
-// gone before it could take the connection (CH-F3).
+fn preparation_custody(preparation: run_channel.ResourceDrain) -> RunCustody {
+  case preparation {
+    run_channel.ResourcesReleased -> NoLaunchResources
+    run_channel.ResourcesUnresolved(reason) -> LaunchResourcesUnresolved(reason)
+  }
+}
+
+// Handoff installs custody before activation. A timeout cannot invent an ownership transfer.
 fn await_result(
   phase: PhaseIdentity,
   host: RunHost,
-  connection: CapConnection,
+  connection: run_channel.Connection,
   now: Int,
   result_subject: Subject(Run),
 ) -> Run {
   let handed = hand_over(host, connection)
-  let deadline_ms = identity.pooled_budget(phase).deadline_ms
-  let wait = int.max(deadline_ms - now, 0) + result_margin_ms
-  case process.receive(result_subject, wait) {
-    // The host took the connection and destroyed it itself, so its
-    // report is the authoritative one — unless the host was gone before
-    // it could take it, in which case `hand_over` destroyed the node
-    // here and holds the only report there is.
-    Ok(settled) ->
-      case handed {
-        None -> settled
-        Some(node) -> Run(..settled, node:)
-      }
-    Error(Nil) -> {
-      process.send(host.commands, Stop)
-
-      // The host owns `destroy`, and with it the node's report; a host
-      // that never answered never handed one back.
+  let wait =
+    int.max(identity.pooled_budget(phase).deadline_ms - now, 0)
+    + result_margin_ms
+  case handed {
+    Some(closed) ->
       Run(
-        outcome: Error(HostUnavailable("no terminal result within the deadline")),
-        node: enforcement.Unreported(
-          "the host produced no terminal result, so the node's report was "
-          <> "never collected",
-        ),
-        // The host owned the record and never handed it back.
+        outcome: Error(HostUnavailable(
+          "the foreground host did not accept original custody",
+        )),
+        node: closed.node,
         calls: call_record.empty(),
+        custody: close_custody(closed),
       )
-    }
+    None ->
+      case process.receive(result_subject, wait) {
+        Ok(settled) -> settled
+        Error(Nil) -> {
+          process.send(host.commands, Stop)
+          Run(
+            outcome: Error(HostUnavailable(
+              "no terminal result within the deadline",
+            )),
+            node: enforcement.Unreported(
+              "the original host produced no cleanup observation",
+            ),
+            calls: call_record.empty(),
+            custody: LaunchResourcesUnresolved(
+              "the original host did not return cleanup custody",
+            ),
+          )
+        }
+      }
   }
 }
 
-// Whether the single-shot host took ownership of the connection before it
-// stopped.
 type HandOver {
   RunHostTook
   RunHostGone
 }
 
-// Hands the launched node's connection to the host, and destroys it here if
-// the host stopped before it could take it — in which case the node's
-// enforcement report comes back here, since the host is not around to
-// carry it.
-//
-// `Connected` carries the node's `destroy`, the host's only handle on the
-// launched node and its socket. A message to a stopped actor is dropped, so
-// a bare send would leak the node whenever the host settled during the
-// launch. Monitoring the host closes the race: the acknowledgement and the
-// host's death are ordered signals from the same process, so exactly one of
-// them arrives first, and a death that beats the acknowledgement means the
-// host never took the connection (CH-F3).
-fn hand_over(host: RunHost, connection: CapConnection) -> Option(Report) {
+fn hand_over(
+  host: RunHost,
+  connection: run_channel.Connection,
+) -> Option(run_channel.CloseResult) {
   let ack = process.new_subject()
   let monitor = process.monitor(host.pid)
-  let outcome =
+  let selector =
     process.new_selector()
-    |> process.select_map(ack, fn(_nil) { RunHostTook })
-    |> process.select_specific_monitor(monitor, fn(_down) { RunHostGone })
-  process.send(
-    host.commands,
-    Connected(send: connection.send, destroy: connection.destroy, ack:),
-  )
-  let handed = case process.selector_receive(outcome, hand_over_timeout_ms) {
-    // The host is gone, so it will never destroy the node — nor report
-    // what confined it. Both fall to the caller here.
-    Ok(RunHostGone) -> Some(connection.destroy())
+    |> process.select_map(ack, fn(_) { RunHostTook })
+    |> process.select_specific_monitor(monitor, fn(_) { RunHostGone })
+  process.send(host.commands, Connected(connection, ack))
+  let handed = case process.selector_receive(selector, hand_over_timeout_ms) {
+    Ok(RunHostTook) -> None
+    Ok(RunHostGone) -> Some(connection.close())
 
-    // Taken, or the host is alive but wedged; either way it owns `destroy`
-    // and destroying here as well would reap the node twice.
-    Ok(RunHostTook) | Error(Nil) -> None
+    // Close is original and idempotent. Both participants may observe the same
+    // retained result; neither creates another node or resource owner.
+    Error(Nil) -> Some(connection.close())
   }
   process.demonitor_process(monitor)
   handed
@@ -839,23 +887,17 @@ fn pooled(state: State) -> Budget {
 fn start_host(
   phase: PhaseIdentity,
   broker: Broker,
-  config: SatelliteConfig,
+  config: RunConfig,
   vault: token.Vault,
-  token_path: String,
   result_subject: Subject(Run),
 ) -> Result(RunHost, actor.StartError) {
   let #(started, clock) = clock.read(config.clock)
-  actor.new_with_initialiser(host_init_timeout_ms, fn(commands) {
+  sm.new_with_initialiser(host_init_timeout_ms, fn(commands) {
     let wire = process.new_subject()
     let selector =
       process.new_selector()
       |> process.select(commands)
-      |> process.select_map(wire, FromWire)
-
-    // The wall deadline is armed on `Connected`, not here: a launch that
-    // outlasted a deadline armed up front stopped the host before the
-    // connection arrived, and the `destroy` it carried — the host's only
-    // handle on the node and its socket — was dropped (CH-F3).
+      |> process.select_map(wire, FromChannel)
     let state =
       State(
         broker:,
@@ -870,145 +912,263 @@ fn start_host(
         clock:,
         call_timeout_ms: config.call_timeout_ms,
         vault:,
-        token_path:,
-        unlink_token_file: config.unlink_token_file,
         commands:,
-        buffer: <<>>,
-        send: None,
-        destroy: None,
-        pending_out: [],
+        connection: None,
+        writer: None,
+        inbound: None,
+        current: None,
+        immediate: EmptyImmediate,
+        fault: None,
         inflight: dict.new(),
         ledger: call_record.start(started),
         seqs: dict.new(),
         result: result_subject,
       )
-    actor.initialised(state)
-    |> actor.selecting(selector)
-    |> actor.returning(#(commands, wire))
+    sm.initialised(Preparing, state)
+    |> sm.selecting(selector)
+    |> sm.returning(#(commands, wire))
     |> Ok
   })
-  |> actor.on_message(handle)
-  |> actor.start
+  |> sm.on_event(handle)
+  |> sm.start
   |> result.map(fn(started) {
     let #(commands, wire) = started.data
     RunHost(pid: started.pid, commands:, wire:)
   })
 }
 
-fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
+fn handle(
+  _phase: RunPhase,
+  state: State,
+  msg: Msg,
+) -> sm.Next(RunPhase, State, Msg) {
   case msg {
-    Connected(send:, destroy:, ack:) ->
-      handle_connected(state, send, destroy, ack)
-    FromWire(WireBytes(data:)) -> handle_bytes(state, data)
-    FromWire(WireClosed(reason:)) ->
-      terminate(state, Error(SatelliteGone(reason)))
+    Connected(connection, ack) -> handle_connected(state, connection, ack)
+    FromChannel(run_channel.Frame(delivery)) -> handle_delivery(state, delivery)
+    FromChannel(run_channel.WriteConsumed(frame)) ->
+      continue_run(handle_write_consumed(state, frame))
+    FromChannel(run_channel.End(incarnation, reason)) ->
+      channel_ended(state, incarnation, SatelliteGone(reason))
+    FromChannel(run_channel.Fault(incarnation, reason)) ->
+      channel_ended(state, incarnation, ChannelFaulted(reason))
     CapStarted(id:, handle:) -> handle_cap_started(state, id, handle)
     CapDone(id:, outcome:) -> handle_cap_done(state, id, outcome)
     Deadline -> terminate(state, Error(DeadlineExceeded))
     Stop -> {
-      let _node = cleanup(state)
-      actor.stop()
+      let _closed = cleanup(state)
+      sm.stop()
     }
   }
 }
 
+// The installed connection owns cleanup before the adapter may receive a body.
 fn handle_connected(
   state: State,
-  send: fn(BitArray) -> Nil,
-  destroy: fn() -> Report,
+  connection: run_channel.Connection,
   ack: Subject(Nil),
-) -> actor.Next(State, Msg) {
-  // Flush anything buffered before the launcher connected.
-  list.each(list.reverse(state.pending_out), send)
+) -> sm.Next(RunPhase, State, Msg) {
+  case state.connection {
+    Some(_) -> {
+      let _closed = connection.close()
+      sm.keep(state)
+    }
+    None -> {
+      let prepared =
+        run_channel.prepare_direction(
+          connection.incarnation,
+          run_channel.ToHost,
+        )
+      case run_channel.activate_direction(prepared) {
+        Error(_) ->
+          terminate(
+            State(..state, connection: Some(connection)),
+            Error(ChannelFaulted("inbound activation failed")),
+          )
+        Ok(inbound) -> {
+          let state =
+            State(
+              ..state,
+              connection: Some(connection),
+              writer: Some(connection.initial_write_grant),
+              inbound: Some(inbound),
+            )
+          process.send(ack, Nil)
+          case connection.activate() {
+            Error(_) ->
+              terminate(
+                state,
+                Error(ChannelFaulted("original activation failed")),
+              )
+            Ok(Nil) -> {
+              let #(now, clock) = clock.read(state.clock)
+              sm.transition(to: Serving, data: State(..state, clock:))
+              |> sm.with_state_timeout(
+                after: int.max(pooled(state).deadline_ms - now, 0),
+                sending: Deadline,
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
-  // The node exists from here, so the wall deadline starts here: after it,
-  // the node dies as a unit (`broker.abort_step` plus `destroy`).
-  let #(now, clock) = clock.read(state.clock)
-  let delay = int.max(pooled(state).deadline_ms - now, 0)
-  let _ = process.send_after(state.commands, delay, Deadline)
-
-  // The host now owns `destroy`. Telling `run_launched` so is what lets it
-  // distinguish this from a host that stopped first (CH-F3).
-  process.send(ack, Nil)
-  actor.continue(
-    State(
-      ..state,
-      clock:,
-      send: Some(send),
-      destroy: Some(destroy),
-      pending_out: [],
-    ),
-  )
+fn channel_ended(
+  state: State,
+  incarnation: run_channel.Incarnation,
+  error: RunError,
+) -> sm.Next(RunPhase, State, Msg) {
+  case state.connection {
+    Some(connection) if connection.incarnation == incarnation ->
+      terminate(state, Error(error))
+    Some(_) | None -> sm.keep(state)
+  }
 }
 
 fn handle_cap_started(
   state: State,
   id: Int,
   handle: broker.CallHandle,
-) -> actor.Next(State, Msg) {
+) -> sm.Next(RunPhase, State, Msg) {
   case dict.get(state.inflight, id) {
-    // Already settled and removed: nothing to track.
-    Error(Nil) -> actor.continue(state)
-    Ok(entry) -> {
-      // A cancel that raced ahead of the clearance fires now.
-      case entry.cancelled {
-        True -> broker.cancel(state.broker, handle)
-        False -> Nil
+    Error(Nil) -> {
+      broker.cancel(state.broker, handle)
+      sm.keep(state)
+    }
+    Ok(slot) -> {
+      case slot.work.cancelled, slot.reply {
+        False, Computing -> Nil
+        True, _ | False, ReplyReady(_) | False, ReplySending(_) ->
+          broker.cancel(state.broker, handle)
       }
-      let inflight =
-        dict.insert(state.inflight, id, InFlight(..entry, handle: Some(handle)))
-      actor.continue(State(..state, inflight:))
+      let work = InFlight(..slot.work, handle: Some(handle))
+      sm.keep(
+        State(
+          ..state,
+          inflight: dict.insert(state.inflight, id, RunSlot(..slot, work:)),
+        ),
+      )
     }
   }
 }
 
+// A computation settles once, but its bounded reply keeps the original slot.
 fn handle_cap_done(
   state: State,
   id: Int,
   outcome: CapOutcome,
-) -> actor.Next(State, Msg) {
+) -> sm.Next(RunPhase, State, Msg) {
   case dict.get(state.inflight, id) {
-    Error(Nil) -> actor.continue(state)
-    Ok(entry) -> {
-      let state = close_call(state, id, entry, outcome)
-      let state = emit(state, id, outcome)
-      actor.continue(State(..state, inflight: dict.delete(state.inflight, id)))
+    Error(Nil) -> sm.keep(state)
+    Ok(RunSlot(reply: ReplyReady(_), ..))
+    | Ok(RunSlot(reply: ReplySending(_), ..)) -> sm.keep(state)
+    Ok(slot) -> {
+      let state = close_call(state, id, slot.work, outcome)
+      case encoded_result(id, outcome) {
+        Error(reason) -> terminate(state, Error(ChannelFaulted(reason)))
+        Ok(payload) -> {
+          let slot = RunSlot(..slot, reply: ReplyReady(payload))
+          continue_run(flush_ready(
+            State(..state, inflight: dict.insert(state.inflight, id, slot)),
+          ))
+        }
+      }
     }
   }
 }
 
-// The step a single inbound frame produces.
 type FrameStep {
   FrameContinue(state: State)
   FrameDone(state: State, result: Result(Outcome, RunError))
 }
 
-fn handle_bytes(state: State, data: BitArray) -> actor.Next(State, Msg) {
-  let buffer = bit_array.append(state.buffer, data)
-  let Deframed(payloads:, buffer:, fault:) = deframe(buffer)
-  let state = State(..state, buffer:)
-  case handle_payloads(state, payloads) {
-    Error(#(state, result)) -> terminate(state, result)
-    Ok(state) ->
-      case fault {
-        None -> actor.continue(state)
-        Some(reason) -> terminate(state, Error(ChannelFaulted(reason)))
+// Sender reservation precedes mailbox publication; this mirror checks exact
+// incarnation, direction, sequence and lifetime charge before semantic decode.
+fn handle_delivery(
+  state: State,
+  delivery: run_channel.Delivery,
+) -> sm.Next(RunPhase, State, Msg) {
+  let #(frame, payload) = run_channel.delivered(delivery)
+  let mirrored = case state.inbound, state.current {
+    Some(window), None -> {
+      use length <- result.try(run_channel.payload_length(
+        bit_array.bit_size(run_channel.payload(payload)) / 8,
+      ))
+      use #(reserved, reservation) <- result.try(run_channel.reserve_frame(
+        window,
+        length,
+      ))
+      let #(expected, _) = run_channel.reservation(reservation)
+      use Nil <- result.try(case expected == frame {
+        True -> Ok(Nil)
+        False -> Error(run_channel.StaleReservation)
+      })
+      run_channel.publish_frame(reserved, reservation)
+    }
+    None, _ | Some(_), Some(_) -> Error(run_channel.WindowUnavailable)
+  }
+  case mirrored {
+    Error(_) ->
+      terminate(
+        state,
+        Error(ChannelFaulted("stale or unreserved foreground frame")),
+      )
+    Ok(inbound) -> {
+      let state =
+        State(..state, inbound: Some(inbound), current: Some(delivery))
+      case handle_payload(state, run_channel.payload(payload)) {
+        FrameContinue(state) -> continue_run(consume_unheld(state))
+        FrameDone(state, result) -> {
+          // The validated result is now held. Final ACK cannot reopen the
+          // reader and must precede synchronous close joining that reader.
+          let state = case result {
+            Ok(_) -> consume_current(state, run_channel.Final)
+            Error(_) -> state
+          }
+          terminate(state, result)
+        }
       }
+    }
   }
 }
 
-// Folds the payloads of one chunk, short-circuiting on the terminal frame.
-fn handle_payloads(
+fn continue_run(state: State) -> sm.Next(RunPhase, State, Msg) {
+  case state.fault {
+    None -> sm.keep(state)
+    Some(error) -> terminate(state, Error(error))
+  }
+}
+
+fn consume_unheld(state: State) -> State {
+  case state.immediate {
+    EmptyImmediate -> consume_current(state, run_channel.Continue)
+    ImmediateReady(..) | ImmediateSending(..) -> state
+  }
+}
+
+fn consume_current(
   state: State,
-  payloads: List(BitArray),
-) -> Result(State, #(State, Result(Outcome, RunError))) {
-  case payloads {
-    [] -> Ok(state)
-    [payload, ..rest] ->
-      case handle_payload(state, payload) {
-        FrameContinue(state:) -> handle_payloads(state, rest)
-        FrameDone(state:, result:) -> Error(#(state, result))
+  disposition: run_channel.Consumption,
+) -> State {
+  case state.inbound, state.current {
+    Some(window), Some(delivery) -> {
+      let #(frame, _) = run_channel.delivered(delivery)
+      let #(window, consumed) =
+        run_channel.consume_frame(window, frame, disposition)
+      case consumed {
+        run_channel.Ignored ->
+          State(
+            ..state,
+            fault: Some(ChannelFaulted("inbound consumption lost correlation")),
+          )
+        run_channel.Consumed -> {
+          run_channel.consume(delivery, disposition)
+          State(..state, inbound: Some(window), current: None)
+        }
       }
+    }
+    None, _ | Some(_), None -> state
   }
 }
 
@@ -1246,7 +1406,11 @@ fn dispatch_cap_call(
         dict.insert(
           state.inflight,
           id,
-          InFlight(handle: None, cancelled: False, service:),
+          RunSlot(
+            work: InFlight(handle: None, cancelled: False, service:),
+            ordinal: seq,
+            reply: Computing,
+          ),
         )
       State(
         ..state,
@@ -1564,108 +1728,115 @@ fn unsettled_outcome() -> CapOutcome {
 fn handle_cancel(state: State, id: Int) -> State {
   case dict.get(state.inflight, id) {
     Error(Nil) -> state
-    Ok(entry) -> {
-      // Cancel the clearance now if it has one; otherwise mark it so the
-      // pending `CapStarted` cancels on arrival.
-      case entry.handle {
-        Some(handle) -> broker.cancel(state.broker, handle)
-        None -> Nil
+    Ok(slot) -> {
+      case slot.reply {
+        ReplyReady(_) | ReplySending(_) -> state
+        Computing -> {
+          option.map(slot.work.handle, fn(handle) {
+            broker.cancel(state.broker, handle)
+          })
+          option.map(slot.work.service, weft.cancel)
+          let work = InFlight(..slot.work, cancelled: True)
+          State(
+            ..state,
+            inflight: dict.insert(state.inflight, id, RunSlot(..slot, work:)),
+          )
+        }
       }
-      option.map(entry.service, weft.cancel)
-      State(
-        ..state,
-        inflight: dict.insert(
-          state.inflight,
-          id,
-          InFlight(..entry, cancelled: True),
-        ),
-      )
     }
   }
 }
 
-// Destroys the satellite, then reports the terminal result — carrying
-// what the node's teardown learned about its jail — and stops.
-//
-// The order is the fix for issue #5. Reporting first and cleaning up
-// afterwards left the node's enforcement report chasing an outcome that
-// had already been delivered, so a healthy run said nothing about the
-// stage whose confinement matters most. Teardown now happens first and
-// hands the report back, so the outcome cannot leave without it.
+// Outcome stays known even when cleanup cannot establish original release.
 fn terminate(
   state: State,
   outcome_result: Result(Outcome, RunError),
-) -> actor.Next(State, Msg) {
-  // The execution settles here, so the calls still in flight are closed
-  // at this instant, before teardown, whose own latency is not the
-  // program's.
+) -> sm.Next(RunPhase, State, Msg) {
   let #(now, _clock) = clock.read(state.clock)
   let calls = call_record.finish(state.ledger, dict.values(state.seqs), now)
-  let node = cleanup(state)
-  process.send(state.result, Run(outcome: outcome_result, node:, calls:))
-  actor.stop()
+  let closed = cleanup(state)
+  process.send(
+    state.result,
+    Run(
+      outcome: outcome_result,
+      node: closed.node,
+      calls:,
+      custody: close_custody(closed),
+    ),
+  )
+  sm.stop()
 }
 
-// Destroys the satellite as a unit and unlinks the token file, returning
-// what the kernel enforced on the node. `abort_step` revokes every token
-// bound to the run phase's `{op_id, step_id}` and cancels every executor
-// under it; `destroy` closes the socket, reaps the node, and hands back
-// its helper's report.
-//
-// That step is the *batch's*, not this execution's own: `tool.Ctx`
-// carries the step id of the producing tool batch, and the run phase's
-// identity is minted from it. So the sweep reaches every sibling tool
-// call of the same batch — a foreground `bash` clearing under the same
-// key, a second program in the same batch — exactly as the operation-wide
-// `abort` it replaced did. ADR-005 forbids a finer coordinate within a
-// batch, and nothing here wants one: the sweep is bounded by a batch
-// whose calls are ending anyway.
-//
-// The sweep comes first, exactly as before: the deadline path must not
-// wait on anything before killing the node. What the launcher's `destroy`
-// then waits for is the settlement the abort itself provokes — a cancelled
-// execution still answers with `exec_exit`, and that report is the ground
-// truth this whole path exists to carry.
-//
-// It is the *step* rather than the operation, and the difference is the
-// one the design note promises: a teardown reaps its own batch, and it
-// does not reap what the program asked to outlive it. A background job
-// the program started clears under the sibling step
-// `{op_id, "job/" <> id}`, so an operation-wide sweep here killed it the
-// instant the program returned. An operator aborting the whole operation
-// still does reach it, through the hub's `abort` command.
-fn cleanup(state: State) -> Report {
-  list.each(dict.to_list(state.inflight), fn(entry) {
-    option.map(entry.1.service, weft.cancel)
+fn close_custody(closed: run_channel.CloseResult) -> RunCustody {
+  case closed.transport, closed.resources {
+    run_channel.TransportJoined, run_channel.ResourcesReleased ->
+      LaunchResourcesReleased
+    run_channel.TransportUnresolved(reason), _ ->
+      LaunchResourcesUnresolved(reason)
+    run_channel.TransportJoined, run_channel.ResourcesUnresolved(reason) ->
+      LaunchResourcesUnresolved(reason)
+  }
+}
+
+// Original services cancel before the original physical step and independent close.
+fn cleanup(state: State) -> run_channel.CloseResult {
+  list.each(dict.values(state.inflight), fn(slot) {
+    option.map(slot.work.service, weft.cancel)
   })
   broker.abort_step(
     state.broker,
     identity.op_id(state.identity),
     step_id: identity.step_id(state.identity),
   )
-  let node = case state.destroy {
-    Some(destroy) -> destroy()
-    None -> enforcement.Unreported("no node was launched")
+  case state.connection {
+    Some(connection) -> connection.close()
+    None ->
+      run_channel.CloseResult(
+        node: enforcement.Unreported("no connection was installed"),
+        transport: run_channel.TransportJoined,
+        resources: run_channel.ResourcesReleased,
+      )
   }
-  state.unlink_token_file(state.token_path)
-  node
 }
 
-// Encodes and writes one frame, buffering until the launcher connects.
+// Encoding must succeed before a slot can become ready. Oversize is a channel
+// failure, never a dropped successful answer or an unbounded mailbox payload.
+fn encoded_frame(frame: framing.Frame) -> Result(run_channel.Payload, String) {
+  framing.encode(frame)
+  |> result.map_error(fn(_) { "outbound frame exceeds the admitted bound" })
+  |> result.try(fn(bytes) {
+    run_channel.from_wire(bytes)
+    |> result.map_error(fn(_) { "invalid outbound frame" })
+  })
+}
+
+fn encoded_result(
+  id: Int,
+  outcome: CapOutcome,
+) -> Result(run_channel.Payload, String) {
+  encoded_frame(framing.Frame(
+    id:,
+    body: framing.CapResult(outcome:, usage: None),
+  ))
+}
+
+// One immediate slot shares the same writer grant as admitted call responses.
 fn send_frame(state: State, frame: framing.Frame) -> State {
-  case framing.encode(frame) {
-    // An unencodable cap_result would be a host bug (ids are positive,
-    // bodies typed); drop it rather than crash — the deadline still bounds
-    // the execution.
-    Error(_) -> state
-    Ok(bytes) ->
-      case state.send {
-        Some(send) -> {
-          send(bytes)
-          state
-        }
-        None -> State(..state, pending_out: [bytes, ..state.pending_out])
+  case state.current, state.immediate {
+    Some(delivery), EmptyImmediate -> {
+      case encoded_frame(frame) {
+        Error(reason) -> State(..state, fault: Some(ChannelFaulted(reason)))
+        Ok(payload) ->
+          flush_ready(
+            State(..state, immediate: ImmediateReady(delivery, payload)),
+          )
       }
+    }
+    None, _ | Some(_), ImmediateReady(..) | Some(_), ImmediateSending(..) ->
+      State(
+        ..state,
+        fault: Some(ChannelFaulted("immediate response slot unavailable")),
+      )
   }
 }
 
@@ -1674,6 +1845,149 @@ fn emit(state: State, id: Int, outcome: CapOutcome) -> State {
     state,
     framing.Frame(id:, body: framing.CapResult(outcome:, usage: None)),
   )
+}
+
+// The serial host alone spends its live grant. No callback owns an unspent copy.
+fn flush_ready(state: State) -> State {
+  case state.writer, state.connection {
+    Some(grant), Some(connection) -> {
+      case state.immediate {
+        ImmediateReady(delivery, payload) ->
+          write_immediate(state, connection, grant, delivery, payload)
+        EmptyImmediate | ImmediateSending(..) -> {
+          let ready =
+            dict.to_list(state.inflight)
+            |> list.filter(fn(pair) {
+              case pair.1.reply {
+                ReplyReady(_) -> True
+                Computing | ReplySending(_) -> False
+              }
+            })
+            |> list.sort(fn(a, b) { int.compare(a.1.ordinal, b.1.ordinal) })
+          case ready {
+            [] -> state
+            [#(id, slot), ..] -> write_reply(state, connection, grant, id, slot)
+          }
+        }
+      }
+    }
+    None, _ | Some(_), None -> state
+  }
+}
+
+fn write_immediate(
+  state: State,
+  connection: run_channel.Connection,
+  grant: run_channel.WriteGrant,
+  delivery: run_channel.Delivery,
+  payload: run_channel.Payload,
+) -> State {
+  case run_channel.reserve_write(grant, payload) {
+    Error(run_channel.WindowUnavailable) -> state
+    Error(_) ->
+      State(
+        ..state,
+        fault: Some(ChannelFaulted("outbound lifetime allowance exhausted")),
+      )
+    Ok(#(held, reservation)) -> {
+      let #(frame, _) = run_channel.reservation(reservation)
+      let state =
+        State(
+          ..state,
+          writer: Some(held),
+          immediate: ImmediateSending(delivery, frame),
+        )
+      offer_reserved(state, connection, reservation, payload)
+    }
+  }
+}
+
+fn write_reply(
+  state: State,
+  connection: run_channel.Connection,
+  grant: run_channel.WriteGrant,
+  id: Int,
+  slot: RunSlot,
+) -> State {
+  case slot.reply {
+    Computing | ReplySending(_) -> state
+    ReplyReady(payload) ->
+      case run_channel.reserve_write(grant, payload) {
+        Error(run_channel.WindowUnavailable) -> state
+        Error(_) ->
+          State(
+            ..state,
+            fault: Some(ChannelFaulted("outbound lifetime allowance exhausted")),
+          )
+        Ok(#(held, reservation)) -> {
+          let #(frame, _) = run_channel.reservation(reservation)
+          let slot = RunSlot(..slot, reply: ReplySending(frame))
+          let state =
+            State(
+              ..state,
+              writer: Some(held),
+              inflight: dict.insert(state.inflight, id, slot),
+            )
+          offer_reserved(state, connection, reservation, payload)
+        }
+      }
+  }
+}
+
+fn offer_reserved(
+  state: State,
+  connection: run_channel.Connection,
+  reservation: run_channel.Reservation,
+  payload: run_channel.Payload,
+) -> State {
+  case connection.offer(reservation, payload) {
+    Ok(Nil) -> state
+    Error(_) ->
+      State(
+        ..state,
+        fault: Some(ChannelFaulted("original writer refused reserved frame")),
+      )
+  }
+}
+
+// Only the exact writer acknowledgement releases either held response slot.
+fn handle_write_consumed(state: State, frame: run_channel.FrameRef) -> State {
+  case state.writer {
+    None -> state
+    Some(grant) -> {
+      let #(grant, consumed) = run_channel.consume_write(grant, frame)
+      case consumed {
+        run_channel.Ignored -> state
+        run_channel.Consumed ->
+          flush_ready(release_consumed_reply(
+            State(..state, writer: Some(grant)),
+            frame,
+          ))
+      }
+    }
+  }
+}
+
+// Matching the immediate slot releases its original inbound ACK. Matching an
+// admitted reply removes only that exact counted slot, after computation settled.
+fn release_consumed_reply(state: State, frame: run_channel.FrameRef) -> State {
+  case state.immediate {
+    ImmediateSending(_, original) if original == frame ->
+      consume_current(
+        State(..state, immediate: EmptyImmediate),
+        run_channel.Continue,
+      )
+    EmptyImmediate | ImmediateReady(..) | ImmediateSending(..) -> {
+      let inflight =
+        dict.filter(state.inflight, fn(_id, slot) {
+          case slot.reply {
+            ReplySending(original) -> original != frame
+            Computing | ReplyReady(_) -> True
+          }
+        })
+      State(..state, inflight:)
+    }
+  }
 }
 
 // --- the host's own length-prefix deframer -------------------------------

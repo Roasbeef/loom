@@ -136,19 +136,16 @@ fn router(routed: Subject(#(String, Int))) -> satellite.CapRouter {
 }
 
 fn single_config(
-  dir: String,
+  _dir: String,
   routed: Subject(#(String, Int)),
-) -> satellite.SatelliteConfig {
-  satellite.SatelliteConfig(
+) -> satellite.RunConfig {
+  satellite.RunConfig(
     base_policy: policy.workspace_default("/work"),
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/bin")],
     cwd: "/work",
-    cap_socket_path: dir <> "/sock",
     entropy: token.production_entropy(),
     clock: clock.fixed(now),
-    write_token_file: satellite.private_token_writer(dir),
-    unlink_token_file: satellite.unlink_token_file,
     router: router(routed),
     ceilings: [
       satellite.CapCeiling(cap: "proc.run", admissions: 2, code: "lifetime"),
@@ -308,7 +305,7 @@ pub fn real_single_shot_admission_preserves_names_ordinals_and_parent_test() {
       phase(3, 4),
       owner,
       single_config(root("single"), routed),
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         admitted_script(ctx, ctx.token)
         satellite_peer.send_outcome(ctx, msgpack.StringValue("verified"))
       }),
@@ -424,7 +421,7 @@ pub fn single_shot_outstanding_refusal_retains_ordinal_and_cancellation_test() {
       phase(3, 1),
       owner,
       single_config(root("single-outstanding"), routed),
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         outstanding_script(ctx, ctx.token)
         satellite_peer.send_outcome(ctx, msgpack.StringValue("verified"))
       }),
@@ -487,7 +484,7 @@ pub fn both_hosts_refuse_invalid_derivation_without_spending_an_ordinal_test() {
       invalid,
       owner,
       single_config(root("invalid-single"), routed),
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         invalid_phase_script(ctx, ctx.token)
         satellite_peer.send_outcome(ctx, msgpack.StringValue("verified"))
       }),

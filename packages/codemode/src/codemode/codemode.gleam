@@ -36,9 +36,8 @@ import codemode/enforcement.{
   type Enforcement, type Report, type Widening, Enforcement, Unreported,
 }
 import codemode/identity.{type ExecIdentity}
-import codemode/satellite.{
-  type Launcher, type Outcome, type RunError, type SatelliteConfig,
-}
+import codemode/run_channel.{type Launcher}
+import codemode/satellite.{type Outcome, type RunConfig, type RunError}
 import codemode/vet.{type Rejection, type Vetted}
 import codemode/vet/policy.{type VetPolicy}
 import gleam/list
@@ -68,6 +67,8 @@ pub type Execution {
     enforcement: Enforcement,
     widening: Widening,
     calls: CallLog,
+    /// Original Launch resource custody, independent of program outcome.
+    custody: satellite.RunCustody,
   )
 }
 
@@ -122,7 +123,7 @@ pub type ExecConfig {
     /// The one execution identity from which build and run phases derive.
     identity: ExecIdentity,
     /// Owner token checks, router and capability admission dependencies.
-    satellite: SatelliteConfig,
+    satellite: RunConfig,
     /// Physical satellite launcher, returning local channel/teardown handles.
     launch: Launcher,
   )
@@ -173,6 +174,7 @@ fn vet_rejected(rejections: List(Rejection), config: ExecConfig) -> Execution {
       because: "vetting refused the program, so no stage composed the grants",
     ),
     calls: call_record.empty(),
+    custody: satellite.NoLaunchResources,
   )
 }
 
@@ -244,6 +246,7 @@ fn compile_failed(
         <> "widened by an approval",
     ),
     calls: call_record.empty(),
+    custody: satellite.NoLaunchResources,
   )
 }
 
@@ -269,15 +272,16 @@ fn run_and_report(
     enforcement: Enforcement(build:, node: ran.node),
     widening: run_widening(approved(config), ran.outcome),
     calls: ran.calls,
+    custody: ran.custody,
   )
 }
 
 // Whether the run phase actually got far enough to compose its grants.
 //
-// Three of the eight `RunError`s settle before `satellite.run` ever calls
-// the launcher — the token would not mint, its file would not write, the
-// host actor would not start — and for those the grants were carried and
-// never offered to a policy. Every other ending, refusal included, went
+// Token minting and host startup can fail before whole Launch sees the grants.
+// The persistent-host token-file variant remains in the shared error type, but
+// foreground placement now belongs to its physical Launch adapter. A lost Launch
+// reply cannot establish that the grants were never offered to a policy. Every other ending, refusal included, went
 // through `launch`, which composes `base ⊕ requirements ⊕ grants` before
 // it does anything else; a launch *refused* under grants is still a
 // clearance that composed them, and saying otherwise would hide the case
@@ -300,6 +304,7 @@ fn run_widening(
           <> "the grants",
       )
     Error(satellite.LaunchRejected(reason: _))
+    | Error(satellite.LaunchOutcomeUnknown(reason: _))
     | Error(satellite.DeadlineExceeded)
     | Error(satellite.SatelliteGone(reason: _))
     | Error(satellite.ChannelFaulted(reason: _))

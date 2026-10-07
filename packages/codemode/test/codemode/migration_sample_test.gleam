@@ -114,6 +114,7 @@ fn run_sample(prerequisites: Prerequisites) -> Nil {
   let assert codemode.Ran(source: returned, artifact:, outcome:) =
     execution.outcome
     as "the migration sample must vet, compile, and run to an outcome"
+
   // The source handed back for the durable entry is the file's own bytes.
   assert returned == source
   assert compile.artifact_entry(artifact) == compile.entry_module
@@ -127,6 +128,7 @@ fn run_sample(prerequisites: Prerequisites) -> Nil {
   let overlap_ms = assert_fan_out_overlapped(live)
   assert_order_was_preserved(live)
   let ticks = assert_the_race_loser_was_killed(live)
+
   // Both jailed stages of a healthy run report what confined them; see
   // `e2e_test` for the assertion this shares.
   let assert enforcement.Reported(..) = execution.enforcement.build
@@ -199,6 +201,7 @@ fn announce(
     <> int.to_string(ticks)
     <> " tick(s) — a loser left running until the program ended reaches 7+",
   )
+
   // What the kernel under this run actually applied. The concurrency
   // claims above hold whatever it says; the *jail* claims in this
   // module's own doc hold only as far as these two lines go.
@@ -228,6 +231,7 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
   let #(now, _clock) = clock.read(rig.wall_clock())
   let deadline = now + 180_000
   let path = rig.toolchain_path(prerequisites)
+
   // Eight outstanding effects: the node itself holds one, the race holds
   // two, and the fan-out three, with room for a cancelled loser that has
   // not yet settled when the fan-out starts.
@@ -262,27 +266,30 @@ fn exec_config(live: Rig, prerequisites: Prerequisites) -> codemode.ExecConfig {
       budget: pooled,
     )
       |> identity.with_own_build_ledger,
-    satellite: satellite.SatelliteConfig(
+    satellite: satellite.RunConfig(
       base_policy: live.base_policy,
       demand: exec.BestEffort,
       env: [#("PATH", path)],
       cwd: live.workspace,
-      cap_socket_path: live.cap_socket_path,
       entropy: token.production_entropy(),
       clock: rig.wall_clock(),
-      write_token_file: satellite.private_token_writer(live.token_dir),
-      unlink_token_file: satellite.unlink_token_file,
       router: satellite.default_router,
       ceilings: [],
       call_timeout_ms: 60_000,
     ),
-    launch: launch.launcher(launch.LaunchConfig(
-      runner: physical.local(live.broker),
-      clock: rig.wall_clock(),
-      erl_path: prerequisites.erl_path,
-      host_mounts: rig.toolchain_mounts(prerequisites),
-      demand: exec.BestEffort,
-      accept_timeout_ms: 30_000,
+    launch: launch.foreground_launcher(launch.ForegroundLaunchConfig(
+      token_path: live.token_dir <> "/cap-token",
+      cap_socket_path: live.cap_socket_path,
+      write_token_file: satellite.private_token_writer(live.token_dir),
+      unlink_token_file: satellite.unlink_token_file,
+      local: launch.LaunchConfig(
+        runner: physical.local(live.broker),
+        clock: rig.wall_clock(),
+        erl_path: prerequisites.erl_path,
+        host_mounts: rig.toolchain_mounts(prerequisites),
+        demand: exec.BestEffort,
+        accept_timeout_ms: 30_000,
+      ),
     )),
   )
 }

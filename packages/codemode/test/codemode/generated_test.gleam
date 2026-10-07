@@ -19,6 +19,7 @@ import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/physical
+import codemode/run_channel
 import codemode/satellite
 import codemode/seed
 import codemode/vet/policy as vet_policy
@@ -112,22 +113,24 @@ fn exec_config(dir: String, build: compile.Builder) -> codemode.ExecConfig {
       step_id: "step-1",
       budget: budget.Budget(max_outstanding: 4, deadline_ms: t + 20_000),
     ),
-    satellite: satellite.SatelliteConfig(
+    satellite: satellite.RunConfig(
       base_policy: policy.workspace_default("/work"),
       demand: exec.BestEffort,
       env: [#("PATH", "/usr/bin")],
       cwd: "/work",
-      cap_socket_path: dir <> "/sock",
       entropy: token.production_entropy(),
       clock: clock.fixed(at: t),
-      write_token_file: satellite.private_token_writer(dir),
-      unlink_token_file: satellite.unlink_token_file,
       router: satellite.default_router,
       ceilings: [],
       call_timeout_ms: 3000,
     ),
     // Never called: every program here stops at the build.
-    launch: fn(_spec) { Error("no satellite in this suite") },
+    launch: fn(_spec) {
+      Error(run_channel.LaunchRefused(
+        "no satellite in this suite",
+        run_channel.ResourcesReleased,
+      ))
+    },
   )
 }
 
@@ -183,6 +186,7 @@ pub fn the_builder_installs_the_generated_modules_after_the_clone_test() {
   let seed_root = fresh_dir("install-seed")
   prepare_seed(seed_root)
   let builder = build.builder(build_config(seed_root))
+
   // The clearance is refused (there is no helper), which is fine: the
   // install runs before the build is dispatched at all.
   let built = builder(build_phase(), root, [#(alpha_module, alpha_source)])
@@ -193,10 +197,12 @@ pub fn the_builder_installs_the_generated_modules_after_the_clone_test() {
     simplifile.read(compile.generated_path(root, alpha_module))
     as "the imported module is inside the cloned prelude"
   assert written == alpha_source
+
   // The clone really did happen first: the seed's own vendored file is
   // there beside it.
   assert simplifile.is_file(root <> "/vendor/cap/src/cap/report.gleam")
     == Ok(True)
+
   // And a module the program did not import was never handed over, so
   // nothing wrote it.
   assert simplifile.is_file(compile.generated_path(root, beta_module))

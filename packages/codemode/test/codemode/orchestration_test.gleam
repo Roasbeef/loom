@@ -12,6 +12,10 @@
 //// The spawn-admission ceiling is at the bottom, driven through the real
 //// satellite host and a real in-process peer, because the ceiling is the
 //// host's and a test of the router alone could not see it.
+//// ## Flow
+////
+//// `phase` and `request` construct original owner context. `seam` and `serviced`
+//// drive seam plans, and `run_peer_with` drives one satellite execution.
 
 import broker/broker
 import broker/budget
@@ -295,6 +299,7 @@ pub fn a_program_and_an_agent_spawn_in_one_step_mint_two_names_test() {
   let assert [fake_agency.SawSpawn(caller: program, request:)] =
     fake_agency.drain(seen)
     as "the spawn must reach the Agency"
+
   // The model's own call, at the same step, the same index, the same
   // purpose, and the same operation — everything but the minter.
   let by_hand = a_caller(0, agent.ToolCall)
@@ -359,9 +364,11 @@ pub fn each_spawn_gets_its_own_ordinal_test() {
     as "both spawns must reach the Agency"
   assert first.minter == agent.Program(ordinal: 0)
   assert second.minter == agent.Program(ordinal: 1)
+
   // The dispatching call's index is the *same* for both: it names the
   // execution, not the spawn.
   assert first.source_index == second.source_index
+
   // Same purpose, same step, and still two distinct children.
   assert one.purpose == two.purpose
   assert fake_agency.minted(first, one) != fake_agency.minted(second, two)
@@ -385,6 +392,7 @@ pub fn a_chosen_ordinal_reaches_no_agent_spawns_child_test() {
       fake_agency.minted(a_caller(index, agent.ToolCall), request).strand
     })
   assert list.all(chosen, fn(name) { !list.contains(reachable, name) })
+
   // And padding buys the program nothing against itself either: every
   // ordinal is its own child.
   assert list.length(list.unique(chosen)) == list.length(indices)
@@ -433,6 +441,7 @@ pub fn a_join_carries_one_answer_per_handle_in_order_test() {
   assert field(second, "strand") == text("sub:main/b")
   assert field(first, "kind") == text("ready")
   assert field(field(first, "outcome"), "kind") == text("completed")
+
   // The join's deadline is the program's, forwarded rather than replaced.
   let assert [fake_agency.SawWait(within_ms:, ..)] = fake_agency.drain(seen)
     as "the join must reach the Agency"
@@ -528,6 +537,7 @@ pub fn a_declared_result_shape_becomes_a_real_schema_test() {
     == [agent.IntegerField, agent.ArrayField(items: agent.StringField)]
   assert list.map(agent.result_fields(parsed), fn(one) { one.required })
     == [True, False]
+
   // The rest of the request crossed too, rather than being defaulted.
   assert spawned.within_ms == option.Some(1000)
   assert spawned.detach
@@ -676,6 +686,7 @@ pub fn a_refusal_travels_with_the_harnesss_own_words_test() {
       ]),
     )
   assert code == "not_a_descendant"
+
   // Not a sentence this module wrote: the Agency's own, so a program
   // reads what a model reads.
   assert message == agent.describe(refusal)
@@ -706,6 +717,7 @@ pub fn a_malformed_argument_is_refused_before_the_agency_test() {
     refused_by(agency, "strand.spawn", map([#("purpose", msgpack.IntValue(1))]))
   assert code == "invalid_argument"
   assert string.contains(message, "purpose")
+
   // Nothing reached the Agency: a call refused for its arguments mints
   // nothing, which is also why it consumes no ordinal.
   assert fake_agency.drain(seen) == []
@@ -1005,11 +1017,13 @@ pub fn a_loop_past_the_spawn_ceiling_is_refused_at_the_ceiling_test() {
   let agency = fake_agency.admitting(seen, fake_agency.always_completed)
   let assert Ok(codes) = run_peer(dir, agency, spawning_peer)
     as "the ceiling peer must report"
+
   // Exactly `ceiling` admissions, then a refusal — at the ceiling, not
   // before it and not one call late.
   assert list.length(codes) == ceiling + 1
   assert list.take(codes, ceiling) == list.repeat("ok", ceiling)
   assert list.drop(codes, ceiling) == ["spawn_ceiling"]
+
   // And the Agency saw exactly the admitted ones: a refused call never
   // reached the messaging plane at all.
   assert list.length(fake_agency.drain(seen)) == ceiling
@@ -1024,6 +1038,7 @@ pub fn the_ceiling_refusal_names_the_ceiling_test() {
   let assert [message] = messages as "one refusal message"
   assert string.contains(message, int.to_string(ceiling))
   assert string.contains(message, "strand.spawn")
+
   // A program told only "refused" would loop; one told "too many at
   // once" would join and retry forever. It is told which.
   assert string.contains(message, "lifetime")
@@ -1107,6 +1122,7 @@ pub fn every_capped_capability_refuses_at_its_own_bound_test() {
         looping_peer(row.cap, row.bound + 1),
       )
       as "the ceiling peer must report"
+
     // Admitted exactly `bound` times, then refused — at the ceiling, not
     // before it and not one call late.
     assert list.length(reported) == row.bound + 1
@@ -1114,6 +1130,7 @@ pub fn every_capped_capability_refuses_at_its_own_bound_test() {
     let assert [refusal] = list.drop(reported, row.bound)
       as "one refusal, at the bound"
     assert string.starts_with(refusal, row.code <> "\n")
+
     // A program told only "refused" retries forever, and one told "too
     // many at once" waits first and then retries forever. It is told the
     // capability, the number, and that the bound is for the execution's
@@ -1121,6 +1138,7 @@ pub fn every_capped_capability_refuses_at_its_own_bound_test() {
     assert string.contains(refusal, row.cap)
     assert string.contains(refusal, int.to_string(row.bound))
     assert string.contains(refusal, "lifetime")
+
     // And the Agency saw exactly the admitted ones: a refused call never
     // reached the messaging plane at all.
     //
@@ -1182,6 +1200,7 @@ pub fn the_ceiling_table_is_the_calls_that_mint_test() {
   assert rows == capped()
   assert orchestration.note_ceiling == 256
   assert orchestration.notes_ceiling == 64
+
   // The two seams' ceiling codes are the same word, and they must stay
   // that way: `cap/report`'s `map_error` carries any code verbatim, so a
   // program at the emit ceiling on one seam and at the note ceiling on
@@ -1228,6 +1247,7 @@ fn looped_args(cap: String, n: Int) -> MsgPackValue {
     "strand.spawn" -> spawn_args("review " <> nth)
     "strand.note" -> map([#("key", text("k" <> nth)), #("value", text("v"))])
     "strand.send" -> map([#("to", text("main")), #("text", text("hi " <> nth))])
+
     // The rest take no argument that a repeat would spoil, so they reuse
     // the plan-shape suite's own well-formed arguments.
     _other -> arguments(cap)
@@ -1349,21 +1369,18 @@ fn run_peer_with(
       ),
       phase(),
       broker_actor,
-      satellite.SatelliteConfig(
+      satellite.RunConfig(
         base_policy: policy.workspace_default("/work"),
         demand: exec.BestEffort,
         env: [#("PATH", "/usr/bin")],
         cwd: "/work",
-        cap_socket_path: dir <> "/sock",
         entropy: token.production_entropy(),
         clock: clock.fixed(at: t),
-        write_token_file: satellite.private_token_writer(dir),
-        unlink_token_file: satellite.unlink_token_file,
         router: orchestration.router(seam(agency)),
         ceilings:,
         call_timeout_ms: 3000,
       ),
-      satellite_peer.launcher(script),
+      satellite_peer.foreground_launcher(script),
     )
   broker.stop(broker_actor)
   case run.outcome {

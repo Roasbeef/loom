@@ -14,6 +14,10 @@
 //// The emit ceiling is at the bottom, driven through the real satellite
 //// host and a real in-process peer, because a ceiling is the *host's* and
 //// a test of the router alone could not see it.
+//// ## Flow
+////
+//// `answering` and `routed` supply the owner workspace seam. `request` and
+//// `serviced` drive individual controls; `run_peer` checks invocation-wide admission.
 
 import broker/broker
 import broker/budget
@@ -579,6 +583,7 @@ pub fn each_read_refusal_keeps_its_own_code_test() {
   ]
   list.each(rows, fn(row) {
     assert workspace.fs_denial(row.0).code == row.1
+
     // Every refusal says something: a code with an empty sentence is a
     // program told only that it failed.
     assert workspace.fs_denial(row.0).message != ""
@@ -905,6 +910,7 @@ pub fn a_loop_past_the_emit_ceiling_is_refused_at_the_ceiling_test() {
       emitting_peer(emit_ceiling + 2),
     )
     as "the ceiling peer must report"
+
   // Admitted exactly `emit_ceiling` times, then refused — at the ceiling,
   // not before it and not one call late.
   assert list.length(reported) == emit_ceiling + 2
@@ -912,6 +918,7 @@ pub fn a_loop_past_the_emit_ceiling_is_refused_at_the_ceiling_test() {
   let refusals = list.drop(reported, emit_ceiling)
   list.each(refusals, fn(refusal) {
     assert string.starts_with(refusal, artifact.emit_ceiling_code <> "\n")
+
     // A program told only "refused" retries forever. It is told the
     // capability, the number, and that the bound is for the execution's
     // whole life.
@@ -919,6 +926,7 @@ pub fn a_loop_past_the_emit_ceiling_is_refused_at_the_ceiling_test() {
     assert string.contains(refusal, int.to_string(emit_ceiling))
     assert string.contains(refusal, "lifetime")
   })
+
   // And the closure saw exactly the admitted ones: a refused call never
   // reached the store at all, which is the whole point of a ceiling over
   // a capability that mints.
@@ -989,21 +997,18 @@ fn run_peer(
       ),
       phase(),
       broker_actor,
-      satellite.SatelliteConfig(
+      satellite.RunConfig(
         base_policy: policy.workspace_default("/work"),
         demand: exec.BestEffort,
         env: [#("PATH", "/usr/bin")],
         cwd: "/work",
-        cap_socket_path: dir <> "/sock",
         entropy: token.production_entropy(),
         clock: clock.fixed(at: t),
-        write_token_file: satellite.private_token_writer(dir),
-        unlink_token_file: satellite.unlink_token_file,
         router: workspace.routing(seam, over: satellite.default_router),
         ceilings:,
         call_timeout_ms: 3000,
       ),
-      satellite_peer.launcher(script),
+      satellite_peer.foreground_launcher(script),
     )
   broker.stop(broker_actor)
   case run.outcome {
@@ -1108,6 +1113,7 @@ pub fn schedule_create_refuses_both_or_neither_timing_test() {
 
   assert both.code == args.invalid_argument_code
   assert neither.code == args.invalid_argument_code
+
   // Neither reached the host: a request the router can see is wrong is
   // never handed on.
   assert drain(seen) == []
@@ -1316,6 +1322,7 @@ pub fn every_schedule_refusal_has_its_own_code_test() {
       "invalid_schedule", "schedule_limit_reached", "schedule_name_taken",
       "schedule_not_found", "schedules_unavailable",
     ]
+
   // Distinct, which is the whole point of giving each one a code.
   assert list.length(list.unique(codes)) == 5
 }

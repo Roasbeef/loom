@@ -13,6 +13,7 @@ import codemode/enforcement
 import codemode/identity
 import codemode/launch
 import codemode/physical
+import codemode/run_channel
 import codemode/satellite
 import codemode/vet
 import codemode/vet/policy as vet_policy
@@ -58,21 +59,23 @@ fn config(service: compile.CompileService) -> codemode.ExecConfig {
     compile: service,
     broker: owner,
     identity: execution_identity(),
-    satellite: satellite.SatelliteConfig(
+    satellite: satellite.RunConfig(
       base_policy: policy.workspace_default("/work"),
       demand: exec.BestEffort,
       env: [],
       cwd: "/work",
-      cap_socket_path: "/work/cap.sock",
       entropy: token.production_entropy(),
       clock: clock.fixed(t),
-      write_token_file: fn(_token) { Error("no physical token requested") },
-      unlink_token_file: fn(_path) { Nil },
       router: satellite.default_router,
       ceilings: [],
       call_timeout_ms: 1000,
     ),
-    launch: fn(_spec) { Error("no node requested") },
+    launch: fn(_spec) {
+      Error(run_channel.LaunchRefused(
+        "the fake original token writer refused",
+        run_channel.ResourcesReleased,
+      ))
+    },
   )
 }
 
@@ -154,9 +157,13 @@ pub fn valid_source_calls_the_whole_service_with_selected_imports_and_phase_test
   assert identity.grants(identity.run_phase(configured.identity))
     == [policy.GrantEnv("APPROVED")]
   assert executed.enforcement.build == build_report()
-  let assert codemode.RunFailed(satellite.TokenFileFailed(..)) =
-    executed.outcome
-    as "the fake service must reach the owner satellite without local compile preparation"
+  assert executed.outcome
+    == codemode.RunFailed(satellite.LaunchRejected(
+      "the fake original token writer refused",
+    ))
+  assert executed.custody == satellite.NoLaunchResources
+
+  // The fake service reached whole Launch without owner-local compile preparation.
   broker.stop(configured.broker)
 }
 
@@ -175,19 +182,17 @@ pub fn executor_artifact_crosses_owner_pipeline_without_local_source_writes_test
   let configured =
     codemode.ExecConfig(
       ..original,
-      satellite: satellite.SatelliteConfig(
-        ..original.satellite,
-        write_token_file: satellite.private_token_writer(root <> "/token"),
-        unlink_token_file: satellite.unlink_token_file,
-      ),
-      launch: fn(spec: satellite.LaunchSpec) {
-        process.send(seen, #(spec.artifact, spec.identity))
-        satellite_peer.launcher(fn(peer) {
+      satellite: original.satellite,
+      launch: fn(request) {
+        let #(artifact, phase, _base, _demand, _env, _cwd) =
+          run_channel.execution(request)
+        process.send(seen, #(artifact, phase))
+        satellite_peer.foreground_launcher(fn(peer) {
           satellite_peer.send_outcome(
             peer,
             msgpack.StringValue("service complete"),
           )
-        })(spec)
+        })(request)
       },
     )
   let executed = codemode.execute(source, configured)

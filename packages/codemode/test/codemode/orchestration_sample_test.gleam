@@ -144,6 +144,7 @@ fn run_sample(prerequisites: Prerequisites) -> Nil {
   let assert satellite.Completed(value) = outcome
     as "the sample must complete with a structured outcome"
   assert_the_reduction_is_right(value)
+
   // Drained once and shared: a second drain would answer with an empty
   // list and every assertion over it would hold vacuously.
   let recorded = fake_agency.drain(seen)
@@ -169,10 +170,12 @@ fn assert_the_reduction_is_right(value: MsgPackValue) -> Nil {
   assert field(value, "symbol") == msgpack.StringValue(sample_repo.symbol)
   assert field(value, "packages_asked") == msgpack.IntValue(3)
   assert field(value, "packages_reviewed") == msgpack.IntValue(3)
+
   // The sum the program computed, over integers it read out of typed
   // results rather than out of sentences.
   assert field(value, "hits") == msgpack.IntValue(3)
   assert field(value, "unfinished") == msgpack.ArrayValue([])
+
   // In the order the program listed the packages. A join that answered in
   // completion order — or a zip that lost the pairing — would show up
   // here as a reordering or as counts against the wrong package, which
@@ -190,9 +193,11 @@ fn assert_the_reduction_is_right(value: MsgPackValue) -> Nil {
 fn assert_the_fan_out_was_three_distinct_children(recorded: List(Seen)) -> Nil {
   let spawns = list.filter_map(recorded, spawn_only)
   assert list.length(spawns) == 3
+
   // Every spawn stated the shape it wanted back, which is what makes the
   // counts above integers rather than prose.
   assert list.all(spawns, fn(one) { one.1.result_schema != option.None })
+
   // Three distinct children, from three distinct call ordinals. Two
   // spawns sharing an ordinal would mint one name twice and the second
   // would reconcile onto the first child.
@@ -205,12 +210,15 @@ fn assert_the_fan_out_was_three_distinct_children(recorded: List(Seen)) -> Nil {
   let names =
     list.map(spawns, fn(one) { fake_agency.minted(one.0, one.1).strand })
   assert list.length(list.unique(names)) == 3
+
   // The dispatching call's index is one execution's, so it is the same
   // for all three; the ordinal is what counts the spawns.
   assert list.all(spawns, fn(one) { one.0.source_index == 0 })
+
   // And every one of them was judged as the strand that dispatched the
   // `code_mode` call, under the operation the pipeline threaded.
   assert list.all(spawns, fn(one) { one.0.strand == "main" })
+
   // The step is the threaded identity's, carried through untouched, and
   // what marks these as a program's children is the minter beside it.
   assert list.all(spawns, fn(one) { one.0.step_id == step() })
@@ -364,6 +372,7 @@ fn exec_config(
   let #(now, _clock) = clock.read(rig.wall_clock())
   let deadline = now + 180_000
   let path = rig.toolchain_path(prerequisites)
+
   // Four outstanding effects: the node holds one for its whole life and
   // the program's three spawns can be in flight together.
   let pooled = budget.Budget(max_outstanding: 4, deadline_ms: deadline)
@@ -396,16 +405,13 @@ fn exec_config(
       budget: pooled,
     )
       |> identity.with_own_build_ledger,
-    satellite: satellite.SatelliteConfig(
+    satellite: satellite.RunConfig(
       base_policy: live.base_policy,
       demand: exec.BestEffort,
       env: [#("PATH", path)],
       cwd: live.workspace,
-      cap_socket_path: live.cap_socket_path,
       entropy: token.production_entropy(),
       clock: rig.wall_clock(),
-      write_token_file: satellite.private_token_writer(live.token_dir),
-      unlink_token_file: satellite.unlink_token_file,
       router: orchestration.router(orchestration.Orchestration(
         agency: reviewing_agency(live.workspace, seen),
         strand: "main",
@@ -422,13 +428,19 @@ fn exec_config(
       ),
       call_timeout_ms: 60_000,
     ),
-    launch: launch.launcher(launch.LaunchConfig(
-      runner: physical.local(live.broker),
-      clock: rig.wall_clock(),
-      erl_path: prerequisites.erl_path,
-      host_mounts: rig.toolchain_mounts(prerequisites),
-      demand: exec.BestEffort,
-      accept_timeout_ms: 30_000,
+    launch: launch.foreground_launcher(launch.ForegroundLaunchConfig(
+      token_path: live.token_dir <> "/cap-token",
+      cap_socket_path: live.cap_socket_path,
+      write_token_file: satellite.private_token_writer(live.token_dir),
+      unlink_token_file: satellite.unlink_token_file,
+      local: launch.LaunchConfig(
+        runner: physical.local(live.broker),
+        clock: rig.wall_clock(),
+        erl_path: prerequisites.erl_path,
+        host_mounts: rig.toolchain_mounts(prerequisites),
+        demand: exec.BestEffort,
+        accept_timeout_ms: 30_000,
+      ),
     )),
   )
 }
