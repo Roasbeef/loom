@@ -217,7 +217,10 @@ pub fn tool_with_directory(
     prompt_snippet: option.Some(
       "`bash` runs a shell command under the session jail policy; one "
       <> "that outlives its timeout becomes a background job and you are "
-      <> "notified when it ends. Declare "
+      <> "notified when it ends. A background job may run up to an hour, "
+      <> "longer if the operator raised `[jobs] max_wall`, so for a long "
+      <> "build do not use foreground mode or wrap the command in `timeout`. "
+      <> "Declare "
       <> "`permissions.writable_roots` for outside writes before running; "
       <> "a denied command needs a fresh call with those roots. Use "
       <> "`${LOOM_SCRATCH_DIR:-$TMPDIR}` for scratch within one call, not "
