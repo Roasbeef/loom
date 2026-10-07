@@ -1,5 +1,39 @@
 # executor
 
+## Frozen deployment descriptors
+
+`remote/deployment.load` strictly decodes the protocol-077 executor schema,
+checks actual canonical files, directories, executables and the private state
+root, then freezes opaque `Descriptor` values in one `Table`. The common
+membership block is identical to the owner's. Each workspace explicitly names
+its configured owner label and `owner_peer`; the owner file's outbound `peer`
+field does not imply that reverse authentication route. Native writable and
+readable authority and mounts must preserve private membership/options and state regions. Writes, scratch and read-write
+mounts also remain disjoint from immutable helper and toolchain binaries.
+Read-only shared toolchain parents remain legal.
+
+`fingerprints` purely returns canonical administrative commitments and grants
+no Descriptor or runtime authority. The digest covers a domain-separated
+canonical MessagePack value containing owner identity, the executor `local_node`,
+first-generation policy,
+the complete native/code-mode enrollment template and approved LSP declarations.
+The original endpoint route stays immutable across reopen: changing `local_node`
+changes the descriptor commitment even when physical facts are identical. TLS
+leaf rotation remains governed by membership configuration. The fixed template
+UUID never becomes a live session. `describe` derives the
+actual session scope and every scope-dependent registration/enrollment digest
+without later filesystem access, mutation or service startup.
+
+Native policy is the complete existing policy wire-map JSON under
+`native_ceiling`; `native_demand` accepts only `full`. Code-mode fields use the
+exact `CodeModeFacts` names. Host mounts explicitly require `read-only` access
+and `required` presence; other variants refuse rather than remap. LSP uses the
+existing profile decoder, preserves up to sixteen declarations in sorted
+profile-label order, and retains trusted home/cache recipes. Actual LSP
+environment and session-cache joins remain full-provisioning/activation
+obligations; this loader does not prove a usable LSP service or runtime role.
+
+
 ## Purpose
 
 The executor service as a process of its own (issue #696, phase S4). The
