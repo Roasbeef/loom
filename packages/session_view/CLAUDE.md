@@ -350,6 +350,10 @@ for a host with no surfaces.
   among the live cards rather than settled; one that ran and is idle again
   has an operation and is settled. `describe` gives any row the same line
   whether or not a strip would list it; the terminal's workspace list uses it.
+  `agent_view.catalogue_name(view, strand)` is the catalogue entry a strand's
+  configuration names (`ModelIdentity.provider`), the owner's own name for the
+  model, where a row's `model` is the upstream identifier; the web header and
+  its cards word the model with it.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.
