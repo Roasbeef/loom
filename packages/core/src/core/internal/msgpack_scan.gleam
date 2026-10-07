@@ -95,6 +95,54 @@ pub fn metadata(bytes: BitArray) -> Result(Nil, CorruptionReport) {
   )
 }
 
+/// Scans the fixed complete LSP identity header before constructing terms.
+/// Timing and the original control reference share this one header reservation.
+///
+/// ## Examples
+///
+/// An 8193-byte header is refused before identity decoding.
+pub fn lsp_header(bytes: BitArray) -> Result(Nil, CorruptionReport) {
+  check(
+    bytes,
+    Profile("core/lsp.header", 8192, 8, 8, 1024, 1024, 1024, 8192, 32),
+  )
+}
+
+/// Scans one complete finite LSP request before semantic term allocation.
+///
+/// ## Examples
+///
+/// A declared large string or aggregate node bomb fails before decoding.
+pub fn lsp_request(bytes: BitArray) -> Result(Nil, CorruptionReport) {
+  check(
+    bytes,
+    Profile("core/lsp.request", 131_072, 8, 8, 1024, 1024, 1024, 131_072, 32),
+  )
+}
+
+/// Scans complete LSP results, including observation's separately charged shell.
+/// The four-MiB fact budget is smaller than this enclosing body reservation.
+///
+/// ## Examples
+///
+/// A 10001-entry array refuses before constructing its row inventory.
+pub fn lsp_result(bytes: BitArray) -> Result(Nil, CorruptionReport) {
+  check(
+    bytes,
+    Profile(
+      "core/lsp.result",
+      4_464_896,
+      16,
+      16,
+      200_000,
+      10_000,
+      10_000,
+      4_464_896,
+      0,
+    ),
+  )
+}
+
 /// Reads the bounded transport envelope's map header without allocating terms.
 /// The four-pair ceiling belongs to the existing envelope shape.
 ///
