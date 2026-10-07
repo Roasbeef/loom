@@ -305,7 +305,7 @@ raised for both.
 
 The `Full` rung of the lattice is reachable, but only by an operator. A
 `[tools]` table in `loom.toml` sets `network = "off" | "full"`. The
-default is off, and so is the absence of the table. Setting `full` puts
+default is `full`, and so is the absence of the table. Setting `full` puts
 `NetworkFull` on the session base, and `bash` asks for whatever the base
 allows rather than stating a network of its own
 (`tool.asking_base_network`). The meet is why that indirection exists: a
