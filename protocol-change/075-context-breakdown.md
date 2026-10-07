@@ -48,7 +48,7 @@ board, a usage row landing on the live active strand starts a read when the last
 automatic read of this selection is at least `surfaces.usage_refresh_interval_ms`
 (30 seconds) old. The instant of an automatic read is kept on
 `context_view.State` (`marked_ms`) and begins again with the selection. A row
-inside the interval is not remembered: the next row after it, or the settling
+inside the interval is not remembered (see the addendum): the next row after it, or the settling
 edge, reads. A stale figure is therefore at most one generation and one interval
 old. A tool result, streaming text and an unrelated capture start no read, as
 before.
@@ -85,3 +85,17 @@ in flight. The panel is opened and closed by the browser, so an element
 replacement by the runtime resets it to closed. The rows are estimates and the
 panel says so; where the provider's count exceeds them the difference is drawn as
 its own row and not spread across the others.
+
+## Addendum (2026-10-06): a row inside the interval is deferred
+
+The live critique of the batch (F180) found the header stuck at an earlier
+turn's figure for over two minutes. A usage row that landed inside the
+interval was dropped, so the header changed only if another row landed after
+the interval ended, and a turn whose last generation fell inside it never
+did. The rule above is amended: a row inside the interval is deferred to the
+end of the interval. `context_view.State` carries that instant
+(`deferred_until_ms`), the first transition at or after it starts the read,
+and the web page arms its one timer for the earlier of the lane's due reading
+and that instant. A strand that stops running drops the deferral, because the
+settling edge reads the final figure. The read rate is unchanged: at most one
+automatic read per interval.

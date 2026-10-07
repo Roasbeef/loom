@@ -612,6 +612,47 @@ pub fn attribute(node: Element, name: String) -> Result(String, Nil)
 @external(javascript, "./dom.mjs", "is_content_editable")
 pub fn is_content_editable(node: Element) -> Result(Bool, Nil)
 
+/// Adds a listener for the capture phase, which hears an event before the
+/// nodes beneath the target do and before any bubbling listener on the same
+/// target, and which may cancel or stop it. `remove_capture_listener` stops it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let listener = ffi_dom.add_capture_listener(page, "keydown", fn(event) { Nil })
+/// ```
+@external(javascript, "./dom.mjs", "add_capture_listener")
+pub fn add_capture_listener(
+  element: Element,
+  event: String,
+  handler: fn(Dynamic) -> Nil,
+) -> Listener
+
+/// Removes a listener `add_capture_listener` returned.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.remove_capture_listener(page, "keydown", listener)
+/// ```
+@external(javascript, "./dom.mjs", "remove_capture_listener")
+pub fn remove_capture_listener(
+  element: Element,
+  event: String,
+  listener: Listener,
+) -> Nil
+
+/// Stops an event reaching any later node or listener on its path
+/// (`stopPropagation`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.stop_propagation(event)
+/// ```
+@external(javascript, "./dom.mjs", "stop_propagation")
+pub fn stop_propagation(event: Dynamic) -> Nil
+
 /// Cancels an event's browser action (`preventDefault`).
 ///
 /// ## Examples

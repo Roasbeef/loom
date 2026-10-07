@@ -180,6 +180,7 @@ import session_view/step
 import session_view/step_effect
 import session_view/step_words
 import session_view/strand_card
+import session_view/surfaces
 import session_view/text_hygiene
 import session_view/trace_view
 import session_view/transcript
@@ -4086,7 +4087,20 @@ pub fn control(
     PauseGoal -> commanded(model, msg.Control(command: command.GoalPause))
     ResumeGoal -> commanded(model, msg.Control(command: command.GoalResume))
     ClearGoal -> commanded(model, msg.Control(command: command.GoalClear))
-    CompactStrand -> commanded(model, msg.Control(command: command.Compact))
+
+    // A new press forgets the last refusal, which the panel keeps drawn until
+    // then; a fresh one comes back if the daemon refuses again.
+    CompactStrand ->
+      commanded(
+        Model(
+          ..model,
+          shared: Shared(
+            ..model.shared,
+            context: context_view.compact_asked(model.shared.context),
+          ),
+        ),
+        msg.Control(command: command.Compact),
+      )
     Fork(name:) -> written(model, "/fork ", name, forking)
   }
 }
@@ -5447,13 +5461,28 @@ fn perform(
 // is not yet due does nothing.
 fn rearm(model: Model(socket), now: Int) -> Model(socket) {
   let _ = option.map(model.view.armed, process.cancel_timer)
-  let due = option.then(model.shared.channel, session_channel.next_due)
+  let due =
+    earliest(
+      option.then(model.shared.channel, session_channel.next_due),
+      surfaces.context_deferred_until(model.shared),
+    )
   let armed = case model.view.timer, due {
     Some(timer), Some(due) ->
       Some(process.send_after(timer, int.max(0, due - now), Nil))
     Some(_), None | None, _ -> None
   }
   Model(..model, view: View(..model.view, armed:))
+}
+
+// The sooner of two optional instants. The lane's reading and the context
+// board's deferred read are separate reasons to wake, and one timer serves
+// both because the tick that runs for either reduces the whole record.
+fn earliest(first: Option(Int), second: Option(Int)) -> Option(Int) {
+  case first, second {
+    Some(a), Some(b) -> Some(int.min(a, b))
+    Some(_), None -> first
+    None, _ -> second
+  }
 }
 
 // --- what the page reads ---------------------------------------------------

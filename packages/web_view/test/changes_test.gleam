@@ -62,6 +62,30 @@ pub fn a_written_file_says_written_where_the_counts_go_test() {
   assert string.contains(html, " +1 -1")
 }
 
+// A new file's rows begin with the hunk header the fold writes, so the one
+// shared drawer numbers each added line and tints it, as it does an edit's.
+pub fn a_written_files_lines_are_numbered_and_added_test() {
+  let written =
+    changes_view.File(
+      path: "calc.py",
+      origin: changes_view.Written,
+      added: 2,
+      removed: 0,
+      rows: [
+        row(changes_view.Hunk, "@@ -0,0 +1,2 @@"),
+        row(changes_view.Added, "+a = 1"),
+        row(changes_view.Added, "+b = 2"),
+      ],
+      cut: 0,
+    )
+  let html = drawn(board([written]))
+
+  assert string.contains(html, "diff-row diff-hunk")
+  assert string.contains(html, "<span class=\"diff-num\">1</span>")
+  assert string.contains(html, "<span class=\"diff-num\">2</span>")
+  assert !string.contains(html, "diff-row diff-context")
+}
+
 fn board(files: List(changes_view.File)) -> changes_view.Board {
   changes_view.Board(
     files:,

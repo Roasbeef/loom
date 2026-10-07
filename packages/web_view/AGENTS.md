@@ -72,7 +72,13 @@ page keys and nonces, and the relay into the session's gateway.
   text node over `context_view.State`. Refresh is `component.ContextRefreshRequested`
   at `component.context_refresh_path`, which the observer's socket admits;
   Compact now is `component.CompactStrand` (a `Control`, `/compact` through the
-  shared step) and only the operator's page draws it.
+  shared step) and only the operator's page draws it. The `<details>` carries
+  `data-dismiss="keep"` and is followed by an empty `<loom-dismiss>` sibling
+  (`web_client/dismiss`), which closes it on an outside press or Escape; it is a
+  sibling and not a wrapper so the buttons keep their tree paths. The panel's
+  fixed position stops short of the 340 px strand column from 980 px up. A usage
+  row inside the 30 s pacing window is deferred to the window's end
+  (`context_view.State.deferred_until_ms`), and `rearm` wakes the page for it.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
@@ -216,8 +222,9 @@ page keys and nonces, and the relay into the session's gateway.
   one `shareable` and nothing else. `creations.typed_path`, `expanded` and `inside`
   are the pure half of the rule for a typed path; the daemon holds the filesystem
   half. A path is drawn only as a text node, never an attribute or a key, and a
-  refusal (`NotAFolder`, `OutsideHome`) is fixed words. A refusal's place is
-  `home_table.Elsewhere`, drawn in the section's head. The submit's event is
+  refusal is one fixed sentence per reason (`NotAFolder`, `OutsideHome`,
+  `HomeItself`, `HiddenFolder`, `StateFolder`). A refusal's place is
+  `home_table.Elsewhere`, drawn under the section's heading row. The submit's event is
   beneath `table_path`, a path the owner's socket admits and no other's.
   Every list that answers also starts `Start.activity(ids, deliver)` for the
   running sessions it lists (at most `home.activity_limit`, 24): it returns

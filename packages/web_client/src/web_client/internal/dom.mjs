@@ -199,6 +199,22 @@ export function add_listener(element, event, handler) {
   return handler;
 }
 
+// A capture-phase listener hears an event on its way down, before any
+// listener on the nodes beneath it and before the document's own bubbling
+// listeners. `remove_capture_listener` must name the same phase.
+export function add_capture_listener(element, event, handler) {
+  element.addEventListener(event, handler, true);
+  return handler;
+}
+
+export function remove_capture_listener(element, event, handler) {
+  element.removeEventListener(event, handler, true);
+}
+
+export function stop_propagation(event) {
+  event.stopPropagation();
+}
+
 export function composed_path(event) {
   return toList(event.composedPath());
 }

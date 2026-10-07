@@ -16,8 +16,8 @@
 //// key of its row. The row is keyed by the identity the daemon gave the entry
 //// (`creations.Recent.id`), so a press that was in flight when the list changed
 //// reaches the same entry or nothing, as a session's row does by its identity.
-//// The refusal of a creation is drawn in the section's head, in the fixed words
-//// of `creations.reason_words`, and never says the path.
+//// The refusal of a creation is drawn under the section's heading row, in the
+//// fixed words of `creations.reason_words`, and never says the path.
 
 import gleam/int
 import gleam/list
@@ -88,12 +88,15 @@ pub fn view(
             html.h3([attribute.class("home-workspace")], [
               html.text("Other folders"),
             ]),
-            case notice {
-              Some(notice) -> notice.line(notice)
-              None -> element.none()
-            },
             create.elsewhere_button(offer),
           ]),
+
+          // The refusal sits under the heading row and not in it: a sentence
+          // as long as a refusal's squeezed the heading to two lines.
+          case notice {
+            Some(notice) -> notice.line(notice)
+            None -> element.none()
+          },
           create.elsewhere_form(offer),
           keyed.ul(
             [attribute.class("home-list")],

@@ -262,6 +262,9 @@
   .session-head details.ctx > summary:hover{color:var(--color-fg);}
   .session-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   .ctx-panel{position:fixed;z-index:40;top:48px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
+  /* Where the strand panel is a column (980px and up) the panel stops short of it, so the tabs stay reachable: the column is 340px wide, with the page's 12px margin beyond it. */
+  @media (min-width:980px){.ctx-panel{right:352px;width:min(420px,calc(100vw - 364px));}
+  loom-shell:has(.region-panel.closed) .ctx-panel{right:12px;width:min(420px,calc(100vw - 24px));}}
   .ctx-actions{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px 0;}
   .ctx-button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;}
   .ctx-button:hover{background:var(--color-bg-sunk);}
@@ -663,6 +666,7 @@
   @keyframes home-note-fade{0%,75%{opacity:1;}100%{opacity:0;}}
   .home-group-head > .notice-line,.home-group-head > .notice-refusal{flex:0 1 auto;margin:0;}
   .home-sessions > .notice-line,.home-sessions > .notice-refusal{margin:0 0 12px 0;}
+  .home-folders > .notice-line,.home-folders > .notice-refusal{margin:0 0 8px 0;}
   /* A row that was pressed and waits on the daemon (round 5, F113): dimmed, a
      spinner where the chevron was, and no second press. */
   li.home-row.opening .home-open,li.home-row.opening .home-item{opacity:.6;pointer-events:none;}
@@ -1275,7 +1279,7 @@
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */
   section.approvals{margin:0 0 6px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-danger);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
+  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-signal);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
   article.approval-card:last-child{margin-bottom:0;}
   .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.4 var(--font-sans);}
   .approval-strand{font-weight:600;}

@@ -19,7 +19,7 @@
 //// daemon's user merely passes through lacks.
 ////
 //// Nothing here echoes the path: every refusal is a `creations.Reason` whose
-//// words are fixed.
+//// words are fixed, one sentence for each reason (`creations.reason_words`).
 ////
 //// ## Flow
 ////
@@ -77,7 +77,8 @@ pub fn check(typed: String, state_root: String) -> Result(String, Reason) {
 /// or is not a directory is `NotAFolder`, as is a folder the home directory's
 /// owner does not own or cannot read, write and search. A canonical folder that
 /// is the home directory itself, lies outside it or lies in a hidden folder is
-/// `OutsideHome` (`creations.inside`).
+/// `HomeItself`, `OutsideHome` or `HiddenFolder` (`creations.inside`), and the
+/// daemon's own state folder, or one containing or inside it, is `StateFolder`.
 ///
 /// ## Examples
 ///
@@ -121,7 +122,7 @@ fn apart_from(folder: String, state_root: String) -> Result(Nil, Reason) {
     || string.starts_with(folder, root <> "/")
     || string.starts_with(root, folder <> "/")
   {
-    True -> Error(creations.OutsideHome)
+    True -> Error(creations.StateFolder)
     False -> Ok(Nil)
   }
 }

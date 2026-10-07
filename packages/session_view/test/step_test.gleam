@@ -25,6 +25,7 @@ import session_view/agent_roster
 import session_view/attempt
 import session_view/command
 import session_view/connection_event
+import session_view/context_view
 import session_view/inbox
 import session_view/lane_fold
 import session_view/model.{type Shared, Shared} as session_model
@@ -517,6 +518,45 @@ pub fn a_refused_decided_read_changes_nothing_the_reader_sees_test() {
       assert after.answer == before.answer
     },
   )
+}
+
+// A strand with nothing to cut refuses `compact` as a conflict. That is not a
+// failure the reader needs a row for: the footer says it once in plain words,
+// the context panel keeps the sentence until the next press, and the daemon's
+// code and reason never reach the reader. A refusal for any other reason is
+// still the raw one.
+pub fn a_compact_with_nothing_to_cut_is_said_plainly_and_kept_test() {
+  let before = attached()
+  let after =
+    applied(
+      before,
+      session_channel.RequestRefused(
+        "compact",
+        4,
+        "conflict",
+        protocol.nothing_to_compact_message,
+      ),
+    )
+  assert after.notice == "Nothing to compact yet."
+  assert after.transcript == before.transcript
+  assert after.context.compaction == context_view.NothingToCompact
+
+  // A press asks again, and the next answer is the one that stands.
+  let asked = context_view.compact_asked(after.context)
+  assert asked.compaction == context_view.Unrefused
+
+  let busy =
+    applied(
+      before,
+      session_channel.RequestRefused(
+        "compact",
+        5,
+        "conflict",
+        "the strand already has a live operation",
+      ),
+    )
+  assert busy.notice == "conflict: the strand already has a live operation"
+  assert busy.context.compaction == context_view.Unrefused
 }
 
 // A prompt the daemon hands back is the prompt's last copy, so forgetting the

@@ -2467,7 +2467,7 @@ pub fn resume_task(
 ///    folders (`NotKnown` otherwise); a recent folder is judged again by
 ///    `folder`, since the directory may have been removed or moved since it was
 ///    remembered. A path the owner typed is judged by `folder` alone
-///    (`new_folder.check` in production: `NotAFolder` or `OutsideHome`). A
+///    (`new_folder.check` in production: `NotAFolder` or one of the refusals of where a folder may lie). A
 ///    workspace the owner holds a session in is not judged again: the owner put
 ///    it there, wherever it is.
 /// 3. The name must pass `creations.chosen_name` against that workspace

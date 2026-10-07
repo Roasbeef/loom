@@ -228,3 +228,19 @@ folder and remembers it; that recents are bounded, ordered, deduplicated, surviv
 a reopen and lose a forgotten entry; that a remembered folder deleted since is
 refused at the press; and that a path is drawn only as a text node, never an
 attribute or a key.
+
+## Addendum (2026-10-06): one sentence for each reason
+
+The live critique of the batch (F183) found that `~/Library`, `/etc` and the
+state folder were refused with the sentence written for the home directory and
+hidden folders, which did not describe them. The folder rule kept two
+reasons only because the path was never to be echoed, and a reason is not the
+path. `OutsideHome` now means only a folder outside home, and three reasons
+are added: `HomeItself`, `HiddenFolder` (a dot-prefixed folder below home, or
+the first folder below it named `Library`) and `StateFolder` (the daemon's own
+state folder, a folder in it or one containing it). `NotAFolder` stays one
+answer for a path that does not exist, is a file, or is not usable, so a page
+still learns nothing about the filesystem beyond whether the folder is usable.
+Each reason has its own fixed sentence, none repeats the path, and the
+sentence is drawn under the heading row of the "Other folders" section and not
+inside it.

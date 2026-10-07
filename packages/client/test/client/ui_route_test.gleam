@@ -4503,14 +4503,19 @@ pub fn a_typed_path_that_is_not_a_usable_folder_creates_nothing_test() {
         #("x-create-home", home),
       ])
     }
-    list.each(
-      [outside, "/", "/etc", home, "~", "~/.hidden", "~/escape", "~/escape/.."],
-      fn(path) {
-        let refused = ask(path)
-        assert refused.status == 291
-        assert refused.body == "OutsideHome"
-      },
-    )
+    list.each([outside, "/", "/etc", "~/escape", "~/escape/.."], fn(path) {
+      let refused = ask(path)
+      assert refused.status == 291
+      assert refused.body == "OutsideHome"
+    })
+    list.each([home, "~"], fn(path) {
+      let refused = ask(path)
+      assert refused.status == 291
+      assert refused.body == "HomeItself"
+    })
+    let hidden = ask("~/.hidden")
+    assert hidden.status == 291
+    assert hidden.body == "HiddenFolder"
     list.each(["~/missing", "~/file.txt", "proj", "", "~other/proj"], fn(path) {
       let refused = ask(path)
       assert refused.status == 291
