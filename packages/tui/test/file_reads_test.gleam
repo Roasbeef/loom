@@ -298,6 +298,56 @@ pub fn quit_cancels_the_configuration_job_test() {
   assert late.view.configuring == None
 }
 
+// A second request while a creation is still unreconciled says so in plain
+// words. The creation key is an internal handle, here a process identity and
+// a clock reading, and the person at the terminal can do nothing with it.
+pub fn a_second_creation_names_no_internal_key_test() {
+  let #(asked, _effects) =
+    stepping.step(backend.KeyPress("n"), picker(absent_config()))
+  let assert Some(slot) = asked.view.configuring
+    as "the creation waits for its configuration job"
+  let resolved =
+    runtime.hold(
+      asked,
+      job.ConfigurationArrived(
+        job.key(slot),
+        weft.PulledOutcome(weft.Completed(0, "/cfg/loom.toml")),
+      ),
+    )
+  let #(created, _effects) = stepping.step(backend.Tick, resolved)
+  let assert Some(creation_key) = created.view.creation_key
+    as "the first creation retained its key"
+
+  let reopened =
+    view_set.overlay(
+      created.view,
+      tui_model.DaemonSelector(session_selector.new(
+        protocol.Page(0, [], None),
+        "",
+      )),
+    )
+  let #(again, _effects) =
+    stepping.step(
+      backend.KeyPress("n"),
+      tui_model.Model(..created, view: reopened),
+    )
+  let assert Some(second) = again.view.configuring
+    as "the second creation waits for its configuration job"
+  let refused =
+    runtime.hold(
+      again,
+      job.ConfigurationArrived(
+        job.key(second),
+        weft.PulledOutcome(weft.Completed(0, "/cfg/loom.toml")),
+      ),
+    )
+  let #(after, _effects) = stepping.step(backend.Tick, refused)
+
+  assert failures(after)
+    == ["the previous session creation did not finish; reopen /sessions"]
+  assert !string.contains(string.join(failures(after), "\n"), creation_key)
+}
+
 // Ticks through `tui.update` until the configuration slot is cleared, so a
 // real job's reply has been taken, or the budget of ticks runs out.
 fn tick_until_configured(
