@@ -291,6 +291,7 @@ one.
 - **Design notes** (explorations, not commitments) — `docs/design-notes/`.
 - **Review waves** — `docs/review/`, one file per wave with its triage.
 - **Operations** — `docs/distribution.md` (what a release carries and why),
+  `docs/configuration.md` (every `loom.toml` key, gated by `make doc-check`),
   `docs/execution.md` (how work gets done), `docs/next.md` (what to do next),
   `docs/docker.md` (the runnable image, its two isolation postures, and
   their measured self-test counts), `docs/updating.md` (how to move a

@@ -97,7 +97,8 @@ the wrapper execs the VM, and `client/daemon/main` runs these steps:
    refuses if a live VM still owns the record. A daemon started by hand in
    the foreground writes its own reservation in this step.
 3. **Prepare the root.** `main.prepare` reads the `[daemon]` limits from the
-   last `--config` file, if any, and calls `root.start` with a
+   last `--config` file, if any (the [configuration reference](../configuration.md)
+   lists that table's keys, and how the whole file is found and read), and calls `root.start` with a
    `manager.Assembly`: the four callbacks the registry uses to build a
    domain, build a session, list a session's fatal processes, and drain a
    session at shutdown. `root.start` only spawns the root's state machine.
@@ -449,8 +450,8 @@ may hold for a slow reader at once (overlapping metadata cuts, encodings,
 fragments and replies), rounded up. It is an accounting bound, not a
 measurement of BEAM heap or RSS.
 
-The `[daemon]` table is read once at startup from the last `--config`
-file. `client/daemon/limits` rejects unknown keys and non-positive values,
+The `[daemon]` table ([keys](../configuration.md#daemon)) is read once at
+startup from the last `--config` file. `client/daemon/limits` rejects unknown keys and non-positive values,
 and it also accepts a `profile` boolean, which the launcher reads. Session
 configuration cannot change a running daemon's limits; raising one means
 restarting the daemon, which is what the refusal text says.
