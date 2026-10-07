@@ -1,111 +1,130 @@
 # Current handoff
 
-This edition records the approved registered-service contracts and the main
-refresh through `de09f9dd6` on October 6, 2026. The isolated `runtime/main-refresh`
-branch replays all 231 integration commits on `origin/main` at `3644b0790`.
-The refreshed storage, tools and client package gates pass. Independent
-compatibility review and the registered-service assembly remain in progress.
-Earlier component results below describe their stated pre-rebase source.
+This edition records the registered-runtime integration through `7178cf937` on
+October 6, 2026. The isolated `runtime/main-refresh` branch includes the approved
+LSP and generation contracts and main at `3644b0790`. Component source, local
+receipts and hosted state were checked for this edition. Runtime assembly and
+separate-host acceptance remain in progress.
 
-The previous edition still required approval for registered LSP and administration.
-The owner has now approved both contracts, including option B and exact-generation
-history with system-child links. Exact-helper retirement and immutable Compile
-rewrite identities were already implemented and committed. Ordinary
-registered session assembly and remote LSP remain unbuilt, so this milestone
-does not complete distributed runtime acceptance.
+The previous edition's statement that no authorized SSH destination was available
+is obsolete. Linux component tests have run on the supplied test VM. Those tests
+used an earlier source snapshot plus seven portability fixes; they do not prove
+the two requested physical owner/executor placements on the current candidate.
+The foundation codecs, registry, helper credits and owner generation DAL are also
+implemented now. Their presence does not enable ordinary registered sessions.
 
 ## Where the tree is
 
-[PR #819](https://github.com/Roasbeef/loom/pull/819) remains draft and
-[issue #697](https://github.com/Roasbeef/loom/issues/697) remains open. The local
-integration commits have not been pushed. The previously observed hosted head was
-`b3bc47efdb2be7df421287aa437debdd034af9e5`, with no checks; hosted state has not been
-refreshed for this rebase. Local source now includes main at `3644b0790`. No push
-or merge is authorized.
+[PR #819](https://github.com/Roasbeef/loom/pull/819) remains open and draft at
+`b3bc47efdb2be7df421287aa437debdd034af9e5`, with no hosted checks on that head.
+[Issue #697](https://github.com/Roasbeef/loom/issues/697) remains open. The local
+integration work has not been pushed; publication and merge remain unauthorized.
+Main has since advanced to `8facdb0ea`, whose
+[CI run passed](https://github.com/Roasbeef/loom/actions/runs/37565157383).
+That render/transfer optimization series is not yet integrated into this branch.
 
 | Boundary | Current integration state |
 | --- | --- |
-| Owner custody and transport | Retained inputs/results, finite TLS BEAM controls, native forwarding and semantic workspace consumers are implemented. |
-| Compile | Exactly Original and UnusedImportRewrite identities preserve immutable inputs, checked predecessor evidence and the original authority/deadline. Protocol 071 and `85fa75c20` implement the approved contract. |
-| Launch | The consumed stream, original satellite, owner consumer and exact-helper retirement now compose. `23c6fabd9`, `a57c907f0` and `81c7c83f7` complete this component milestone. |
-| Ordinary daemon path | Protocol 077 is approved. Default assembly, deployment, pinning, complete generation custody and full executor activation still need implementation. |
-| LSP | Protocol 076 is approved, including consumed transport and original timing/retirement custody. Its registered service still needs implementation. |
-| Distributed orchestration | C1 ownership, C2 routing, C3 durable cross-node messaging and M1 controlled movement remain required and unimplemented. |
-| Preserved work | The unrelated owner-binding test runner and main checkout changes remain outside this work. |
+| Owner custody and semantic transport | Original inputs, results, finite TLS BEAM controls, native forwarding and semantic workspace consumers are implemented. |
+| Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
+| Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
+| Generation history | `0e06673d6` and `cc668b1f2` retain bounded node claims, publication fences and retirement metadata. `cce28b4af` retains original owner generations and atomic child/system links. Actual physical join validation remains an assembly obligation. |
+| LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. Physical native and ordinary assembly joins remain pending. |
+| Deployment | `a58713277` and `45de677f` commit reviewed strict owner/executor loaders and their manifest. Shipped role bootstrap, admin transport, full host activation and ordinary daemon assembly remain unbuilt. |
+| Launch utilities | `ed4abd587` supplies named private role bundles, selected export, lifecycle commands and a setup guide. Current images deliberately lack runtime capability labels and cannot pass its startup gate. |
+| Distributed orchestration | Executor pools, C1 ownership, C2 routing, C3 durable cross-node messaging and M1 controlled movement remain required. |
 
-The [integration guide](design-notes/distributed-runtime-integration.md) maps the
-components and full acceptance criteria. The
-[Compile and retirement review](review/distributed-compile-retirement.md) records
-the final source, corrected review findings, execution evidence and limits.
-Earlier review records remain evidence for their stated revisions.
+The [integration guide](design-notes/distributed-runtime-integration.md) records
+full acceptance criteria. The [setup guide](distributed-setup.md) distinguishes
+prepared bundles, packaged role support and actual physical execution. Earlier
+review records describe their stated source revisions, not the entire current
+candidate.
 
 ## Verification and its limits
 
-Before this rebase, independent complete package gates passed core with 189 tests plus JavaScript
-checks, storage with 224, code mode with 483, broker with 444, executor with 370
-and client with 3,084. The final combined client gate returned exit zero.
-Fifteen explicit optional controls remain skipped: one Linux `/proc` witness,
-thirteen shipped-server controls and one rust-analyzer control. All 59 final
-source paths matched between integration and verification checkouts before
-these documentation updates.
+The committed helper-credit integration passed broker with 458 tests, executor
+with 400, code mode with 483 and client with 3,130. The owner-generation DAL then
+passed storage with 253 tests. The client gate retains fifteen explicit optional
+skips: one Linux `/proc` witness, thirteen shipped-server controls and one
+rust-analyzer control. Formatting, affected lint and documentation checks passed;
+the latest integrated documentation receipt has zero errors and 195 warnings.
 
-Final formatting, the six changed-package lint targets, documentation and
-prelude checks passed with exit zero. Documentation reported 186 warnings and
-zero errors.
+Adding the LSP custody DAL exposed a recurring Launch shutdown failure in the
+combined executor gate: 411 passed and one failed because a node logged
+`weft_drain_proof_lost`. A deterministic regression reproduced it against the old
+source. Channel shutdown could stop paused leaves before the asynchronous weft
+scope adopted them. `832f86095` queues cancellation through the original witnessed
+scope and accepts only its normal exit as transport join. Native retirement and
+resource cleanup retain separate witnesses; independent source review is clean.
 
-The real executor control completes three Launches through one active slot.
-The composed owner controls require exact retained native/outer receipts,
-Released resource custody and physical path removal for both Original and
-Rewrite builds. Five Compile and two retirement mutants compile and fail their
-runtime assertions. Source review and bounded correction reviews are complete.
-Earlier failed test runs remain recorded separately; focused passes and observed
-host load do not establish that every failure was a flake.
+The first independent combined rerun then passed 414 tests and failed a separate
+parked-reservation fixture. That fixture expected its callback to notify completion
+after cancellation could kill it. Production instead admits the reservation to an
+independent custodian writer. `6b26739e` corrects the fixture: the exact callback
+must die before releasing the original SQLite writer, and reopening proves its
+COMMIT. Existing uncertain/no-submission/cleanup assertions and timeouts remain.
+Independent review is clean. The combined executor gate with deployment imported
+passes all 422 tests, with the required short scratch path, in 149.48 seconds.
 
-Immediately after the rebase, SQL regeneration succeeded with no artifact drift.
-Generation-registry schema work added afterward is still being integrated.
-`make check-storage` passes all 235 tests, including populated migrations from
-both historical catalogue version-eight layouts and refusal of mixed/absent
-layouts. The catalogue now stamps version nine. `make check-tools` passes all
-752 tests, and the seeded `make check-client` passes all 3,130 tests, including
-main's moved LSP inference and the live shell-directory controls. The client
-run retains the same 15 documented optional skips. Commit `de09f9dd6` preserves
-typed workspace authority in the shell-directory callbacks and fixtures.
-Formatting, tools/storage lint, documentation and prelude checks pass with zero
-errors; the latest documentation check reports 192 warnings.
+The Linux test host ran the executor suite on `cc668b1f2` plus seven portability
+fixture patches, all 384 tests passing. Those patches are committed locally as
+`c1754adae`. They select the host's temporary directory, account for OTP 29's
+64-MiB JIT mapping in compiler fixture file-size limits, and retain a test clock
+until shutdown joins. The Linux sandbox self-test and offline code-mode control
+also passed. This was component validation on Linux, not a remote owner driving
+the other machine's executor. Both physical placements still need the assembled
+runtime and the same exact candidate revision.
 
-The shared original-generation and system-child codecs are committed in
-`7c41fafef`. Their independent core gate passes 197 tests and JavaScript
-controls, with core lint and documentation checks passing. These pure codecs
-do not establish live registry, LSP or endpoint authorization. Three isolated
-foundation worktrees are implementing helper consumption credits, the bounded
-generation registry and the complete LSP command/result codecs.
+All 23 imported launch-tooling tests pass. Independent review found and verified
+corrections for canonical mount targets and an unresolved marker in the shipped
+membership fragment; its bounded recheck is clean. Docker lifecycle calls in
+these tests are mocked. One test generates and checks real local certificates;
+it does not establish a live TLS deployment.
 
-Full repository gates, ordinary registered tools, separate-host acceptance and
-hosted CI have not passed on this candidate. Component results do not establish
-those outcomes. The new SSH user promised for host testing has not been supplied;
-the earlier rejected transfer created no remote checkout. Wait for that new
-destination identity before transferring source.
+The deployment slice passes six owner and seven executor focused controls.
+Independent review found no blocking source issue. Its isolated full package runs
+omitted the required short scratch root and refused existing Launch fixture
+enrollment before effects; those red receipts remain. The corrected integrated
+executor gate passes above. The integrated client gate passes all 3,136 tests in 436.55 seconds, retaining
+the fifteen explicit optional skips listed above.
+
+The consumed-LSP slice passes 211 LSP tests and 211 core tests, including existing
+JavaScript controls. Independent review found a retained-integer accounting gap:
+Registered diagnostic coordinates and versions had fixed charges without finite
+numeric ranges. The correction checks LSP unsigned/signed integer ranges before
+retention, settlement or consumption acknowledgement. Its bounded recheck is
+clean; Standard transport behavior stays unchanged. Integration updates two local
+transport test patterns to assert their existing ordinary variant explicitly.
+Root core and LSP gates each pass all 211 tests; affected lint reports zero
+errors. Executor/code-mode verification against this final combined source is
+in progress. An extra large-array JavaScript probe
+exposes the same existing sibling-recursion stack limit in both parser profiles;
+no exact-limit JavaScript runtime success is claimed.
+
+Full repository gates, actual shipped registered tools, both physical-host
+placements, container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Finish verifying the main refresh without losing local shell cwd, job cwd
-   capture, recent folders or LSP scope inference. **Exit:** the combined source
-   passes its affected-package gates and independent compatibility review.
-2. Implement those contracts through ordinary daemon assembly. Preserve one
-   original owner Broker/custodian, executor-only physical paths, full report
-   admission, jobs, hooks, guidance, Git and LSP. **Exit:** default tools and
-   code mode work with the checkout absent from the owner, including complete
-   report retention and lifecycle controls. Historical query alone is not the
-   fresh-work acceptance criterion.
-3. Complete executor pools, C1-C3 and M1 from the API plan. Each session has one
-   authoritative owner; cross-node acknowledgement follows recipient durable
-   admission under the same message ID, not model consumption. **Exit:** the
-   separate-host cancellation, partition, restart, lost-reply and controlled
-   movement controls pass. Automatic failover and workspace snapshot migration
-   remain deferred.
-4. Check for further main movement, run applicable model and full repository gates,
-   then review the assembled system. **Exit:** exact candidate results justify
-   the remaining integration checklist before requesting publication or merge.
+1. Finish the current integration wave for **#697**: complete the executor and
+   code-mode checks against the committed deployment and consumed-LSP changes.
+   Core, LSP and client checks pass. **Exit:** affected combined gates pass
+   with the short scratch prerequisite, and every verified finding is resolved.
+   Preserve ordinary local transport behavior and every existing test.
+2. Build the approved ordinary registered path from protocols 076 and 077.
+   Preserve one original owner Broker/custodian, exact-generation publication,
+   executor-only physical paths, full reports, jobs, hooks, cwd, guidance, Git and
+   LSP. **Exit:** default tools and code mode run with the checkout absent from
+   the owner, and Close/restore retains original history and permits only proved
+   clean successors. Historical query alone does not establish fresh execution.
+3. Complete role packaging and the two physical-host placements, followed by
+   executor pools and C1-C3/M1. **Exit:** the same candidate passes normal effects,
+   cancellation, partition, restart, lost-reply, routing, durable messaging and
+   controlled-movement controls. Automatic failover and workspace snapshot
+   migration remain deferred.
+4. Integrate current main, run applicable model and full repository gates, and
+   review the assembled system. **Exit:** exact candidate evidence closes the
+   integration checklist before publication or merge is requested.
 
 ## Rulings already made
 
@@ -114,48 +133,59 @@ reopening where the ruling lives.
 
 **Executors share the runtime trust domain.** Trusted TLS BEAM membership carries
 physical service traffic. Satellites remain jailed and distribution-disabled;
-executor membership does not grant Raft voting membership. See the
+executor membership grants no Raft vote. See the
 [integration guide](design-notes/distributed-runtime-integration.md).
 
-**Compile has two fixed attempts.** The approved
-[protocol 071](../protocol-change/071-remote-compile-attempts.md) permits one
-Original and one deterministic UnusedImportRewrite. It does not grant a retry
-framework, renewed deadline, new budget or new grants.
+**Compile has two fixed attempts.** Approved
+[protocol 071](../protocol-change/071-remote-compile-attempts.md) permits Original
+and one deterministic UnusedImportRewrite under the same authority and deadline.
+It grants no retry framework, renewed budget or replacement grants.
 
-**Launch retires its exact borrowed helper.** The approved
+**Launch retires its exact borrowed helper.** The
 [protocol-067 addendum](../protocol-change/067-remote-workspace-services.md#addendum-exact-original-helper-retirement-for-launch)
-costs one helper restart per Launch. It preserves ordinary command/Compile
-reuse and never closes the shared pool for each Launch.
+costs one helper restart per Launch while preserving ordinary command/Compile
+reuse. It never shuts down the shared pool for each Launch.
 
-**Cleanup witnesses remain separate.** Original native retirement, transport
-join, capability drain, resource removal and complete-report COMMIT discharge
-different obligations. Terminal history, actor death, absence and receipt cannot
-replace another boundary's witness. See the
+**Cleanup witnesses remain separate.** Native retirement, transport join,
+capability drain, resource removal and complete-report COMMIT discharge distinct
+obligations. Terminal history, actor death, absence and receipt cannot replace
+another boundary's witness. See the
 [retirement architecture](architecture/launch-native-retirement.md).
+
+**Generation policy is approved.**
+[Protocol 077](../protocol-change/077-registered-generations.md) selects sixteen
+live/unretired slots, 4,096 permanent identities and 256 MiB of logical metadata.
+Original removal acknowledgement and durable Removed precede slot reuse.
+Uncertain custody stays charged. Successors retain immutable original owner
+and system-child links; history reads and receipts cannot repeat an effect.
 
 ## Deliberately open
 
 The approved [LSP contract](../protocol-change/076-registered-lsp.md) and
 [administration contract](../protocol-change/077-registered-generations.md) define
-implementation work, not completed capabilities. Administration selects sixteen
-live/unretired slots with 4096 permanent generation identities and 256 MiB of
-logical metadata. Clean successors retain immutable original owner doors and
-exact historical receipt routing. Uncertain custody remains charged.
+required implementation work. Full activation, original physical retirement and
+normal daemon assembly are unbuilt, not accepted limitations of the final
+feature. C1-C3 and M1 also remain required by **#697**.
 
-The owner accepted the inherited workspace/cache filesystem policy without an
-aggregate disk quota. All new LSP custody and transport inventories retain their
-explicit bounds. C1-C3 and M1 remain required unbuilt scope; automatic failover
-and workspace snapshot migration remain deferred.
+The owner accepted inherited workspace/cache filesystem policy without an
+aggregate disk quota. New LSP transport and retained-state inventories keep their
+explicit bounds. Automatic failover and workspace snapshot migration remain
+deferred. None of these is unfinished work somebody forgot.
 
 ## How to verify
 
-Use `make check-<package>` for affected packages, `make fmt-check`, changed-package
-lint, `make doc-check` and `make prelude-check` for shared gates, then `make check`
-for the complete candidate. Regenerate the offline code-mode seed when its
-source or compiler changes. Capture each command's own exit status.
+Use `make check-<package>` for affected packages, `make fmt-check`, affected lint,
+`make doc-check` and `make prelude-check`, then `make check` for the complete
+candidate. Regenerate the normal offline seed when its source/compiler changes.
+Capture each command's own exit status.
 
-Keep checkout-backed tests outside `/tmp`, which the jail replaces, and Unix
-socket roots short enough for the platform. Serialize heavy real-helper suites
-and tests that package the same generated TUI shipment. Preserve red receipts
-and investigate the actual failure before changing a timeout or calling it a
-flake. See [execution](execution.md) for the remaining rules.
+**Use short, isolated socket scratch paths.** Checkout-backed tests stay outside
+`/tmp`, which the jail replaces. Set `LOOM_TEST_SCRATCH` explicitly for deep
+worktrees; an enrollment refusal before effects is not evidence of a runtime
+regression.
+
+**Serialize builds that share generated artifacts.** Parallel package gates in
+one checkout can collide while packaging the TUI or helper. Keep independent
+worktrees isolated and preserve failed receipts. Investigate a concrete failure
+before changing a timeout or calling it a flake. See
+[execution](execution.md) for the remaining rules.

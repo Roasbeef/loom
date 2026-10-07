@@ -107,6 +107,34 @@ restart controls. The wrapper's production decoder, retention lifecycle and
 remaining D3 operational checks are still open; no dependency is adopted here.
 Automatic failover and workspace snapshot migration remain deferred.
 
+## Launch tooling and physical-host acceptance
+
+The delivery includes container packaging, utility commands for launching multiple
+orchestrators and executors, and a setup guide. Extend the existing Docker image,
+release scripts and Make targets after the shipped deployment entrypoints exist.
+Each node needs its own stable identity, pinned credentials and durable state;
+adding instances must preserve the deployment table's finite peer and workspace
+bounds. Stopping or replacing a container cannot imply clean generation retirement.
+
+The utility must make role placement explicit. Executor nodes hold the checkout,
+toolchains and physical journals. Orchestrators hold conversation state, provider
+credentials, approvals, owner custody and blobs. A brain-only container must not
+receive the executor workspace mount. The guide must document enrollment, selecting
+an executor, inspecting health, clean shutdown, retained uncertainty and restart.
+It must report the sandbox layers actually available in the selected container
+posture, using the existing self-test rather than assuming Docker provides Loom's
+inner isolation.
+
+Separate-host acceptance runs both directions on the same candidate: a local
+executor with a remote orchestrator, then a remote executor with a local
+orchestrator. For each direction, record the revision, native platform, enrollment,
+commands, exit statuses and lifecycle evidence. Keep the executor checkout absent
+from the owner and verify ordinary tools, Compile/Launch and LSP before exercising
+cancellation, partition, lost replies and clean generation replacement. Multiple
+container instances then exercise executor selection and the C1-C3/M1 routing,
+messaging and controlled-movement behavior. A local two-node fixture or a successful
+image build does not replace either physical-host direction.
+
 ## How changes enter the integration branch
 
 Workers own disjoint implementation slices in isolated worktrees. Each slice
@@ -132,6 +160,8 @@ does not merge the implementation into `main`.
 - [ ] Integrate current `main` and pass its full repository gates.
 - [ ] Exercise ordinary tools, code-mode Compile/Launch and LSP through registered remote consumers.
 - [ ] Pass separate-host tests with the workspace absent from the owner, including cancellation, partition, restart and lost replies.
+- [ ] Pass both owner/executor host placements on the exact candidate revision.
+- [ ] Deliver tested container launch utilities and a setup guide for multiple orchestrators and executors.
 - [ ] Run the applicable formal-model gates and document the implementation correspondence and proof limits.
 - [ ] Complete the remaining issue phases and a final adversarial review of the assembled system.
 
