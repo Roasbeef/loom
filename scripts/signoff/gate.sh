@@ -38,6 +38,9 @@
 #   config          optional, sourced: LOOM_CPUS and LOOM_MEMORY ceilings
 #   .gitconfig      user.name, which gh-signoff requires to post
 #   .local/share/gh the gh-signoff extension
+#   .ssh            the key and known_hosts for an ssh origin, read by
+#                   both the gate's fetch and the driver's; with an https
+#                   origin there is nothing to put here
 #
 # and the driver it runs is an installed copy of scripts/signoff/driver.sh
 # at /usr/local/libexec/loom-signoff/driver.sh, so the code that decides
@@ -122,6 +125,12 @@ if ! flock -n 9; then
 	done
 fi
 
+
+# HOME is the state directory for every git command from here on, the
+# fetch below included, so an ssh origin's keys and known_hosts and the
+# .gitconfig are read from one place. Left to sudo's env_reset, HOME would
+# be root's for this fetch and the state directory's for the driver's.
+export HOME="$state"
 cd "$checkout"
 git fetch --quiet --prune origin
 if ! git cat-file -e "$sha^{commit}" 2>/dev/null ||
@@ -142,7 +151,6 @@ if [ "$post" = yes ]; then
 	export GH_TOKEN
 fi
 
-export HOME="$state"
 export LOOM_DIR="$checkout"
 export LOOM_ORIGIN
 LOOM_ORIGIN=$(git remote get-url origin)

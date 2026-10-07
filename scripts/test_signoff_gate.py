@@ -128,6 +128,15 @@ class GateTest(Fixture):
         self.assertNotIn("GH_TOKEN", seen)
         self.assertEqual(seen["LOOM_PARALLEL"], "4")
 
+    def test_the_gate_fetches_with_the_state_directory_as_home(self):
+        # The test's own HOME knows nothing of this URL, so the fetch can
+        # succeed only if git reads the state directory's .gitconfig.
+        url = "https://origin.example.invalid/loom.git"
+        (self.state / ".gitconfig").write_text(f'[url "{self.origin}"]\n\tinsteadOf = {url}\n')
+        git(self.state / "loom-signoff", "remote", "set-url", "origin", url)
+        result = self.gate(f"signoff {self.pushed} --dry-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_the_config_sets_the_ceilings(self):
         (self.state / "config").write_text("LOOM_CPUS=8\nLOOM_MEMORY=12g\n")
         result = self.gate(f"signoff {self.pushed} --dry-run")
