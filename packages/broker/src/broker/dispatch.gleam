@@ -56,11 +56,14 @@
 
 import broker/exec
 import broker/framing.{type OutputStream}
+import broker/internal/call
 import core/clock.{type Clock}
-import core/ids.{type OpId}
+import core/ids.{type EntryId, type OpId}
 import core/remote_tool
-import gleam/erlang/process.{type Pid}
+import gleam/erlang/process.{type Pid, type Subject}
+import gleam/erlang/reference.{type Reference}
 import gleam/option.{type Option}
+import gleam/result
 
 /// How long a relay waits, after it has asked the helper to stop, for the
 /// helper's terminal event before it declares the execution unkillable and
@@ -189,6 +192,8 @@ pub type CallContext {
 /// a decision the broker already made; the dispatcher carries them out.
 pub type Dispatch {
   Dispatch(
+    /// Original one-use system permission; ordinary calls carry None.
+    system_reservation: Option(SystemReservationRef),
     /// Logical identity from the cleared CallSpec, independent of call seq.
     context: CallContext,
     /// The cleared request, token and final policy included.
@@ -268,4 +273,149 @@ pub type Dispatcher {
     /// `exec_start` that began the call.
     start: fn(Dispatch) -> Result(Execution, StartRefusal),
   )
+}
+
+/// The immutable trusted native declaration retained before Broker clearance.
+pub type SystemCommandDeclaration {
+  SystemCommandDeclaration(
+    /// The original configured owner label in the native envelope.
+    owner: String,
+    /// The original durable work operation.
+    operation: OpId,
+    /// Its exact fixed phase.
+    step: String,
+    /// The retained complete command arguments.
+    argv: List(String),
+    /// The retained ordered environment.
+    env: List(#(String, String)),
+    /// The executor-side working directory.
+    cwd: String,
+    /// The original finite deadline, never renewed by congestion.
+    deadline_ms: Int,
+  )
+}
+
+/// The actual cleared coordinates, excluding Dispatch callbacks.
+pub type ClearedSystemCommand {
+  ClearedSystemCommand(
+    /// The complete request the Broker actually cleared.
+    request: exec.ExecRequest,
+    /// The original actual operation.
+    operation: OpId,
+    /// The original actual phase.
+    step: String,
+    /// The unchanged Broker deadline.
+    deadline_ms: Int,
+    /// The actual events-subject owner.
+    caller: Option(Pid),
+  )
+}
+
+/// One local routing permission to the original custodian's typed subject.
+/// There is deliberately no codec or durable constructor from history.
+pub opaque type SystemReservationRef {
+  /// Only an original actor inventory entry gives these coordinates meaning.
+  SystemReservationRef(
+    /// The exact original auxiliary subject, never a registered replacement.
+    subject: Subject(SystemReservationMessage),
+    /// Fresh BEAM identity of the actual opaque pending value.
+    reference: Reference,
+    /// Complete direct system child allocated once in SQLite.
+    origin: remote_tool.ChildOrigin,
+    /// Original immutable work UUID, retained before clearance.
+    request_id: EntryId,
+  )
+}
+
+/// Closed original-owner requests; messages contain no executable callbacks.
+pub type SystemReservationMessage {
+  /// Consumes one actual pending permission before payload admission.
+  ReserveSystem(
+    /// Original actor and one-use inventory identity.
+    ref: SystemReservationRef,
+    /// The unchanged actual Broker projection, without callbacks.
+    cleared: ClearedSystemCommand,
+    /// Complete canonical Prepared envelope with original scope and deadline.
+    envelope: BitArray,
+    /// A bounded original ask receives known Fresh admission only.
+    reply: Subject(Result(#(EntryId, BitArray), Nil)),
+  )
+
+  /// Cancels the same durable identity before or after native admission.
+  CancelSystem(
+    /// The same original identity even after permission consumption.
+    ref: SystemReservationRef,
+    /// The bounded ask observes durable sticky cancellation.
+    reply: Subject(Result(Nil, Nil)),
+  )
+}
+
+/// Mints a local reference only after the custodian retained FreshPending.
+/// Its fresh Reference must name an actual entry in that original actor.
+///
+/// ## Examples
+///
+/// `system_reservation_ref(subject, reference, origin, uuid)` has no wire encoding.
+pub fn system_reservation_ref(
+  subject: Subject(SystemReservationMessage),
+  reference: Reference,
+  origin: remote_tool.ChildOrigin,
+  request_id: EntryId,
+) -> SystemReservationRef {
+  SystemReservationRef(subject, reference, origin, request_id)
+}
+
+/// Projects routing coordinates for exact original-subject validation.
+///
+/// ## Examples
+///
+/// `system_reservation_fields(ref)` never resolves a registered replacement.
+pub fn system_reservation_fields(
+  ref: SystemReservationRef,
+) -> #(
+  Subject(SystemReservationMessage),
+  Reference,
+  remote_tool.ChildOrigin,
+  EntryId,
+) {
+  #(ref.subject, ref.reference, ref.origin, ref.request_id)
+}
+
+/// Asks the original subject to consume its permission and commit exact bytes.
+/// Timeout or a lost reply supplies no reservation and cannot rearm the entry.
+///
+/// ## Examples
+///
+/// `reserve_system(ref, actual, bytes, 5000)` returns the original committed UUID.
+pub fn reserve_system(
+  ref: SystemReservationRef,
+  cleared: ClearedSystemCommand,
+  envelope: BitArray,
+  waiting: Int,
+) -> Result(#(EntryId, BitArray), Nil) {
+  use answer <- result.try(
+    call.try_call(ref.subject, waiting: waiting, sending: fn(reply) {
+      ReserveSystem(ref, cleared, envelope, reply)
+    })
+    |> result.replace_error(Nil),
+  )
+  answer
+}
+
+/// Sends sticky cancellation to the same original subject and identity.
+///
+/// ## Examples
+///
+/// `cancel_system(ref, 5000)` does not reconstruct reserve permission.
+pub fn cancel_system(
+  ref: SystemReservationRef,
+  waiting: Int,
+) -> Result(Nil, Nil) {
+  use answer <- result.try(
+    call.try_call(ref.subject, waiting: waiting, sending: fn(reply) {
+      CancelSystem(ref, reply)
+    })
+    |> result.replace_error(Nil),
+  )
+  answer
 }
