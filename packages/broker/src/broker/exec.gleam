@@ -130,6 +130,12 @@
 //// 7. `native_exit` receives the status the port reports, and `native_verdict`
 ////    decides whether it retires the helper.
 ////
+//// Credited execution follows `run_protocol` → `handle_protocol_run` →
+//// `protocol_input_ack` / `protocol_output` → `protocol_terminal` →
+//// `protocol_reusable` → `consume_protocol_reusable`. `Finishing` keeps the
+//// original borrow busy until the final consumer retains and consumes the
+//// exact witness. `defer_checkin` owns one immutable original return closure.
+////
 //// ## Transitions
 ////
 //// <!-- transitions: exec.Phase -->
@@ -141,6 +147,7 @@
 //// | `Idle` | ignored | `Dead`, protocol violation | `Running`; refused if the helper is degraded or the caller's events owner is gone | ignored | ignored | stale, ignored | `Dead` | `Dead`; a missed heartbeat also gives `Dead` |
 //// | `Running` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | `Cancelling` after the TERM write, `Dead` if the write fails | the execution's own id gives `Idle`; other ids dropped | stale, ignored | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
 //// | `Cancelling` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored, the first deadline keeps running | the execution's own id gives `Idle` and disarms the deadline | `CancelDeadline` kills the helper and keeps its port, `Dead` | `Dead`, in-flight caller told | `Dead`, in-flight caller told |
+//// | `Finishing` | ignored | `Dead`, protocol violation | refused, `HelperBusy` | ignored | terminal retained; only matching consumed finite reusable enters `Idle` | none | `Dead`, original retirement | `Dead` |
 //// | `Dead` | ignored | dropped | refused with the stored failure | ignored | dropped | stale, ignored; `KillWitnessDeadline` on a killed helper, or one whose write failed, whose status never came closes the port and gives `LostExit` | ignored | the exit status of a retained port is the retirement proof; after a closed port it is ignored |
 
 import broker/framing.{type Fault, type Frame, type OutputStream}
@@ -484,6 +491,87 @@ pub opaque type Helper {
   )
 }
 
+/// One original credited execution. Its helper and id cannot be replaced by a peer.
+pub opaque type ProtocolExecution {
+  ProtocolExecution(helper: Helper, id: Int)
+}
+
+/// The outcome of submission, preserving an original handle when a reply was lost.
+pub type ProtocolRunFailure {
+  /// A definite refusal or failed reservation; no replacement is implied.
+  ProtocolRunRefused(failure: ExecFailure)
+
+  /// Original submission may have started. Cleanup keeps this exact handle.
+  ProtocolRunUnknown(execution: ProtocolExecution, failure: ExecFailure)
+}
+
+/// Credited events have their own consumed transport and never enter ExecEvent.
+pub type ProtocolEvent {
+  /// Exact stdin queue admission, distinct from delivery to the child.
+  ProtocolInputAccepted(ordinal: Int, frame_id: Int)
+
+  /// Definite rejection of one original input frame.
+  ProtocolInputRefused(
+    ordinal: Int,
+    frame_id: Int,
+    reason: framing.InputRefusal,
+  )
+
+  /// One output offer; consumption must name this original ordinal.
+  ProtocolOutput(
+    ordinal: Int,
+    stream: OutputStream,
+    data: BitArray,
+    total_bytes: Int,
+    disposition: framing.OutputDisposition,
+  )
+
+  /// Native verdict and protocol disposition; neither is reusable evidence.
+  ProtocolTerminal(
+    result: Result(ExecResult, ExecFailure),
+    disposition: framing.ProtocolDisposition,
+  )
+
+  /// Delivered post-join witness. Retain its original command association before consuming it.
+  ProtocolReusable
+
+  /// Transport or identity failed; custody remains unavailable.
+  ProtocolFailure(failure: ExecFailure)
+}
+
+type EventSink {
+  OrdinaryEvents(events: Subject(ExecEvent))
+  CreditedEvents(events: Subject(ProtocolEvent))
+}
+
+type InputCredit {
+  InputAvailable(next: Int)
+  InputOffered(ordinal: Int, frame_id: Int, end: framing.InputEnd)
+  InputEnded
+}
+
+type ReuseCredit {
+  ReuseAwaited
+  ReuseOffered
+  ReuseConsumed
+}
+
+type ProtocolRun {
+  ProtocolRun(
+    id: Int,
+    mode: framing.ProtocolMode,
+    events: Subject(ProtocolEvent),
+    input: InputCredit,
+    next_output: Int,
+    offered_output: Option(Int),
+    consumed_output: Int,
+    stdout_bytes: Int,
+    stderr_bytes: Int,
+    reuse: ReuseCredit,
+    deferred: Option(fn() -> Nil),
+  )
+}
+
 // Existing local callers use the relay's aggregate cancellation deadline. A
 // remote admission additionally fences the queued Run at its final BEAM reader.
 type RunWindow {
@@ -496,6 +584,32 @@ type RunWindow {
 /// state timeouts. Opaque; constructed only through this module's API.
 pub opaque type Msg {
   Begin
+  ReserveProtocol(reply: Subject(Result(Int, ExecFailure)))
+  RunProtocol(
+    id: Int,
+    request: ExecRequest,
+    mode: framing.ProtocolMode,
+    clock: clock.Clock,
+    deadline: Int,
+    events: Subject(ProtocolEvent),
+    reply: Subject(Result(Int, ExecFailure)),
+  )
+  FeedProtocol(
+    id: Int,
+    ordinal: Int,
+    frame_id: Int,
+    data: BitArray,
+    end: framing.InputEnd,
+    reply: Subject(Result(Nil, ExecFailure)),
+  )
+  ConsumeProtocolOutput(id: Int, ordinal: Int)
+  ConsumeProtocolReusable(id: Int)
+  DeferProtocolCheckin(
+    id: Int,
+    checkin: fn() -> Nil,
+    reply: Subject(Result(Nil, ExecFailure)),
+  )
+  CancelProtocol(id: Int)
   AwaitReady(reply: Subject(Result(List(String), ExecFailure)))
   QueryStatus(reply: Subject(HelperStatus))
   Run(
@@ -668,6 +782,9 @@ type Phase {
   /// is what disarms it.
   Cancelling(features: List(String), exec: RunningExec)
 
+  /// The original credited execution has terminated but its borrow remains held.
+  Finishing(features: List(String), exec: RunningExec)
+
   /// The channel is gone. Absorbing: every request is answered with this
   /// failure until the machine is shut down, and no second failure
   /// re-notifies anyone.
@@ -679,7 +796,7 @@ type Phase {
 type RunningExec {
   RunningExec(
     id: Int,
-    events: Subject(ExecEvent),
+    events: EventSink,
     demand: EnforcementDemand,
     /// The layer tags this execution's policy calls for, computed at
     /// dispatch and checked against the `exec_exit` report. Held here
@@ -722,6 +839,8 @@ type Data {
     hello_features: List(String),
     commands: Subject(Msg),
     wire: Subject(WireEvent),
+    protocol: Option(ProtocolRun),
+    reserved_protocol: Option(Int),
   )
 }
 
@@ -795,6 +914,8 @@ pub fn prepare(config: HelperConfig) -> Result(Helper, actor.StartError) {
     // parked phase owns no deadline because no handshake has begun.
     let data =
       Data(
+        protocol: None,
+        reserved_protocol: None,
         config:,
         wire_out: WireUnopened,
         deframer: framing.deframer(),
@@ -1185,6 +1306,58 @@ fn handle(
   message: Msg,
 ) -> state_machine.Next(Phase, Data, Msg) {
   case phase, message {
+    Idle(..), ReserveProtocol(reply:) ->
+      case data.reserved_protocol {
+        None -> {
+          let #(data, id) = fresh_id(data)
+          process.send(reply, Ok(id))
+          state_machine.keep(Data(..data, reserved_protocol: Some(id)))
+        }
+        Some(_) -> {
+          process.send(reply, Error(HelperBusy))
+          state_machine.keep(data)
+        }
+      }
+    _phase, ReserveProtocol(reply:) -> {
+      process.send(reply, Error(NotReady))
+      state_machine.keep(data)
+    }
+
+    phase, RunProtocol(id:, request:, mode:, clock:, deadline:, events:, reply:)
+    ->
+      handle_protocol_run(
+        Machine(phase:, data:),
+        id,
+        request,
+        mode,
+        clock,
+        deadline,
+        events,
+        reply,
+      )
+    phase, FeedProtocol(id:, ordinal:, frame_id:, data: bytes, end:, reply:) ->
+      handle_protocol_feed(
+        Machine(phase:, data:),
+        id,
+        ordinal,
+        frame_id,
+        bytes,
+        end,
+        reply,
+      )
+    phase, ConsumeProtocolOutput(id:, ordinal:) ->
+      advance(consume_protocol_output(Machine(phase:, data:), id, ordinal))
+    phase, ConsumeProtocolReusable(id:) ->
+      advance(consume_protocol_reusable(Machine(phase:, data:), id))
+    phase, DeferProtocolCheckin(id:, checkin:, reply:) ->
+      defer_checkin(Machine(phase:, data:), id, checkin, reply)
+    phase, CancelProtocol(id:) ->
+      case running_with_id(phase, id) {
+        Some(_) -> handle(phase, data, CancelExec)
+        None -> state_machine.keep(data)
+      }
+    Finishing(..) as phase, message ->
+      handle_finishing(Machine(phase:, data:), message)
     Prepared, Begin -> activate(data)
     AwaitingHello, Begin
     | Idle(..), Begin
@@ -1264,7 +1437,10 @@ fn handle(
     // features are carried by the three live states rather than beside
     // them.
     phase, QueryStatus(reply:) -> {
-      process.send(reply, status_of(phase))
+      process.send(reply, case data.reserved_protocol, phase {
+        Some(_), Idle(features:) -> StatusBusy(features)
+        _, _ -> status_of(phase)
+      })
       state_machine.keep(data)
     }
 
@@ -1315,7 +1491,10 @@ fn handle(
       refuse_run(data, reply, HelperBusy)
 
     Idle(features:), Run(request:, window:, events:, reply:) ->
-      handle_run(data, features, request, window, events, reply)
+      case data.reserved_protocol {
+        Some(_) -> refuse_run(data, reply, HelperBusy)
+        None -> handle_run(data, features, request, window, events, reply)
+      }
 
     // Stdin follows the execution rather than the phase: a payload that
     // has been TERMed but has not exited may still be reading.
@@ -1498,8 +1677,12 @@ fn entered(
     Idle(..) ->
       case from {
         AwaitingHello -> arm_heartbeat(data)
-        Prepared | Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
-          state_machine.keep(data)
+        Prepared
+        | Idle(..)
+        | Running(..)
+        | Cancelling(..)
+        | Finishing(..)
+        | Dead(..) -> state_machine.keep(data)
       }
 
     // Nothing left to probe. Cancelling rather than letting the ticks
@@ -1525,7 +1708,7 @@ fn entered(
       state_machine.keep(data)
       |> state_machine.cancel_timeout(name: heartbeat_timer)
 
-    Running(..) -> state_machine.keep(data)
+    Running(..) | Finishing(..) -> state_machine.keep(data)
   }
 }
 
@@ -1578,7 +1761,9 @@ fn status_of(phase: Phase) -> HelperStatus {
   case phase {
     Prepared | AwaitingHello -> StatusStarting
     Idle(features:) -> StatusReady(features:)
-    Running(features:, ..) | Cancelling(features:, ..) -> StatusBusy(features:)
+    Running(features:, ..)
+    | Cancelling(features:, ..)
+    | Finishing(features:, ..) -> StatusBusy(features:)
     Dead(failure:, ..) -> StatusDead(failure:)
   }
 }
@@ -1654,7 +1839,7 @@ fn native_exit(
         Dead(failure, NativeExit(status:, awaited: awaiting)),
         machine.data,
       )
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
+    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) | Finishing(..) -> {
       let awaited = Unprompted(exposure_of(machine.phase))
       let data = notify_death(machine, ChannelClosed(status)) |> run_cleanup
       state_machine.transition(
@@ -1671,7 +1856,7 @@ fn native_exit(
 fn exposure_of(phase: Phase) -> Exposure {
   case phase {
     Prepared | AwaitingHello | Dead(..) -> NoJail
-    Idle(..) -> SettledJail
+    Idle(..) | Finishing(..) -> SettledJail
     Running(..) | Cancelling(..) -> LiveJail
   }
 }
@@ -1816,7 +2001,7 @@ fn handle_run(
 // Whether the process that would receive an execution's events is alive.
 // A subject with no owner, a named subject nobody has registered, has no one
 // to receive them either.
-fn events_owner_alive(events: Subject(ExecEvent)) -> Bool {
+fn events_owner_alive(events: Subject(a)) -> Bool {
   case process.subject_owner(events) {
     Ok(owner) -> process.is_alive(owner)
     Error(Nil) -> False
@@ -1853,6 +2038,14 @@ fn dispatch_exec(
   reply: Subject(Result(Nil, ExecFailure)),
 ) -> state_machine.Next(Phase, Data, Msg) {
   let #(data, id) = fresh_id(data)
+
+  // A consumed finite execution may retain its original late-checkin window.
+  // Starting ordinary work closes that completed association so its controls
+  // cannot attach to the successor and ordinary output follows its own lane.
+  let data = case data.protocol {
+    Some(ProtocolRun(reuse: ReuseConsumed, ..)) -> Data(..data, protocol: None)
+    None | Some(_) -> data
+  }
   let frame =
     framing.Frame(
       id:,
@@ -1868,7 +2061,7 @@ fn dispatch_exec(
   let exec =
     RunningExec(
       id:,
-      events:,
+      events: OrdinaryEvents(events),
       demand: request.demand,
       required: required_layers_for_demand(
         request.policy,
@@ -2160,7 +2353,7 @@ fn handle_bytes(machine: Machine, bytes: BitArray) -> Machine {
 fn apply_inbound(machine: Machine, item: framing.Inbound) -> Machine {
   case machine.phase {
     Prepared | Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) ->
+    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) | Finishing(..) ->
       case item {
         framing.Known(frame:) -> handle_frame(machine, frame)
         framing.UnknownInbound(id:, kind:) ->
@@ -2181,6 +2374,50 @@ fn apply_inbound(machine: Machine, item: framing.Inbound) -> Machine {
 // channel-fatal conditions mark it dead via `mark_dead`.
 fn handle_frame(machine: Machine, frame: Frame) -> Machine {
   case frame.body {
+    framing.ProtocolStart(..)
+    | framing.ProtocolInput(..)
+    | framing.ProtocolOutputConsumed(..) ->
+      mark_dead(machine, ProtocolViolation("protocol_direction"))
+    framing.ProtocolInputAccepted(execution_id:, ordinal:, frame_id:) ->
+      protocol_input_ack(
+        machine,
+        frame.id,
+        execution_id,
+        ordinal,
+        frame_id,
+        None,
+      )
+    framing.ProtocolInputRefused(execution_id:, ordinal:, frame_id:, reason:) ->
+      protocol_input_ack(
+        machine,
+        frame.id,
+        execution_id,
+        ordinal,
+        frame_id,
+        Some(reason),
+      )
+    framing.ProtocolOutput(
+      execution_id:,
+      ordinal:,
+      stream:,
+      data:,
+      bytes:,
+      disposition:,
+    ) ->
+      protocol_output(
+        machine,
+        frame.id,
+        execution_id,
+        ordinal,
+        stream,
+        data,
+        bytes,
+        disposition,
+      )
+    framing.ProtocolReusable(execution_id:) ->
+      protocol_reusable(machine, frame.id, execution_id)
+    framing.ProtocolExit(terminal:, disposition:) ->
+      protocol_terminal(machine, frame.id, terminal, disposition)
     framing.Hello(proto:, peer: _, features:) ->
       handle_hello(machine, proto, features)
     framing.ExecOut(stream:, data:, bytes:, truncated:) ->
@@ -2268,8 +2505,12 @@ fn handle_hello(
         True -> complete_handshake(machine, features)
       }
 
-    Prepared | Idle(..) | Running(..) | Cancelling(..) | Dead(..) ->
-      mark_dead(machine, ProtocolViolation(kind: "hello"))
+    Prepared
+    | Idle(..)
+    | Running(..)
+    | Cancelling(..)
+    | Finishing(..)
+    | Dead(..) -> mark_dead(machine, ProtocolViolation(kind: "hello"))
   }
 }
 
@@ -2293,7 +2534,7 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
         body: framing.Hello(
           proto: framing.exec_protocol_version,
           peer: "broker",
-          features: [],
+          features: [framing.protocol_credit_feature],
         ),
       ),
     )
@@ -2309,7 +2550,7 @@ fn complete_handshake(machine: Machine, features: List(String)) -> Machine {
   // answers it with `features`. Nothing here has to flush a queue.
   case machine.phase {
     Prepared | Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
+    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) | Finishing(..) -> {
       // The features are kept in the data as well as in the phase because a
       // retirement verdict is asked for in `Dead`, where the phase no
       // longer has them and the verdict needs to know about bwrap.
@@ -2327,9 +2568,24 @@ fn handle_exec_out(
   bytes: Int,
   truncated: Bool,
 ) -> Machine {
+  case machine.data.protocol {
+    Some(_) ->
+      mark_dead(machine, ProtocolViolation("ordinary_output_on_protocol"))
+    None -> handle_ordinary_out(machine, id, stream, data, bytes, truncated)
+  }
+}
+
+fn handle_ordinary_out(
+  machine: Machine,
+  id: Int,
+  stream: OutputStream,
+  data: BitArray,
+  bytes: Int,
+  truncated: Bool,
+) -> Machine {
   case running_with_id(machine.phase, id) {
     Some(exec) -> {
-      process.send(
+      send_execution_event(
         exec.events,
         Output(stream:, data:, total_bytes: bytes, truncated:),
       )
@@ -2342,6 +2598,18 @@ fn handle_exec_out(
 }
 
 fn handle_exec_exit(machine: Machine, id: Int, result: ExecResult) -> Machine {
+  case machine.data.protocol {
+    Some(_) ->
+      mark_dead(machine, ProtocolViolation("ordinary_terminal_on_protocol"))
+    None -> handle_ordinary_exit(machine, id, result)
+  }
+}
+
+fn handle_ordinary_exit(
+  machine: Machine,
+  id: Int,
+  result: ExecResult,
+) -> Machine {
   use exec <- settle(machine, id)
 
   // The enforcement report is ground truth: a degraded run against a
@@ -2415,12 +2683,12 @@ fn settle(
     Running(features:, exec:) | Cancelling(features:, exec:) ->
       case exec.id == id {
         True -> {
-          process.send(exec.events, event(exec))
+          send_execution_event(exec.events, event(exec))
           Machine(..machine, phase: Idle(features:))
         }
         False -> machine
       }
-    Prepared | AwaitingHello | Idle(..) | Dead(..) -> machine
+    Prepared | AwaitingHello | Idle(..) | Finishing(..) | Dead(..) -> machine
   }
 }
 
@@ -2433,7 +2701,7 @@ fn running_with_id(phase: Phase, id: Int) -> Option(RunningExec) {
         True -> Some(exec)
         False -> None
       }
-    Prepared | AwaitingHello | Idle(..) | Dead(..) -> None
+    Prepared | AwaitingHello | Idle(..) | Finishing(..) | Dead(..) -> None
   }
 }
 
@@ -2571,7 +2839,7 @@ fn mark_dead(machine: Machine, failure: ExecFailure) -> Machine {
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
     Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
+    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) | Finishing(..) -> {
       let exposure = exposure_of(machine.phase)
       bury(machine, failure, kill_transport(_, exposure))
     }
@@ -2602,7 +2870,7 @@ fn mark_gone(machine: Machine, failure: ExecFailure) -> Machine {
   case machine.phase {
     Prepared -> Machine(Dead(failure, NoNativeResource), machine.data)
     Dead(..) -> machine
-    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) -> {
+    AwaitingHello | Idle(..) | Running(..) | Cancelling(..) | Finishing(..) -> {
       let exposure = exposure_of(machine.phase)
       bury(machine, failure, fn(_) { PendingExit(Unprompted(exposure:)) })
     }
@@ -2643,8 +2911,8 @@ fn die(
 // with `failure`.
 fn notify_death(machine: Machine, failure: ExecFailure) -> Data {
   case machine.phase {
-    Running(exec:, ..) | Cancelling(exec:, ..) ->
-      process.send(exec.events, Failed(failure:))
+    Running(exec:, ..) | Cancelling(exec:, ..) | Finishing(exec:, ..) ->
+      send_execution_event(exec.events, Failed(failure:))
     Prepared | AwaitingHello | Idle(..) | Dead(..) -> Nil
   }
   list.each(machine.data.pending_heartbeats, fn(pending) {
@@ -3900,3 +4168,634 @@ fn helper_ready(helper: Helper) -> Bool {
 // How long an idle helper has to answer a readiness probe before the
 // pool treats it as wedged. See `helper_ready`.
 const ready_probe_ms = 1000
+
+/// Starts one credited execution under its original native deadline.
+/// Returning success identifies submission; input acceptance and reuse arrive separately.
+///
+/// ## Examples
+///
+/// `run_protocol(helper, request, framing.FiniteCollected, clock, deadline, events, 1000)`.
+pub fn run_protocol(
+  helper: Helper,
+  request: ExecRequest,
+  mode: framing.ProtocolMode,
+  clock: clock.Clock,
+  deadline: Int,
+  events: Subject(ProtocolEvent),
+  waiting timeout: Int,
+) -> Result(ProtocolExecution, ProtocolRunFailure) {
+  use id <- result.try(
+    call.try_call(helper.commands, waiting: timeout, sending: ReserveProtocol)
+    |> or_unresponsive
+    |> result.map_error(ProtocolRunRefused),
+  )
+  let execution = ProtocolExecution(helper, id)
+  case
+    call.try_call(helper.commands, waiting: timeout, sending: fn(reply) {
+      RunProtocol(id, request, mode, clock, deadline, events, reply)
+    })
+  {
+    Ok(Ok(_)) -> Ok(execution)
+    Ok(Error(failure)) -> Error(ProtocolRunRefused(failure))
+    Error(call.NoReply) | Error(call.CalleeGone) ->
+      Error(ProtocolRunUnknown(execution, HelperUnresponsive))
+  }
+}
+
+/// Submits one exact bounded input; only ProtocolInputAccepted attests queue admission.
+///
+/// ## Examples
+///
+/// `protocol_input(execution, 1, 2, <<>>, framing.InputEOF, 1000)`.
+pub fn protocol_input(
+  execution: ProtocolExecution,
+  ordinal: Int,
+  frame_id: Int,
+  data: BitArray,
+  end: framing.InputEnd,
+  waiting timeout: Int,
+) -> Result(Nil, ExecFailure) {
+  call.try_call(execution.helper.commands, waiting: timeout, sending: fn(reply) {
+    FeedProtocol(execution.id, ordinal, frame_id, data, end, reply)
+  })
+  |> or_unresponsive
+}
+
+/// Returns one output credit after admission by the final bounded consumer.
+///
+/// ## Examples
+///
+/// `protocol_output_consumed(execution, ordinal)`.
+pub fn protocol_output_consumed(
+  execution: ProtocolExecution,
+  ordinal: Int,
+) -> Nil {
+  process.send(
+    execution.helper.commands,
+    ConsumeProtocolOutput(execution.id, ordinal),
+  )
+}
+
+/// Consumes the matching reusable witness after retaining its command association.
+/// ServerProtocol cannot become reusable through this API.
+///
+/// ## Examples
+///
+/// `protocol_reusable_consumed(execution)` follows committed exact witness readback.
+pub fn protocol_reusable_consumed(execution: ProtocolExecution) -> Nil {
+  process.send(execution.helper.commands, ConsumeProtocolReusable(execution.id))
+}
+
+/// Cancels only the original execution, so a late caller cannot stop a successor.
+///
+/// ## Examples
+///
+/// `cancel_protocol(execution)`.
+pub fn cancel_protocol(execution: ProtocolExecution) -> Nil {
+  process.send(execution.helper.commands, CancelProtocol(execution.id))
+}
+
+/// Holds one original finite checkin until the exact reuse witness is consumed.
+/// A second registration refuses without replacing the first association.
+///
+/// ## Examples
+///
+/// `defer_protocol_checkin(execution, fn() { checkin(pool, helper) }, 1000)`.
+pub fn defer_protocol_checkin(
+  execution: ProtocolExecution,
+  checkin: fn() -> Nil,
+  waiting timeout: Int,
+) -> Result(Nil, ExecFailure) {
+  call.try_call(execution.helper.commands, waiting: timeout, sending: fn(reply) {
+    DeferProtocolCheckin(execution.id, checkin, reply)
+  })
+  |> or_unresponsive
+}
+
+fn handle_protocol_run(
+  machine: Machine,
+  id: Int,
+  request: ExecRequest,
+  mode: framing.ProtocolMode,
+  clock: clock.Clock,
+  deadline: Int,
+  events: Subject(ProtocolEvent),
+  reply: Subject(Result(Int, ExecFailure)),
+) -> state_machine.Next(Phase, Data, Msg) {
+  case machine.phase {
+    Idle(features:) -> {
+      let ready =
+        machine.data.reserved_protocol == Some(id)
+        && list.contains(features, framing.protocol_credit_feature)
+        && protocol_policy_fits(request, mode)
+        && native_wall_fits(request, clock, deadline)
+        && events_owner_alive(events)
+      case ready, request.demand, degraded_features(features) {
+        False, _, _ -> {
+          process.send(reply, Error(NotReady))
+          state_machine.keep(Data(..machine.data, reserved_protocol: None))
+        }
+        True, FullEnforcement, True | True, PlatformEnforcement, True -> {
+          process.send(reply, Error(DegradedHelper(features)))
+          state_machine.keep(Data(..machine.data, reserved_protocol: None))
+        }
+        True, _, _ -> {
+          let data = Data(..machine.data, reserved_protocol: None)
+          let protocol =
+            ProtocolRun(
+              id,
+              mode,
+              events,
+              InputAvailable(1),
+              1,
+              None,
+              0,
+              0,
+              0,
+              ReuseAwaited,
+              None,
+            )
+          let data = Data(..data, protocol: Some(protocol))
+          let exec =
+            RunningExec(
+              id,
+              CreditedEvents(events),
+              request.demand,
+              required_layers_for_demand(
+                request.policy,
+                features,
+                request.demand,
+              ),
+              tolerated_layers_for_demand(
+                request.policy,
+                features,
+                request.demand,
+              ),
+            )
+          process.send(reply, Ok(id))
+          send_or_die(
+            Machine(Running(features, exec), data),
+            framing.Frame(
+              id,
+              framing.ProtocolStart(
+                framing.ProtocolRequest(
+                  request.argv,
+                  request.env,
+                  request.cwd,
+                  request.policy,
+                  request.token,
+                  None,
+                ),
+                mode,
+              ),
+            ),
+          )
+        }
+      }
+    }
+    Dead(failure:, ..) -> {
+      process.send(reply, Error(failure))
+      state_machine.keep(machine.data)
+    }
+    Prepared | AwaitingHello -> {
+      process.send(reply, Error(NotReady))
+      state_machine.keep(machine.data)
+    }
+    Running(..) | Cancelling(..) | Finishing(..) -> {
+      process.send(reply, Error(HelperBusy))
+      state_machine.keep(machine.data)
+    }
+  }
+}
+
+fn handle_protocol_feed(
+  machine: Machine,
+  id: Int,
+  ordinal: Int,
+  frame_id: Int,
+  bytes: BitArray,
+  end: framing.InputEnd,
+  reply: Subject(Result(Nil, ExecFailure)),
+) -> state_machine.Next(Phase, Data, Msg) {
+  case machine.data.protocol, running_with_id(machine.phase, id) {
+    Some(p), Some(_) -> {
+      let finite =
+        p.mode != framing.FiniteCollected
+        || ordinal == 1
+        && bit_array.byte_size(bytes) == 0
+        && end == framing.InputEOF
+      case
+        p.input,
+        p.id == id
+        && frame_id > 0
+        && bit_array.byte_size(bytes) <= 8192
+        && finite
+      {
+        InputAvailable(next), True if next == ordinal -> {
+          let data =
+            Data(
+              ..machine.data,
+              protocol: Some(
+                ProtocolRun(..p, input: InputOffered(ordinal, frame_id, end)),
+              ),
+            )
+          process.send(reply, Ok(Nil))
+          send_or_die(
+            Machine(..machine, data:),
+            framing.Frame(
+              id,
+              framing.ProtocolInput(id, ordinal, frame_id, bytes, end),
+            ),
+          )
+        }
+        _, _ -> {
+          process.send(reply, Error(ProtocolViolation("input_credit")))
+          state_machine.keep(machine.data)
+        }
+      }
+    }
+    _, _ -> {
+      process.send(reply, Error(NotReady))
+      state_machine.keep(machine.data)
+    }
+  }
+}
+
+fn protocol_input_ack(
+  machine: Machine,
+  envelope: Int,
+  id: Int,
+  ordinal: Int,
+  frame_id: Int,
+  refusal: Option(framing.InputRefusal),
+) -> Machine {
+  case machine.data.protocol, running_with_id(machine.phase, id) {
+    Some(p), Some(_) ->
+      case p.input {
+        InputOffered(expected, expected_frame, end)
+          if id == envelope && expected == ordinal && expected_frame == frame_id
+        -> {
+          let input = case refusal, end {
+            None, framing.InputContinues -> InputAvailable(ordinal + 1)
+            None, framing.InputEOF -> InputEnded
+            Some(_), _ -> InputEnded
+          }
+          let event = case refusal {
+            None -> ProtocolInputAccepted(ordinal, frame_id)
+            Some(reason) -> ProtocolInputRefused(ordinal, frame_id, reason)
+          }
+          process.send(p.events, event)
+          Machine(
+            ..machine,
+            data: Data(..machine.data, protocol: Some(ProtocolRun(..p, input:))),
+          )
+        }
+        _ -> mark_dead(machine, ProtocolViolation("input_ack_identity"))
+      }
+    _, _ -> mark_dead(machine, ProtocolViolation("input_ack_execution"))
+  }
+}
+
+fn protocol_output(
+  machine: Machine,
+  envelope: Int,
+  id: Int,
+  ordinal: Int,
+  stream: OutputStream,
+  bytes: BitArray,
+  total: Int,
+  disposition: framing.OutputDisposition,
+) -> Machine {
+  case machine.data.protocol, running_with_id(machine.phase, id) {
+    Some(p), Some(_) -> {
+      let previous = case stream {
+        framing.Stdout -> p.stdout_bytes
+        framing.Stderr -> p.stderr_bytes
+      }
+      case
+        envelope == id
+        && p.id == id
+        && ordinal == p.next_output
+        && p.offered_output == None
+        && total == previous + bit_array.byte_size(bytes)
+      {
+        True -> {
+          process.send(
+            p.events,
+            ProtocolOutput(ordinal, stream, bytes, total, disposition),
+          )
+          let p =
+            ProtocolRun(
+              ..p,
+              next_output: ordinal + 1,
+              offered_output: Some(ordinal),
+              stdout_bytes: case stream {
+                framing.Stdout -> total
+                framing.Stderr -> p.stdout_bytes
+              },
+              stderr_bytes: case stream {
+                framing.Stderr -> total
+                framing.Stdout -> p.stderr_bytes
+              },
+            )
+          Machine(..machine, data: Data(..machine.data, protocol: Some(p)))
+        }
+        False -> mark_dead(machine, ProtocolViolation("output_credit_or_count"))
+      }
+    }
+    _, _ -> mark_dead(machine, ProtocolViolation("output_execution"))
+  }
+}
+
+fn consume_protocol_output(machine: Machine, id: Int, ordinal: Int) -> Machine {
+  case machine.data.protocol, running_with_id(machine.phase, id) {
+    Some(p), Some(_) if p.id == id ->
+      case p.offered_output {
+        Some(expected) if expected == ordinal -> {
+          let data =
+            Data(
+              ..machine.data,
+              protocol: Some(
+                ProtocolRun(..p, offered_output: None, consumed_output: ordinal),
+              ),
+            )
+          send_frame(
+            Machine(..machine, data:),
+            framing.Frame(id, framing.ProtocolOutputConsumed(id, ordinal)),
+          )
+        }
+        _ if ordinal <= p.consumed_output -> machine
+        _ -> mark_dead(machine, ProtocolViolation("output_consumer_identity"))
+      }
+    _, _ -> machine
+  }
+}
+
+fn protocol_terminal(
+  machine: Machine,
+  id: Int,
+  terminal: framing.ProtocolTerminal,
+  disposition: framing.ProtocolDisposition,
+) -> Machine {
+  case
+    machine.data.protocol,
+    machine.phase,
+    framing.protocol_terminal_body(terminal)
+  {
+    Some(p),
+      Running(features:, exec:),
+      framing.ExecExit(
+        code:,
+        signal:,
+        stdout_bytes:,
+        stderr_bytes:,
+        stdout_truncated:,
+        stderr_truncated:,
+        enforcement:,
+        degraded:,
+        wall_ms:,
+        timed_out:,
+        cancelled:,
+      )
+    | Some(p),
+      Cancelling(features:, exec:),
+      framing.ExecExit(
+        code:,
+        signal:,
+        stdout_bytes:,
+        stderr_bytes:,
+        stdout_truncated:,
+        stderr_truncated:,
+        enforcement:,
+        degraded:,
+        wall_ms:,
+        timed_out:,
+        cancelled:,
+      )
+      if p.id == id && exec.id == id
+    -> {
+      let result =
+        ExecResult(
+          code,
+          signal,
+          stdout_bytes,
+          stderr_bytes,
+          stdout_truncated,
+          stderr_truncated,
+          enforcement,
+          degraded,
+          wall_ms,
+          timed_out,
+          cancelled,
+        )
+      let complete =
+        disposition == framing.ProtocolComplete
+        && !stdout_truncated
+        && !stderr_truncated
+        && p.offered_output == None
+        && stdout_bytes == p.stdout_bytes
+        && stderr_bytes == p.stderr_bytes
+      let enforced = case exec.demand {
+        BestEffort -> True
+        FullEnforcement ->
+          !degraded_report(enforcement, degraded, exec.required)
+        PlatformEnforcement ->
+          !platform_degraded_report(
+            enforcement,
+            degraded,
+            exec.required,
+            exec.tolerated,
+          )
+      }
+      case complete, enforced {
+        True, True -> {
+          process.send(p.events, ProtocolTerminal(Ok(result), disposition))
+          Machine(
+            Finishing(features, exec),
+            Data(
+              ..machine.data,
+              protocol: Some(ProtocolRun(..p, input: InputEnded)),
+            ),
+          )
+        }
+        _, _ -> {
+          process.send(
+            p.events,
+            ProtocolTerminal(
+              case enforced {
+                True -> Ok(result)
+                False -> Error(DegradedExecution(result))
+              },
+              framing.ProtocolFailed,
+            ),
+          )
+          mark_dead(
+            Machine(Finishing(features, exec), machine.data),
+            ProtocolViolation("protocol_terminal_failed"),
+          )
+        }
+      }
+    }
+    _, _, _ ->
+      mark_dead(machine, ProtocolViolation("protocol_terminal_identity"))
+  }
+}
+
+fn protocol_reusable(machine: Machine, envelope: Int, id: Int) -> Machine {
+  case machine.phase, machine.data.protocol {
+    Finishing(..), Some(p)
+      if envelope == id
+      && p.id == id
+      && p.mode == framing.FiniteCollected
+      && p.reuse == ReuseAwaited
+    -> {
+      process.send(p.events, ProtocolReusable)
+      Machine(
+        ..machine,
+        data: Data(
+          ..machine.data,
+          protocol: Some(ProtocolRun(..p, reuse: ReuseOffered)),
+        ),
+      )
+    }
+    Dead(..), _ -> machine
+    _, _ -> mark_dead(machine, ProtocolViolation("reusable_identity_or_mode"))
+  }
+}
+
+fn consume_protocol_reusable(machine: Machine, id: Int) -> Machine {
+  case machine.phase, machine.data.protocol {
+    Finishing(features:, ..), Some(p)
+      if p.id == id
+      && p.mode == framing.FiniteCollected
+      && p.reuse == ReuseOffered
+    -> {
+      let machine =
+        Machine(
+          Idle(features),
+          Data(
+            ..machine.data,
+            protocol: Some(ProtocolRun(..p, reuse: ReuseConsumed)),
+          ),
+        )
+      case p.deferred {
+        Some(checkin) -> {
+          checkin()
+          Machine(..machine, data: Data(..machine.data, protocol: None))
+        }
+        None -> machine
+      }
+    }
+    _, _ -> machine
+  }
+}
+
+fn defer_checkin(
+  machine: Machine,
+  id: Int,
+  checkin: fn() -> Nil,
+  reply: Subject(Result(Nil, ExecFailure)),
+) -> state_machine.Next(Phase, Data, Msg) {
+  case machine.data.protocol, machine.phase {
+    Some(p), Idle(..)
+      if p.id == id
+      && p.mode == framing.FiniteCollected
+      && p.reuse == ReuseConsumed
+      && p.deferred == None
+    -> {
+      process.send(reply, Ok(Nil))
+      checkin()
+      state_machine.keep(Data(..machine.data, protocol: None))
+    }
+    Some(p), Running(..)
+    | Some(p), Cancelling(..)
+    | Some(p), Finishing(..)
+      if p.id == id && p.mode == framing.FiniteCollected && p.deferred == None
+    -> {
+      process.send(reply, Ok(Nil))
+      state_machine.keep(
+        Data(
+          ..machine.data,
+          protocol: Some(ProtocolRun(..p, deferred: Some(checkin))),
+        ),
+      )
+    }
+    _, _ -> {
+      process.send(reply, Error(ProtocolViolation("deferred_checkin_identity")))
+      state_machine.keep(machine.data)
+    }
+  }
+}
+
+// Finishing keeps the original borrow busy while ordinary reader and retirement
+// traffic continue. It owns no timeout and cannot manufacture reuse evidence.
+fn handle_finishing(
+  machine: Machine,
+  message: Msg,
+) -> state_machine.Next(Phase, Data, Msg) {
+  case message {
+    FromWire(WireBytes(bytes)) -> advance(handle_bytes(machine, bytes))
+    FromWire(WireClosed(status)) -> native_exit(machine, status)
+    QueryStatus(reply) -> {
+      process.send(reply, status_of(machine.phase))
+      state_machine.keep(machine.data)
+    }
+    AwaitReady(reply) -> {
+      process.send(reply, Ok(machine.data.hello_features))
+      state_machine.keep(machine.data)
+    }
+    AwaitRetirement(_) ->
+      state_machine.keep(machine.data) |> state_machine.postpone
+    Shutdown -> handle_shutdown(machine)
+    Run(reply:, ..) -> refuse_run(machine.data, reply, HelperBusy)
+    Heartbeat(reply) -> send_heartbeat(machine, reply)
+    HeartbeatTick -> handle_heartbeat_tick(machine)
+    _ -> state_machine.keep(machine.data)
+  }
+}
+
+fn send_execution_event(sink: EventSink, event: ExecEvent) -> Nil {
+  case sink, event {
+    OrdinaryEvents(events), event -> process.send(events, event)
+    CreditedEvents(events), Failed(failure) ->
+      process.send(events, ProtocolFailure(failure))
+    CreditedEvents(events), Output(..) | CreditedEvents(events), Exited(..) ->
+      process.send(
+        events,
+        ProtocolFailure(ProtocolViolation("ordinary_event_on_protocol")),
+      )
+  }
+}
+
+/// The original wire execution id, for immutable retained command association.
+///
+/// ## Examples
+///
+/// `protocol_execution_id(original)` never selects the newest execution.
+pub fn protocol_execution_id(execution: ProtocolExecution) -> Int {
+  execution.id
+}
+
+// Credit bounds are opt-in and cannot widen ordinary native admission.
+fn protocol_policy_fits(
+  request: ExecRequest,
+  mode: framing.ProtocolMode,
+) -> Bool {
+  case request.policy {
+    None -> False
+    Some(admitted_policy) -> {
+      let maximum_wall = case mode {
+        framing.ServerProtocol -> 43_200
+        framing.FiniteCollected -> 60
+      }
+      admitted_policy.limits.wall_s > 0
+      && admitted_policy.limits.wall_s <= maximum_wall
+      && admitted_policy.limits.output_bytes > 0
+      && admitted_policy.limits.output_bytes <= 67_108_864
+      && case mode {
+        framing.ServerProtocol -> admitted_policy.network == policy.NetworkOff
+        framing.FiniteCollected -> True
+      }
+    }
+  }
+}

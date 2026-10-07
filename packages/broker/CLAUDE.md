@@ -428,7 +428,7 @@ protocol (spec Part 1.4). WP-G.
   acknowledgement: it cancels and joins its jail, then exits. The BEAM
   drains stdout and retains the port until `exit_status`.
   `envelope_version` (the `v` key) is 1; `exec_protocol_version` (the
-  `hello.proto` value) is 3; `max_frame_bytes` is 16 MiB. **A
+  `hello.proto` value) is 4; `max_frame_bytes` is 16 MiB. **A
   `protocol-change` that adds, removes, or makes-required a key on a
   frame the exec helper sends or receives — or adds a kind to that
   channel — bumps `exec_protocol_version` and the Go
@@ -1180,3 +1180,63 @@ same observer and proof grade.
 The native protocol is unchanged. Each Launch retires one helper and therefore
 pays for one helper restart. This adds no stronger descendant-containment or
 cgroup guarantee. See [exact-helper retirement](../../docs/architecture/launch-native-retirement.md).
+
+
+## Credited helper foundation
+
+Protocol 076's encoding uses body protocol four, envelope one, and negotiated
+`protocol-credit-v1`. `framing.ProtocolMode` fixes `ServerProtocol` versus
+`FiniteCollected`; named `InputEnd`, `OutputDisposition`, `InputRefusal` and
+`ProtocolDisposition` types decode their closed wire vocabulary. Input binds
+original execution id, ordinal and frame id. Output has one shared ordinal
+credit and retains the ordinary cumulative per-stream `bytes` semantics.
+Ordinary frame content and `ExecEvent` remain unchanged. Credited terminal
+reports add `protocol` to `exec_exit` through opaque `ProtocolTerminal`.
+
+`exec.run_protocol` reserves one original id without effects, then submits Run
+under its unchanged native clock/deadline. It returns opaque
+`ProtocolExecution` or `ProtocolRunFailure`: explicit `ProtocolRunRefused`, or
+`ProtocolRunUnknown(original, failure)` after a possibly-started reply was
+lost. Reservation never substitutes a new id after uncertainty. Exact
+`protocol_execution_id` exposes that immutable wire id for retained command
+association. Input submission returns no native acceptance witness;
+`ProtocolInputAccepted` arrives separately after queue admission.
+
+`ProtocolEvent` is separate from ordinary output journals: exact input
+acceptance/refusal, consumed output offers, native/protocol terminal, delivered
+reusable witness, and protocol failure. `protocol_output_consumed` returns
+credit only after final bounded admission. `Finishing` remains `StatusBusy`
+after terminal and after delivered `ProtocolReusable`. Only explicit
+`protocol_reusable_consumed` on that original finite handle enters Idle.
+`defer_protocol_checkin` retains one immutable original callback; a conflicting
+second association refuses. Wrong/missing/late witnesses cannot invoke it, and
+ServerProtocol cannot use this finite transition.
+
+The executor installs two trusted constructors:
+`dispatcher_collected_with_native_deadline` and
+`dispatcher_protocol_retiring_with_native_deadline`. The second requires the
+existing installed `RetirementSeam` and pre-dispatch exact borrowed retirement.
+No cleared request carries a peer role selector. `ProtocolDispatch` preserves
+seq, cleared request, original clock/deadline, consumed event subject and local
+custodian. `start_protocol` returns an opaque exact execution or
+`ProtocolStartFailure`: `ProtocolNotStarted`,
+`ProtocolStartUnknown(original, failure)`, or `ProtocolStartReplyLost` requiring
+reconciliation at its original retained command address.
+
+Protocol feed, consumed output/reuse, cancel and release are serialized through
+the executor owner. Each control compares both its table slot and original
+opaque helper execution, so late controls cannot affect a successor. Finite
+release defers the original checkin until consumed reuse. Server release uses
+`exec.retire_borrowed` and retains the row until the exact original retirement
+callback. Custodian death cancels that original execution; pool closure still
+joins all borrowed helpers. Unknown start retains the original row and borrow
+rather than interpreting timeout as definite absence.
+
+Dedicated controls hold the original owner Down after native exit, and a real
+helper test crosses the production port/codec/pool to exact joined retirement.
+
+The next dependency wave must install the validated ServerLeaseClaim and real
+bounded consumed transport, commit/read back terminal and matching reusable
+under the original native/command association before consuming the witness,
+and retain exact retirement separately. This foundation supplies no owner
+checkout fallback and does not establish registered LSP end-to-end acceptance.
