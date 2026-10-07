@@ -222,7 +222,9 @@ pub fn tool_with_directory(
       <> "a denied command needs a fresh call with those roots. Use "
       <> "`${LOOM_SCRATCH_DIR:-$TMPDIR}` for scratch within one call, not "
       <> "literal `/tmp`; it is deleted when the call ends, so files a later "
-      <> "call needs go in `$TMPDIR`, which persists. "
+      <> "call needs go in `$TMPDIR`, which persists. Set a directory once "
+      <> "with `working_directory`, or pass `cwd`, rather than repeating a "
+      <> "`cd` or a variable prefix on every command. "
       <> "A pipeline that "
       <> "exists to find, filter, or count across files belongs in "
       <> "`code_mode` with `cap/search`, which answers structured.",
