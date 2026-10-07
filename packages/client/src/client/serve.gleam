@@ -61,10 +61,12 @@ import client/blocksummarybook
 import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
+import client/config_edit
 import client/config_reload
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
+import client/daemon/limits as daemon_limits
 import client/directories
 import client/distill
 import client/distillpass
@@ -173,6 +175,7 @@ import tom
 import tools/advise
 import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
+import tools/configuration as configuration_tool
 import tools/history as history_tool
 import tools/remember
 import tools/tool
@@ -1840,6 +1843,17 @@ fn parse_config(
     workspace_config,
     advisor_config,
   ))
+}
+
+// Edit validation covers both resident settings and daemon-owned startup
+// settings without executing configured secret commands or rebuilding services.
+fn validate_config_edit(text: String) -> Result(Nil, String) {
+  use _ <- result.try(parse_config(text))
+  use document <- result.try(
+    tom.parse(text) |> result.map_error(string.inspect),
+  )
+  use _ <- result.try(daemon_limits.from_document(document))
+  Ok(Nil)
 }
 
 // Boot-owned services and resolved credentials do not move during a reload.
@@ -3539,6 +3553,12 @@ fn assemble_in(
   let toolchain =
     codemode_wiring.discover(settings.codemode_seed)
     |> session_toolchain(settings, index_path, memory_store, memory_digest)
+
+  // The lock exists before any jail policy can mask it. An unavailable
+  // editing lock disables only edits, preserving read-only configurations.
+  let selected_configuration =
+    option.map(settings.configuration_source, fn(source) { source.0 })
+  let configuration_ready = config_edit.prepare(selected_configuration)
   let base_policy =
     session_base(settings, index_path, memory_store, memory_digest, toolchain)
 
@@ -4058,6 +4078,24 @@ fn assemble_in(
       field.text(key: "detail", value: warning),
     ])
   })
+  let configuration_door =
+    config_edit.door(selected_configuration, validate_config_edit, fn() {
+      config_reload.refresh_at(models_name)
+    })
+  let validate_configuration = configuration_door.validate
+  let apply_configuration = configuration_door.apply
+  let configuration_door =
+    configuration_tool.Door(
+      ..configuration_door,
+      validate: fn(edit) {
+        use Nil <- result.try(configuration_ready)
+        validate_configuration(edit)
+      },
+      apply: fn(edit) {
+        use Nil <- result.try(configuration_ready)
+        apply_configuration(edit)
+      },
+    )
   use tool_registry <- result.try(
     list.append(
       contributions.with_directory(
@@ -4086,7 +4124,13 @@ fn assemble_in(
       [
         contributions.Contribution(
           contributions.BuiltIn,
-          list.append(skill_tool.tools(skills), peers.tools(peer_wiring)),
+          list.append(
+            [
+              configuration_tool.tool(configuration_door),
+              ..skill_tool.tools(skills)
+            ],
+            peers.tools(peer_wiring),
+          ),
         ),
         // `advise` is registered for the whole session because a registry
         // is per session rather than per strand; `configuration` below
@@ -5977,7 +6021,10 @@ fn protecting_configuration(
 ) -> policy.SandboxPolicy {
   case source {
     None -> base
-    Some(#(path, _)) -> protecting(base, always: [path], where_maskable: [])
+    Some(#(path, _)) ->
+      protecting(base, always: [path], where_maskable: [
+        config_edit.lock_path(path),
+      ])
   }
 }
 

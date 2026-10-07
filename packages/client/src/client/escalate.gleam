@@ -593,7 +593,18 @@ fn decide(config: Config, refused: Refused) -> Decision {
   case borrow(config) {
     Error(Nil) -> Settle
     Ok(runtime) -> {
-      let id = record_id(refused.strand, refused.tool, refused.denial.wanted)
+      // A validated configuration revision is a new human-edit question.
+      // Retries of that revision share their budget; other tools retain the
+      // magnitude-insensitive wanted-grant identity used to bound fatigue.
+      let identity_tool = case refused.tool {
+        "loom_config" ->
+          case tool.required_string(refused.arguments, "digest") {
+            Ok(base) -> refused.tool <> ":" <> base
+            Error(_) -> refused.tool
+          }
+        tool -> tool
+      }
+      let id = record_id(refused.strand, identity_tool, refused.denial.wanted)
       let scope =
         durable.CallScope(
           operation: refused.operation,
