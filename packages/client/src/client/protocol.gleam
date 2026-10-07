@@ -138,6 +138,13 @@ pub type Command {
   /// Requests one ascending bounded history page, not the whole parent tree.
   History(after_seq: Int, before_seq: Int)
 
+  /// Requests one bounded page of a strand's ancestry: the records on the path
+  /// from `from`, an entry's identity, down its parent links, newest first by
+  /// the page's own order and at most one hundred, and nothing another strand
+  /// wrote between them. A client names a strand by its leaf and pages by the
+  /// parent of the oldest record it holds (protocol-change/072).
+  HistoryLineage(from: String)
+
   /// Reads up to eight exact escalation cells, including resolution authors.
   EscalationsGet(ids: List(String))
 
@@ -301,8 +308,38 @@ pub type Command {
   /// and picked up on restart.
   CancelSchedule(target: String, name: String)
 
+  /// Reads everything the session remembers for its own sake: the
+  /// filesystem and network permissions and the exact-action consents an
+  /// approval for the session left behind, each with who approved it and
+  /// when. Answered by a `permissions` snapshot.
+  ///
+  /// Not a read an observer may make. The listing names principals and
+  /// credentials, and it is the page an operator forgets from, so the
+  /// gateway admits it exactly as it admits an approval
+  /// (`protocol-change/073`).
+  PermissionsGet
+
+  /// Forgets remembered permissions, guarded by the sequence the listing
+  /// carried. Answered by the fresh `permissions` snapshot, and refused
+  /// (`code_conflict`) when the sequence moved or the target is already gone,
+  /// in which case nothing was written.
+  PermissionForget(target: ForgetTarget, expected_seq: Option(Int))
+
   /// A well-formed envelope with an unknown command name, kept as data.
   UnknownCommand(cmd: String, body: JsonValue)
+}
+
+/// What a `permission_forget` names.
+pub type ForgetTarget {
+  /// One remembered filesystem or network permission, in the protocol's grant
+  /// vocabulary as the listing carried it.
+  ForgetGrant(grant: Grant)
+
+  /// One remembered exact-action consent, by the identity the listing gave it.
+  ForgetAction(id: String)
+
+  /// Everything the session remembers.
+  ForgetAll
 }
 
 /// One block a `block_summaries` read names.
@@ -386,6 +423,11 @@ pub type Snapshot {
   /// and a successful `schedule_cancel`, so one reply re-renders a
   /// listing after a cancellation rather than two).
   SchedulesSnapshot(schedules: List(ScheduleInfo))
+
+  /// What the session remembers (`client/permissions.board`): the reply to
+  /// both `permissions` and a successful `permission_forget`, so one reply
+  /// redraws the list after a forget.
+  PermissionsSnapshot(board: JsonValue)
 }
 
 /// One schedule as the protocol lists it.
@@ -811,6 +853,10 @@ fn command_body(command: Command) -> #(String, JsonValue) {
         #("before_seq", json.Int(before_seq)),
       ]),
     )
+    HistoryLineage(from:) -> #(
+      "history_lineage",
+      json.Object([#("from", json.String(from))]),
+    )
     Subscribe(session:, from_seq:) -> #(
       "subscribe",
       object_of([
@@ -970,7 +1016,48 @@ fn command_body(command: Command) -> #(String, JsonValue) {
         #("name", json.String(name)),
       ]),
     )
+    PermissionsGet -> #("permissions", json.Object([]))
+    PermissionForget(target:, expected_seq:) -> #(
+      "permission_forget",
+      object_of([
+        #("target", Some(encode_forget_target(target))),
+        #("expected_seq", option.map(expected_seq, json.Int)),
+      ]),
+    )
     UnknownCommand(cmd:, body:) -> #(cmd, body)
+  }
+}
+
+fn encode_forget_target(target: ForgetTarget) -> JsonValue {
+  case target {
+    ForgetGrant(grant:) ->
+      json.Object([
+        #("kind", json.String("grant")),
+        #("grant", encode_grant(grant)),
+      ])
+    ForgetAction(id:) ->
+      json.Object([#("kind", json.String("action")), #("id", json.String(id))])
+    ForgetAll -> json.Object([#("kind", json.String("all"))])
+  }
+}
+
+fn decode_forget_target(value: JsonValue) -> Result(ForgetTarget, String) {
+  use fields <- result.try(body_fields(value))
+  use kind <- result.try(required_string(fields, "kind"))
+  case kind {
+    "grant" -> {
+      use grant <- result.try(case list.key_find(fields, "grant") {
+        Ok(grant) -> decode_grant(grant)
+        Error(Nil) -> Error("a grant is required")
+      })
+      Ok(ForgetGrant(grant:))
+    }
+    "action" -> {
+      use id <- result.try(required_string(fields, "id"))
+      Ok(ForgetAction(id:))
+    }
+    "all" -> Ok(ForgetAll)
+    other -> Error("unknown forget target: " <> other)
   }
 }
 
@@ -1126,6 +1213,11 @@ fn decode_command_body(
       use after_seq <- result.try(nonnegative_field(fields, "after_seq"))
       use before_seq <- result.try(nonnegative_field(fields, "before_seq"))
       Ok(History(after_seq, before_seq))
+    }
+    "history_lineage" -> {
+      use fields <- result.try(body_fields(body))
+      use from <- result.try(required_string(fields, "from"))
+      Ok(HistoryLineage(from:))
     }
     "subscribe" -> {
       use fields <- result.try(body_fields(body))
@@ -1326,6 +1418,16 @@ fn decode_command_body(
       use target <- result.try(required_string(fields, "target"))
       use name <- result.try(required_string(fields, "name"))
       Ok(CancelSchedule(target:, name:))
+    }
+    "permissions" -> Ok(PermissionsGet)
+    "permission_forget" -> {
+      use fields <- result.try(body_fields(body))
+      use target <- result.try(case list.key_find(fields, "target") {
+        Ok(target) -> decode_forget_target(target)
+        Error(Nil) -> Error("a target is required")
+      })
+      use expected_seq <- result.try(optional_int(fields, "expected_seq"))
+      Ok(PermissionForget(target:, expected_seq:))
     }
     other -> Ok(UnknownCommand(cmd: other, body:))
   }
@@ -1602,6 +1704,8 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
         #("mode", json.String("schedules")),
         #("schedules", json.Array(list.map(schedules, encode_schedule_info))),
       ])
+    PermissionsSnapshot(board:) ->
+      json.Object([#("mode", json.String("permissions")), #("board", board)])
   }
 }
 
@@ -2010,7 +2114,7 @@ fn decode_transfer_begin(body) {
   )
   case
     list.contains(
-      ["recent", "catch_up", "history", "escalations", "decided"],
+      ["recent", "catch_up", "history", "lineage", "escalations", "decided"],
       window,
     ),
     list.contains(["owner", "operator", "observer"], role),
@@ -2226,6 +2330,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
         Ok(_) -> Error("schedules must be an array")
       })
       Ok(SnapshotEvent(SchedulesSnapshot(schedules:)))
+    }
+    "permissions" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing permissions board"),
+      )
+      Ok(SnapshotEvent(PermissionsSnapshot(board:)))
     }
     other -> Error("unknown snapshot mode: " <> other)
   }

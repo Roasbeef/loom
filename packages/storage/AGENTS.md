@@ -19,15 +19,24 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 7. Each later version has its own embedded
+- The catalogue is at `user_version` 8. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
-  `catalogue_credential_kinds_schema`, `catalogue_logins_schema`), and
+  `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
+  `catalogue_recent_folders_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
   catalogue runs the same list after `sql_schema`. A version it does not know
   is refused, so a downgrade needs the pre-upgrade catalogue restored.
+- `catalogue.remember_folder`, `recent_folders` and `forget_folder` keep the
+  owner's recent folders (protocol-change/074): a table of workspace paths keyed
+  by an autoincrement sequence, so recency is an order and not a clock. A
+  `Recent` carries that sequence as its `id`, which a page keys its list by and
+  a forget names, and which a repeated remember retires. A
+  remember deletes, inserts and trims to `recent_folder_limit` (10) in one
+  transaction, so a folder appears once, newest first, and the list stays
+  bounded. The table belongs to no session and survives every deletion.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived
@@ -172,11 +181,32 @@ with these forks: they define the same modules.
   every read. This capability creates neither a reader process nor a lease.
   Each function takes a final wait budget in milliseconds, capped at 5,000.
   The shared monitored exchange in `internal/snapshot_call` returns
-  `ReadTimedOut` or `ReaderUnavailable` instead of panicking.
+  `ReadTimedOut` or `ReaderUnavailable` instead of panicking. Only the
+  second proves the actor dead; the first is a deadline, and a late reply
+  lands in the mailbox of the process that made the call, so a long-lived
+  caller makes the exchange from a short-lived weft run (the gateway's
+  transfer capture does). Measured on a 28 MB, 4,727-message real session,
+  `capture` takes 1.5 to 11 ms: the cut reads the maintained `session` row for
+  stats and high-water, index ranges for registers, and one `ix_entry_seq`
+  search for the recent window, so its cost does not grow with history. A
+  timeout therefore means the actor was busy elsewhere, not that capture is slow.
   `KeyPage(namespace, prefix, after, limit)` selects at most 100 ascending
   register headers after an exclusive key cursor, before values are copied.
   Every page is a fresh coherent cut; a removed cursor still names the same
   key boundary, and pagination retains no transaction between calls.
+  `Reader.lineage(from, before_seq, limit, wait)` returns one entry's ancestry
+  as ascending descriptors: `from` and the entries below it down their parent
+  links, below the exclusive high-water `before_seq`, at most `limit` (never
+  over `page_limit`, 100) and at most `lineage_bytes_limit` (2 MiB) of payload
+  past the first record, which is always returned (protocol-change/072). It
+  costs the records it returns and not the distance between them: each step is
+  one primary-key probe of `entries` (`SnapshotEntryHead`, one query per step,
+  since sqlc cannot generate a self-referencing recursive query), so the writes
+  of other strands between a strand's records are never read. `snapshot.lineage`
+  owns the walk and its bounds, and each backend supplies only the step
+  (`snapshot_sqlite.lineage`, `snapshot_memory.lineage`). Every step asks for an
+  entry below the sequence of the one before, so a corrupt parent link ends the
+  walk instead of looping, and an entry the store lacks ends it as a root does.
 - `storage/sql` contains parrot/sqlc-generated catalogue and snapshot queries.
   `storage/sql_schema` embeds catalogue `sql/schema.sql`; `session_schema`
   embeds conversation `sql/session.sql`; `catalogue_names_schema` embeds the

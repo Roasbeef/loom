@@ -65,6 +65,12 @@ pub type Selection {
     before_seq: Int,
   )
 
+  /// The entry a strand's ancestry is read from, without conversation content.
+  LineageFrom(
+    /// Canonical identity of the newest record the read may return.
+    entry: String,
+  )
+
   /// At most eight exact escalation keys, not their actions or grants.
   Decisions(
     /// Distinct exact keys whose resolution may update the approval view.
@@ -196,6 +202,7 @@ fn encode_selection(selection) {
       #("after_seq", json.Int(after)),
       #("before_seq", json.Int(before)),
     ]
+    LineageFrom(entry) -> [#("from", json.String(entry))]
     Cursor(seq) -> [#("from_seq", json.Int(seq))]
     Decisions(ids) -> [#("ids", json.Array(list.map(ids, json.String)))]
     DecidedList -> []
@@ -285,6 +292,10 @@ fn decode_selection(kind, fields) {
       )
       Ok(HistoryRange(after, before))
     }
+    "history_lineage" -> {
+      use entry <- result.try(identity(fields, "from"))
+      Ok(LineageFrom(entry))
+    }
     "escalations_decided" -> Ok(DecidedList)
     "escalations_get" -> {
       use values <- result.try(case list.key_find(fields, "ids") {
@@ -323,6 +334,8 @@ fn decode_selection(kind, fields) {
     | "goal_resume"
     | "schedules"
     | "schedule_cancel"
+    | "permissions"
+    | "permission_forget"
     | "prompt"
     | "prompt_content"
     | "steer"

@@ -70,6 +70,9 @@ pub type Change {
   /// A validated recorded history request owns the subsequent page reply.
   RequestedHistory(before_seq: Int)
 
+  /// A validated recorded lineage request owns the subsequent page reply.
+  RequestedLineage(entry: String)
+
   /// A local replacement failure does not replace the visible attachment.
   Rejected(reason: String)
 }
@@ -187,6 +190,10 @@ fn advance(state: State(socket, recorder), id: attempt.Id, event) {
           _,
           attempt.Request(selection: attempt.HistoryRange(_, before), ..),
         ) -> [RequestedHistory(before), ..changes]
+        attempt.Issued(
+          _,
+          attempt.Request(selection: attempt.LineageFrom(entry), ..),
+        ) -> [RequestedLineage(entry), ..changes]
         _ -> changes
       }
       #(State(..state, current: Some(lane)), changes)

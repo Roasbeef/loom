@@ -12,6 +12,8 @@ fn drawn() -> String {
     choose: fn(_) { Nil },
     submit: fn(_, _, _) { Nil },
     cancel: Nil,
+    elsewhere: Nil,
+    submit_elsewhere: fn(_, _, _) { Nil },
     state: create.Composing("/src/loom"),
   )
   |> create.form("/src/loom")

@@ -281,6 +281,73 @@ pub fn decided_window_carries_metadata_and_no_entries_test() {
     as "no descriptors follow the metadata"
 }
 
+pub fn the_lineage_command_round_trips_and_names_one_entry_test() {
+  let command =
+    protocol.CommandEnvelope(3, protocol.HistoryLineage("0198-entry"))
+  assert protocol.decode_command(protocol.encode_command(command))
+    == Ok(command)
+  let missing =
+    json.to_string(
+      json.Object([
+        #("v", json.Int(2)),
+        #("id", json.Int(3)),
+        #("cmd", json.String("history_lineage")),
+        #("body", json.Object([])),
+      ]),
+    )
+  assert result.is_error(protocol.decode_command(missing))
+}
+
+// A lineage read is one descriptor read from the entry it was asked about and
+// nothing else: the transfer asks the reader for the walk below its own
+// high-water, accepts what comes back once, and then streams the records. It
+// never asks for a second page, because the client pages by naming a parent.
+pub fn a_lineage_transfer_reads_one_walk_and_then_the_records_test() {
+  let #(leaf, _) = ids.mint_entry(ids.generator(clock.fixed(1), 1))
+  let assert Ok(current) =
+    transfer.start(cut([]), json.Object([]), "s:1", transfer.Lineage(leaf), 0)
+    as "a lineage read starts"
+  let assert transfer.Emit(_, next) =
+    transfer.step(current, now: 0, until: 6000)
+    as "metadata precedes the walk"
+  assert transfer.step(next, now: 0, until: 6000)
+    == transfer.ReadLineage(leaf, 101, transfer.reader_maximum_ms)
+  let #(parent, _) = ids.mint_entry(ids.generator(clock.fixed(2), 2))
+  let older = snapshot.Descriptor(parent, 7, 300)
+  let newer = snapshot.Descriptor(leaf, 40, 300)
+
+  // The walk is oldest first, as a page is, so the client's reassembly sees
+  // ascending sequences whichever read produced them.
+  let assert Ok(next) = transfer.accept_lineage(next, [older, newer])
+    as "an ascending walk below the high-water is accepted"
+  let assert transfer.ReadFragment(first, 0, _) =
+    transfer.step(next, now: 0, until: 6000)
+    as "the oldest record is read first"
+  assert first == older
+  assert result.is_error(transfer.accept_lineage(next, [newer, older]))
+  assert result.is_error(
+    transfer.accept_lineage(next, [
+      snapshot.Descriptor(leaf, 101, 300),
+    ]),
+  )
+}
+
+pub fn a_lineage_transfer_that_found_nothing_ends_with_no_cursor_test() {
+  let #(leaf, _) = ids.mint_entry(ids.generator(clock.fixed(1), 1))
+  let assert Ok(current) =
+    transfer.start(cut([]), json.Object([]), "s:1", transfer.Lineage(leaf), 0)
+    as "a lineage read starts"
+  let assert transfer.Emit(_, next) =
+    transfer.step(current, now: 0, until: 6000)
+    as "metadata precedes the walk"
+  let assert Ok(next) = transfer.accept_lineage(next, [])
+    as "an entry the store does not hold is the end of a walk"
+  let assert transfer.End(protocol.SnapshotEnd(body)) =
+    transfer.step(next, now: 0, until: 6000)
+    as "the transfer ends"
+  assert field(body, "more_after") == json.Null
+}
+
 // The integers from `first` to `last`, inclusive.
 fn numbers(first: Int, last: Int) -> List(Int) {
   list.repeat(0, last - first + 1)

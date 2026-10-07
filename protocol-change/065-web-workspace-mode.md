@@ -94,7 +94,9 @@ ui`), so "invite people" to a web UI implies the browser can do both.
 - **A workspace chosen from the ones the owner's listing already shows,
   chosen.** The browser names an index into a list the daemon drew; the
   daemon resolves the path. A new workspace is created from a terminal
-  once.
+  once. *(Amended 2026-10-06: the owner may also type a folder inside their home
+  directory, and the daemon remembers recent ones; see
+  [074](074-web-new-folder-sessions.md).)*
 
 ### The admin page's powers
 

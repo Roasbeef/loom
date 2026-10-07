@@ -64,6 +64,15 @@ page keys and nonces, and the relay into the session's gateway.
   `sessions`, `resume` and `rename` run in the component's process; those
   three start a task and answer as a message, so the runtime never waits on
   the registry for them.
+- **Context breakdown** (protocol-change/075). The `ctx ~41%` figure is a native
+  `<details>` whose body is `view/context_breakdown.panel(state, Actions(refresh,
+  compact))`: headline, basis words, stacked bar (`split`: system prompt, tools,
+  messages, what the provider counted beyond them, reserve, free), the tokens until
+  auto-compact and a closed, bounded item list (`tools`, `kinds`). Everything is a
+  text node over `context_view.State`. Refresh is `component.ContextRefreshRequested`
+  at `component.context_refresh_path`, which the observer's socket admits;
+  Compact now is `component.CompactStrand` (a `Control`, `/compact` through the
+  shared step) and only the operator's page draws it.
 - `component.Msg(socket)`: `Opened`, `Refused`, `TimerArmed`, `Arrived`
   (a batch of up to `arrival_batch` frames, reduced at once), `Ticked`
   (the deadline timer fired), `OlderRequested` (the "Load older" button, a
@@ -86,7 +95,33 @@ page keys and nonces, and the relay into the session's gateway.
   control's region in the Session pane, and only an owner's socket admits a
   click at or beneath it. `component.rename_path` (`0\t3\t2\t4`) is the
   rename control's, the pane's fifth child, admitted the same way and for a
-  submit as well (protocol-change/067).
+  submit as well (protocol-change/067). `component.remembered_path`
+  (`0\t3\t2\t5`) is the operator's list of remembered permissions, the pane's
+  sixth child (protocol-change/073); the operator socket admits clicks beneath
+  it and the observer's admits none.
+- **Allowing for the session, and what it kept** (protocol-change/073).
+  Owner only: `component.may_remember` (the owner's `Standing.reader`) gates the
+  session button, the list, `want_permissions`, `ask_forget` and the click; a
+  member's page offers allow once and deny, and the gateway refuses the same
+  commands from a member.
+  `component.Answer` is `AllowOnce | AllowForSession | Deny`. The card offers
+  `Allow <tool> for this session` after allow once only where
+  `approval.rememberable` holds, and `component.decide` asks again at the click
+  (`operator.decision` refuses a record that is not eligible) and echoes the
+  drawn sequence, digest and grants with `scope: "session"`. The Session pane's
+  list of what the session remembers is `view/remembered`, drawn from
+  `Shared.remembered` (`session_view/remembered.Board`, which the shared step reads
+  with `permissions` and replaces from every `permission_forget` answer) and
+  `web_view/remembered.State`: `asked_at`, the open question `Armed(key, forget)`
+  and the `Login`s the daemon said have ended. A Forget button's message
+  (`operator_page.AskingForget(armed)`) carries the question as the list looked
+  when it was drawn, so the second press (`ConfirmingForget`) sends exactly that
+  and nothing the browser chose. `component.want_permissions` marks the read owed
+  on the operator page's own cadence (`remembered.refresh_ms`, 30 s) and after an
+  approval for the session; `component.judge_logins` asks `Transport.logins`
+  (`None` on an observer's page) which sign-ins the list names have ended, and the
+  answer arrives as `LoginsJudged`. Every path, command, tool, strand and name is a
+  text node, and none is a key, a class or an attribute.
 - **Subtitle and rename.** `sessions.Entry.subtitle` is the first line of the
   session's first prompt, which the daemon derived once. It is a person's own
   prompt, so the sidebar (`session-text` wrapping `session-name` and
@@ -167,7 +202,22 @@ page keys and nonces, and the relay into the session's gateway.
   `Created(answer)` departs (a `creations.Ticketed` path into `departure`) or
   words the refusal (`creations.reason_words`). Only the open form's submit asks,
   and only once. `web_view/creations` holds `Sharing`, `Answer`, `Reason`,
-  `chosen_name` (the one rule for a name) and `folder`. The submit's event is
+  `chosen_name` (the one rule for a name) and `folder`.
+  A folder with no session (protocol-change/074): `Start.create` takes a
+  `creations.Place`, `Drawn(workspace)` or `Typed(path)`, and `Start.folders`
+  (`home.Folders(recent, forget)`, `Some` where `create` is) reads the owner's
+  remembered folders after each list (`FoldersRead`) and forgets one by identity
+  (`Forgetting(id)`). `view/folders` draws the section after the lists: the
+  "New session in another folder" button (`OpeningElsewhere`, state
+  `create.Elsewhere`, then `CreatingElsewhere(path, name, sharing)` and
+  `create.Sending`) and the remembered folders no group shows, keyed by
+  `creations.Recent.id`, each with the usual form (`Choosing`) and "Forget this
+  folder". `create.typed_fields` accepts exactly one `path`, one `name`, at most
+  one `shareable` and nothing else. `creations.typed_path`, `expanded` and `inside`
+  are the pure half of the rule for a typed path; the daemon holds the filesystem
+  half. A path is drawn only as a text node, never an attribute or a key, and a
+  refusal (`NotAFolder`, `OutsideHome`) is fixed words. A refusal's place is
+  `home_table.Elsewhere`, drawn in the section's head. The submit's event is
   beneath `table_path`, a path the owner's socket admits and no other's.
   Every list that answers also starts `Start.activity(ids, deliver)` for the
   running sessions it lists (at most `home.activity_limit`, 24): it returns
@@ -502,8 +552,9 @@ page keys and nonces, and the relay into the session's gateway.
   opened first, and both are cut to the folds `fit` grants.
   The page reads when it wants something, one read at a time (`View.purpose`:
   `Resting | ForOlder | ForLead | ForTail | ForSteps(fold)`), through the history
-  window's scan (`history_view.scan`), which keeps what it reads apart from the
-  window. `begun`, at the end of a projection, starts the first of: `ForTail`,
+  window's scan (`history_view.scan`), which walks the strand's own parent
+  links a page of at most a hundred records at a time (`history_lineage`,
+  protocol-change/072) and keeps what it reads apart from the window. `begun`, at the end of a projection, starts the first of: `ForTail`,
   the strand's newest turns, when the window holds none of the strand's records
   and no turn is closed (`unread_tail`). A gateway's cut is the newest records of
   the whole session, so another strand that wrote past a settled one (the advisor
@@ -511,10 +562,10 @@ page keys and nonces, and the relay into the session's gateway.
   strand: it reads from the leaf, as the turns below the window are read, once
   (a refusal sets `Completion` to `Spent`, and the page then offers Load older,
   whose press reads from the leaf again; a cut that names no leaf is the
-  beginning). A scan stops after eight reads in a row that add nothing
-  (`history_view.scan_floor`, a strand sparse among the session's sequences);
-  `paused` gives it up like a refusal and keeps the sequence it reached in
-  `View.resume`, which the next `ForTail` or `ForOlder` starts below. `ForLead`, the start
+  beginning). Another strand's records between the strand's own cost the walk
+  nothing, so a strand sparse among the session's sequences is read as a dense
+  one is; a read that finds nothing below what the scan holds ends it
+  (`Bottomed`). `ForLead`, the start
   of the turn the window began inside (a page opened on a settled session holds
   only the end of its newest turn, and draws nothing for it until the start is
   read, so the divider's figures are the turn's), `ForSteps`, the newest
@@ -555,7 +606,7 @@ page keys and nonces, and the relay into the session's gateway.
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
   types or plain values. `heading.view(session_id, home, name,
-  workspace, status, tone, context, cost, notice)` draws the top bar (the brand,
+  workspace, status, tone, context, breakdown, cost, notice)` draws the top bar (the brand,
   `home`, the workspace's path with the home directory as `~` and then the name as two
   spans, the status as a `.pill` whose class follows the `Tone`
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
@@ -563,7 +614,7 @@ page keys and nonces, and the relay into the session's gateway.
   were spent and none priced, each as a word and a `span.num`; a figure with no
   value is not drawn, so no `est` for an unpriced model and no `ctx` on the
   primary strand before its first turn), with the ended
-  page's notice as its last child; `component.heading(model, going_home)` reads those
+  page's notice as its last child; `component.heading(model, going_home, context_actions)` reads those
   values from the model, draws `heading.home_link(going_home)` as `home`
   when the transport has the capability, and stays the entry point both pages
   call.
@@ -788,6 +839,19 @@ page keys and nonces, and the relay into the session's gateway.
 - An approval card is headed `<b>strand</b> wants to <approval.wants(tool)>`,
   with the strand from the escalation record's scope
   (`component.raised_on`) and the arming delay drawn as the `Arming…` note.
+- A settled reasoning row shows the summarizer's label as the terminal does
+  (`Reasoning (summarized) · N lines · T`, the label as the preview, the block's
+  own text behind the chevron). `component.pieces` applies the labels from
+  `Shared.summaries` on every read (`session_view/turn_labels.apply`), so a block
+  that streamed with a live label keeps it when it settles and until its stored
+  label arrives, and a sealed turn or an opened fold shows a label that arrives
+  later with nothing re-sealed. `relaned` marks the long reasoning blocks the
+  pieces draw as wanted (`labels_wanted`, `turn_labels.keys`), so blocks that
+  arrived through a lineage read or an opened fold are read like the window's;
+  the shared step's tick sends the `block_summaries` read (at most
+  `block_summary.max_blocks` names, each block asked once per attachment), and
+  `serviced` ticks when one is owed. The lane draws the label only as a text
+  node (`lane.summary_row`).
 - A decided approval is a `turns.Decided` piece: `session_view/decisions`
   reads the approval ledger (`shared.approvals`) and the strands the
   captures saw pending requests raised on (`View.raised`), and
@@ -866,11 +930,11 @@ page keys and nonces, and the relay into the session's gateway.
   it is the heading and one line saying so, so the pane is always drawn and
   the panes after it never move. It reads no worktree: the daemon serves
   worktree bytes to an Owner binding only.
-- `session_tab.view(goal, cost, jobs, viewers, workspace, share, controls, rename)`
+- `session_tab.view(goal, cost, jobs, viewers, workspace, share, controls, rename, remembered)`
   draws the Session pane, the panel's third. Its children are the title, a
-  memoized `div.session-rows` of groups, `share`, `controls` and `rename`, in
-  that order so the three controls' paths never move (`invite_path`,
-  `session_controls_path`, `rename_path`). The groups read Session (the name
+  memoized `div.session-rows` of groups, `share`, `controls`, `rename` and
+  `remembered`, in that order so the controls' paths never move (`invite_path`,
+  `session_controls_path`, `rename_path`, `remembered_path`). The groups read Session (the name
   with its Rename control, then the workspace), People (the viewers, then the
   invitation buttons), Goal (the terminal's own row, `goal_view.row`, or `none`,
   then its buttons), Fork, Jobs and Cost, each under an eyebrow heading and with
@@ -1100,9 +1164,11 @@ page keys and nonces, and the relay into the session's gateway.
   one before is answered: the strand's notes (a first capture, to seed a
   todo board, which the todo panel draws), the session's context (a first
   capture, a configuration change and the end of each operation), the
-  advisor's pending nudges and the goal. Also the `history` read
-  (`session_channel.history`) for at most 100 sequences below the oldest
-  record the page holds. The summary labels' read is not sent.
+  advisor's pending nudges and the goal. Also the strand's lineage read
+  (`session_channel.lineage`, `history_lineage`) for at most 100 of the strand's
+  own records from the parent of the oldest one the page lacks, and, for the
+  history window's own demand, which this host does not make, the terminal's
+  `history` interval read. The summary labels' read is not sent.
 - The page renders `web_client`'s custom elements by tag:
   `<loom-elapsed offset>` in a strand's own view and in the live reasoning row, `<loom-fold>` around a settled
   turn's work, `<loom-expand>` around a step or reasoning row with a body, and `<loom-follow>` around the lane and `<loom-shell>` around the page. The stylesheet pins the
@@ -1185,12 +1251,13 @@ page keys and nonces, and the relay into the session's gateway.
   turn's key, and its lines' memos, as they were (`lane_memo_test`). The
   undrawn end of a turn whose input is older stays in the window so the
   next read goes below it, and counts as cut once it alone no longer fits.
-- **One read at a time.** The history read goes out only when the lane has
-  no request out (`session_channel.history` refuses a busy lane); until
-  then the demand stays `Wanted` and every reduction offers it again. While
-  a read is out the history window is frozen, and the reply, a refusal or
-  the lane's failure is what ends it. The button is offered only while
-  there are sequences below the window to read.
+- **One read at a time.** The lineage read goes out only when the lane has
+  no request out (`session_channel.lineage` refuses a busy lane); until
+  then the demand stays `Owed` and every reduction offers it again. The
+  reply, a refusal or the lane's failure is what ends it. The button is
+  offered only while the strand has turns below the ones the page holds. The
+  lane says it is loading until the first cut has arrived, and says the
+  conversation begins only when a read of the strand found it.
 - **One ordered effect.** The lane's outputs are performed in one
   `effect.from`, never split across `effect.batch`, which does not order.
 - **The page keeps no facts the step recorded for surfaces it lacks.** The

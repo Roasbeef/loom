@@ -94,6 +94,17 @@ fn id(seq: Int) -> ids.EntryId {
   ids.mint_entry(ids.generator(clock.fixed(1000), seq)).0
 }
 
+/// The identity of the record with this sequence, as the lineage read names it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.entry_text(300)
+/// ```
+pub fn entry_text(seq: Int) -> String {
+  ids.entry_id_to_string(id(seq))
+}
+
 fn item(seq: Int, at: Int, body: message.AgentMessage) -> snapshot.Item {
   let parent = case seq {
     1 -> None
@@ -817,83 +828,6 @@ fn long_items(from: Int, to: Int) -> List(snapshot.Item) {
       }
     }
     [item(seq, 10_000 + seq, body), ..items]
-  })
-}
-
-/// A capture of `main` holding the records `from` to `to` of a
-/// conversation whose first turn, a question at 1 and its answer at 2, is
-/// followed by 150 records another strand wrote, 3 to 152, before `main`
-/// goes on at 153 with three-record turns, as in `conversation`. `main`'s
-/// record at 153 names the answer at 2 as its parent, so a read of the
-/// hundred sequences below 153 finds none of `main`'s ancestry.
-///
-/// ## Examples
-///
-/// ```gleam
-/// lane_fixture.gapped(153, 302)
-/// ```
-pub fn gapped(from: Int, to: Int) -> session_channel.Update {
-  capture_of(gapped_items(from, to), None, [], [])
-}
-
-/// The records `from` to `to` of `gapped`'s conversation, as the window of
-/// an older page of history.
-///
-/// ## Examples
-///
-/// ```gleam
-/// lane_fixture.gapped_page(53, 152)
-/// ```
-pub fn gapped_page(from: Int, to: Int) -> snapshot.Window {
-  let items = gapped_items(from, to)
-  snapshot.Window(list.reverse(items), list.length(items) * 100, None)
-}
-
-fn gapped_items(from: Int, to: Int) -> List(snapshot.Item) {
-  int.range(from: to, to: from - 1, with: [], run: fn(items, seq) {
-    let at = 10_000 + seq
-    let made = case seq {
-      1 -> item(1, at, said("question 0", None))
-      2 -> item(2, at, assistant([message.AssistantText("answer 0", None)]))
-
-      // The other strand's records hang off one another, and none of them
-      // is on `main`'s ancestry.
-      _ if seq < 153 ->
-        snapshot.Loaded(
-          entry.MessageEntry(
-            id(seq),
-            Some(id(seq - 1)),
-            seq,
-            at,
-            assistant([message.AssistantText("elsewhere", None)]),
-            False,
-          ),
-          100,
-        )
-      153 ->
-        snapshot.Loaded(
-          entry.MessageEntry(
-            id(153),
-            Some(id(2)),
-            153,
-            at,
-            said("question 1", None),
-            False,
-          ),
-          100,
-        )
-      _ -> {
-        let turn = int.to_string({ seq - 150 } / 3)
-        let body = case { seq - 153 } % 3 {
-          0 -> said("question " <> turn, None)
-          1 -> assistant([message.AssistantText("working on " <> turn, None)])
-          _ ->
-            assistant([message.AssistantText("**answer " <> turn <> "**", None)])
-        }
-        item(seq, at, body)
-      }
-    }
-    [made, ..items]
   })
 }
 
@@ -1814,6 +1748,30 @@ pub fn opened(model: component.Model(socket)) -> component.Model(socket) {
 /// lane_fixture.reading([3, 110])
 /// ```
 pub fn reading(steps: List(Int)) -> List(snapshot.Item) {
+  worked_turns(steps, fn(_) { [] })
+}
+
+/// `reading`, with a long reasoning block (`thought`, of the response's
+/// sequence) opening each step's response, so every step has one block the
+/// summarizer labels, at content index 0.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.thinking([3, 110])
+/// ```
+pub fn thinking(steps: List(Int)) -> List(snapshot.Item) {
+  worked_turns(steps, fn(at) {
+    [message.AssistantThinking(thought(at), None, False)]
+  })
+}
+
+// The turns of `reading`, each response opening with the blocks `opening`
+// gives for its sequence.
+fn worked_turns(
+  steps: List(Int),
+  opening: fn(Int) -> List(message.AssistantBlock),
+) -> List(snapshot.Item) {
   let #(_, _, items) =
     list.fold(steps, #(1, 1, []), fn(acc, count) {
       let #(turn, seq, items) = acc
@@ -1826,15 +1784,17 @@ pub fn reading(steps: List(Int)) -> List(snapshot.Item) {
             item(
               at,
               10_000 + at * 10,
-              assistant([
-                call(
-                  name,
-                  "fs_read",
-                  json.Object([
-                    #("path", json.String("notes/" <> name <> ".txt")),
-                  ]),
-                ),
-              ]),
+              assistant(
+                list.append(opening(at), [
+                  call(
+                    name,
+                    "fs_read",
+                    json.Object([
+                      #("path", json.String("notes/" <> name <> ".txt")),
+                    ]),
+                  ),
+                ]),
+              ),
             ),
             item(
               at + 1,
@@ -2152,7 +2112,28 @@ pub fn served(
   restore: session_channel.Update,
   role: String,
 ) -> #(component.Model(page_fixture.Wire), List(String)) {
-  serving(page, wire, archive, restore, role, 400, [])
+  served_labelled(page, wire, archive, restore, role, [])
+}
+
+/// `served`, with the summarizer's stored labels `labels` (an entry's text,
+/// a content index and the label), which a `block_summaries` read is
+/// answered from: each block it names that the list holds, and nothing for
+/// the others, as the daemon answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.served_labelled(page, wire, archive, capture, "operator", [#(lane_fixture.entry_text(2), 0, "Reads.")])
+/// ```
+pub fn served_labelled(
+  page: component.Model(page_fixture.Wire),
+  wire: page_fixture.Wire,
+  archive: List(snapshot.Item),
+  restore: session_channel.Update,
+  role: String,
+  labels: List(#(String, Int, String)),
+) -> #(component.Model(page_fixture.Wire), List(String)) {
+  serving(page, wire, archive, restore, role, labels, 400, [])
 }
 
 fn serving(
@@ -2161,6 +2142,7 @@ fn serving(
   archive: List(snapshot.Item),
   restore: session_channel.Update,
   role: String,
+  labels: List(#(String, Int, String)),
   rounds: Int,
   written: List(String),
 ) -> #(component.Model(page_fixture.Wire), List(String)) {
@@ -2175,7 +2157,9 @@ fn serving(
       let answered =
         page_fixture.run(page, component.update, [
           component.Arrived(
-            list.flat_map(frames, fn(frame) { answer(frame, archive, role) }),
+            list.flat_map(frames, fn(frame) {
+              answer(frame, archive, role, labels)
+            }),
           ),
         ])
       let page = case
@@ -2192,6 +2176,7 @@ fn serving(
         archive,
         restore,
         role,
+        labels,
         rounds - 1,
         list.append(written, frames),
       )
@@ -2205,13 +2190,57 @@ fn answer(
   frame: String,
   archive: List(snapshot.Item),
   role: String,
+  labels: List(#(String, Int, String)),
 ) -> List(connection_event.Message) {
   let id = page_fixture.request_id(frame)
+  case string.contains(frame, "\"cmd\":\"block_summaries\"") {
+    True -> [page_fixture.block_summaries(id, named(frame, labels))]
+    False -> answered_from(frame, archive, role, id)
+  }
+}
+
+// The labels among `labels` that a `block_summaries` frame names.
+fn named(
+  frame: String,
+  labels: List(#(String, Int, String)),
+) -> List(#(String, Int, String)) {
+  let assert Ok(json.Object(fields)) = json.parse(frame)
+  let assert Ok(json.Object(body)) = list.key_find(fields, "body")
+  let assert Ok(json.Array(blocks)) = list.key_find(body, "blocks")
+  list.filter(labels, fn(label) {
+    list.any(blocks, fn(block) {
+      block
+      == json.Object([
+        #("entry", json.String(label.0)),
+        #("block", json.Int(label.1)),
+      ])
+    })
+  })
+}
+
+fn answered_from(
+  frame: String,
+  archive: List(snapshot.Item),
+  role: String,
+  id: Int,
+) -> List(connection_event.Message) {
   case
+    string.contains(frame, "\"cmd\":\"history_lineage\""),
     string.contains(frame, "\"cmd\":\"history\""),
     string.contains(frame, "\"cmd\":\"catch_up\"")
   {
-    True, _ -> {
+    True, _, _ -> {
+      let assert Ok(json.Object(fields)) = json.parse(frame)
+      let assert Ok(json.Object(body)) = list.key_find(fields, "body")
+      let assert Ok(json.String(from)) = list.key_find(body, "from")
+      page_fixture.lineage(
+        id,
+        role,
+        lineage_of(archive, from),
+        high_water(archive),
+      )
+    }
+    False, True, _ -> {
       let assert Ok(json.Object(fields)) = json.parse(frame)
       let assert Ok(json.Object(body)) = list.key_find(fields, "body")
       let assert Ok(json.Int(after)) = list.key_find(body, "after_seq")
@@ -2227,9 +2256,54 @@ fn answer(
         before,
       )
     }
-    False, True -> page_fixture.catch_up(id, role)
-    False, False -> [page_fixture.refusal(id)]
+    False, False, True -> page_fixture.catch_up(id, role)
+    False, False, False -> [page_fixture.refusal(id)]
   }
+}
+
+// The records a lineage read from the entry `from` returns: that entry and the
+// ones below it down their parent links, at most a hundred and no more than a
+// page's bytes, newest first, as the lane holds a page. An entry the archive
+// does not hold has no records.
+fn lineage_of(archive: List(snapshot.Item), from: String) -> snapshot.Window {
+  let held =
+    dict.from_list(
+      list.map(archive, fn(item) { #(snapshot.identity(item), item) }),
+    )
+  let records = walked(held, Some(from), 100, [])
+  snapshot.Window(records, list.length(records) * 100, None)
+}
+
+fn walked(
+  held: dict.Dict(String, snapshot.Item),
+  next: Option(String),
+  remaining: Int,
+  found: List(snapshot.Item),
+) -> List(snapshot.Item) {
+  case next, remaining {
+    None, _ | _, 0 -> list.reverse(found)
+    Some(id), _ ->
+      case dict.get(held, id) {
+        Error(Nil) -> list.reverse(found)
+        Ok(item) -> {
+          let parent = case item {
+            snapshot.Loaded(entry, _) ->
+              option.map(entry.parent, ids.entry_id_to_string)
+            snapshot.Unloaded(..) -> None
+          }
+          walked(held, parent, remaining - 1, [item, ..found])
+        }
+      }
+  }
+}
+
+// The first sequence the archive has not used, which is what a daemon's capture
+// carries as its high-water.
+fn high_water(archive: List(snapshot.Item)) -> Int {
+  1
+  + list.fold(archive, 0, fn(newest, item) {
+    int.max(newest, snapshot.sequence(item))
+  })
 }
 
 /// A capture of `main` holding one turn that was stopped: a question, one call
@@ -2275,6 +2349,44 @@ pub fn stopped(diagnostic: String) -> session_channel.Update {
   )
 }
 
+/// The records of `turns` turns that each failed: a question (`FAIL t`) and a
+/// response that carries no text and says the provider refused the request, as
+/// the records read after a run that ended in an error. Oldest first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.failing(2)
+/// ```
+pub fn failing(turns: Int) -> List(snapshot.Item) {
+  list.flat_map(counted(turns), fn(turn) {
+    let seq = 2 * turn - 1
+    [
+      item(seq, 10_000 + seq, said("FAIL " <> int.to_string(turn), None)),
+      item(
+        seq + 1,
+        10_000 + seq + 1,
+        message.AssistantMessage(
+          [],
+          "test",
+          "test",
+          "test",
+          None,
+          None,
+          None,
+          usage(),
+          message.Errored,
+          None,
+          Some("provider returned http 400"),
+          None,
+          None,
+          0,
+        ),
+      ),
+    ]
+  })
+}
+
 /// A capture of `main` holding `turns` turns of two records, each a one-line question
 /// and an answer of `size` characters: few rows, many bytes.
 ///
@@ -2303,4 +2415,99 @@ pub fn heavy(turns: Int, size: Int) -> session_channel.Update {
     [],
     [],
   )
+}
+
+/// The reasoning a long block holds: well over the 512 bytes the summarizer
+/// labels, opening with a first line that names `seq`, so a test can tell the
+/// raw row from a labelled one and one block from another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.thought(2)
+/// ```
+pub fn thought(seq: Int) -> String {
+  "Thought "
+  <> int.to_string(seq)
+  <> ": weigh the locking order against the retry path.\n"
+  <> string.repeat("Then compare it with what the second reader sees. ", 14)
+}
+
+/// A capture of `main` whose turns each think before every step. A complete
+/// turn is a question (`question t`), then for each of its `steps` a response
+/// whose first content block is a long reasoning block (`thought`, of the
+/// response's sequence) beside an `fs_read` call, and the call's result, then
+/// an answer (`answer t`); a turn of `n` steps is `2n + 2` records. With
+/// `running` given, a last turn (`question running`) follows the complete ones
+/// with the same steps and no answer, and `main` runs under that operation.
+/// The response of step `s` in the turn that starts at sequence `first` is
+/// `first + 2s - 1`, and its reasoning is content block 0.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.reasoned(2, 1, None)
+/// ```
+pub fn reasoned(
+  complete: Int,
+  steps: Int,
+  running: Option(String),
+) -> session_channel.Update {
+  let per_turn = 2 * steps + 2
+  let done =
+    list.flat_map(counted(complete), fn(turn) {
+      let label = int.to_string(turn)
+      reasoned_turn(label, { turn - 1 } * per_turn + 1, steps, [
+        assistant([message.AssistantText("answer " <> label, None)]),
+      ])
+    })
+  let live = case running {
+    Some(_) -> reasoned_turn("running", complete * per_turn + 1, steps, [])
+    None -> []
+  }
+  capture_of(list.append(done, live), running, [], [])
+}
+
+// One turn: its question, its thinking steps and then `ending`, which is the
+// answer for a complete turn and nothing for the turn still running.
+fn reasoned_turn(
+  label: String,
+  first: Int,
+  steps: Int,
+  ending: List(message.AgentMessage),
+) -> List(snapshot.Item) {
+  let worked =
+    list.flat_map(counted(steps), fn(step) {
+      let seq = first + 2 * step - 1
+      let call_id = "r" <> int.to_string(seq)
+      [
+        item(
+          seq,
+          10_000 + seq,
+          assistant([
+            message.AssistantThinking(thought(seq), None, False),
+            call(
+              call_id,
+              "fs_read",
+              json.Object([#("path", json.String("a.gleam"))]),
+            ),
+          ]),
+        ),
+        item(
+          seq + 1,
+          10_000 + seq + 1,
+          result(call_id, "fs_read", json.Object([]), 10_000 + seq + 1),
+        ),
+      ]
+    })
+  let closing =
+    list.index_map(ending, fn(body, index) {
+      let seq = first + 2 * steps + 1 + index
+      item(seq, 10_000 + seq, body)
+    })
+  list.flatten([
+    [item(first, 10_000 + first, said("question " <> label, None))],
+    worked,
+    closing,
+  ])
 }

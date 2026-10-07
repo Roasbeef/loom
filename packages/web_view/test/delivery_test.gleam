@@ -79,6 +79,7 @@ fn started() -> Page {
       rename: None,
       shareable: None,
       worktree: None,
+      logins: None,
       manage: None,
     )
   let start =

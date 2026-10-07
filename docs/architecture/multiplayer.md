@@ -168,7 +168,7 @@ gateway also pushes four things:
   bound the snapshot preview uses (`broadcast_delta`,
   `client/gateway.gleam:3631`).
 - The presence roster when a peer subscribes and when one departs
-  (`publish_presence`, `client/gateway.gleam:2795`). Every subscribed
+  (`publish_presence`, `client/gateway.gleam:3042`). Every subscribed
   peer is pushed a copy, the newcomer included, and each copy costs one
   authority check for that peer.
   [Protocol-change/054](../../protocol-change/054-roster-push-on-subscribe.md)
@@ -177,7 +177,7 @@ gateway also pushes four things:
   refresh.
 
 Two pieces of wiring in `client/serve` make the pushes reach the shipped
-binary. It starts one `commit_forwarder` (`client/gateway.gleam:1400`) per
+binary. It starts one `commit_forwarder` (`client/gateway.gleam:1452`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
 `tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:4146`), so
@@ -242,8 +242,8 @@ subscribes ([protocol-change/054](../../protocol-change/054-roster-push-on-subsc
 Delivery splits on the envelope, not on the connection (`send_to`,
 `client/gateway.gleam:3539`). A frame with a `reply_to` goes out on that
 command's single bounded reply capability. A frame without one goes out
-through `deliver` (`client/gateway.gleam:3796`). Both paths call
-`check_binding` (`client/gateway.gleam:2625`) immediately before the
+through `deliver` (`client/gateway.gleam:4075`). Both paths call
+`check_binding` (`client/gateway.gleam:2872`) immediately before the
 frame leaves, so every frame that reaches a socket has passed the same
 membership check, and there is no second authority path to keep
 consistent.
@@ -288,7 +288,7 @@ prompt opens the run. The gateway holds the second in a per-strand queue,
 answers it `mutation_outcome {status: "queued"}`, and submits it under its
 own submitter's origin when the run settles (`hold_prompt`,
 `client/gateway.gleam:5042`). The queue is gateway memory and holds four
-prompts per strand (`held_per_strand`, `client/gateway.gleam:976`). A
+prompts per strand (`held_per_strand`, `client/gateway.gleam:1031`). A
 fifth prompt receives the `conflict` reply that every second prompt used
 to receive.
 
@@ -322,8 +322,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:5433`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:2909`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:5736`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:3188`) after `state.live` has
 been refreshed from the registers and before any frame leaves.
 
 Ordinarily the drain submits only the head of the queue. Natural
@@ -375,7 +375,7 @@ absent field as the mark of a push. A frame that does carry `reply_to` is
 still matched against the outstanding request, so a stale or forged
 correlation still fails closed. A push belongs to no request: it consumes
 no credit, allocates no identity, and cannot fail the lane
-(`apply_pushed`, `session_view/session_channel.gleam:841`).
+(`apply_pushed`, `session_view/session_channel.gleam:858`).
 
 ```mermaid
 stateDiagram-v2
@@ -403,20 +403,20 @@ stateDiagram-v2
 
 A notice arriving in `Ready` starts a catch-up at once. A notice arriving
 while a request is in flight sets a one-bit mark, `Refresh.Due`, and
-`send_queued` (`session_view/session_channel.gleam:1681`) starts the catch-up at the
+`send_queued` (`session_view/session_channel.gleam:1774`) starts the catch-up at the
 next transition to `Ready`. That is sooner than the idle refresh in
-`tick` (`session_view/session_channel.gleam:1322`) would have started it. The mark is a
+`tick` (`session_view/session_channel.gleam:1377`) would have started it. The mark is a
 bit rather than a count because a notice carries no state, so any number
 of them mean the same thing: capture when free.
 
 Two cases drop a notice
-(`capture_or_defer`, `session_view/session_channel.gleam:898`): a sequence below the current cut's
+(`capture_or_defer`, `session_view/session_channel.gleam:915`): a sequence below the current cut's
 `next_seq`, which the terminal already holds, and a notice that arrives
 before any cut exists, which the initial transfer will deliver anyway. A
 `Closed` lane drops everything.
 
 Because a notice may correctly do nothing, the lane reports every one it
-reads as `Noticed` (`session_view/session_channel.gleam:200`) before deciding what
+reads as `Noticed` (`session_view/session_channel.gleam:206`) before deciding what
 to do with it, and the model counts those arrivals (`tui/inbound.gleam:303`).
 That count is how the shipped fixture proves that pushes reach a terminal
 without depending on which capture painted the answer.

@@ -58,10 +58,23 @@
 //// answer arrives as `Created`: a ticket departs for the new session through the
 //// same hidden `<loom-switch>` a switch uses, and a refusal is the reason's
 //// fixed words (`creations.reason_words`). While one creation is out the form is
-//// disabled and a second submit asks nothing. The workspace is the catalogue's
-//// text carried by the message the tree was drawn with, never a field the
-//// browser fills, and the daemon checks again that the owner already holds a
-//// session in it.
+//// disabled and a second submit asks nothing. The workspace of that form is the
+//// catalogue's text carried by the message the tree was drawn with, never a
+//// field the browser fills, and the daemon checks again that the owner holds a
+//// session in it or remembers it.
+////
+//// A folder that holds no session is the one place the browser's own text names
+//// a workspace (protocol-change/074). After the lists, a section
+//// (`view/folders`) holds a "New session in another folder" button
+//// (`OpeningElsewhere`) whose form adds a path field to the same name and box.
+//// Submitting it (`CreatingElsewhere`) asks `Start.create` for a `Typed` place,
+//// and the daemon decides whether the text names a usable folder inside the
+//// owner's home directory. The section also lists the folders the daemon
+//// remembers that no group shows, each with the usual form (`Choosing`) and a
+//// "Forget this folder" button (`Forgetting`), through `Start.folders`: it reads
+//// the list after every list read and answers `FoldersRead`, and forgets by the
+//// identity the daemon gave the entry, so a press names an entry that was drawn
+//// and never a path. A typed path is never drawn back, in text or an attribute.
 ////
 //// The owner's fresh home can also stop, archive and delete a session from its
 //// row (`Start.manage`, protocol-change/065's addendum on session actions): Stop
@@ -166,11 +179,13 @@
 ////
 //// A creation is a third, in `Connected` and only on a page with `Start.create`:
 ////
-//// | form | a workspace's button | the form is submitted | the daemon answers | Cancel |
-//// | --- | --- | --- | --- | --- |
-//// | `Idle` | `Composing` that workspace | asks nothing | nothing to answer | stays `Idle` |
-//// | `Composing(w)` | moves to the pressed workspace | asks the daemon if it is `w`'s form, then `Waiting(w)` | nothing to answer | `Idle` |
-//// | `Waiting(w)` | asks nothing | asks nothing | departs and `Idle`, or says why and `Composing(w)`, or `Idle` for a session made and not opened | stays `Waiting(w)` |
+//// | form | a workspace's button | "another folder" | the form is submitted | the daemon answers | Cancel |
+//// | --- | --- | --- | --- | --- | --- |
+//// | `Idle` | `Composing` that workspace | `Elsewhere` | asks nothing | nothing to answer | stays `Idle` |
+//// | `Composing(w)` | moves to the pressed workspace | `Elsewhere` | asks the daemon if it is `w`'s form, then `Waiting(w)` | nothing to answer | `Idle` |
+//// | `Waiting(w)` | asks nothing | asks nothing | asks nothing | departs and `Idle`, or says why and `Composing(w)`, or `Idle` for a session made and not opened | stays `Waiting(w)` |
+//// | `Elsewhere` | `Composing` that workspace | stays `Elsewhere` | asks the daemon for the typed path, then `Sending` | nothing to answer | `Idle` |
+//// | `Sending` | asks nothing | asks nothing | asks nothing | departs and `Idle`, or says why and `Elsewhere`, or `Idle` for a session made and not opened | stays `Sending` |
 
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -197,6 +212,7 @@ import web_view/signins.{type Signin}
 import web_view/view/archiving
 import web_view/view/create.{type Create}
 import web_view/view/ended
+import web_view/view/folders as folders_view
 import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
@@ -240,6 +256,11 @@ pub const signins_path = "0\t2\t2"
 /// handed the capability (`client/daemon/ui_socket.home_admin_accepts`).
 /// `home_test` fails if the view moves it.
 pub const admin_path = "0\t0\t5"
+
+/// The most remembered folders the page keeps from a read. It mirrors
+/// `catalogue.recent_folder_limit`, the catalogue's own bound, which this package
+/// cannot import from `storage`; the two are kept equal by hand.
+pub const recent_limit = 10
 
 /// How long the page's list stands before it is read again, in milliseconds.
 /// The list changes when a session is created, renamed, archived or opened,
@@ -315,8 +336,9 @@ pub type Start {
     /// the daemon could not ask, or that was slow to answer, is left out of the
     /// answer, and its row says nothing about what it is doing.
     activity: fn(List(String), fn(List(#(String, Activity))) -> Nil) -> Nil,
-    /// Asks the daemon to create a session in the named workspace with the
-    /// typed name and sharing, and mint a ticket for its page
+    /// Asks the daemon to create a session in a place (a workspace the page
+    /// drew, or a folder the owner typed, protocol-change/074) with the typed
+    /// name and sharing, and mint a ticket for its page
     /// (protocol-change/065, the fourth pull request). It is `Some` only for the
     /// owner's page minted to operate, and then it is the page's whole offer: a
     /// page with `None` draws no control and ignores every creation message. It
@@ -325,8 +347,13 @@ pub type Start {
     /// page, its ceiling, the principal and the workspace again, whatever this
     /// page said.
     create: Option(
-      fn(String, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
+      fn(creations.Place, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
     ),
+    /// Reads and edits the owner's recent folders (protocol-change/074). It is
+    /// `Some` exactly where `create` is, and a page with `None` lists no folder
+    /// and ignores the messages. The daemon checks the page, its ceiling and the
+    /// owner again whenever either runs, whatever this page said.
+    folders: Option(Folders),
     /// Asks the daemon to rename the named session, for the owner's page that
     /// submitted a row's rename form (protocol-change/067): the daemon checks
     /// that the page is open and was minted to operate, that its credential
@@ -398,6 +425,23 @@ pub type Start {
     /// function it is given, from the daemon's own task, as `NameAnswered`'s
     /// message.
     rename_self: Option(fn(String, fn(names.Answer) -> Nil) -> Nil),
+  )
+}
+
+/// What the daemon lets the owner's page do with its recent folders
+/// (protocol-change/074). Each function returns at once and answers from the
+/// daemon's own task, with the list as it then stands, which arrives as
+/// `FoldersRead`.
+pub type Folders {
+  Folders(
+    /// Starts the read of the remembered folders, newest first, that a session
+    /// may still be started in. It is asked after each list that was not
+    /// `Closed`, so a folder remembered from the terminal or another device
+    /// reaches an open page at its next read.
+    recent: fn(fn(List(creations.Recent)) -> Nil) -> Nil,
+    /// Forgets the entry with this identity and answers the list that remains.
+    /// An identity that is gone changes nothing.
+    forget: fn(Int, fn(List(creations.Recent)) -> Nil) -> Nil,
   )
 }
 
@@ -487,6 +531,9 @@ pub opaque type Model {
     /// workspace, or that workspace's creation out. Only a page with
     /// `Start.create` leaves `Idle`.
     creating: create.State,
+    /// The owner's remembered folders as the last read gave them, newest first.
+    /// The view draws those that no group already shows.
+    recent: List(creations.Recent),
     /// Which row's rename form is open, and where it stands.
     edit: Edit,
     /// Which row is waiting on the owner's second press of Delete or on the
@@ -565,6 +612,28 @@ pub type Msg {
   /// what the browser's event listed (`view/create.fields`). The page asks only
   /// for the form that is open, and only once.
   Creating(workspace: String, name: String, sharing: Sharing)
+
+  /// The "New session in another folder" button was pressed: open its form. A
+  /// page with no `Start.create` ignores it.
+  OpeningElsewhere
+
+  /// The form for another folder was submitted: ask the daemon to create the
+  /// session in the typed path. The path, the name and the sharing are what the
+  /// browser's event listed (`view/create.typed_fields`), and the path is the
+  /// browser's text and nothing else is: the daemon decides whether it names a
+  /// folder the owner may use. The page asks only for the form that is open, and
+  /// only once.
+  CreatingElsewhere(path: String, name: String, sharing: Sharing)
+
+  /// A remembered folder's "Forget this folder" was pressed. The identity is the
+  /// daemon's, fixed when the tree was drawn, so a press names an entry that was
+  /// drawn and never a path.
+  Forgetting(id: Int)
+
+  /// A read of the remembered folders, or the answer to a forget, arrived. It is
+  /// the effect's own message, dispatched from the daemon's task, and no
+  /// handler carries it.
+  FoldersRead(rows: List(creations.Recent))
 
   /// The daemon answered a request to create a session. It is the effect's own
   /// message, dispatched from the daemon's task, and no handler carries it, so
@@ -724,6 +793,7 @@ pub fn new(start: Start) -> Model {
     opening: None,
     resuming: None,
     creating: create.Idle,
+    recent: [],
     edit: NotEditing,
     acting: actions.Calm,
     signins: [],
@@ -855,11 +925,13 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.start.create, model.status, model.creating {
         Some(_), Connected, create.Idle
         | Some(_), Connected, create.Composing(_)
+        | Some(_), Connected, create.Elsewhere
         -> #(
           Model(..model, creating: create.Composing(workspace), note: None),
           effect.none(),
         )
         Some(_), Connected, create.Waiting(_)
+        | Some(_), Connected, create.Sending
         | Some(_), Connecting, _
         | Some(_), Ended(_), _
         | None, _, _
@@ -889,11 +961,71 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Cancelled ->
       case model.creating {
-        create.Composing(_) -> #(
+        create.Composing(_) | create.Elsewhere -> #(
           Model(..model, creating: create.Idle),
           effect.none(),
         )
-        create.Idle | create.Waiting(_) -> #(model, effect.none())
+        create.Idle | create.Waiting(_) | create.Sending -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    // The button opens the form for a typed folder, if the page may create and
+    // no creation is out. It closes a workspace's open form, as another
+    // workspace's button does.
+    OpeningElsewhere ->
+      case model.start.create, model.status, model.creating {
+        Some(_), Connected, create.Idle
+        | Some(_), Connected, create.Composing(_)
+        | Some(_), Connected, create.Elsewhere
+        -> #(
+          Model(..model, creating: create.Elsewhere, note: None),
+          effect.none(),
+        )
+        Some(_), Connected, create.Waiting(_)
+        | Some(_), Connected, create.Sending
+        | Some(_), Connecting, _
+        | Some(_), Ended(_), _
+        | None, _, _
+        -> #(model, effect.none())
+      }
+
+    // The typed folder's submit is honoured only for its form while it is open,
+    // as a workspace's is. The path is the browser's text, so the daemon is
+    // the one that decides what it names.
+    CreatingElsewhere(path:, name:, sharing:) ->
+      case model.start.create, model.status, model.creating {
+        Some(ask), Connected, create.Elsewhere -> #(
+          Model(..model, creating: create.Sending, note: None),
+          creation(ask, creations.Typed(path), name, sharing),
+        )
+        Some(_), _, _ | None, _, _ -> #(model, effect.none())
+      }
+
+    // A forget asks the daemon from its own task, on a page that was handed the
+    // capability and is connected. The identity is one the tree drew.
+    Forgetting(id:) ->
+      case model.start.folders, model.status {
+        Some(Folders(forget:, ..)), Connected -> #(
+          Model(..model, note: None),
+          forgetting(forget, id),
+        )
+        Some(_), Connecting | Some(_), Ended(_) | None, _ -> #(
+          model,
+          effect.none(),
+        )
+      }
+
+    // A read of the remembered folders replaces the page's own, on a page that
+    // lists them.
+    FoldersRead(rows:) ->
+      case model.start.folders {
+        Some(_) -> #(
+          Model(..model, recent: list.take(rows, recent_limit)),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
       }
 
     // A submit asks the daemon from its own task so the runtime stays free. It is
@@ -905,7 +1037,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.start.create, model.status, model.creating {
         Some(ask), Connected, create.Composing(open) if open == workspace -> #(
           Model(..model, creating: create.Waiting(workspace), note: None),
-          creation(ask, workspace, name, sharing),
+          creation(ask, creations.Drawn(workspace), name, sharing),
         )
         Some(_), _, _ | None, _, _ -> #(model, effect.none())
       }
@@ -923,9 +1055,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           Model(
             ..model,
             note: Some(refusal(
-              create.open_for(model.creating)
-                |> option.map(home_table.Workspace)
-                |> option.unwrap(home_table.Page),
+              refused_at(model),
               creations.reason_words(reason),
             )),
             creating: reopened(model.creating, reason),
@@ -1506,13 +1636,40 @@ fn resuming(
 // Starts the daemon's creation task and returns at once; the answer arrives
 // later as `Created`, dispatched from the task's own process.
 fn creation(
-  ask: fn(String, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
-  workspace: String,
+  ask: fn(creations.Place, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
+  place: creations.Place,
   name: String,
   sharing: Sharing,
 ) -> Effect(Msg) {
   use dispatch <- effect.from
-  ask(workspace, name, sharing, fn(answer) { dispatch(Created(answer)) })
+  ask(place, name, sharing, fn(answer) { dispatch(Created(answer)) })
+}
+
+// Starts the daemon's task that forgets one folder and returns at once; the list
+// that remains arrives later as `FoldersRead`, dispatched from the task.
+fn forgetting(
+  forget: fn(Int, fn(List(creations.Recent)) -> Nil) -> Nil,
+  id: Int,
+) -> Effect(Msg) {
+  use dispatch <- effect.from
+  forget(id, fn(rows) { dispatch(FoldersRead(rows)) })
+}
+
+// Where a refused creation's words are drawn: beside the workspace's heading
+// when the form was open under a group the page draws, in the section for
+// folders that hold no session when it was open there or for a typed path, and
+// under the page's heading otherwise.
+fn refused_at(model: Model) -> home_table.Place {
+  case create.open_for(model.creating), model.creating {
+    Some(workspace), _ ->
+      case list.any(model.groups, fn(group) { group.workspace == workspace }) {
+        True -> home_table.Workspace(workspace)
+        False -> home_table.Elsewhere
+      }
+    None, create.Sending | None, create.Elsewhere -> home_table.Elsewhere
+    None, create.Idle | None, create.Composing(_) | None, create.Waiting(_) ->
+      home_table.Page
+  }
 }
 
 // Where the form stands after a refusal: open again under the workspace it was
@@ -1522,7 +1679,9 @@ fn reopened(state: create.State, reason: creations.Reason) -> create.State {
   case state, reason {
     create.Waiting(_), creations.NotOpened -> create.Idle
     create.Waiting(workspace), _ -> create.Composing(workspace)
-    create.Idle, _ | create.Composing(_), _ -> state
+    create.Sending, creations.NotOpened -> create.Idle
+    create.Sending, _ -> create.Elsewhere
+    create.Idle, _ | create.Composing(_), _ | create.Elsewhere, _ -> state
   }
 }
 
@@ -1592,6 +1751,11 @@ fn following(model: Model, listing: Listing) -> Effect(Msg) {
           use dispatch <- effect.from
           model.start.signins(fn(read) { dispatch(SigninsRead(read)) })
           model.start.who(fn(name) { dispatch(NameRead(name)) })
+          case model.start.folders {
+            Some(Folders(recent:, ..)) ->
+              recent(fn(rows) { dispatch(FoldersRead(rows)) })
+            None -> Nil
+          }
         },
         arming(model),
       ])
@@ -1697,6 +1861,7 @@ pub fn view(model: Model) -> Element(Msg) {
         rename_offer(model),
         manage_offer(model),
         create_offer(model),
+        folders_offer(model),
         model.opening,
         model.note,
       ),
@@ -1889,8 +2054,34 @@ fn device_offer(model: Model) -> signins_view.Device(Msg) {
 // `Start.create`, and every other page draws nothing.
 fn create_offer(model: Model) -> Create(Msg) {
   case model.start.create {
-    Some(_) -> create.Offered(Choosing, Creating, Cancelled, model.creating)
+    Some(_) ->
+      create.Offered(
+        Choosing,
+        Creating,
+        Cancelled,
+        OpeningElsewhere,
+        CreatingElsewhere,
+        model.creating,
+      )
     None -> create.Never
+  }
+}
+
+// What the page offers for folders that hold no session: the section on a page
+// that may create, with the remembered folders no group already shows, which are
+// the ones a person could not otherwise reach without typing them again. A page
+// that has read nothing yet draws nothing, so the control does not appear before
+// the page knows its standing.
+fn folders_offer(model: Model) -> folders_view.Folders(Msg) {
+  case model.start.create, model.status {
+    Some(_), Connected ->
+      folders_view.Shown(
+        recent: list.filter(model.recent, fn(entry) {
+          !list.any(model.groups, fn(group) { group.workspace == entry.path })
+        }),
+        forget: Forgetting,
+      )
+    Some(_), Connecting | Some(_), Ended(_) | None, _ -> folders_view.Hidden
   }
 }
 

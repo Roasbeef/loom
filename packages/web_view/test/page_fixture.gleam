@@ -161,6 +161,61 @@ pub fn history(
   replies(id, "history", before, role, [], list.reverse(window.items))
 }
 
+/// The lineage reads among the frames the page wrote since the last look.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.lineage_reads(wire)
+/// ```
+pub fn lineage_reads(wire: Wire) -> List(String) {
+  sent(wire)
+  |> list.filter(fn(frame) {
+    string.contains(frame, "\"cmd\":\"history_lineage\"")
+  })
+}
+
+/// The entry a lineage read starts at, as text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.lineage_from(frame)
+/// ```
+pub fn lineage_from(frame: String) -> String {
+  case json.parse(frame) {
+    Ok(json.Object(fields)) ->
+      case list.key_find(fields, "body") {
+        Ok(json.Object(body)) ->
+          case list.key_find(body, "from") {
+            Ok(json.String(from)) -> from
+            _ -> ""
+          }
+        _ -> ""
+      }
+    _ -> ""
+  }
+}
+
+/// The replies to a `history_lineage` read the lane sent as request `id`,
+/// carrying the records of `window` (newest first, as the lane holds a page) for
+/// an attachment with `role`. `next_seq` is the high-water the daemon captured,
+/// above every record's sequence.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.lineage(4, "operator", window, 301)
+/// ```
+pub fn lineage(
+  id: Int,
+  role: String,
+  window: snapshot.Window,
+  next_seq: Int,
+) -> List(connection_event.Message) {
+  replies(id, "lineage", next_seq, role, [], list.reverse(window.items))
+}
+
 /// The replies to the catch-up the lane sent as request `id`, for an
 /// attachment with `role`: a transfer that brings no record, as the
 /// session `transfer` describes has none.
@@ -433,8 +488,48 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       rename: None,
       shareable: None,
       worktree: None,
+      logins: None,
       manage: None,
     ),
+  )
+}
+
+/// The daemon's answer to the `block_summaries` read the lane sent as
+/// request `id`: the stored labels it found, each an entry's text, a content
+/// index and the label.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.block_summaries(9, [#("0198c0de-0000-7000-8000-000000000006", 0, "Reads.")])
+/// ```
+pub fn block_summaries(
+  id: Int,
+  found: List(#(String, Int, String)),
+) -> connection_event.Message {
+  reply(
+    id,
+    "snapshot",
+    json.Object([
+      #("mode", json.String("block_summaries")),
+      #(
+        "board",
+        json.Object([
+          #(
+            "summaries",
+            json.Array(
+              list.map(found, fn(label) {
+                json.Object([
+                  #("entry", json.String(label.0)),
+                  #("block", json.Int(label.1)),
+                  #("text", json.String(label.2)),
+                ])
+              }),
+            ),
+          ),
+        ]),
+      ),
+    ]),
   )
 }
 

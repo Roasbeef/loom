@@ -15,6 +15,7 @@ import core/message
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 
 fn network_grant() -> policy.Grant {
@@ -270,6 +271,66 @@ pub fn schedules_command_round_trips_test() {
   assert encoded == "{\"v\":2,\"id\":19,\"cmd\":\"schedules\",\"body\":{}}"
   assert protocol.decode_command(encoded)
     == Ok(protocol.CommandEnvelope(id: 19, command: protocol.ListSchedules))
+}
+
+pub fn the_permission_commands_round_trip_test() {
+  let read =
+    protocol.encode_command(protocol.CommandEnvelope(
+      id: 40,
+      command: protocol.PermissionsGet,
+    ))
+  assert read == "{\"v\":2,\"id\":40,\"cmd\":\"permissions\",\"body\":{}}"
+  assert protocol.decode_command(read)
+    == Ok(protocol.CommandEnvelope(id: 40, command: protocol.PermissionsGet))
+  list.each(
+    [
+      protocol.PermissionForget(
+        protocol.ForgetGrant(policy.GrantReadableRoot("/repo")),
+        Some(4),
+      ),
+      protocol.PermissionForget(protocol.ForgetAction("ab12"), Some(9)),
+      protocol.PermissionForget(protocol.ForgetAll, None),
+    ],
+    fn(command) {
+      let encoded =
+        protocol.encode_command(protocol.CommandEnvelope(id: 41, command:))
+      assert protocol.decode_command(encoded)
+        == Ok(protocol.CommandEnvelope(id: 41, command:))
+    },
+  )
+}
+
+pub fn a_forget_must_name_a_known_kind_of_target_test() {
+  assert result.is_error(protocol.decode_command(
+    "{\"v\":2,\"id\":42,\"cmd\":\"permission_forget\",\"body\":{}}",
+  ))
+  assert result.is_error(protocol.decode_command(
+    "{\"v\":2,\"id\":42,\"cmd\":\"permission_forget\",\"body\":{\"target\":{\"kind\":\"everything-else\"}}}",
+  ))
+  assert result.is_error(protocol.decode_command(
+    "{\"v\":2,\"id\":42,\"cmd\":\"permission_forget\",\"body\":{\"target\":{\"kind\":\"all\"},\"expected_seq\":\"one\"}}",
+  ))
+}
+
+pub fn a_permissions_snapshot_round_trips_test() {
+  let event =
+    protocol.SnapshotEvent(
+      protocol.PermissionsSnapshot(
+        board: json.Object([
+          #("seq", json.Int(3)),
+          #("grants", json.Array([])),
+          #("actions", json.Array([])),
+        ]),
+      ),
+    )
+  let encoded =
+    protocol.encode_event(protocol.EventEnvelope(
+      reply_to: Some(5),
+      seq: None,
+      event:,
+    ))
+  assert protocol.decode_event(encoded)
+    == Ok(protocol.EventEnvelope(reply_to: Some(5), seq: None, event:))
 }
 
 pub fn schedule_cancel_round_trips_its_pair_test() {

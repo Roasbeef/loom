@@ -181,6 +181,23 @@ pub fn begin(
   ])
 }
 
+/// Starts the read of one strand's ancestry, which carries no conversation
+/// window of its own and no metadata the lane adopts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot.begin_lineage(body, selected, attachment, 1)
+/// ```
+pub fn begin_lineage(
+  body: json.JsonValue,
+  expected: Expected,
+  previous: Option(Attachment),
+  from_seq: Int,
+) -> Result(Transfer, String) {
+  begin_window(body, expected, previous, empty(), from_seq, ["lineage"])
+}
+
 /// Starts an exact escalation lookup without carrying the conversation window.
 ///
 /// ## Examples
@@ -520,6 +537,20 @@ fn trim(window: Window) {
             Some(sequence(oldest)),
           ))
       }
+  }
+}
+
+/// Returns the entry identity without requiring loaded payload data.
+///
+/// ## Examples
+///
+/// ```gleam
+/// snapshot.identity(snapshot.Unloaded("id", 12, 100)) == "id"
+/// ```
+pub fn identity(item: Item) -> String {
+  case item {
+    Loaded(entry, _) -> ids.entry_id_to_string(entry.id)
+    Unloaded(id, ..) -> id
   }
 }
 

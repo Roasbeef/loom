@@ -286,7 +286,7 @@ tight; the same facts fit on the frame.
 
 Data: context is `context_view.footer`
 (`packages/session_view/src/session_view/context_view.gleam:358`) (`footer`),
-cost is the session's `usage` (`packages/session_view/src/session_view/model.gleam:353`)
+cost is the session's `usage` (`packages/session_view/src/session_view/model.gleam:365`)
 (`usage`), the needs-you count is `strand_card.needing`
 (`packages/session_view/src/session_view/strand_card.gleam:69`) (`needing`),
 and the activity label is `layout.active_status_label`
@@ -583,7 +583,7 @@ New `F` keys wait on a check of what Herdr and common terminals pass through
 | Workspace and strip rows | `Row`, `Line` (section 2) | None |
 | Strand cards, status line | `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:45`) (`status_line`) | None |
 | Gutter hue | `turns.hue` (`packages/session_view/src/session_view/turns.gleam:288`) (`hue`) | None |
-| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1240`) (`divider`), plus a count from the steps' results | None |
+| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1259`) (`divider`), plus a count from the steps' results | None |
 | Sent messages | `agent_messages.observe` | None |
 | Received strand messages | A strand origin on the admitted message | **protocol-change 059** |
 | Peer messages | `PeerOrigin` | None |

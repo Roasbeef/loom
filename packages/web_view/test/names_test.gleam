@@ -54,6 +54,7 @@ fn start(
     rename: None,
     manage: None,
     create: None,
+    folders: None,
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,

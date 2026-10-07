@@ -30,6 +30,10 @@ fn handlers(view: Element(message)) -> List(String) {
   lane_fixture.beyond_dividers(every_handler(view))
 }
 
+fn refresh_click() -> String {
+  component.context_refresh_path <> "\n" <> "click"
+}
+
 fn older_click() -> String {
   component.older_path <> "\n" <> "click"
 }
@@ -158,7 +162,11 @@ pub fn the_marker_controls_add_no_handler_to_either_page_test() {
       element.to_string(component.view(page)),
       "data-loom-focus",
     )
-    let observer = handlers(component.view(page))
+    // The bar's context figure carries one more click, at its own path, once
+    // a board has arrived (`component.context_refresh_path`).
+    let observer =
+      handlers(component.view(page))
+      |> list.filter(fn(key) { key != refresh_click() })
     assert list.length(observer) == 4
     assert list.all(observer, is_chip_click)
 

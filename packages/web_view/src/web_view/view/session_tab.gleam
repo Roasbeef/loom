@@ -45,7 +45,9 @@
 //// the panel never moves. After the rows it has three more children: the
 //// owner's invitation control (`view/share`), or an empty node on a page that
 //// has none, the operator's session controls (`view/controls`), or an empty
-//// node, and the owner's rename control (`view/rename`), or an empty node.
+//// node, the owner's rename control (`view/rename`), or an empty node, and the
+//// operator's list of remembered permissions (`view/remembered`), or an empty
+//// node.
 ////
 //// Job lines, which carry a command excerpt, viewer names and the goal's
 //// objective, are session and principal text: each is drawn as a text node,
@@ -83,12 +85,15 @@ import session_view/session_summary.{
 /// page. It is the pane's fourth child, after the invitation control and not
 /// before it, so that adding it moved no path the socket admits. `rename` is
 /// the owner's rename control (`view/rename`), or `element.none()` on any
-/// other page, and is the pane's fifth and last child for the same reason.
+/// other page, and is the pane's fifth child for the same reason. `remembered`
+/// is the operator's list of what "Allow for this session" kept
+/// (`view/remembered`), or `element.none()` on an observer's page, and is the
+/// pane's sixth and last child, beneath `component.remembered_path`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), element.none(), element.none(), element.none())
+/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn view(
   goal: List(String),
@@ -99,6 +104,7 @@ pub fn view(
   share: Element(message),
   controls: Element(message),
   rename: Element(message),
+  remembered: Element(message),
 ) -> Element(message) {
   html.section(
     [
@@ -112,6 +118,7 @@ pub fn view(
       share,
       controls,
       rename,
+      remembered,
     ],
   )
 }

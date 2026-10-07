@@ -23,6 +23,7 @@ import session_view/attempt
 import session_view/command
 import session_view/connection_event
 import session_view/operator
+import session_view/remembered
 
 /// The clock readings one event is applied at.
 ///
@@ -76,6 +77,11 @@ pub type Command {
   /// Decide the approval `review` as the host showed it, not as the session
   /// state holds it under the same ID now.
   Decide(review: approval.Review, choice: operator.Choice)
+
+  /// Forget remembered permissions, as the host listed them
+  /// (protocol-change/073). It is refused to an attachment that may not
+  /// approve, and the daemon refuses it again to an observer.
+  Forget(forget: remembered.Forget)
 
   /// Switch the active strand to the catalogue model `name`.
   SelectModel(name: String)

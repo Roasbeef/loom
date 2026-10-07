@@ -25,6 +25,9 @@
 //// 5. `seed_subtitle` reduces a first prompt with `subtitle_from_prompt` and
 ////    writes the result once.
 //// 6. `delete` removes a registration and every row that refers to it.
+//// 7. `remember_folder`, `recent_folders` and `forget_folder` keep the short list
+////    of folders the owner recently started a session in, which belongs to no
+////    session and so outlives every one.
 
 import core/ids
 import gleam/dynamic/decode
@@ -40,6 +43,7 @@ import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_logins_schema
 import storage/catalogue_names_schema
+import storage/catalogue_recent_folders_schema
 import storage/catalogue_subtitles_schema
 import storage/sql
 import storage/sql_schema
@@ -217,7 +221,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 7
+pub const current_version = 8
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -230,6 +234,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(5, catalogue_subtitles_schema.schema),
     #(6, catalogue_credential_kinds_schema.schema),
     #(7, catalogue_logins_schema.schema),
+    #(8, catalogue_recent_folders_schema.schema),
   ]
 }
 
@@ -1014,6 +1019,80 @@ pub fn member_page(
     )
     Ok(Page(revision:, records:))
   })
+}
+
+/// The most folders the catalogue remembers. A creation that would make an
+/// eleventh forgets the oldest, so the list a page draws stays short and the
+/// table cannot grow without bound.
+pub const recent_folder_limit = 10
+
+/// Remembers a folder a session was just created in, as the newest.
+///
+/// A folder already remembered moves to the front instead of appearing twice,
+/// and one that falls past `recent_folder_limit` is forgotten. The delete, the
+/// insert and the trim commit together, so a reader never sees the folder
+/// twice or the list over its bound. The text is the daemon's canonical
+/// workspace path; an empty one or one longer than a path may be is refused
+/// rather than stored. Recency is the table's sequence, not a clock, so the
+/// order survives a restart and a clock that moves backward.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.remember_folder(store, "/Users/o/code/app")
+/// ```
+pub fn remember_folder(
+  catalogue: Catalogue,
+  workspace: String,
+) -> Result(Nil, Error) {
+  case workspace != "" && string.byte_size(workspace) <= 4096 {
+    False -> Error(Invalid("recent folder is empty or too long"))
+    True ->
+      transaction(catalogue.connection, fn() {
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.delete_recent_folder(workspace),
+        ))
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.insert_recent_folder(workspace),
+        ))
+        statement(catalogue, sql.trim_recent_folders(recent_folder_limit))
+      })
+  }
+}
+
+/// One remembered folder: its path, and the identity the table gave it when it
+/// was remembered. The identity is the table's sequence, which no later row
+/// reuses, so a page that keys its list by it and a press that names it can only
+/// reach that entry, or nothing once it is gone or remembered again.
+pub type Recent {
+  Recent(id: Int, workspace: String)
+}
+
+/// The remembered folders, newest first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.recent_folders(store)
+/// ```
+pub fn recent_folders(catalogue: Catalogue) -> Result(List(Recent), Error) {
+  query(catalogue, sql.recent_folders())
+  |> result.map(list.map(_, fn(row) { Recent(row.seq, row.workspace) }))
+}
+
+/// Forgets one remembered folder by its identity. An identity that is not
+/// remembered (forgotten already, or remembered again since) is not an error:
+/// the list is what the caller asked for either way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.forget_folder(store, 4)
+/// ```
+pub fn forget_folder(catalogue: Catalogue, id: Int) -> Result(Nil, Error) {
+  statement(catalogue, sql.forget_recent_folder(id))
 }
 
 /// Closes the metadata connection without stopping or opening any session.

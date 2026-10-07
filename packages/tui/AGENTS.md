@@ -748,7 +748,11 @@ boundaries and the split's measurements under Invariants.
   and holds its pane on the original cells until dismissal or resize.
 - `session_channel.HistoryPage` has an independent projection lane; exact
   bounds and attachment identity are checked before presentation. The recorded
-  `attempt.HistoryRange` restores request ownership during replay. Attachment
+  `attempt.HistoryRange` restores request ownership during replay. The terminal
+  pages with this interval read and never sends the strand's lineage read
+  (`LineagePage`, `attempt.LineageFrom`, protocol-change/072), which the web
+  view's scan uses; the terminal's attachment only refuses one that arrives
+  during its initial capture. Attachment
   replacement clears a different session's history; same-session reconnect
   preserves the reading endpoint without reusing mutation authority.
 - User messages have a warm shaded, labelled block. Assistant prose has a

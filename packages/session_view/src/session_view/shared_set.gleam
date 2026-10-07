@@ -544,6 +544,36 @@ pub fn jobs_refresh(
   Shared(..shared, jobs_refresh:)
 }
 
+/// Replaces `Shared.remembered`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.remembered(model.shared, value)
+/// ```
+@internal
+pub fn remembered(
+  shared: Shared(a, b, c, d),
+  remembered,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, remembered:)
+}
+
+/// Replaces `Shared.remembered_refresh`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.remembered_refresh(model.shared, value)
+/// ```
+@internal
+pub fn remembered_refresh(
+  shared: Shared(a, b, c, d),
+  remembered_refresh,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, remembered_refresh:)
+}
+
 /// Replaces `Shared.agent_messages`; the record documents the field.
 ///
 /// ## Examples

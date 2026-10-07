@@ -10,6 +10,14 @@ key distinct from the decision key. Runtime treats grants and the fact payload
 as opaque JSON; client policy validation owns their meaning. The existing
 `approve_escalation_at` remains the one-call door. See protocol 041.
 
+`api.edit_reserved_facts` is the same guard without a decision: a list of
+`ReservedFactEdit` (`ReservedFactSet` of a `ReservedFactChange`, or
+`ReservedFactRemove` of a cell read at a sequence) applied in one transaction,
+each under the sequence its caller observed. A cell that moved loses the whole
+edit as `RaceLost`; nothing is retried, because the caller's read was a
+question put to a person. Every key must be reserved. The remembered-permissions
+forget is its one caller (protocol 073).
+
 
 ## Streamed response handoff
 
@@ -92,8 +100,8 @@ extended by the M3 runtime wave.
   four attempts against a fence that refuses all four would report
   `RaceLost` and name the wrong cause.
 - `runtime/api.{put_reserved_fact, put_reserved_fact_expecting,
-  delete_reserved_fact, delete_reserved_prefix, reserved_facts,
-  reserved_fact_key}` — the
+  delete_reserved_fact, delete_reserved_prefix, edit_reserved_facts,
+  reserved_facts, reserved_fact_key}` — the
   harness-only door to the reserved corners of `fact.custom`, and the
   predicate naming them. Deliberately disjoint from `put_fact`/`facts`,
   which refuse and hide the same keys. `put_reserved_fact_expecting` is

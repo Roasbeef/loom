@@ -25,6 +25,7 @@ import web_view/component
 import web_view/home
 import web_view/image
 import web_view/invites
+import web_view/remembered
 import web_view/sessions
 
 // A page whose transport never opens: what is under test is which
@@ -50,6 +51,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       rename: None,
       shareable: None,
       worktree: None,
+      logins: None,
       manage: None,
     ),
   )
@@ -247,6 +249,32 @@ pub fn an_observer_socket_accepts_the_home_click_at_its_exact_path_test() {
       "{\"kind\":3,\"messages\":["
         <> click_at(component.home_path, "click")
         <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.observer_accepts(frame)
+    },
+  )
+}
+
+// Protocol-change/075: an observer's socket admits a click at the context
+// breakdown's Refresh button and not at its sibling, Compact now, which only
+// the operator's page draws, nor beneath the figure, nor another event.
+pub fn an_observer_socket_accepts_the_context_refresh_click_only_test() {
+  let click_at = fn(path, name) {
+    "{\"kind\":1,\"path\":"
+    <> json.to_string(json.string(path))
+    <> ",\"name\":\""
+    <> name
+    <> "\",\"event\":{}}"
+  }
+  let refresh = component.context_refresh_path
+  assert ui_socket.observer_accepts(click_at(refresh, "click"))
+  list.each(
+    [
+      click_at(refresh, "submit"),
+      click_at(refresh <> "\t0", "click"),
+      click_at(string.drop_end(refresh, 1) <> "1", "click"),
+      click_at("0\t0\t5\t0", "click"),
     ],
     fn(frame) {
       assert !ui_socket.observer_accepts(frame)
@@ -1032,7 +1060,7 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
 // operate, as the rename capability is, and the two are separate: each is given
 // by its own function and neither implies the other.
 pub fn only_an_owners_operating_home_may_create_test() {
-  let ask = fn(_workspace, _name, _sharing, _deliver) { Nil }
+  let ask = fn(_place, _name, _sharing, _deliver) { Nil }
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)
   let assert Some(_) =
@@ -1040,6 +1068,21 @@ pub fn only_an_owners_operating_home_may_create_test() {
   assert ui_socket.home_create_capability(owner, access.Observer, ask) == None
   assert ui_socket.home_create_capability(member, access.Operator, ask) == None
   assert ui_socket.home_create_capability(member, access.Observer, ask) == None
+}
+
+// Only the owner's operating home is handed the recent-folders capability.
+pub fn only_an_owners_operating_home_is_handed_the_folders_capability_test() {
+  let folders = home.Folders(recent: fn(_) { Nil }, forget: fn(_, _) { Nil })
+  let owner = home_principal(access.OwnerPrincipal)
+  let member = home_principal(access.MemberPrincipal)
+  let assert Some(_) =
+    ui_socket.home_folders_capability(owner, access.Operator, folders)
+  assert ui_socket.home_folders_capability(owner, access.Observer, folders)
+    == None
+  assert ui_socket.home_folders_capability(member, access.Operator, folders)
+    == None
+  assert ui_socket.home_folders_capability(member, access.Observer, folders)
+    == None
 }
 
 // The home's capability to stop, archive and delete is the owner's, on a page
@@ -1432,4 +1475,69 @@ pub fn the_sidebars_activity_read_is_an_operators_alone_test() {
     process.send(answers, rows)
   })
   assert process.receive(answers, 2000) == Ok([#("a", sessions.Working)])
+}
+
+// Protocol-change/073: a member operator's socket admits the remembered
+// permissions' Forget buttons as it admits an approval card's, because anyone
+// who may approve may forget. An observer's socket admits none, and its page
+// draws none.
+pub fn the_remembered_list_is_an_operators_and_never_an_observers_test() {
+  let beneath = component.remembered_path <> "\t1\t0\t1\t1\t0"
+  assert ui_socket.operator_accepts(click_on(beneath))
+  assert ui_socket.owner_accepts(click_on(beneath))
+  assert !ui_socket.observer_accepts(click_on(beneath))
+  assert !ui_socket.observer_accepts(click_on(component.remembered_path))
+}
+
+fn signin(fingerprint: String) -> access.Signin {
+  access.Signin(
+    fingerprint:,
+    issued_at_ms: 0,
+    last_resumed_ms: None,
+    expires_at_ms: None,
+    issued_by: None,
+  )
+}
+
+// A login is ended only when the registry answered for its principal and the
+// principal's active list did not hold it; a principal the page may not read,
+// a failed read and a list longer than a page are left out, so the page notes
+// only what the daemon could say.
+pub fn a_login_is_judged_ended_only_when_the_registry_could_say_so_test() {
+  let alice = remembered.Login("alice", "aaaaaaaaaaaaaaaa")
+  let gone = remembered.Login("alice", "bbbbbbbbbbbbbbbb")
+  let bob = remembered.Login("bob", "cccccccccccccccc")
+  let open = fn() { Ok(1) }
+
+  // The page's own principal is read as `None`, another's as `Some`.
+  let signins = fn(target) {
+    case target {
+      None ->
+        Ok(access.SigninPage([signin("aaaaaaaaaaaaaaaa")], access.Exhausted))
+      Some("bob") -> Error(Nil)
+      Some(_) -> Error(Nil)
+    }
+  }
+  assert ui_socket.ended_logins("alice", open, signins, [alice, gone, bob])
+    == [gone]
+
+  // A list that ran past one page proves nothing about a login not on it.
+  let long = fn(_) {
+    Ok(access.SigninPage([signin("aaaaaaaaaaaaaaaa")], access.Remaining))
+  }
+  assert ui_socket.ended_logins("alice", open, long, [alice, gone]) == []
+
+  // A page that has itself ended judges nothing.
+  assert ui_socket.ended_logins("alice", fn() { Error(Nil) }, signins, [gone])
+    == []
+}
+
+// Only the owner's page, the one that draws the list, is handed the means to
+// ask which sign-ins have ended, so a member's or an observer's page holds no
+// way to learn who else signed in.
+pub fn an_observers_page_is_handed_no_way_to_judge_sign_ins_test() {
+  let ask = fn(_logins, _deliver) { Nil }
+  assert ui_socket.logins_capability(ui_socket.Observing, ask) == None
+  assert ui_socket.logins_capability(ui_socket.Operating, ask) == None
+  assert option.is_some(ui_socket.logins_capability(ui_socket.Owning, ask))
 }

@@ -251,6 +251,41 @@
   .session-head .figures{display:flex;flex-wrap:wrap;gap:0 12px;margin-left:auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
   .session-head .figure{white-space:nowrap;}
   .session-head .figure .num{color:var(--color-fg);font:500 12px/1.4 var(--font-mono);}
+  /* The context figure is a native details element: its summary is the
+     `ctx ~41%` words and its body is the breakdown (web_view/view/context_breakdown).
+     The panel is fixed under the bar at the right edge, so the bar's own
+     wrapping and the columns' clipping cannot cut it, and it is at most the
+     viewport's width less a gutter. It has a hairline border and no shadow. The
+     browser opens and closes it, so the server never renders for that. */
+  .session-head details.ctx > summary{cursor:pointer;list-style:none;border-radius:4px;}
+  .session-head details.ctx > summary::-webkit-details-marker{display:none;}
+  .session-head details.ctx > summary:hover{color:var(--color-fg);}
+  .session-head details.ctx > summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .ctx-panel{position:fixed;z-index:40;top:48px;right:12px;box-sizing:border-box;width:min(420px,calc(100vw - 24px));max-height:calc(100dvh - 60px);overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);color:var(--color-fg);font:13px/1.45 var(--font-sans);white-space:normal;}
+  .ctx-actions{display:flex;justify-content:flex-end;gap:8px;margin:0 0 8px 0;}
+  .ctx-button{margin:0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg);font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .ctx-button:hover{background:var(--color-bg-sunk);}
+  .ctx-button:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .ctx-headline{margin:0 0 4px 0;font:600 13px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
+  .ctx-note{margin:4px 0 8px 0;color:var(--color-fg-quiet);font:12px/1.45 var(--font-sans);}
+  .ctx-until{margin:8px 0 0 0;color:var(--color-fg);font:13px/1.45 var(--font-sans);}
+  .ctx-bar{display:flex;height:10px;margin:8px 0 10px 0;overflow:hidden;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);}
+  .ctx-segment{flex:0 0 auto;display:block;height:100%;}
+  .ctx-system{background:var(--color-strand-4);}
+  .ctx-tools{background:var(--color-strand-2);}
+  .ctx-messages{background:var(--color-current);}
+  .ctx-other{background:var(--color-fg-faint);}
+  .ctx-reserve{background:var(--color-signal);}
+  .ctx-free{background:var(--color-bg-sunk);}
+  ul.ctx-legend,ul.ctx-list{list-style:none;margin:0;padding:0;}
+  .ctx-legend .ctx-row{display:grid;grid-template-columns:12px minmax(0,1fr) auto 3.5em;align-items:center;gap:0 8px;padding:2px 0;}
+  .ctx-list .ctx-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 8px;padding:1px 0;}
+  .ctx-swatch{display:block;width:10px;height:10px;border:1px solid var(--color-divider);border-radius:2px;}
+  .ctx-name{min-width:0;overflow-wrap:anywhere;}
+  .ctx-tokens,.ctx-percent{color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);font-variant-numeric:tabular-nums;text-align:right;}
+  .ctx-items{margin:6px 0 8px 0;}
+  .ctx-items > summary{cursor:pointer;color:var(--color-current);font:12px/1.4 var(--font-sans);}
+  .ctx-group h3{margin:8px 0 2px 0;color:var(--color-fg-quiet);font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;}
   /* The shell's own tree (web_client/shell), drawn in its shadow root: the
      bar with its two buttons, and under it a row of the sidebar's column, the
      centre and the panel's column. A column is a fixed-width wrapper around
@@ -503,10 +538,16 @@
   button.home-new{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
   button.home-new:hover:not(:disabled){background:var(--color-bg-raised);}
   button.home-new:disabled{opacity:.5;cursor:default;}
+  li.home-folder{padding:8px 0;border-bottom:1px solid var(--color-divider);}
+  .home-folder .home-group-head{margin:0;}
+  .home-folder-name{flex:0 0 auto;color:var(--color-fg);font:500 13px/1.4 var(--font-sans);}
+  .home-folder-path{flex:1 1 auto;min-width:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  button.home-forget{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;}
+  button.home-forget:hover{background:var(--color-bg-raised);}
   form.home-create{display:flex;flex-direction:column;gap:10px;margin:0 0 12px 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
-  .home-create-name{width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:14px/1.5 var(--font-sans);}
-  .home-create-name:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
-  .home-create-name:disabled{opacity:.6;}
+  .home-create-name,.home-create-path{width:100%;box-sizing:border-box;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:14px/1.5 var(--font-sans);}
+  .home-create-name:focus-visible,.home-create-path:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
+  .home-create-name:disabled,.home-create-path:disabled{opacity:.6;}
   label.home-create-share{display:flex;align-items:flex-start;gap:8px;cursor:pointer;}
   label.home-create-share input{flex:0 0 auto;margin:3px 0 0 0;}
   .home-create-share-text{display:flex;flex-direction:column;gap:1px;min-width:0;}
@@ -1174,6 +1215,17 @@
   .session-workspace{color:var(--color-fg-quiet);font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   ul.session-jobs,ul.session-viewers{list-style:none;padding:0;}
   .session-quiet{color:var(--color-fg-quiet);}
+  /* The operator's list of remembered permissions, the Session pane's last
+     child (web_view/view/remembered). It is placed after the Cost group; its
+     question is the make-shareable question's tinted block, so only the rows
+     are styled here. */
+  .pane-session > section.remembered{order:10;margin:14px 0 0 0;padding:0;border-top:0;font-size:13px;}
+  ul.remembered-list{list-style:none;margin:0 0 8px 0;padding:0;}
+  li.remembered-row{margin:0 0 10px 0;}
+  li.remembered-row p{margin:0;}
+  .remembered-what{font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
+  .remembered-ended{color:var(--color-danger-text);}
+  button.remembered-forget{font-size:12px;}
   /* The owner's invitation control at the foot of the Session pane
      (web_view/view/share). The command and the claim token are drawn by
      <loom-copy>, whose shadow root adopts this sheet, so its code box and

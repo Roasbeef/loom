@@ -101,10 +101,11 @@ pub fn timed_out_reads_remain_queued_and_late_replies_are_isolated_test() {
     let assert True = resume_process(fixture.pid)
       as "release the original actor"
 
-    // Reading again is deliberately test-only: it demonstrates that timeout
-    // did not cancel actor work. Production must retire this gateway instead.
-    // This page's reply differs from the queued capture and missing fragment,
-    // so a late reply cannot silently satisfy the new exchange.
+    // Reading again demonstrates that timeout did not cancel actor work, and
+    // that it did not make the reader unusable. This page's reply differs
+    // from the queued capture and missing fragment, so a late reply cannot
+    // silently satisfy the new exchange. A caller that does not want the late
+    // replies in its own mailbox asks from a process that exits first.
     let later = fixture.reader.page(0, 2, 1, 1000)
     let late_replies = mailbox_length(process.self())
     let closed = fixture.close()
@@ -140,6 +141,8 @@ pub fn dead_reader_returns_total_unavailable_for_every_operation_test() {
     assert fixture.reader.capture(snapshot.Plan([], [], 0), 1000)
       == Error(snapshot.ReaderUnavailable)
     assert fixture.reader.page(0, 2, 1, 1000)
+      == Error(snapshot.ReaderUnavailable)
+    assert fixture.reader.lineage(entry.id, 2, 1, 1000)
       == Error(snapshot.ReaderUnavailable)
     assert fixture.reader.fragment(snapshot.Descriptor(entry.id, 1, 1), 0, 1000)
       == Error(snapshot.ReaderUnavailable)
@@ -821,6 +824,7 @@ pub fn conversation_schema_and_generated_queries_match_sources_test() {
     sql.snapshot_entry_page(Some(0), Some(1), 1).0,
     sql.snapshot_recent_entries(Some(1), 1).0,
     sql.snapshot_entry_fragment(0, 1, "", Some(1), 1).0,
+    sql.snapshot_entry_head("", Some(1)).0,
   ]
   assert normalized_sql(source) == normalized_sql(string.join(generated, "\n"))
 }
@@ -874,6 +878,7 @@ fn normalized_sql(source: String) -> String {
         "page_size",
         "offset",
         "fragment_size",
+        "entry_id",
         "id",
         "payload_bytes",
       ],
@@ -1049,6 +1054,48 @@ pub fn sqlite_key_pages_use_an_indexed_bounded_window_test() {
   assert sqlight.close(conn) == Ok(Nil)
 }
 
+// A capture reads its statistics from the maintained session row and its
+// recent window from one index search, so its cost does not grow with the
+// length of the history. Measured on a real 28 MB session of 4,727 messages
+// and 35,840 sequence numbers it took 1.5 to 11 ms, which means a capture that
+// exceeds its five-second wait was queued behind other work in the actor, not
+// slow in itself. These plans are what keeps that true.
+pub fn capture_cost_does_not_grow_with_history_test() {
+  let assert Ok(conn) = sqlight.open(path("capture-plan"))
+    as "query-plan fixture opens"
+  assert sqlight.exec(session_schema.schema, on: conn) == Ok(Nil)
+  let explain = fn(statement: String, params) {
+    let assert Ok(plan) =
+      sqlight.query(
+        "EXPLAIN QUERY PLAN " <> statement,
+        on: conn,
+        with: params,
+        expecting: decode.at([3], decode.string),
+      )
+      as "SQLite explains the capture query"
+    plan
+  }
+
+  // The statistics are one stored row. Nothing in them aggregates entries.
+  let summary = explain(sql.snapshot_session().0, [])
+  assert list.any(summary, string.contains(_, "SCAN session"))
+  assert !list.any(summary, string.contains(_, "entries"))
+  assert !list.any(summary, string.contains(_, "usage_ledger"))
+
+  // The recent window is a descending range over the sequence index, with no
+  // sort and no scan of the entry table.
+  let recent =
+    explain(sql.snapshot_recent_entries(Some(1), 1).0, [
+      sqlight.int(1),
+      sqlight.int(1),
+    ])
+  assert list.any(recent, string.contains(_, "SEARCH entries"))
+  assert list.any(recent, string.contains(_, "ix_entry_seq"))
+  assert !list.any(recent, string.contains(_, "SCAN entries"))
+  assert !list.any(recent, string.contains(_, "TEMP B-TREE"))
+  assert sqlight.close(conn) == Ok(Nil)
+}
+
 pub fn reference_expansion_spends_the_same_metadata_budget_test() {
   list.each([Memory, Sqlite], fn(backend) {
     let fixture = open(backend, "reference-budget")
@@ -1134,4 +1181,125 @@ pub fn metadata_byte_limit_includes_keys_and_reference_payloads_test() {
       == Error(snapshot.MetadataTooLarge)
     assert fixture.close() == Ok(Nil)
   })
+}
+
+// Two strands write alternately, so neither one's records are adjacent in the
+// sequence. Each record names the one before it on its own strand.
+fn interleaved(count: Int) -> #(List(entry.Entry), List(entry.Entry)) {
+  let #(_, _, left, right) =
+    list.fold(
+      range(1, count),
+      #(fixtures.new_ctx(), #(None, None), [], []),
+      fn(acc, n) {
+        let #(ctx, #(left_leaf, right_leaf), left, right) = acc
+        let #(a, ctx) =
+          fixtures.message_entry(ctx, left_leaf, "left " <> int.to_string(n))
+        let #(b, ctx) =
+          fixtures.message_entry(ctx, right_leaf, "right " <> int.to_string(n))
+        #(ctx, #(Some(a.id), Some(b.id)), [a, ..left], [b, ..right])
+      },
+    )
+  #(list.reverse(left), list.reverse(right))
+}
+
+pub fn a_lineage_read_returns_one_strands_records_only_test() {
+  list.each([Memory, Sqlite], fn(backend) {
+    let fixture = open(backend, "lineage")
+    let #(left, right) = interleaved(150)
+    let _committed =
+      write(
+        fixture,
+        list.flat_map(list.zip(left, right), fn(pair) {
+          [tx.InsertEntry(pair.0), tx.InsertEntry(pair.1)]
+        }),
+      )
+    let assert Ok(cut) = fixture.reader.capture(snapshot.Plan([], [], 0), 1000)
+    assert cut.next_seq == 301
+    let assert Ok(leaf) = list.last(left)
+
+    // The newest page is the newest hundred of the strand, oldest first, and
+    // none of the other strand's records, though they sit between them.
+    let assert Ok(page) =
+      fixture.reader.lineage(leaf.id, cut.next_seq, 100, 1000)
+    assert list.length(page) == 100
+    let left_ids = list.map(left, fn(held) { held.id })
+    assert list.all(page, fn(item) { list.contains(left_ids, item.id) })
+    assert list.map(page, fn(item) { item.seq })
+      == list.map(range(51, 150), fn(n) { 2 * n - 1 })
+
+    // The next page starts at the parent of the oldest record held, and the
+    // two pages are the strand's whole ancestry with no record twice.
+    let assert Ok(oldest) = list.first(page)
+    let assert Ok(held) = list.find(left, fn(held) { held.id == oldest.id })
+    let assert entry.MessageEntry(parent: Some(next), ..) = held
+    let assert Ok(rest) = fixture.reader.lineage(next, cut.next_seq, 100, 1000)
+    assert list.map(rest, fn(item) { item.seq })
+      == list.map(range(1, 50), fn(n) { 2 * n - 1 })
+
+    // The high-water bounds a page: an entry at or above it is not read, and a
+    // walk from one below it stops at the same place.
+    assert fixture.reader.lineage(leaf.id, 299, 100, 1000) == Ok([])
+    let assert Ok(inside) = fixture.reader.lineage(leaf.id, 300, 3, 1000)
+    assert list.map(inside, fn(item) { item.seq }) == [295, 297, 299]
+
+    // An entry the store does not hold is the end of a walk, not a fault, and
+    // a request outside the bounds is refused before any read.
+    let #(unknown, _) = ids.mint_entry(ids.generator(clock.fixed(9000), 52))
+    assert fixture.reader.lineage(unknown, cut.next_seq, 100, 1000) == Ok([])
+    assert fixture.reader.lineage(leaf.id, cut.next_seq, 0, 1000)
+      == Error(snapshot.InvalidRequest)
+    assert fixture.reader.lineage(leaf.id, cut.next_seq, 101, 1000)
+      == Error(snapshot.InvalidRequest)
+    assert fixture.reader.lineage(leaf.id, 0, 10, 1000)
+      == Error(snapshot.InvalidRequest)
+    assert fixture.close() == Ok(Nil)
+  })
+}
+
+pub fn a_lineage_page_stops_before_the_record_that_would_pass_its_bytes_test() {
+  list.each([Memory, Sqlite], fn(backend) {
+    let fixture = open(backend, "lineage-bytes")
+    let big = string.repeat("x", 900_000)
+    let #(chain, _) =
+      list.fold(range(1, 3), #([], fixtures.new_ctx()), fn(acc, _) {
+        let #(held, ctx): #(List(entry.Entry), _) = acc
+        let parent = case held {
+          [newest, ..] -> Some(newest.id)
+          [] -> None
+        }
+        let #(next, ctx) = fixtures.message_entry(ctx, parent, big)
+        #([next, ..held], ctx)
+      })
+    let _committed =
+      write(
+        fixture,
+        list.map(list.reverse(chain), fn(held) { tx.InsertEntry(held) }),
+      )
+    let assert [newest, ..] = chain
+    let assert Ok(page) = fixture.reader.lineage(newest.id, 4, 100, 1000)
+
+    // Three records of nine hundred kilobytes are past the page's two
+    // megabytes, so the oldest is left for the next read and the newest two
+    // are returned.
+    assert list.map(page, fn(item) { item.seq }) == [2, 3]
+    assert fixture.close() == Ok(Nil)
+  })
+}
+
+pub fn the_lineage_step_is_a_primary_key_probe_test() {
+  let assert Ok(conn) = sqlight.open(path("lineage-plan"))
+    as "query-plan fixture opens"
+  assert sqlight.exec(session_schema.schema, on: conn) == Ok(Nil)
+  let assert Ok(plan) =
+    sqlight.query(
+      "EXPLAIN QUERY PLAN " <> sql.snapshot_entry_head("", Some(1)).0,
+      on: conn,
+      with: [sqlight.text("id"), sqlight.int(10)],
+      expecting: decode.at([3], decode.string),
+    )
+    as "SQLite explains one step of a lineage walk"
+  assert list.any(plan, string.contains(_, "SEARCH entries"))
+  assert list.any(plan, string.contains(_, "PRIMARY KEY"))
+  assert !list.any(plan, string.contains(_, "SCAN"))
+  assert sqlight.close(conn) == Ok(Nil)
 }

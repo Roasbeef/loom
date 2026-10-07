@@ -515,7 +515,10 @@ fn merge_commentary(pieces: List(Piece)) -> List(Piece) {
 /// work, which is one piece, ends before its decision's line, and the line
 /// reads as the turn's last word on the request. A decision older than the
 /// first piece the window holds is dropped, as the records it follows are
-/// not drawn, and one newer than every piece goes last.
+/// not drawn, and one newer than every piece goes last. With no piece drawn
+/// there is nothing to place a decision beside, so none is drawn: a page that
+/// has not yet read the strand's records would otherwise show a decision alone,
+/// and it would read as the answer.
 ///
 /// ## Examples
 ///
@@ -523,6 +526,18 @@ fn merge_commentary(pieces: List(Piece)) -> List(Piece) {
 /// assert turns.with_decisions([], []) == []
 /// ```
 pub fn with_decisions(
+  pieces: List(Piece),
+  decided: List(decisions.Decision),
+) -> List(Piece) {
+  case pieces {
+    // A decision is a line among the records it concerns. With none of them
+    // drawn it would stand alone and read as the answer, so it waits for them.
+    [] -> []
+    [_, ..] -> placed_decisions(pieces, decided)
+  }
+}
+
+fn placed_decisions(
   pieces: List(Piece),
   decided: List(decisions.Decision),
 ) -> List(Piece) {

@@ -17,6 +17,7 @@ import client/daemon/admin as access_admin
 import client/daemon/domain as domain_service
 import client/daemon/limits
 import client/daemon/manager
+import client/daemon/new_folder
 import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_assets
@@ -52,6 +53,7 @@ import storage/access
 import storage/catalogue
 import storage/domain
 import support/addresses
+import support/extensions
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import web_view/actions
@@ -608,13 +610,20 @@ fn creating_from_home(
     Ok("shareable") -> creations.Shareable
     Ok(_) | Error(Nil) -> creations.Private
   }
-  let ask = fn(workspace, name, sharing, deliver) {
+  // `x-create-home` stands for the owner's home directory, so a test can type a
+  // path under a directory of its own; without it the daemon's own is used.
+  let folder = case req.get_header(request, "x-create-home") {
+    Ok(home) -> new_folder.check_in(_, home, attachment.state_root)
+    Error(Nil) -> new_folder.check(_, attachment.state_root)
+  }
+  let ask = fn(place, name, sharing, deliver) {
     ui_socket.create_task(
       standing,
       tickets,
       open,
       attachment.create,
-      workspace,
+      folder,
+      place,
       name,
       sharing,
       deliver,
@@ -631,7 +640,11 @@ fn creating_from_home(
     None -> stub(289, "no capability")
     Some(ask) -> {
       let answers = process.new_subject()
-      ask(workspace, name, sharing, fn(answer) { process.send(answers, answer) })
+      let place = case req.get_header(request, "x-create-typed") {
+        Ok(_) -> creations.Typed(workspace)
+        Error(Nil) -> creations.Drawn(workspace)
+      }
+      ask(place, name, sharing, fn(answer) { process.send(answers, answer) })
       case process.receive(answers, 10_000) {
         Ok(creations.Ticketed(path)) -> reported(stub(290, path), reach)
         Ok(creations.Declined(reason)) ->
@@ -4222,7 +4235,8 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         tickets,
         page_open,
         create,
-        ready.state_root,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
         "x",
         creations.Private,
         within: 2000,
@@ -4243,7 +4257,8 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         tickets,
         fn() { Error(Nil) },
         create,
-        ready.state_root,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
         "x",
         creations.Private,
         within: 2000,
@@ -4280,7 +4295,8 @@ pub fn the_eleventh_creation_in_an_hour_is_refused_test() {
         tickets,
         page_open,
         create,
-        workspace,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(workspace),
         name,
         creations.Shareable,
         within: 2000,
@@ -4327,7 +4343,8 @@ pub fn each_creation_draws_its_own_request_key_test() {
           tickets,
           page_open,
           create,
-          ready.state_root,
+          new_folder.check(_, ready.state_root),
+          creations.Drawn(ready.state_root),
           "k",
           creations.Private,
           within: 2000,
@@ -4370,7 +4387,8 @@ pub fn a_session_that_does_not_open_is_reported_as_created_test() {
         tickets,
         page_open,
         create,
-        ready.state_root,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
         "x",
         creations.Private,
         within: 300,
@@ -4404,7 +4422,8 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       tickets,
       page_open,
       slow,
-      ready.state_root,
+      new_folder.check(_, ready.state_root),
+      creations.Drawn(ready.state_root),
       "slow",
       creations.Private,
       fn(answer) { process.send(answers, #(answer, process.self())) },
@@ -4415,6 +4434,222 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       as "the task answers once the session is resident"
     assert string.starts_with(path, "/ui/sessions/")
     assert task != process.self()
+  })
+}
+
+// --- a session in a folder that holds none (protocol-change/074) -------------
+
+// A directory the test treats as the owner's home: canonical, empty, and made
+// afresh for each test, with a folder `proj` inside it.
+fn owners_home(name: String) -> String {
+  let assert Ok(home) = bootstrap.canonical_directory(extensions.scratch(name))
+    as "the scratch directory resolves"
+  let assert Ok(Nil) = simplifile.create_directory_all(home <> "/proj")
+    as "the project folder is made"
+  home
+}
+
+// The whole path through the router: the owner types a path under their home
+// into the form for another folder, the daemon makes it canonical, creates the
+// session there with the typed name, mints a ticket, and remembers the folder.
+pub fn a_typed_folder_creates_a_session_and_is_remembered_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let home = owners_home("typed-creates")
+    let before = session_count(ready, credential)
+    let owner = enter(port, operator_home(port, credential))
+    let asked =
+      home_socket(port, owner, [
+        #("x-create-workspace", "~/proj/../proj"),
+        #("x-create-typed", "yes"),
+        #("x-create-home", home),
+        #("x-create-name", "typed one"),
+      ])
+    assert asked.status == 290
+    assert string.starts_with(asked.body, "/ui/sessions/")
+    assert session_count(ready, credential) == before + 1
+
+    // The session is in the canonical folder, not in the text that was typed.
+    let assert Ok(view) = manager.get(ready.registry, session_of(asked.body))
+    assert view.registration.workspace == home <> "/proj"
+    assert view.registration.name == "typed one"
+
+    // The folder is remembered, once, as the newest.
+    let assert Ok([newest, ..]) = manager.recent_folders(ready.registry)
+    assert newest.workspace == home <> "/proj"
+  })
+}
+
+// A path the daemon will not use creates nothing and is answered in a reason's
+// fixed words: outside the home directory, the home directory itself, a hidden
+// folder, one that is not there, a file, a link that leaves home and a path
+// that is not absolute.
+pub fn a_typed_path_that_is_not_a_usable_folder_creates_nothing_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let home = owners_home("typed-refused")
+    let assert Ok(Nil) = simplifile.create_directory_all(home <> "/.hidden")
+      as "a hidden folder"
+    let assert Ok(Nil) = simplifile.write(home <> "/file.txt", "x") as "a file"
+    let assert Ok(outside) =
+      bootstrap.canonical_directory(extensions.scratch("typed-outside"))
+      as "a folder outside home"
+    let assert Ok(Nil) = simplifile.create_symlink(outside, home <> "/escape")
+      as "a link that leaves home"
+    let before = session_count(ready, credential)
+    let owner = enter(port, operator_home(port, credential))
+    let ask = fn(path) {
+      home_socket(port, owner, [
+        #("x-create-workspace", path),
+        #("x-create-typed", "yes"),
+        #("x-create-home", home),
+      ])
+    }
+    list.each(
+      [outside, "/", "/etc", home, "~", "~/.hidden", "~/escape", "~/escape/.."],
+      fn(path) {
+        let refused = ask(path)
+        assert refused.status == 291
+        assert refused.body == "OutsideHome"
+      },
+    )
+    list.each(["~/missing", "~/file.txt", "proj", "", "~other/proj"], fn(path) {
+      let refused = ask(path)
+      assert refused.status == 291
+      assert refused.body == "NotAFolder"
+    })
+    assert session_count(ready, credential) == before
+    assert manager.recent_folders(ready.registry) == Ok([])
+  })
+}
+
+// A forged typed creation from a member's page or an observer-ceiling page is
+// refused for who they are, before the path is looked at, and creates nothing.
+pub fn a_forged_typed_creation_from_another_page_creates_nothing_test() {
+  fixture_with(Switching, fn(ready, port, credential) {
+    let session = create_session(ready, "typed-forged", 1121)
+    let home = owners_home("typed-forged-home")
+    let before = session_count(ready, credential)
+    let operator = [#("page", json.String("operator"))]
+    let grant = member(ready, "ui-typist", session, access.Operator)
+    let members_home = enter(port, home_link(port, grant, operator))
+    let observers_home = enter(port, home_link(port, credential, []))
+    list.each([members_home, observers_home], fn(page) {
+      let forced =
+        home_socket(port, page, [
+          #("x-create-force", "yes"),
+          #("x-create-workspace", home <> "/proj"),
+          #("x-create-typed", "yes"),
+          #("x-create-home", home),
+        ])
+      assert forced.status == 291
+      assert forced.body == "NotOwner"
+    })
+    assert session_count(ready, credential) == before
+    assert manager.recent_folders(ready.registry) == Ok([])
+  })
+}
+
+// A folder that was remembered is creatable after its sessions are gone, is
+// judged again at the press, and is refused with a plain reason once the
+// directory has been removed. A path the daemon does not remember is not
+// creatable as a place the page drew, whatever the frame said.
+pub fn a_remembered_folder_is_judged_again_at_the_press_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "remembered-known", 1122)
+    let home = owners_home("remembered")
+    let folder = home <> "/proj"
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let create = counting_create(ready, existing, asked)
+    let attempt = fn(path) {
+      ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        create,
+        new_folder.check_in(_, home, ready.state_root),
+        creations.Drawn(path),
+        "again",
+        creations.Private,
+        within: 2000,
+      )
+    }
+
+    // Not remembered, not held: not in the owner's list.
+    assert attempt(folder) == creations.Declined(creations.NotKnown)
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // Remembered: creatable, in the folder the daemon knows.
+    manager.remember_folder(ready.registry, folder)
+    let assert creations.Ticketed(_) = attempt(folder)
+    let assert Ok(creation) = process.receive(asked, 0)
+    assert creation.workspace == folder
+
+    // The directory is removed: the entry is still listed but the press is
+    // refused in plain words, and nothing is asked of the registry.
+    let assert Ok(Nil) = simplifile.delete(folder) as "the folder is removed"
+    assert attempt(folder) == creations.Declined(creations.NotAFolder)
+    assert process.receive(asked, 0) == Error(Nil)
+
+    // A remembered folder outside the home directory (a terminal made it) is
+    // refused too.
+    manager.remember_folder(ready.registry, "/etc")
+    assert attempt("/etc") == creations.Declined(creations.OutsideHome)
+  })
+}
+
+// The page's list is the owner's remembered folders that a session may start in:
+// newest first, only those inside the home directory, and only for the owner.
+// Forgetting names the identity the list gave and answers the list that remains.
+pub fn the_owners_recent_folders_are_listed_and_forgotten_test() {
+  fixture(fn(ready, _, credential) {
+    let home = owners_home("recents")
+    let assert Ok(Nil) = simplifile.create_directory_all(home <> "/second")
+      as "a second folder"
+    manager.remember_folder(ready.registry, home <> "/proj")
+    manager.remember_folder(ready.registry, "/etc")
+    manager.remember_folder(ready.registry, home <> "/second")
+    manager.remember_folder(ready.registry, home <> "/.hidden")
+    let #(standing, _) = creator_standing(ready, credential, access.Operator)
+    let listed = ui_socket.recent_for(standing, page_open, home)
+    assert list.map(listed, fn(entry) { entry.path })
+      == [home <> "/second", home <> "/proj"]
+
+    // A folder remembered again moves to the front under a new identity, so the
+    // old one forgets nothing.
+    let assert [second, proj] = listed
+    manager.remember_folder(ready.registry, home <> "/proj")
+    assert ui_socket.forget_for(standing, page_open, home, proj.id)
+      |> list.map(fn(entry) { entry.path })
+      == [home <> "/proj", home <> "/second"]
+    let assert [fresh, _] = ui_socket.recent_for(standing, page_open, home)
+    assert fresh.id != proj.id
+
+    // Forgetting a listed identity removes just that folder, and forgetting it
+    // again changes nothing.
+    assert ui_socket.forget_for(standing, page_open, home, second.id)
+      |> list.map(fn(entry) { entry.path })
+      == [home <> "/proj"]
+    assert ui_socket.forget_for(standing, page_open, home, second.id)
+      |> list.map(fn(entry) { entry.path })
+      == [home <> "/proj"]
+
+    // A page that has ended, one minted to read and a member's page are told of
+    // no folder and forget nothing.
+    let #(readonly, _) = creator_standing(ready, credential, access.Observer)
+    assert ui_socket.recent_for(readonly, page_open, home) == []
+    assert ui_socket.forget_for(readonly, page_open, home, fresh.id) == []
+    assert ui_socket.recent_for(standing, fn() { Error(Nil) }, home) == []
+    let existing = create_session(ready, "recents-known", 1123)
+    let grant = member(ready, "ui-recents", existing, access.Operator)
+    let #(members, _) = creator_standing(ready, grant, access.Operator)
+    let members = ui_socket.Standing(..members, principal: "ui-recents")
+    assert ui_socket.recent_for(members, page_open, home) == []
+    assert ui_socket.forget_for(members, page_open, home, fresh.id) == []
+    assert list.map(ui_socket.recent_for(standing, page_open, home), fn(entry) {
+        entry.path
+      })
+      == [home <> "/proj"]
   })
 }
 

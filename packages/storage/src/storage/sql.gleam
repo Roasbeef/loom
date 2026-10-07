@@ -951,6 +951,44 @@ pub fn restore_session(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
+pub type RecentFolders {
+  RecentFolders(seq: Int, workspace: String)
+}
+
+pub fn recent_folders() {
+  let sql =
+    "SELECT seq, workspace FROM catalogue_recent_folders ORDER BY seq DESC"
+  #(sql, [], recent_folders_decoder())
+}
+
+pub fn recent_folders_decoder() -> decode.Decoder(RecentFolders) {
+  use seq <- decode.field(0, decode.int)
+  use workspace <- decode.field(1, decode.string)
+  decode.success(RecentFolders(seq:, workspace:))
+}
+
+pub fn insert_recent_folder(workspace workspace: String) {
+  let sql = "INSERT INTO catalogue_recent_folders (workspace) VALUES (?)"
+  #(sql, [dev.ParamString(workspace)])
+}
+
+pub fn delete_recent_folder(workspace workspace: String) {
+  let sql = "DELETE FROM catalogue_recent_folders WHERE workspace = ?"
+  #(sql, [dev.ParamString(workspace)])
+}
+
+pub fn forget_recent_folder(seq seq: Int) {
+  let sql = "DELETE FROM catalogue_recent_folders WHERE seq = ?"
+  #(sql, [dev.ParamInt(seq)])
+}
+
+pub fn trim_recent_folders(limit limit: Int) {
+  let sql =
+    "DELETE FROM catalogue_recent_folders
+WHERE seq NOT IN (SELECT seq FROM catalogue_recent_folders ORDER BY seq DESC LIMIT ?)"
+  #(sql, [dev.ParamInt(limit)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
@@ -1588,4 +1626,39 @@ pub fn snapshot_entry_fragment_decoder() -> decode.Decoder(
 ) {
   use fragment <- decode.field(0, decode.bit_array)
   decode.success(SnapshotEntryFragment(fragment:))
+}
+
+pub type SnapshotEntryHead {
+  SnapshotEntryHead(
+    id: String,
+    parent_id: Option(String),
+    seq: Option(Int),
+    payload_bytes: Option(Int),
+  )
+}
+
+pub fn snapshot_entry_head(
+  entry_id entry_id: String,
+  before_seq before_seq: Option(Int),
+) {
+  let sql =
+    "SELECT CAST(CASE WHEN length(CAST(id AS BLOB)) = 36 THEN id ELSE '' END AS TEXT) AS id,
+  parent_id, seq, length(payload) AS payload_bytes FROM entries
+WHERE id = ?1 AND seq < ?2 LIMIT 2"
+  #(
+    sql,
+    [
+      dev.ParamString(entry_id),
+      dev.ParamNullable(option.map(before_seq, fn(v) { dev.ParamInt(v) })),
+    ],
+    snapshot_entry_head_decoder(),
+  )
+}
+
+pub fn snapshot_entry_head_decoder() -> decode.Decoder(SnapshotEntryHead) {
+  use id <- decode.field(0, decode.string)
+  use parent_id <- decode.field(1, decode.optional(decode.string))
+  use seq <- decode.field(2, decode.optional(decode.int))
+  use payload_bytes <- decode.field(3, decode.optional(decode.int))
+  decode.success(SnapshotEntryHead(id:, parent_id:, seq:, payload_bytes:))
 }

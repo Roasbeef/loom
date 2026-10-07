@@ -142,6 +142,14 @@ pub opaque type Message {
     reply: Subject(Result(List(snapshot.Descriptor), snapshot.Error)),
   )
 
+  /// Walk one entry's ancestry below a fixed high-water.
+  SnapshotLineage(
+    from: ids.EntryId,
+    before: Int,
+    limit: Int,
+    reply: Subject(Result(List(snapshot.Descriptor), snapshot.Error)),
+  )
+
   /// Return one bounded serialized entry fragment.
   SnapshotFragment(
     descriptor: snapshot.Descriptor,
@@ -773,6 +781,14 @@ pub fn snapshot_reader(handle: Subject(Message)) -> snapshot.Reader {
         _,
       ))
     },
+    lineage: fn(from, before, limit, waiting_ms) {
+      snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotLineage(
+        from,
+        before,
+        limit,
+        _,
+      ))
+    },
     fragment: fn(descriptor, offset, waiting_ms) {
       snapshot_call.read(handle, waiting: waiting_ms, sending: SnapshotFragment(
         descriptor,
@@ -809,6 +825,12 @@ fn handle_message(
         reply,
         Error(snapshot.StorageFailure(HandleClosed)),
       )
+    SnapshotLineage(reply:, ..), True ->
+      snapshot_answer(
+        actor_state,
+        reply,
+        Error(snapshot.StorageFailure(HandleClosed)),
+      )
     SnapshotFragment(reply:, ..), True ->
       snapshot_answer(
         actor_state,
@@ -828,6 +850,17 @@ fn handle_message(
         snapshot_memory.page(
           snapshot_view(actor_state.state),
           after,
+          before,
+          limit,
+        ),
+      )
+    SnapshotLineage(from, before, limit, reply), False ->
+      snapshot_answer(
+        actor_state,
+        reply,
+        snapshot_memory.lineage(
+          snapshot_view(actor_state.state),
+          from,
           before,
           limit,
         ),

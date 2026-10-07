@@ -54,6 +54,7 @@ import session/session
 import session_view/advisor_pending as terminal_nudges
 import session_view/block_summary as terminal_summaries
 import session_view/notes_view as terminal_notes
+import session_view/remembered as session_remembered
 import simplifile
 import storage/access
 import storage/storage
@@ -5953,6 +5954,368 @@ pub fn once_approval_leaves_session_permissions_absent_test() {
   assert api.fact_cell(harness.runtime, permissions.key) == Ok(None)
 }
 
+// --- remembered permissions: provenance, listing and forgetting -------------
+// (protocol-change/073)
+
+// Remembers full network access as `alice` on the authenticated connection
+// and answers the escalation's id, so a test starts from one remembered
+// permission with real provenance.
+fn remember_network_as(
+  harness: Harness,
+  handle: gateway.ConnectionHandle,
+  id: String,
+  op: Int,
+  request: Int,
+) -> Nil {
+  claim(
+    harness,
+    id,
+    scope_on("main", op_id(op)),
+    durable.Action("bash", id <> "-action", "network request"),
+    [policy.GrantNetwork(policy.NetworkFull)],
+  )
+  let _displayed = next_escalation(harness)
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      request,
+      protocol.ApproveForSession(
+        id,
+        [policy.GrantNetwork(policy.NetworkFull)],
+        id <> "-action",
+        current_question_seq(harness, id),
+      ),
+    )),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, request, 20).event
+    as "the remembered approval commits"
+  assert record.status == "approved"
+}
+
+// The board a `permissions` read answers, decoded the way a client decodes it.
+fn read_board(
+  harness: Harness,
+  handle: gateway.ConnectionHandle,
+  request: Int,
+) -> session_remembered.Board {
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      request,
+      protocol.PermissionsGet,
+    )),
+  )
+  let assert protocol.SnapshotEvent(protocol.PermissionsSnapshot(board:)) =
+    next_reply(harness, request, 20).event
+    as "the operator reads what the session remembers"
+  let assert Ok(board) = session_remembered.decode(board)
+    as "the daemon's board decodes with the client's decoder"
+  board
+}
+
+// The daemon's owner on an authenticated attachment: the one principal that may
+// remember permissions for the session (protocol-change/073). The page caps it
+// to operator authority, as `ui_relay.capped` does.
+fn authenticated_owner(harness: Harness, socket: process.Pid) {
+  let #(handle, auth, closed) =
+    attach_socket(
+      harness.hub,
+      harness.runtime,
+      harness.inbox,
+      access.Principal("alice", "Alice", access.OwnerPrincipal),
+      access.Participant(access.Operator),
+      socket,
+    )
+  gateway.connection_text(handle, subscribe_frame(harness.runtime, 700))
+  let _snapshot = next_reply(harness, 700, 8)
+  #(handle, auth, closed)
+}
+
+// A member who may allow once and deny may not remember anything for the
+// session, nor see or forget what the owner remembered.
+pub fn a_member_operator_may_not_remember_list_or_forget_test() {
+  let harness = start_harness()
+  let #(owner, _, _) = authenticated_owner(harness, process.self())
+  remember_network_as(harness, owner, "owners", 620, 960)
+  let #(member, _, _) =
+    authenticated(harness, access.Participant(access.Operator), process.self())
+  claim(
+    harness,
+    "members",
+    scope_on("main", op_id(621)),
+    durable.Action("bash", "members-action", "network request"),
+    [policy.GrantNetwork(policy.NetworkFull)],
+  )
+  let _displayed = next_escalation(harness)
+  list.each(
+    [
+      #(
+        961,
+        protocol.ApproveForSession(
+          "members",
+          [policy.GrantNetwork(policy.NetworkFull)],
+          "members-action",
+          current_question_seq(harness, "members"),
+        ),
+      ),
+      #(962, protocol.PermissionsGet),
+      #(963, protocol.PermissionForget(protocol.ForgetAll, None)),
+    ],
+    fn(sent) {
+      gateway.connection_text(
+        member,
+        protocol.encode_command(protocol.CommandEnvelope(sent.0, sent.1)),
+      )
+      let assert protocol.ErrorEvent(code: "forbidden", ..) =
+        next_reply(harness, sent.0, 20).event
+        as "a member is refused what only the owner may do"
+    },
+  )
+  assert stored(harness, "members").status == durable.Pending
+  assert permissions.read(harness.runtime.session)
+    == Ok([policy.GrantNetwork(policy.NetworkFull)])
+    as "the owner's grant is untouched"
+
+  // Allow once is still a member's.
+  gateway.connection_text(
+    member,
+    protocol.encode_command(protocol.CommandEnvelope(
+      964,
+      protocol.Approve(
+        "members",
+        [policy.GrantNetwork(policy.NetworkFull)],
+        "members-action",
+        current_question_seq(harness, "members"),
+      ),
+    )),
+  )
+  let assert protocol.EscalationEvent(record:) =
+    next_reply(harness, 964, 20).event
+  assert record.status == "approved"
+}
+
+pub fn session_approval_records_the_principal_the_credential_and_the_time_test() {
+  let harness = start_harness()
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
+  remember_network_as(harness, handle, "provenance", 606, 940)
+  let assert Ok(permissions.Listing(grants: [remembered], ..)) =
+    permissions.listing(harness.runtime)
+    as "one permission is remembered"
+  assert remembered.grant == policy.GrantNetwork(policy.NetworkFull)
+  let assert permissions.Approved(by:, via:, at_ms:) = remembered.provenance
+    as "the approval is attributed"
+  assert by == message.Origin("alice", "Alice")
+  assert via == permissions.Device(string.repeat("a", 16))
+  assert at_ms >= 1_756_000_000_000
+  let board = read_board(harness, handle, 941)
+  let assert [row] = board.grants
+  assert row.kind == session_remembered.FullNetwork
+  let assert session_remembered.Approved(principal:, name:, ..) = row.provenance
+  assert principal == Some("alice")
+  assert name == Some("Alice")
+}
+
+pub fn a_fact_written_before_provenance_reads_as_unknown_test() {
+  let harness = start_harness()
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
+  let earlier =
+    json.Object([
+      #(
+        "grants",
+        json.Array([grants.encode(policy.GrantNetwork(policy.NetworkFull))]),
+      ),
+      #("origin", json.Null),
+    ])
+  let assert Ok(Nil) =
+    api.put_reserved_fact(harness.runtime, permissions.key, earlier)
+  let board = read_board(harness, handle, 942)
+  let assert [row] = board.grants
+  assert row.provenance == session_remembered.Unknown
+  assert permissions.read(harness.runtime.session)
+    == Ok([policy.GrantNetwork(policy.NetworkFull)])
+    as "an unattributed permission is still honoured"
+}
+
+pub fn an_observer_may_neither_list_nor_forget_remembered_permissions_test() {
+  let harness = start_harness()
+  let #(operator, _, _) = authenticated_owner(harness, process.self())
+  remember_network_as(harness, operator, "kept", 607, 943)
+  let #(observer, _, _) =
+    authenticated(harness, access.Participant(access.Observer), process.self())
+  gateway.connection_text(
+    observer,
+    protocol.encode_command(protocol.CommandEnvelope(
+      944,
+      protocol.PermissionsGet,
+    )),
+  )
+  let assert protocol.ErrorEvent(code: "forbidden", ..) =
+    next_reply(harness, 944, 20).event
+    as "the list names principals and credentials, which an observer is not shown"
+  gateway.connection_text(
+    observer,
+    protocol.encode_command(protocol.CommandEnvelope(
+      945,
+      protocol.PermissionForget(protocol.ForgetAll, None),
+    )),
+  )
+  let assert protocol.ErrorEvent(code: "forbidden", ..) =
+    next_reply(harness, 945, 20).event
+    as "an observer cannot forget what an operator allowed"
+  assert permissions.read(harness.runtime.session)
+    == Ok([policy.GrantNetwork(policy.NetworkFull)])
+}
+
+pub fn forgetting_a_permission_removes_it_and_leaves_the_rest_test() {
+  let harness = start_harness()
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
+  remember_network_as(harness, handle, "network", 608, 946)
+  let board = read_board(harness, handle, 947)
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      948,
+      protocol.PermissionForget(
+        protocol.ForgetGrant(policy.GrantNetwork(policy.NetworkFull)),
+        board.seq,
+      ),
+    )),
+  )
+  let assert protocol.SnapshotEvent(protocol.PermissionsSnapshot(board: after)) =
+    next_reply(harness, 948, 20).event
+    as "a forget answers with what remains"
+  let assert Ok(after) = session_remembered.decode(after)
+  assert after.grants == []
+
+  // The next request is not met by standing authority, so it asks again.
+  assert permissions.read(harness.runtime.session) == Ok([])
+  assert permissions.read_for(
+      harness.runtime.session,
+      "main",
+      "bash",
+      json.Object([]),
+    )
+    == Ok([])
+}
+
+pub fn a_forget_made_from_a_list_that_has_moved_writes_nothing_test() {
+  let harness = start_harness()
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
+  remember_network_as(harness, handle, "first", 609, 949)
+  let seen = read_board(harness, handle, 950)
+
+  // Another approval lands after the operator's list was drawn.
+  claim(
+    harness,
+    "second",
+    scope_on("main", op_id(610)),
+    durable.Action("bash", "second-action", "read request"),
+    [policy.GrantReadableRoot("/usr")],
+  )
+  let _displayed = next_escalation(harness)
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      951,
+      protocol.ApproveForSession(
+        "second",
+        [policy.GrantReadableRoot("/usr")],
+        "second-action",
+        current_question_seq(harness, "second"),
+      ),
+    )),
+  )
+  let assert protocol.EscalationEvent(_) = next_reply(harness, 951, 20).event
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      952,
+      protocol.PermissionForget(protocol.ForgetAll, seen.seq),
+    )),
+  )
+  let assert protocol.ErrorEvent(code: "conflict", ..) =
+    next_reply(harness, 952, 20).event
+    as "the list the operator saw is not the one in force"
+  let assert Ok(kept) = permissions.read(harness.runtime.session)
+  assert list.length(kept) == 2
+    as "a permission the operator never saw is not forgotten"
+}
+
+pub fn forgetting_everything_also_forgets_exact_action_consents_test() {
+  let harness = start_harness()
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
+  remember_network_as(harness, handle, "everything", 611, 953)
+  let arguments = json.Object([#("command", json.String("substrate watch"))])
+  let digest = escalate.action_digest(arguments)
+  claim(
+    harness,
+    "watch",
+    scope_on("main", op_id(612)),
+    durable.Action("bash", digest, "watch mail"),
+    [wall(0)],
+  )
+  let _displayed = next_escalation(harness)
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      954,
+      protocol.ApproveForSession(
+        "watch",
+        [wall(0)],
+        digest,
+        current_question_seq(harness, "watch"),
+      ),
+    )),
+  )
+  let assert protocol.EscalationEvent(_) = next_reply(harness, 954, 20).event
+  let board = read_board(harness, handle, 955)
+  assert list.length(board.grants) == 1
+  let assert [consent] = board.actions
+  assert consent.tool == Some("bash")
+  assert consent.strand == Some("main")
+  assert consent.preview == Some("watch mail")
+    as "the listing says which command is remembered"
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      956,
+      protocol.PermissionForget(protocol.ForgetAll, board.seq),
+    )),
+  )
+  let assert protocol.SnapshotEvent(protocol.PermissionsSnapshot(board: after)) =
+    next_reply(harness, 956, 20).event
+  let assert Ok(after) = session_remembered.decode(after)
+  assert after.grants == []
+  assert after.actions == []
+  assert permissions.read_for(
+      harness.runtime.session,
+      "main",
+      "bash",
+      arguments,
+    )
+    == Ok([])
+    as "the same command is no longer met by its consent"
+}
+
+pub fn forgetting_names_only_what_the_listing_could_have_named_test() {
+  let harness = start_harness()
+  let #(handle, _, _) = authenticated_owner(harness, process.self())
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      957,
+      protocol.PermissionForget(
+        protocol.ForgetAction("../escalation/x"),
+        Some(1),
+      ),
+    )),
+  )
+  let assert protocol.ErrorEvent(code: "bad_request", ..) =
+    next_reply(harness, 957, 20).event
+    as "a wire value cannot name another reserved cell"
+}
+
 pub fn remembered_watch_authority_matches_only_its_strand_tool_and_arguments_test() {
   let harness = start_harness()
   subscribe(harness)
@@ -6328,4 +6691,114 @@ pub fn a_held_skill_invocation_is_reported_as_typed_test() {
   send(harness, 930, protocol.Steer("main", "/sample the queue"))
   assert process.receive(reported, within: 5000) == Ok("/sample the queue")
   let assert Ok(Nil) = simplifile.delete(root)
+}
+
+// Writes one message that follows `parent` on its strand and answers its
+// identity, so two strands can take turns in the sequence.
+fn write_after(
+  harness: Harness,
+  seed: Int,
+  parent: Option(ids.EntryId),
+  text: String,
+) -> ids.EntryId {
+  let #(id, _) =
+    ids.mint_entry(ids.generator(clock.fixed(1_700_000_000_001), seed))
+  let row =
+    core_entry.MessageEntry(
+      id:,
+      parent:,
+      seq: 0,
+      ts: 0,
+      message: message.UserMessage(
+        content: [message.UserText(text:, text_signature: None)],
+        timestamp: 0,
+        origin: None,
+      ),
+      terminate: False,
+    )
+  let assert Ok(_) =
+    writer.commit(harness.runtime.tree.writer, tx.Tx([tx.InsertEntry(row)], []))
+    as "the fixture entry is written"
+  id
+}
+
+// The identities of the records one lineage transfer carries, in the order it
+// sends them, once the transfer has been read to its end.
+fn lineage_records(
+  socket: gateway.ConnectionHandle,
+  id: Int,
+  from: ids.EntryId,
+) -> List(String) {
+  let assert protocol.SnapshotBegin(header) =
+    queued_request(
+      socket,
+      id,
+      protocol.HistoryLineage(ids.entry_id_to_string(from)),
+    )
+    as "a lineage read opens a transfer for an observer"
+  assert queue_field(header, "window") == json.String("lineage")
+  let assert json.String(snapshot_id) = queue_field(header, "snapshot_id")
+    as "the transfer names itself"
+  lineage_drained(socket, snapshot_id, 0, id * 1000, [])
+}
+
+fn lineage_drained(
+  socket: gateway.ConnectionHandle,
+  snapshot_id: String,
+  index: Int,
+  request: Int,
+  found: List(String),
+) -> List(String) {
+  assert index < 200 as "the bounded fixture transfer must terminate"
+  case
+    queued_request(socket, request, protocol.SnapshotNext(snapshot_id, index))
+  {
+    protocol.SnapshotEnd(_) -> list.reverse(found)
+    protocol.SnapshotChunk(body) -> {
+      let found = case
+        queue_field(body, "kind"),
+        queue_field(body, "offset"),
+        queue_field(body, "record_id")
+      {
+        json.String("entry"), json.Int(0), json.String(record) -> [
+          record,
+          ..found
+        ]
+        _, _, _ -> found
+      }
+      lineage_drained(socket, snapshot_id, index + 1, request + 1, found)
+    }
+    _ -> panic as "every credited continuation yields a fragment or its end"
+  }
+}
+
+/// A strand's lineage is read with nothing another strand wrote between its
+/// records, an observer may read it, and a request that names no entry is a
+/// bad request rather than a read.
+pub fn a_lineage_read_answers_an_observer_with_one_strands_records_test() {
+  let harness = network_harness()
+  let socket =
+    queued_socket(
+      harness,
+      operator("bob", "Bob"),
+      access.Participant(access.Observer),
+    )
+  let a1 = write_after(harness, 1, None, "a1")
+  let b1 = write_after(harness, 2, None, "b1")
+  let a2 = write_after(harness, 3, Some(a1), "a2")
+  let b2 = write_after(harness, 4, Some(b1), "b2")
+  let a3 = write_after(harness, 5, Some(a2), "a3")
+  let named = list.map([a1, a2, a3], ids.entry_id_to_string)
+  assert lineage_records(socket, 10, a3) == named
+  assert lineage_records(socket, 11, b2)
+    == list.map([b1, b2], ids.entry_id_to_string)
+
+  // The page begins at the entry it is given, so a client pages by naming the
+  // parent of the oldest record it holds, and an entry in the middle of a chain
+  // reads only what lies below it.
+  assert lineage_records(socket, 12, a2)
+    == list.map([a1, a2], ids.entry_id_to_string)
+  let assert protocol.ErrorEvent(code: "bad_request", ..) =
+    queued_request(socket, 13, protocol.HistoryLineage("not an entry"))
+    as "an identity that parses to no entry is refused"
 }

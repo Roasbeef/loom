@@ -88,7 +88,7 @@ pub fn settle(
 /// Sends whichever of the side surfaces' waiting reads the lane allows, in
 /// the order the tick has always serviced them: the queue, the worktree,
 /// the notes, the todo seed, the live jobs, the context, the advisor's
-/// pending nudges and the goal.
+/// pending nudges, the goal and the remembered permissions.
 ///
 /// The reads share the lane's one command slot, so the order decides which
 /// waiting read is sent first. Each reads and writes the shared record
@@ -112,6 +112,7 @@ pub fn service_reads(
   |> surfaces.service_context_read
   |> surfaces.service_advisor_nudges_read
   |> surfaces.service_goal_read
+  |> surfaces.service_remembered_read
 }
 
 /// Advances the active strand's activity clock and the generation clock to
@@ -245,6 +246,8 @@ pub fn new(
     jobs_awaiting: None,
     jobs_request: None,
     jobs_notice: "",
+    remembered: None,
+    remembered_refresh: worktree_view.Settled,
     nudges: None,
     nudges_refresh: worktree_view.Settled,
     nudges_awaiting: None,
@@ -350,10 +353,12 @@ pub fn new(
 ///
 /// What the terminal alone does in its tick is absent: the recorded replay,
 /// its daemon-control drains, the activity poll and the footer's cache label.
-/// So is the read of summary labels (`surfaces.service_block_summaries`),
-/// which the terminal sends between the side surfaces' reads and the lane's
-/// tick. The daemon may run a summarizer for a label it is asked for, and
-/// only a host that draws labels should ask.
+/// The read of summary labels (`surfaces.service_block_summaries`) runs
+/// between the side surfaces' reads and the lane's tick, where the terminal
+/// sends it. The daemon may run a summarizer for a label it is asked for, so
+/// the read is sent only for blocks the host has marked wanted
+/// (`block_summary.want`), and the web view marks the reasoning blocks it
+/// draws.
 ///
 /// An `Acted` runs the command (`commands.act`) and settles, and leaves the
 /// facts the command recorded on the record. The host that acted knows which
@@ -501,6 +506,7 @@ fn tick(
     |> advance_roster
     |> drain_connection
     |> service_reads
+    |> surfaces.service_block_summaries
     |> tick_lane
   settle(started, after) |> forget_surfaces
 }

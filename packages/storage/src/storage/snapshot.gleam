@@ -7,13 +7,13 @@
 //// This reader does not assign entries to strands or interpret machine state.
 ////
 //// Every call accepts its remaining wait budget, capped at five seconds.
-//// ReadTimedOut does not cancel the queued or running read, so a caller may
-//// never retry the same request against the same reader. Whether the timeout
-//// says anything about the reader depends on whose budget expired: a reader
-//// that was given its whole budget and did not answer is wedged, and session
-//// custody must then drain the original store or retain RecoveryBlocked
-//// before reopening it; a caller that chose a shorter wait has learned only
-//// that its own deadline passed and must refuse that one request.
+//// ReadTimedOut does not cancel the queued or running read, and says only that
+//// the caller's deadline passed: the actor may be behind a long write or a
+//// stalled disk. Each call owns its reply subject, so repeating a read cannot
+//// be answered by an earlier one, and a caller that asks from a short-lived
+//// process drops the late reply when that process exits. Only
+//// ReaderUnavailable proves the actor dead, and then session custody must
+//// drain the original store or retain RecoveryBlocked before reopening it.
 ////
 //// Register plans are declarative. Reference expansion follows a named JSON
 //// field in already bounded source cells, so storage need not import machine
@@ -27,7 +27,7 @@ import core/register.{type RegisterNs}
 import gleam/bool
 import gleam/dict
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import storage/storage.{type Register, type SessionStats, type StorageError}
@@ -40,6 +40,15 @@ pub const metadata_cells_limit = 1024
 
 /// A page cannot return a history-sized descriptor list.
 pub const page_limit = 100
+
+/// The payload bytes one lineage page may name, past its first record.
+///
+/// A page is bounded by records and by bytes because either can be large while
+/// the other is small: a hundred results of a few lines, or three records that
+/// each carry a tool's whole output. The first record is always returned, so a
+/// record larger than this bound still has a page of its own and a walk cannot
+/// stall on it.
+pub const lineage_bytes_limit = 2_097_152
 
 /// Raw bytes leave room for base64 and an envelope below 256 KiB.
 pub const fragment_bytes_limit = 194_560
@@ -55,6 +64,10 @@ pub type Reader {
     capture: fn(Plan, Int) -> Result(Cut, Error),
     /// Reads ascending descriptors between bounds; the final argument is wait ms.
     page: fn(Int, Int, Int, Int) -> Result(List(Descriptor), Error),
+    /// Reads one entry's ancestry from that entry down its parent links, as
+    /// ascending descriptors; the arguments are the entry, the exclusive
+    /// high-water, the record limit and wait ms.
+    lineage: fn(EntryId, Int, Int, Int) -> Result(List(Descriptor), Error),
     /// Reads bytes at an offset, then wait ms; EOF is an empty byte array.
     fragment: fn(Descriptor, Int, Int) -> Result(BitArray, Error),
   )
@@ -177,7 +190,9 @@ pub type Cut {
 /// Refusals preserve the distinction between resource limits and corruption.
 @internal
 pub type Error {
-  /// The wait expired; the read may still be queued or running. Never retry.
+  /// The wait expired; the read may still be queued or running. This is a
+  /// deadline and not evidence about the actor, so the caller refuses its own
+  /// request and may ask again.
   ReadTimedOut
 
   /// The actor was absent or died before replying. Session custody still owns it.
@@ -211,6 +226,17 @@ pub type Header {
     seq: Int,
     /// Encoded JSON payload bytes, without fetching the payload itself.
     byte_length: Int,
+  )
+}
+
+/// One entry's placement: what a lineage walk needs to take a step.
+@internal
+pub type Link {
+  Link(
+    /// The entry's own descriptor.
+    descriptor: Descriptor,
+    /// The entry it follows, or nothing for a root.
+    parent: Option(EntryId),
   )
 }
 
@@ -506,6 +532,80 @@ pub fn validate_page(
   case after >= 0 && before > after && limit > 0 && limit <= page_limit {
     True -> Ok(Nil)
     False -> Error(InvalidRequest)
+  }
+}
+
+/// Validates a lineage request before a backend is asked to walk.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert snapshot.validate_lineage(10, 100) == Ok(Nil)
+/// ```
+pub fn validate_lineage(before: Int, limit: Int) -> Result(Nil, Error) {
+  case before >= 1 && limit > 0 && limit <= page_limit {
+    True -> Ok(Nil)
+    False -> Error(InvalidRequest)
+  }
+}
+
+/// Walks one entry's ancestry through `link`, newest first, and returns the
+/// descriptors it passed through oldest first, as `page` does.
+///
+/// The walk stops at a root, at an entry the store does not hold below the
+/// high-water, at `limit` records, or before the record that would carry the
+/// page past `lineage_bytes_limit`; the first record is always returned.
+/// Every step asks for an entry below the sequence of the one before it, so
+/// the walk descends strictly and a corrupt parent link cannot make it loop.
+/// Both backends supply only `link`, so the bounds exist once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // snapshot.lineage(leaf, cut.next_seq, 100, link)
+/// ```
+@internal
+pub fn lineage(
+  from: EntryId,
+  before: Int,
+  limit: Int,
+  link: fn(EntryId, Int) -> Result(Option(Link), Error),
+) -> Result(List(Descriptor), Error) {
+  use Nil <- result.try(validate_lineage(before, limit))
+  walk(Some(from), before, limit, 0, [], link)
+}
+
+fn walk(
+  next: Option(EntryId),
+  before: Int,
+  remaining: Int,
+  bytes: Int,
+  kept: List(Descriptor),
+  link: fn(EntryId, Int) -> Result(Option(Link), Error),
+) -> Result(List(Descriptor), Error) {
+  case next, remaining {
+    None, _ | Some(_), 0 -> Ok(kept)
+    Some(id), _ -> {
+      use found <- result.try(link(id, before))
+      case found {
+        None -> Ok(kept)
+        Some(Link(descriptor:, parent:)) -> {
+          let size = bytes + descriptor.byte_length
+          case kept != [] && size > lineage_bytes_limit {
+            True -> Ok(kept)
+            False ->
+              walk(
+                parent,
+                descriptor.seq,
+                remaining - 1,
+                size,
+                [descriptor, ..kept],
+                link,
+              )
+          }
+        }
+      }
+    }
   }
 }
 

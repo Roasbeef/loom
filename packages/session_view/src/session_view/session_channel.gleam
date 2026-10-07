@@ -102,6 +102,7 @@
 //// | `Ready` | stays on other pushes; `AwaitingBegin` on a notice at or past the cut or a metadata push; any reply is `Closed` | `AwaitingReply` once `send_queued` issues `goal_get`, after any waiting command | `AwaitingBegin` once the refresh instant passes | `AwaitingReply` (`Sent`), or refused if the role or slot forbids | `Closed` | `Closed` |
 //// | `Closed` | ignored | ignored | nothing | refused | unchanged | unchanged |
 
+import core/ids
 import core/json
 import gleam/bool
 import gleam/int
@@ -134,6 +135,11 @@ pub type Update {
 
   /// An independently validated older page; never advances the live cursor.
   HistoryPage(window: snapshot.Window, before_seq: Int, after_seq: Int)
+
+  /// An independently validated page of one strand's ancestry, as the records
+  /// on the path from `from` down its parent links; never advances the live
+  /// cursor, and never carries metadata the lane adopts.
+  LineagePage(window: snapshot.Window, from: String)
 
   /// Exact decisions only; never a replacement conversation cut.
   LookedUp(records: List(approval.Review), missing: List(String))
@@ -255,6 +261,10 @@ type Intent {
   /// Only the decided-approvals transfer may answer this read.
   Listing
 
+  /// The independently validated page is the ancestry of this entry, whose
+  /// record is the newest it may hold.
+  Lineage(from: String)
+
   /// The independently validated page stays inside these sequence bounds.
   History(after_seq: Int, before_seq: Int)
 }
@@ -325,6 +335,7 @@ type Projection {
   Decisions(List(String))
   Decided
   OlderPage(after_seq: Int, before_seq: Int)
+  Lineaged(from: String)
 }
 
 // The outstanding request, not a transport connection's lifecycle. A pushed
@@ -764,6 +775,7 @@ pub fn mutation_available(channel: Channel(socket, recorder)) -> Bool {
     | AwaitingReply(_, Read)
     | AwaitingReply(_, Lookup(_))
     | AwaitingReply(_, Listing)
+    | AwaitingReply(_, Lineage(..))
     | AwaitingReply(_, History(..)) -> synchronized(channel)
     AwaitingReply(_, Mutation) | Closed -> False
   }
@@ -968,6 +980,7 @@ fn apply_pushed(
     | protocol.BlockSummariesSnapshot(..)
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
+    | protocol.PermissionsSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.OperationChanged(..)
     | protocol.EscalationPending(..)
@@ -1048,6 +1061,7 @@ fn apply_reply(
         | attempt.Decisions(_)
         | attempt.DecidedList
         | attempt.HistoryRange(..)
+        | attempt.LineageFrom(..)
         | attempt.Credit(..) ->
           fail(channel, "resumed marker answers a request that asked for none")
       }
@@ -1128,6 +1142,42 @@ fn apply_reply(
           credit(channel, transfer, OlderPage(after, before)),
           [],
         )
+      }
+    }
+    AwaitingReply(_, Lineage(from)), session_wire.Begin(body) -> {
+      let started = {
+        use _ <- result.try(matching_window(body, "lineage"))
+        snapshot.begin_lineage(body, channel.expected, channel.attachment, 1)
+      }
+      case started {
+        Error(reason) -> fail(channel, reason)
+        Ok(transfer) -> #(credit(channel, transfer, Lineaged(from)), [])
+      }
+    }
+    Receiving(transfer, Lineaged(from)), session_wire.End(body) -> {
+      let completed = {
+        use cut <- result.try(snapshot.finish(transfer, body))
+
+        // The newest record of the page is the entry that was asked about, or
+        // there is no record: the store holds nothing at that entry below the
+        // cut. Anything else is a page of another read.
+        case cut.window.items {
+          [] -> Ok(cut.window)
+          [newest, ..] ->
+            case snapshot.identity(newest) == from {
+              True -> Ok(cut.window)
+              False -> Error("lineage page does not begin at its entry")
+            }
+        }
+      }
+      case completed {
+        Error(reason) -> fail(channel, reason)
+        Ok(window) ->
+          send_queued(
+            Channel(..channel, phase: Ready, refresh_at: now),
+            [LineagePage(window, from)],
+            now,
+          )
       }
     }
     Receiving(transfer, OlderPage(after, before)), session_wire.End(body) -> {
@@ -1285,6 +1335,11 @@ fn matching_presentation(name, intent, event) {
 
     "schedules", Read, protocol.SchedulesSnapshot(_) -> True
     "schedule_cancel", Mutation, protocol.SchedulesSnapshot(_) -> True
+
+    // A forget answers with the permissions that remain, as a goal mutation
+    // answers with its board, so the page redraws from the one reply.
+    "permissions", Read, protocol.PermissionsSnapshot(_) -> True
+    "permission_forget", Mutation, protocol.PermissionsSnapshot(_) -> True
     _, _, _ -> False
   }
 }
@@ -1455,6 +1510,7 @@ fn fail(channel: Channel(socket, recorder), reason: String) {
     AwaitingReply(_, Read)
     | AwaitingReply(_, Lookup(_))
     | AwaitingReply(_, Listing)
+    | AwaitingReply(_, Lineage(..))
     | AwaitingReply(_, History(..))
     | AwaitingBegin
     | Receiving(..)
@@ -1552,6 +1608,7 @@ pub fn replay_issued(
     Ready, attempt.DecidedList -> decided(channel, now)
     Ready, attempt.HistoryRange(after, before) ->
       history(channel, after, before, now)
+    Ready, attempt.LineageFrom(entry) -> lineage(channel, entry, now)
     Ready, attempt.NoSelection ->
       admit(channel, session_wire.command(1, request.kind, []), now)
       |> result.map(fn(admitted) { admitted.0 })
@@ -1671,6 +1728,42 @@ pub fn history(
   Ok(send(channel, Outbound(..outbound, intent: History(after, before)), now))
 }
 
+/// Reads at most one hundred records of one strand's ancestry on the existing
+/// lane: the entry `from` and the records below it down their parent links,
+/// and nothing another strand wrote between them.
+///
+/// A strand is named by its newest record, and a page below one already held
+/// by the parent of its oldest record, so the read carries no cursor of its own
+/// (protocol-change/072). Like `history` it cannot replace live metadata or the
+/// catch-up cursor, and a busy lane leaves the request with its caller.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_channel.lineage(channel, "0198...", now:)
+/// ```
+@internal
+pub fn lineage(
+  channel: Channel(socket, recorder),
+  from: String,
+  now now: Int,
+) -> Result(Channel(socket, recorder), String) {
+  use <- bool.guard(
+    result.is_error(ids.parse_entry_id(from)),
+    Error("lineage requires an entry identity"),
+  )
+  use <- bool.guard(
+    !ready_for_read(channel),
+    Error("conversation read lane is busy"),
+  )
+  use outbound <- result.try(
+    outbound(
+      session_wire.command(1, "history_lineage", [#("from", json.String(from))]),
+    ),
+  )
+  Ok(send(channel, Outbound(..outbound, intent: Lineage(from)), now))
+}
+
 // Every transition back to `Ready` passes through here, so this is the one
 // place a deferred notice can be spent. A waiting local command still goes
 // first: it keeps the lane busy, and the notice survives to the transition
@@ -1788,6 +1881,7 @@ fn send(channel: Channel(socket, recorder), outbound: Outbound, now: Int) {
     Lookup(ids) -> attempt.Decisions(ids)
     Listing -> attempt.DecidedList
     History(after, before) -> attempt.HistoryRange(after, before)
+    Lineage(from) -> attempt.LineageFrom(from)
     Read | Mutation -> attempt.NoSelection
   }
   let next =
@@ -1858,6 +1952,7 @@ pub fn is_read(command: String) -> Bool {
     "models"
     | "skills"
     | "schedules"
+    | "permissions"
     | "notes"
     | "queued_input"
     | "context"

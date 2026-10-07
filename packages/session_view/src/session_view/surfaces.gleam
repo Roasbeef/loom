@@ -74,7 +74,7 @@ import core/entry
 import gleam/bool
 import gleam/dict
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import session_view/advisor_pending
 import session_view/block_summary
 import session_view/command
@@ -89,6 +89,7 @@ import session_view/model.{
 import session_view/outbound
 import session_view/protocol
 import session_view/queue_request
+import session_view/remembered
 import session_view/session_channel
 import session_view/shared_set
 import session_view/transcript_lines
@@ -343,6 +344,64 @@ pub fn service_jobs_read(
         "Live jobs unavailable without a live conversation attachment",
       )
     _, worktree_view.Settled, _ -> shared
+  }
+}
+
+/// Sends a requested read of what the session remembers once the channel is
+/// ready for it.
+///
+/// Over the shared record alone. Only a host that asked for the read sets
+/// `remembered_refresh`, and the read is the operator's: the gateway refuses
+/// it to an observer (protocol-change/073), so a host asks only where it may
+/// approve. A read that cannot be sent now stays requested for the next tick.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_remembered_read(model.shared)
+/// ```
+@internal
+pub fn service_remembered_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.remembered_refresh, shared.peer {
+    Some(channel), worktree_view.Requested, Attached ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          outbound.send_frame(
+            shared_set.remembered_refresh(shared, worktree_view.Settled),
+            protocol.permissions(shared.next_id),
+          )
+        False -> shared
+      }
+    _, worktree_view.Requested, _ | _, worktree_view.Settled, _ -> shared
+  }
+}
+
+/// Forgets remembered permissions, as the host listed them.
+///
+/// Forgetting needs what an approval needs: a live attachment that may
+/// mutate. The request echoes the sequence the host's list carried, so the
+/// daemon refuses it when the list has moved, and a refusal asks the host to
+/// read again (`lane_fold.refuse`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.forget_remembered(shared, remembered.ForgetEverything(None))
+/// ```
+@internal
+pub fn forget_remembered(
+  shared: Shared(socket, recorder, source, replay_source),
+  forget: remembered.Forget,
+) -> Shared(socket, recorder, source, replay_source) {
+  case outbound.mutation_refusal(shared, command.Approve("")) {
+    Some(reason) -> session_model.append_error(shared, reason)
+    None ->
+      outbound.send_frame(
+        shared,
+        protocol.permission_forget(shared.next_id, forget),
+      )
   }
 }
 
@@ -1029,12 +1088,24 @@ pub fn receive_jobs(
   }
 }
 
-/// Context follows the server's selected configuration and the end of the
-/// active strand's operation, never scrollback retention and no longer the
-/// leaf. The leaf moves once per committed entry, so a refresh keyed on it
-/// cost the server a full branch scan per tool call: a thirty-tool turn ran
-/// about sixty of them for a percentage nobody reads until the turn ends.
-/// Streaming tokens and unrelated captures start no read.
+/// The least time between two reads that a provider usage row asks for.
+///
+/// A usage row commits once per generation, so a long turn of many tool
+/// rounds would otherwise cost the server a branch scan per round. Thirty
+/// seconds keeps the header within a few points of the real figure on the
+/// longest turns and holds the read rate near two per minute. The settling
+/// edge, a strand switch and a configuration change are not paced by it.
+pub const usage_refresh_interval_ms = 30_000
+
+/// Context follows the server's selected configuration, the end of the
+/// active strand's operation, and, while that operation runs, the usage rows
+/// its generations commit at most once per `usage_refresh_interval_ms`. It
+/// never follows scrollback retention and no longer the leaf. The leaf moves
+/// once per committed entry, so a refresh keyed on it cost the server a full
+/// branch scan per tool call: a thirty-tool turn ran about sixty of them for
+/// a percentage nobody reads until the turn ends. A tool result carries no
+/// usage and so starts no read, and neither do streaming tokens or unrelated
+/// captures.
 ///
 /// Over the shared record alone; it is one of the three edges
 /// `session_step.settle` runs after every event.
@@ -1055,11 +1126,17 @@ pub fn sync_context(
       session_model.queue_owner(after),
       after.active_strand,
     )
-  let changed = context_refresh_due(before, after)
+  let changed =
+    context_refresh_due(before, after)
+    || context_usage_due(before, after, selected.marked_ms)
   let context = case after.peer {
     Attached ->
       case changed {
-        True -> context_view.invalidate(selected)
+        True ->
+          context_view.State(
+            ..context_view.invalidate(selected),
+            marked_ms: Some(after.stamp.now_ms),
+          )
         False -> selected
       }
     Replaying -> selected
@@ -1080,6 +1157,7 @@ pub fn sync_context(
 /// configuration change, and the active strand's operation reaching `done`.
 /// A leaf that moved while that operation is still running is not one of
 /// them, which is what holds a thirty-tool turn to a single observation.
+/// `context_usage_due` adds the paced fifth.
 ///
 /// ## Examples
 ///
@@ -1100,6 +1178,40 @@ pub fn context_refresh_due(
     None, Some(_) -> True
     _, None -> False
   }
+}
+
+/// Whether a provider usage row landed on the live active strand and the
+/// last automatic read is at least `usage_refresh_interval_ms` old.
+///
+/// The usage ledger records the highest usage row it has admitted for each
+/// strand, so a row landing is a changed entry there; a tool result moves
+/// no ledger entry and cannot start a read. A row inside the interval is not
+/// remembered. The next row after the interval asks again and the settling
+/// edge reads regardless, so a stale header is bounded by one generation
+/// plus the interval.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.context_usage_due(before.shared, after.shared, None)
+/// ```
+@internal
+pub fn context_usage_due(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+  marked_ms: Option(Int),
+) -> Bool {
+  let landed =
+    dict.get(before.cache.seen, after.active_strand)
+    != dict.get(after.cache.seen, after.active_strand)
+  let paced = case marked_ms {
+    Some(marked) -> after.stamp.now_ms - marked >= usage_refresh_interval_ms
+    None -> True
+  }
+  before.active_strand == after.active_strand
+  && session_model.active_strand_live(after)
+  && landed
+  && paced
 }
 
 // The settling edge of the active strand's operation: the phase this terminal

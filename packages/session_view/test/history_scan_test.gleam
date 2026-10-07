@@ -2,9 +2,10 @@
 ////
 //// The web view closes a settled turn into a summary and reads its records
 //// again only when the reader asks, through a scan: a read that starts at one
-//// record, walks down in bounded intervals, and holds what it found apart from
-//// the window the page is drawing. These tests read what a scan holds, what it
-//// asks for, and that the window is the same after it as before.
+//// record, walks down the strand's own parent links a page at a time, and holds
+//// what it found apart from the window the page is drawing. These tests read
+//// what a scan holds, what it asks for, and that the window is the same after it
+//// as before.
 
 import core/clock
 import core/entry
@@ -50,14 +51,12 @@ fn window(items: List(snapshot.Item)) -> snapshot.Window {
   snapshot.Window(items, list.length(items) * 100, None)
 }
 
-fn between(
-  all: List(snapshot.Item),
-  after: Int,
-  before: Int,
-) -> snapshot.Window {
+// The page a lineage read from the record `from` returns: that record and the
+// ninety-nine below it, newest first, as the lane hands them over.
+fn page(all: List(snapshot.Item), from: Int) -> snapshot.Window {
   window(
     list.filter(all, fn(item) {
-      snapshot.sequence(item) > after && snapshot.sequence(item) < before
+      snapshot.sequence(item) <= from && snapshot.sequence(item) > from - 100
     }),
   )
 }
@@ -97,88 +96,96 @@ fn live(all: List(snapshot.Item)) -> history_view.State {
   )
 }
 
-fn leaf_text(seq: Int) -> String {
+fn text(seq: Int) -> String {
   ids.entry_id_to_string(id(seq))
 }
 
-// A scan reads down from the record it starts at, interval by interval, and the
+// A scan reads down from the record it starts at, a page at a time, and the
 // window the page draws is the same value when it is done.
 pub fn a_scan_reads_below_its_leaf_and_leaves_the_window_alone_test() {
   let all = entries(1200)
   let current = view(1200)
   let before = live(all)
   let started =
-    history_view.scan(before, leaf_text(500), 501, snapshot.empty(), current)
+    history_view.scan(before, text(500), 501, snapshot.empty(), current)
 
-  // Nothing is held yet, so the first read is owed for the interval below the
-  // record it starts from.
+  // Nothing is held yet, so the first read is owed from the record the scan
+  // starts at, and the window asks for nothing.
   let assert Some(branch) = history_view.scanned(started, current)
   assert branch.records == []
-  assert branch.unloaded == Some(leaf_text(500))
-  assert history_view.range(started) == None
+  assert branch.unloaded == Some(text(500))
+  assert history_view.lineage(started) == None
   let wanted = history_view.scan_older(started, branch.unloaded)
-  assert history_view.range(wanted) == Some(#(400, 501))
+  assert history_view.lineage(wanted) == Some(text(500))
+  assert history_view.range(wanted) == None
 
   let received =
-    history_view.accept(
-      history_view.sent(wanted, 501),
-      between(all, 400, 501),
-      501,
-      400,
-      current,
+    history_view.accept_lineage(
+      history_view.sent_lineage(wanted, text(500)),
+      page(all, 500),
+      text(500),
     )
   let assert Some(read) = history_view.scanned(received, current)
   assert list.length(read.records) == 100
+  assert read.unloaded == Some(text(400))
   assert received.window == before.window
   assert received.before_seq == before.before_seq
   assert received.request == history_view.Quiet
+  assert history_view.lineage(received) == None
+
+  // The next read starts at the parent the scan lacks, so no record is read
+  // twice.
+  let next = history_view.scan_older(received, read.unloaded)
+  assert history_view.lineage(next) == Some(text(400))
 }
 
 // A scan starts from the records the host already has: the part of a window it
 // is handed that is the leaf's ancestry below the sequence, and the read it asks
-// for next is below that.
+// for next starts at the parent of the oldest of them.
 pub fn a_scan_starts_from_what_the_host_already_holds_test() {
   let all = entries(1200)
   let current = view(1200)
-  let started =
-    history_view.scan(
-      live(all),
-      leaf_text(500),
-      501,
-      between(all, 449, 520),
-      current,
+  let known =
+    window(
+      list.filter(all, fn(item) {
+        snapshot.sequence(item) >= 449 && snapshot.sequence(item) < 520
+      }),
     )
+  let started = history_view.scan(live(all), text(500), 501, known, current)
   let assert Some(branch) = history_view.scanned(started, current)
-  assert list.length(branch.records) == 51
-  assert branch.unloaded == Some(leaf_text(449))
+  assert list.length(branch.records) == 52
+  assert branch.unloaded == Some(text(448))
   let assert Ok(first) = list.first(branch.records)
   assert first.entry.seq == 500
   let wanted = history_view.scan_older(started, branch.unloaded)
-  assert history_view.range(wanted) == Some(#(349, 450))
+  assert history_view.lineage(wanted) == Some(text(448))
 }
 
-// A reply belongs to the demand that asked for it. The window's own demand is
-// served first, and a reply for the interval the scan asked for is the scan's.
+// The window's own demand is served first, so the lane reads one thing at a
+// time, and a reply goes to the scan that asked for it and to nothing else.
 pub fn a_reply_goes_to_whoever_asked_for_it_test() {
   let all = entries(1200)
   let current = view(1200)
   let asked =
-    history_view.scan(live(all), leaf_text(500), 501, snapshot.empty(), current)
-    |> history_view.scan_older(Some(leaf_text(500)))
-  let window_wants = history_view.older(asked, Some(leaf_text(1100)))
+    history_view.scan(live(all), text(500), 501, snapshot.empty(), current)
+    |> history_view.scan_older(Some(text(500)))
+  let window_wants = history_view.older(asked, Some(text(1100)))
   let assert Some(#(window_after, window_before)) =
     history_view.range(window_wants)
   assert window_before == 1101
   assert window_after == 1000
+  assert history_view.lineage(window_wants) == None
 
-  // The scan's reply, with the window's demand also owed, changes only the
-  // scan once the scan's read is out.
-  let sent = history_view.sent(asked, 501)
-  let received =
-    history_view.accept(sent, between(all, 400, 501), 501, 400, current)
+  // The scan's reply changes only the scan once the scan's read is out.
+  let sent = history_view.sent_lineage(asked, text(500))
+  let received = history_view.accept_lineage(sent, page(all, 500), text(500))
   let assert Some(read) = history_view.scanned(received, current)
   assert list.length(read.records) == 100
   assert received.window == sent.window
+
+  // A reply for a read the scan did not ask for is not taken.
+  let stray = history_view.accept_lineage(sent, page(all, 300), text(300))
+  assert stray == sent
 }
 
 // A read that is refused, or a lane that is lost, abandons the scan and says so
@@ -187,29 +194,35 @@ pub fn a_refused_read_abandons_the_scan_test() {
   let all = entries(1200)
   let current = view(1200)
   let out =
-    history_view.scan(live(all), leaf_text(500), 501, snapshot.empty(), current)
-    |> history_view.scan_older(Some(leaf_text(500)))
-    |> history_view.sent(501)
+    history_view.scan(live(all), text(500), 501, snapshot.empty(), current)
+    |> history_view.scan_older(Some(text(500)))
+    |> history_view.sent_lineage(text(500))
   assert out.scan != history_view.Abandoned
   let refused = history_view.cancel(out)
   assert refused.scan == history_view.Abandoned
-  assert history_view.range(refused) == None
+  assert history_view.lineage(refused) == None
   assert history_view.scanned(refused, current) == None
   assert history_view.scan_end(refused).scan == history_view.Unscanned
 }
 
-// A scan stops being readable when no sequence is left below it, so a host that
-// reaches the start of a strand does not ask for an interval that is not there.
-pub fn a_scan_at_the_first_sequence_reads_no_further_test() {
+// A read that brings nothing the scan does not hold says the store has nothing
+// below it, so the scan is not readable and the same entry is not asked for
+// again. A strand's first record has no parent, so it is not asked for either.
+pub fn a_read_that_finds_nothing_ends_the_scan_test() {
   let all = entries(1200)
   let current = view(1200)
-  let above =
-    history_view.scan(live(all), leaf_text(1), 2, snapshot.empty(), current)
-  assert history_view.scan_readable(above, Some(leaf_text(2)))
-  let at =
-    history_view.scan(live(all), leaf_text(1), 1, snapshot.empty(), current)
-  assert !history_view.scan_readable(at, Some(leaf_text(1)))
-  assert history_view.scan_older(at, Some(leaf_text(1))) == at
+  let asked =
+    history_view.scan(live(all), text(500), 501, snapshot.empty(), current)
+    |> history_view.scan_older(Some(text(500)))
+    |> history_view.sent_lineage(text(500))
+  let empty = history_view.accept_lineage(asked, snapshot.empty(), text(500))
+  assert !history_view.scan_readable(empty, Some(text(500)))
+  assert history_view.scan_older(empty, Some(text(500))) == empty
+  assert history_view.lineage(empty) == None
+  assert !history_view.scan_readable(
+    history_view.scan(live(all), text(1), 2, snapshot.empty(), current),
+    None,
+  )
 }
 
 // A leaf that is not an identity abandons the scan before it reads anything.
@@ -235,7 +248,7 @@ pub fn a_scan_past_its_bytes_keeps_its_newest_end_test() {
   let current = view(1200)
   let heavy =
     snapshot.Window(
-      list.map(between(all, 400, 501).items, fn(item) {
+      list.map(page(all, 500).items, fn(item) {
         case item {
           snapshot.Loaded(entry, _) -> snapshot.Loaded(entry, 4 * 1024 * 1024)
           snapshot.Unloaded(..) -> item
@@ -245,15 +258,15 @@ pub fn a_scan_past_its_bytes_keeps_its_newest_end_test() {
       None,
     )
   let asked =
-    history_view.scan(live(all), leaf_text(500), 501, snapshot.empty(), current)
-    |> history_view.scan_older(Some(leaf_text(500)))
-    |> history_view.sent(501)
-  let received = history_view.accept(asked, heavy, 501, 400, current)
+    history_view.scan(live(all), text(500), 501, snapshot.empty(), current)
+    |> history_view.scan_older(Some(text(500)))
+    |> history_view.sent_lineage(text(500))
+  let received = history_view.accept_lineage(asked, heavy, text(500))
   let assert Some(read) = history_view.scanned(received, current)
   assert list.length(read.records) == 8
   let assert Ok(newest) = list.first(read.records)
   assert newest.entry.seq == 500
-  assert !history_view.scan_readable(received, Some(leaf_text(500)))
+  assert !history_view.scan_readable(received, Some(text(500)))
 }
 
 // Reads the scan until it can read no further, and says how many reads it took.
@@ -265,46 +278,64 @@ fn exhausted(
 ) -> #(history_view.State, Int) {
   let assert Some(branch) = history_view.scanned(scan, current)
   let wanted = history_view.scan_older(scan, branch.unloaded)
-  case
-    history_view.scan_readable(scan, branch.unloaded),
-    history_view.range(wanted)
-  {
-    True, Some(#(after, before)) ->
+  case history_view.lineage(wanted) {
+    Some(from) -> {
+      let assert Ok(from_seq) =
+        list.find_map(all, fn(item) {
+          case snapshot.identity(item) == from {
+            True -> Ok(snapshot.sequence(item))
+            False -> Error(Nil)
+          }
+        })
       exhausted(
-        history_view.accept(
-          history_view.sent(wanted, before),
-          between(all, after, before),
-          before,
-          after,
-          current,
+        history_view.accept_lineage(
+          history_view.sent_lineage(wanted, from),
+          page(all, from_seq),
+          from,
         ),
         all,
         current,
         reads + 1,
       )
-    True, None | False, _ -> #(scan, reads)
+    }
+    None -> #(scan, reads)
   }
 }
 
 // A record over the presentation limit reaches the page as a descriptor with no
-// payload, and no read below it ever proves it, so a scan that runs into one
-// stops there. Reading on would walk every sequence beneath it to the strand's
-// first for nothing: with the oversize record near the top of a session of fifty
-// thousand records, that is about five hundred serial reads.
+// payload, and no read below it proves it, so a scan that runs into one stops
+// there. Reading on would ask for the same record again for nothing.
 pub fn a_scan_stops_at_a_record_over_the_presentation_limit_test() {
   let all =
     list.map(entries(1200), fn(item) {
       case snapshot.sequence(item) {
-        300 -> snapshot.Unloaded(leaf_text(300), 300, 5 * 1024 * 1024)
+        300 -> snapshot.Unloaded(text(300), 300, 5 * 1024 * 1024)
         _ -> item
       }
     })
   let current = view(1200)
   let started =
-    history_view.scan(live(all), leaf_text(500), 501, snapshot.empty(), current)
+    history_view.scan(live(all), text(500), 501, snapshot.empty(), current)
   let #(done, reads) = exhausted(started, all, current, 0)
   assert reads <= 4
   let assert Some(branch) = history_view.scanned(done, current)
-  assert branch.unloaded == Some(leaf_text(300))
+  assert branch.unloaded == Some(text(300))
   assert !history_view.scan_readable(done, branch.unloaded)
+}
+
+// However many records other strands wrote between this strand's, a scan takes
+// one read for each hundred of the strand's own: the walk never meets them. This
+// is the property the interval read lacked, which needed a read for every
+// hundred sequences of the whole session. The newest hundred are the live
+// window's, which a scan starts from, so they are not read.
+pub fn a_scan_costs_the_strands_records_and_not_the_sessions_test() {
+  let all = entries(1200)
+  let current = view(1200)
+  let started =
+    history_view.scan(live(all), text(1200), 1201, snapshot.empty(), current)
+  let #(done, reads) = exhausted(started, all, current, 0)
+  assert reads == 11
+  let assert Some(branch) = history_view.scanned(done, current)
+  assert list.length(branch.records) == 1200
+  assert branch.unloaded == None
 }

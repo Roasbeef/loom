@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:344`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:353`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:3991`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4304`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -558,8 +558,10 @@ shared step and so does what the step does, including reads for surfaces
 it does not draw. After a first capture it reads the strand's notes, to
 seed a todo board, which the todo panel draws, and then the session's context, the
 advisor's pending nudges and the goal, each when the one before is
-answered; it reads the context again when an operation ends and when the
-configuration changes. Ten seconds after it opens, and then on a tick at most every ten seconds, it also reads the followed
+answered; it reads the context again when an operation ends, when the
+configuration changes, and, while the followed strand runs, when a provider
+usage row lands, at most once every `surfaces.usage_refresh_interval_ms` (30 s;
+protocol-change/075). Ten seconds after it opens, and then on a tick at most every ten seconds, it also reads the followed
 strand's live jobs for the Session pane (the lane also asks for them whenever a run's completion changes; the delay keeps the startup reads the same as the terminal's):
 `live_jobs` is one of the gateway's read-only commands, every role may send
 it, and its answer is a snapshot the lane folds like the others, so it adds
@@ -610,28 +612,32 @@ page draws from its newest blocks back, and only while it runs.
 hundred records, which are the end of a turn. It draws nothing for that turn
 until it has read its start, and then draws it once, with the right figures. The
 read is the history window's scan (`history_view.scan`): a transient read of one
-stretch of the strand's ancestry, from one record downward through the lane's
-`history` read in intervals of at most a hundred sequences, kept apart from the
-window so that a read through a turn of thousands of records cannot evict the
-live end. It starts from the records the page already holds, the capture's and
+stretch of the strand's ancestry, from one record downward along the strand's own
+parent links through the lane's lineage read (`history_lineage`,
+protocol-change/072) in pages of at most a hundred of the strand's records, kept
+apart from the window so that a read through a turn of thousands of records
+cannot evict the live end. It starts from the records the page already holds, the capture's and
 the window's, and asks the daemon only for what those do not settle. The page
 has one read out at a time and chooses the next from what it wants, in this
 order: the start of the turn the window began inside, the steps of an open fold
 it does not hold, and the turns below its oldest after a press of "Load older".
-A read that finds none of the strand's records, because other strands wrote
-every sequence in it, still moves the next read below it. The scan is bounded
-at 4,096 records, and a read the lane refuses is given up and not asked again
-until the reader presses again.
+What other strands wrote between the strand's records is never read, so a strand
+sparse among the session's sequences opens in one read and pages by its own
+turns, and a turn of any length is complete when the reads reach its input. A
+read that adds nothing ends the scan. The scan is bounded at 4,096 records, and
+a read the lane refuses is given up and not asked again until the reader presses
+again.
 
 **Load older.** Above the oldest row the lane draws `lane.Top`: the
 beginning of the conversation, a "Load older" button, "Loading older
 rows…" while the page reads turns, or a line saying the page is full. The button
 sends `component.OlderRequested` on both pages, which `component.older` turns
 into a want (`View.older`). The page then reads from the parent of the oldest
-closed turn's first record, on its own lane, the read the terminal pages with
-(`session_channel.history`), and stops at the first page that holds ten whole
+closed turn's first record, on its own lane, through the lineage read
+(`session_channel.lineage`), and stops at the first page that holds ten whole
 turns, the strand's first record or the scan's bound. A press loads turns, not
-records. The lane has one request out at a time: when it is busy the demand
+records. Until the first cut has arrived the lane says it is loading, and it says
+the conversation begins only when a read of the strand found its first record. The lane has one request out at a time: when it is busy the demand
 stays `Wanted` and is offered again after every reduction until the lane takes
 it, and a second press while a read is out asks nothing. The page keeps
 following the session while the read is out, since the records it reads are kept
@@ -686,9 +692,10 @@ its top edge was in the viewport instead, and each time the lane changes size it
 scrolls by however far the button moved, until the reader next touches the
 transcript, so the divider stays under the pointer when the steps are drawn.
 
-**Observers.** A `history` read is a read. The gateway admits it for an
-observer's binding (`gateway.read_only` lists `History`), and the lane
-sends it on any attachment (`session_channel.history` checks no role).
+**Observers.** A `history` or `history_lineage` read is a read. The gateway
+admits it for an observer's binding (`gateway.read_only` lists `History` and
+`HistoryLineage`), and the lane sends it on any attachment
+(`session_channel.lineage` and `session_channel.history` check no role).
 Protocol-change/051's addendum on history paging lets the observer's page
 carry this one handler: the button's message is `component.OlderRequested`
 on both pages, and the page socket admits from an observer a `click` at
@@ -1001,8 +1008,9 @@ and mints nothing. `ui_route_test` runs each step against a real registry and
 ### Creating a session
 
 The fourth pull request of 065 lets the owner's home make a session. The owner
-picks a workspace the owner already has a session in; there is no path field.
-`ui_socket.home_create_capability` hands `Start.create` to a page whose principal
+picks a workspace the owner already has a session in, or, since
+[protocol-change/074](../../protocol-change/074-web-new-folder-sessions.md),
+types a folder inside their home directory (below). `ui_socket.home_create_capability` hands `Start.create` to a page whose principal
 is the daemon's owner and whose ceiling is Operator, and to no other, so any
 other home draws nothing (`view/create` has `Never`) and drops the messages.
 With it `view/home_table` draws a "New session" button at the head of each
@@ -1038,6 +1046,39 @@ different paths, each handler has its own decoder, and the decoders refuse each
 other's fields (`text` for a rename, `name` and `shareable` for a creation), so a
 submit reaches one handler and one message. `ui_route_test`, `ui_socket_test`, `ui_sessions_test` and
 `home_test` read each refusal and the admission.
+
+#### A folder that has no session
+
+Protocol-change/074 adds an "Other folders" section after the home's lists
+(`view/folders`), drawn only where `view/create` is `Offered` and the page has
+read its list. It holds a "New session in another folder" button and one row for
+each remembered folder that no group already shows. The button opens a form with
+a path field and the same name and Shareable box (`create.Elsewhere`, then
+`create.Sending` while the creation is out). It is the one form whose workspace is
+a field, so `view/create.typed_fields` accepts exactly one `path`, one `name`, at
+most one `shareable` and nothing else. A creation now names a `creations.Place`:
+`Drawn(workspace)` for a workspace the page drew and `Typed(path)` for the field.
+The submit sits beneath `home.table_path`, so the owner's admission is unchanged.
+
+`create_for` resolves the place before anything is created (`placed`). A typed
+path goes to `client/daemon/new_folder.check`: the text rule, `~` expansion,
+`bootstrap.canonical_directory`, the rule that the canonical folder lies strictly
+inside the canonical home directory with no hidden segment below it
+(`creations.inside`), and ownership by the home directory's owner with owner
+read, write and search. A refusal is `NotAFolder` or `OutsideHome`, in fixed words
+that never say the path. A `Drawn` workspace is accepted when the owner holds a
+session in it, or when it is one of the owner's remembered folders, which is then
+judged like a typed path, so a folder deleted since is refused at the press.
+
+The remembered folders are the catalogue's `catalogue_recent_folders` (version 8,
+ten rows, ordered by an autoincrement sequence that is also the entry's identity).
+`server.create_session` remembers the canonical workspace once a session exists, so
+every surface feeds it. `Start.folders` (`home.Folders`, given on the creation
+capability's condition by `ui_socket.home_folders_capability`) reads the list after
+each list read (`recent_for`, which leaves out folders outside home) and forgets
+an entry by its identity (`forget_for`), each in a task after the same owner check
+as a creation. The rows are keyed by that identity, and a path is drawn only as a
+text node.
 
 ### The admin page
 
@@ -1301,6 +1342,38 @@ is refused binds nothing and leaves the claim open. A lost reply cannot be
 replayed, since the login drawn for it is gone: the owner rotates, which voids the
 login with the rest.
 
+## The context breakdown (protocol-change/075)
+
+The top bar's `ctx ~41%` is the summary of a native `<details>`
+(`heading.view`), and its body is `view/context_breakdown`: the headline
+`Context window ~U / W (N%)`, the basis in words, a stacked bar, rows for the
+pinned prompt, the tools, the messages, what the provider counted beyond them,
+the compaction reserve and free space, the tokens left until the session
+compacts itself, and a closed list of the tools by name and the messages by
+kind, bounded at eight rows each. It is drawn from the board the shared record
+already holds (`context_view.State`), the one the figure reads, so it adds no
+read and no wire field. The browser opens and closes it, so the server renders
+nothing for that, and the stylesheet places the panel under the bar at the
+right edge (`.ctx-panel`, fixed, hairline border, no shadow). A tool name or a
+message kind is a text node; each bar segment's `style` holds an integer
+percentage the module computed.
+
+The panel has two buttons in its first child, so their paths do not depend on
+whether a board has arrived. Refresh (`component.ContextRefreshRequested`,
+`component.context_refresh_path`) marks the board stale and ticks the shared
+step, which sends the read, as the terminal's `r` does. The observer's socket
+admits a click at that exact path and nowhere new in the bar, since the button
+asks only for a read of a board the page draws. Compact now
+(`component.CompactStrand`, the next sibling) runs `/compact` through the
+shared step's control arm, the path a typed `/compact` takes, and only the
+operator's page draws it (`context_breakdown.Actions.compact`).
+
+The figure itself follows the board, which `surfaces.sync_context` keeps
+fresh. While the active strand runs, a usage row landing in the cache ledger
+(`cache_watch.Ledger.seen`) starts a read when the last automatic read is 30
+seconds old, so a long turn's figure follows it at about two reads a minute at
+most. A tool result admits no row and starts none.
+
 ## Expanding a row
 
 The terminal's `Ctrl+g` expands every row at once; the page lets the reader
@@ -1424,8 +1497,25 @@ would try to trick the person into approving:
   Send, Queue or Steer button, or by Command or Control with Enter in the
   editor, which submits that same form; the form's submit never carries a
   decision.
-- The page offers allow once and deny. Allow for the session is left out,
-  because a remembered grant outlives the page that gave it.
+- The owner's page offers allow once, allow for the session and deny; a member's
+  offers allow once and deny only, and draws no list, because remembering,
+  listing and forgetting are the owner's alone (the gateway refuses them to a
+  member; `component.may_remember` is the page's offer)
+  ([protocol-change/073](../../protocol-change/073-web-session-grants.md)).
+  Allow for the session follows allow once, names the tool ("Allow bash for
+  this session"), and appears only where `approval.rememberable` holds, the
+  terminal's rule; `component.decide` asks it again at the click and echoes
+  the drawn sequence, action digest and grants with `scope: "session"`.
+  A remembered grant outlives the page that gave it, so the Session pane
+  lists what the session remembers (`view/remembered`): each filesystem or
+  network permission and each remembered command, who allowed it, from which
+  browser sign-in or terminal, and when. Each row has a two-step Forget and
+  "Forget all" sits under the list. A permission from a browser sign-in that
+  has since ended says so (`Transport.logins`, judged by the daemon from the
+  registry). The list is the Session pane's sixth child
+  (`component.remembered_path`); an observer's page draws none and its socket
+  admits none, and the gateway refuses `permissions` and
+  `permission_forget` to an observer on its own.
 - Cards are keyed by the record's sequence, so a click in flight while the
   list shifts reaches the same card or none.
 
@@ -1509,7 +1599,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/component.gleam` | The observer's application: the shared step's host, event-driven delivery (a batch per burst, one timer for the lane's next due reading), the clock read once per message, `submit` and `decide` wrapping the operator's inputs as the step's commands, the history read `older`, `refreshed` deriving the row window (`live_rows`, `held_rows`, `Paging`) and the strip from the record, and `view`, which lays out the regions below. |
 | `packages/web_view/src/web_view/ending.gleam` | `Ending`, the closed reason a page has no session, with its fixed headline and advice, its reason string (the relay's hop to the component) and its close code (`Final` or `Retry`). |
 | `packages/web_view/src/web_view/view/ended.gleam` | The notice a page draws from an `Ending`, inside the heading. |
-| `packages/web_view/src/web_view/view/heading.gleam` | The top bar: the brand, the session's workspace and name, the connection's status and the context and cost estimates, drawn from plain values the component hands it. |
+| `packages/web_view/src/web_view/view/heading.gleam` | The top bar: the brand, the session's workspace and name, the connection's status and the context and cost estimates, drawn from plain values the component hands it. The context figure opens `context_breakdown`. |
+| `packages/web_view/src/web_view/view/context_breakdown.gleam` | The panel the context figure opens: headline, stacked bar, rows, tokens until compaction and a bounded item list, drawn from `context_view.State`, with Refresh and, on the operator's page, Compact now. |
 | `packages/web_view/src/web_view/view/switch.gleam` | The hidden `<loom-switch>` both pages draw as their centre's last child, carrying a ticket's address only once the daemon has minted one. |
 | `packages/web_view/src/web_view/view/shell.gleam` | The page's frame, `<loom-shell>`, and the order of its four children: the top bar, the sidebar, the centre column and the strand panel. The `sidebar` attribute is written from the `Sidebar` type, and `workspace` carries the digest the daemon computed, for the browser's saved layout. |
 | `packages/web_view/src/web_view/view/panel.gleam` | The strand panel, the right column and the frame's last child: four panes, always all drawn, the Strands pane (a title and the strip's cards), the Changes pane, the Session pane and the Trace pane. `<loom-shell>` draws the tabs and shows one pane; the panel carries no decision control. |
@@ -1526,6 +1617,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/session_tab.gleam` | The Session pane, as groups under eyebrow headings (Session, People, Goal, Fork, Jobs, Cost; the stylesheet orders them, the children keep their pinned paths): the workspace, the goal, the followed strand's live jobs (the read-only `live_jobs` read the component makes on a tick, first ten seconds after opening and then at most every 10 s), on an operator's page only the attached viewers, and the estimated cost, as text nodes in the panel's third pane. |
 | `packages/web_view/src/web_view/invites.gleam` | The invitation an owner's page may mint: `Role` (observer or operator, never an owner), `Invitation`, `Reason` with its fixed words, `Answer`, the control's `Share` state and `claim_ttl_ms` (one hour). |
 | `packages/web_view/src/web_view/view/share.gleam` | The invitation control in the Session pane: two buttons, or the invitation with a `<loom-copy>` box for the command and for the token. Drawn on an owner's page only; the messages its buttons send are values handed in. |
+| `packages/web_view/src/web_view/remembered.gleam` | The page's own part of the remembered-permissions list: `State` (when it was last wanted, the open question, the sign-ins the daemon said have ended), `Armed` (one forget as the list looked when its button was drawn), `Login`, the row identities, and `refresh_ms` (30 s). |
+| `packages/web_view/src/web_view/view/remembered.gleam` | The Session pane's list of what "Allow for this session" kept: each permission and remembered command, who allowed it, from which sign-in or terminal and when, a two-step Forget for each row and for all of them, and a note under a permission whose browser sign-in has ended. The pane's sixth child. Every path, command and name is a text node. |
 | `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn under the strand panel's panes on both pages and has no handler. |
 | `packages/web_view/src/web_view/view/commentary.gleam` | The advisor's settled commentary, read-only: the request labels and full bodies of the reviews, drawn in the Strands pane under the strand cards as one closed `details` whose summary is `Advisor · N reviews · last: …`, the bodies as Markdown, newest three then a count, with the board's not-loaded line. No handler, and nothing while the advisor itself is on screen. |
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons and the Fork form (`session`, in the Session pane), and the dock's one goal line while a goal runs or is held (`dock`). It takes the messages its buttons send and the form's submit handler as values. |

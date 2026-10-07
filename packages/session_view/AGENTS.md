@@ -123,17 +123,23 @@ for a host with no surfaces.
   looks at records without keeping them (protocol-change/071). `scan(state,
   leaf, before_seq, known, view)` starts it at the record `leaf`, seeded with
   the part of `known` and the window that is the leaf's ancestry below
-  `before_seq`; `scanned` gives what it holds as a `Branch`, `scan_older` asks
-  for the interval below it (a read the host's step sends through the same
-  `range`/`sent`/`accept` as the window's, the window's demand served first, a
-  reply going to whichever asked for it), `scan_readable(state, missing)` says
-  whether it can go on (a sequence is left, it has neither reached its
-  bound nor been cut, and the parent it is missing, `missing`, is not a record
-  over the presentation limit that it already holds as a descriptor: no read
-  below such a record proves it), and `scan_end` drops it. It is bounded at 4,096 records
-  and 32 MiB, private to the module, and a page that would take it past the
-  bound is cut at the oldest end, so it still ends at its leaf, and the scan is
-  unreadable afterwards. `Scanning.barren` counts reads in a row that added nothing, and `scan_floor` gives the sequence reached once there are eight, which the host takes as a reason to stop and resume below it (a strand sparse among the session's sequences). A `cancel` abandons it. The window is the same value after a scan as before it.
+  `before_seq`; `scanned` gives what it holds as a `Branch`. The scan reads the
+  strand's own parent links (protocol-change/072): `scan_older` owes a read
+  that starts at the parent the scan lacks (`Lineage`: `Idle | Owed(from) |
+  Out(from)`), `lineage` names the entry to read when the window has no demand
+  of its own to serve first, `sent_lineage` marks it out, and `accept_lineage`
+  takes the page that answers it, ignoring a reply to a read the scan did not
+  ask for. A page that adds no record the scan did not hold sets
+  `Floor` to `Bottomed`, so the same entry is never asked for twice.
+  `scan_readable(state, missing)` says whether it can go on (the last read added
+  records, it has neither reached its bound nor been cut, and the parent it is
+  missing, `missing`, is not a record over the presentation limit that it
+  already holds as a descriptor: no read below such a record proves it), and
+  `scan_end` drops it. It is bounded at 4,096 records and 32 MiB, private to the
+  module, and a page that would take it past the bound is cut at the oldest end,
+  so it still ends at its leaf, and the scan is unreadable afterwards. A
+  `cancel` abandons it. The window is the same value after a scan as before it,
+  and its own interval read (`range`, `sent`, `accept`) is the terminal's.
 - `protocol.Event`, `protocol.EntryRecord` and the board types, and
   `session_wire.Reply`: total decoders for the daemon's frames.
 - `transcript_line.Line(speaker, text)` and `Speaker`, with the live
@@ -453,7 +459,9 @@ recorded (the terminal through `tui_model.hold_shared`, `run_shared` and
   `retire_delivered_nudges` for a pushed entry,
   `retire_nudges_delivered_since_board` for a captured cut, `refuse_goal`),
   the `sync_*` edges with
-  `context_refresh_due`, `advisor_nudges_action` and `goal_action`, which
+  `context_refresh_due`, `context_usage_due` (a provider usage row landing on the
+  live active strand, at most once per `usage_refresh_interval_ms` of the
+  selection's `context_view.State.marked_ms`), `advisor_nudges_action` and `goal_action`, which
   compare two records, and the goal commands `submit_goal_action` and
   `confirming`. A dropped queue read appends `queue_request.Dropped`, and a
   goal board or failed goal read appends a `GoalObservation`. The functions
@@ -618,6 +626,18 @@ fit. It is pure and portable, and the web view's `component.held` is its one
 caller (protocol-change/070); `newest` and `item_rows` are public so a host that
 reads a fold's steps keeps no more than a page draws.
 
+`turn_labels` draws the summarizer's labels on the finished pieces
+(`apply(pieces, labels)`): each reasoning row of a `Plain` block or a `Work`
+item whose content block has a label (`transcript_lines.labels_for`: the stored
+label, or the live label carried over to the entry's first long reasoning block)
+becomes a `SummarizedReasoning` row, with the row's key and the block's full
+text (`thoughts`) unchanged. It is applied when the lane is drawn and never
+stored in a piece, so a label that arrives after a turn was sealed
+(`turn_ledger`) or after a fold's steps were read shows with nothing re-sealed.
+`keys(pieces)` lists the long reasoning blocks of the same pieces for
+`block_summary.want`. `step.update`'s tick runs `surfaces.service_block_summaries`
+for a host that has marked blocks wanted.
+
 The remaining modules are the pieces those decode or fold through:
 `approval` (exact escalation decisions), `advisor_history` and
 `advisor_pending`, `block_summary` (summarizer labels), `command` and
@@ -626,7 +646,12 @@ attachment list; it also recognises the memory context the daemon attaches to
 a run, `memory_context_lines`, and folds it in `transcript_text` to `memory
 context (n lines)` beside the `[loom]` injection collapse, and owns the
 attribution lead and fence `client/memory` builds its text from), `context_view`, `file_read_view`, `goal_view`,
-`live_jobs`, `notes_view`, `pasted_image`, `queued_input`,
+`live_jobs`, `notes_view`, `pasted_image`, `queued_input`, `remembered` (what
+the session remembers for its operator, protocol-change/073: the board's total
+decoder, the words both hosts use for a row and `Forget`, the request a forget
+becomes; `Shared.remembered` holds the last board and `remembered_refresh` is
+the page's owed read, serviced by `surfaces.service_remembered_read` and
+unused by the terminal),
 `stream_identity`, `text_hygiene`, `todo_board` and `tool_activity`, and
 `worktree_view`.
 

@@ -218,6 +218,7 @@ fn page(
     transport: component.Transport(
       ..start.transport,
       worktree: Some(fn(_deliver) { process.send(asks, Nil) }),
+      logins: None,
     ),
   )
   |> component.new

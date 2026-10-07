@@ -269,7 +269,8 @@ pub fn apply_channel_update(
 // asks for. A refusal of one is no command's outcome.
 fn host_read(command: String) -> Bool {
   case command {
-    "history" | "escalations_get" | "escalations_decided" -> True
+    "history" | "history_lineage" | "escalations_get" | "escalations_decided" ->
+      True
     _ -> session_channel.is_read(command)
   }
 }
@@ -286,6 +287,8 @@ fn fold_update(
       reconcile_cut(shared, cut, view, trigger, around)
     session_channel.HistoryPage(window, before, after) ->
       receive_history(shared, window, before, after, around)
+    session_channel.LineagePage(window, from) ->
+      receive_lineage(shared, window, from, around)
     session_channel.LookedUp(records, missing) -> {
       // A lookup started before automatic presentation may finish while the
       // operator is reviewing another question. The visible record owns
@@ -327,7 +330,8 @@ fn fold_update(
       }
     }
     session_channel.Auxiliary(event) -> event_fold.apply_event(shared, event)
-    session_channel.RequestRefused("history", _, code, message) ->
+    session_channel.RequestRefused("history", _, code, message)
+    | session_channel.RequestRefused("history_lineage", _, code, message) ->
       session_model.append_error(
         shared_set.scrollback(shared, history_view.cancel(shared.scrollback)),
         "Older history: " <> code <> ": " <> message,
@@ -1145,6 +1149,10 @@ pub fn receive_unlaned(
 /// History shares the existing correlated read lane. A busy lane leaves one
 /// demand pending without blocking input, spawning a worker, or opening a socket.
 ///
+/// The window's demand is an interval of the session's sequence and is served
+/// first. A scan's demand is the ancestry of one entry, and is read as a
+/// lineage (`session_channel.lineage`), which names no sequence at all.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1154,8 +1162,12 @@ pub fn receive_unlaned(
 pub fn service_history(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
-  case history_view.range(shared.scrollback), shared.channel {
-    Some(#(after, before)), Some(channel) -> {
+  case
+    history_view.range(shared.scrollback),
+    history_view.lineage(shared.scrollback),
+    shared.channel
+  {
+    Some(#(after, before)), _, Some(channel) -> {
       case
         session_channel.history(
           channel,
@@ -1174,7 +1186,42 @@ pub fn service_history(
         }
       }
     }
-    _, _ -> shared
+    None, Some(from), Some(channel) -> {
+      case
+        session_channel.lineage(channel, from, now: shared.stamp.transport_ms)
+      {
+        Error(_) -> shared
+        Ok(channel) -> {
+          let held = session_model.hold_channel(shared, channel)
+          shared_set.scrollback(
+            held,
+            history_view.sent_lineage(shared.scrollback, from),
+          )
+        }
+      }
+    }
+    _, _, _ -> shared
+  }
+}
+
+// A lineage page belongs to the scan that asked for it, and only the scan's
+// host takes what it read, so the shared record changes only in its scrollback.
+// The projection is built again, as it is for any page, because what the scan
+// holds is what the host was waiting to draw from.
+fn receive_lineage(
+  shared: Shared(socket, recorder, source, replay_source),
+  window: snapshot.Window,
+  from: String,
+  around: Surroundings,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.captured {
+    None -> shared
+    Some(#(cut, view)) -> {
+      let history = history_view.accept_lineage(shared.scrollback, window, from)
+      let shared =
+        apply_cut(shared_set.scrollback(shared, history), cut, view, around)
+      shared_set.render_revision(shared, shared.render_revision + 1)
+    }
   }
 }
 
@@ -1392,6 +1439,12 @@ fn apply_request_refused(
   // decisions it saw live and says nothing.
   use <- bool.lazy_guard(command == "escalations_decided", fn() { shared })
 
+  // The read of what the session remembers is the page's own as well. A
+  // daemon that does not know it leaves the page's list unread, which the
+  // page says in its own words, and a footer error every half minute would
+  // be the only other trace.
+  use <- bool.lazy_guard(command == "permissions", fn() { shared })
+
   // A notes read refused while no notes surface is open was the todo
   // panel's seed. An older daemon refuses it, and an error row would report
   // a read the operator never asked for.
@@ -1413,6 +1466,11 @@ fn apply_request_refused(
           )
         False -> shared
       }
+
+    // A forget that lost its guard changed nothing, and the list it was made
+    // from is out of date, so the page reads it again.
+    "permission_forget" ->
+      shared_set.remembered_refresh(shared, worktree_view.Requested)
     "live_jobs" ->
       case shared.jobs_request == Some(request_id) {
         True ->
@@ -1522,6 +1580,11 @@ pub fn apply_replay_change(
       shared_set.scrollback(
         shared,
         history_view.sent(history_view.freeze(shared.scrollback), before),
+      )
+    attempt_replay.RequestedLineage(entry) ->
+      shared_set.scrollback(
+        shared,
+        history_view.sent_lineage(shared.scrollback, entry),
       )
     attempt_replay.Rejected(reason) ->
       session_model.append_error(shared, "open session: " <> reason)

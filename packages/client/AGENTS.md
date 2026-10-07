@@ -86,6 +86,29 @@ workspace, catalogue and code-mode refusal inputs before constructing the
 restart specification. Those callbacks retain the runtime inputs they require,
 but no longer add a path through the complete startup `Settings` record.
 
+## Transfer captures and a slow storage actor
+
+`begin_transfer` does not wait for storage. It starts a one-task weft run
+whose task calls `snapshot_reader.capture`, so the run owns the reply subject
+and the five-second deadline, and the answer returns to the hub as
+`CaptureReported` through the pending entry in `State.captures`. The entry
+holds the request's reply capability, because `request_frame` clears the
+connection's own copy when it returns. A late reply goes to a task that has
+already exited, so it is never an unexpected message in the hub's mailbox, and
+the hub keeps serving every other attachment while one capture is outstanding.
+
+`reader_failed` fences the hub (`ReaderPoisoned`, every attachment closed, the
+incarnation's stop capability invoked) only for `snapshot.ReaderUnavailable`,
+which `storage/internal/snapshot_call` reports when its monitor sees the
+storage actor die. `ReadTimedOut` is only a deadline. It refuses the one
+request in band as `snapshot_failed` ("retry the request"), drops that
+transfer, and leaves the attachment open for the client's retry. The cost is
+that a storage actor which is alive but never answers no longer retires its
+session by itself; each retry queues one more capture behind it, bounded by
+the one request a connection may have in flight. The goal, advisor, block
+summary and notes reads still call `capture` from the hub's own process, so
+they can still receive a late reply there; they take the same refusal.
+
 ## Provider observation capture
 
 `wiring.request_image_classifier` projects the session before constructing
@@ -401,7 +424,9 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   (`component.Start.workspace_digest`, the lower-case SHA-256 in hex) that
   the browser keys the reader's saved layout by, so a path is never an
   attribute or a storage key. An observer's
-  socket forwards only the "Load older" click at `component.older_path`
+  socket forwards only the "Load older" click at `component.older_path`, the
+  context breakdown's Refresh click at `component.context_refresh_path`
+  (protocol-change/075), the chips, the Home button and a fold's divider
   and drops every other browser message (`observer_accepts`,
   protocol-change/051, the addendum on history paging); an operator's
   forwards only the
@@ -470,16 +495,32 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   `Start.rename`, and a home that holds either gets `home_owner_accepts` (a
   `submit` beneath `home.table_path`, plus the clicks `home_accepts` takes), one
   rule for both forms; every other home gets `home_accepts`.
-  `create_for(standing, tickets, open, create, workspace, name, sharing,
-  within:)` re-derives the page from the grant: open (the epoch check), Operator
-  ceiling, the credential authenticates as the page's principal and that is the
-  owner, `creations.chosen_name`, a workspace the owner's `authorized_page`
-  lists, `ui_sessions.reserve_creation` (10 an hour per credential, apart from
+  `create_for(standing, tickets, open, create, folder, place, name, sharing,
+  within:)` re-derives the page from the grant: `authorized_owner` (open, the
+  epoch check, Operator ceiling, the credential authenticates as the page's
+  principal and that is the owner), `placed` (a `creations.Place`: a typed path
+  is judged by `folder`, which is `new_folder.check` in production; a drawn
+  workspace is one the owner's `authorized_page` lists, or one of the owner's
+  remembered folders, judged again by `folder`; protocol-change/074),
+  `creations.chosen_name` against that workspace, `ui_sessions.reserve_creation` (10 an hour per credential, apart from
   invitations, not given back), then `create` (`HomeAttachment.create`, which is
   `server.create_session`, the control command's own function) under a key
   `web-<hex>`, a `daemon.session_created` line, and `opened_ticket` (the open,
   wait and mint `resume_for` shares). `create_task` runs it in a weft run linked
   to the Lustre runtime and returns at once.
+  A folder with no session (protocol-change/074). `client/daemon/new_folder` is
+  the filesystem half of the rule for a typed path: `check_in(typed, home)` types
+  the text (`creations.typed_path`), expands `~` (`creations.expanded`), makes it
+  canonical with `bootstrap.canonical_directory`, requires the canonical folder
+  to lie strictly inside the canonical home with no hidden segment
+  (`creations.inside`), and requires the folder's owner to be the home's owner
+  with owner rwx; `check` reads `HOME`. `server.create_session` ends by
+  `manager.remember_folder`, a cast to the registry that writes the catalogue's
+  recent-folders table (`catalogue.remember_folder`), so every surface feeds it;
+  `manager.recent_folders` and `forget_folder` read and edit it. `recent_for` and
+  `forget_for` run `authorized_owner` first and list only entries inside home;
+  `home_folders_capability` gives `Start.folders` on the creation capability's
+  condition, and `upgrade_home` builds its two functions with `read_task`.
   The home's activity words (protocol-change/065, the home-list addendum) come
   from `HomeAttachment.activity`, which `server.home_activity` builds: the
   control command's `sessions.activity` read over the ids the page's credential
@@ -908,7 +949,15 @@ catalogue without opening runtimes. Explicit admission invokes
   `Approve`, `Deny`, `Fork`, `Navigate`, `Compact`, `CreateStrand`,
   `ListModels` (wire name `models`), `SetConfig`, `ListSchedules` (wire name
   `schedules`), `CancelSchedule` (wire name `schedule_cancel`)) plus `UnknownCommand`,
-  which keeps an unrecognized name as data.
+  which keeps an unrecognized name as data. `HistoryLineage(from)` (wire name
+  `history_lineage`) is the strand-scoped history read (protocol-change/072): it
+  begins a bounded transfer (`transfer.Lineage`, step `ReadLineage`, checked by
+  `accept_lineage`) of the records on the path from one entry down its parent
+  links, at most 100 and 2 MiB, oldest first, from `snapshot_reader.lineage`. A
+  client names a strand by its leaf and pages by the parent of the oldest record
+  it holds, so the transfer has no cursor (`more_after` is null). It is
+  read-only, so an observer's attachment may issue it, and it is authorized per
+  frame as `history` is.
 - `client/protocol.{EventEnvelope, Event}` — the server→client envelope
   `{v, reply_to?, event, seq?, body}` and its events (`SnapshotEvent`,
   `EntryEvent`, `OpTransitionEvent`, `StreamDeltaEvent`, `UsageEvent`,
@@ -5624,6 +5673,34 @@ The gateway commits it atomically with the captured approval.
 `permission_grants` never acquire an unlimited wall grant. Mixed requests
 and other resource grants remain once-only. Running jobs retain the authority
 captured at launch, and session close still joins their cancellation.
+
+## Remembered permissions: provenance and forgetting (protocol 073)
+
+`client/permissions` also records who approved each remembered grant and lists
+and forgets what a session remembers. The general fact keeps `grants`, the only
+thing dispatch reads, and adds `version: 2` and a `remembered` array of
+`{grant, provenance}` rows. A `Provenance` is `Approved(by, via, at_ms)` or
+`Unknown`: `by` is the principal of the approving connection's binding, `via`
+is `Login`, `Device` or `Uncredentialed` with the credential digest's
+fingerprint (the kind comes from `access.credential_kind`), and `at_ms` is the
+gateway clock at commit (`gateway.approval_provenance`). The decoder is total
+and advisory: a missing or damaged row reads as `Unknown` and never changes what
+is permitted, and a fact with no `version` reads with every grant `Unknown`.
+Exact-action consent cells gain `tool`, `strand`, a preview of at most 200
+characters and the same provenance.
+
+`permissions.listing` reads the general fact and every consent cell with their
+sequences, and `permissions.board` encodes it as the `permissions` snapshot
+(`protocol.PermissionsSnapshot`). `permissions.forgetting` builds the guarded
+edit for a `protocol.ForgetTarget` (one grant, one consent by its lower-case
+hexadecimal id, or everything) as the operator saw it, and the gateway applies
+it through `api.edit_reserved_facts`: a moved cell, or a target already gone,
+is `Stale` and answers `conflict` with nothing written. The general fact is
+rewritten and never deleted. `PermissionsGet` and `PermissionForget` count as
+mutations in `gateway.read_only`, so an observer attachment is refused both and
+neither runs while the session drains. Both, and `ApproveForSession`, are also
+owner-only (`gateway.owner_only`): an authenticated attachment whose principal is
+a member is refused with `forbidden`.
 
 `lsp/jail.workspace_reads` intersects the workspace with session-authorized
 readable and writable roots. Sibling dependencies become readable while writes

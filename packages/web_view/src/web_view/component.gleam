@@ -72,10 +72,12 @@
 //// a summary (`turn_ledger`) when every record of it is in the window and
 //// nothing will be added, so the window holds the running turn and the page
 //// holds the closed turns as the pieces it draws, not as records
-//// (protocol-change/071). `older` pages further back by turns, through the
-//// lane's `history` read, the read the terminal pages with, and opening a
-//// closed turn's fold reads that turn's newest steps the same way. The limit
-//// and `Paging` are this page's view state.
+//// (protocol-change/071). `older` pages further back by turns, and opening a
+//// closed turn's fold reads that turn's newest steps the same way: both walk
+//// the strand's own parent links through the lane's lineage read
+//// (`history_lineage`, protocol-change/072), so what other strands wrote in
+//// between costs the page nothing. The limit and `Paging` are this page's view
+//// state.
 ////
 //// What the page draws is derived from the shared record by `refreshed`, which
 //// runs at the end of every message and rebuilds a projection only when the
@@ -168,6 +170,7 @@ import session_view/operator
 import session_view/outbound
 import session_view/pasted_image
 import session_view/protocol
+import session_view/remembered as kept
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/session_summary
@@ -185,6 +188,7 @@ import session_view/transcript_line.{
   type CacheNotice, type Line, type Stream, Assistant, Line,
 }
 import session_view/transcript_lines
+import session_view/turn_labels
 import session_view/turn_ledger
 import session_view/turns
 import session_view/worktree_view
@@ -194,12 +198,14 @@ import web_view/ending.{type Ending}
 import web_view/grants
 import web_view/image as web_image
 import web_view/invites
+import web_view/remembered as holding
 import web_view/renames
 import web_view/sessions
 import web_view/shareables
 import web_view/view/archiving
 import web_view/view/changes
 import web_view/view/commentary
+import web_view/view/context_breakdown
 import web_view/view/crumb
 import web_view/view/ended
 import web_view/view/expansion
@@ -330,6 +336,17 @@ pub const invite_path = "0\t3\t2\t2"
 /// moves the control or a handler leaves the region.
 pub const rename_path = "0\t3\t2\t4"
 
+/// The Lustre event path of the operator's list of remembered permissions: the
+/// sixth and last child of the Session pane (`view/session_tab`), after the
+/// rename control (`rename_path`), so that placing it there moved no path the
+/// socket admits. Every handler beneath it is one of the list's Forget buttons
+/// or its question's two (`view/remembered`, protocol-change/073). The
+/// operator's socket admits them like any click that is not an owner's control,
+/// and an observer's socket admits none, the page drawing nothing there and
+/// the daemon refusing a forget from an observer's attachment on its own.
+/// `page_events_test` fails if the view moves the list.
+pub const remembered_path = "0\t3\t2\t5"
+
 /// The Lustre event path of the "Home" button, on both pages: it is the
 /// second child of the top bar (`view/heading`), after the brand, and the top
 /// bar is the first child of the page's frame (`view/shell`). The button is
@@ -342,6 +359,19 @@ pub const rename_path = "0\t3\t2\t4"
 /// (`client/daemon/ui_socket.home_ticket_for`). `page_events_test` fails if
 /// the view moves the button.
 pub const home_path = "0\t0\t1"
+
+/// The Lustre event path of the Refresh button in the context breakdown, on
+/// both pages: the top bar's figures are its sixth child, the context figure
+/// is the figures' first child (a `<details>`), its panel (`view/context_breakdown`)
+/// the figure's second child, the panel's row of buttons the panel's first
+/// child, and Refresh the row's first. The observer's socket admits a `click` at
+/// exactly this path (`client/daemon/ui_socket.observer_accepts`), since the
+/// button asks only for a fresh read of the board the page already draws, the
+/// read its own lane makes at the end of every turn. The Compact now button is
+/// the row's second child and is drawn only on the operator's page, where the
+/// socket admits it like any click. `page_events_test` fails if the view moves
+/// the button.
+pub const context_refresh_path = "0\t0\t5\t0\t1\t0\t0"
 
 /// The Lustre event path of the operator's session controls, the goal's
 /// buttons and the Fork form: the fourth child of the Session pane, after the
@@ -605,6 +635,17 @@ pub type Transport(socket) {
     /// request in a task of its own, which calls the function it is given with
     /// the answer, and that call is dispatched as `ManageAnswered`.
     manage: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
+    /// Asks the daemon which of the browser sign-ins a remembered permission
+    /// was allowed from have ended, for an operator's page that lists what the
+    /// session remembers (protocol-change/073). It returns at once: the daemon
+    /// asks the registry in a task of its own, which calls the function it is
+    /// given with the logins that have ended, and that call is dispatched as
+    /// `LoginsJudged`. A login the daemon could not judge, because the page's
+    /// principal may not ask about another's or the registry did not answer, is
+    /// not among them. It is `None` for an observer's page, which draws no list.
+    logins: Option(
+      fn(List(holding.Login), fn(List(holding.Login)) -> Nil) -> Nil,
+    ),
   )
 }
 
@@ -667,12 +708,21 @@ pub type Activity {
   Busy
 }
 
-/// An operator's answer that the page offers. Remembering a grant for the
-/// session is not offered from a page (protocol-change/051, the operator
-/// addendum), so it is not a value this type can hold.
+/// An operator's answer that the page offers.
+///
+/// Remembering a grant for the session was left out of the first operator page
+/// (protocol-change/051, the operator addendum) because a remembered grant
+/// outlives the page that gave it. protocol-change/073 offers it, with the
+/// list of what is remembered and who allowed it beside it, so an owner can
+/// see and forget what a page left behind.
 pub type Answer {
   /// Grant the displayed authority for this one request.
   AllowOnce
+
+  /// Grant it and remember it for the session. The card offers it only where
+  /// the whole request is eligible (`approval.rememberable`), and `decide`
+  /// asks again at the click.
+  AllowForSession
 
   /// Refuse the request.
   Deny
@@ -700,6 +750,9 @@ pub type Control {
 
   /// `/fork <name>`, with the name as the operator typed it.
   Fork(name: String)
+
+  /// `/compact`, from the context breakdown's Compact now button.
+  CompactStrand
 }
 
 /// How much of the strand's history the page holds. It only moves forward:
@@ -874,12 +927,6 @@ type View(socket) {
     /// `Reached` once a read found nothing below the page's oldest turn, which
     /// says the strand has no more even where its last record names a parent.
     floor: Earlier,
-    /// The sequence the last read for the strand's newest or older turns got
-    /// to before it stopped, having found none of the strand's records in a run
-    /// of intervals (`history_view.scan_floor`). The next such read starts below
-    /// it, so a strand that is sparse among the session's sequences is read in
-    /// steps and not all at once.
-    resume: Option(Int),
     /// The closed turns of each strand the reader left, by the strand's name,
     /// for the life of the page, as `parked_paging` is kept: the history
     /// window of a parked strand has been trimmed to what the closed turns do
@@ -975,6 +1022,10 @@ type View(socket) {
     /// the decisions once its first cut is adopted and seeds the approval
     /// ledger the transcript's decision rows come from.
     decided: Decided,
+    /// What the page holds about the list of remembered permissions beyond the
+    /// board itself: when it last wanted it, the question that is open and the
+    /// sign-ins the daemon said have ended (`web_view/remembered`).
+    holding: holding.State,
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
     /// How many composer submits were refused with the draft kept, by the
@@ -1082,6 +1133,12 @@ pub type Msg(socket) {
   /// carry it (protocol-change/051, the addendum on strand focus).
   FocusRequested(strand: String)
 
+  /// The context breakdown's Refresh button was pressed: read the board again.
+  /// It carries nothing and sends no command, only the read the page makes at
+  /// the end of every turn, so an observer's page may carry it
+  /// (protocol-change/075).
+  ContextRefreshRequested
+
   /// The "Home" button was pressed. It carries nothing: the daemon mints a
   /// ticket for this page's own principal, so the press cannot name a place
   /// to go. It is the second message a browser can send an observer's page,
@@ -1099,6 +1156,12 @@ pub type Msg(socket) {
   /// effect's own message, dispatched from the daemon's task, and no handler
   /// carries it.
   ActivityObserved(rows: List(#(String, sessions.Activity)))
+
+  /// The daemon judged which browser sign-ins a remembered permission came
+  /// from have ended. It is the effect's own message, dispatched from the
+  /// daemon's task, and no handler carries it, so a browser cannot send one
+  /// and cannot mark a sign-in ended or standing.
+  LoginsJudged(ended: List(holding.Login))
 
   /// The daemon asks for one of the images the page draws, to answer a
   /// request for its address (protocol-change/051, the addendum on images).
@@ -1198,7 +1261,6 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       older: Unasked,
       completion: Untried,
       floor: Unheld,
-      resume: None,
       parked_sealed: dict.new(),
       blocks: [],
       pieces: [],
@@ -1256,6 +1318,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       renamed: 0,
       jobs_asked_at: None,
       decided: Owed,
+      holding: holding.new(),
       refusal: None,
       refusals: 0,
       outcome: "",
@@ -1412,6 +1475,8 @@ pub fn update(
 
     OlderRequested -> older_at(model, at)
 
+    ContextRefreshRequested -> context_refresh_at(model, at)
+
     FoldToggled(fold:) -> folded_at(model, fold, at)
 
     FocusRequested(strand:) -> focus_at(model, strand, at)
@@ -1437,6 +1502,20 @@ pub fn update(
     // draws a word and a dot from it and nothing else moves.
     ActivityObserved(rows:) -> #(
       Model(..model, view: View(..model.view, activity: dict.from_list(rows))),
+      effect.none(),
+    )
+
+    // Which sign-ins have ended is the page's own state, drawn as a note under
+    // the permissions that came from them, and it changes nothing the lane
+    // holds.
+    LoginsJudged(ended:) -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          holding: holding.judged(model.view.holding, ended),
+        ),
+      ),
       effect.none(),
     )
 
@@ -1718,9 +1797,13 @@ fn serviced(
   effects: List(step_effect.Effect(socket, Nil)),
   at: Int,
 ) -> #(Model(socket), List(step_effect.Effect(socket, Nil))) {
-  case history_view.range(model.shared.scrollback) {
-    None -> #(model, effects)
-    Some(_) -> {
+  case
+    history_view.range(model.shared.scrollback),
+    history_view.lineage(model.shared.scrollback),
+    block_summary.next_read(model.shared.summaries)
+  {
+    None, None, None -> #(model, effects)
+    Some(_), _, _ | None, Some(_), _ | None, None, Some(_) -> {
       let #(shared, sent) = step.update(model.shared, tick_at(at))
       let model = settled(Model(..model, shared:)) |> settled_projection
       #(model, list.append(effects, sent))
@@ -2152,13 +2235,34 @@ fn resumed(model: Model(socket)) -> Model(socket) {
 //
 // The window is written in the two places this module has always written it:
 // it is trimmed, and it is asked for a read. The read is the window's own scan
-// (`history_view.scan`), which keeps what it reads apart from the window, so
-// a read through a turn of thousands of records never evicts the live end.
+// (`history_view.scan`), which walks the strand's ancestry a page at a time and
+// keeps what it reads apart from the window, so a read through a turn of
+// thousands of records never evicts the live end.
 fn relaned(model: Model(socket)) -> Model(socket) {
-  case model.shared.captured {
+  let laid = case model.shared.captured {
     None -> settled_projection(model)
     Some(#(cut, view)) -> relaid(model, cut, view, 4) |> settled_projection
   }
+  labels_wanted(laid)
+}
+
+// Marks the reasoning blocks the page now draws as wanted, so the lane reads
+// the stored summarizer labels the page lacks for them (`block_summary.want`;
+// the shared step sends the read once the lane is free). This is the one place
+// the page learns which blocks it draws, and it runs when a projection was
+// rebuilt: the window's turns, the closed turns the page holds, the steps of
+// a fold the reader opened and a page of older history all end up in `pieces`,
+// so a block that arrived through a lineage read or an opened fold is asked
+// about like one in the window. A block already labelled, already asked about
+// or already waiting is not added again, and the read names at most
+// `block_summary.max_blocks` of them.
+fn labels_wanted(model: Model(socket)) -> Model(socket) {
+  let summaries =
+    block_summary.want(
+      model.shared.summaries,
+      turn_labels.keys(model.view.pieces),
+    )
+  Model(..model, shared: Shared(..model.shared, summaries:))
 }
 
 // One pass of the projection, and another when the read the pass chose was
@@ -2245,7 +2349,7 @@ fn scanned(
     Resting, history_view.Scanning(..) | Resting, history_view.Abandoned ->
       ended(model)
     _, history_view.Abandoned | _, history_view.Unscanned -> abandoned(model)
-    purpose, history_view.Scanning(request: history_view.Quiet, ..) ->
+    purpose, history_view.Scanning(request: history_view.Idle, ..) ->
       read(model, purpose, cut, view)
     _, history_view.Scanning(..) -> model
   }
@@ -2271,55 +2375,28 @@ fn read(
         transcript.branch_blocks(branch, cut, view, shared.active_strand, [])
       let source = source_of(shared.scrollback, branch)
       case found(model, purpose, blocks, branch, view, source) {
-        Ok(taken) ->
-          ended(Model(..taken, view: View(..taken.view, resume: None)))
+        Ok(taken) -> ended(taken)
         Error(Nil) ->
-          case history_view.scan_floor(shared.scrollback) {
-            Some(floor) -> paused(model, purpose, floor)
-            None ->
-              Model(
-                ..model,
-                shared: Shared(
-                  ..shared,
-                  scrollback: history_view.scan_older(
-                    shared.scrollback,
-                    branch.unloaded,
-                  ),
-                ),
-              )
-          }
+          Model(
+            ..model,
+            shared: Shared(
+              ..shared,
+              scrollback: history_view.scan_older(
+                shared.scrollback,
+                branch.unloaded,
+              ),
+            ),
+          )
       }
     }
   }
 }
 
-// A read that went through a run of intervals and found none of the records it
-// is after: the strand is sparse among the session's sequences. It is given up
-// as a refused one is, so the page offers "Load older" and nothing is read in a
-// loop, and for the turns the page lacks it remembers how far down it got, so
-// the press goes on from there and not from the start.
-fn paused(model: Model(socket), purpose: Purpose, floor: Int) -> Model(socket) {
-  let resume = case purpose {
-    ForOlder | ForTail -> Some(floor)
-    ForLead | ForSteps(_) | Resting -> None
-  }
-  abandoned(Model(..model, view: View(..model.view, resume:)))
-}
-
-// The sequence a read for the strand's turns starts below: the one it was
-// given, or the one an earlier read of the same turns got to.
-fn lowered(model: Model(socket), before: Int) -> Int {
-  case model.view.resume {
-    Some(floor) -> int.min(floor, before)
-    None -> before
-  }
-}
-
 // Whether the scan can be asked for more: it can not once it holds the
 // strand's first record, and not once it can no longer be read
-// (`history_view.scan_readable`: no sequence left, its bound reached, or the
-// parent it is missing is a record over the presentation limit, which it holds
-// as a descriptor and no read will load).
+// (`history_view.scan_readable`: a read found nothing below what it holds, its
+// bound was reached, or the parent it is missing is a record over the
+// presentation limit, which it holds as a descriptor and no read will load).
 fn source_of(
   scrollback: history_view.State,
   branch: snapshot_view.Branch,
@@ -3281,7 +3358,7 @@ fn wanted(
     Unfinished, Ok(end), _ -> Some(#(ForLead, end.id, end.seq + 1))
     _, _, Some(#(leaf, before)) ->
       case view.completion {
-        Untried -> Some(#(ForTail, leaf, lowered(model, before)))
+        Untried -> Some(#(ForTail, leaf, before))
         Spent -> reader_asked(model, window, cut)
       }
     _, _, None -> reader_asked(model, window, cut)
@@ -3299,8 +3376,7 @@ fn reader_asked(
     Some(turn) -> Some(#(ForSteps(turn.0), turn.1.end.id, turn.1.end.seq + 1))
     None ->
       case model.view.older, below_origin(model, window, cut) {
-        Pressed, Some(#(leaf, before)) ->
-          Some(#(ForOlder, leaf, lowered(model, before)))
+        Pressed, Some(#(leaf, before)) -> Some(#(ForOlder, leaf, before))
         Pressed, None | Unasked, _ -> None
       }
   }
@@ -3738,12 +3814,244 @@ pub fn decide(
         "That approval changed after it was drawn, so nothing was decided.",
       )
     Ok(record) -> {
+      case answer, may_remember(model) {
+        AllowForSession, False ->
+          refused(
+            model,
+            "Only the session owner can allow for the session, so nothing was decided.",
+          )
+        _, _ -> decided(model, record, answer)
+      }
+    }
+  }
+}
+
+// The decision on a record the page drew, now that the answer is one this
+// page may give.
+fn decided(
+  model: Model(socket),
+  record: approval.Review,
+  answer: Answer,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  {
+    {
       let choice = case answer {
         AllowOnce -> operator.AllowOnce
+        AllowForSession -> operator.AllowForSession
         Deny -> operator.Deny
       }
-      commanded(model, msg.Decide(review: record, choice:))
+      let #(model, effects) =
+        commanded(model, msg.Decide(review: record, choice:))
+
+      // An approval that remembers something changes the list, so the page
+      // reads it again once the lane has answered the approval.
+      #(owing_permissions(model, answer), effects)
     }
+  }
+}
+
+// The list is owed a fresh read after an approval for the session. A refused
+// approval changed nothing, and the read it earns is harmless.
+fn owing_permissions(model: Model(socket), answer: Answer) -> Model(socket) {
+  case answer {
+    AllowForSession ->
+      Model(
+        ..model,
+        shared: Shared(
+          ..model.shared,
+          remembered_refresh: worktree_view.Requested,
+        ),
+      )
+    AllowOnce | Deny -> model
+  }
+}
+
+/// Marks the list of remembered permissions as wanted when the page has never
+/// read it, or last wanted it `holding.refresh_ms` or more ago.
+///
+/// The operator's page calls this after every message it takes. It is the
+/// operator's page alone that does, because the gateway admits the read to an
+/// attachment that may approve and refuses it to an observer's; the observer's
+/// component never calls it. The shared step sends the read once the lane is
+/// ready for it (`surfaces.service_remembered_read`), so this only says that
+/// one is owed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.want_permissions(model)
+/// ```
+pub fn want_permissions(model: Model(socket)) -> Model(socket) {
+  let at = model.view.transport.now()
+  case
+    may_remember(model),
+    holding.due(model.view.holding, at),
+    model.shared.remembered_refresh
+  {
+    False, _, _ -> model
+    True, True, worktree_view.Settled ->
+      Model(
+        shared: Shared(
+          ..model.shared,
+          remembered_refresh: worktree_view.Requested,
+        ),
+        view: View(
+          ..model.view,
+          holding: holding.wanted(model.view.holding, at),
+        ),
+      )
+    True, True, worktree_view.Requested | True, False, _ -> model
+  }
+}
+
+/// Whether this page may remember permissions for the session, list what is
+/// remembered and forget it: only the daemon's owner's page may
+/// (protocol-change/073). Members keep allow once and deny. The page reads it
+/// from the standing the daemon derived from the authenticated principal when
+/// the page opened, and the gateway refuses the same commands from a member
+/// whatever a page sends, so this is the offer and not the gate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.may_remember(model)
+/// ```
+pub fn may_remember(model: Model(socket)) -> Bool {
+  case model.view.reader {
+    DaemonOwner -> True
+    Participant -> False
+  }
+}
+
+/// The list of remembered permissions as the daemon last gave it, or `None`
+/// while the page has not read it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.permissions_kept(model)
+/// ```
+pub fn permissions_kept(model: Model(socket)) -> Option(kept.Board) {
+  model.shared.remembered
+}
+
+/// What the page holds about the list: the open question and the sign-ins the
+/// daemon said have ended.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.permissions_state(model)
+/// ```
+pub fn permissions_state(model: Model(socket)) -> holding.State {
+  model.view.holding
+}
+
+/// Asks the daemon which sign-ins the list's permissions came from have ended,
+/// when the list changed from `before` and names any, and keeps the answer the
+/// last one gave until then.
+///
+/// The ask is the daemon's task and its answer arrives as `LoginsJudged`, so
+/// the page's runtime never waits for the registry. An observer's page has no
+/// capability and asks nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.judge_logins(before, after)
+/// ```
+pub fn judge_logins(
+  before: Model(socket),
+  after: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case
+    after.shared.remembered == before.shared.remembered,
+    after.view.transport.logins,
+    after.shared.remembered
+  {
+    True, _, _ | False, None, _ | False, _, None -> #(after, effect.none())
+    False, Some(ask), Some(board) ->
+      case holding.logins(board) {
+        [] -> #(
+          Model(
+            ..after,
+            view: View(
+              ..after.view,
+              holding: holding.judged(after.view.holding, []),
+            ),
+          ),
+          effect.none(),
+        )
+        logins -> #(after, judging(ask, logins))
+      }
+  }
+}
+
+fn judging(
+  ask: fn(List(holding.Login), fn(List(holding.Login)) -> Nil) -> Nil,
+  logins: List(holding.Login),
+) -> Effect(Msg(socket)) {
+  use dispatch <- effect.from
+  ask(logins, fn(ended) { dispatch(LoginsJudged(ended)) })
+}
+
+/// Opens the question for one forget, which sends nothing. Only one question
+/// is open at a time, so asking another replaces it.
+///
+/// The question is the request as the list looked when its button was drawn,
+/// with the sequence that list carried. Confirming sends that and nothing the
+/// browser chose, and a list that moved in between makes the daemon refuse it
+/// rather than forget what the operator never saw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.ask_forget(model, armed)
+/// ```
+pub fn ask_forget(model: Model(socket), armed: holding.Armed) -> Model(socket) {
+  case may_remember(model) {
+    True ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          holding: holding.arm(model.view.holding, armed),
+        ),
+      )
+    False -> model
+  }
+}
+
+/// Closes the question without sending anything.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.cancel_forget(model)
+/// ```
+pub fn cancel_forget(model: Model(socket)) -> Model(socket) {
+  Model(
+    ..model,
+    view: View(..model.view, holding: holding.disarm(model.view.holding)),
+  )
+}
+
+/// Sends the forget the open question armed, through the shared step like any
+/// other command, and closes the question. With no question open it does
+/// nothing, so a confirm the page did not draw changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.confirm_forget(model)
+/// ```
+pub fn confirm_forget(
+  model: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.holding.armed, may_remember(model) {
+    None, _ | _, False -> #(model, effect.none())
+    Some(open), True ->
+      commanded(cancel_forget(model), msg.Forget(forget: open.forget))
   }
 }
 
@@ -3778,6 +4086,7 @@ pub fn control(
     PauseGoal -> commanded(model, msg.Control(command: command.GoalPause))
     ResumeGoal -> commanded(model, msg.Control(command: command.GoalResume))
     ClearGoal -> commanded(model, msg.Control(command: command.GoalClear))
+    CompactStrand -> commanded(model, msg.Control(command: command.Compact))
     Fork(name:) -> written(model, "/fork ", name, forking)
   }
 }
@@ -4827,7 +5136,6 @@ fn focus_at(
             older: Unasked,
             completion: Untried,
             floor: Unheld,
-            resume: None,
             folds: [],
             parked_paging: dict.delete(remembered, strand),
             refusal: None,
@@ -4851,14 +5159,14 @@ fn focus_at(
 /// Asks for the rows older than the oldest one the page holds, when the
 /// lane lists them as `lane.Earlier`, and does nothing otherwise.
 ///
-/// The page's limit rises from `live_rows` to `held_rows`, and the history
-/// window asks for the interval of at most a hundred sequences below its
-/// oldest record (`history_view.older`), which the step's tick sends as a
-/// `history` read as soon as the lane has no other request out. That is the
-/// read the terminal pages with, and a read, not a mutation: the gateway
-/// admits it for an observer's attachment as for an operator's. While it
-/// is out the lane draws `lane.Loading`, and a second press asks nothing.
-/// The reply is folded in by the step.
+/// The page's limit rises from `live_rows` to `held_rows`, and the page wants
+/// the turns below its oldest. They are read from the parent of the oldest turn
+/// the page holds, down the strand's own parent links (`history_lineage`), which
+/// the step's tick sends as soon as the lane has no other request out. It is a
+/// read and not a mutation: the gateway admits it for an observer's attachment
+/// as for an operator's, and it names no strand's records but the ones on the
+/// path it starts at. While it is out the lane draws `lane.Loading`, and a
+/// second press asks nothing. The reply is folded in by the step.
 ///
 /// ## Examples
 ///
@@ -4899,6 +5207,31 @@ fn older_at(
     | lane.Earlier, Some(_), Connecting
     | lane.Earlier, Some(_), Ended(_)
     -> #(model, effect.none())
+  }
+}
+
+// The press is a want for a fresh board. The state is marked stale, which a
+// read already out coalesces into one more, and the tick that follows is the
+// shared step's own, where the read is sent when the lane is free. A page that
+// is not following a session has no lane to ask.
+fn context_refresh_at(
+  model: Model(socket),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.status {
+    Connected ->
+      stepping(
+        Model(
+          ..model,
+          shared: Shared(
+            ..model.shared,
+            context: context_view.invalidate(model.shared.context),
+          ),
+        ),
+        [tick_at(at)],
+        at,
+      )
+    Connecting | Ended(_) -> #(model, effect.none())
   }
 }
 
@@ -5018,7 +5351,9 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
   }
 }
 
-/// What the lane draws above the oldest row the page holds.
+/// What the lane draws above the oldest row the page holds: that the page is
+/// loading, until the first cut has arrived and while it reads turns below the
+/// ones it holds, and otherwise whether older turns exist.
 ///
 /// ## Examples
 ///
@@ -5026,12 +5361,19 @@ fn is_fold(piece: turns.Piece, fold: Int) -> Bool {
 /// // component.top(model) == lane.Earlier
 /// ```
 pub fn top(model: Model(socket)) -> lane.Top {
-  case reading_older(model), model.view.earlier, model.view.paging {
-    True, _, _ -> lane.Loading
-    False, Reached, _ -> lane.Beginning
-    False, Unheld, Full -> lane.Full(held_rows)
-    False, Unheld, Crowded -> lane.Crowded
-    False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
+  case model.view.status {
+    // Until the first cut arrives the page knows nothing of the strand, and
+    // saying the conversation begins would be a statement about a session it
+    // has not read.
+    Connecting -> lane.Loading
+    Connected | Ended(_) ->
+      case reading_older(model), model.view.earlier, model.view.paging {
+        True, _, _ -> lane.Loading
+        False, Reached, _ -> lane.Beginning
+        False, Unheld, Full -> lane.Full(held_rows)
+        False, Unheld, Crowded -> lane.Crowded
+        False, Unheld, Tail | False, Unheld, Paged -> lane.Earlier
+      }
   }
 }
 
@@ -5132,6 +5474,12 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 
 /// The lane's pieces, in order (`session_view/turns`).
 ///
+/// A reasoning block the summarizer has labelled is drawn as a summarized row.
+/// The label is read from the shared record when the pieces are read, and is
+/// never kept in the pieces the page holds, so a label that arrives after a
+/// turn was sealed, or after a fold's steps were read, shows on the next draw
+/// (`session_view/turn_labels`).
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -5139,6 +5487,7 @@ pub fn lines(model: Model(socket)) -> List(Line) {
 /// ```
 pub fn pieces(model: Model(socket)) -> List(turns.Piece) {
   model.view.pieces
+  |> turn_labels.apply(model.shared.summaries)
   |> turns.with_decisions(decisions.from_ledger(
     model.shared.approvals,
     model.view.raised,
@@ -5687,7 +6036,11 @@ pub fn session_id(model: Model(socket)) -> String {
 pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
   shell.view(
     shell.Observer,
-    heading(model, GoingHome),
+    heading(
+      model,
+      GoingHome,
+      context_breakdown.Actions(refresh: ContextRefreshRequested, compact: None),
+    ),
     shell.Unlisted,
     [
       crumb(model),
@@ -5719,6 +6072,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       model,
       FocusRequested,
       None,
+      element.none(),
       element.none(),
       element.none(),
       element.none(),
@@ -5778,12 +6132,13 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// the operator page passes an owner's control (`view/share`), and every other
 /// page passes `element.none()`. `controls` is the operator's goal buttons and
 /// fork form, and `rename` the owner's rename control (`rename_form`), which
-/// every other page passes as `element.none()`.
+/// every other page passes as `element.none()`, and `remembered` the operator's
+/// list of remembered permissions (`view/remembered`), likewise.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none())
+/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -5792,6 +6147,7 @@ pub fn panel(
   share: Element(message),
   controls: Element(message),
   rename: Element(message),
+  remembered: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -5815,6 +6171,7 @@ pub fn panel(
       share,
       controls,
       rename,
+      remembered,
     ),
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),
@@ -6006,6 +6363,10 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// the words as plain values, because it cannot import the types this module
 /// defines.
 ///
+/// `context_actions` are the two messages the context breakdown's buttons
+/// send (`view/context_breakdown`): the observer's page offers Refresh alone,
+/// and the operator's page adds Compact now, since only it may run `/compact`.
+///
 /// `going_home` is the message the bar's "Home" button sends, which the page's
 /// own message type wraps. The button is drawn only when the transport has the
 /// capability to go home, and otherwise the bar's second child is an empty
@@ -6014,9 +6375,13 @@ pub fn viewers(model: Model(socket)) -> session_summary.Viewers {
 /// ## Examples
 ///
 /// ```gleam
-/// // component.heading(model, GoingHome)
+/// // component.heading(model, GoingHome, context_breakdown.Actions(Refresh, None))
 /// ```
-pub fn heading(model: Model(socket), going_home: message) -> Element(message) {
+pub fn heading(
+  model: Model(socket),
+  going_home: message,
+  context_actions: context_breakdown.Actions(message),
+) -> Element(message) {
   heading.view(
     session_id: model.shared.session,
     home: case model.view.transport.home {
@@ -6028,6 +6393,7 @@ pub fn heading(model: Model(socket), going_home: message) -> Element(message) {
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
     context: context_figure(model),
+    breakdown: context_breakdown.panel(model.shared.context, context_actions),
     cost: cost_text(model),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
   )
