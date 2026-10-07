@@ -111,7 +111,7 @@ machine ProductExecutor {
     on eAssociateCommand do (a: tAssociationRequest) {
       if (mode == CompileSubmitUnassociated || mode == ProductLiveAssociation) {
         deferredLiveAssociation = a;
-        if (mode == ProductLiveAssociation) { send driver, eLiveAssociationView, a; }
+        send driver, eLiveAssociationView, a;
         return;
       }
       associateLive(a);

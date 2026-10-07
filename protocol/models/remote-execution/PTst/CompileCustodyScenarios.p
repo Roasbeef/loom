@@ -42,6 +42,16 @@ machine CompileCustodyScenario {
       assert mode == CompileSubmitUnassociated && stage == 0, "request-only association was not refused";
       stage = 1; send productOwner, eCompileContinueSubmit;
     }
+    on eLiveAssociationView do (a: tAssociationRequest) {
+      // Admitted can arrive while Executor is still sending its callback.
+      // This observation proves the original callback is held before release.
+      assert mode == CompileSubmitUnassociated && stage == 1,
+        "unexpected held Compile association";
+      assert a.command.prepared.native == request(1, 1, 1) &&
+        a.evidence.answer == Prior && a.evidence.row.phase == Admitted,
+        "held Compile association lacked original admitted evidence";
+      stage = 2; send service, eCompileFailPreparation, compileBefore(productService(1));
+    }
     on eCompileRecovered do {
       if (mode == CompileFailLateReady) {
         if (stage == 20) { stage = 21; send service, eCompileFailPreparation, compileBefore(productService(1)); }
@@ -63,9 +73,7 @@ machine CompileCustodyScenario {
     on eView do (v: tReply) {
       latest = v; send productOwner, eProductView, v;
       if (v.answer != Prior) { return; }
-      if (mode == CompileSubmitUnassociated && v.row.phase == Admitted && stage == 1) {
-        stage = 2; send service, eCompileFailPreparation, compileBefore(productService(1));
-      } else if (mode == CompileSubmitUnassociated && v.row.phase == Running && stage == 3) {
+      if (mode == CompileSubmitUnassociated && v.row.phase == Running && stage == 3) {
         send helper, eFinishNative;
       } else if (mode == CompilePayloadPending && v.row.phase == Running) {
         if (stage == 0) { stage = 1; send helper, eFinishNative; }

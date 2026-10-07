@@ -497,6 +497,13 @@ retirement and receipt histories remain distinct from resource cleanup.
 The existing `tcCompileReadySubmitUnassociated` now pauses actual Admitted before
 association, rather than allowing Running first. Its Request-only refusal,
 Ready-plus-in-flight Before refusal and exact resumed native settlement remain.
+The directed Before attempt waits for `eLiveAssociationView`, which confirms
+that the service holds the original callback. P can interleave sends within
+Executor's admission handler: observing Admitted alone does not mean its later
+association callback has arrived. Releasing on that earlier observation could
+consume the scenario's default deferred record and send to a null executor.
+The arrival notification orders this directed control; it grants no association
+or launch permission and changes no production runtime boundary.
 Four additional normal cases cover cancellation order, lost/stale reply recovery,
 changed Claim/duplicate association, and four hostile controls delivered against
 two genuine associations. Seven positive probes require actual claim/association,
