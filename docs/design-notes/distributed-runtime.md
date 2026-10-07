@@ -207,6 +207,22 @@ configuration can follow. Operator-added directories
 validated against the orchestrator's filesystem when added; a remote
 validation message can follow if anyone needs it.
 
+Two code-mode features are also left local-only for now. Background code mode
+(`async_codemode`, `async_runs`) holds the whole runtime handle, and a remote
+session registers `code_mode` without it. MCP façades need the orchestrator's
+MCP clients and secrets inside the executor's hermetic build; a remote
+session's `code_mode` omits them until the MCP layer is split into the data an
+executor needs and the clients that stay on the orchestrator.
+
+The remaining placement questions follow the rule in section 3. The `[tools]
+env` table is resolved on the executor from its own configuration and secret
+store, so no credential crosses the wire. Installed LSP profiles are
+discovered on the executor. Guidance splits in two: the user's global guidance
+is read on the orchestrator, the workspace's guidance files arrive as census
+text. Which tools run where is a name table with a test asserting every
+registered tool is placed exactly once, and a remote session refuses an
+unplaced tool rather than running it on the orchestrator.
+
 ### What stops reading the local disk
 
 For a remote session the orchestrator must not touch the workspace path. The
