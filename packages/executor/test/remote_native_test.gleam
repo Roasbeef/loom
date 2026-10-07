@@ -29,6 +29,7 @@ import executor/remote/native
 import executor/remote/payload
 import executor/remote/service
 import executor/remote/wire
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -38,6 +39,7 @@ import gleam/string
 import gleam/time/timestamp
 import remote_native_beam_fixture as beam_fixture
 import simplifile
+import sqlight
 import telemetry/log
 import weft
 import weft/actor
@@ -47,6 +49,16 @@ import weft/poll
 // census. This test-only BIF detects request actors surviving scoped drain.
 @external(erlang, "erlang", "processes")
 fn live_processes() -> List(process.Pid)
+
+// This serialized owner keeps an admitted SQLite transaction independent of
+// the cancellable transport caller waiting for its reservation answer.
+type ParkedReservation {
+  ReserveOwnerChild(
+    caller: process.Pid,
+    reply: process.Subject(Result(dispatcher.Reserved, Nil)),
+  )
+  CloseReservationWriter(process.Subject(Nil))
+}
 
 fn scope() -> identity.Scope {
   let assert Ok(session) =
@@ -919,17 +931,69 @@ pub fn owner_cancel_during_parked_durable_reservation_fences_submission_test() {
   let cancelled = process.new_subject()
   let terminal_events = process.new_subject()
   let reserve_done = process.new_subject()
+  let #(_, request_id) = identity.key_fields(key(1))
+  let assert Ok(bytes) = wire.encode_prepared(prepared)
+  let owner_path = path <> "/owner-reservation.sqlite"
+
+  // Production reserve_child queues a turn on the original custodian actor.
+  // Its caller can die while that independently owned SQLite turn completes.
+  // This test owns a separate reservation database through the same boundary.
+  let assert Ok(writer) =
+    actor.new_with_initialiser(1000, fn(commands) {
+      let assert Ok(store) = sqlight.open(owner_path)
+        as "The original serialized writer owns its SQLite handle."
+      assert sqlight.exec(
+          "CREATE TABLE owner_reservation (request_id TEXT PRIMARY KEY, prepared BLOB NOT NULL)",
+          store,
+        )
+        == Ok(Nil)
+      Ok(actor.initialised(store) |> actor.returning(commands))
+    })
+    |> actor.on_message(fn(store, message) {
+      case message {
+        ReserveOwnerChild(caller, reply) -> {
+          assert sqlight.exec("BEGIN IMMEDIATE", store) == Ok(Nil)
+          let permit = process.new_subject()
+          process.send(parked, #(permit, caller))
+          let assert Ok(Nil) = process.receive(permit, 3000)
+            as "Only the original admitted writer turn owns the permit."
+
+          // The real custodian owns this serialized SQLite turn independently
+          // of the run worker blocked in its reserve_child call. This fixture
+          // retains the request UUID and canonical prepared bytes at that seam.
+          assert sqlight.query(
+              "INSERT INTO owner_reservation VALUES (?,?)",
+              store,
+              [sqlight.text(request_id), sqlight.blob(bytes)],
+              decode.int,
+            )
+            == Ok([])
+          assert sqlight.exec("COMMIT", store) == Ok(Nil)
+          process.send(reserve_done, Nil)
+          process.send(reply, Ok(dispatcher.Reserved(key(1), prepared)))
+          actor.continue(store)
+        }
+
+        CloseReservationWriter(reply) -> {
+          assert sqlight.close(store) == Ok(Nil)
+          process.send(reply, Nil)
+          actor.stop()
+        }
+      }
+    })
+    |> actor.start
+    as "Durable custody belongs to an actor independent of the run worker."
+  let writer_monitor = process.monitor(writer.pid)
+  let writer_commands = writer.data
   let adapter =
     dispatcher.dispatcher(dispatcher.Config(
       transport,
       23,
       10_000,
       fn(_) {
-        let permit = process.new_subject()
-        process.send(parked, permit)
-        let assert Ok(Nil) = process.receive(permit, 3000)
-        process.send(reserve_done, Nil)
-        Ok(dispatcher.Reserved(key(1), prepared))
+        let reply = process.new_subject()
+        process.send(writer_commands, ReserveOwnerChild(process.self(), reply))
+        process.receive(reply, 3000) |> result.unwrap(Error(Nil))
       },
       fn(_, _, _, _, _) {
         panic as "Cancelled request cannot receive a durable success."
@@ -942,13 +1006,49 @@ pub fn owner_cancel_during_parked_durable_reservation_fences_submission_test() {
     adapter.start(
       owner_request(prepared, fn(value) { process.send(terminal_events, value) }),
     )
-  let assert Ok(permit) = process.receive(parked, 3000)
+  let assert Ok(#(permit, worker)) = process.receive(parked, 3000)
+    as "The original writer admitted the reservation before cancellation."
+  assert worker != writer.pid
+  let worker_monitor = process.monitor(worker)
   execution.cancel()
   assert process.receive(cancelled, 1000) == Ok(Nil)
   assert process.receive(terminal_events, 1000)
     == Ok(dispatch.Failed(exec.ExecutionLost(exec.RemoteOutcomeUncertain)))
+
+  // Cancellation kills the waiting transport callback before its admitted
+  // writer turn may commit. Its dead reply Subject cannot send a submission.
+  let worker_exit =
+    process.new_selector()
+    |> process.select_specific_monitor(worker_monitor, fn(down) { down.reason })
+    |> process.selector_receive(1000)
+  assert worker_exit == Ok(process.Killed)
+  let writer_events =
+    process.new_selector()
+    |> process.select_specific_monitor(writer_monitor, fn(down) { down.reason })
+  assert process.selector_receive(writer_events, 0) == Error(Nil)
   process.send(permit, Nil)
   assert process.receive(reserve_done, 1000) == Ok(Nil)
+
+  // Closing and reopening the original SQLite store proves reservation COMMIT
+  // independently of the callback's lifetime and the executor's empty journal.
+  let writer_closed = process.new_subject()
+  process.send(writer.data, CloseReservationWriter(writer_closed))
+  assert process.receive(writer_closed, 1000) == Ok(Nil)
+  assert process.selector_receive(writer_events, 1000) == Ok(process.Normal)
+  let assert Ok(retained) = sqlight.open(owner_path)
+  let row = {
+    use actual_id <- decode.field(0, decode.string)
+    use actual_request <- decode.field(1, decode.bit_array)
+    decode.success(#(actual_id, actual_request))
+  }
+  assert sqlight.query(
+      "SELECT request_id,prepared FROM owner_reservation",
+      retained,
+      [],
+      row,
+    )
+    == Ok([#(request_id, bytes)])
+  assert sqlight.close(retained) == Ok(Nil)
   assert journal.inspect(book, key(1), digest)
     == Error(journal.Rejected(admission.UnknownRequest))
   assert simplifile.is_file(path <> "/proof") == Ok(False)
