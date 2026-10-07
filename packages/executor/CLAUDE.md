@@ -1179,3 +1179,49 @@ claim. The executable profile control observes the linked engine and actual page
 allocation refusal. Fixture callbacks are explicit synthetic trusted witnesses;
 they do not establish actual owner/native provenance, power-loss durability,
 physical manager cleanup, ordinary Registered tools or separate-host acceptance.
+
+
+## Owned history connection custody (protocol 077)
+
+`remote/journal.RecoveryInput` retains an exact path, full native scope and
+capacity without opening a connection. `journal`, `workspace_journal` and
+`resource_journal` expose separate opaque `OwnedRecovery` handles for temporary
+history. Their closed actor messages permit only original inspection and exact
+receipt acknowledgement; no admission, execution claim, preparation claim or
+generic live-Journal projection is available through these handles. Shared SQL
+setup, reducers, codecs and existing transactions remain the only durability
+semantics. Legacy fresh/recover/release constructors retain their existing
+behavior and do not acquire the stronger owned-release proof.
+
+Each new actor self-adopts through the supplied original `weft.Ledger` before
+acknowledging startup, while resource-free. Only its later initialization turn
+opens SQLite and validates retained metadata. Refused adoption opens no database.
+A lost requester cannot orphan an admitted writer: cancellation targets the
+original adopted actor, including while recovery is waiting on `BEGIN IMMEDIATE`.
+An initialization failure after SQL open explicitly closes the actual connection;
+failed close retains it in `FailedCloseOwned` for abnormal shutdown cleanup.
+
+Resource recovery owns the complete two-actor construction. Its original actor
+parks and adopts first, native self-adopts beneath that exact resource PID through
+`adopt_under`, and resource installs that same opaque native handle once before
+opening resource SQL. Full enrollment-derived native scope is checked both before
+construction and inside the actor. Resource explicit SQL close and original
+normal DOWN precede native automatic cancellation. The original managed aggregate
+waits for both owners; the resource release method proves its own connection only.
+A separate native release request would race the required automatic child close.
+
+Every normal exit of these restricted actors means either no SQL opened or actual
+explicit SQL close succeeded. `ReleasedOwned` removes the closed connection before
+an injected final-stop turn. Failed close stops abnormally; shutdown prevents a
+normal witness when close fails. `release_owned` requires both its successful close
+reply and the original normal DOWN. Closed, missing reply, late monitor, abnormal
+exit and lost run proof remain uncertain; none grants fresh execution.
+
+`owned_journal_recovery_test` uses original actor checkpoints over real SQLite
+custody. Its closed probes are absent in production; `RefuseClose` is a labelled
+synthetic failure, not evidence of a real SQLite close error. Controls cover refused
+adoption, pre-ACK and initialization requester loss, enclosing coordinator loss,
+blocked native/workspace/resource writer locks, partial acquisition failure, exact
+retained results and receipts, lost replies, delayed DOWN, abnormal close failure
+and resource-before-native cancellation. This component does not assemble the
+registered history lane or prove complete generation/physical retirement.
