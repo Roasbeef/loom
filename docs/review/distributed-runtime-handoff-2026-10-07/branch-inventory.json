@@ -1,0 +1,2975 @@
+{
+  "date": "2026-10-07",
+  "integration_baseline": "1c50b074fbde0b2b43a50689d3272798b90c59b7",
+  "branches": [
+    {
+      "branch": "runtime/catalogue-main-compat",
+      "base": "19d511b61d918d0032054f4157780c7af5d77777",
+      "head": "26e5ced1d15f9c9f0a26345c7c0e6aea06ccb79a",
+      "commits": [
+        "cae307b6e04d3030e16060160aa7d0f0bbd3edc1",
+        "26e5ced1d15f9c9f0a26345c7c0e6aea06ccb79a"
+      ],
+      "files": [
+        {
+          "path": "packages/storage/AGENTS.md",
+          "sha256": "cb1e34f5e3b9389bef16465c54cf5d408c579ac8f0e54d25a937223cd01a817c"
+        },
+        {
+          "path": "packages/storage/CLAUDE.md",
+          "sha256": "cb1e34f5e3b9389bef16465c54cf5d408c579ac8f0e54d25a937223cd01a817c"
+        },
+        {
+          "path": "packages/storage/sql/catalogue_profiles.sql",
+          "sha256": "de35ac889872c8a636cf33d0da7e27f2ba8ebc848d9cc5f815224f9b663cfaae"
+        },
+        {
+          "path": "packages/storage/src/storage/catalogue.gleam",
+          "sha256": "3dcf90414bd06a6311a1c91a0d169b49c3285ad47c3821a128daaa829e4bac16"
+        },
+        {
+          "path": "packages/storage/src/storage/catalogue_profiles_schema.gleam",
+          "sha256": "466eaca30f44a0a29ccfce168a0648aa6e26615d404f0e499d0ddbe0548b49cb"
+        },
+        {
+          "path": "packages/storage/src/storage/sql.gleam",
+          "sha256": "b201c4b8d1b0cb49df5c62f37c9a364e1b0ab8f3903f7bf189bec4fb52ee1c68"
+        },
+        {
+          "path": "packages/storage/src/storage/sql/catalogue.sql",
+          "sha256": "2e30ae89c6da334eed171fad68e8fea5590e380198973caac8aa4d47299988a2"
+        },
+        {
+          "path": "packages/storage/test/storage/access_test.gleam",
+          "sha256": "dc658533394df5169e46c32dba0f0e58ab87ec790c4fc027661a808e299b0601"
+        },
+        {
+          "path": "packages/storage/test/storage/catalogue_test.gleam",
+          "sha256": "60f0da57e835f07c2a22d9f5c88da8c2d10cd2132e1a77937b0c45914bef7b9b"
+        },
+        {
+          "path": "packages/storage/test/storage/catalogue_v9_test.gleam",
+          "sha256": "d8adb19d33933fd31ea6336dc6d9956324e785f3406e109afecf738b3ab84377"
+        },
+        {
+          "path": "packages/storage/test/storage/domain_test.gleam",
+          "sha256": "e596f1e5e9f1efbe5174c6c47c7e2b552c0f1ef5d3c2f338b8badf34cd0e176a"
+        },
+        {
+          "path": "packages/storage/test/storage/workspace_binding_test.gleam",
+          "sha256": "52d7a715584aca2f5366046c9a133a44dec2b30d217ab01fb6c3ce88043baed5"
+        },
+        {
+          "path": "scripts/gen-sql.sh",
+          "sha256": "402fc480c348934e33ddabdf3e2a354f988d8c18bd292c8cd4aec18a9e722f47"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/catalogue-main-compat",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/compile-attempts",
+      "base": "dbb5acdbdb7dd53f1d404f06a9d7cae786bd9c51",
+      "head": "0973be50d1fc6d28426f1f5c75b61d4fc6cd9fc5",
+      "commits": [
+        "0973be50d1fc6d28426f1f5c75b61d4fc6cd9fc5"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/executor.md",
+          "sha256": "8f2df92574f7be95905a35644838f67d28259dfbaf22390ea1a7354a80fc2fe1"
+        },
+        {
+          "path": "docs/architecture/launch-native-retirement.md",
+          "sha256": "5519ff1ddbc111352f62c439d0a7be4d65e9f4ad99ec522241e06243cddca8d6"
+        },
+        {
+          "path": "docs/architecture/remote-compile-attempts.md",
+          "sha256": "ec70e87983e2067f42d5cb589dbbfe8c833789641b7eb829cc6fd0ddad444d52"
+        },
+        {
+          "path": "docs/design-notes/microvm-executor-tier.md",
+          "sha256": "f1240b6c70334810485c5646265bce1351bc4a2671a19b2dc6b9e5d5514c5ef6"
+        },
+        {
+          "path": "packages/broker/AGENTS.md",
+          "sha256": "57222860dd0558e3a3acbbae6ee10cc010b0097a1d7b7e4454ba8a001c0da543"
+        },
+        {
+          "path": "packages/broker/CLAUDE.md",
+          "sha256": "57222860dd0558e3a3acbbae6ee10cc010b0097a1d7b7e4454ba8a001c0da543"
+        },
+        {
+          "path": "packages/broker/src/broker/exec.gleam",
+          "sha256": "9708451b7ff3e2b91d58df761f0c685c4f1c2d3d17c1404b9d1386f08cdaa285"
+        },
+        {
+          "path": "packages/broker/src/broker/executor.gleam",
+          "sha256": "8482b92c057d9bfeed5baa1429e124c3bac4a56f60f27f9339be5fe9f40c508a"
+        },
+        {
+          "path": "packages/broker/test/broker/retirement_test.gleam",
+          "sha256": "b449cc0a8f5a8c499b0e4216fb243bb0f034b0bdd92a7b35eca03e8032b172b8"
+        },
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "47dfba2a296d3eccd8bcb4f4d92d5a718fa5169b9d11e0577d37e76ebcb040d8"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "47dfba2a296d3eccd8bcb4f4d92d5a718fa5169b9d11e0577d37e76ebcb040d8"
+        },
+        {
+          "path": "packages/client/src/client/remote/command_binding.gleam",
+          "sha256": "bf1539143de08ae6d5fad625c91038669f126355c6b45ce5bce68aea22f8bd98"
+        },
+        {
+          "path": "packages/client/src/client/remote/compile_client.gleam",
+          "sha256": "0a3676c2e6e6da0b66023df61f524a277eded4323ba7eb1f7b9cb1070a4e2e17"
+        },
+        {
+          "path": "packages/client/src/client/remote/custodian.gleam",
+          "sha256": "cbb10e2d2405bb53f06967005f07f880405f4b569e6740d1024cf0596e47d15d"
+        },
+        {
+          "path": "packages/client/src/client/remote/dispatch_binding.gleam",
+          "sha256": "f351f84250c7a52d75c3fcf5e6c14d39a64c9da502f0f74a18c5827ea2559fc7"
+        },
+        {
+          "path": "packages/client/src/client/remote/launch_client.gleam",
+          "sha256": "c7126db7c23a87ccf9ac806213fe47fe3edf0c28e1a3de7d2677acb6904a3522"
+        },
+        {
+          "path": "packages/client/src/client/remote/launch_execution.gleam",
+          "sha256": "a8082f5a6b2a0511d6f52f6e22b3a915fee473668dbc0702d6ac6b561f500824"
+        },
+        {
+          "path": "packages/client/src/client/remote/workspace_binding.gleam",
+          "sha256": "0b7f1dfda688b61a64e21ca1aed4700214edaa6158ccb797c5237a0fecdbc3f3"
+        },
+        {
+          "path": "packages/client/test/client/codemode_test.gleam",
+          "sha256": "b442895be38c4eeeb625004ae91114f1cd667f28d42dcf45b2dce2f1260f7291"
+        },
+        {
+          "path": "packages/client/test/client/remote/compile_client_joined_test.gleam",
+          "sha256": "844c8139ce4deba6f31fe59273a9e74d7870977a02d33230b1fe4f95684b4188"
+        },
+        {
+          "path": "packages/client/test/client/remote/compile_client_test.gleam",
+          "sha256": "1ffc0062a5c1ca495c6a72c89b0964f9cb93d33f43d45a551ac232e7ccdd7511"
+        },
+        {
+          "path": "packages/client/test/client/remote/launch_client_fixture.gleam",
+          "sha256": "552ff79eef8bb859d33c6bfd57f948ea0bcb976ebbd4ba213b1597b7065d2d08"
+        },
+        {
+          "path": "packages/client/test/client/remote/launch_client_test.gleam",
+          "sha256": "08d517202d12245ee742bcbc35bd74d2ce70d2e7aaefe578789143ed5f2d496a"
+        },
+        {
+          "path": "packages/codemode/AGENTS.md",
+          "sha256": "0673bbab2ce15ca87c119be8891d0f6a98cd60edb0fd461a98300f7f2e4f2e33"
+        },
+        {
+          "path": "packages/codemode/CLAUDE.md",
+          "sha256": "0673bbab2ce15ca87c119be8891d0f6a98cd60edb0fd461a98300f7f2e4f2e33"
+        },
+        {
+          "path": "packages/codemode/src/codemode/codemode.gleam",
+          "sha256": "c1962ad00fce2dd6b5ccef7a00cc66140325a81670331606ba91cdc5c806bbc6"
+        },
+        {
+          "path": "packages/codemode/src/codemode/compile.gleam",
+          "sha256": "cf459ec5a062a80b1913ef041e2c85c5ee45998363668bde0abd5de8e5b82087"
+        },
+        {
+          "path": "packages/codemode/src/codemode/service_input.gleam",
+          "sha256": "a2dd68cb614abcd380df702f241478799b6cb64e8ff728068785bea85711d6b1"
+        },
+        {
+          "path": "packages/codemode/test/codemode/compile_test.gleam",
+          "sha256": "0edaaa8c681157f9ac728fd558f3a2e183350c91f77699777ccd3d68e3ef3f61"
+        },
+        {
+          "path": "packages/codemode/test/codemode/e2e_test.gleam",
+          "sha256": "e4a4a3f5459b6a8ef1886a433fcc66838428ce24f51513fed21107a7f3f125c2"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestrator_test.gleam",
+          "sha256": "3d48a9bbcda4ced07bd06306efaa26357ad35795b9e0cf1d9da847846146e2db"
+        },
+        {
+          "path": "packages/codemode/test/codemode/service_input_test.gleam",
+          "sha256": "35b3051529d99dc8bbb4518fa14824d7244703f19f24656ae3689356836729da"
+        },
+        {
+          "path": "packages/core/AGENTS.md",
+          "sha256": "193839538ac1edf7934df11c9f1704b89241a27336835fd8b032bf0082112e0e"
+        },
+        {
+          "path": "packages/core/CLAUDE.md",
+          "sha256": "193839538ac1edf7934df11c9f1704b89241a27336835fd8b032bf0082112e0e"
+        },
+        {
+          "path": "packages/core/src/core/command.gleam",
+          "sha256": "54d782b3d320fd33f4a499d2bfb8625eb4a0c4532f2f343b07a7d924d9fa726c"
+        },
+        {
+          "path": "packages/core/src/core/remote_tool.gleam",
+          "sha256": "f80b99575090147fd1535978ebc41811c31f6dff5f50ba87606f17da5841cbef"
+        },
+        {
+          "path": "packages/core/test/command_rewrite_test.mjs",
+          "sha256": "8bf3f7faa96d1bbad902eb31c9bba0d39e3492a5093f05946e1c7bf6596d43ee"
+        },
+        {
+          "path": "packages/core/test/core/command_test.gleam",
+          "sha256": "5160f8fbe5fd1f63ff886abb4ea0480abc0996ae055d77862aa1fb9aa40dd02b"
+        },
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "a06730dded24617bf18c47ec8f96c06f9667de88aee6e9d05dcb0ceb39abb51e"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "a06730dded24617bf18c47ec8f96c06f9667de88aee6e9d05dcb0ceb39abb51e"
+        },
+        {
+          "path": "packages/executor/src/executor.gleam",
+          "sha256": "83075ab9b0147c2efb062e810e2d473d2257a93c7da9b1c1b70ac9dbd51d384c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/compile_service.gleam",
+          "sha256": "21adfc451de1b887ce90e7e3322fc1c8014e8af89475e62e20ba80325d3f683a"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_channel.gleam",
+          "sha256": "5e6b687aa062d4f90840ab517f60e89eba6561afe2258ed70c934c82c902a57f"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_service.gleam",
+          "sha256": "bbcd57ae984869fbe31c0148b57d183f916f4c0494fd5c6d0a0a706cef06b70c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/native.gleam",
+          "sha256": "89ee1a7ea1a71c6bc3f0b7a411dad64bf28433fba235bfb73b6067f7bc9177f0"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/resource_journal.gleam",
+          "sha256": "74d28c828cc9337ef93a7e348f721c8ce461f7d4927b08f1bf31129fbd00c613"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/service.gleam",
+          "sha256": "dedef6e1a7c3eb3b9241d129839b8fa18e6f165d6b5f5fc58320a888ee0bc6c4"
+        },
+        {
+          "path": "packages/executor/test/compile_service_test.gleam",
+          "sha256": "716614e9388f0210a50c0cddf546e2d008b6fc7151bfcaaaedebe6ae2ec0c781"
+        },
+        {
+          "path": "packages/executor/test/executor_launch_socket_fixture.erl",
+          "sha256": "350451caa399dec8b04b644f880c4490e4bb110a90ba28278e9d3b1ded6efeeb"
+        },
+        {
+          "path": "packages/executor/test/launch_beam_stream_test.gleam",
+          "sha256": "aac096461641a1d08839929e249e36acfae78225046ce1d631020b996b7833cf"
+        },
+        {
+          "path": "packages/executor/test/launch_service_test.gleam",
+          "sha256": "3c858ab26284692772e2a5bb1f73c09be5f0e5688713bb207b4b16fd4dd64627"
+        },
+        {
+          "path": "packages/executor/test/launch_stream_preparation_fixture.gleam",
+          "sha256": "a0e794d74dbba0b8fddc8b08cf186b4f57cbd43a111f5492dad29e77c6136f71"
+        },
+        {
+          "path": "packages/storage/AGENTS.md",
+          "sha256": "f5d0895cb6088bfc0abb4c8ad70bd8ba7b50d5210a0fc03bde0c65135583599d"
+        },
+        {
+          "path": "packages/storage/CLAUDE.md",
+          "sha256": "f5d0895cb6088bfc0abb4c8ad70bd8ba7b50d5210a0fc03bde0c65135583599d"
+        },
+        {
+          "path": "packages/storage/src/storage/owner_custody.gleam",
+          "sha256": "9efd228e80ec47e6bdeb3b5285586939ca4184521a2a5e85a3d979097929bbd9"
+        },
+        {
+          "path": "packages/storage/test/storage/command_custody_test.gleam",
+          "sha256": "f3bd1ee15a7ebdde79814193f476ca6301afa71717ace645f0ae02d25258c108"
+        },
+        {
+          "path": "protocol-change/067-remote-workspace-services.md",
+          "sha256": "36bd7d0df7ee0e6b93cd3a279d4e615cf5b90696b3fe7d8dd0bf20b133126b29"
+        },
+        {
+          "path": "protocol-change/071-remote-compile-attempts.md",
+          "sha256": "f1a3f6c85be98524c438770a91c537fe17d2d2e14adc2aebc4ebc10290cf81b8"
+        },
+        {
+          "path": "scripts/check.sh",
+          "sha256": "aaff925243821501dca1cac08e51721e505e3c17fd8e773b021329b5083311c2"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/compile-attempts",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/compile-preparation-custody",
+      "base": "5230b75d4ea97833b48a554539d70f61a9143c06",
+      "head": "1676ef1ac50b5ed658276216d005359c4bd88075",
+      "commits": [
+        "1676ef1ac50b5ed658276216d005359c4bd88075"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "1c8fd5602fd50c451332e5b6eaa8d9be99bf54acfba67472e8ef3827c388af8c"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "1c8fd5602fd50c451332e5b6eaa8d9be99bf54acfba67472e8ef3827c388af8c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/compile_preparation.gleam",
+          "sha256": "c46b16586c521bbaceacdc6aeab22f1c2e6922a7018d2cb275f35bef402de971"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/compile_service.gleam",
+          "sha256": "96ce3e787582e33453b1c7c3451c1b69961a572a1364091fefa69ed008f754e2"
+        },
+        {
+          "path": "packages/executor/test/compile_preparation_test.gleam",
+          "sha256": "233ede73e0629b0703046bb90722d16329f16c4548581e6c10ffac8fb36385dc"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/compile-preparation-custody",
+      "classification": "unfinished; not imported"
+    },
+    {
+      "branch": "runtime/distributed-launch-tooling",
+      "base": "4eb45fb0b4d5e9eb9cce11e13bf37b35ad49f140",
+      "head": "9bdabd70d8cabf98102e34d812419b7d022979c3",
+      "commits": [
+        "9bdabd70d8cabf98102e34d812419b7d022979c3"
+      ],
+      "files": [
+        {
+          "path": "docker/distributed/Dockerfile",
+          "sha256": "f22eae6dca4a74bc640494228f3b310b017b44cbfb7227efe1b2d59842766b50"
+        },
+        {
+          "path": "docker/distributed/role-entrypoint.sh",
+          "sha256": "0ecdcd8cdc642ce57ba18229986e1533411ee81c8e3b455657bb4a1dd0f520d5"
+        },
+        {
+          "path": "docs/distributed-setup.md",
+          "sha256": "544f3da7322638c4ddea693e841fb3c11f85af872fbac06abed14943c5afe76a"
+        },
+        {
+          "path": "scripts/distributed/executor-membership.template.toml",
+          "sha256": "17efc2457ec2cce8fe830088f4c371a7856fd3180d1cd97d04b306403cee929f"
+        },
+        {
+          "path": "scripts/distributed/launch.py",
+          "sha256": "cd380545edfa9b1994af860a29ee01d0312812e7541475156325f3944ca28065"
+        },
+        {
+          "path": "scripts/distributed/plan.example.json",
+          "sha256": "be23f4731a35972f3d277b0719c564640f3bb52606369357d9d624275925d5b8"
+        },
+        {
+          "path": "scripts/test_distributed_launch.py",
+          "sha256": "6214cd34b1f28fcf5d9364a8c14805ec183e19852d11c85fd6f10bcba7c15815"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/distributed-launch-tooling",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/fact-effects-construction",
+      "base": "d84b60a91d7bb413fe0a422d070c17af61081ade",
+      "head": "b222e40216900c1ff2e78013a8ef27fa347d2e51",
+      "commits": [
+        "b222e40216900c1ff2e78013a8ef27fa347d2e51"
+      ],
+      "files": [
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "696c99dfb2e39d73d80cb87d3154d4287a617f0f3349d836d2e34f4a82568013"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "696c99dfb2e39d73d80cb87d3154d4287a617f0f3349d836d2e34f4a82568013"
+        },
+        {
+          "path": "packages/client/src/client/hookserve.gleam",
+          "sha256": "bbb45c199dab59d2bead224020b42edb0b39ce0007b26869c6ed2892bc5f6529"
+        },
+        {
+          "path": "packages/client/test/client/registered_hook_test.gleam",
+          "sha256": "6be97001967ab5e2350669c975024f9f1c1390f98cd8be9661cdc76bb8658a08"
+        },
+        {
+          "path": "packages/runtime/AGENTS.md",
+          "sha256": "086338553c25886ad6f9b1e01de29b4a5c4c1f6c222635fa24d2108d7977899c"
+        },
+        {
+          "path": "packages/runtime/CLAUDE.md",
+          "sha256": "086338553c25886ad6f9b1e01de29b4a5c4c1f6c222635fa24d2108d7977899c"
+        },
+        {
+          "path": "packages/runtime/src/runtime/api.gleam",
+          "sha256": "35c91bd419c09b243ca613ed8f3344ab7d889d6e9d83a6981ddc6ad1b3bb0c5c"
+        },
+        {
+          "path": "packages/runtime/src/runtime/supervisor.gleam",
+          "sha256": "f8d3766b79f54556bc7f2d3a19a87785155a262f6bc36f8d06de70c82d51efdd"
+        },
+        {
+          "path": "packages/runtime/test/runtime/fact_effects_test.gleam",
+          "sha256": "97ddcb11556dd290ccc2d671a82ef95879ffc0a145fdff4201b181706e651b65"
+        },
+        {
+          "path": "protocol-change/079-registered-generations.md",
+          "sha256": "c9cafd7418ccdd334bb9d7628579f1bce2ff0895a6d45842a6cbcd64032805af"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/fact-effects-construction",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/foreground-launch-channel",
+      "base": "a1713085e4ba3e2fa9c8f7d5d9ddd3147406f6d5",
+      "head": "c1fcb939416977e91bb003021c57166ec90ba3b2",
+      "commits": [
+        "c1fcb939416977e91bb003021c57166ec90ba3b2"
+      ],
+      "files": [
+        {
+          "path": "packages/client/src/client/codemode.gleam",
+          "sha256": "a8e10507107111ff301e54345f441a07ac5bb5da753bc2abc1c67461a5c67095"
+        },
+        {
+          "path": "packages/client/src/client/extension/dispatch.gleam",
+          "sha256": "2ef5ca40538b0b92d0170a9affa7de63733178cd527ab1138a7b0135659d2fdd"
+        },
+        {
+          "path": "packages/codemode/src/codemode/codemode.gleam",
+          "sha256": "e85efca0174e24a88e1eac9c2dba23cce2de18a2dbc1f877af04d0daa21c3477"
+        },
+        {
+          "path": "packages/codemode/src/codemode/internal/ffi_unix.gleam",
+          "sha256": "b49e533915ad4bacbb22642da36b0c5ae7dbc5d28ac9dba6c2c7df431ffa5928"
+        },
+        {
+          "path": "packages/codemode/src/codemode/launch.gleam",
+          "sha256": "e0dbeae43ad729cba43d7cfafc73fb264cb06bdd6e5a77e6391fe95dba6aad27"
+        },
+        {
+          "path": "packages/codemode/src/codemode/run_channel.gleam",
+          "sha256": "6e161174bc6987462172586aa46d6cad60a85ae7c8092110fde49fca080f5b23"
+        },
+        {
+          "path": "packages/codemode/src/codemode/satellite.gleam",
+          "sha256": "2e47b4dbec7754b31368dacbc483b4b4e9536e7cf9d24f511763d28917ba811e"
+        },
+        {
+          "path": "packages/codemode/src/codemode_ffi.erl",
+          "sha256": "44b0b7d7f2ea71a88cedb07b9a46343bdf65d0fda037e2a9eba5c27e8bd968bf"
+        },
+        {
+          "path": "packages/codemode/test/codemode/admitted_provenance_test.gleam",
+          "sha256": "979caf8c8841659780ddd14cf180ccb975383107bc89d76bac09735087009b04"
+        },
+        {
+          "path": "packages/codemode/test/codemode/compile_service_test.gleam",
+          "sha256": "28c684a7425f4092649d962c2e0e4c8dc34164eafc69d4124819c1c81bdfdacf"
+        },
+        {
+          "path": "packages/codemode/test/codemode/e2e_test.gleam",
+          "sha256": "517a2aec1c177fd7c8d01843a16aabed4fadcfa269709e2ba6b854a3f5a3871e"
+        },
+        {
+          "path": "packages/codemode/test/codemode/foreground_launch_test.gleam",
+          "sha256": "ef5051573e0158dd70bcb46bc50a9730f0143990e993835e045523bb032484c4"
+        },
+        {
+          "path": "packages/codemode/test/codemode/generated_test.gleam",
+          "sha256": "7d97399b7b884237ede3758420509f10fb2ee142ea904b98629b7d5ff2686dcc"
+        },
+        {
+          "path": "packages/codemode/test/codemode/identity_test.gleam",
+          "sha256": "dbfd878d26bb6f426ad567a173b11227f52b17669ab3e33e53a167b4ab1d6bfb"
+        },
+        {
+          "path": "packages/codemode/test/codemode/migration_sample_test.gleam",
+          "sha256": "c8f25ad110849394f9dd8bae341253bddb8eca9d65f564ca07f9e3f44057702d"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestration_sample_test.gleam",
+          "sha256": "383b46a38b5626c604dbbb9a590f27dbcc84159d7549138c03d20ca4cba30f60"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestration_test.gleam",
+          "sha256": "c306a2a0fb99964a723b93079ca4a0568d354080349830fda4fa5fcc1d533db5"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestrator_test.gleam",
+          "sha256": "d5378568b8e5ec2896304e9074ae7db0f050a77fe2388717f7440d2546516491"
+        },
+        {
+          "path": "packages/codemode/test/codemode/run_channel_test.gleam",
+          "sha256": "61a773e0aaccf57d4d956f9b94039dea2376cb1fd9e4e7c1c3316530090b3f70"
+        },
+        {
+          "path": "packages/codemode/test/codemode/satellite_test.gleam",
+          "sha256": "08fb91deaca51ca151cc7326d1bac4e9f8167ba1f6947fd696b56bee9c2cd0b1"
+        },
+        {
+          "path": "packages/codemode/test/codemode/widening_test.gleam",
+          "sha256": "f6e2a2fe157648a7b9e66eb16b9505afeff4d418d709245b9dabe92ee0469735"
+        },
+        {
+          "path": "packages/codemode/test/codemode/workspace_test.gleam",
+          "sha256": "879795194034358c2f635b83fe340307613da685026ce6f93ca00634e95ca3bf"
+        },
+        {
+          "path": "packages/codemode/test/support/satellite_peer.gleam",
+          "sha256": "6e3a9227b38c130dc0bd717eb46be4aee20f0742c9fbe35863b373ae199d6ab7"
+        },
+        {
+          "path": "packages/tools/src/tools/codemode.gleam",
+          "sha256": "c68bf94f59c7aa9cddc1d7fae1fd0736cb1882ef1668a11cdb2356fd18dffdaa"
+        },
+        {
+          "path": "packages/tools/test/tools/codemode_test.gleam",
+          "sha256": "2258fbfaff709356142b3ddf7f48c51617da84f550f4e07567136c26e5903630"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/foreground-launch-channel",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/foreground-launch-integration",
+      "base": "4a9797a500fc45a0ecaa9f145ffe098c57ba3830",
+      "head": "caa591e80f8a67217780c8c9d5193d5600ce4e4a",
+      "commits": [
+        "caa591e80f8a67217780c8c9d5193d5600ce4e4a"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/code-mode.md",
+          "sha256": "3f2fb50144cc83782e248ee104d9930bb6f7c1bbe78e24bc527b2db3ce74563f"
+        },
+        {
+          "path": "docs/architecture/extensions.md",
+          "sha256": "780b510ca2024aca9b8768cb5663537af32acad827ed1d7fbe8bda592c758195"
+        },
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "2d98bb3e8ce3578e06bd314745521ac0e77d78e0ec450d78ecd124d21255cc61"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "2d98bb3e8ce3578e06bd314745521ac0e77d78e0ec450d78ecd124d21255cc61"
+        },
+        {
+          "path": "packages/client/src/client/codemode.gleam",
+          "sha256": "bf584aa16514850e2e2cfe0d50162b7c5350017fb368bbd7fbbe50ffff5d273f"
+        },
+        {
+          "path": "packages/client/src/client/extension/dispatch.gleam",
+          "sha256": "2ef5ca40538b0b92d0170a9affa7de63733178cd527ab1138a7b0135659d2fdd"
+        },
+        {
+          "path": "packages/client/test/client/codemode_cleanup_test.gleam",
+          "sha256": "a994c5e74dada6755f9cfd1556954b3350daa09da948adf8ffacaacf0303075e"
+        },
+        {
+          "path": "packages/client/test/client/codemode_test.gleam",
+          "sha256": "8a6a526ea644078b366c7950817c955c109a7b858c0a22e398355bdc1eca9172"
+        },
+        {
+          "path": "packages/codemode/AGENTS.md",
+          "sha256": "d49656eaf6496635c7946beec986f94b52f7213225600243bc7747bcfafd1a50"
+        },
+        {
+          "path": "packages/codemode/CLAUDE.md",
+          "sha256": "d49656eaf6496635c7946beec986f94b52f7213225600243bc7747bcfafd1a50"
+        },
+        {
+          "path": "packages/codemode/src/codemode/codemode.gleam",
+          "sha256": "725b2747a5e83f7c9ee43ee0d9474f484239b923b4b98460e0e7a6bc6d60b76a"
+        },
+        {
+          "path": "packages/codemode/src/codemode/internal/ffi_unix.gleam",
+          "sha256": "b49e533915ad4bacbb22642da36b0c5ae7dbc5d28ac9dba6c2c7df431ffa5928"
+        },
+        {
+          "path": "packages/codemode/src/codemode/launch.gleam",
+          "sha256": "e0dbeae43ad729cba43d7cfafc73fb264cb06bdd6e5a77e6391fe95dba6aad27"
+        },
+        {
+          "path": "packages/codemode/src/codemode/run_channel.gleam",
+          "sha256": "6e161174bc6987462172586aa46d6cad60a85ae7c8092110fde49fca080f5b23"
+        },
+        {
+          "path": "packages/codemode/src/codemode/satellite.gleam",
+          "sha256": "7b25c4321dbd357ac812648276eed5bd57b89431d047c65601a7fef4b08d6f08"
+        },
+        {
+          "path": "packages/codemode/src/codemode_ffi.erl",
+          "sha256": "44b0b7d7f2ea71a88cedb07b9a46343bdf65d0fda037e2a9eba5c27e8bd968bf"
+        },
+        {
+          "path": "packages/codemode/test/codemode/admitted_provenance_test.gleam",
+          "sha256": "b7f5e7ee21e6cb2905a38b8504465fa0c9628c1eb55b7a8f1559327cf368da74"
+        },
+        {
+          "path": "packages/codemode/test/codemode/compile_service_test.gleam",
+          "sha256": "3eb95565473d9ed1624b8bc98ada839b737cff05849b53dcc88ddb15ea337cb2"
+        },
+        {
+          "path": "packages/codemode/test/codemode/e2e_test.gleam",
+          "sha256": "db7309b94bbaf5bd8b7f3f55596d126454fef1339655d1db270061adb5726a38"
+        },
+        {
+          "path": "packages/codemode/test/codemode/foreground_launch_test.gleam",
+          "sha256": "ef5051573e0158dd70bcb46bc50a9730f0143990e993835e045523bb032484c4"
+        },
+        {
+          "path": "packages/codemode/test/codemode/generated_test.gleam",
+          "sha256": "ee476f52f7dee81c757b5ea45f8fa1c8a8205c8b81cef5153fb5365c7aefd11a"
+        },
+        {
+          "path": "packages/codemode/test/codemode/identity_test.gleam",
+          "sha256": "59bdd15b03af0b85b2ed980de61fddffaa221d7265b035694d2c1c0f9f5312e4"
+        },
+        {
+          "path": "packages/codemode/test/codemode/migration_sample_test.gleam",
+          "sha256": "38fdc23801e3ac7d8fcad967905513319fc3bf7886332da02f5fbd20b404c224"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestration_sample_test.gleam",
+          "sha256": "94b3a0b0fbd6e252580cded4164b825fc08e4fd3a02d7a87a5fa5a7b83b3b466"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestration_test.gleam",
+          "sha256": "1680877ca1743d05e68669abd35f41ea7a026043c9fae7252ec9468657cdeb4e"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestrator_test.gleam",
+          "sha256": "d8263b0fc675473047f01ff66c552371a321e3f057138c123cde9e83aa4d8a32"
+        },
+        {
+          "path": "packages/codemode/test/codemode/run_channel_test.gleam",
+          "sha256": "61a773e0aaccf57d4d956f9b94039dea2376cb1fd9e4e7c1c3316530090b3f70"
+        },
+        {
+          "path": "packages/codemode/test/codemode/satellite_test.gleam",
+          "sha256": "212897cc8b11ba0f30453c89072c1d5b57c3c6d387c1c4842adaa5caeee97b2d"
+        },
+        {
+          "path": "packages/codemode/test/codemode/widening_test.gleam",
+          "sha256": "898833e65baef9941a4ab868ae8c28e8e0570d086f132050155c44f02ad9c623"
+        },
+        {
+          "path": "packages/codemode/test/codemode/workspace_test.gleam",
+          "sha256": "ae78342b1ddb7720d2472a53cba137879cef1c573b8f2619525464bee60d52ab"
+        },
+        {
+          "path": "packages/codemode/test/support/satellite_peer.gleam",
+          "sha256": "6e3a9227b38c130dc0bd717eb46be4aee20f0742c9fbe35863b373ae199d6ab7"
+        },
+        {
+          "path": "packages/tools/AGENTS.md",
+          "sha256": "758da78143ae8fdfd0e2b31ea48f8939d353ef793a461d489318644f259a502e"
+        },
+        {
+          "path": "packages/tools/CLAUDE.md",
+          "sha256": "758da78143ae8fdfd0e2b31ea48f8939d353ef793a461d489318644f259a502e"
+        },
+        {
+          "path": "packages/tools/src/tools/codemode.gleam",
+          "sha256": "d37450e8c60dfca196e4e910e1c73ed64a7682ba122841ed8b6fc880325c5dba"
+        },
+        {
+          "path": "packages/tools/test/tools/codemode_test.gleam",
+          "sha256": "34947f1eac02df80fdfd7b74c6059c161388434f5d4a3f7d0f29ba3554908fbb"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/foreground-launch-integration",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/generation-scope-plan",
+      "base": "4ae3a223bbd9687ae5365e54e9509380e764f740",
+      "head": "70eed3722214bfec6d5d06b9a33974f59b8b5645",
+      "commits": [
+        "17bc2db4c2fb04bf488ede3740a89fc13f04a355",
+        "70eed3722214bfec6d5d06b9a33974f59b8b5645"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "446e803038f7c8b77609be23da3017f6fca186e18bcc03f2843b8d79a0124911"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "446e803038f7c8b77609be23da3017f6fca186e18bcc03f2843b8d79a0124911"
+        },
+        {
+          "path": "packages/executor/sql/generations.sql",
+          "sha256": "1e8603f42e61a83aa21efda027c988a46f117878fd32240d9b8b8d5f3d0cd901"
+        },
+        {
+          "path": "packages/executor/sql/generations_v2.sql",
+          "sha256": "62a122e2d97dd6759963e52ff7eb0d124d62c36cdc31a5dc9ebadbb66c0ec47f"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_registry.gleam",
+          "sha256": "f06e638cb8575132e152be737df43ff772783756c7c1a491d96a4042ad8900a4"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_registry_schema.gleam",
+          "sha256": "7d477567a45065f75ffe657b246d54be78db31a1cec99f748869f06be672f539"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_scope_plan.gleam",
+          "sha256": "d044138e6172fdbd5be6bf1d29c85e309098fcdf49aeec3b5d04807a2cb5905d"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_scope_plan_migration.gleam",
+          "sha256": "53194f5817e2346f15d116c1afcb64ec4eceff7a0ffeec54fe2f26f57395f7de"
+        },
+        {
+          "path": "packages/executor/src/executor/sql.gleam",
+          "sha256": "8f7fa819fe99e667495d6de4677a19484f050a6f36aa827bb127a83ab82dee3e"
+        },
+        {
+          "path": "packages/executor/src/executor/sql/generations.sql",
+          "sha256": "929b41fe9597c31298ff3093c5cea6b9a1149e60c767a424c96a1fd29e4fcc72"
+        },
+        {
+          "path": "packages/executor/test/fixtures/generations_v1.sql",
+          "sha256": "8713be58d78d6933c2c8118e4f4b31edb5f2bc36172ba821af78b8f3d83bdf8b"
+        },
+        {
+          "path": "packages/executor/test/generation_scope_plan_test.gleam",
+          "sha256": "7d335734942c899156b615fd7e23a0493c1d56fbdaafba4bf35c8d2498a6798b"
+        },
+        {
+          "path": "protocol-change/077-registered-generations.md",
+          "sha256": "4bfd9b1fbed788c9bea8f3602b0dc9cb8b66cf58ee50b2bacfd02d1b15faea93"
+        },
+        {
+          "path": "scripts/gen-sql.sh",
+          "sha256": "ad1ba4613fa2250aacd38032f960f3697371c7d0eec17e01c4aaf0c02a3fa3ae"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/generation-scope-plan",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/launch-beam-bind",
+      "base": "077d6388f1f75b919639d5688e0a2310c2a339b3",
+      "head": "b9ab54328ce12f8157abe21344c486e31925e188",
+      "commits": [
+        "b9ab54328ce12f8157abe21344c486e31925e188"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/remote-compilation.md",
+          "sha256": "d59a8e3fd34673d5d835b451a1cf72213fca440cde3ee6f424f711668b8b658d"
+        },
+        {
+          "path": "docs/review/launch-beam-finite-controls.md",
+          "sha256": "ef750138f79febbf6041c04289151c32563e798e7680af0e0d65ff84d176f767"
+        },
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "4bfdc670e43072cee557941ffb2af85ce996292f9350d1385110619d47cc6302"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "4bfdc670e43072cee557941ffb2af85ce996292f9350d1385110619d47cc6302"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/beam_endpoint.gleam",
+          "sha256": "c4e5076011feeccd9cff60d986dc821cacb4ec562b303e0fafa5149edb37f36f"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/compile_service.gleam",
+          "sha256": "8fed1ad371e0d4d6ceb716ac9ca6faecac0c3c0ffe0d6c594a6f727874a3c14b"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/beam_protocol.gleam",
+          "sha256": "361eb22b8cc6f3f50871fd84d1752f7f36453ea76105fdb6a73156fbec3d2d1e"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/launch_stream_wire.gleam",
+          "sha256": "920e1810c8b4dbb5b72238556c3bb0839e37d11d77559911f0bfe8b5973e3539"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_beam.gleam",
+          "sha256": "dadf56ce86363949bb912855717aaedf814cc56011f1c116fb5c2ec253eebb63"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_channel.gleam",
+          "sha256": "31fbf857bcc073aecf66763584bc007d881d2e21d416c49dd88bb8f82a438480"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_observation.gleam",
+          "sha256": "1dda679d66ba527488f22c3f065197dacd4ce37d0d412bded3470eae69ebd24c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_service.gleam",
+          "sha256": "16e613d9689ac07a7f926c6b648034fb2a1bd5c13c903f8fa513c122c2ac0f26"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_wire.gleam",
+          "sha256": "ea7a966dff07045108bd9c37119de6656f384598a3c3d900e3e389ab08462dbc"
+        },
+        {
+          "path": "packages/executor/test/beam_endpoint_fixture.gleam",
+          "sha256": "73c43916f27c2ea12e6f882e22861d400a11b4cad3ed01fa453de321cd4ce223"
+        },
+        {
+          "path": "packages/executor/test/beam_endpoint_test.gleam",
+          "sha256": "6f71bb21769eddce3761e706e36ac5ef7fc1c80499c4267f3cd72bfa4cc97e2a"
+        },
+        {
+          "path": "packages/executor/test/beam_protocol_test.gleam",
+          "sha256": "2b7f4b923c8092a86a2869082fcaae67d2f769e37c4eb7f645b5da91c1b35e2d"
+        },
+        {
+          "path": "packages/executor/test/executor_beam_endpoint_test_ffi.erl",
+          "sha256": "e90ba20ddae14fca253b141870a87c43d61d592ac71e618545e07ae7f1ce5786"
+        },
+        {
+          "path": "packages/executor/test/executor_launch_socket_fixture.erl",
+          "sha256": "c34236250619af16e7799bb6e90e2d3574039dd8b28c171e2fa288e7e2c78669"
+        },
+        {
+          "path": "packages/executor/test/launch_channel_test.gleam",
+          "sha256": "2977af77c20cdc1553b9cd9e099cce2c776cc8372d7ae95d7d469b7927323c58"
+        },
+        {
+          "path": "packages/executor/test/launch_service_test.gleam",
+          "sha256": "385f2a9418412e43363eee9a9e8cc5350b15b4981be43e78ea566e2251167901"
+        },
+        {
+          "path": "packages/executor/test/launch_stream_preparation_fixture.gleam",
+          "sha256": "6baf904f58d9330849b063d00e773acb52b3ba2d72b1d9b6c4aac1d131e66da7"
+        },
+        {
+          "path": "packages/executor/test/launch_wire_test.gleam",
+          "sha256": "06237a898370ed5007e7e82ab267576de56dbccdbbeb71cef45e86e014cee653"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/launch-beam-bind",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/launch-beam-control",
+      "base": "7b7188c45d347cc07ebbb3bdc2750304342e75b8",
+      "head": "e31fe33b02612f68d6ea643375eec00f41b03ff2",
+      "commits": [
+        "e31fe33b02612f68d6ea643375eec00f41b03ff2"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/code-mode.md",
+          "sha256": "3f2fb50144cc83782e248ee104d9930bb6f7c1bbe78e24bc527b2db3ce74563f"
+        },
+        {
+          "path": "docs/architecture/extensions.md",
+          "sha256": "780b510ca2024aca9b8768cb5663537af32acad827ed1d7fbe8bda592c758195"
+        },
+        {
+          "path": "docs/review/launch-beam-finite-controls.md",
+          "sha256": "7bb2b970e85d0acfc8d11973d3b32680ce8a3e8405ec955bc410e868dfe4c0b5"
+        },
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "2d98bb3e8ce3578e06bd314745521ac0e77d78e0ec450d78ecd124d21255cc61"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "2d98bb3e8ce3578e06bd314745521ac0e77d78e0ec450d78ecd124d21255cc61"
+        },
+        {
+          "path": "packages/client/src/client/codemode.gleam",
+          "sha256": "bf584aa16514850e2e2cfe0d50162b7c5350017fb368bbd7fbbe50ffff5d273f"
+        },
+        {
+          "path": "packages/client/src/client/extension/dispatch.gleam",
+          "sha256": "2ef5ca40538b0b92d0170a9affa7de63733178cd527ab1138a7b0135659d2fdd"
+        },
+        {
+          "path": "packages/client/test/client/codemode_cleanup_test.gleam",
+          "sha256": "a994c5e74dada6755f9cfd1556954b3350daa09da948adf8ffacaacf0303075e"
+        },
+        {
+          "path": "packages/client/test/client/codemode_test.gleam",
+          "sha256": "8a6a526ea644078b366c7950817c955c109a7b858c0a22e398355bdc1eca9172"
+        },
+        {
+          "path": "packages/codemode/AGENTS.md",
+          "sha256": "d49656eaf6496635c7946beec986f94b52f7213225600243bc7747bcfafd1a50"
+        },
+        {
+          "path": "packages/codemode/CLAUDE.md",
+          "sha256": "d49656eaf6496635c7946beec986f94b52f7213225600243bc7747bcfafd1a50"
+        },
+        {
+          "path": "packages/codemode/src/codemode/codemode.gleam",
+          "sha256": "725b2747a5e83f7c9ee43ee0d9474f484239b923b4b98460e0e7a6bc6d60b76a"
+        },
+        {
+          "path": "packages/codemode/src/codemode/internal/ffi_unix.gleam",
+          "sha256": "b49e533915ad4bacbb22642da36b0c5ae7dbc5d28ac9dba6c2c7df431ffa5928"
+        },
+        {
+          "path": "packages/codemode/src/codemode/launch.gleam",
+          "sha256": "e0dbeae43ad729cba43d7cfafc73fb264cb06bdd6e5a77e6391fe95dba6aad27"
+        },
+        {
+          "path": "packages/codemode/src/codemode/run_channel.gleam",
+          "sha256": "6e161174bc6987462172586aa46d6cad60a85ae7c8092110fde49fca080f5b23"
+        },
+        {
+          "path": "packages/codemode/src/codemode/satellite.gleam",
+          "sha256": "7b25c4321dbd357ac812648276eed5bd57b89431d047c65601a7fef4b08d6f08"
+        },
+        {
+          "path": "packages/codemode/src/codemode_ffi.erl",
+          "sha256": "44b0b7d7f2ea71a88cedb07b9a46343bdf65d0fda037e2a9eba5c27e8bd968bf"
+        },
+        {
+          "path": "packages/codemode/test/codemode/admitted_provenance_test.gleam",
+          "sha256": "b7f5e7ee21e6cb2905a38b8504465fa0c9628c1eb55b7a8f1559327cf368da74"
+        },
+        {
+          "path": "packages/codemode/test/codemode/compile_service_test.gleam",
+          "sha256": "3eb95565473d9ed1624b8bc98ada839b737cff05849b53dcc88ddb15ea337cb2"
+        },
+        {
+          "path": "packages/codemode/test/codemode/e2e_test.gleam",
+          "sha256": "db7309b94bbaf5bd8b7f3f55596d126454fef1339655d1db270061adb5726a38"
+        },
+        {
+          "path": "packages/codemode/test/codemode/foreground_launch_test.gleam",
+          "sha256": "ef5051573e0158dd70bcb46bc50a9730f0143990e993835e045523bb032484c4"
+        },
+        {
+          "path": "packages/codemode/test/codemode/generated_test.gleam",
+          "sha256": "ee476f52f7dee81c757b5ea45f8fa1c8a8205c8b81cef5153fb5365c7aefd11a"
+        },
+        {
+          "path": "packages/codemode/test/codemode/identity_test.gleam",
+          "sha256": "59bdd15b03af0b85b2ed980de61fddffaa221d7265b035694d2c1c0f9f5312e4"
+        },
+        {
+          "path": "packages/codemode/test/codemode/migration_sample_test.gleam",
+          "sha256": "38fdc23801e3ac7d8fcad967905513319fc3bf7886332da02f5fbd20b404c224"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestration_sample_test.gleam",
+          "sha256": "94b3a0b0fbd6e252580cded4164b825fc08e4fd3a02d7a87a5fa5a7b83b3b466"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestration_test.gleam",
+          "sha256": "1680877ca1743d05e68669abd35f41ea7a026043c9fae7252ec9468657cdeb4e"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestrator_test.gleam",
+          "sha256": "d8263b0fc675473047f01ff66c552371a321e3f057138c123cde9e83aa4d8a32"
+        },
+        {
+          "path": "packages/codemode/test/codemode/run_channel_test.gleam",
+          "sha256": "61a773e0aaccf57d4d956f9b94039dea2376cb1fd9e4e7c1c3316530090b3f70"
+        },
+        {
+          "path": "packages/codemode/test/codemode/satellite_test.gleam",
+          "sha256": "212897cc8b11ba0f30453c89072c1d5b57c3c6d387c1c4842adaa5caeee97b2d"
+        },
+        {
+          "path": "packages/codemode/test/codemode/widening_test.gleam",
+          "sha256": "898833e65baef9941a4ab868ae8c28e8e0570d086f132050155c44f02ad9c623"
+        },
+        {
+          "path": "packages/codemode/test/codemode/workspace_test.gleam",
+          "sha256": "ae78342b1ddb7720d2472a53cba137879cef1c573b8f2619525464bee60d52ab"
+        },
+        {
+          "path": "packages/codemode/test/support/satellite_peer.gleam",
+          "sha256": "6e3a9227b38c130dc0bd717eb46be4aee20f0742c9fbe35863b373ae199d6ab7"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/beam_endpoint.gleam",
+          "sha256": "b76a5378cf68b87de0f2c80d9c00fb18e2e9d915ea472a1f7645a5e6f5751f41"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/compile_service.gleam",
+          "sha256": "8fed1ad371e0d4d6ceb716ac9ca6faecac0c3c0ffe0d6c594a6f727874a3c14b"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/beam_protocol.gleam",
+          "sha256": "b29be34eb73075fff373f578c7f21bb3b6f21f0d2f153018f23f501c236170de"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_channel.gleam",
+          "sha256": "ae27d070de20e9ea80848b36d18f1049e96f55d00f4484c8925a545a6a27de06"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_observation.gleam",
+          "sha256": "1dda679d66ba527488f22c3f065197dacd4ce37d0d412bded3470eae69ebd24c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_service.gleam",
+          "sha256": "c638ddd797d6980fabfade1603b6fceea5739103a5b137eaf833a831e6cf238d"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_wire.gleam",
+          "sha256": "ea7a966dff07045108bd9c37119de6656f384598a3c3d900e3e389ab08462dbc"
+        },
+        {
+          "path": "packages/executor/test/beam_endpoint_fixture.gleam",
+          "sha256": "938b050c67a6ea36c8b92313922cb812679fc5430727bdcc1ef77437ef1b8ed4"
+        },
+        {
+          "path": "packages/executor/test/beam_protocol_test.gleam",
+          "sha256": "ef4a234c9f40f4e95f8b2f85b4ea4a0bede28611330944d066eefc87e211ae2a"
+        },
+        {
+          "path": "packages/executor/test/executor_beam_endpoint_test_ffi.erl",
+          "sha256": "444caa0baa92c3b7090cd5306648b5e73989bf96a2ba7fd3fb218d333d2030ec"
+        },
+        {
+          "path": "packages/executor/test/launch_wire_test.gleam",
+          "sha256": "06237a898370ed5007e7e82ab267576de56dbccdbbeb71cef45e86e014cee653"
+        },
+        {
+          "path": "packages/tools/AGENTS.md",
+          "sha256": "758da78143ae8fdfd0e2b31ea48f8939d353ef793a461d489318644f259a502e"
+        },
+        {
+          "path": "packages/tools/CLAUDE.md",
+          "sha256": "758da78143ae8fdfd0e2b31ea48f8939d353ef793a461d489318644f259a502e"
+        },
+        {
+          "path": "packages/tools/src/tools/codemode.gleam",
+          "sha256": "d37450e8c60dfca196e4e910e1c73ed64a7682ba122841ed8b6fc880325c5dba"
+        },
+        {
+          "path": "packages/tools/test/tools/codemode_test.gleam",
+          "sha256": "34947f1eac02df80fdfd7b74c6059c161388434f5d4a3f7d0f29ba3554908fbb"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/launch-beam-control",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/launch-beam-stream",
+      "base": "7494a52aeb2cd92f782a9a90900a1f538cd01d0d",
+      "head": "ef4fc78f0ce46008ae09633253b85ffaf96171be",
+      "commits": [
+        "ef4fc78f0ce46008ae09633253b85ffaf96171be"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/src/executor/remote/internal/launch_stream_wire.gleam",
+          "sha256": "920e1810c8b4dbb5b72238556c3bb0839e37d11d77559911f0bfe8b5973e3539"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_beam.gleam",
+          "sha256": "dadf56ce86363949bb912855717aaedf814cc56011f1c116fb5c2ec253eebb63"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_channel.gleam",
+          "sha256": "31fbf857bcc073aecf66763584bc007d881d2e21d416c49dd88bb8f82a438480"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_observation.gleam",
+          "sha256": "1dda679d66ba527488f22c3f065197dacd4ce37d0d412bded3470eae69ebd24c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_service.gleam",
+          "sha256": "16e613d9689ac07a7f926c6b648034fb2a1bd5c13c903f8fa513c122c2ac0f26"
+        },
+        {
+          "path": "packages/executor/test/executor_launch_beam_probe.erl",
+          "sha256": "ec9a8cff334f2365397cc99168c86a59538aca1c3ccd3d1a30d72a4fedcdd23a"
+        },
+        {
+          "path": "packages/executor/test/executor_launch_socket_fixture.erl",
+          "sha256": "c34236250619af16e7799bb6e90e2d3574039dd8b28c171e2fa288e7e2c78669"
+        },
+        {
+          "path": "packages/executor/test/launch_beam_stream_fixture.gleam",
+          "sha256": "7cc425c83982a97fcdac2f523b41162ff8547a1725bf38552e553017575e7a54"
+        },
+        {
+          "path": "packages/executor/test/launch_beam_stream_test.gleam",
+          "sha256": "cb959729ca7f2d23beab9d62cc53ba1b42e735e34a7f4c1a0d978d2b469ec907"
+        },
+        {
+          "path": "packages/executor/test/launch_channel_test.gleam",
+          "sha256": "2977af77c20cdc1553b9cd9e099cce2c776cc8372d7ae95d7d469b7927323c58"
+        },
+        {
+          "path": "packages/executor/test/launch_service_test.gleam",
+          "sha256": "9a0d15b04652ca6294f977509da4f85694283674c7fdae2fd2f1af66a300d608"
+        },
+        {
+          "path": "packages/executor/test/launch_stream_preparation_fixture.gleam",
+          "sha256": "6baf904f58d9330849b063d00e773acb52b3ba2d72b1d9b6c4aac1d131e66da7"
+        },
+        {
+          "path": "packages/executor/test/launch_stream_wire_test.gleam",
+          "sha256": "2a3fb474e9b135f272dfd84fc9e2f3ff4a1bff7c5a841e740197968453c9580a"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/launch-beam-stream",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/launch-client",
+      "base": "077d6388f1f75b919639d5688e0a2310c2a339b3",
+      "head": "ed8f4fbae9b2eb3471889c0e3165ed4329d10171",
+      "commits": [
+        "ed8f4fbae9b2eb3471889c0e3165ed4329d10171"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/remote-compilation.md",
+          "sha256": "08c629ec8376dd21382322d4da5d7e79fa25ddcd854cf03a645f1dbe71ab1ad5"
+        },
+        {
+          "path": "docs/review/launch-beam-finite-controls.md",
+          "sha256": "7bb2b970e85d0acfc8d11973d3b32680ce8a3e8405ec955bc410e868dfe4c0b5"
+        },
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "cdb2168f2a386f6c1033ba31e954e90f223f039ecc8881e923087027f81697dc"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "cdb2168f2a386f6c1033ba31e954e90f223f039ecc8881e923087027f81697dc"
+        },
+        {
+          "path": "packages/client/src/client/remote/launch_client.gleam",
+          "sha256": "4cf369cf663798da3b54204bcd38a6afa5be2eaabe76c57abaaad91880f99708"
+        },
+        {
+          "path": "packages/client/src/client/remote/launch_execution.gleam",
+          "sha256": "8872daabadd015f2236d0e9dbdafde8a878c519a7412e2576c44ec924f9640d2"
+        },
+        {
+          "path": "packages/client/src/client/remote/launch_receipt.gleam",
+          "sha256": "7bcca37496be4ecae0e5d8316ea67dfa8bcf17cce3af1a9713e574b604dd77aa"
+        },
+        {
+          "path": "packages/client/test/client/remote/launch_client_fixture.gleam",
+          "sha256": "0ec5ba8f642a1d8fb4e2cdbf149a6f752dc1644735aac2190543d948a3919ce5"
+        },
+        {
+          "path": "packages/client/test/client/remote/launch_client_test.gleam",
+          "sha256": "400936f389e349a151d30dd39fb9f7f9537f2061b22f18b6025a8d6096a58eb9"
+        },
+        {
+          "path": "packages/client/test/client_test_ffi.erl",
+          "sha256": "eb9e5465db4e513e5ae9ea3b6c1a636e18e076c613f4f0ad8aab5fde186002e1"
+        },
+        {
+          "path": "packages/client/test/support/internal/ffi_launch_scope.gleam",
+          "sha256": "fc2b167d480070005678b7a8a23ea7af5cca16dc587e71c0d9cc5fc73696e839"
+        },
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "40821eb520ea08adb95d43be149c7c2ec9b23ac78de477d46b180e7eb8436506"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "40821eb520ea08adb95d43be149c7c2ec9b23ac78de477d46b180e7eb8436506"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/beam_endpoint.gleam",
+          "sha256": "c4e5076011feeccd9cff60d986dc821cacb4ec562b303e0fafa5149edb37f36f"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/compile_service.gleam",
+          "sha256": "8fed1ad371e0d4d6ceb716ac9ca6faecac0c3c0ffe0d6c594a6f727874a3c14b"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/beam_protocol.gleam",
+          "sha256": "361eb22b8cc6f3f50871fd84d1752f7f36453ea76105fdb6a73156fbec3d2d1e"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/launch_stream_wire.gleam",
+          "sha256": "920e1810c8b4dbb5b72238556c3bb0839e37d11d77559911f0bfe8b5973e3539"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_beam.gleam",
+          "sha256": "dadf56ce86363949bb912855717aaedf814cc56011f1c116fb5c2ec253eebb63"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_channel.gleam",
+          "sha256": "31fbf857bcc073aecf66763584bc007d881d2e21d416c49dd88bb8f82a438480"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_observation.gleam",
+          "sha256": "1dda679d66ba527488f22c3f065197dacd4ce37d0d412bded3470eae69ebd24c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_service.gleam",
+          "sha256": "16e613d9689ac07a7f926c6b648034fb2a1bd5c13c903f8fa513c122c2ac0f26"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_wire.gleam",
+          "sha256": "ea7a966dff07045108bd9c37119de6656f384598a3c3d900e3e389ab08462dbc"
+        },
+        {
+          "path": "packages/executor/test/beam_endpoint_fixture.gleam",
+          "sha256": "938b050c67a6ea36c8b92313922cb812679fc5430727bdcc1ef77437ef1b8ed4"
+        },
+        {
+          "path": "packages/executor/test/beam_protocol_test.gleam",
+          "sha256": "ef4a234c9f40f4e95f8b2f85b4ea4a0bede28611330944d066eefc87e211ae2a"
+        },
+        {
+          "path": "packages/executor/test/executor_beam_endpoint_test_ffi.erl",
+          "sha256": "444caa0baa92c3b7090cd5306648b5e73989bf96a2ba7fd3fb218d333d2030ec"
+        },
+        {
+          "path": "packages/executor/test/executor_launch_socket_fixture.erl",
+          "sha256": "c34236250619af16e7799bb6e90e2d3574039dd8b28c171e2fa288e7e2c78669"
+        },
+        {
+          "path": "packages/executor/test/launch_channel_test.gleam",
+          "sha256": "2977af77c20cdc1553b9cd9e099cce2c776cc8372d7ae95d7d469b7927323c58"
+        },
+        {
+          "path": "packages/executor/test/launch_service_test.gleam",
+          "sha256": "385f2a9418412e43363eee9a9e8cc5350b15b4981be43e78ea566e2251167901"
+        },
+        {
+          "path": "packages/executor/test/launch_wire_test.gleam",
+          "sha256": "06237a898370ed5007e7e82ab267576de56dbccdbbeb71cef45e86e014cee653"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/launch-client",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/launch-completion",
+      "base": "35c64e259d2ce0aded5eb4d4255a570acc2e0c26",
+      "head": "d45863c10fa7ea40d4ccc76be156998d4a8ee578",
+      "commits": [
+        "d45863c10fa7ea40d4ccc76be156998d4a8ee578"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/src/executor/remote/launch_completion.gleam",
+          "sha256": "6f6096f8fd690842c1b14a575594bc1fda6e5303efba723727e982871b2654eb"
+        },
+        {
+          "path": "packages/executor/test/launch_completion_test.gleam",
+          "sha256": "6dff832c4398ed5417eb4cdfe73d148d0926fa8d3733cfadcdca1207632e987b"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/launch-completion",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/launch-resource-custody",
+      "base": "4a9797a500fc45a0ecaa9f145ffe098c57ba3830",
+      "head": "7a81dd0aac846d7f5dc02fc7c22b79101e8b2ca6",
+      "commits": [
+        "d62c9f9cf63404fb56899c2dc8338318ec27d5ee",
+        "7a81dd0aac846d7f5dc02fc7c22b79101e8b2ca6"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/remote-compilation.md",
+          "sha256": "279899ea9f45c4262d0db38564dbd60c41a661696092fd041dd18627ce17d414"
+        },
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "16ad199e06b910c5e61a2ce35eb1b0d1feb7d09b9fbe431d033281dbbcce21ec"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "16ad199e06b910c5e61a2ce35eb1b0d1feb7d09b9fbe431d033281dbbcce21ec"
+        },
+        {
+          "path": "packages/executor/sql/resources.sql",
+          "sha256": "c0f3a314b9d8a48509cfc6af212fb25a32f195dff467c249f98fa2455ae6da23"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_completion.gleam",
+          "sha256": "6f6096f8fd690842c1b14a575594bc1fda6e5303efba723727e982871b2654eb"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/resource_journal.gleam",
+          "sha256": "277220e106a8c4873c0ac7080580304cba9d8a1ca60f48ba7a15d3bff4d83f73"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/service.gleam",
+          "sha256": "c9ed4d919e3c2bd978fec3dc62b362f8df6def597e987508c3ae2387c91a79ef"
+        },
+        {
+          "path": "packages/executor/src/executor/resource_schema.gleam",
+          "sha256": "76a27e6c46a95b15b74feeffb1f7eaf748c97b0390da77ba51b9501c2a11f950"
+        },
+        {
+          "path": "packages/executor/src/executor/sql.gleam",
+          "sha256": "d0d8e515ebbaaf1f959c6a4418ef8904a0bf29092ae475a4ccab8886cf4fb842"
+        },
+        {
+          "path": "packages/executor/src/executor/sql/resources.sql",
+          "sha256": "3ced3d245bd3d936f0a2932d49f4c87f606d520c5ba38654df439c926a5a39af"
+        },
+        {
+          "path": "packages/executor/test/command_native_service_test.gleam",
+          "sha256": "4419e15187b99f8dfaad7b707e72436e2542bbc60f674fff5146bc07602ff3ef"
+        },
+        {
+          "path": "packages/executor/test/launch_completion_test.gleam",
+          "sha256": "6dff832c4398ed5417eb4cdfe73d148d0926fa8d3733cfadcdca1207632e987b"
+        },
+        {
+          "path": "packages/executor/test/resource_journal_test.gleam",
+          "sha256": "7541e98dd603dd77094fe136d95b2d0d4210cf468a0712a1194aa8f3b48325b5"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/launch-resource-custody",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/launch-retirement",
+      "base": "dbb5acdbdb7dd53f1d404f06a9d7cae786bd9c51",
+      "head": "1ddbad5768e444f17f7c496a6bf836e92be5914b",
+      "commits": [
+        "1ddbad5768e444f17f7c496a6bf836e92be5914b"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/executor.md",
+          "sha256": "8f2df92574f7be95905a35644838f67d28259dfbaf22390ea1a7354a80fc2fe1"
+        },
+        {
+          "path": "docs/architecture/launch-native-retirement.md",
+          "sha256": "5519ff1ddbc111352f62c439d0a7be4d65e9f4ad99ec522241e06243cddca8d6"
+        },
+        {
+          "path": "docs/design-notes/microvm-executor-tier.md",
+          "sha256": "f1240b6c70334810485c5646265bce1351bc4a2671a19b2dc6b9e5d5514c5ef6"
+        },
+        {
+          "path": "packages/broker/AGENTS.md",
+          "sha256": "57222860dd0558e3a3acbbae6ee10cc010b0097a1d7b7e4454ba8a001c0da543"
+        },
+        {
+          "path": "packages/broker/CLAUDE.md",
+          "sha256": "57222860dd0558e3a3acbbae6ee10cc010b0097a1d7b7e4454ba8a001c0da543"
+        },
+        {
+          "path": "packages/broker/src/broker/exec.gleam",
+          "sha256": "9708451b7ff3e2b91d58df761f0c685c4f1c2d3d17c1404b9d1386f08cdaa285"
+        },
+        {
+          "path": "packages/broker/src/broker/executor.gleam",
+          "sha256": "8482b92c057d9bfeed5baa1429e124c3bac4a56f60f27f9339be5fe9f40c508a"
+        },
+        {
+          "path": "packages/broker/test/broker/retirement_test.gleam",
+          "sha256": "b449cc0a8f5a8c499b0e4216fb243bb0f034b0bdd92a7b35eca03e8032b172b8"
+        },
+        {
+          "path": "packages/executor/src/executor.gleam",
+          "sha256": "83075ab9b0147c2efb062e810e2d473d2257a93c7da9b1c1b70ac9dbd51d384c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_channel.gleam",
+          "sha256": "5e6b687aa062d4f90840ab517f60e89eba6561afe2258ed70c934c82c902a57f"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_service.gleam",
+          "sha256": "bbcd57ae984869fbe31c0148b57d183f916f4c0494fd5c6d0a0a706cef06b70c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/native.gleam",
+          "sha256": "89ee1a7ea1a71c6bc3f0b7a411dad64bf28433fba235bfb73b6067f7bc9177f0"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/service.gleam",
+          "sha256": "dedef6e1a7c3eb3b9241d129839b8fa18e6f165d6b5f5fc58320a888ee0bc6c4"
+        },
+        {
+          "path": "packages/executor/test/executor_launch_socket_fixture.erl",
+          "sha256": "350451caa399dec8b04b644f880c4490e4bb110a90ba28278e9d3b1ded6efeeb"
+        },
+        {
+          "path": "packages/executor/test/launch_beam_stream_test.gleam",
+          "sha256": "aac096461641a1d08839929e249e36acfae78225046ce1d631020b996b7833cf"
+        },
+        {
+          "path": "packages/executor/test/launch_service_test.gleam",
+          "sha256": "3c858ab26284692772e2a5bb1f73c09be5f0e5688713bb207b4b16fd4dd64627"
+        },
+        {
+          "path": "packages/executor/test/launch_stream_preparation_fixture.gleam",
+          "sha256": "a0e794d74dbba0b8fddc8b08cf186b4f57cbd43a111f5492dad29e77c6136f71"
+        },
+        {
+          "path": "protocol-change/067-remote-workspace-services.md",
+          "sha256": "36bd7d0df7ee0e6b93cd3a279d4e615cf5b90696b3fe7d8dd0bf20b133126b29"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/launch-retirement",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/lsp-finite-collector",
+      "base": "9470a28bc7c28e53ca91d4edf998556cba09fad2",
+      "head": "3a3733787f2071524932695cf94278dd2107f49c",
+      "commits": [
+        "3a3733787f2071524932695cf94278dd2107f49c"
+      ],
+      "files": [
+        {
+          "path": "packages/codemode/AGENTS.md",
+          "sha256": "ec6d993d7ec4bb64e2b63cac84fa3360deaaee3de17073a999a326357537626e"
+        },
+        {
+          "path": "packages/codemode/CLAUDE.md",
+          "sha256": "ec6d993d7ec4bb64e2b63cac84fa3360deaaee3de17073a999a326357537626e"
+        },
+        {
+          "path": "packages/codemode/src/codemode/lsp_host/manager.gleam",
+          "sha256": "d50bd3503c836606ddec7bd8758c75bd61cfe6302c8fb23324e35e29aa860cc5"
+        },
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "cb4f9a55cd1dfb17ec1340d254042f114fd22f5bff33105122c3870ec139a3d1"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "cb4f9a55cd1dfb17ec1340d254042f114fd22f5bff33105122c3870ec139a3d1"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/lsp_finite_collector.gleam",
+          "sha256": "d54e2ca89b8fa0175af6d4e73e677d65602a0ce34d1e7c2efd68ab539365975e"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/lsp_finite_plan.gleam",
+          "sha256": "23d24a3672007e3a0345d6e82f4eb3bba4a26c41661eb9ad20fba70ce93ef96c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_journal.gleam",
+          "sha256": "5d1a6a1402dee8f582a506b9486ba1770bf285b585f7213930e4ae2e0ebd2c46"
+        },
+        {
+          "path": "packages/executor/test/lsp_finite_collector_test.gleam",
+          "sha256": "0b807505cf7754418d925bb26c48a6d7fd25f3ed1893406ce418b81b03d2e25c"
+        },
+        {
+          "path": "packages/executor/test/lsp_finite_plan_test.gleam",
+          "sha256": "57afd6ef2dedb7005335a91192fe8e53dfa544ed71f26296ea147ce6d142e32c"
+        },
+        {
+          "path": "packages/tools/AGENTS.md",
+          "sha256": "bff0fc959b7500770a75093e91d223706b8d674be14ea8b986146973e93c8421"
+        },
+        {
+          "path": "packages/tools/CLAUDE.md",
+          "sha256": "bff0fc959b7500770a75093e91d223706b8d674be14ea8b986146973e93c8421"
+        },
+        {
+          "path": "packages/tools/src/tools/grep.gleam",
+          "sha256": "b1543642df99abaa240a16a95d58852f75ceda26ee82780a81816fa8f0a46776"
+        },
+        {
+          "path": "packages/tools/test/tools/registered_grep_test.gleam",
+          "sha256": "c339d342711bd8992e68280fbad807356760032c3988a20c0859bdfe4a7cf890"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/lsp-finite-collector",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/managed-generation-endpoint",
+      "base": "bc0f9b25ba2440975f4d55480d7981b4f94cf7e4",
+      "head": "a713aec3cc066e366f1d14caa5b8dda36d0a1a10",
+      "commits": [
+        "a713aec3cc066e366f1d14caa5b8dda36d0a1a10"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "2ca2451852e3b9cdfe6b8270ffded520e9be1a0c7f260503d43670aeaf04a70a"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "2ca2451852e3b9cdfe6b8270ffded520e9be1a0c7f260503d43670aeaf04a70a"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_registry.gleam",
+          "sha256": "69b6e63b9903d3e53b658d26d6fb11eccb18ef2b67e135fc74da559228ddd08b"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/beam_endpoint.gleam",
+          "sha256": "72f81e0584d5864fa638d8454a51f39ef2219c3c315915770de8f146d3e17244"
+        },
+        {
+          "path": "packages/executor/test/beam_endpoint_fixture.gleam",
+          "sha256": "0fd6427718247d3d3d23eb5cbf1213b201caa5ed5d03ba4d80ccec264e18684b"
+        },
+        {
+          "path": "packages/executor/test/executor_beam_endpoint_test_ffi.erl",
+          "sha256": "ce88586cf1b18acd07d5a0adde4fc111cdd85bc6b43b2f4c74a8fe882d2b8e80"
+        },
+        {
+          "path": "packages/executor/test/managed_endpoint_fixture.gleam",
+          "sha256": "efff66492e7ddbcb0a7c4e2517ff740b770d70dcfb3dee3fba9df74c8e46f2e7"
+        },
+        {
+          "path": "packages/executor/test/managed_endpoint_test.gleam",
+          "sha256": "3ea126fb77e2e67c46244a83952a13759729ace5b497ca0aea73a9abbc83e2c6"
+        },
+        {
+          "path": "protocol-change/077-registered-generations.md",
+          "sha256": "1a84bfa598ecb1a554ce37542edab9e2eb6206421b31a08676b0fefa1aa9a074"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/managed-generation-endpoint",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/model-compile-order",
+      "base": "a1ab45a0282ff49149d4f1d20c203171fc1c39ea",
+      "head": "775c64255d3d2ef0bdd0301bb774107e0d1375e2",
+      "commits": [
+        "775c64255d3d2ef0bdd0301bb774107e0d1375e2"
+      ],
+      "files": [
+        {
+          "path": "protocol/models/remote-execution/PSrc/ProductExecutor.p",
+          "sha256": "48fa81a3bbc5091a8eb9ba895c1eec83ca7f0857c461bd461ef378b540f3ea35"
+        },
+        {
+          "path": "protocol/models/remote-execution/PTst/CompileCustodyScenarios.p",
+          "sha256": "e40a9ea44aad7914cdedb55e9b5df3388e77b5a0d6a66e6532112a9fd2032e21"
+        },
+        {
+          "path": "protocol/models/remote-execution/README.md",
+          "sha256": "767393341ae1623affa7b7dda864536a6ab5c027a1d31c030216c0d70e18a78b"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/model-compile-order",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/original-pool-return",
+      "base": "2fbd1d5f3e715d8adccf266d5c2dd920cd7b80e5",
+      "head": "449662c264f038c1d90823f87a0718a280dfc388",
+      "commits": [
+        "449662c264f038c1d90823f87a0718a280dfc388"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/executor.md",
+          "sha256": "7b239bf5a92a1f2eb144d8d6afd8d04ce3e54fc034404afc0d99bef0e780b97e"
+        },
+        {
+          "path": "docs/architecture/extensions.md",
+          "sha256": "e2e0e8fe17498bbc40e3f3f3e415bef5dffde7e735279ec345ac0c24abc7730b"
+        },
+        {
+          "path": "docs/code-tour.md",
+          "sha256": "010dc5567c848b0a373eaad61d7b51cb2089c80af795445a442e0c7dd9948b59"
+        },
+        {
+          "path": "docs/design-notes/microvm-executor-tier.md",
+          "sha256": "5440b117341c280b2090d5f41120a265a045d22c26e46af768a840e30b0e8c65"
+        },
+        {
+          "path": "packages/broker/AGENTS.md",
+          "sha256": "b93dea1d0a507b871e59ec229343313424f6dfe670c8a8dbd6f6b757a0d3f54e"
+        },
+        {
+          "path": "packages/broker/CLAUDE.md",
+          "sha256": "b93dea1d0a507b871e59ec229343313424f6dfe670c8a8dbd6f6b757a0d3f54e"
+        },
+        {
+          "path": "packages/broker/src/broker/exec.gleam",
+          "sha256": "502cdcb19fb94ca26293b8a3187ee9eea43a5ddfa183532ee802e89eca753c08"
+        },
+        {
+          "path": "packages/broker/src/broker/executor.gleam",
+          "sha256": "14445212f1a14b9fdb3b6deb34baa874c5902d992c82d74dd7dbc26ae904f3bb"
+        },
+        {
+          "path": "packages/broker/test/broker/collected_return_real_test.gleam",
+          "sha256": "2aa1e884ae6d01065f6c36d7d026c7d662ef2269a323c3bbc1bc414d0a0e9871"
+        },
+        {
+          "path": "packages/broker/test/broker/collected_return_test.gleam",
+          "sha256": "64d6cf153455b4f8b71e6369ba6766b0837f47d9f7d25f848922a4cbcd22d328"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/original-pool-return",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/original-scope-witnesses",
+      "base": "9470a28bc7c28e53ca91d4edf998556cba09fad2",
+      "head": "001ef1c80b7cc0ea8599961327ed2397a209988d",
+      "commits": [
+        "001ef1c80b7cc0ea8599961327ed2397a209988d"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "74ef8e70a607a8e375822e620e8a05f868234c9f23ceeee531c684c79b2f5611"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "74ef8e70a607a8e375822e620e8a05f868234c9f23ceeee531c684c79b2f5611"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_registry.gleam",
+          "sha256": "747452775d1f032a862bb86a374fab8bbe74ccd7f03246b2984d38f74dc54a8a"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/service.gleam",
+          "sha256": "a9929c282a53f0752c1d6b4a8bfb9e9a158bbe9646193be8eac94fd36ed1bb7b"
+        },
+        {
+          "path": "packages/executor/test/native_scope_close_proof_test.gleam",
+          "sha256": "df35411d26644d60be5c7673811fc1943746308f4b9f77166969b59399276a56"
+        },
+        {
+          "path": "packages/executor/test/startup_claim_validation_test.gleam",
+          "sha256": "b098a0fba6e8c950247395c65799cfc47c934c9c73ae512330573822691b54d3"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/original-scope-witnesses",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/owned-generation-registry",
+      "base": "69fe2df69af198f75279d5d8b4dc209f5687492a",
+      "head": "2d49c0e8cd9fe2c6190952d089443173c98b8061",
+      "commits": [
+        "2d49c0e8cd9fe2c6190952d089443173c98b8061"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "4381005eaca864578a33f8c0a121c581e938ebee68a893ba71aa1fb27dae8ba4"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "4381005eaca864578a33f8c0a121c581e938ebee68a893ba71aa1fb27dae8ba4"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_registry.gleam",
+          "sha256": "a1c221a5e91efc170d2481b4fea65a94aa092671ba5f4f2a131bfaa35fb080b5"
+        },
+        {
+          "path": "packages/executor/test/generation_registry_owned_test.gleam",
+          "sha256": "69da3795baf238e311610beb6ff12a8d8c33c49b55d93db4efb0e45dbf03b407"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/owned-generation-registry",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/owned-journal-recovery",
+      "base": "4ae3a223bbd9687ae5365e54e9509380e764f740",
+      "head": "2c23a0c97e668c31b7437e1ff95588fafaf50b8f",
+      "commits": [
+        "2c23a0c97e668c31b7437e1ff95588fafaf50b8f"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "fa32aa2a91b2447bcd807489dae5834d85495b91e0c6695ca2d254b7e451e37a"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "fa32aa2a91b2447bcd807489dae5834d85495b91e0c6695ca2d254b7e451e37a"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/journal.gleam",
+          "sha256": "210127a1045d4df31296444036e89ed4544a3257b15d0a99c8652779eb392950"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/resource_journal.gleam",
+          "sha256": "c0c333ebd2ebbc77d83134f2212b58fecb57c36db776c34df9d049c612e4fbba"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/workspace_journal.gleam",
+          "sha256": "92d1b75445863be4002ebc43ddbb39ecb5ecd5876b1e450bdb9956e74c353076"
+        },
+        {
+          "path": "packages/executor/test/owned_journal_recovery_test.gleam",
+          "sha256": "e33f67860a9e094e88b01581aea41fe96615b8a7de7ae49250f85dcefd08f1e9"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/owned-journal-recovery",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/owned-live-journals",
+      "base": "37a05f42a9695c33ae2ea9680e6631452b82fc43",
+      "head": "d5b9c3393a6d151ccfe2629f8b9dc8ab9fe9b0ad",
+      "commits": [
+        "d5b9c3393a6d151ccfe2629f8b9dc8ab9fe9b0ad"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "85e93a0c273d87e80e526a97acb23e9f7811960d1670014caf4e51be21e0dcad"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "85e93a0c273d87e80e526a97acb23e9f7811960d1670014caf4e51be21e0dcad"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/journal.gleam",
+          "sha256": "9ca1af90fa68b0196d740460a7c305c9985e2027dd116fa9379b73cfb6f552a5"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/resource_journal.gleam",
+          "sha256": "950184b671f86fed1a189e7748feb6529132f124e8dd9ee5cb1fb53feca53018"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/workspace_journal.gleam",
+          "sha256": "af09a80dce0b4186957f4b8f7fe101b8c00954e0b41d7849b9a989208908ce54"
+        },
+        {
+          "path": "packages/executor/test/owned_live_journal_test.gleam",
+          "sha256": "1c58700c6265452dc1c33321b6b7f910a121c1903a848d39e8f9e5f1a8f20914"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/owned-live-journals",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/owned-lsp-journal",
+      "base": "e336f4a19f2d51fb115b8bf065b79e167edd4434",
+      "head": "6603c4a4fefd6394f5a095233e0ff8ac9968eabc",
+      "commits": [
+        "6603c4a4fefd6394f5a095233e0ff8ac9968eabc"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "81d7caf2b17ca1c482523f5631ea745e62b325b808923d96161787bed3ab4f31"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "81d7caf2b17ca1c482523f5631ea745e62b325b808923d96161787bed3ab4f31"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_journal.gleam",
+          "sha256": "34fb398563c7fdfe183621380e275baef5334653d0a82bc1a4691d310adec8e9"
+        },
+        {
+          "path": "packages/executor/test/owned_lsp_journal_test.gleam",
+          "sha256": "1cf9614b395fc172d8e1e338bcd5155f7a53db0d7b842ab9851d03c71a91ba47"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/owned-lsp-journal",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/owner-native-identities",
+      "base": "29172fad314c1b65e6ff1deadd364761609e61e1",
+      "head": "f190ce9b954d21acb52b2d7ea5ebf9e364df56a5",
+      "commits": [
+        "d8d829ca8cdcfbaf012531be1b30b567c8bf1025",
+        "f190ce9b954d21acb52b2d7ea5ebf9e364df56a5"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/executor.md",
+          "sha256": "f58947f190be692a149ebfeb48466613f5f4f1e5fc1e06c7c955791f72a96970"
+        },
+        {
+          "path": "docs/design-notes/background-jobs.md",
+          "sha256": "84a839864f2fcc49ae95b72565a80670608b841465aa78e90ed311c871c9d6ce"
+        },
+        {
+          "path": "packages/broker/AGENTS.md",
+          "sha256": "c880cafab7db9a3f6ca0cbaa48f033afcbce6bf7fa9e92edb019ee7e5365ac4a"
+        },
+        {
+          "path": "packages/broker/CLAUDE.md",
+          "sha256": "c880cafab7db9a3f6ca0cbaa48f033afcbce6bf7fa9e92edb019ee7e5365ac4a"
+        },
+        {
+          "path": "packages/broker/src/broker/broker.gleam",
+          "sha256": "f0b934c8171f1e475a1ca9e4f3a0d3711296bcfe6dc22151d285cea3efb7dea3"
+        },
+        {
+          "path": "packages/broker/src/broker/dispatch.gleam",
+          "sha256": "345097670cea174259116f5971758d50049721e6af655af8d88ff68ae647220c"
+        },
+        {
+          "path": "packages/broker/test/broker/cancel_fence_test.gleam",
+          "sha256": "8ed93ddc1ee7e76a9718535ca831118ef2cf01040fd4c47f5bc16cbc619ba6c5"
+        },
+        {
+          "path": "packages/broker/test/broker/executor_snapshot_test.gleam",
+          "sha256": "ea9d2cf8af57ff5f0c77b5404534b941cb0549c4582d85edf33af13f81870201"
+        },
+        {
+          "path": "packages/broker/test/broker/executor_test.gleam",
+          "sha256": "173af6747dedc498063ce9f8e96b9c21cfd445b7f782236cef065c092673ee29"
+        },
+        {
+          "path": "packages/broker/test/broker/failure_matrix_test.gleam",
+          "sha256": "9048c7e2835fb8f251eb9953a76a875d853722868ab50009d3203d55016a6865"
+        },
+        {
+          "path": "packages/broker/test/broker/native_start_window_test.gleam",
+          "sha256": "883664e74f12e2f5658c936ca72d440a9af85a7c4db5ce44344abb6000d5d3a6"
+        },
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "b279188c3b9c904a6c106727006b4d237893362aa01efcbfdf263d091c493249"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "b279188c3b9c904a6c106727006b4d237893362aa01efcbfdf263d091c493249"
+        },
+        {
+          "path": "packages/client/src/client/remote/custodian.gleam",
+          "sha256": "a59f245faa4050204c5020d10195e088d23abbbed141fda38dea3de89b9db219"
+        },
+        {
+          "path": "packages/client/src/client/remote/dispatch_binding.gleam",
+          "sha256": "d8bf6acfeda2c2875e3d433754b58201a55a40517cfcfafc94c21a4c8b446630"
+        },
+        {
+          "path": "packages/client/src/client/remote/native_envelope.gleam",
+          "sha256": "797975ebbf3e8cd358d9d3b1efebc10192ce1147ba023622af49bd7ff31e19ac"
+        },
+        {
+          "path": "packages/client/src/client/remote/workspace_binding.gleam",
+          "sha256": "1d82cb0924a34a359d86234ebfd81e804cf667e0cbd3cae2024078379ffbd456"
+        },
+        {
+          "path": "packages/client/src/client/remote/workspace_command_binding.gleam",
+          "sha256": "4156e8e5d47f9d9f428e025134b8181331c5bc60bf6a42bcc59ffae56d55f6e6"
+        },
+        {
+          "path": "packages/client/test/client/remote/command_binding_test.gleam",
+          "sha256": "8003239221de6bba96fcccf51fba79e735774302b94dd7dfdf37fe9932d569aa"
+        },
+        {
+          "path": "packages/client/test/client/remote/dispatch_binding_test.gleam",
+          "sha256": "738c50086f1eb92e213af3c80423b42f556126e39dc8165989760b0e85e170ff"
+        },
+        {
+          "path": "packages/client/test/client/remote/launch_command_binding_test.gleam",
+          "sha256": "050f175f80b1f390cd762443d23fe764b03b7184f7e75b0a2687ed940c36d4e8"
+        },
+        {
+          "path": "packages/client/test/client/remote/native_integration.gleam",
+          "sha256": "23f37b576e4524b792ea3df5277c8a188fe79a76b710aaa774e9e2d911829218"
+        },
+        {
+          "path": "packages/client/test/client/remote/registered_custodian_test.gleam",
+          "sha256": "629e706797fa0b690581ef0f0968a137abfac9b7a5f7d2bd5d30d679753ce201"
+        },
+        {
+          "path": "packages/core/AGENTS.md",
+          "sha256": "b76fca1981df5d840563061f60eff764b5bfe05e52f07db39dd7d2a42c3f2004"
+        },
+        {
+          "path": "packages/core/CLAUDE.md",
+          "sha256": "b76fca1981df5d840563061f60eff764b5bfe05e52f07db39dd7d2a42c3f2004"
+        },
+        {
+          "path": "packages/core/src/core/lsp_command.gleam",
+          "sha256": "78e28d6a823b2723eacc37951a91351337b847c7821ba67f195b9e9c063a1763"
+        },
+        {
+          "path": "packages/core/src/core/remote_tool.gleam",
+          "sha256": "0e381e84f4e2da8d21d482962b4d70d246337e38abf3c7755d73f78504fc1161"
+        },
+        {
+          "path": "packages/core/test/core/remote_child_codec_test.gleam",
+          "sha256": "c4933ab226d75409ce1697dedb3a756bc4bc8bf3053e4e7c7a8681d447bdfc93"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/native.gleam",
+          "sha256": "732fbd7928a3fd5b8dd826c66e468e3f17ad2033c4f4a1e39540f7adc32fce73"
+        },
+        {
+          "path": "packages/executor/test/command_route_test.gleam",
+          "sha256": "f492469f014c9cc95186dcaf10bf7a9c6209fcbf1fb75ab339303a466be9a342"
+        },
+        {
+          "path": "packages/executor/test/remote_native_test.gleam",
+          "sha256": "5d7713cfa1a6a9986e9cd9d2a4a877ae06ce49bbb35ea137aecbba5332832423"
+        },
+        {
+          "path": "packages/storage/AGENTS.md",
+          "sha256": "1db8ff0e1b3b78420b4b8d46d44e410f6e02a2fd5cfa76c7f28984ea8f5770f4"
+        },
+        {
+          "path": "packages/storage/CLAUDE.md",
+          "sha256": "1db8ff0e1b3b78420b4b8d46d44e410f6e02a2fd5cfa76c7f28984ea8f5770f4"
+        },
+        {
+          "path": "packages/storage/src/storage/owner_custody.gleam",
+          "sha256": "6bc026ac46c3c4da36ded402204d41bb1013153ca756ccc18be45e79ca8a83dd"
+        },
+        {
+          "path": "packages/storage/src/storage/sql.gleam",
+          "sha256": "1fa9ee2fb4c7ca8965b3d8e409127ef1976f3013846c94a8a4fa3d767d66a8d6"
+        },
+        {
+          "path": "packages/storage/src/storage/sql/owner_custody.sql",
+          "sha256": "7f8a4453662bc6b52df397e6ec2feb151bf79214994220b82e7f83563adb1796"
+        },
+        {
+          "path": "packages/storage/test/storage/owner_custody_test.gleam",
+          "sha256": "685e49e42d39e830b68dd35ba86e8edeec8584082b8dd3f19849f087049dee30"
+        },
+        {
+          "path": "packages/storage/test/storage/owner_generations_test.gleam",
+          "sha256": "fe937b035f0481f30ef2268c682f9492f1fe910476897908f706dd5e4d7d966f"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/owner-native-identities",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-deployment-config",
+      "base": "630e868b01e7f681629a1baeec6503f2fe4e9d8c",
+      "head": "615c8a735695d61d5b04c6397b187e33abfa2117",
+      "commits": [
+        "8ff73ca7d8614c4a0df5a857aca8455efc99d33a",
+        "615c8a735695d61d5b04c6397b187e33abfa2117"
+      ],
+      "files": [
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "c90bbdf96600f6184b6f893b9227cc49bc93b7b2bc3117f08ccc19975fa3d8ef"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "c90bbdf96600f6184b6f893b9227cc49bc93b7b2bc3117f08ccc19975fa3d8ef"
+        },
+        {
+          "path": "packages/client/src/client/daemon/deployment.gleam",
+          "sha256": "a307c1e66e693d41789f0a0ba97de22f5814182336c366e120db09a16870530f"
+        },
+        {
+          "path": "packages/client/test/client/daemon/deployment_test.gleam",
+          "sha256": "5add0c97a38c9747bcb0153a41bdb3f3b16b55a317467047299ed0e43fceae87"
+        },
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "b9ccb5bfb447568959f70152d13b4315ac55bae2aec04696062d8425d93797d7"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "b9ccb5bfb447568959f70152d13b4315ac55bae2aec04696062d8425d93797d7"
+        },
+        {
+          "path": "packages/executor/gleam.toml",
+          "sha256": "9f74e4b722053cd101cb0a16b0918cb96ea8d9c08a1ceaabdb282a64bf685154"
+        },
+        {
+          "path": "packages/executor/manifest.toml",
+          "sha256": "c6ff19b583cb5871168eaf3cfe12468efdf0b8069a743cd83ffd5f901fea745a"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/deployment.gleam",
+          "sha256": "e04d7ace3f51eecdffa92853eb9f1bd791d9bd2f60b7e68b7563fd8e8b834ea1"
+        },
+        {
+          "path": "packages/executor/test/remote_deployment_test.gleam",
+          "sha256": "40485efc79fee25ce8549853df1d020da4f5acc9d0e58102743b1d1997895941"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-deployment-config",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-generation-foundation",
+      "base": "58fdc2648169e067c3bac8b19f50be5976aedef5",
+      "head": "04ffe04b8474cd9102d83ea9ae05f46c1f795260",
+      "commits": [
+        "b5366ad2dcddad923b6931bdcac7437d74c29ff6",
+        "04ffe04b8474cd9102d83ea9ae05f46c1f795260"
+      ],
+      "files": [
+        {
+          "path": "packages/core/src/core/generation.gleam",
+          "sha256": "6ce294f0f0fbbe4d839ad527f17dea45ff47b0eef3c76335de33f560fa94231f"
+        },
+        {
+          "path": "packages/core/src/core/remote_tool.gleam",
+          "sha256": "5883da1cbb9eed773889c82d352a247a9e6f74329437b86727951d32cb6804b4"
+        },
+        {
+          "path": "packages/core/test/core/generation_test.gleam",
+          "sha256": "585360cb60623b307c95910b3bbdf16df6e240039bf7369760642888760d921c"
+        },
+        {
+          "path": "packages/core/test/core/remote_child_codec_test.gleam",
+          "sha256": "e5d5e835773ccef1f830198899e1597b669841214e6897b7d8a0c857ca87f9d1"
+        },
+        {
+          "path": "packages/executor/sql/generations.sql",
+          "sha256": "88aceb6529749955ca2416ab834030da999c4cfe9fd1d8ee9b070f58fc37be61"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_registry.gleam",
+          "sha256": "a0df8d0a555af60765569ad17efc06e0398bdfb81d34639a32d56bd5620a167d"
+        },
+        {
+          "path": "packages/executor/src/executor/generation_registry_schema.gleam",
+          "sha256": "8387fbd6fd642853b2b5c281b312d74109524c6b88b9cd8b89707afe146a27e6"
+        },
+        {
+          "path": "packages/executor/src/executor/sql.gleam",
+          "sha256": "5ea55164eccb1aa80d6c82d827d1a2b9c39153a283fa12625c1fd83aeb99c6b9"
+        },
+        {
+          "path": "packages/executor/src/executor/sql/generations.sql",
+          "sha256": "f87f3cd7d0b1d5be2a75d3b262c59fc5b5963d19c57d4e579699340bc75d187e"
+        },
+        {
+          "path": "packages/executor/test/generation_registry_test.gleam",
+          "sha256": "07a79f9fefd0f2409d19ab321a96435a0e5fb83a2ab6102e676e9b9c32e8b69a"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-generation-foundation",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-goal-checks",
+      "base": "ca6c03e51fcfbfb8368cd4c02425d10c5625bbc5",
+      "head": "725c3afb6e12aa2f3c470287712b64202b9ad595",
+      "commits": [
+        "725c3afb6e12aa2f3c470287712b64202b9ad595"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/advisor.md",
+          "sha256": "72e325a20f89ab4293d9f33457ac9c36f97d4257959c26aebd6c07f424398a69"
+        },
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "030bf3d18e076c00c94e30b0f05d610b5a038c4db8a59eb8219ddb9b8636f246"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "030bf3d18e076c00c94e30b0f05d610b5a038c4db8a59eb8219ddb9b8636f246"
+        },
+        {
+          "path": "packages/client/src/client/advisor.gleam",
+          "sha256": "3c2c6572e76bed459cee66a8d191378349eca19eec370e0effb63534241a4773"
+        },
+        {
+          "path": "packages/client/src/client/goalcheck.gleam",
+          "sha256": "18fd8404fd052db69d2ba3b82d6a0f26b216637a010727e01436f93f9df1981f"
+        },
+        {
+          "path": "packages/client/src/client/registered_system_work.gleam",
+          "sha256": "f8aaaabfd02cd44bee4ab9e4562c484e2b836ce897448de6395e3d4d36a6f4b7"
+        },
+        {
+          "path": "packages/client/test/client/registered_goal_check_test.gleam",
+          "sha256": "819178818c2ed9fcff00aadad4434da62fcca78739d5c6ef34521c4ddfaf363d"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-goal-checks",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-helper-credit",
+      "base": "267a898befacbdbbd420875da2a6f2e062fb4d6c",
+      "head": "9f7ac2265425083071b19b0108a802fda115b2d4",
+      "commits": [
+        "9f7ac2265425083071b19b0108a802fda115b2d4"
+      ],
+      "files": [
+        {
+          "path": "packages/broker/AGENTS.md",
+          "sha256": "d389beea417c59dedb11f7302a8ad2b1af00ac9d101e24a34c6cc06ccff7aa19"
+        },
+        {
+          "path": "packages/broker/CLAUDE.md",
+          "sha256": "d389beea417c59dedb11f7302a8ad2b1af00ac9d101e24a34c6cc06ccff7aa19"
+        },
+        {
+          "path": "packages/broker/src/broker/exec.gleam",
+          "sha256": "f5d7be1d18ff69bf870e891646c063e58a678cbcc685e92c2ea9f0d4953372e0"
+        },
+        {
+          "path": "packages/broker/src/broker/executor.gleam",
+          "sha256": "86321612a6a0fc980a5c01b7963d5001adc540281d807a4c2c558b19cd141a77"
+        },
+        {
+          "path": "packages/broker/src/broker/framing.gleam",
+          "sha256": "88b9a2ee2528a4d302d0a903c0acda92a8016e56a70ffe673cc4f67da5f049ac"
+        },
+        {
+          "path": "packages/broker/test/broker/protocol_credit_test.gleam",
+          "sha256": "dbb9be51ce869e3b37baad55dc8ee7472859e8ee45ba6300a0e1a016fc65ebe2"
+        },
+        {
+          "path": "packages/broker/test/broker/protocol_executor_test.gleam",
+          "sha256": "8bfa72049e3be5999dbf8a62d084e6ad2a0931c640d9780f6011522873c9a065"
+        },
+        {
+          "path": "packages/broker/test/broker/protocol_framing_test.gleam",
+          "sha256": "61874f8638755f5934a81a32ea30acef9900ed3801630af33c36a2ddf95528a3"
+        },
+        {
+          "path": "packages/broker/test/broker/protocol_real_helper_test.gleam",
+          "sha256": "fe8232b71aed508ee4825297e310ff7783642b26f34e01a7a73700f376804da1"
+        },
+        {
+          "path": "packages/sandbox/AGENTS.md",
+          "sha256": "23da6c1baca90ca87f3cefee16185b678a4c863485d35fc21e7a8c69b460f90b"
+        },
+        {
+          "path": "packages/sandbox/CLAUDE.md",
+          "sha256": "23da6c1baca90ca87f3cefee16185b678a4c863485d35fc21e7a8c69b460f90b"
+        },
+        {
+          "path": "packages/sandbox/internal/framing/framing.go",
+          "sha256": "23d643655c61118d4c69475f506de8055fcb03742c03d29822d2142076af5633"
+        },
+        {
+          "path": "packages/sandbox/internal/framing/protocol_test.go",
+          "sha256": "3b9c4371776dd4e3f118f29ae8860a81c18eea245fad8530ed0fdfa52087bec0"
+        },
+        {
+          "path": "packages/sandbox/internal/jail/run.go",
+          "sha256": "387d4e9ae74936c6dfec446e97532115904c5ab8ac801a10bcc2c16927a732c3"
+        },
+        {
+          "path": "packages/sandbox/internal/server/protocol.go",
+          "sha256": "158bf932c5183266b4bc9a8a0db574fcc119ef5d6475f95cc3cb8d73579eda0d"
+        },
+        {
+          "path": "packages/sandbox/internal/server/protocol_integration_test.go",
+          "sha256": "765ec0d327f7c4388ed2b47b7449d2487694bc9a9554ea609bfbd17f2e791029"
+        },
+        {
+          "path": "packages/sandbox/internal/server/protocol_test.go",
+          "sha256": "a69dae1d962d575a60f2a0e59729feb54b7613d52de0cebd9c8261948ae72526"
+        },
+        {
+          "path": "packages/sandbox/internal/server/server.go",
+          "sha256": "c45b080927a15094eef5b3d9ced5eeb5ada97c4958925aab58b9f563249f1349"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-helper-credit",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-hook-callers",
+      "base": "a1ab45a0282ff49149d4f1d20c203171fc1c39ea",
+      "head": "0f5725df4753c12fb13d23fd1cc5d24cbb40fb11",
+      "commits": [
+        "0f5725df4753c12fb13d23fd1cc5d24cbb40fb11"
+      ],
+      "files": [
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "7a16dc162384af61c4c087f6a8c19006bf1e9dea340bc5bf4fe26d566f6a037b"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "7a16dc162384af61c4c087f6a8c19006bf1e9dea340bc5bf4fe26d566f6a037b"
+        },
+        {
+          "path": "packages/client/src/client/hookrunner.gleam",
+          "sha256": "93786dfda0d63b3f8a8995f4782e247ccbfd3d0f93ca1ca83b6ceabe267dafc4"
+        },
+        {
+          "path": "packages/client/src/client/hookserve.gleam",
+          "sha256": "30d2e861b1be401a3988539d1350dcdc03860677463cd7bd3d292f8a0a3f0f7d"
+        },
+        {
+          "path": "packages/client/src/client/hookwire.gleam",
+          "sha256": "bc56916b65275d982913cc1dcd17dc965df71e39ae260ceadeedf2ea9ba846c7"
+        },
+        {
+          "path": "packages/client/src/client/registered_system_work.gleam",
+          "sha256": "6692e9b3d3f10957f46151922fcce97e7ad789f48970ec8a18fc1c0c698083b5"
+        },
+        {
+          "path": "packages/client/test/client/registered_hook_test.gleam",
+          "sha256": "98ba1e355a9a67c3990f6f6a9a4b0ec879526a3d9c97b2a5e342f96217631852"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-hook-callers",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-lsp-consumed",
+      "base": "c1754adaee0300c89d0d72b6c579e9606f80d08c",
+      "head": "4be489896ed78d8055f3c27a86202055efd8f1ec",
+      "commits": [
+        "4be489896ed78d8055f3c27a86202055efd8f1ec"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/lsp.md",
+          "sha256": "6d36344478459d5fd21748acf7411ec355eb15567875588327b7cd9d12d676a9"
+        },
+        {
+          "path": "packages/core/AGENTS.md",
+          "sha256": "ace02ced13dc2f63f67b3801873f00da83998961efbe77d23d2d177666d8c89c"
+        },
+        {
+          "path": "packages/core/CLAUDE.md",
+          "sha256": "ace02ced13dc2f63f67b3801873f00da83998961efbe77d23d2d177666d8c89c"
+        },
+        {
+          "path": "packages/core/src/core/json.gleam",
+          "sha256": "68b4d512c05c942e38cc33b165a3ade6252fb65e0eae37b8113ac54f42c88d50"
+        },
+        {
+          "path": "packages/core/test/core/json_test.gleam",
+          "sha256": "e33cf909eb754c86825bf895d03b7cc6aadb27b92043954646ea2dd32a587825"
+        },
+        {
+          "path": "packages/lsp/AGENTS.md",
+          "sha256": "d28b6c286edfca5a176573764e4af5924985a15d4ab530f1c7b50e5f5ce3841c"
+        },
+        {
+          "path": "packages/lsp/CLAUDE.md",
+          "sha256": "d28b6c286edfca5a176573764e4af5924985a15d4ab530f1c7b50e5f5ce3841c"
+        },
+        {
+          "path": "packages/lsp/src/lsp/client.gleam",
+          "sha256": "077ab1fa3f61451cded73f5d5aef787892afa81feedd2d9769a2dbd674d91b3d"
+        },
+        {
+          "path": "packages/lsp/src/lsp/internal/consumed_channel.gleam",
+          "sha256": "8108e59c31a2e44e116b0a3c44a2187bb806d90b9260663c1cbc41f7497884ce"
+        },
+        {
+          "path": "packages/lsp/src/lsp/jsonrpc.gleam",
+          "sha256": "7e20d1e11045094fe1de3b675d295751c0a5c079eb92c8c366cbf6ad855e647b"
+        },
+        {
+          "path": "packages/lsp/src/lsp/transport.gleam",
+          "sha256": "052e8822db2d481f4c98b95205182dba42787f07525f175ca3ee0a85ed370c87"
+        },
+        {
+          "path": "packages/lsp/test/lsp/consumed_client_test.gleam",
+          "sha256": "f2867739fcbabaa53bc9b6b92ef91c49bd456769b53f98ac183e45ea3e83a06a"
+        },
+        {
+          "path": "packages/lsp/test/lsp/transport_test.gleam",
+          "sha256": "c4fa3bf0db04de0e04c59581688187dd8b970fb65e59550ba491e813b78d213d"
+        },
+        {
+          "path": "packages/lsp/test/support/consumed_server.gleam",
+          "sha256": "a1c20646c54cafaf4ac68090ba6cb4a9bb27177e45d28351f6eb081255a52e50"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-lsp-consumed",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/lsp-custody",
+      "base": "4eb45fb0b4d5e9eb9cce11e13bf37b35ad49f140",
+      "head": "b1d19eead519fc1dbd054033b7a5822f5c34e125",
+      "commits": [
+        "ff5bf2c2f6eba3e85c554f3551f06a54c8a61d89",
+        "b1d19eead519fc1dbd054033b7a5822f5c34e125"
+      ],
+      "files": [
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "afbaf25e98fad84ebe4099532741340f66ba3b42488073325bd5d1d4c31dd3e8"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "afbaf25e98fad84ebe4099532741340f66ba3b42488073325bd5d1d4c31dd3e8"
+        },
+        {
+          "path": "packages/executor/sql/lsp_custody.sql",
+          "sha256": "cbe1c4b4a031ae2b75bdfbd374f052e713f62ebe3a37c64a50e7455b06e7f46e"
+        },
+        {
+          "path": "packages/executor/src/executor/lsp_custody_schema.gleam",
+          "sha256": "7a64f9847f44522503e5bcdd2253f301880d71f9588a83f588be0aa29d7c45f4"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_journal.gleam",
+          "sha256": "b69bb0c55d196a9ab327027f276fc637cd718fec9f10f5b8522e6182b0093cd3"
+        },
+        {
+          "path": "packages/executor/src/executor/sql.gleam",
+          "sha256": "e1dd5bfe5d3fce45b25eff84b5e90bb94c86ad0fe93ed273a79ebb2ac3d40ec6"
+        },
+        {
+          "path": "packages/executor/src/executor/sql/lsp_custody.sql",
+          "sha256": "8dd0911177649441061fd14b9733026d89eed172b112caef359cf23f6be4da58"
+        },
+        {
+          "path": "packages/executor/test/lsp_journal_test.gleam",
+          "sha256": "0d10083e6dfb4306cad251f8a2e717ada6d856a3dfe86bc3ed1fcc64d511ee3b"
+        },
+        {
+          "path": "scripts/gen-sql.sh",
+          "sha256": "594f5271442cd5ad69aaf6d8603f3a11b809d30e6b415726ba15f725bbf08952"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-lsp-custody",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-lsp-foundation",
+      "base": "fe34ab48eaa02d5417b23b625f2885ee9ec2a873",
+      "head": "366d302d3685ee9b24f324541d3abe6d876b5cc4",
+      "commits": [
+        "97dc8ad1a48454d6411947d093664fc90ee2bdda",
+        "366d302d3685ee9b24f324541d3abe6d876b5cc4"
+      ],
+      "files": [
+        {
+          "path": "packages/core/src/core/generation.gleam",
+          "sha256": "6ce294f0f0fbbe4d839ad527f17dea45ff47b0eef3c76335de33f560fa94231f"
+        },
+        {
+          "path": "packages/core/src/core/internal/msgpack_scan.gleam",
+          "sha256": "7ed45ea8a305fa3e4dfcc4e50fa7cd0dd30ea2407c494fd0b8d4b2c40cbf5bea"
+        },
+        {
+          "path": "packages/core/src/core/lsp_command.gleam",
+          "sha256": "9f38ca3f18459e5a76e105a26f6a017b420878d440b2f6a1b27c13e642ca17b6"
+        },
+        {
+          "path": "packages/core/src/core/remote_tool.gleam",
+          "sha256": "5883da1cbb9eed773889c82d352a247a9e6f74329437b86727951d32cb6804b4"
+        },
+        {
+          "path": "packages/core/test/core/generation_test.gleam",
+          "sha256": "585360cb60623b307c95910b3bbdf16df6e240039bf7369760642888760d921c"
+        },
+        {
+          "path": "packages/core/test/core/lsp_command_test.gleam",
+          "sha256": "04717f13dd8197bd1485e4dfb1a47a18014ae21b631de1216ba97e351f2dca00"
+        },
+        {
+          "path": "packages/core/test/core/lsp_preflight_test.gleam",
+          "sha256": "7453e6e3125d361da8f921caf2ac2d4d6d178214e3164b9319542747716389a6"
+        },
+        {
+          "path": "packages/core/test/core/remote_child_codec_test.gleam",
+          "sha256": "e5d5e835773ccef1f830198899e1597b669841214e6897b7d8a0c857ca87f9d1"
+        },
+        {
+          "path": "packages/executor/gleam.toml",
+          "sha256": "89aef50eb9a65864c466c1d1e2bbe77ffa31cb425cb5a5dd936edaa6896a96d4"
+        },
+        {
+          "path": "packages/executor/manifest.toml",
+          "sha256": "71699d8e83de6b308c76fb4502df51dd4bb3aaf3ad885a280cbc7faedd23128f"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_wire.gleam",
+          "sha256": "4c42debbc778f953bed28667943dcb42b5e78b34af781947b41b151c88d6639b"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_wire/observation.gleam",
+          "sha256": "79c12df7a40fc7e366616109359f4dcc495cbe6b2dad15188cb5dfee128d8e03"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_wire/query.gleam",
+          "sha256": "398600431fc076f4305c91db4afe4128868f1eb017df8894dcb0bb728595e925"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_wire/value.gleam",
+          "sha256": "f4213aff5c8459ecb0c6b67a8f24ed218750a10a750bd1bacc42d343af7fc55d"
+        },
+        {
+          "path": "packages/executor/test/lsp_wire_test.gleam",
+          "sha256": "24bfcf682b4de464cf6f4b4e794dd76726516a0f54d11d1fe6c053d9aa99076d"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-lsp-foundation",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-lsp-native",
+      "base": "f2dea5c380af6430c6deba918f93a656492757ef",
+      "head": "0e8088ede31a74bf83a4097614bcf8290b7ba144",
+      "commits": [
+        "0e8088ede31a74bf83a4097614bcf8290b7ba144"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/executor.md",
+          "sha256": "c6a98ac939e20819bff731e0416cf8797a63e877c9c4f46b3b08468c6ec54627"
+        },
+        {
+          "path": "docs/architecture/extensions.md",
+          "sha256": "c33916f7eb29963a4e9938bb6b4f3c1a74822b3cc5ff69fed71177f5d6172ae8"
+        },
+        {
+          "path": "docs/code-tour.md",
+          "sha256": "9ca4d5823f9feff74213bceac8257d8b2b7c32f4c88ace87e216ab13fadb1e9f"
+        },
+        {
+          "path": "docs/design-notes/microvm-executor-tier.md",
+          "sha256": "fd02116a493da1ed316497be5d08927f175ebe0dc35d3acfd407d1eab1e1fe48"
+        },
+        {
+          "path": "packages/broker/AGENTS.md",
+          "sha256": "6c7a47736238bc87898e09dd96e399f2a52df75472f0334f8f3380c7e5bc7614"
+        },
+        {
+          "path": "packages/broker/CLAUDE.md",
+          "sha256": "6c7a47736238bc87898e09dd96e399f2a52df75472f0334f8f3380c7e5bc7614"
+        },
+        {
+          "path": "packages/broker/src/broker/exec.gleam",
+          "sha256": "76a997c16316684127a23b30bc1ea8ff498d33a9b497368ad6f62d7bcd2f26bc"
+        },
+        {
+          "path": "packages/broker/src/broker/executor.gleam",
+          "sha256": "0b3c7654e6474b67602f08fec542d77d434f97a94d9c8f18b76e8b3683c48904"
+        },
+        {
+          "path": "packages/broker/test/broker/protocol_session_deadline_test.gleam",
+          "sha256": "de73128b872d80c0eb14164e5b1160560d6b49089f2be9b3ebebb080c69c7f95"
+        },
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "4395aeb939a048c055cf1aff3428791bbcdbdb3e636eb22955b458ed622fd149"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "4395aeb939a048c055cf1aff3428791bbcdbdb3e636eb22955b458ed622fd149"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/lsp_native_plan.gleam",
+          "sha256": "6b370963981b2aff88b1f4ce0f2a655bd7791120e19707bef4f0a50c62e3cc7e"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/internal/lsp_output_join.gleam",
+          "sha256": "b55b69cfaf6e761cff629d8460cd9aee7293f6dd3d08a97f6d8b022b45db865a"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_journal.gleam",
+          "sha256": "855915231ffd6ed20cd1eb4501013fc107772fa37522a60bfe995a1028e21041"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/lsp_native.gleam",
+          "sha256": "409a2c09fa515fef4618d2bf4a6162fedff43d627971ec557ef6d600ea70082d"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/service.gleam",
+          "sha256": "6c453ffd2650644fde2c03932f05b9783a832802758d8abfe2c794fff19a759f"
+        },
+        {
+          "path": "packages/executor/test/executor_launch_socket_fixture.erl",
+          "sha256": "8070a9cc719a1540da197bccafafa02dabe4da54b7f3228c0e0a601fe612c6da"
+        },
+        {
+          "path": "packages/executor/test/lsp_journal_test.gleam",
+          "sha256": "677e467bf12bc2e2a2398a7aa78b2818e744e3ed1dab1b670e97cd290004b569"
+        },
+        {
+          "path": "packages/executor/test/lsp_native_test.gleam",
+          "sha256": "50775b0842b179c48d3608e017d1812b428001654e18916e2d36fbff5cd12932"
+        },
+        {
+          "path": "packages/executor/test/support/lsp_native_fixture.gleam",
+          "sha256": "14901a65a78bc9779f1d602eb2b38d2f65cee86f575febca53dc528660e7152e"
+        },
+        {
+          "path": "packages/sandbox/AGENTS.md",
+          "sha256": "bd5e5d40dcba6d22bbf3f970f834681ff142ce1cc9a71485bf2f3e4017e19f0b"
+        },
+        {
+          "path": "packages/sandbox/CLAUDE.md",
+          "sha256": "bd5e5d40dcba6d22bbf3f970f834681ff142ce1cc9a71485bf2f3e4017e19f0b"
+        },
+        {
+          "path": "packages/sandbox/internal/server/protocol.go",
+          "sha256": "270e2f77c12cbad60a294aa8a7816cc1101802c3a4b447e8aad996049bf76e92"
+        },
+        {
+          "path": "packages/sandbox/internal/server/protocol_integration_test.go",
+          "sha256": "fe6a288ed7572e80efa3f502f0ae24cf16fd7c66b66a95d4bbd7b242e6565490"
+        },
+        {
+          "path": "protocol-change/076-registered-lsp.md",
+          "sha256": "1bd22c52fcb8b3e5fa00354767f3aff875f2f12ab7f014861e0bfc9e803544bd"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-lsp-native",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/registered-owner-custodian",
+      "base": "f2dea5c380af6430c6deba918f93a656492757ef",
+      "head": "12cf267155ec29f06e42119efb6616d15546c951",
+      "commits": [
+        "12cf267155ec29f06e42119efb6616d15546c951"
+      ],
+      "files": [
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "885182b4301c7420e2cdd3c50d18f891e490a8ca0e40b5f8632029b676493e45"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "885182b4301c7420e2cdd3c50d18f891e490a8ca0e40b5f8632029b676493e45"
+        },
+        {
+          "path": "packages/client/src/client/remote/custodian.gleam",
+          "sha256": "7b2e69365b54b276b122916bf2ed768d61bc2e8a26dfe997d2093a06380fa7d5"
+        },
+        {
+          "path": "packages/client/src/client/remote/dispatch_binding.gleam",
+          "sha256": "88a7fbf683ec947841c637b17233735dab641cef44c50f30d08fecfb70029723"
+        },
+        {
+          "path": "packages/client/test/client/remote/registered_custodian_test.gleam",
+          "sha256": "556a375e3d584c6ad1ce25a12dc0f8e91470e623c4a0cd09b42f7c4ad9f8d284"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-owner-custodian",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/owner-generation-custody",
+      "base": "cc668b1f241531ea3f2fa0d10bfb7f9f98272ee1",
+      "head": "cb666ed674e8f3ae2d6c5ad1b7bd2499851b21eb",
+      "commits": [
+        "17b02053e187260045f271c540cbf4cf1817a00c",
+        "cb666ed674e8f3ae2d6c5ad1b7bd2499851b21eb"
+      ],
+      "files": [
+        {
+          "path": "packages/storage/AGENTS.md",
+          "sha256": "098e0d249182d39f08539515f48ff912429a27fdc4c89c177e3425895d71c48d"
+        },
+        {
+          "path": "packages/storage/CLAUDE.md",
+          "sha256": "098e0d249182d39f08539515f48ff912429a27fdc4c89c177e3425895d71c48d"
+        },
+        {
+          "path": "packages/storage/sql/owner_custody.sql",
+          "sha256": "ff15d5a80af921ecc08d220056458a4a48853603e986a40eb5532b2bc068fb0c"
+        },
+        {
+          "path": "packages/storage/src/storage/owner_custody.gleam",
+          "sha256": "5d08ae36dfaa598366c12470b9fe2d863e7247a3c666e1f83913f5b1bb8e9163"
+        },
+        {
+          "path": "packages/storage/src/storage/owner_custody_schema.gleam",
+          "sha256": "6093c176922d469208841048d1a148e328aad3420c6bf60e0b115427edf0f700"
+        },
+        {
+          "path": "packages/storage/src/storage/sql.gleam",
+          "sha256": "06375530c4c6c94d201e082dfd2df51e08599a3f807410a58567d8ac608dffb0"
+        },
+        {
+          "path": "packages/storage/src/storage/sql/owner_custody.sql",
+          "sha256": "506ba461f53aaa33922394fb96e586e5b9b1794e695679e2527a7ca5acd46e33"
+        },
+        {
+          "path": "packages/storage/test/storage/owner_custody_test.gleam",
+          "sha256": "411fc854c30e664b67ad1cd4c377ee55dfa7c74346832c39267c830fdc456b69"
+        },
+        {
+          "path": "packages/storage/test/storage/owner_generations_test.gleam",
+          "sha256": "fbb1d7abefa92faf46b4740041fbe8062a7f606877336851b4812ff09188692c"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-owner-generation",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/whole-launch-owner",
+      "base": "be3068b5b5983b44a154cb652e541139d2ff6823",
+      "head": "59283dc15a1849141bff8098522511a59b2de12b",
+      "commits": [
+        "885a382da1961c6df28a56dde2bc7a5d4ae127ee",
+        "59283dc15a1849141bff8098522511a59b2de12b"
+      ],
+      "files": [
+        {
+          "path": "docs/architecture/code-mode.md",
+          "sha256": "3f2fb50144cc83782e248ee104d9930bb6f7c1bbe78e24bc527b2db3ce74563f"
+        },
+        {
+          "path": "docs/architecture/extensions.md",
+          "sha256": "780b510ca2024aca9b8768cb5663537af32acad827ed1d7fbe8bda592c758195"
+        },
+        {
+          "path": "docs/architecture/remote-compilation.md",
+          "sha256": "d59a8e3fd34673d5d835b451a1cf72213fca440cde3ee6f424f711668b8b658d"
+        },
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "2d98bb3e8ce3578e06bd314745521ac0e77d78e0ec450d78ecd124d21255cc61"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "2d98bb3e8ce3578e06bd314745521ac0e77d78e0ec450d78ecd124d21255cc61"
+        },
+        {
+          "path": "packages/client/src/client/codemode.gleam",
+          "sha256": "bf584aa16514850e2e2cfe0d50162b7c5350017fb368bbd7fbbe50ffff5d273f"
+        },
+        {
+          "path": "packages/client/src/client/extension/dispatch.gleam",
+          "sha256": "2ef5ca40538b0b92d0170a9affa7de63733178cd527ab1138a7b0135659d2fdd"
+        },
+        {
+          "path": "packages/client/test/client/codemode_cleanup_test.gleam",
+          "sha256": "a994c5e74dada6755f9cfd1556954b3350daa09da948adf8ffacaacf0303075e"
+        },
+        {
+          "path": "packages/client/test/client/codemode_test.gleam",
+          "sha256": "8a6a526ea644078b366c7950817c955c109a7b858c0a22e398355bdc1eca9172"
+        },
+        {
+          "path": "packages/codemode/AGENTS.md",
+          "sha256": "d49656eaf6496635c7946beec986f94b52f7213225600243bc7747bcfafd1a50"
+        },
+        {
+          "path": "packages/codemode/CLAUDE.md",
+          "sha256": "d49656eaf6496635c7946beec986f94b52f7213225600243bc7747bcfafd1a50"
+        },
+        {
+          "path": "packages/codemode/src/codemode/codemode.gleam",
+          "sha256": "725b2747a5e83f7c9ee43ee0d9474f484239b923b4b98460e0e7a6bc6d60b76a"
+        },
+        {
+          "path": "packages/codemode/src/codemode/internal/ffi_unix.gleam",
+          "sha256": "b49e533915ad4bacbb22642da36b0c5ae7dbc5d28ac9dba6c2c7df431ffa5928"
+        },
+        {
+          "path": "packages/codemode/src/codemode/launch.gleam",
+          "sha256": "e0dbeae43ad729cba43d7cfafc73fb264cb06bdd6e5a77e6391fe95dba6aad27"
+        },
+        {
+          "path": "packages/codemode/src/codemode/run_channel.gleam",
+          "sha256": "6e161174bc6987462172586aa46d6cad60a85ae7c8092110fde49fca080f5b23"
+        },
+        {
+          "path": "packages/codemode/src/codemode/satellite.gleam",
+          "sha256": "7b25c4321dbd357ac812648276eed5bd57b89431d047c65601a7fef4b08d6f08"
+        },
+        {
+          "path": "packages/codemode/src/codemode_ffi.erl",
+          "sha256": "44b0b7d7f2ea71a88cedb07b9a46343bdf65d0fda037e2a9eba5c27e8bd968bf"
+        },
+        {
+          "path": "packages/codemode/test/codemode/admitted_provenance_test.gleam",
+          "sha256": "b7f5e7ee21e6cb2905a38b8504465fa0c9628c1eb55b7a8f1559327cf368da74"
+        },
+        {
+          "path": "packages/codemode/test/codemode/compile_service_test.gleam",
+          "sha256": "3eb95565473d9ed1624b8bc98ada839b737cff05849b53dcc88ddb15ea337cb2"
+        },
+        {
+          "path": "packages/codemode/test/codemode/e2e_test.gleam",
+          "sha256": "db7309b94bbaf5bd8b7f3f55596d126454fef1339655d1db270061adb5726a38"
+        },
+        {
+          "path": "packages/codemode/test/codemode/foreground_launch_test.gleam",
+          "sha256": "ef5051573e0158dd70bcb46bc50a9730f0143990e993835e045523bb032484c4"
+        },
+        {
+          "path": "packages/codemode/test/codemode/generated_test.gleam",
+          "sha256": "ee476f52f7dee81c757b5ea45f8fa1c8a8205c8b81cef5153fb5365c7aefd11a"
+        },
+        {
+          "path": "packages/codemode/test/codemode/identity_test.gleam",
+          "sha256": "59bdd15b03af0b85b2ed980de61fddffaa221d7265b035694d2c1c0f9f5312e4"
+        },
+        {
+          "path": "packages/codemode/test/codemode/migration_sample_test.gleam",
+          "sha256": "38fdc23801e3ac7d8fcad967905513319fc3bf7886332da02f5fbd20b404c224"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestration_sample_test.gleam",
+          "sha256": "94b3a0b0fbd6e252580cded4164b825fc08e4fd3a02d7a87a5fa5a7b83b3b466"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestration_test.gleam",
+          "sha256": "1680877ca1743d05e68669abd35f41ea7a026043c9fae7252ec9468657cdeb4e"
+        },
+        {
+          "path": "packages/codemode/test/codemode/orchestrator_test.gleam",
+          "sha256": "d8263b0fc675473047f01ff66c552371a321e3f057138c123cde9e83aa4d8a32"
+        },
+        {
+          "path": "packages/codemode/test/codemode/run_channel_test.gleam",
+          "sha256": "61a773e0aaccf57d4d956f9b94039dea2376cb1fd9e4e7c1c3316530090b3f70"
+        },
+        {
+          "path": "packages/codemode/test/codemode/satellite_test.gleam",
+          "sha256": "212897cc8b11ba0f30453c89072c1d5b57c3c6d387c1c4842adaa5caeee97b2d"
+        },
+        {
+          "path": "packages/codemode/test/codemode/widening_test.gleam",
+          "sha256": "898833e65baef9941a4ab868ae8c28e8e0570d086f132050155c44f02ad9c623"
+        },
+        {
+          "path": "packages/codemode/test/codemode/workspace_test.gleam",
+          "sha256": "ae78342b1ddb7720d2472a53cba137879cef1c573b8f2619525464bee60d52ab"
+        },
+        {
+          "path": "packages/codemode/test/support/satellite_peer.gleam",
+          "sha256": "6e3a9227b38c130dc0bd717eb46be4aee20f0742c9fbe35863b373ae199d6ab7"
+        },
+        {
+          "path": "packages/executor/AGENTS.md",
+          "sha256": "40821eb520ea08adb95d43be149c7c2ec9b23ac78de477d46b180e7eb8436506"
+        },
+        {
+          "path": "packages/executor/CLAUDE.md",
+          "sha256": "40821eb520ea08adb95d43be149c7c2ec9b23ac78de477d46b180e7eb8436506"
+        },
+        {
+          "path": "packages/executor/sql/resources.sql",
+          "sha256": "c0f3a314b9d8a48509cfc6af212fb25a32f195dff467c249f98fa2455ae6da23"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_channel.gleam",
+          "sha256": "31fbf857bcc073aecf66763584bc007d881d2e21d416c49dd88bb8f82a438480"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_completion.gleam",
+          "sha256": "6f6096f8fd690842c1b14a575594bc1fda6e5303efba723727e982871b2654eb"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_observation.gleam",
+          "sha256": "1dda679d66ba527488f22c3f065197dacd4ce37d0d412bded3470eae69ebd24c"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/launch_service.gleam",
+          "sha256": "16e613d9689ac07a7f926c6b648034fb2a1bd5c13c903f8fa513c122c2ac0f26"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/resource_journal.gleam",
+          "sha256": "277220e106a8c4873c0ac7080580304cba9d8a1ca60f48ba7a15d3bff4d83f73"
+        },
+        {
+          "path": "packages/executor/src/executor/remote/service.gleam",
+          "sha256": "c9ed4d919e3c2bd978fec3dc62b362f8df6def597e987508c3ae2387c91a79ef"
+        },
+        {
+          "path": "packages/executor/src/executor/resource_schema.gleam",
+          "sha256": "76a27e6c46a95b15b74feeffb1f7eaf748c97b0390da77ba51b9501c2a11f950"
+        },
+        {
+          "path": "packages/executor/src/executor/sql.gleam",
+          "sha256": "d0d8e515ebbaaf1f959c6a4418ef8904a0bf29092ae475a4ccab8886cf4fb842"
+        },
+        {
+          "path": "packages/executor/src/executor/sql/resources.sql",
+          "sha256": "3ced3d245bd3d936f0a2932d49f4c87f606d520c5ba38654df439c926a5a39af"
+        },
+        {
+          "path": "packages/executor/test/command_native_service_test.gleam",
+          "sha256": "4419e15187b99f8dfaad7b707e72436e2542bbc60f674fff5146bc07602ff3ef"
+        },
+        {
+          "path": "packages/executor/test/executor_launch_socket_fixture.erl",
+          "sha256": "c34236250619af16e7799bb6e90e2d3574039dd8b28c171e2fa288e7e2c78669"
+        },
+        {
+          "path": "packages/executor/test/launch_channel_test.gleam",
+          "sha256": "2977af77c20cdc1553b9cd9e099cce2c776cc8372d7ae95d7d469b7927323c58"
+        },
+        {
+          "path": "packages/executor/test/launch_completion_test.gleam",
+          "sha256": "6dff832c4398ed5417eb4cdfe73d148d0926fa8d3733cfadcdca1207632e987b"
+        },
+        {
+          "path": "packages/executor/test/launch_service_test.gleam",
+          "sha256": "385f2a9418412e43363eee9a9e8cc5350b15b4981be43e78ea566e2251167901"
+        },
+        {
+          "path": "packages/executor/test/resource_journal_test.gleam",
+          "sha256": "7541e98dd603dd77094fe136d95b2d0d4210cf468a0712a1194aa8f3b48325b5"
+        },
+        {
+          "path": "packages/tools/AGENTS.md",
+          "sha256": "758da78143ae8fdfd0e2b31ea48f8939d353ef793a461d489318644f259a502e"
+        },
+        {
+          "path": "packages/tools/CLAUDE.md",
+          "sha256": "758da78143ae8fdfd0e2b31ea48f8939d353ef793a461d489318644f259a502e"
+        },
+        {
+          "path": "packages/tools/src/tools/codemode.gleam",
+          "sha256": "d37450e8c60dfca196e4e910e1c73ed64a7682ba122841ed8b6fc880325c5dba"
+        },
+        {
+          "path": "packages/tools/test/tools/codemode_test.gleam",
+          "sha256": "34947f1eac02df80fdfd7b74c6059c161388434f5d4a3f7d0f29ba3554908fbb"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/whole-launch-owner",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/workspace-system-read",
+      "base": "d84b60a91d7bb413fe0a422d070c17af61081ade",
+      "head": "b49bcc39b900ae45283914ee1fa56771c2359c91",
+      "commits": [
+        "b49bcc39b900ae45283914ee1fa56771c2359c91"
+      ],
+      "files": [
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "167b4188f3ed0258e5226d0575b802f28b3ec4cf271434e09f318eb84344b03a"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "167b4188f3ed0258e5226d0575b802f28b3ec4cf271434e09f318eb84344b03a"
+        },
+        {
+          "path": "packages/client/src/client/remote/workspace_binding.gleam",
+          "sha256": "4c6a9f0916be59ad94dae38a83f333ee23f4c008a759526f89186aefda8ce155"
+        },
+        {
+          "path": "packages/client/src/client/remote/workspace_client.gleam",
+          "sha256": "2f8634e0eb6ae9848f7c4d0261abd7d40c145033b19b8bdc02eb429c0774b579"
+        },
+        {
+          "path": "packages/client/test/client/remote/workspace_system_client_test.gleam",
+          "sha256": "19023c8e22550d96ef5df769439c51caf26928cd738f0df6dee1771d80ef370d"
+        },
+        {
+          "path": "packages/client/test/support/workspace_system_beam_fixture.gleam",
+          "sha256": "5b9a4871e13147dc3ef7e1c85528de6e9ca3ebe06fa7fe24980ed0150b88cd57"
+        },
+        {
+          "path": "protocol-change/079-registered-generations.md",
+          "sha256": "9bffc4f4979b95a23ec4754cbae05f617c7f5701d5649c9fbb6437f2ab1320ac"
+        }
+      ],
+      "status": "archival checkpoint; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/workspace-system-read",
+      "classification": "historical component snapshot; inspect integrated successor before reuse"
+    },
+    {
+      "branch": "runtime/source-acquisition",
+      "base": "ddec0465bd2fe73e293881cf26d517f5c132d5d9",
+      "head": "3d76f2db816b8e72530d85ab7f07ad2d0765ad9c",
+      "commits": [
+        "3d76f2db816b8e72530d85ab7f07ad2d0765ad9c"
+      ],
+      "files": [
+        {
+          "path": "packages/client/AGENTS.md",
+          "sha256": "0e5311d0105c6c16011f368a542ac0a84c3b7506915d7d0a4400d5948a4abbe4"
+        },
+        {
+          "path": "packages/client/CLAUDE.md",
+          "sha256": "0e5311d0105c6c16011f368a542ac0a84c3b7506915d7d0a4400d5948a4abbe4"
+        },
+        {
+          "path": "packages/client/src/client/remote/custodian.gleam",
+          "sha256": "0c91a33a6b7a935b0e9ae08cfd05cd25dc8b10a2d29f0008d8a1d51cf68d898b"
+        },
+        {
+          "path": "packages/client/src/client/remote/hook_source_acquisition.gleam",
+          "sha256": "f11713aa6041f0c20bcb7897300c8c54728556120fa59aa5d08013c16226cc2a"
+        },
+        {
+          "path": "packages/client/test/client/remote/hook_source_acquisition_test.gleam",
+          "sha256": "f541e5b1b8f286d26f09c78c422727ea10aa205fc7784671b4fc5d0f6e6dd89e"
+        },
+        {
+          "path": "packages/client/test/client/remote/registered_custodian_test.gleam",
+          "sha256": "9672887beec56dc4d42119c8f443743c40fa1c57e393c304df990d816cd14060"
+        },
+        {
+          "path": "packages/client/test/support/hook_source_beam_fixture.gleam",
+          "sha256": "1bae83aba789c09b568eddb78734da3c5fa4143ba80d8ec983a2d3296c91be4e"
+        },
+        {
+          "path": "packages/storage/AGENTS.md",
+          "sha256": "0a91913ae7a5b4428cbf9a0a736122b431e7476265b712b84e500ba42e8151c4"
+        },
+        {
+          "path": "packages/storage/CLAUDE.md",
+          "sha256": "0a91913ae7a5b4428cbf9a0a736122b431e7476265b712b84e500ba42e8151c4"
+        },
+        {
+          "path": "packages/storage/src/storage/owner_custody.gleam",
+          "sha256": "90139d78712dadf10e20176f5323214e890b2e8bbfa3555e46cdee6b04e60f01"
+        },
+        {
+          "path": "packages/storage/test/storage/owner_generations_test.gleam",
+          "sha256": "a9814139459f28d407a8dd7366d3812cfb4b7a3dc59ddde4f43ba7a2b6f4722c"
+        }
+      ],
+      "status": "WIP red; missing lookup error; not integrated",
+      "worktree": "/Users/roasbeef/gocode/src/github.com/roasbeef/loom/.worktrees/registered-source-acquisition",
+      "classification": "unfinished; not imported"
+    }
+  ]
+}

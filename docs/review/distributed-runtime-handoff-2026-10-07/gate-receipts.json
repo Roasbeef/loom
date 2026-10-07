@@ -1,0 +1,377 @@
+{
+  "oct7-6ab920-shipped-client-statuses.json": [
+    {
+      "step": "shipment",
+      "command": [
+        "make",
+        "server-shipment"
+      ],
+      "actual_exit": 0,
+      "seconds": 44.55,
+      "log": "/private/tmp/loom-launch-resume/oct7-6ab920-shipped-client-shipment.log",
+      "tracked_changes": []
+    },
+    {
+      "step": "client-shipped",
+      "command": [
+        "make",
+        "check-client"
+      ],
+      "actual_exit": 2,
+      "seconds": 568.64,
+      "log": "/private/tmp/loom-launch-resume/oct7-6ab920-shipped-client-client-shipped.log",
+      "tracked_changes": []
+    }
+  ],
+  "oct7-tail-barrier-statuses.json": [
+    {
+      "step": "tail",
+      "command": [
+        "bash",
+        "scripts/test.sh",
+        "client",
+        "--match",
+        "client@daemon_shipped_jobs_test:daemon_shipped_job_tails_polls_and_stops_test_"
+      ],
+      "actual_exit": 0,
+      "seconds": 3.73,
+      "log": "/private/tmp/loom-launch-resume/oct7-tail-barrier-tail.log",
+      "tracked_changes": []
+    },
+    {
+      "step": "lint",
+      "command": [
+        "make",
+        "lint-client"
+      ],
+      "actual_exit": 0,
+      "seconds": 3.15,
+      "log": "/private/tmp/loom-launch-resume/oct7-tail-barrier-lint.log",
+      "tracked_changes": []
+    }
+  ],
+  "oct7-assembled-root-statuses.json": [
+    {
+      "step": "seed",
+      "command": [
+        "make",
+        "codemode-seed"
+      ],
+      "actual_exit": 0,
+      "seconds": 9.77,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-root-seed.log",
+      "source_changes": []
+    },
+    {
+      "step": "runtime",
+      "command": [
+        "make",
+        "check-runtime"
+      ],
+      "actual_exit": 0,
+      "seconds": 63.13,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-root-runtime.log",
+      "source_changes": []
+    },
+    {
+      "step": "workspace-system",
+      "command": [
+        "bash",
+        "scripts/test.sh",
+        "client",
+        "--match",
+        "client@remote@workspace_system_client_test:"
+      ],
+      "actual_exit": 1,
+      "seconds": 45.08,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-root-workspace-system.log",
+      "source_changes": []
+    }
+  ],
+  "oct7-assembled-recovery-host-statuses.json": [
+    {
+      "step": "workspace-system",
+      "command": [
+        "bash",
+        "scripts/test.sh",
+        "client",
+        "--match",
+        "client@remote@workspace_system_client_test:"
+      ],
+      "actual_exit": 0,
+      "seconds": 17.61,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-workspace-system.log",
+      "source_changes": []
+    },
+    {
+      "step": "workspace-existing",
+      "command": [
+        "bash",
+        "scripts/test.sh",
+        "client",
+        "--match",
+        "client@remote@workspace_client_test:"
+      ],
+      "actual_exit": 0,
+      "seconds": 6.36,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-workspace-existing.log",
+      "source_changes": []
+    },
+    {
+      "step": "binding-existing",
+      "command": [
+        "bash",
+        "scripts/test.sh",
+        "client",
+        "--match",
+        "client@remote@workspace_binding_test:"
+      ],
+      "actual_exit": 0,
+      "seconds": 1.86,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-binding-existing.log",
+      "source_changes": []
+    },
+    {
+      "step": "fact-hooks",
+      "command": [
+        "bash",
+        "scripts/test.sh",
+        "client",
+        "--match",
+        "client@registered_hook_test:fact_effects_"
+      ],
+      "actual_exit": 0,
+      "seconds": 1.09,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-fact-hooks.log",
+      "source_changes": []
+    },
+    {
+      "step": "legacy-hooks",
+      "command": [
+        "bash",
+        "scripts/test.sh",
+        "client",
+        "--match",
+        "client@hookserve_test:"
+      ],
+      "actual_exit": 0,
+      "seconds": 1.23,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-legacy-hooks.log",
+      "source_changes": []
+    },
+    {
+      "step": "lint-runtime",
+      "command": [
+        "make",
+        "lint-runtime"
+      ],
+      "actual_exit": 0,
+      "seconds": 0.63,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-lint-runtime.log",
+      "source_changes": []
+    },
+    {
+      "step": "lint-client",
+      "command": [
+        "make",
+        "lint-client"
+      ],
+      "actual_exit": 0,
+      "seconds": 3.05,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-lint-client.log",
+      "source_changes": []
+    },
+    {
+      "step": "doc",
+      "command": [
+        "make",
+        "doc-check"
+      ],
+      "actual_exit": 0,
+      "seconds": 2.77,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-doc.log",
+      "source_changes": []
+    },
+    {
+      "step": "prelude",
+      "command": [
+        "make",
+        "prelude-check"
+      ],
+      "actual_exit": 0,
+      "seconds": 0.77,
+      "log": "/private/tmp/loom-launch-resume/oct7-assembled-recovery-host-prelude.log",
+      "source_changes": []
+    }
+  ],
+  "registered-hook-root-statuses.json": [
+    {
+      "step": "diff",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "actual_exit": 0,
+      "seconds": 0.02,
+      "log": "/private/tmp/loom-launch-resume/registered-hook-root-diff.log"
+    },
+    {
+      "step": "format",
+      "command": [
+        "gleam",
+        "format",
+        "--check",
+        "packages/client/src/client/hookserve.gleam",
+        "packages/client/src/client/hookwire.gleam",
+        "packages/client/src/client/hookrunner.gleam",
+        "packages/client/src/client/registered_system_work.gleam",
+        "packages/client/test/client/registered_hook_test.gleam"
+      ],
+      "actual_exit": 0,
+      "seconds": 0.01,
+      "log": "/private/tmp/loom-launch-resume/registered-hook-root-format.log"
+    },
+    {
+      "step": "seed",
+      "command": [
+        "make",
+        "codemode-seed"
+      ],
+      "actual_exit": 0,
+      "seconds": 9.89,
+      "log": "/private/tmp/loom-launch-resume/registered-hook-root-seed.log"
+    },
+    {
+      "step": "client",
+      "command": [
+        "make",
+        "check-client"
+      ],
+      "actual_exit": 0,
+      "seconds": 403.62,
+      "log": "/private/tmp/loom-launch-resume/registered-hook-root-client.log"
+    },
+    {
+      "step": "lint",
+      "command": [
+        "make",
+        "lint-client"
+      ],
+      "actual_exit": 0,
+      "seconds": 2.97,
+      "log": "/private/tmp/loom-launch-resume/registered-hook-root-lint.log"
+    },
+    {
+      "step": "docs",
+      "command": [
+        "make",
+        "doc-check",
+        "prelude-check"
+      ],
+      "actual_exit": 0,
+      "seconds": 3.45,
+      "log": "/private/tmp/loom-launch-resume/registered-hook-root-docs.log"
+    }
+  ],
+  "registered-goal-root-statuses.json": [
+    {
+      "step": "format",
+      "actual_exit": 0,
+      "seconds": 0.01,
+      "log": "/private/tmp/loom-launch-resume/registered-goal-root-format.log"
+    },
+    {
+      "step": "seed",
+      "actual_exit": 0,
+      "seconds": 12.6,
+      "log": "/private/tmp/loom-launch-resume/registered-goal-root-seed.log"
+    },
+    {
+      "step": "client",
+      "actual_exit": 0,
+      "seconds": 402.66,
+      "log": "/private/tmp/loom-launch-resume/registered-goal-root-client.log"
+    },
+    {
+      "step": "lint",
+      "actual_exit": 0,
+      "seconds": 2.97,
+      "log": "/private/tmp/loom-launch-resume/registered-goal-root-lint.log"
+    },
+    {
+      "step": "docs",
+      "actual_exit": 0,
+      "seconds": 2.96,
+      "log": "/private/tmp/loom-launch-resume/registered-goal-root-docs.log"
+    }
+  ],
+  "oct7-rebase-root-statuses.json": [
+    {
+      "step": "sql",
+      "actual_exit": 0,
+      "seconds": 5.08,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-sql.log"
+    },
+    {
+      "step": "storage",
+      "actual_exit": 0,
+      "seconds": 20.15,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-storage.log"
+    },
+    {
+      "step": "daemon_protocol",
+      "actual_exit": 0,
+      "seconds": 11.98,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-daemon_protocol.log"
+    },
+    {
+      "step": "daemon_server",
+      "actual_exit": 0,
+      "seconds": 6.03,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-daemon_server.log"
+    },
+    {
+      "step": "daemon_manager",
+      "actual_exit": 0,
+      "seconds": 1.47,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-daemon_manager.log"
+    },
+    {
+      "step": "domain_resolution",
+      "actual_exit": 0,
+      "seconds": 1.02,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-domain_resolution.log"
+    },
+    {
+      "step": "tui_daemon",
+      "actual_exit": 0,
+      "seconds": 8.19,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-tui_daemon.log"
+    },
+    {
+      "step": "ui-profile",
+      "actual_exit": 0,
+      "seconds": 1.02,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-ui-profile.log"
+    },
+    {
+      "step": "ui-unknown-profile",
+      "actual_exit": 0,
+      "seconds": 1.03,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-ui-unknown-profile.log"
+    },
+    {
+      "step": "lint",
+      "actual_exit": 0,
+      "seconds": 3.82,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-lint.log"
+    },
+    {
+      "step": "docs",
+      "actual_exit": 2,
+      "seconds": 2.85,
+      "log": "/private/tmp/loom-launch-resume/oct7-rebase-root-docs.log"
+    }
+  ]
+}
