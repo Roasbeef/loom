@@ -83,6 +83,7 @@ fn runtime(seed: Int) -> api.Runtime {
           run: fn(_) { effects.ToolFailed("no tools") },
           replay_still_safe: fn(_) { False },
           execution_mode: fn(_) { effects.ConcurrentExecution },
+          recover: None,
         ),
         hooks: effects.default_hooks(),
       ),

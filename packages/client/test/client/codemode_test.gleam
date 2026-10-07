@@ -1584,6 +1584,7 @@ fn start_runtime_over(shape: fn(session.Session) -> session.Session) -> Live {
           run: fn(_run) { effects.ToolFailed(reason: "no tools") },
           replay_still_safe: fn(_name) { False },
           execution_mode: fn(_name) { effects.ExclusiveExecution },
+          recover: None,
         ),
         hooks: effects.default_hooks(),
       ),

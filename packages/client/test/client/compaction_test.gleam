@@ -841,6 +841,7 @@ fn refusing_tools() -> effects.ToolSurface {
     run: fn(_run) { effects.ToolFailed(reason: "no tools in this harness") },
     replay_still_safe: fn(_name) { False },
     execution_mode: fn(_name) { effects.ExclusiveExecution },
+    recover: None,
   )
 }
 

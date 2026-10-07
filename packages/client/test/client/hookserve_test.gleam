@@ -611,6 +611,7 @@ fn clearing_unless(rig: Rig, forbidden: String) -> effects.Effects {
             )
         }
       },
+      recover: None,
     ),
   )
 }
@@ -635,6 +636,7 @@ fn wrapping_clearance(rig: Rig) -> effects.Effects {
           replay: operation.ReplayNever,
         )
       },
+      recover: None,
     ),
   )
 }
@@ -767,6 +769,7 @@ fn effects_placing(follow_up: Option(AgentMessage)) -> effects.Effects {
       run: fn(_run) { panic as "no tool is run" },
       replay_still_safe: fn(_name) { False },
       execution_mode: fn(_name) { effects.ExclusiveExecution },
+      recover: None,
     ),
     hooks: effects.Hooks(..effects.default_hooks(), run_end: fn(_operation) {
       follow_up

@@ -553,6 +553,7 @@ fn start_harness() -> Harness {
           run: fn(_) { effects.ToolFailed(reason: "no tools") },
           replay_still_safe: fn(_) { False },
           execution_mode: fn(_) { effects.ExclusiveExecution },
+          recover: None,
         ),
         hooks: effects.default_hooks(),
       ),

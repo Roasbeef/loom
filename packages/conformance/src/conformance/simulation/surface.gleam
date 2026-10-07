@@ -200,6 +200,7 @@ pub fn build_on(
       // Scripted tools may always overlap; per-tool exclusivity has its
       // own dedicated runtime test.
       execution_mode: fn(_name) { effects.ConcurrentExecution },
+      recover: None,
     ),
     hooks: hooks(ctl, script, raw, strand),
   )

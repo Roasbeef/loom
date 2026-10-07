@@ -443,6 +443,7 @@ fn effects_over(
       run:,
       replay_still_safe: fn(name) { replay_still_safe(declared, name) },
       execution_mode: fn(name) { execution_mode(declared, name) },
+      recover: None,
     ),
     hooks: compaction_hooks(config),
   )

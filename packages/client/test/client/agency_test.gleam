@@ -191,6 +191,7 @@ fn start_harness_on(
           run: fn(_run) { effects.ToolFailed(reason: "no tools") },
           replay_still_safe: fn(_name) { False },
           execution_mode: fn(_name) { effects.ExclusiveExecution },
+          recover: None,
         ),
         hooks: agency.reaping_hooks(effects.default_hooks(), config),
       ),

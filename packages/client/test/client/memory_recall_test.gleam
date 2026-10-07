@@ -571,6 +571,7 @@ fn refusing_tools() -> effects.ToolSurface {
     },
     replay_still_safe: fn(_name) { False },
     execution_mode: fn(_name) { effects.ExclusiveExecution },
+    recover: None,
   )
 }
 

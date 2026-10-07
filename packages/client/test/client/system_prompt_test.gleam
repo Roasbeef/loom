@@ -847,6 +847,7 @@ fn open_runtime(label: String) -> api.Runtime {
           run: fn(_run) { effects.ToolFailed(reason: "no tools") },
           replay_still_safe: fn(_name) { False },
           execution_mode: fn(_name) { effects.ExclusiveExecution },
+          recover: None,
         ),
         hooks: effects.default_hooks(),
       ),
