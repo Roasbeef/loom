@@ -685,7 +685,7 @@ only Go module.
 - **The helper speaks first.** The spec does not say who does; the helper
   sends its hello so the broker learns features before committing work, and
   requires the broker's hello before any other frame.
-- **A wire change moves `framing.ExecProtocolVersion`.** It is 3, and the
+- **A wire change moves `framing.ExecProtocolVersion`.** It is 4, and the
   `hello.proto` value on both sides; a `protocol-change` that adds,
   removes, or makes-required a key on a frame this helper sends or
   receives — or adds a kind to this channel — bumps it and
@@ -935,3 +935,56 @@ only Go module.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
   `make selftest` probes the current kernel; `make e2e` runs the jailed
   acceptance against a freshly built helper.
+
+
+## Credited protocol executions
+
+Protocol 076 adds opt-in `protocol-credit-v1` to both hello feature sets. Body
+protocol version four includes `protocol_start`, `protocol_input`,
+`protocol_input_accepted`, `protocol_input_refused`, `protocol_output`,
+`protocol_output_consumed` and `protocol_reusable`; envelope version one stays
+unchanged. Ordinary start/stdin/output/exit maps retain their existing fields.
+A credited `exec_exit` alone adds `protocol`, either `complete` or `failed`.
+
+`ProtocolStart` preserves argv/env/cwd/policy/token/limits and adds the closed
+`server_protocol` or `finite_collected` mode. Input binds the original
+execution id, positive ordinal and original frame id; it carries at most 8192
+bytes and EOF. Accepted attests the existing stdin queue's copied admission,
+not a pipe write or child consumption. Refused preserves those coordinates and
+one closed reason. Finite collection accepts only one empty EOF; server input
+has 8192-frame/64-MiB lifetime ceilings. `protocolRun.admit` is the sole worker,
+with one pending frame and a joined lifetime; the reader never calls `put`.
+
+`protocolRun.output` shares one credit across stdout and stderr. Output binds
+the original execution and ordinal; its `bytes` remains cumulative admitted
+bytes for that stream, including the current chunk. Exact consumed input from
+the final bounded receiver returns the credit. Old duplicate consumption is
+ignored, while foreign or future witnesses fence the connection. Failed gates
+cannot reopen. The controlled pump retains its existing 32-KiB read buffer;
+`creditWriter` owns one encoded sent copy, one general control slot and one
+reserved lifecycle slot, including any blocked write. ACK/reusable frames are
+at most 128 encoded bytes, terminal frames at most 32 KiB. Credited integer
+encoding compacts bounded ordinals to preserve those complete envelope ceilings. Occupied control or
+lifecycle slots fence without blocking the reader or allocating another queue.
+
+`jail.StartProtocol` installs `ProtocolHooks` before pumps start.
+`protocolRun.attachOriginal` and `original` protect the original Exec under the
+credit mutex; an already-failed pre-attachment pump cancels that same execution
+as soon as attachment returns. Child exit
+seals input and abandons/joins the pipe queue; the existing 500-ms drain grace
+closes writer admission before joining pumps, even when all writer slots are
+empty. A pump already holding output credit cannot admit a later blocked write.
+Cancellation wakes credit
+waiters and interrupts an occupied writer through the connection fence. The
+original admission worker and pumps join before terminal flush. `waitProtocol`
+then releases the cgroup, joins previous cleanup, and closes actual `waitDone`.
+Only a complete finite protocol can emit its original `ProtocolReusable` after
+that close. Server mode requires helper retirement and refuses another start;
+a finite helper can subsequently run ordinary commands with their old formats.
+
+Dedicated controls pin occupied-writer fencing, exact/cumulative shared output,
+wrong/late consumption, pending admission, and reusable ordering while release
+is held. A fast overflow before original attachment still cancels and joins.
+Real-helper controls run sequential collectors and an ordinary
+successor, and cancel a server with unconsumed output or a full native stdin queue. These test the local
+helper foundation; they do not prove registered LSP service assembly.

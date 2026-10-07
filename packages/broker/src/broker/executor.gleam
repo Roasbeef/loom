@@ -175,6 +175,7 @@ import broker/dispatch.{type Dispatcher}
 import broker/exec.{type Helper}
 import broker/execution
 import broker/executor_view
+import broker/framing
 import broker/internal/call
 import broker/relay
 import core/clock
@@ -240,6 +241,70 @@ pub type Unreachable {
   Unreachable
 }
 
+/// One cleared protocol command, preserving the original deadline and event owner.
+pub type ProtocolDispatch {
+  ProtocolDispatch(
+    /// Original service-local command sequence, shared with ordinary dispatch.
+    seq: Int,
+    /// The exact cleared native request.
+    request: exec.ExecRequest,
+    /// The original admitted clock.
+    clock: clock.Clock,
+    /// The original absolute native deadline.
+    deadline_ms: Int,
+    /// The bounded consumed protocol receiver.
+    events: Subject(exec.ProtocolEvent),
+    /// The original local custodian whose death cancels this command.
+    caller: Pid,
+  )
+}
+
+/// A trusted constructor fixes the protocol mode; no request carries a role selector.
+pub opaque type ProtocolDispatcher {
+  ProtocolDispatcher(
+    start: fn(ProtocolDispatch) ->
+      Result(ProtocolExecution, ProtocolStartFailure),
+  )
+}
+
+/// A definite refusal and a possibly-started original command are distinct.
+pub type ProtocolStartFailure {
+  /// Admission explicitly refused before protocol start.
+  ProtocolNotStarted(refusal: dispatch.StartRefusal)
+
+  /// Start reply was lost; this original handle and borrow remain held.
+  ProtocolStartUnknown(execution: ProtocolExecution, failure: exec.ExecFailure)
+
+  /// Executor reply was lost; retain its original command for reconciliation.
+  ProtocolStartReplyLost
+}
+
+/// Exact original execution controls, all serialized through the executor owner.
+pub opaque type ProtocolExecution {
+  ProtocolExecution(
+    subject: Subject(Msg),
+    seq: Int,
+    original: exec.ProtocolExecution,
+  )
+}
+
+type ProtocolRelease {
+  ProtocolHeld
+  ProtocolReleaseRequested
+}
+
+type ProtocolRow {
+  ProtocolRow(
+    seq: Int,
+    helper: Helper,
+    execution: exec.ProtocolExecution,
+    owner: Pid,
+    monitor: process.Monitor,
+    disposition: RowDisposition,
+    release: ProtocolRelease,
+  )
+}
+
 // Remote admission must survive helper checkout and queued Run delays without
 // turning the same frozen budget into a fresh native wall timeout.
 type StartWindow {
@@ -250,6 +315,27 @@ type StartWindow {
 /// The service's message type. Opaque: callers reach the service through
 /// this module's functions and through the closures of an `Execution`.
 pub opaque type Msg {
+  StartProtocol(
+    request: ProtocolDispatch,
+    mode: framing.ProtocolMode,
+    disposition: StartDisposition,
+    reply: Subject(Result(ProtocolExecution, ProtocolStartFailure)),
+  )
+  FeedProtocol(
+    id: Int,
+    original: exec.ProtocolExecution,
+    ordinal: Int,
+    frame_id: Int,
+    data: BitArray,
+    end: framing.InputEnd,
+    reply: Subject(Result(Nil, exec.ExecFailure)),
+  )
+  ConsumeProtocolOutput(id: Int, original: exec.ProtocolExecution, ordinal: Int)
+  ConsumeProtocolReusable(id: Int, original: exec.ProtocolExecution)
+  CancelProtocol(id: Int, original: exec.ProtocolExecution)
+  ReleaseProtocol(id: Int, original: exec.ProtocolExecution)
+  ProtocolCheckedIn(id: Int, original: exec.ProtocolExecution)
+  ProtocolRetired(id: Int, outcome: Result(Nil, exec.RetirementFailure))
   Start(
     request: dispatch.Dispatch,
     window: StartWindow,
@@ -329,6 +415,7 @@ type State {
     retirement: Option(RetirementSeam),
     subject: Subject(Msg),
     rows: Dict(Int, Row),
+    protocols: Dict(Int, ProtocolRow),
     // Counters and rings for the snapshot. Bounded; see `executor_view`.
     books: executor_view.Books,
   )
@@ -479,6 +566,7 @@ fn start_service(
         retirement:,
         subject:,
         rows: dict.new(),
+        protocols: dict.new(),
         books: executor_view.new(),
       ),
     )
@@ -700,6 +788,65 @@ fn handle(
   message: Msg,
 ) -> state_machine.Next(Phase, State, Msg) {
   case phase, message {
+    Serving, StartProtocol(request:, mode:, disposition:, reply:) -> {
+      let #(state, answer) = begin_protocol(state, request, mode, disposition)
+      process.send(reply, answer)
+      state_machine.keep(state)
+    }
+    Closing(..), StartProtocol(reply:, ..)
+    | Closed(..), StartProtocol(reply:, ..)
+    -> {
+      process.send(
+        reply,
+        Error(ProtocolNotStarted(dispatch.NoHelper(exec.PoolUnavailable))),
+      )
+      state_machine.keep(state)
+    }
+    _phase,
+      FeedProtocol(id:, original:, ordinal:, frame_id:, data:, end:, reply:)
+    -> {
+      let answer = case find_protocol(state, id, original) {
+        Ok(row) ->
+          exec.protocol_input(
+            row.execution,
+            ordinal,
+            frame_id,
+            data,
+            end,
+            waiting: run_wait_ms,
+          )
+        Error(Nil) -> Error(exec.NotReady)
+      }
+      process.send(reply, answer)
+      state_machine.keep(state)
+    }
+    _phase, ConsumeProtocolOutput(id:, original:, ordinal:) -> {
+      case find_protocol(state, id, original) {
+        Ok(row) -> exec.protocol_output_consumed(row.execution, ordinal)
+        Error(Nil) -> Nil
+      }
+      state_machine.keep(state)
+    }
+    _phase, ConsumeProtocolReusable(id:, original:) -> {
+      case find_protocol(state, id, original) {
+        Ok(row) -> exec.protocol_reusable_consumed(row.execution)
+        Error(Nil) -> Nil
+      }
+      state_machine.keep(state)
+    }
+    _phase, CancelProtocol(id:, original:) -> {
+      case find_protocol(state, id, original) {
+        Ok(row) -> exec.cancel_protocol(row.execution)
+        Error(Nil) -> Nil
+      }
+      state_machine.keep(state)
+    }
+    phase, ReleaseProtocol(id:, original:) ->
+      conclude(phase, release_exact_protocol(state, id, original))
+    phase, ProtocolCheckedIn(id:, original:) ->
+      conclude(phase, protocol_checked_in(state, id, original))
+    phase, ProtocolRetired(id:, outcome:) ->
+      conclude(phase, protocol_retired(state, id, outcome))
     Serving, Start(request:, window:, disposition:, reply:) -> {
       let #(state, answer) =
         begin_execution(state, request, window, disposition)
@@ -854,7 +1001,8 @@ fn dispatch_execution(
   // A sequence number still in the table is a late `start` the broker gave
   // up on (see the module doc); taking it would overwrite a live row.
   use <- bool.guard(
-    when: dict.has_key(state.rows, request.seq),
+    when: dict.has_key(state.rows, request.seq)
+      || dict.has_key(state.protocols, request.seq),
     return: Error(dispatch.NotStarted),
   )
 
@@ -1272,7 +1420,17 @@ fn relay_gone(state: State, down: process.Down) -> State {
   case down {
     // The service only monitors processes, never ports.
     process.PortDown(..) -> state
-    process.ProcessDown(pid:, ..) ->
+    process.ProcessDown(pid:, ..) -> {
+      let state =
+        list.fold(dict.values(state.protocols), state, fn(state, row) {
+          case row.owner == pid {
+            True -> {
+              exec.cancel_protocol(row.execution)
+              release_protocol(state, row.seq)
+            }
+            False -> state
+          }
+        })
       case
         list.find(dict.values(state.rows), fn(row) { row.relay.pid == pid })
       {
@@ -1286,6 +1444,7 @@ fn relay_gone(state: State, down: process.Down) -> State {
           state
         Error(Nil) -> original_owner_gone(state, pid)
       }
+    }
   }
 }
 
@@ -1400,6 +1559,9 @@ fn begin_close(
   reply: Subject(Result(Nil, exec.RetirementFailure)),
 ) -> state_machine.Next(Phase, State, Msg) {
   let closer = Closer(reply:, helpers_ms: helpers)
+  list.each(dict.values(state.protocols), fn(row) {
+    exec.cancel_protocol(row.execution)
+  })
   let state =
     list.fold(dict.keys(state.rows), state, fn(state, seq) {
       cancel_row(
@@ -1444,6 +1606,9 @@ fn finish_closing(
   state: State,
   closer: Closer,
 ) -> state_machine.Next(Phase, State, Msg) {
+  list.each(dict.values(state.protocols), fn(row) {
+    process.demonitor_process(row.monitor)
+  })
   list.each(dict.values(state.rows), fn(row) {
     process.demonitor_process(row.relay_monitor)
     option.map(row.owner_monitor, process.demonitor_process)
@@ -1474,7 +1639,8 @@ fn finish_closing(
 }
 
 fn has_live_row(state: State) -> Bool {
-  list.any(dict.values(state.rows), fn(row) {
+  dict.size(state.protocols) > 0
+  || list.any(dict.values(state.rows), fn(row) {
     case row.status {
       Live -> True
       Granted(..) | Retiring -> False
@@ -1639,4 +1805,379 @@ fn log_closed(
         ..fields
       ])
   }
+}
+
+/// Installs reusable finite collection only in trusted local assembly.
+///
+/// ## Examples
+///
+/// `dispatcher_collected_with_native_deadline(service)` supplies finite startup/search.
+pub fn dispatcher_collected_with_native_deadline(
+  executor: Executor,
+) -> ProtocolDispatcher {
+  protocol_dispatcher(executor, framing.FiniteCollected, Reuse)
+}
+
+/// Installs exact helper retirement for a previously validated ServerLease claim.
+/// A raw request cannot select this constructor or create a retirement registration.
+///
+/// ## Examples
+///
+/// `dispatcher_protocol_retiring_with_native_deadline(service, retained_retired)`.
+pub fn dispatcher_protocol_retiring_with_native_deadline(
+  executor: Executor,
+  retired: fn(dispatch.ExecutionId, Result(Nil, exec.RetirementFailure)) -> Nil,
+) -> Result(ProtocolDispatcher, dispatch.StartRefusal) {
+  case executor.retirement {
+    None -> Error(dispatch.NotStarted)
+    Some(_) ->
+      Ok(protocol_dispatcher(
+        executor,
+        framing.ServerProtocol,
+        RetireOriginal(retired),
+      ))
+  }
+}
+
+fn protocol_dispatcher(
+  executor: Executor,
+  mode: framing.ProtocolMode,
+  disposition: StartDisposition,
+) -> ProtocolDispatcher {
+  let subject = executor.subject
+  ProtocolDispatcher(fn(request) {
+    case
+      call.try_call(subject, waiting: start_budget_ms(), sending: fn(reply) {
+        StartProtocol(request, mode, disposition, reply)
+      })
+    {
+      Ok(answer) -> answer
+      Error(call.NoReply) | Error(call.CalleeGone) ->
+        Error(ProtocolStartReplyLost)
+    }
+  })
+}
+
+/// Starts the exact command through a constructor whose lifetime is already fixed.
+///
+/// ## Examples
+///
+/// `start_protocol(dispatcher, cleared)`.
+pub fn start_protocol(
+  dispatcher: ProtocolDispatcher,
+  request: ProtocolDispatch,
+) -> Result(ProtocolExecution, ProtocolStartFailure) {
+  dispatcher.start(request)
+}
+
+/// Submits one input through the original executor sender; acceptance is a later event.
+///
+/// ## Examples
+///
+/// `protocol_input(execution, 1, 2, <<>>, framing.InputEOF, 1000)`.
+pub fn protocol_input(
+  execution: ProtocolExecution,
+  ordinal: Int,
+  frame_id: Int,
+  data: BitArray,
+  end: framing.InputEnd,
+  waiting timeout: Int,
+) -> Result(Nil, exec.ExecFailure) {
+  case
+    call.try_call(execution.subject, waiting: timeout, sending: fn(reply) {
+      FeedProtocol(
+        execution.seq,
+        execution.original,
+        ordinal,
+        frame_id,
+        data,
+        end,
+        reply,
+      )
+    })
+  {
+    Ok(answer) -> answer
+    Error(_) -> Error(exec.HelperUnresponsive)
+  }
+}
+
+/// Returns exact output credit only after the final bounded consumer admits it.
+///
+/// ## Examples
+///
+/// `protocol_output_consumed(execution, ordinal)`.
+pub fn protocol_output_consumed(
+  execution: ProtocolExecution,
+  ordinal: Int,
+) -> Nil {
+  process.send(
+    execution.subject,
+    ConsumeProtocolOutput(execution.seq, execution.original, ordinal),
+  )
+}
+
+/// Consumes the retained exact post-join witness; delivery alone never checks in.
+///
+/// ## Examples
+///
+/// `protocol_reusable_consumed(execution)` follows original association readback.
+pub fn protocol_reusable_consumed(execution: ProtocolExecution) -> Nil {
+  process.send(
+    execution.subject,
+    ConsumeProtocolReusable(execution.seq, execution.original),
+  )
+}
+
+/// Cancels the original command without touching a successor.
+///
+/// ## Examples
+///
+/// `cancel_protocol(execution)`.
+pub fn cancel_protocol(execution: ProtocolExecution) -> Nil {
+  process.send(
+    execution.subject,
+    CancelProtocol(execution.seq, execution.original),
+  )
+}
+
+/// Releases original custody through finite reuse or exact retirement, separately.
+///
+/// ## Examples
+///
+/// `release_protocol_execution(execution)` cannot turn terminal into reuse evidence.
+pub fn release_protocol_execution(execution: ProtocolExecution) -> Nil {
+  process.send(
+    execution.subject,
+    ReleaseProtocol(execution.seq, execution.original),
+  )
+}
+
+fn begin_protocol(
+  state: State,
+  request: ProtocolDispatch,
+  mode: framing.ProtocolMode,
+  disposition: StartDisposition,
+) -> #(State, Result(ProtocolExecution, ProtocolStartFailure)) {
+  case dispatch_protocol(state, request, mode, disposition) {
+    Ok(#(state, answer)) -> #(state, answer)
+    Error(reason) -> #(state, Error(reason))
+  }
+}
+
+fn dispatch_protocol(
+  state: State,
+  request: ProtocolDispatch,
+  mode: framing.ProtocolMode,
+  disposition: StartDisposition,
+) -> Result(
+  #(State, Result(ProtocolExecution, ProtocolStartFailure)),
+  ProtocolStartFailure,
+) {
+  use <- bool.guard(
+    when: request.seq < 0
+      || dict.has_key(state.rows, request.seq)
+      || dict.has_key(state.protocols, request.seq)
+      || !process.is_alive(request.caller),
+    return: Error(ProtocolNotStarted(dispatch.NotStarted)),
+  )
+  use helper <- result.try(
+    state.config.checkout()
+    |> result.map_error(fn(error) {
+      ProtocolNotStarted(dispatch.NoHelper(error))
+    }),
+  )
+  use Nil <- result.try(
+    case
+      exec.native_wall_fits(request.request, request.clock, request.deadline_ms)
+    {
+      True -> Ok(Nil)
+      False -> {
+        state.config.checkin(helper)
+        Error(ProtocolNotStarted(dispatch.NotStarted))
+      }
+    },
+  )
+  let subject = state.subject
+  let id = dispatch.execution_id(state.config.incarnation, request.seq)
+  use original <- result.try(case disposition, state.retirement {
+    Reuse, _ -> Ok(ReuseHelper)
+    RetireOriginal(completed), Some(prepare) ->
+      prepare(helper, fn(outcome) {
+        completed(id, outcome)
+        process.send(subject, ProtocolRetired(request.seq, outcome))
+      })
+      |> result.map(RetireHelper)
+      |> result.replace_error(ProtocolNotStarted(dispatch.NotStarted))
+    RetireOriginal(_), None -> {
+      state.config.checkin(helper)
+      Error(ProtocolNotStarted(dispatch.NotStarted))
+    }
+  })
+  let monitor = process.monitor(request.caller)
+  case
+    exec.run_protocol(
+      helper,
+      request.request,
+      mode,
+      request.clock,
+      request.deadline_ms,
+      request.events,
+      waiting: run_wait_ms,
+    )
+  {
+    Ok(execution) -> {
+      let row =
+        ProtocolRow(
+          request.seq,
+          helper,
+          execution,
+          request.caller,
+          monitor,
+          original,
+          ProtocolHeld,
+        )
+      Ok(#(
+        State(
+          ..state,
+          protocols: dict.insert(state.protocols, request.seq, row),
+        ),
+        Ok(ProtocolExecution(subject, request.seq, execution)),
+      ))
+    }
+    Error(exec.ProtocolRunUnknown(execution, failure)) -> {
+      let row =
+        ProtocolRow(
+          request.seq,
+          helper,
+          execution,
+          request.caller,
+          monitor,
+          original,
+          ProtocolHeld,
+        )
+      let state =
+        State(
+          ..state,
+          protocols: dict.insert(state.protocols, request.seq, row),
+        )
+      exec.cancel_protocol(execution)
+      Ok(#(
+        state,
+        Error(ProtocolStartUnknown(
+          ProtocolExecution(subject, request.seq, execution),
+          failure,
+        )),
+      ))
+    }
+    Error(exec.ProtocolRunRefused(_)) -> {
+      process.demonitor_process(monitor)
+      case original {
+        ReuseHelper -> {
+          exec.shutdown(helper)
+          state.config.checkin(helper)
+        }
+        RetireHelper(retirement) -> exec.retire_borrowed(retirement)
+      }
+      Error(ProtocolNotStarted(dispatch.NotStarted))
+    }
+  }
+}
+
+fn release_protocol(state: State, id: Int) -> State {
+  case dict.get(state.protocols, id) {
+    Ok(ProtocolRow(release: ProtocolHeld, ..) as row) -> {
+      case row.disposition {
+        ReuseHelper -> {
+          let subject = state.subject
+          let _registered =
+            exec.defer_protocol_checkin(
+              row.execution,
+              fn() {
+                process.send(subject, ProtocolCheckedIn(id, row.execution))
+              },
+              waiting: run_wait_ms,
+            )
+          Nil
+        }
+        RetireHelper(original) -> exec.retire_borrowed(original)
+      }
+      State(
+        ..state,
+        protocols: dict.insert(
+          state.protocols,
+          id,
+          ProtocolRow(..row, release: ProtocolReleaseRequested),
+        ),
+      )
+    }
+    Ok(ProtocolRow(release: ProtocolReleaseRequested, ..)) | Error(Nil) -> state
+  }
+}
+
+fn protocol_checked_in(
+  state: State,
+  id: Int,
+  original: exec.ProtocolExecution,
+) -> State {
+  case find_protocol(state, id, original) {
+    Ok(
+      ProtocolRow(
+        disposition: ReuseHelper,
+        release: ProtocolReleaseRequested,
+        ..,
+      ) as row,
+    ) -> {
+      state.config.checkin(row.helper)
+      process.demonitor_process(row.monitor)
+      State(..state, protocols: dict.delete(state.protocols, id))
+    }
+    Ok(_) | Error(Nil) -> state
+  }
+}
+
+fn protocol_retired(
+  state: State,
+  id: Int,
+  outcome: Result(Nil, exec.RetirementFailure),
+) -> State {
+  case dict.get(state.protocols, id), outcome {
+    Ok(ProtocolRow(disposition: RetireHelper(_), ..) as row), Ok(Nil) -> {
+      process.demonitor_process(row.monitor)
+      State(..state, protocols: dict.delete(state.protocols, id))
+    }
+    _, _ -> state
+  }
+}
+
+// Old controls name the original helper execution as well as its table slot.
+fn find_protocol(
+  state: State,
+  id: Int,
+  original: exec.ProtocolExecution,
+) -> Result(ProtocolRow, Nil) {
+  use row <- result.try(dict.get(state.protocols, id))
+  case row.execution == original {
+    True -> Ok(row)
+    False -> Error(Nil)
+  }
+}
+
+fn release_exact_protocol(
+  state: State,
+  id: Int,
+  original: exec.ProtocolExecution,
+) -> State {
+  case find_protocol(state, id, original) {
+    Ok(_) -> release_protocol(state, id)
+    Error(Nil) -> state
+  }
+}
+
+/// The exact native wire id retained under this original service command.
+///
+/// ## Examples
+///
+/// `protocol_execution_id(original)` is unchanged across terminal and reuse.
+pub fn protocol_execution_id(execution: ProtocolExecution) -> Int {
+  exec.protocol_execution_id(execution.original)
 }

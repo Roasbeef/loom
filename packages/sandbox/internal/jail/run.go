@@ -91,11 +91,12 @@ type Exec struct {
 	wallT    *time.Timer
 	timedOut bool
 
-	pumps  sync.WaitGroup
-	feat   Features
-	cgDir  string
-	cg     cgroupOutcome
-	mounts MountReport
+	pumps    sync.WaitGroup
+	protocol *ProtocolHooks
+	feat     Features
+	cgDir    string
+	cg       cgroupOutcome
+	mounts   MountReport
 	// seatbelt holds the generated macOS plan's enforcement entries. They
 	// are published only when stage 2 reports from inside the profile.
 	seatbelt   []string
@@ -204,7 +205,23 @@ func CgroupSkip(reason string, ceilings CgroupCeilings) string {
 // subtree lives in one fresh session/pgroup owned by the direct child;
 // cancellation and cleanup signal the group, never a single pid — an orphaned
 // grandchild is still ours to kill.
+// ProtocolHooks joins credited admission at child exit and releases output
+// waiters when the existing drain grace expires. Ordinary executions use none.
+type ProtocolHooks struct {
+	ChildExited  func()
+	DrainExpired func()
+}
+
+// StartProtocol installs credited lifecycle custody before pumps can emit bytes.
+func StartProtocol(req Request, feat Features, selfExe string, sink OutputSink, hooks ProtocolHooks) (*Exec, error) {
+	return start(req, feat, selfExe, sink, &hooks)
+}
+
 func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, error) {
+	return start(req, feat, selfExe, sink, nil)
+}
+
+func start(req Request, feat Features, selfExe string, sink OutputSink, hooks *ProtocolHooks) (*Exec, error) {
 	if len(req.Argv) == 0 {
 		return nil, fmt.Errorf("jail: empty argv")
 	}
@@ -547,6 +564,7 @@ func Start(req Request, feat Features, selfExe string, sink OutputSink) (*Exec, 
 
 	e := &Exec{
 		cmd:        cmd,
+		protocol:   hooks,
 		pgid:       cmd.Process.Pid, // Setsid ⇒ pgid == child pid
 		started:    time.Now(),
 		stdin:      newStdinQueue(stdinW),
@@ -636,9 +654,15 @@ func (e *Exec) pump(name string, r *os.File, lim *StreamLimiter, sink OutputSink
 		if n > 0 {
 			allow, justTruncated := lim.Admit(n)
 			if allow > 0 || justTruncated {
-				chunk := make([]byte, allow)
-				copy(chunk, buf[:allow])
-				sink(name, chunk, lim.Admitted(), justTruncated)
+				if e.protocol != nil {
+					// Credited sinks retain this producer buffer until consumption.
+					// The bounded writer owns the single encoded sent copy.
+					sink(name, buf[:allow], lim.Admitted(), justTruncated)
+				} else {
+					chunk := make([]byte, allow)
+					copy(chunk, buf[:allow])
+					sink(name, chunk, lim.Admitted(), justTruncated)
+				}
 			}
 		}
 		if err != nil {
@@ -759,6 +783,11 @@ func (e *Exec) Wait() Result {
 func (e *Exec) Settle() (Result, func()) {
 	err := e.cmd.Wait()
 
+	if e.protocol != nil {
+		e.protocol.ChildExited()
+		_ = e.stdin.abandon()
+	}
+
 	observedDescendantKill := false
 	if e.tracker != nil {
 		observedDescendantKill = e.tracker.signal(syscall.SIGKILL)
@@ -848,6 +877,10 @@ func (e *Exec) waitForOutputPumps() {
 	case <-done:
 		return
 	case <-timer.C:
+	}
+
+	if e.protocol != nil {
+		e.protocol.DrainExpired()
 	}
 
 	// Close is safe against a blocked Read and makes that Read return. The pump
