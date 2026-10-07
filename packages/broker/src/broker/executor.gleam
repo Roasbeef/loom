@@ -1988,7 +1988,12 @@ fn dispatch_protocol(
   )
   use Nil <- result.try(
     case
-      exec.native_wall_fits(request.request, request.clock, request.deadline_ms)
+      exec.protocol_native_wall_fits(
+        request.request,
+        mode,
+        request.clock,
+        request.deadline_ms,
+      )
     {
       True -> Ok(Nil)
       False -> {

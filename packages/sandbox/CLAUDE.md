@@ -988,3 +988,12 @@ is held. A fast overflow before original attachment still cancels and joins.
 Real-helper controls run sequential collectors and an ordinary
 successor, and cancel a server with unconsumed output or a full native stdin queue. These test the local
 helper foundation; they do not prove registered LSP service assembly.
+
+ServerProtocol permits zero policy wall time because its original elapsed
+lifetime belongs to the trusted broker and Service. The helper frame carries no
+clock or deadline, so this policy admission does not attest elapsed authority.
+Positive server wall time remains at most twelve hours; finite collection still
+requires positive wall time at most sixty seconds. Both modes retain positive
+output at most 64 MiB, and server network remains off. Actual negotiated-reader
+controls prove the zero-wall server reaches the existing jailed child path and
+refuse finite zero, over-ceiling wall/output and server network widening.

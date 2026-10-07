@@ -421,7 +421,10 @@ func (s *Server) handleProtocolStart(f framing.Frame) {
 	if body.Mode == framing.ProtocolServer {
 		maximumWall = 12 * 60 * 60
 	}
-	if pol.Limits.OutputBytes == 0 || pol.Limits.OutputBytes > 64<<20 || pol.Limits.WallSeconds == 0 || pol.Limits.WallSeconds > maximumWall {
+	// Server lifetime belongs to the broker's original elapsed deadline. The
+	// frame carries no clock authority; finite collectors still need a wall cap.
+	zeroWallRefused := pol.Limits.WallSeconds == 0 && body.Mode != framing.ProtocolServer
+	if pol.Limits.OutputBytes == 0 || pol.Limits.OutputBytes > 64<<20 || zeroWallRefused || pol.Limits.WallSeconds > maximumWall {
 		s.protocolError(f.ID, "credited policy requires bounded original output and wall limits")
 		return
 	}
