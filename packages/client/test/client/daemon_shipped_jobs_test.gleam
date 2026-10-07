@@ -9,9 +9,10 @@
 //// still pending; a third turn calls `job_kill`; and a fourth polls from
 //// that same cursor again, which has to say the owner asked, carry the
 //// helper's own `cancelled` witness, and show those three lines and
-//// nothing else. The bytes are read from the terminal poll rather than
-//// the live one because that is where the ordering is real, and
-//// `read_and_stop` says why. Then the payload has to be gone, because a job
+//// nothing else. `await_staged_output` waits for the original runner to
+//// receive the appended bytes before the live poll and cancellation. Both
+//// live and terminal cursors must account for them. Then the payload has
+//// to be gone, because a job
 //// whose record says stopped and whose process is still running is the
 //// failure this whole surface exists to prevent.
 ////
@@ -62,8 +63,12 @@
 //// `codemode.ready` rather than inferring readiness from a tool call
 //// that would otherwise fail as something else.
 
+import broker/framing
 import broker/token
+import client/codemode
 import client/internal/ffi_os
+import client/jobs
+import client/jobstate
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
 import core/entry
@@ -416,34 +421,49 @@ fn exercise_tail(
   // lines of the file whether they arrived before or after it opened.
   let witness = await_payload(shipped.payload, workspace)
   assert simplifile.append(workspace <> "/" <> watched_log, appended) == Ok(Nil)
-  let _ = settled(session.driver, ["watching"])
+  let watching = settled(session.driver, ["watching"])
+  await_staged_output(workspace, watching)
   read_and_stop(session, witness)
   daemon.close(session.connected.control)
 }
 
-// What the live read is for, and what it deliberately is not for.
-//
-// Only the job's own runner can say how much of the tail it has folded,
-// and `job_poll` is the only way to ask it, so there is no observable the
-// fixture could wait on before this turn that would mean "the appended
-// bytes have arrived". `await_payload` is the barrier for the *append* —
-// the process exists — and nothing more. Between the append and this poll
-// sit `tail`'s own wakeup (kqueue, or inotify, or a one-second sleep),
-// the helper's framing, the relay and the fold, and the fixture's only
-// margin is two provider round trips.
-//
-// So the live read asserts what a *running* job's record says, which
-// does not depend on that timing, and the bytes are asserted on the
-// terminal read instead, where the ordering is real: output and exit
-// reach the runner over one helper connection in order, so a record that
-// says the execution ended is a record that has already folded every
-// byte the helper sent.
+// The PID announcement precedes exec and proves no output. Wait on the original
+// runner's staging file: absorb updates its tail before appending these same
+// bytes. The following public poll still has to report the complete live cursor.
+fn await_staged_output(workspace: String, sample: tui_driver.Sample) -> Nil {
+  let started = latest_details(sample, "bash")
+  let assert json.String(id) = field(started, "job_id")
+    as "The original background start supplies its exact job identity."
+  let assert Ok(id) = jobstate.parse_job_id(id)
+    as "The announced original job identity is valid."
+  let path =
+    jobs.staging_path(
+      workspace <> "/" <> codemode.blob_directory,
+      id,
+      framing.Stdout,
+    )
+  let expected = bit_array.from_string(appended)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 15_000, every: 25, attempt: fn() {
+      case simplifile.read_bits(path) {
+        Ok(bytes) if bytes == expected -> poll.Done(Nil)
+        Ok(_) | Error(_) -> poll.Retry
+      }
+    })
+    as "The original runner receives every appended byte before cancellation."
+  Nil
+}
+
+// With actual output observed, the nonblocking public poll must expose it while
+// the job is still running. Terminal framing alone cannot prove that tail read
+// the file before cancellation; this live cursor establishes that premise.
 fn read_and_stop(session: Session, witness: PayloadWitness) -> Nil {
   prompt(session.driver, "read the tail")
   let read = settled(session.driver, ["read", "watching"])
   let live = latest_details(read, "job_poll")
   assert field(live, "state") == json.String("running")
   assert field(live, "pending") == json.Bool(True)
+  assert field(live, "cursor") == json.String(appended_cursor)
   prompt(session.driver, "stop it")
   let _ = settled(session.driver, ["stopped", "read", "watching"])
   assert_terminal(session, witness)
