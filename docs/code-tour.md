@@ -227,9 +227,9 @@ the session's one writer.
 
 ## 4. The first commit
 
-`api.prompt` is two lines (`runtime/api.gleam:488`): accept quietly, then
+`api.prompt` is two lines (`runtime/api.gleam:564`): accept quietly, then
 ring the doorbell. The work is in `accept_quietly`
-(`runtime/api.gleam:427`), and its shape is the shape of every admission
+(`runtime/api.gleam:589`), and its shape is the shape of every admission
 in the system.
 
 It reads the strand state, the leaf, and the pending payloads — capturing
@@ -1199,7 +1199,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:1485`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:1573`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1210,7 +1210,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1913`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1970`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3773`). Keying
@@ -1236,7 +1236,7 @@ corner would buy.
 
 Not every second strand is a child. If the catalogue routes an `advisor`
 role, `serve` seeds one more strand at boot — through
-`create_idle_strand` (`runtime/api.gleam:1544`) rather than through the
+`create_idle_strand` (`runtime/api.gleam:1602`) rather than through the
 Agency, so it gets no lineage cell and so is addressable by nobody,
 lists nobody, and is reaped by nobody. At each end of a run on `main` a
 wrapped `run_end` slot casts to `client/advisor`'s actor, which scans

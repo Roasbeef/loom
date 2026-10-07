@@ -87,7 +87,7 @@ a model's request, and carries a `lineage/` cell naming its parent.
 address another, and `strand.roster` lists strands from it.
 
 `ensure_strand` (`client/advisor.gleam:3760`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1544`) instead. That is the
+`create_idle_strand` (`runtime/api.gleam:1602`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
 
