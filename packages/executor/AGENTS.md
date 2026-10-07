@@ -231,6 +231,18 @@ its incarnation and fixed limits. The native SQLite connection stays in private
 both the original close acknowledgement and normal actor exit. Closed or dead
 handles return Uncertain. No registry address resolves a replacement actor.
 
+The internal `park` construction starts a resource-free, linked, trapping-exits
+writer directly under its permanent node parent. That parent retains the ACK and
+`parked_pid` before `fresh_owned` or `recover_owned` sends typed initialization.
+The actor installs Acquired connection custody before shared setup validation,
+migration and COMMIT run in its next turn. Parent death attempts actual native
+close; it supplies no successful explicit-release witness. Lost Ready can still
+be closed through that exact original parked handle. A failed close keeps the
+actual connection in Failed state, refuses work and permits original cleanup.
+`park_observed` supplies bounded closed fixture checkpoints and actual native
+close observations without exposing the connection. Its one-shot close refusal
+is synthetic; held independent SQLite locks exercise actual BEGIN refusal.
+
 `admit` returns `Fresh(StartupClaim)` only after the first insertion commits;
 exact retries return historical `Retained`. `prepare_publication` commits
 Publishing before returning its original `PublishingPermit`. Close commits a

@@ -27,6 +27,27 @@
 //// ## Flow
 ////
 //// `fresh` and `recover` enter `open`; `validate_path` refuses unsafe opens.
+//// `park` acknowledges the permanent parent's resource-free writer;
+//// `parked_pid` names that original. `fresh_owned`, `recover_owned` and
+//// `initialize_owned` send typed initialization after the parent retains it.
+//// `acquire` returns the original connection; `setup` shares all legacy SQL.
+//// `release_parked`, `release_subject` and `exchange_subject` retain exact
+//// original close observation. `close_context` retains failed close custody.
+//// `park_observed`, `start_parked` and `checkpoint` expose closed finite test
+//// gates; `handle_setup` starts after custody installation, and `or_stop`
+//// preserves its shutdown obligation. `close_connection` reports actual close;
+//// `notify` sends closed original SQL observations without exposing its handle.
+//// `handle_release` distinguishes native close from its original ACK and exit.
+////
+//// <!-- transitions: generation_registry.State -->
+////
+//// | state | initialize | setup | work | release | parent exit |
+//// | --- | --- | --- | --- | --- | --- |
+//// | `Waiting` | `Acquired` after SQL open; `Closed` on refusal | refused | refused | `Closed`, ACK then stop | stop, no connection |
+//// | `Acquired` | refused | `Open` after COMMIT; `Closed` or `Failed` after setup failure | refused | `Closed` on actual close; `Failed` on refusal | actual close attempted |
+//// | `Open` | refused | refused | transact; poisoned state closes or retains `Failed` | `Closed` on actual close; `Failed` on refusal | actual close attempted |
+//// | `Failed` | refused | refused | refused | retry actual original close; retain `Failed` on refusal | actual close attempted |
+//// | `Closed` | refused | refused | refused | uncertainty, stop | stop, no connection |
 //// `admit` and `admit_planned` enter `admit_original`; `scope_plan` observes
 //// immutable charged provenance. Admission checks exact originals and `check_lineage` before insertion; `original`
 //// projects only its original claim. `prepare_publication` and `published`
@@ -110,6 +131,83 @@ pub opaque type Store {
     /// Immutable selected finite profile.
     limits: Limits,
   )
+}
+
+/// Resource-free original writer acknowledged under its permanent node parent.
+/// The parent must retain this handle before requesting live initialization.
+@internal
+pub opaque type Parked {
+  /// The PID and address identify the same original linked actor.
+  Parked(
+    /// Original resource-free writer address.
+    subject: process.Subject(Message),
+    /// Original PID acknowledged by weft startup.
+    pid: process.Pid,
+    /// Test-only finite checkpoint; ordinary parked writers carry None.
+    probe: Option(Probe),
+  )
+}
+
+/// Closed acquisition checkpoints used only by deterministic custody controls.
+@internal
+pub type Checkpoint {
+  /// No initializer resource exists and startup has not acknowledged the PID.
+  BeforeAck
+
+  /// Acquired state already owns the native connection before SQL setup.
+  AfterAcquire
+
+  /// Setup COMMIT succeeded but Ready has not been sent.
+  AfterCommit
+
+  /// Native close succeeded but its acknowledgement has not been sent.
+  AfterClose
+
+  /// Close ACK was sent but its original normal exit has not occurred.
+  AfterCloseAck
+
+  /// Synthetic one-shot refusal tests retention; this is no SQLite lock claim.
+  RefuseCloseOnce
+}
+
+/// Exact original observations; no native connection escapes through the probe.
+@internal
+pub type OwnershipEvent {
+  /// One finite gate names the original writer and its selected ordering point.
+  CheckpointReached(
+    /// Selected original ordering point.
+    checkpoint: Checkpoint,
+    /// Actual original writer PID.
+    pid: process.Pid,
+    /// Releases only this gate, granting no initialization or claim authority.
+    permit: process.Subject(Nil),
+  )
+
+  /// The setup turn is about to invoke its actual BEGIN IMMEDIATE.
+  BeginAttempted(
+    /// Exact connection owner.
+    pid: process.Pid,
+  )
+
+  /// Actual BEGIN result while the independent fixture lock remains held.
+  BeginFinished(
+    /// Exact connection owner.
+    pid: process.Pid,
+    /// Ordinary DAL projection of the actual SQL result.
+    outcome: Result(Nil, Error),
+  )
+
+  /// Actual native close response, separate from actor death or an ACK.
+  ConnectionClosed(
+    /// Exact connection-owning writer.
+    pid: process.Pid,
+    /// Actual sqlight.close result translated through the ordinary DAL adapter.
+    outcome: Result(Nil, Error),
+  )
+}
+
+type Probe {
+  Probe(Checkpoint, process.Subject(OwnershipEvent))
 }
 
 /// Sole original startup authority, returned only after first insertion COMMIT.
@@ -278,6 +376,7 @@ type Context {
     incarnation: ids.EntryId,
     limits: Limits,
     format: Int,
+    probe: Option(Probe),
   )
 }
 
@@ -311,11 +410,22 @@ type PlanHeader {
 }
 
 type State {
+  Waiting
+  Acquired(Context)
   Open(Context)
+  Failed(Context)
   Closed
 }
 
 type Message {
+  Initialize(
+    String,
+    Store,
+    OpenMode,
+    Option(Probe),
+    process.Subject(Result(Store, Error)),
+  )
+  Setup(Store, OpenMode, process.Subject(Result(Store, Error)))
   AdmissionWork(
     fn(Context, Inventory) -> Result(Admission, Error),
     process.Subject(Result(Admission, Error)),
@@ -345,6 +455,7 @@ type Message {
     process.Subject(Result(Option(scope_plan.Plan), Error)),
   )
   Release(process.Subject(Result(Nil, Error)))
+  AcknowledgeRelease(Option(Probe), process.Subject(Result(Nil, Error)))
   Stop
 }
 
@@ -374,6 +485,137 @@ pub fn limits(live: Int, rows: Int, bytes: Int) -> Result(Limits, Error) {
 /// `selected_limits()` retains sixteen live and 4096 permanent slots.
 pub fn selected_limits() -> Limits {
   Limits(max_live, max_rows, max_bytes)
+}
+
+/// Starts an empty linked writer directly under its permanent node parent.
+/// Its initializer acquires no SQL handle. The parent records this ACK before
+/// sending fresh_owned or recover_owned; a finite exchange worker cannot own it.
+///
+/// ## Examples
+///
+/// `park()` acknowledges the original PID before any database path is selected.
+@internal
+pub fn park() -> Result(Parked, Error) {
+  start_parked(None)
+}
+
+/// Starts the same writer with one closed, finite custody-test checkpoint.
+/// No callback, native handle or alternative SQL implementation is accepted.
+///
+/// ## Examples
+///
+/// `park_observed(AfterCommit, observations)` can withhold only the Ready result.
+@internal
+pub fn park_observed(
+  checkpoint: Checkpoint,
+  observations: process.Subject(OwnershipEvent),
+) -> Result(Parked, Error) {
+  start_parked(Some(Probe(checkpoint, observations)))
+}
+
+fn start_parked(probe: Option(Probe)) -> Result(Parked, Error) {
+  use started <- result.try(
+    actor.new_with_initialiser(1000, fn(subject) {
+      use Nil <- result.try(
+        checkpoint(probe, BeforeAck)
+        |> result.replace_error("Original parent unavailable before ACK"),
+      )
+      Ok(actor.initialised(Waiting) |> actor.returning(subject))
+    })
+    |> actor.trapping_exits(True)
+    |> actor.on_message(handle)
+    |> actor.on_shutdown(shutdown)
+    |> actor.start
+    |> result.replace_error(Uncertain),
+  )
+  Ok(Parked(started.data, started.pid, probe))
+}
+
+fn checkpoint(probe: Option(Probe), stage: Checkpoint) -> Result(Nil, String) {
+  case probe {
+    Some(Probe(selected, observations)) if selected == stage -> {
+      let permit = process.new_subject()
+      process.send(
+        observations,
+        CheckpointReached(stage, process.self(), permit),
+      )
+      process.new_selector()
+      |> process.select_map(permit, fn(_) { Ok(Nil) })
+      |> process.select_trapped_exits(fn(_) {
+        Error("Original parent retired during checkpoint")
+      })
+      |> process.selector_receive(1000)
+      |> result.unwrap(Error("Custody checkpoint expired"))
+    }
+    Some(_) | None -> Ok(Nil)
+  }
+}
+
+/// Projects the original acknowledged writer for the node parent's monitor.
+///
+/// ## Examples
+///
+/// `parked_pid(original)` never resolves a replacement process.
+@internal
+pub fn parked_pid(parked: Parked) -> process.Pid {
+  parked.pid
+}
+
+/// Initializes the parent's retained original writer with an unused ledger.
+/// SQL open, validation and COMMIT run inside that original actor's turns.
+/// Loss of the result retains uncertainty and grants no replacement authority.
+///
+/// ## Examples
+///
+/// `fresh_owned(parked, path, incarnation, selected_limits())` returns its Store.
+@internal
+pub fn fresh_owned(
+  parked: Parked,
+  path: String,
+  incarnation: ids.EntryId,
+  limits: Limits,
+) -> Result(Store, Error) {
+  initialize_owned(parked, path, incarnation, limits, Create)
+}
+
+/// Recovers history inside the same parent-owned original writer.
+/// This shares legacy recovery validation and issues no startup claim.
+///
+/// ## Examples
+///
+/// `recover_owned(parked, path, incarnation, limits)` preserves charged history.
+@internal
+pub fn recover_owned(
+  parked: Parked,
+  path: String,
+  incarnation: ids.EntryId,
+  limits: Limits,
+) -> Result(Store, Error) {
+  initialize_owned(parked, path, incarnation, limits, Recover)
+}
+
+fn initialize_owned(
+  parked: Parked,
+  path: String,
+  incarnation: ids.EntryId,
+  limits: Limits,
+  mode: OpenMode,
+) -> Result(Store, Error) {
+  let store = Store(parked.subject, incarnation, limits)
+  exchange(store, fn(reply) {
+    Initialize(path, store, mode, parked.probe, reply)
+  })
+}
+
+/// Closes and joins the retained original writer, including a parked writer.
+/// Initialization-result loss does not prevent its permanent parent closing it.
+///
+/// ## Examples
+///
+/// `release_parked(original)` requires close ACK and original normal exit.
+@internal
+pub fn release_parked(parked: Parked) -> Result(Nil, Error) {
+  release_subject(parked.subject)
 }
 
 /// Creates an unused node ledger and retains one original serialized connection.
@@ -409,12 +651,16 @@ pub fn recover(
 ///
 /// `release(store)` leaves every permanent ledger row intact.
 pub fn release(store: Store) -> Result(Nil, Error) {
+  release_subject(store.subject)
+}
+
+fn release_subject(subject: process.Subject(Message)) -> Result(Nil, Error) {
   use owner <- result.try(
-    process.subject_owner(store.subject) |> result.replace_error(Uncertain),
+    process.subject_owner(subject) |> result.replace_error(Uncertain),
   )
   let watch = process.monitor(owner)
   let outcome = {
-    use Nil <- result.try(exchange(store, Release))
+    use Nil <- result.try(exchange_subject(subject, Release))
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(down) {
       case down {
@@ -1035,108 +1281,8 @@ fn open(
   limits: Limits,
   mode: OpenMode,
 ) -> Result(Store, Error) {
-  use Nil <- result.try(validate_path(path))
-  use exists <- result.try(
-    simplifile.exists(path, False) |> result.replace_error(InvalidPath),
-  )
-  use Nil <- result.try(case mode, exists {
-    Create, True -> Error(AlreadyExists)
-    Recover, False -> Error(Missing)
-    _, _ -> Ok(Nil)
-  })
-  use connection <- result.try(sqlight.open(path) |> sql_error)
-  let provisional = Context(connection, incarnation, limits, 2)
-  let opened = {
-    // Unknown versions refuse before even journal-profile mutation. Version one
-    // is validated under its original scalar/body rules before any DDL upgrade.
-    use format <- result.try(case mode {
-      Create -> Ok(2)
-      Recover -> {
-        use formats <- result.try(
-          query(provisional, sql.generation_format())
-          |> result.replace_error(Corrupt),
-        )
-        case formats {
-          [value] if value.format == 1 || value.format == 2 -> Ok(value.format)
-          _ -> Error(Corrupt)
-        }
-      }
-    })
-    let store = Context(..provisional, format: format)
-    use modes <- result.try(
-      sqlight.query(
-        "PRAGMA journal_mode=WAL",
-        connection,
-        [],
-        decode.field(0, decode.string, decode.success),
-      )
-      |> sql_error,
-    )
-    use Nil <- result.try(case modes {
-      ["wal"] -> Ok(Nil)
-      _ -> Error(Uncertain)
-    })
-    use Nil <- result.try(
-      sqlight.exec(
-        "PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000",
-        connection,
-      )
-      |> sql_error,
-    )
-    use levels <- result.try(
-      sqlight.query(
-        "PRAGMA synchronous",
-        connection,
-        [],
-        decode.field(0, decode.int, decode.success),
-      )
-      |> sql_error,
-    )
-    use Nil <- result.try(case levels {
-      [2] -> Ok(Nil)
-      _ -> Error(Uncertain)
-    })
-    use Nil <- result.try(
-      sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error,
-    )
-    let initialized = {
-      use Nil <- result.try(case mode {
-        Create -> {
-          use Nil <- result.try(
-            sqlight.exec(generation_registry_schema.schema, connection)
-            |> sql_error,
-          )
-          statement(
-            store,
-            sql.initialize_generations(limits.live, limits.rows, limits.bytes),
-          )
-        }
-        Recover -> Ok(Nil)
-      })
-      use original_inventory <- result.try(inventory(store))
-      use Nil <- result.try(
-        list.try_each(original_inventory.headers, fn(header) {
-          read_row(store, header) |> result.replace(Nil)
-        }),
-      )
-      use Nil <- result.try(case mode, format {
-        Recover, 1 ->
-          sqlight.exec(generation_scope_plan_migration.schema, connection)
-          |> sql_error
-        Create, _ | Recover, _ -> Ok(Nil)
-      })
-
-      // The upgrade retains every old reservation and intentionally inserts no
-      // provenance. Validate its new scalar shape before uncertainty changes.
-      let upgraded = Context(..store, format: 2)
-      use _ <- result.try(inventory(upgraded))
-      case mode {
-        Create -> Ok(Nil)
-        Recover -> statement(upgraded, sql.recover_generation_uncertainty(<<>>))
-      }
-    }
-    complete_transaction(store, initialized)
-  }
+  use provisional <- result.try(acquire(path, incarnation, limits, mode, None))
+  let opened = setup(provisional, mode)
   case opened {
     Ok(Nil) -> {
       case
@@ -1147,16 +1293,135 @@ fn open(
       {
         Ok(started) -> Ok(Store(started.data, incarnation, limits))
         Error(_) -> {
-          let _ = sqlight.close(connection)
+          let _ = sqlight.close(provisional.connection)
           Error(Uncertain)
         }
       }
     }
     Error(error) -> {
-      let _ = sqlight.close(connection)
+      let _ = sqlight.close(provisional.connection)
       Error(error)
     }
   }
+}
+
+fn acquire(
+  path: String,
+  incarnation: ids.EntryId,
+  limits: Limits,
+  mode: OpenMode,
+  probe: Option(Probe),
+) -> Result(Context, Error) {
+  use Nil <- result.try(validate_path(path))
+  use exists <- result.try(
+    simplifile.exists(path, False) |> result.replace_error(InvalidPath),
+  )
+  use Nil <- result.try(case mode, exists {
+    Create, True -> Error(AlreadyExists)
+    Recover, False -> Error(Missing)
+    Create, False | Recover, True -> Ok(Nil)
+  })
+  use connection <- result.try(sqlight.open(path) |> sql_error)
+  Ok(Context(connection, incarnation, limits, 2, probe))
+}
+
+fn setup(provisional: Context, mode: OpenMode) -> Result(Nil, Error) {
+  let connection = provisional.connection
+
+  // Unknown versions refuse before even journal-profile mutation. Version one
+  // is validated under its original scalar/body rules before any DDL upgrade.
+  use format <- result.try(case mode {
+    Create -> Ok(2)
+    Recover -> {
+      use formats <- result.try(
+        query(provisional, sql.generation_format())
+        |> result.replace_error(Corrupt),
+      )
+      case formats {
+        [value] if value.format == 1 || value.format == 2 -> Ok(value.format)
+        _ -> Error(Corrupt)
+      }
+    }
+  })
+  let store = Context(..provisional, format: format)
+  use modes <- result.try(
+    sqlight.query(
+      "PRAGMA journal_mode=WAL",
+      connection,
+      [],
+      decode.field(0, decode.string, decode.success),
+    )
+    |> sql_error,
+  )
+  use Nil <- result.try(case modes {
+    ["wal"] -> Ok(Nil)
+    _ -> Error(Uncertain)
+  })
+  use Nil <- result.try(
+    sqlight.exec(
+      "PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000",
+      connection,
+    )
+    |> sql_error,
+  )
+  use levels <- result.try(
+    sqlight.query(
+      "PRAGMA synchronous",
+      connection,
+      [],
+      decode.field(0, decode.int, decode.success),
+    )
+    |> sql_error,
+  )
+  use Nil <- result.try(case levels {
+    [2] -> Ok(Nil)
+    _ -> Error(Uncertain)
+  })
+  notify(provisional.probe, BeginAttempted(process.self()))
+  let beginning = sqlight.exec("BEGIN IMMEDIATE", connection) |> sql_error
+  notify(provisional.probe, BeginFinished(process.self(), beginning))
+  use Nil <- result.try(beginning)
+  let initialized = {
+    use Nil <- result.try(case mode {
+      Create -> {
+        use Nil <- result.try(
+          sqlight.exec(generation_registry_schema.schema, connection)
+          |> sql_error,
+        )
+        statement(
+          store,
+          sql.initialize_generations(
+            store.limits.live,
+            store.limits.rows,
+            store.limits.bytes,
+          ),
+        )
+      }
+      Recover -> Ok(Nil)
+    })
+    use original_inventory <- result.try(inventory(store))
+    use Nil <- result.try(
+      list.try_each(original_inventory.headers, fn(header) {
+        read_row(store, header) |> result.replace(Nil)
+      }),
+    )
+    use Nil <- result.try(case mode, format {
+      Recover, 1 ->
+        sqlight.exec(generation_scope_plan_migration.schema, connection)
+        |> sql_error
+      Create, _ | Recover, _ -> Ok(Nil)
+    })
+
+    // The upgrade retains every old reservation and intentionally inserts no
+    // provenance. Validate its new scalar shape before uncertainty changes.
+    let upgraded = Context(..store, format: 2)
+    use _ <- result.try(inventory(upgraded))
+    case mode {
+      Create -> Ok(Nil)
+      Recover -> statement(upgraded, sql.recover_generation_uncertainty(<<>>))
+    }
+  }
+  complete_transaction(store, initialized)
 }
 
 fn validate_path(path: String) -> Result(Nil, Error) {
@@ -2018,8 +2283,15 @@ fn exchange(
   store: Store,
   make: fn(process.Subject(Result(a, Error))) -> Message,
 ) -> Result(a, Error) {
+  exchange_subject(store.subject, make)
+}
+
+fn exchange_subject(
+  subject: process.Subject(Message),
+  make: fn(process.Subject(Result(a, Error))) -> Message,
+) -> Result(a, Error) {
   use owner <- result.try(
-    process.subject_owner(store.subject) |> result.replace_error(Uncertain),
+    process.subject_owner(subject) |> result.replace_error(Uncertain),
   )
   use Nil <- result.try(case process.is_alive(owner) {
     True -> Ok(Nil)
@@ -2027,7 +2299,7 @@ fn exchange(
   })
   let reply = process.new_subject()
   let monitor = process.monitor(owner)
-  process.send(store.subject, make(reply))
+  process.send(subject, make(reply))
   let outcome =
     process.new_selector()
     |> process.select_map(reply, fn(answer) { answer })
@@ -2041,6 +2313,36 @@ fn exchange(
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
+    Initialize(path, store, mode, probe, reply) -> {
+      case state {
+        Waiting -> {
+          case acquire(path, store.incarnation, store.limits, mode, probe) {
+            Ok(context) -> {
+              // Shutdown owns the returned connection before setup can begin.
+              actor.continue(Acquired(context))
+              |> actor.then_handle(Setup(store, mode, reply))
+            }
+            Error(error) -> {
+              process.send(reply, Error(error))
+              actor.continue(Closed) |> actor.then_handle(Stop)
+            }
+          }
+        }
+        Acquired(_) | Open(_) | Failed(_) | Closed -> {
+          process.send(reply, Error(Uncertain))
+          actor.continue(state)
+        }
+      }
+    }
+    Setup(store, mode, reply) -> {
+      case state {
+        Acquired(context) -> handle_setup(context, store, mode, reply)
+        Waiting | Open(_) | Failed(_) | Closed -> {
+          process.send(reply, Error(Uncertain))
+          actor.continue(state)
+        }
+      }
+    }
     AdmissionWork(work, reply) -> handle_work(state, work, reply)
     PublicationWork(work, reply) -> handle_work(state, work, reply)
     PhaseWork(work, reply) -> handle_work(state, work, reply)
@@ -2048,20 +2350,89 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     PredecessorWork(work, reply) -> handle_work(state, work, reply)
     NilWork(work, reply) -> handle_work(state, work, reply)
     PlanWork(work, reply) -> handle_work(state, work, reply)
-    Release(reply) -> {
-      case state {
-        Open(context) -> {
-          let result = sqlight.close(context.connection) |> sql_error
-          process.send(reply, result)
-          actor.continue(Closed) |> actor.then_handle(Stop)
+    Release(reply) -> handle_release(state, reply)
+    AcknowledgeRelease(probe, reply) -> {
+      use Nil <- or_stop(checkpoint(probe, AfterClose))
+      process.send(reply, Ok(Nil))
+      use Nil <- or_stop(checkpoint(probe, AfterCloseAck))
+      actor.stop()
+    }
+    Stop -> actor.stop()
+  }
+}
+
+fn handle_release(
+  state: State,
+  reply: process.Subject(Result(Nil, Error)),
+) -> actor.Next(State, Message) {
+  case state {
+    Acquired(context) | Open(context) | Failed(context) -> {
+      let closing = case context.probe {
+        Some(Probe(RefuseCloseOnce, _)) -> Error(Uncertain)
+        Some(_) | None -> close_connection(context)
+      }
+      case closing {
+        Ok(Nil) -> {
+          actor.continue(Closed)
+          |> actor.then_handle(AcknowledgeRelease(context.probe, reply))
         }
-        Closed -> {
-          process.send(reply, Error(Uncertain))
-          actor.continue(Closed) |> actor.then_handle(Stop)
+        Error(error) -> {
+          process.send(reply, Error(error))
+          let retained = case context.probe {
+            Some(Probe(RefuseCloseOnce, observations)) ->
+              Context(..context, probe: Some(Probe(BeforeAck, observations)))
+            Some(_) | None -> context
+          }
+          actor.continue(Failed(retained))
         }
       }
     }
-    Stop -> actor.stop()
+    Waiting -> {
+      process.send(reply, Ok(Nil))
+      actor.continue(Closed) |> actor.then_handle(Stop)
+    }
+    Closed -> {
+      process.send(reply, Error(Uncertain))
+      actor.continue(Closed) |> actor.then_handle(Stop)
+    }
+  }
+}
+
+fn handle_setup(
+  context: Context,
+  store: Store,
+  mode: OpenMode,
+  reply: process.Subject(Result(Store, Error)),
+) -> actor.Next(State, Message) {
+  // This turn begins only after Acquired installed the shutdown obligation.
+  use Nil <- or_stop(checkpoint(context.probe, AfterAcquire))
+  case setup(context, mode) {
+    Ok(Nil) -> {
+      use Nil <- or_stop(checkpoint(context.probe, AfterCommit))
+      process.send(reply, Ok(store))
+      actor.continue(Open(context))
+    }
+    Error(error) -> {
+      process.send(reply, Error(error))
+      close_context(context)
+    }
+  }
+}
+
+fn or_stop(
+  outcome: Result(Nil, String),
+  then: fn(Nil) -> actor.Next(State, Message),
+) -> actor.Next(State, Message) {
+  case outcome {
+    Ok(Nil) -> then(Nil)
+    Error(reason) -> actor.stop_abnormal(reason)
+  }
+}
+
+fn close_context(context: Context) -> actor.Next(State, Message) {
+  case close_connection(context) {
+    Ok(Nil) -> actor.continue(Closed) |> actor.then_handle(Stop)
+    Error(_) -> actor.continue(Failed(context))
   }
 }
 
@@ -2071,9 +2442,9 @@ fn handle_work(
   reply: process.Subject(Result(a, Error)),
 ) -> actor.Next(State, Message) {
   case state {
-    Closed -> {
+    Waiting | Acquired(_) | Failed(_) | Closed -> {
       process.send(reply, Error(Uncertain))
-      actor.continue(Closed)
+      actor.continue(state)
     }
     Open(context) -> {
       let outcome = transact(context, work)
@@ -2081,8 +2452,7 @@ fn handle_work(
       case outcome {
         Error(Uncertain) | Error(Corrupt) -> {
           // Poisoned ownership closes its native handle once and cannot admit again.
-          let _ = sqlight.close(context.connection)
-          actor.continue(Closed) |> actor.then_handle(Stop)
+          close_context(context)
         }
         _ -> actor.continue(state)
       }
@@ -2092,10 +2462,27 @@ fn handle_work(
 
 fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
   case state {
-    Open(context) -> {
-      let _ = sqlight.close(context.connection)
+    Acquired(context) | Open(context) | Failed(context) -> {
+      let _ = close_connection(context)
       Nil
     }
-    Closed -> Nil
+    Waiting | Closed -> Nil
+  }
+}
+
+fn close_connection(context: Context) -> Result(Nil, Error) {
+  let outcome = sqlight.close(context.connection) |> sql_error
+  case context.probe {
+    Some(Probe(_, observations)) ->
+      process.send(observations, ConnectionClosed(process.self(), outcome))
+    None -> Nil
+  }
+  outcome
+}
+
+fn notify(probe: Option(Probe), event: OwnershipEvent) -> Nil {
+  case probe {
+    Some(Probe(_, observations)) -> process.send(observations, event)
+    None -> Nil
   }
 }
