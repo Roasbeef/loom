@@ -239,6 +239,7 @@ import runtime/escalation as runtime_escalation
 import runtime/hooks
 import runtime/writer
 import session/session
+import session_view/protocol as session_wire
 import storage/access
 import storage/snapshot
 import storage/storage.{type EntryHead}
@@ -7049,7 +7050,7 @@ fn describe_reject(reason: acceptance.RejectReason) -> #(String, String) {
     acceptance.InvalidMessage(reason:) -> #(protocol.code_bad_request, reason)
     acceptance.NothingToCompact -> #(
       protocol.code_conflict,
-      "there is nothing to compact",
+      session_wire.nothing_to_compact_message,
     )
     acceptance.InvalidNavigation(reason:) -> #(
       protocol.code_bad_request,

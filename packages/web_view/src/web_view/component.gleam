@@ -4087,7 +4087,20 @@ pub fn control(
     PauseGoal -> commanded(model, msg.Control(command: command.GoalPause))
     ResumeGoal -> commanded(model, msg.Control(command: command.GoalResume))
     ClearGoal -> commanded(model, msg.Control(command: command.GoalClear))
-    CompactStrand -> commanded(model, msg.Control(command: command.Compact))
+
+    // A new press forgets the last refusal, which the panel keeps drawn until
+    // then; a fresh one comes back if the daemon refuses again.
+    CompactStrand ->
+      commanded(
+        Model(
+          ..model,
+          shared: Shared(
+            ..model.shared,
+            context: context_view.compact_asked(model.shared.context),
+          ),
+        ),
+        msg.Control(command: command.Compact),
+      )
     Fork(name:) -> written(model, "/fork ", name, forking)
   }
 }

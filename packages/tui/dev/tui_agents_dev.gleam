@@ -335,6 +335,7 @@ fn fixture_context() -> context_view.State {
     0,
     None,
     None,
+    context_view.Unrefused,
   )
 }
 

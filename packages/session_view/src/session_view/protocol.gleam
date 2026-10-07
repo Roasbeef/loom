@@ -1091,6 +1091,18 @@ fn decode_escalation(body: JsonValue) -> Result(Event, String) {
   }
 }
 
+/// The words the daemon's refusal of `compact` carries when the strand has
+/// nothing to cut. The gateway words the refusal with this constant, and the
+/// shared step recognises it by it, so the page can say the same thing in its
+/// own plain sentence instead of the raw code and reason.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert protocol.nothing_to_compact_message == "there is nothing to compact"
+/// ```
+pub const nothing_to_compact_message = "there is nothing to compact"
+
 fn decode_error(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "error body"))
   use code <- result.try(required_string(fields, "code"))

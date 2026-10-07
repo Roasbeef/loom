@@ -1418,6 +1418,21 @@ fn apply_request_refused(
     |> session_model.invalidate_frame
   })
 
+  // A strand with nothing to cut is not a failure the operator needs a row
+  // for. The context panel says so beside the button until the next press,
+  // and the footer says it once, in words and not as the daemon's code.
+  use <- bool.lazy_guard(
+    command == "compact" && message == protocol.nothing_to_compact_message,
+    fn() {
+      shared
+      |> shared_set.context(context_view.nothing_to_compact(shared.context))
+      |> outbound.discard_own_turn
+      |> shared_set.submitting(None)
+      |> shared_set.notice("Nothing to compact yet.")
+      |> session_model.invalidate_frame
+    },
+  )
+
   // Every goal command is refused worded and nowhere else: an older daemon
   // refuses all five, and an operator watching a panel fail to appear has
   // no way to tell that from a session with no goal.
