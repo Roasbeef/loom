@@ -371,6 +371,22 @@ pub fn principal_memberships_decoder() -> decode.Decoder(PrincipalMemberships) {
   decode.success(PrincipalMemberships(session_id:, name:, role:))
 }
 
+pub type MemberedSessions {
+  MemberedSessions(session_id: String)
+}
+
+pub fn membered_sessions() {
+  let sql =
+    "
+SELECT DISTINCT session_id FROM access_memberships ORDER BY session_id"
+  #(sql, [], membered_sessions_decoder())
+}
+
+pub fn membered_sessions_decoder() -> decode.Decoder(MemberedSessions) {
+  use session_id <- decode.field(0, decode.string)
+  decode.success(MemberedSessions(session_id:))
+}
+
 pub fn insert_access_login(
   digest digest: String,
   principal_id principal_id: String,
