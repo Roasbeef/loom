@@ -40,6 +40,43 @@ same Table, with no refresh or peer probing. These loaders do not install
 startup, assembly or activation; the shipped local path remains unchanged.
 
 
+## Original registered owner custody
+
+`remote/custodian.with_registered` adds a closed internal placement to the
+existing configuration. It revalidates canonical enrollment, SHA-256, native
+registration digest, descriptor and complete scope against the association;
+configuration supplies no `LiveGeneration`. The original serialized actor
+opens its own companion, commits and reads back the immutable pin, then calls
+`owner_custody.retain_generation` on that same connection. An existing unpinned
+companion refuses adoption. Registered handles retain their original companion
+path and reject path or placement drift before opening any writer. Ordinary
+constructor/start compatibility remains unchanged. Every registered fresh tool, native/workspace child,
+service, offer and native command uses that private connection-bound capability
+through the existing atomic registered DAL methods.
+
+`registered` returns `ReadyForActivation(RegisteredOwner)` only from that
+original admitting actor. The opaque value captures its pinned handle and exact
+committed metadata; executor activation acknowledgement remains an assembly
+step. Exact generation recovery returns `HistoryOnly` metadata. It cannot
+construct `dispatch_binding.new_registered`, restart a tool body, reserve new
+children or allocate system ordinals. A fenced original actor reports `Frozen`
+readiness and retains only receipt/history reconciliation. `tool_generation`, `child_generation`,
+`service_generation` and `receipt_generation` read complete original identities
+and retained associations. `retain_system_intent` permits exact historical
+observation; `admit_system_child` delegates the original intent/child/link/counter
+transaction and cannot allocate on a reopened connection.
+
+`dispatch_binding.new_registered` checks full connection scope and generation
+before capturing the original actor, and `with_commands` compares the immutable
+enrollment. Registered native and workspace receipt writers COMMIT and read back
+exact bytes plus the original generation before success. Registered dispatch also
+compares that association before acknowledgement. A stopped original binding
+cannot follow a replacement actor through a latest lookup. Dedicated registered
+custodian tests exercise real actor/SQLite admissions, historical reopen, SQL
+rollback and suppressed receipt readback, original dispatch envelopes and waiting
+caller cancellation. These component joins do not install daemon startup,
+executor activation, owner LSP custody or full runtime assembly.
+
 ## Per-strand shell directories
 
 `client/working_directory` stores canonical shell defaults under reserved
