@@ -6406,3 +6406,49 @@ Dispatcher callback boundary. They do not prove queue acceptance, physical helpe
 stdin consumption or shipped registered assembly.
 Default source acquisition and serve selection remain ordinary assembly work
 under protocol-change/079, originally approved as 077.
+
+
+## Fresh registered workspace system reads
+
+`remote/workspace_client.new_system` captures only the actual original
+RegisteredOwner, complete association, verified canonical enrollment and
+concrete endpoint selected by the immutable `daemon/deployment.Table`. It
+compares the full scope, endpoint generation, owner and selected peer before
+returning opaque SystemConfig. Construction starts no actor or exchange, and
+ReadyForActivation remains separate from executor activation.
+
+`system_read_plan` fixes one complete WorkspaceAdministration Read/Text plan:
+original association, durable work address, operation, step, UUID, checked
+relative path and live-incarnation monotonic deadline. Its canonical metadata
+fits the existing 8192-byte SystemIntent profile and contains no source body.
+The caller retains those exact bytes through `custodian.retain_system_intent`.
+`invoke_system` compares the whole original readback before calling actual
+serialized `admit_system_child`; the pure encoder calls no actor. Supplied
+Limits only preflight encoding. The writer independently enforces its own
+retained quota, including against a permissive encoding profile.
+
+Only that invocation's actual Fresh result permits first Submit. Repeated or
+concurrent admission observes the original UUID and canonical request; lost
+reply or readback supplies no replay permission. `workspace_binding.system_reservation`
+rechecks that actual child and complete expected invocation without any mint.
+The private Consumer keeps ordinary receipt behavior and adds only original
+registered receipt authority. Registered settlement compares
+`custodian.receipt_generation`'s full bytes and association with the original
+plan before ACK or Completed. The original deadline is never renewed, and a
+historical connection cannot recreate first-send authority from another VM's
+monotonic clock. Source bytes belong to the existing workspace receipt profile,
+not client metadata; no second receipt cache exists.
+
+Caller death ends observation. An admitted read remains owned by its original
+semantic service; the enclosing host owns physical close and join. Native
+system allocation/cancellation does not apply to this path. The module retains
+one synchronous exchange per invocation; the existing maximum of four
+consumers remains the assembly's obligation. The eight-MiB filesystem text
+limit applies after the actual whole-file read, not to peak allocation.
+
+Dedicated `workspace_system_client_test` controls use independent authenticated
+TLS BEAMs, actual owner/executor SQLite and the real filesystem adapter. Fixed
+file barriers and a read counter observe actual physical reads; SQL faults
+exercise original receipt custody. Indexed source acquisition, trust parsing,
+batch recovery lookup, default registered assembly, executor activation and
+full-host close remain later slices. This component does not install them.

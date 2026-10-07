@@ -1038,3 +1038,108 @@ computed timeout cannot replace that durable work address. SystemIntent's
 8192-byte metadata bound does not permit truncating the ordinary input or moving
 unbounded content into control metadata. Local behavior remains unchanged where
 this registered admission path is not selected.
+
+
+## Addendum: fresh registered workspace system reads
+
+The ordinary workspace consumer reads an existing child before reserving its
+candidate. Pre-admitting a WorkspaceSystem child and then calling ordinary
+`workspace_client.invoke` cannot perform its first Submit: the registered
+reservation path rejects a system origin before transport, and its ordinary
+retained-child branch only observes. The independent acquisition review
+identified the missing first-submit seam against
+`d84b60a91d7bb413fe0a422d070c17af61081ade`; the real registered control confirms
+the earlier reservation rejection. Its four corrections are accepted as an
+internal refinement of this proposal under `docs/execution.md` section 7. The
+original source approval and authority mapping above remain unchanged.
+
+Add the following internal, closed construction and invocation surface in
+`client/remote/workspace_client`:
+
+```gleam
+pub opaque type SystemConfig
+pub opaque type SystemReadPlan
+pub fn new_system(owner: custodian.RegisteredOwner,
+  table: deployment.Table, endpoint: connection.Config,
+  limits: custody.Limits, within_ms: Int)
+  -> Result(SystemConfig, ConfigurationError)
+pub fn system_read_plan(config: SystemConfig, work_address: String,
+  operation: ids.OpId, step: scope.Step, request_id: ids.EntryId,
+  path: scope.RelativePath, deadline_ms: Int)
+  -> Result(SystemReadPlan, custody.Error)
+pub fn system_read_content(plan: SystemReadPlan) -> BitArray
+pub fn invoke_system(config: SystemConfig, plan: SystemReadPlan,
+  intent: custody.IntentReadback) -> Result(Outcome, SystemError)
+```
+
+The minimum internal binding helpers are:
+
+```gleam
+pub fn system_reservation(owner: custodian.Handle,
+  admitted: custody.SystemReservationReadback,
+  expected: workspace.Invocation) -> Result(binding.Reservation, custody.Error)
+pub fn retained_completion(reservation: binding.Reservation)
+  -> Result(Option(BitArray), custody.Error)
+pub fn system_origin(reservation: binding.Reservation)
+  -> Result(remote_tool.ChildOrigin, custody.Error)
+```
+
+The first helper compares the admitted WorkspaceSystem payload with the exact
+canonical expected invocation, then rechecks the original child row; it performs
+no allocation or mint. The second rechecks that same UUID and request before
+projecting optional receipt bytes. The third projects the original opaque
+reservation's system origin for the registered receipt-generation readback;
+it rejects ordinary origins. A private Consumer carries only the concrete
+endpoint and ReceiptAuthority: Ordinary or the original Registered handle and
+association. The existing ordinary completion/ACK behavior is preserved.
+
+Construction MUST capture the actual RegisteredOwner's original pinned handle,
+complete association and canonical enrollment. It selects and verifies the
+original pin against the immutable deployment Table, compares the endpoint's
+full scope and exact generation, owner and selected peer, and validates finite
+transport settings. It starts no process or exchange. ReadyForActivation is
+readiness for later activation, never an activation acknowledgement.
+
+SystemReadPlan is pure bounded metadata for one fixed `Read(path, Text)` under
+WorkspaceAdministration. It includes the complete original association, work
+address, operation, step, once-retained request UUID, checked relative path and
+absolute monotonic deadline. Its canonical bytes MUST fit SystemIntent's 8192
+bytes. The caller retains these exact bytes through the original custodian's
+existing `retain_system_intent`; this slice adds no batch discovery or lookup.
+It mints neither an activation UUID nor a ToolKey. Actual companion quotas are
+checked again by the serialized writer; the supplied existing Limits are only
+the encoder's preflight profile.
+
+`invoke_system` MUST compare the supplied retained intent with the whole fixed
+plan, then call the original custodian's actual `admit_system_child` itself.
+Its closed pure encoder uses only the admitted real origin/UUID and fixed plan
+coordinates. Before Submit it MUST compare the complete canonical request,
+origin, UUID and actual child generation to the original association, and
+revalidate the same deployment pin. Only that invocation's real Fresh result
+permits one first Submit. Retained, repeated and concurrent admissions observe
+the original request. A lost admission reply or failed readback is explicit
+uncertainty and MUST NOT replay. No caller-supplied Fresh, origin, reusable send
+token or authority-selecting callback is accepted. Ordinary invoke is unchanged.
+
+Registered settlement MUST decode the completion against that exact retained
+Read request, reuse the canonical request-matched owner receipt transaction,
+and compare `receipt_generation`'s complete bytes and association with the
+original plan before ACK or returning Completed. Failure withholds both, and
+recovery targets the original request only. No second receipt cache is added.
+The fixed original deadline bounds admission and exchanges; retries cannot
+renew it. Receipt custody remains independently inspectable after expiry.
+
+Caller death ends observation and prevents later caller-owned batch dispatch.
+An already admitted semantic read remains owned by its original workspace
+service, which commits completion independently. Its enclosing original host
+owns physical seal/cancel/join. Native system allocation/cancellation does not
+apply to WorkspaceSystem; this seam adds no semantic Cancel frame.
+
+Use one synchronous exchange per invocation and the existing transport,
+workspace codec and companion profiles. Assembly retains the existing maximum
+of four concurrent consumers. The existing filesystem text acceptance limit is
+eight MiB after `filesystem.read`; it is not a peak allocation guarantee.
+Source bodies stay in workspace receipts, outside client metadata. This slice
+establishes first-submit and settlement mechanics only. Indexed acquisition,
+parsing/trust, default registered assembly, activation and full host close
+remain subsequent dependencies and are not claimed complete here.

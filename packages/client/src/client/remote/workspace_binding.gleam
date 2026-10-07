@@ -131,6 +131,69 @@ pub fn reserve(
   Ok(reservation)
 }
 
+/// Converts the actual serialized system admission into its exact reservation.
+/// The caller owns the Fresh decision; this helper never allocates or mints.
+/// Canonical expected bytes and actual original child readback must agree.
+///
+/// ## Examples
+///
+/// `system_reservation(owner, admitted, expected)` refuses a changed Read path.
+@internal
+pub fn system_reservation(
+  owner: custodian.Handle,
+  admitted: custody.SystemReservationReadback,
+  expected: workspace.Invocation,
+) -> Result(Reservation, custody.Error) {
+  let #(bound, operation, step, origin, id) =
+    workspace.invocation_identity(expected)
+  use Nil <- result.try(require(fn() { id == admitted.request_id }))
+  use Nil <- result.try(case admitted.payload {
+    custody.WorkspaceSystem(_) -> Ok(Nil)
+    custody.NativeSystem(_) -> Error(custody.Conflict)
+  })
+  use Nil <- result.try(provenance(
+    bound,
+    admitted.origin,
+    operation,
+    step,
+    origin,
+  ))
+  use bytes <- result.try(codec.encode_invocation(expected) |> codec_error)
+  let reservation = Reservation(owner, admitted.origin, expected, bytes)
+  use _ <- result.try(recheck(reservation))
+  Ok(reservation)
+}
+
+/// Rechecks the exact original UUID and canonical request before reading receipt.
+/// This projects existing custody without creating an acknowledgement.
+///
+/// ## Examples
+///
+/// `retained_completion(reserved)` returns `Ok(None)` before receipt custody.
+@internal
+pub fn retained_completion(
+  reserved: Reservation,
+) -> Result(Option(BitArray), custody.Error) {
+  recheck(reserved)
+}
+
+/// Projects original system provenance for the registered receipt continuation.
+/// Tool and derived workspace-command origins cannot enter this path.
+///
+/// ## Examples
+///
+/// `system_origin(reserved)` supplies the same original used during admission.
+@internal
+pub fn system_origin(
+  reserved: Reservation,
+) -> Result(remote_tool.ChildOrigin, custody.Error) {
+  case remote_tool.child_fields(reserved.child) {
+    remote_tool.SystemFields(_, _, _) -> Ok(reserved.child)
+    remote_tool.ToolFields(_, _) | remote_tool.WorkspaceCommandFields(_, _) ->
+      Error(custody.Conflict)
+  }
+}
+
 /// Projects exactly the stored Invocation for a future bounded semantic sender.
 ///
 /// ## Examples
