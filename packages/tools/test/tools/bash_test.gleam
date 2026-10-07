@@ -917,7 +917,7 @@ pub fn cwd_reaches_foreground_and_auto_without_changing_workspace_test() {
       ]),
     )
   assert !automatic.is_error
-  assert process.receive(attended, 100) == Ok(#(root, root))
+  assert process.receive(attended, 100) == Ok(#(ctx.workspace, root))
   assert recorded_spec(recorded).cwd == root
   let assert Ok(Nil) = simplifile.delete_all([root]) as "remove fixture"
 }
@@ -959,7 +959,7 @@ pub fn background_captures_cwd_before_start_test() {
       ]),
     )
   assert !outcome.is_error
-  assert process.receive(started, 100) == Ok(#(root, selected))
+  assert process.receive(started, 100) == Ok(#(ctx.workspace, selected))
   let missing =
     bash.tool_with_directory(jobs, directory).run(
       ctx,
