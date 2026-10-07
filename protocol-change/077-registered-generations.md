@@ -484,13 +484,40 @@ The managed endpoint APIs are:
 
 ```gleam
 pub type EndpointLifetime { RetiredSlots16 }
-pub fn configure_managed_server(book: generation_registry.Book,
+pub fn configure_managed_server(store: generation_registry.Store,
   within_ms: Int, lifetime: EndpointLifetime) -> Result(ServerConfig, Error)
 pub fn register_generation(server: Server, row: Registration,
   claim: generation_registry.StartupClaim) -> Result(Nil, Error)
 pub fn retire_registration(server: Server, row: Registration,
   retired: RetirementRecord) -> Result(Nil, Error)
 ```
+
+The concrete implementation uses `generation_registry.Store` for the conceptual
+ledger handle. Three narrow local construction/check seams preserve the publication
+ordering: `beam_endpoint.publication_endpoint(Server, Registration)` derives the
+row-bound original endpoint digest;
+`generation_registry.validate_publication(Store, StartupClaim, Digest)` checks the
+actual private Store actor/incarnation, exact association/doors and committed Publishing
+intent; `generation_registry.validate_removal(Store, RetirementRecord, Digest)` checks
+the exact committed published retirement record and its original endpoint. These checks
+grant no claim or replacement credit, and add no external wire or configuration surface.
+
+The endpoint digest binds its fresh nonce, canonical full Binding, owner Peer, all
+concrete service PIDs and original lifetime owner. Existing PID projections and inspect
+spellings identify only this original endpoint lifetime, never durable replacement
+lookup. An attached Compile owner must match the full canonical enrollment digest.
+Checked native-only registrations can exercise component controls; full-product
+`scope_admin` retains the obligation to assemble complete Compile/Launch/LSP services and
+verify exact enrollment at full provisioning.
+
+Actual successful hot-row removal and its acknowledgement receipt share one actor
+transition after the real Fenced+Drained recheck. The endpoint retains a metadata-only
+exact receipt dictionary, capped at 4096 entries, containing one 32-byte retirement
+digest and one 32-byte row-bound original endpoint digest per permanent ledger identity.
+That is at most 262144 logical digest bytes, excluding map/VM overhead; a smaller
+configured ledger ceiling bounds reachable entries further. No physical handle or
+monitor is retained. An absent hot row without this exact receipt refuses; lost ACK
+reconciliation repeats only the same committed record against its original endpoint.
 
 `generation_registry` owns the bounded SQL/total codec layer and opaque first-claim/retirement values; it imports neither host nor endpoint. `scope_admin` composes
 that ledger, host and endpoint. Construction of these values follows durable admission
