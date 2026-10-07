@@ -1488,3 +1488,52 @@ joins, endpoint drainage or journal release. FullHost must supply those separate
 original observations before constructing complete generation retirement evidence.
 Dedicated startup and native-scope proof controls use actual SQL/actors and real
 native pool retirement; protocol-peer LSP controls assert refused evidence only.
+
+
+## Original Compile preparation custody (077, in progress)
+
+`remote/compile_preparation` parks a linked, trapping, resource-free physical
+Owner under its actual permanent constructor caller. Its one-use Prepare checks
+complete admitted bytes, the exact Claim/Input/resource endpoint, the captured
+parent and original native/resource liveness. Exclusive mkdir installs actual
+directory ownership before layout/seed writes. Shared `write_layout` and
+`publish_ready` keep legacy and owned preparation on the same business path.
+Partial failures and possibly published Ready retain that original allocation;
+no historical row, copied handle, caller death or path absence reconstructs it.
+An already admitted synchronous effect may finish before queued parent loss.
+
+Release requires the actual original native `ScopeCloseProof` before deletion.
+Only an actually acquired original directory may be removed; a conflicting
+preexisting path remains untouched. Successful deletion is installed before
+`mark_released`, actual COMMIT and exact same-original `inspect` readback.
+The opaque ReleaseProof binds original Subject/PID/parent, Journal, complete
+Input, canonical root, original native proof digest and exact retained Ready.
+The release caller independently installs its original Owner monitor before
+the ask and requires proof ACK plus that exact Owner Normal under the unchanged
+absolute deadline. Lost replies, failed SQL or missing/abnormal joins refuse.
+
+`compile_service.start_original` is separate from legacy start/supervised/close.
+Original construction retains typed direct Detached Active/Control entries,
+worker-created one-use receiving permits and separately installed original scope
+monitors. Its custom trapped-exit selector preserves original scope links and
+weft's actual caller-death teardown; named scope failure fences admission instead
+of killing the permanent endpoint. Actual original parent/other abnormal links
+still terminate it. Original close is staged: continuation quiescence retains
+physical Owners in AwaitingOriginalResources; original native safety then permits
+physical/SQL cleanup and exact original Owner joins under that first close cap.
+
+The original aggregate delivery integration is a blocked draft: pinned weft's
+private Detached outbox cannot be safely polled between this actor's receives,
+which discard unmatched messages. A narrow typed Detached selector/demand seam
+awaits approval. These original close paths are not a publication-ready FullHost
+assembly, and current tests do not claim full original aggregate closure.
+Legacy construction remains available with its existing behavior.
+
+`compile_preparation_test` uses actual SQLite, source writes, original actors and
+real unused pool/native closure. Its deliberately empty seed controls partial
+preparation without launching a compiler/helper. It covers installed-state parent
+loss, finite observer loss, exclusive-path canaries, copied owners, foreign native
+proofs, actual held-lock busy failure, suppressed release SQL and unchanged
+absolute deadlines. Closed named checkpoint permits substitute no effect factory.
+Normal seed, successful compiler/artifact controls, complete original-close
+controls, affected full gates and independent review remain required.

@@ -16,13 +16,17 @@
 //// lost drain proofs permanently fence admission. Closing joins local tasks but
 //// proves neither resource cleanup nor native retirement. Hard kill cannot run a
 //// fence hook; recovery reads history and never reconstructs a Claim.
-//// The actor keeps weft's linked ownership: an abnormal relay loss terminates
+//// Legacy construction keeps weft's linked ownership: an abnormal relay loss terminates
 //// this temporary endpoint rather than leaving an admitting actor without proof.
+//// Original construction retains the scope link and installs its own monitor,
+//// retains custody before the typed work permit, and joins outcomes,
+//// AllDelivered and original Normal independently. Preparation owners retain
+//// artifacts until actual native safety and physical/SQL release are witnessed.
 ////
 //// ## Flow
 ////
 //// `configure` checks pinned assembly; `start` and `supervised` use `builder`.
-//// `send_operation` enters `handle`; `operation_key` selects the complete key; `submit` consumes a ticket before `launch`.
+//// `send_operation` enters `handle` and `handle_message`; `operation_key` selects the complete key; `submit` consumes a ticket before `launch`.
 //// `perform` re-vets and admits; `begin_preparation` stores the original Claim.
 //// `prepare` creates the allocation; `observe` finalizes once after real terminal.
 //// `launch_control` bounds metadata asks before phase changes; `control` fences before native cancel.
@@ -30,17 +34,29 @@
 //// `route` forwards live claims directly and historical contexts through control.
 //// `cancel_entry` follows a fence; `shutdown` attempts sealing on normal exit.
 //// `reported` keeps uncertainty fenced; `begin_close` starts one seal/fence barrier.
+//// `start_original` and `builder_observed` select original custody.
+//// `launch_original` and `start_control_original` retain direct typed aggregates.
+//// `offer_active_permit` and `offer_control_permit` retain worker-owned subjects.
+//// `grant_runs`, `grant_begin` and `grant_begin_actual` release installed custody.
+//// `linked_exit`, `pull_original_runs`, `active_down` and `control_down` keep independent proofs.
+//// `original_active_report` and `original_control_report` retain delivery facts.
+//// `finish_active_original`, `finish_control_original` and `joined_account` discharge them.
+//// `begin_original_close`, `finish_original_close` and `expire_original_close` share a deadline.
+//// `begin_release_preparations` and `continue_original_release` retain physical owners.
+//// `close_digest`, `original_down` and `preparation_error` preserve exact summaries.
 
 import broker/enrollment
 import broker/internal/call
-import codemode/build
 import codemode/compile
 import codemode/service_input as input
-import codemode/service_resources as resources
 import core/command
+import core/generation
+import core/json
+import core/msgpack as mp
 import core/workspace
 import executor/remote/compile_completion as completion
 import executor/remote/compile_observation as observation
+import executor/remote/compile_preparation as preparation
 import executor/remote/identity
 import executor/remote/resource_journal as journal
 import executor/remote/service as native
@@ -49,6 +65,7 @@ import gleam/bit_array
 import gleam/crypto
 import gleam/dict.{type Dict}
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor as otp_actor
@@ -93,6 +110,40 @@ pub opaque type Service {
     subject: process.Subject(Message),
     /// Lifecycle endpoint, separate from native retirement.
     pid: process.Pid,
+  )
+}
+
+/// Original quiescence and complete actual finite aggregate account.
+@internal
+pub opaque type CompileCloseProof {
+  /// Produced only after original continuation quiescence.
+  CompileCloseProof(
+    /// Exact original private Compile door.
+    subject: process.Subject(Message),
+    /// Original permanent Compile actor.
+    pid: process.Pid,
+    /// Retained original native Service identity.
+    native_pid: process.Pid,
+    /// Retained original durable resource actor.
+    resource_pid: process.Pid,
+    /// Complete immutable administrative scope.
+    scope: workspace.Scope,
+    /// Original close cap shared with preparation release.
+    deadline: Int,
+    /// Canonical account of actual discharged finite aggregates.
+    digest: generation.Digest,
+  )
+}
+
+/// Actual original preparation release inventory, after native-safe cleanup.
+@internal
+pub opaque type CompileResourcesProof {
+  /// Original native-safe physical/SQL release account.
+  CompileResourcesProof(
+    /// Retained original quiescence and shared deadline.
+    closed: CompileCloseProof,
+    /// Sorted original cleanup accounts and final managed release account.
+    digest: generation.Digest,
   )
 }
 
@@ -243,6 +294,7 @@ type Active {
     reply: Option(process.Subject(Result(Reply, Error))),
     result: Option(Result(Reply, Error)),
     drain: Drain,
+    original_run: Option(ActiveRun),
   )
 }
 
@@ -254,12 +306,18 @@ type Control {
     reply: process.Subject(Result(wire.Body, native.Error)),
   )
   Barrier(originals: List(journal.Input))
+  ReleasePreparations(
+    proof: native.ScopeCloseProof,
+    owners: List(preparation.Owner),
+    deadline: Int,
+  )
 }
 
 type ControlAnswer {
   Answer(value: Reply)
   Forwarded
   BarrierDone
+  ResourcesReleased(digests: List(generation.Digest))
 }
 
 type ControlReply {
@@ -276,6 +334,7 @@ type Metadata {
     reports: process.Subject(weft.Pulled(ControlAnswer, Error)),
     result: Option(Result(ControlAnswer, Error)),
     drain: Drain,
+    original_run: Option(ControlRun),
   )
 }
 
@@ -290,7 +349,61 @@ type Gate {
 
 type StartDecision {
   BeginPreparation
+  BeginOwnedPreparation(owner: preparation.Owner)
   DoNotBegin
+}
+
+type Custody {
+  LegacyCustody
+  OriginalCustody
+}
+
+type OriginalDown {
+  AwaitingDown
+  NormalDown
+  LostDown
+}
+
+type WorkPermit {
+  AwaitingPermit
+  OfferedPermit(process.Subject(Nil))
+  GrantedPermit
+}
+
+type ActiveRun {
+  ActiveRun(
+    detached: weft.Detached(Reply, Error),
+    watch: process.Monitor,
+    down: OriginalDown,
+    delivery: Drain,
+    permit: WorkPermit,
+  )
+}
+
+type ControlRun {
+  ControlRun(
+    deadline: Int,
+    detached: weft.Detached(ControlAnswer, Error),
+    watch: process.Monitor,
+    down: OriginalDown,
+    delivery: Drain,
+    permit: WorkPermit,
+  )
+}
+
+type OriginalClose {
+  NotClosing
+  JoiningOriginal(
+    deadline: Int,
+    reply: process.Subject(Result(CompileCloseProof, Error)),
+  )
+  AwaitingOriginalResources(proof: CompileCloseProof)
+  ReleasingOriginal(
+    proof: CompileCloseProof,
+    reply: process.Subject(Result(CompileResourcesProof, Error)),
+    result: Option(Result(List(generation.Digest), Error)),
+  )
+  LostOriginal
 }
 
 type State {
@@ -303,6 +416,15 @@ type State {
     serial: Int,
     selector: process.Selector(Message),
     gate: Gate,
+    custody: Custody,
+    preparations: Dict(command.ServiceKey, preparation.Owner),
+    pending_begin: Option(
+      #(command.ServiceKey, journal.Claim, process.Subject(StartDecision)),
+    ),
+    original_close: OriginalClose,
+    account: BitArray,
+    probe: Option(preparation.Probe),
+    parent: process.Pid,
   )
 }
 
@@ -324,9 +446,28 @@ type Message {
     envelope: wire.CommandEnvelope,
     reply: process.Subject(Result(wire.Body, native.Error)),
   )
+  LinkedExit(process.ExitMessage)
   ResourceDown
   NativeDown
   Close(reply: process.Subject(Result(Nil, Error)))
+  CloseOriginal(reply: process.Subject(Result(CompileCloseProof, Error)))
+  ClosePreparations(
+    proof: native.ScopeCloseProof,
+    reply: process.Subject(Result(CompileResourcesProof, Error)),
+  )
+  GrantRuns
+  ActivePermit(command.ServiceKey, process.Subject(Nil))
+  ControlPermit(Int, process.Subject(Nil))
+  ReleaseBegin(
+    command.ServiceKey,
+    journal.Claim,
+    process.Subject(StartDecision),
+    process.Subject(Nil),
+  )
+  GrantBegin
+  PullOriginalRuns
+  ActiveDown(key: command.ServiceKey, down: process.Down)
+  ControlDown(id: Int, down: process.Down)
 }
 
 /// Checks exact endpoints and administrative scope without reading peer input.
@@ -379,6 +520,44 @@ pub fn configure(
 pub fn start(config: Config) -> Result(Service, Error) {
   builder(config)
   |> actor.unlinked
+  |> actor.start
+  |> result.map(fn(started) {
+    Service(
+      config.scope,
+      config.native,
+      journal.enrolled(config.resources),
+      journal.pid(config.resources),
+      started.data,
+      started.pid,
+    )
+  })
+  |> result.replace_error(Uncertain)
+}
+
+/// Starts the permanent original-custody service under its actual host parent.
+/// No preparation or SQL work runs in this initializer.
+///
+/// ## Examples
+///
+/// `start_original(config)` retains original preparation owners until full close.
+@internal
+pub fn start_original(config: Config) -> Result(Service, Error) {
+  start_original_observed(config, None)
+}
+
+/// Retains the same original service with fixed internal test observations.
+///
+/// ## Examples
+///
+/// `start_original_observed(config, None)` is production original construction.
+@internal
+pub fn start_original_observed(
+  config: Config,
+  probe: Option(preparation.Probe),
+) -> Result(Service, Error) {
+  builder_observed(config, OriginalCustody, probe)
+  |> actor.trapping_exits(True)
+  |> actor.periodic(every: 25, sending: PullOriginalRuns)
   |> actor.start
   |> result.map(fn(started) {
     Service(
@@ -529,9 +708,82 @@ pub fn close(service: Service) -> Result(Nil, Error) {
   |> result.unwrap(Error(Uncertain))
 }
 
+/// Quiesces original continuations while retaining actual preparation owners.
+///
+/// ## Examples
+///
+/// `close_original(service)` leaves original resource/native doors available.
+@internal
+pub fn close_original(service: Service) -> Result(CompileCloseProof, Error) {
+  call.try_call(service.subject, waiting: 35_000, sending: CloseOriginal)
+  |> result.unwrap(Error(Uncertain))
+}
+
+/// Completes native-safe original preparation release under the retained deadline.
+///
+/// ## Examples
+///
+/// `close_preparations(service, proof)` never reconstructs ownership from SQL.
+@internal
+pub fn close_preparations(
+  service: Service,
+  proof: native.ScopeCloseProof,
+) -> Result(CompileResourcesProof, Error) {
+  call.try_call(service.subject, waiting: 35_000, sending: ClosePreparations(
+    proof,
+    _,
+  ))
+  |> result.unwrap(Error(Uncertain))
+}
+
+/// Checks the exact original service after a retained close result.
+///
+/// ## Examples
+///
+/// `validate_close_original(original, proof)` refuses replacement actors.
+@internal
+pub fn validate_close_original(
+  service: Service,
+  proof: CompileCloseProof,
+) -> Result(generation.Digest, Error) {
+  case
+    service.subject == proof.subject
+    && service.pid == proof.pid
+    && native.pid(service.native) == proof.native_pid
+    && service.resource_owner == proof.resource_pid
+    && service.scope == proof.scope
+  {
+    True -> Ok(proof.digest)
+    False -> Error(Invalid)
+  }
+}
+
+/// Checks the original resource proof without reopening stopped actors.
+///
+/// ## Examples
+///
+/// `validate_preparations(original, proof)` observes no new authority.
+@internal
+pub fn validate_preparations(
+  service: Service,
+  proof: CompileResourcesProof,
+) -> Result(generation.Digest, Error) {
+  use _ <- result.try(validate_close_original(service, proof.closed))
+  Ok(proof.digest)
+}
+
 fn builder(
   config: Config,
 ) -> actor.Builder(State, Message, process.Subject(Message)) {
+  builder_observed(config, LegacyCustody, None)
+}
+
+fn builder_observed(
+  config: Config,
+  custody: Custody,
+  probe: Option(preparation.Probe),
+) -> actor.Builder(State, Message, process.Subject(Message)) {
+  let parent = process.self()
   actor.new_with_initialiser(1000, fn(subject) {
     let resource_monitor = process.monitor(journal.pid(config.resources))
     let native_monitor = process.monitor(native.pid(config.native))
@@ -542,6 +794,10 @@ fn builder(
         ResourceDown
       })
       |> process.select_specific_monitor(native_monitor, fn(_) { NativeDown })
+    let selector = case custody {
+      LegacyCustody -> selector
+      OriginalCustody -> process.select_trapped_exits(selector, LinkedExit)
+    }
     Ok(
       actor.initialised(State(
         config,
@@ -552,6 +808,13 @@ fn builder(
         0,
         selector,
         Serving,
+        custody,
+        dict.new(),
+        None,
+        NotClosing,
+        <<>>,
+        probe,
+        parent,
       ))
       |> actor.selecting(selector)
       |> actor.returning(subject),
@@ -562,6 +825,16 @@ fn builder(
 }
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  case message {
+    LinkedExit(exit) -> linked_exit(state, exit)
+    _ -> handle_message(state, message)
+  }
+}
+
+fn handle_message(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
   let next = case message {
     Operation(caller, requested, reply) ->
       operation(state, caller, requested, reply)
@@ -570,10 +843,57 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Report(key, report) -> reported(state, key, report)
     ControlReport(id, report) -> control_reported(state, id, report)
     Command(envelope, reply) -> route(state, envelope, reply)
+    LinkedExit(_) -> state
     ResourceDown | NativeDown -> fence_service(state)
-    Close(reply) -> begin_close(state, reply)
+    Close(reply) ->
+      case state.custody {
+        LegacyCustody -> begin_close(state, reply)
+        OriginalCustody -> {
+          process.send(reply, Error(Closing))
+          state
+        }
+      }
+    CloseOriginal(reply) -> begin_original_close(state, reply)
+    ClosePreparations(proof, reply) ->
+      begin_release_preparations(state, proof, reply)
+    GrantRuns -> grant_runs(state)
+    ActivePermit(key, permit) -> offer_active_permit(state, key, permit)
+    ControlPermit(id, permit) -> offer_control_permit(state, id, permit)
+    GrantBegin -> grant_begin(state)
+    ReleaseBegin(key, claim, reply, permit) ->
+      grant_begin_actual(
+        State(..state, selector: process.deselect(state.selector, permit)),
+        key,
+        claim,
+        reply,
+      )
+    PullOriginalRuns -> pull_original_runs(state)
+    ActiveDown(key, down) -> active_down(state, key, down)
+    ControlDown(id, down) -> control_down(state, id, down)
   }
-  continue_or_close(next)
+  let continuing = continue_or_close(next)
+  case message {
+    Operation(..)
+    | ActivePermit(..)
+    | ControlPermit(..)
+    | Command(..)
+    | Begin(..)
+    | Report(..)
+    | ControlReport(..)
+    | ActiveDown(..)
+    | ControlDown(..)
+    | CloseOriginal(..)
+    | ClosePreparations(..)
+    | Close(..)
+    | ResourceDown
+    | NativeDown
+    | PullOriginalRuns ->
+      continuing
+      |> actor.then_handle(GrantRuns)
+      |> actor.then_handle(GrantBegin)
+    GrantRuns | GrantBegin | ReleaseBegin(..) | LinkedExit(_) | Ready(_) ->
+      continuing
+  }
 }
 
 fn operation(
@@ -781,6 +1101,18 @@ fn launch(
   deadline: Int,
   reply: process.Subject(Result(Reply, Error)),
 ) -> State {
+  case state.custody {
+    LegacyCustody -> launch_legacy(state, original, deadline, reply)
+    OriginalCustody -> launch_original(state, original, deadline, reply)
+  }
+}
+
+fn launch_legacy(
+  state: State,
+  original: journal.Input,
+  deadline: Int,
+  reply: process.Subject(Result(Reply, Error)),
+) -> State {
   let reports = process.new_subject()
   let cancel = weft.cancel_signal()
   let config = state.config
@@ -805,6 +1137,7 @@ fn launch(
       Some(reply),
       None,
       Awaiting,
+      None,
     )
   State(
     ..state,
@@ -849,8 +1182,34 @@ fn accept_begin(
         active_reply(state, key),
         Ok(Observed(journal.Unknown(None), journal.CompilePending)),
       )
-      process.send(reply, BeginPreparation)
-      State(..state, active: dict.insert(state.active, key, active))
+      case state.custody {
+        LegacyCustody -> {
+          process.send(reply, BeginPreparation)
+          State(..state, active: dict.insert(state.active, key, active))
+        }
+        OriginalCustody -> {
+          case
+            preparation.park_observed(
+              state.config.resources,
+              state.config.native,
+              active.original,
+              state.probe,
+            )
+          {
+            Ok(owner) ->
+              State(
+                ..state,
+                active: dict.insert(state.active, key, active),
+                preparations: dict.insert(state.preparations, key, owner),
+                pending_begin: Some(#(key, claim, reply)),
+              )
+            Error(_) -> {
+              process.send(reply, DoNotBegin)
+              fence_service(state)
+            }
+          }
+        }
+      }
     }
     Serving, Preparing(_)
     | Serving, Observing(_)
@@ -915,14 +1274,19 @@ fn perform(
       Ok(Observed(status, completion))
     }
     journal.FreshClaim(claim) -> {
-      use Nil <- result.try(handoff(
+      use owner <- result.try(handoff(
         config,
         subject,
         original.key,
         claim,
         deadline,
       ))
-      let prepared = prepare(config, admitted, claim, deadline)
+      let prepared = case owner {
+        None -> prepare(config, admitted, claim, deadline)
+        Some(owner) ->
+          preparation.prepare(owner, admitted, claim, deadline)
+          |> result.map_error(preparation_error)
+      }
       case prepared {
         Ok(Nil) -> {
           process.send(subject, Ready(original.key))
@@ -941,11 +1305,13 @@ fn handoff(
   key: command.ServiceKey,
   claim: journal.Claim,
   deadline: Int,
-) -> Result(Nil, Error) {
+) -> Result(Option(preparation.Owner), Error) {
   use Nil <- result.try(remaining(config, deadline))
   let wait = deadline - native.configuration(config.native).now()
   case call.try_call(subject, waiting: wait, sending: Begin(key, claim, _)) {
-    Ok(BeginPreparation) -> remaining(config, deadline)
+    Ok(BeginPreparation) -> remaining(config, deadline) |> result.replace(None)
+    Ok(BeginOwnedPreparation(owner)) ->
+      remaining(config, deadline) |> result.replace(Some(owner))
     Ok(DoNotBegin) -> Error(Closing)
     Error(_) -> Error(Uncertain)
   }
@@ -957,8 +1323,7 @@ fn prepare(
   claim: journal.Claim,
   deadline: Int,
 ) -> Result(Nil, Error) {
-  let #(key, decoded, vetted) = input.admitted_compile(admitted)
-  let facts = input.compile_facts(decoded)
+  let #(key, _, _) = input.admitted_compile(admitted)
   let enrolled = journal.enrolled(config.resources)
   use root <- result.try(
     enrollment.compile_path(enrolled, key) |> result.replace_error(Invalid),
@@ -976,30 +1341,18 @@ fn prepare(
     ),
   )
   use Nil <- result.try(remaining(config, deadline))
-  use _ <- result.try(
-    compile.prepare_workspace(vetted, root, facts.dependencies)
-    |> result.map_error(Preparation),
-  )
-  use Nil <- result.try(remaining(config, deadline))
-  let code = enrollment.code_mode_facts(enrolled)
-  use Nil <- result.try(
-    build.prepare_seed(
-      build.PreparationConfig(code.seed_root, facts.dependencies),
+  use ready <- result.try(
+    preparation.write_layout(
+      config.resources,
+      config.native,
+      admitted,
       root,
-      facts.generated,
+      deadline,
     )
-    |> result.map_error(Preparation),
+    |> result.map_error(preparation_error),
   )
-  use Nil <- result.try(remaining(config, deadline))
-  use locations <- result.try(
-    resources.admit_compile_locations(enrolled, key, root)
-    |> result.replace_error(Invalid),
-  )
-  use _ <- result.try(
-    journal.commit_ready(claim, resources.CompileReady(locations))
-    |> result.map_error(Custody),
-  )
-  remaining(config, deadline)
+  preparation.publish_ready(config.native, claim, ready, deadline)
+  |> result.map_error(preparation_error)
 }
 
 fn before(
@@ -1139,7 +1492,7 @@ fn launch_control(state: State, task: Control, reply: ControlReply) -> State {
       // A capacity refusal must leave the original Claim and phase unchanged.
       let state = case task {
         Fence(original) -> stop_entry(state, original.key)
-        Read(_, _) | Route(_, _) | Barrier(_) -> state
+        Read(_, _) | Route(_, _) | Barrier(_) | ReleasePreparations(..) -> state
       }
       start_control(state, task, reply)
     }
@@ -1147,6 +1500,17 @@ fn launch_control(state: State, task: Control, reply: ControlReply) -> State {
 }
 
 fn start_control(state: State, task: Control, reply: ControlReply) -> State {
+  case state.custody {
+    LegacyCustody -> start_control_legacy(state, task, reply)
+    OriginalCustody -> start_control_original(state, task, reply)
+  }
+}
+
+fn start_control_legacy(
+  state: State,
+  task: Control,
+  reply: ControlReply,
+) -> State {
   let reports = process.new_subject()
   let cancel = weft.cancel_signal()
   let config = state.config
@@ -1158,7 +1522,7 @@ fn start_control(state: State, task: Control, reply: ControlReply) -> State {
     |> weft.cancel_with(cancel)
     |> weft.cancel_when_exits(process.self())
     |> weft.start_relayed(to: reports)
-  let metadata = Metadata(task, reply, cancel, reports, None, Awaiting)
+  let metadata = Metadata(task, reply, cancel, reports, None, Awaiting, None)
   State(
     ..state,
     serial: id + 1,
@@ -1209,6 +1573,19 @@ fn control(config: Config, task: Control) -> Result(ControlAnswer, Error) {
       )
       native.send_command_exchange(config.native, context, envelope, reply)
       Ok(Forwarded)
+    }
+    ReleasePreparations(proof, owners, deadline) -> {
+      use digests <- result.try(
+        list.try_map(owners, fn(owner) {
+          use released <- result.try(
+            preparation.release(owner, proof, deadline)
+            |> result.map_error(preparation_error),
+          )
+          preparation.validate_release(owner, released)
+          |> result.map_error(preparation_error)
+        }),
+      )
+      Ok(ResourcesReleased(digests))
     }
     Barrier(originals) -> {
       use _ <- result.try(
@@ -1323,7 +1700,11 @@ fn reported(
 ) -> State {
   case dict.get(state.active, key) {
     Error(Nil) -> state
-    Ok(active) -> record_report(state, key, active, report)
+    Ok(active) ->
+      case active.original_run {
+        None -> record_report(state, key, active, report)
+        Some(_) -> original_active_report(state, key, active, report)
+      }
   }
 }
 
@@ -1416,7 +1797,11 @@ fn control_reported(
 ) -> State {
   case dict.get(state.metadata, id) {
     Error(Nil) -> state
-    Ok(metadata) -> record_control(state, id, metadata, report)
+    Ok(metadata) ->
+      case metadata.original_run {
+        None -> record_control(state, id, metadata, report)
+        Some(_) -> original_control_report(state, id, metadata, report)
+      }
   }
 }
 
@@ -1533,6 +1918,22 @@ fn control_result(
         Serving | Fenced -> fence_service(state)
       }
     }
+    ReleasePreparations(..), outcome -> {
+      case state.original_close {
+        ReleasingOriginal(proof, reply, _) -> {
+          let result = case outcome {
+            Ok(ResourcesReleased(digests)) -> Ok(digests)
+            Ok(_) -> Error(Uncertain)
+            Error(error) -> Error(error)
+          }
+          State(
+            ..state,
+            original_close: ReleasingOriginal(proof, reply, Some(result)),
+          )
+        }
+        _ -> state
+      }
+    }
     Read(_, _), outcome | Route(_, _), outcome ->
       case control_definite(task, outcome) {
         True -> state
@@ -1575,8 +1976,10 @@ fn send_control(
   case reply, value {
     Whole(reply), Ok(Answer(value)) -> process.send(reply, Ok(value))
     Whole(reply), Error(error) -> process.send(reply, Error(error))
-    Whole(reply), Ok(Forwarded) | Whole(reply), Ok(BarrierDone) ->
-      process.send(reply, Error(Uncertain))
+    Whole(reply), Ok(Forwarded)
+    | Whole(reply), Ok(BarrierDone)
+    | Whole(reply), Ok(ResourcesReleased(_))
+    -> process.send(reply, Error(Uncertain))
     Native(reply), Error(Capacity) ->
       process.send(reply, Error(native.Capacity))
     Native(reply), Error(Invalid) -> process.send(reply, Error(native.Invalid))
@@ -1605,7 +2008,8 @@ fn begin_close(
         list.find(dict.values(state.metadata), fn(metadata) {
           case metadata.task {
             Barrier(_) -> True
-            Read(_, _) | Fence(_) | Route(_, _) -> False
+            Read(_, _) | Fence(_) | Route(_, _) | ReleasePreparations(..) ->
+              False
           }
         })
       case barrier {
@@ -1635,14 +2039,23 @@ fn continue_or_close(state: State) -> actor.Next(State, Message) {
   case state.gate, drained {
     Joining(reply, Some(outcome)), True -> {
       let lost = dict.size(state.active) > 0 || dict.size(state.metadata) > 0
-      process.send(reply, case lost {
-        True -> Error(Uncertain)
-        False -> outcome
-      })
-      actor.stop()
+      case state.custody {
+        LegacyCustody -> {
+          process.send(reply, case lost {
+            True -> Error(Uncertain)
+            False -> outcome
+          })
+          actor.stop()
+        }
+        OriginalCustody ->
+          finish_original_close(state, case lost {
+            True -> Error(Uncertain)
+            False -> outcome
+          })
+      }
     }
     Serving, _ | Fenced, _ | Joining(_, _), _ ->
-      actor.continue(state) |> actor.with_selector(state.selector)
+      continue_original_release(state)
   }
 }
 
@@ -1704,5 +2117,743 @@ fn admit_attempt(
         failure,
       )
     }
+  }
+}
+
+// Preserve weft's original caller link while making finite scope failures
+// observable. Actual parent/other-link loss still shuts this permanent actor.
+fn linked_exit(
+  state: State,
+  exit: process.ExitMessage,
+) -> actor.Next(State, Message) {
+  let original_scope =
+    list.any(dict.values(state.active), fn(active) {
+      case active.original_run {
+        Some(run) -> weft.scope_pid(run.detached) == exit.pid
+        None -> False
+      }
+    })
+    || list.any(dict.values(state.metadata), fn(metadata) {
+      case metadata.original_run {
+        Some(run) -> weft.scope_pid(run.detached) == exit.pid
+        None -> False
+      }
+    })
+  case exit.pid == state.parent, original_scope, exit.reason {
+    True, _, process.Normal -> actor.stop()
+    True, _, reason -> actor.stop_abnormal(string.inspect(reason))
+    False, True, process.Normal ->
+      actor.continue(state) |> actor.with_selector(state.selector)
+    False, True, process.Killed | False, True, process.Abnormal(_) ->
+      actor.continue(fence_service(state))
+      |> actor.with_selector(state.selector)
+    False, False, process.Normal ->
+      actor.continue(state) |> actor.with_selector(state.selector)
+    False, False, reason -> actor.stop_abnormal(string.inspect(reason))
+  }
+}
+
+// Original runs are held by this actor, so their outbox never belongs to a relay.
+// Work remains parked until the acquired run/monitor state has been installed.
+fn launch_original(
+  state: State,
+  original: journal.Input,
+  deadline: Int,
+  reply: process.Subject(Result(Reply, Error)),
+) -> State {
+  let config = state.config
+  let subject = state.subject
+  let cancel = weft.cancel_signal()
+  let wait = deadline - native.configuration(config.native).now()
+  let parent = process.self()
+
+  // The task creates its own receiving door; early offers queue until custody exists.
+  let detached =
+    weft.new_prepared([
+      weft.managed(fn(_ledger) {
+        let permit = process.new_subject()
+        process.send(subject, ActivePermit(original.key, permit))
+        use Nil <- result.try(
+          process.receive(permit, wait) |> result.replace_error(Closing),
+        )
+        perform(config, subject, original, deadline)
+      }),
+    ])
+    |> weft.deadline(wait)
+    |> weft.cancel_grace(1000)
+    |> weft.cancel_with(cancel)
+    |> weft.cancel_when_exits(parent)
+    |> weft.start_detached
+
+  // The original scope monitor precedes installed state and the worker offer.
+  // Retaining its link preserves weft's caller-death Gone/drain transition.
+  let watch = process.monitor(weft.scope_pid(detached))
+  let run = ActiveRun(detached, watch, AwaitingDown, Awaiting, AwaitingPermit)
+  let active =
+    Active(
+      original,
+      deadline,
+      Admitting,
+      cancel,
+      process.new_subject(),
+      Some(reply),
+      None,
+      Awaiting,
+      Some(run),
+    )
+  State(
+    ..state,
+    active: dict.insert(state.active, original.key, active),
+    selector: process.select_specific_monitor(state.selector, watch, ActiveDown(
+      original.key,
+      _,
+    )),
+  )
+}
+
+fn start_control_original(
+  state: State,
+  task: Control,
+  reply: ControlReply,
+) -> State {
+  let config = state.config
+  let cancel = weft.cancel_signal()
+  let parent = process.self()
+  let subject = state.subject
+  let id = state.serial
+  let started = native.configuration(config.native).now()
+  let wait = case task {
+    ReleasePreparations(_, _, deadline) -> int.min(30_000, deadline - started)
+    _ -> 30_000
+  }
+
+  // Metadata retains its own concrete result type and unchanged original allowance.
+  let detached =
+    weft.new_prepared([
+      weft.managed(fn(_ledger) {
+        let permit = process.new_subject()
+        process.send(subject, ControlPermit(id, permit))
+        use Nil <- result.try(
+          process.receive(permit, wait) |> result.replace_error(Uncertain),
+        )
+        control(config, task)
+      }),
+    ])
+    |> weft.deadline(wait)
+    |> weft.cancel_grace(1000)
+    |> weft.cancel_with(cancel)
+    |> weft.cancel_when_exits(parent)
+    |> weft.start_detached
+
+  // The original scope monitor precedes installed state and the worker offer.
+  // Retaining its link preserves weft's caller-death Gone/drain transition.
+  let watch = process.monitor(weft.scope_pid(detached))
+  let run =
+    ControlRun(
+      started + wait,
+      detached,
+      watch,
+      AwaitingDown,
+      Awaiting,
+      AwaitingPermit,
+    )
+  let metadata =
+    Metadata(
+      task,
+      reply,
+      cancel,
+      process.new_subject(),
+      None,
+      Awaiting,
+      Some(run),
+    )
+  State(
+    ..state,
+    serial: state.serial + 1,
+    metadata: dict.insert(state.metadata, state.serial, metadata),
+    selector: process.select_specific_monitor(
+      state.selector,
+      watch,
+      ControlDown(state.serial, _),
+    ),
+  )
+}
+
+// Worker-owned subjects are offered only to the exact already-installed entry.
+// Custody or deadline loss cancels the parked worker without granting effects.
+fn offer_active_permit(
+  state: State,
+  key: command.ServiceKey,
+  permit: process.Subject(Nil),
+) -> State {
+  case dict.get(state.active, key) {
+    Ok(Active(original_run: Some(run), ..) as active)
+      if run.permit == AwaitingPermit
+    -> {
+      case
+        state.gate,
+        active.deadline > native.configuration(state.config.native).now()
+      {
+        Serving, True ->
+          State(
+            ..state,
+            active: dict.insert(
+              state.active,
+              key,
+              Active(
+                ..active,
+                original_run: Some(
+                  ActiveRun(..run, permit: OfferedPermit(permit)),
+                ),
+              ),
+            ),
+          )
+        _, _ -> {
+          weft.cancel(active.cancel)
+          state
+        }
+      }
+    }
+    _ -> state
+  }
+}
+
+fn offer_control_permit(
+  state: State,
+  id: Int,
+  permit: process.Subject(Nil),
+) -> State {
+  case dict.get(state.metadata, id) {
+    Ok(Metadata(original_run: Some(run), ..) as metadata)
+      if run.permit == AwaitingPermit
+    -> {
+      case run.deadline > native.configuration(state.config.native).now() {
+        True ->
+          State(
+            ..state,
+            metadata: dict.insert(
+              state.metadata,
+              id,
+              Metadata(
+                ..metadata,
+                original_run: Some(
+                  ControlRun(..run, permit: OfferedPermit(permit)),
+                ),
+              ),
+            ),
+          )
+        False -> {
+          weft.cancel(metadata.cancel)
+          state
+        }
+      }
+    }
+    _ -> state
+  }
+}
+
+fn grant_runs(state: State) -> State {
+  let active =
+    dict.map_values(state.active, fn(_, active) {
+      case active.original_run {
+        Some(ActiveRun(permit: OfferedPermit(permit), ..) as run) -> {
+          case preparation.observes(state.probe, preparation.RunPermit) {
+            True ->
+              preparation.notify(
+                state.probe,
+                preparation.BeforeRunPermit(
+                  preparation.ActiveRun,
+                  weft.scope_pid(run.detached),
+                  permit,
+                ),
+              )
+            False -> process.send(permit, Nil)
+          }
+          Active(
+            ..active,
+            original_run: Some(ActiveRun(..run, permit: GrantedPermit)),
+          )
+        }
+        _ -> active
+      }
+    })
+  let metadata =
+    dict.map_values(state.metadata, fn(_, metadata) {
+      case metadata.original_run {
+        Some(ControlRun(permit: OfferedPermit(permit), ..) as run) -> {
+          case preparation.observes(state.probe, preparation.RunPermit) {
+            True ->
+              preparation.notify(
+                state.probe,
+                preparation.BeforeRunPermit(
+                  preparation.ControlRun,
+                  weft.scope_pid(run.detached),
+                  permit,
+                ),
+              )
+            False -> process.send(permit, Nil)
+          }
+          Metadata(
+            ..metadata,
+            original_run: Some(ControlRun(..run, permit: GrantedPermit)),
+          )
+        }
+        _ -> metadata
+      }
+    })
+  State(..state, active:, metadata:)
+}
+
+// The Begin response follows installed permanent ownership and the original
+// Claim. A held test permit rechecks admission when finally received.
+fn grant_begin(state: State) -> State {
+  case state.pending_begin {
+    None -> state
+    Some(#(key, claim, reply)) -> {
+      let state = State(..state, pending_begin: None)
+      case
+        preparation.observes(state.probe, preparation.BeginPermit),
+        dict.get(state.preparations, key)
+      {
+        True, Ok(owner) -> {
+          let permit = process.new_subject()
+          preparation.notify(
+            state.probe,
+            preparation.BeforeBeginPermit(preparation.pid(owner), permit),
+          )
+          State(
+            ..state,
+            selector: process.select_map(state.selector, permit, fn(_) {
+              ReleaseBegin(key, claim, reply, permit)
+            }),
+          )
+        }
+        _, _ -> grant_begin_actual(state, key, claim, reply)
+      }
+    }
+  }
+}
+
+fn grant_begin_actual(
+  state: State,
+  key: command.ServiceKey,
+  claim: journal.Claim,
+  reply: process.Subject(StartDecision),
+) -> State {
+  let granted = {
+    use active <- result.try(dict.get(state.active, key))
+    use owner <- result.try(dict.get(state.preparations, key))
+    case state.gate, active.phase {
+      Serving, Preparing(saved) ->
+        case
+          journal.original(saved) == journal.original(claim)
+          && active.deadline > native.configuration(state.config.native).now()
+        {
+          True -> Ok(owner)
+          False -> Error(Nil)
+        }
+      _, _ -> Error(Nil)
+    }
+  }
+  process.send(reply, case granted {
+    Ok(owner) -> BeginOwnedPreparation(owner)
+    Error(Nil) -> DoNotBegin
+  })
+  state
+}
+
+fn pull_original_runs(state: State) -> State {
+  let state =
+    list.fold(dict.keys(state.active), state, fn(state, key) {
+      case dict.get(state.active, key) {
+        Ok(Active(original_run: Some(run), ..)) if run.delivery == Awaiting ->
+          reported(state, key, weft.pull(run.detached, within: 0))
+        _ -> state
+      }
+    })
+  let state =
+    list.fold(dict.keys(state.metadata), state, fn(state, id) {
+      case dict.get(state.metadata, id) {
+        Ok(Metadata(original_run: Some(run), ..)) if run.delivery == Awaiting ->
+          control_reported(state, id, weft.pull(run.detached, within: 0))
+        _ -> state
+      }
+    })
+  expire_original_close(state)
+}
+
+fn original_active_report(
+  state: State,
+  key: command.ServiceKey,
+  active: Active,
+  report: weft.Pulled(Reply, Error),
+) -> State {
+  case active.original_run {
+    None -> state
+    Some(run) -> {
+      case report {
+        weft.PulledOutcome(_) -> {
+          let state = record_report(state, key, active, report)
+          finish_active_original(state, key)
+        }
+        weft.AllDelivered -> {
+          let active =
+            Active(
+              ..active,
+              original_run: Some(ActiveRun(..run, delivery: Delivered)),
+            )
+          finish_active_original(
+            State(..state, active: dict.insert(state.active, key, active)),
+            key,
+          )
+        }
+        weft.RunLost(_) ->
+          record_report(
+            state,
+            key,
+            Active(
+              ..active,
+              original_run: Some(ActiveRun(..run, delivery: Lost)),
+            ),
+            report,
+          )
+        weft.NotYet -> state
+      }
+    }
+  }
+}
+
+fn active_down(
+  state: State,
+  key: command.ServiceKey,
+  down: process.Down,
+) -> State {
+  case dict.get(state.active, key) {
+    Ok(Active(original_run: Some(run), ..) as active) -> {
+      let proof = original_down(down)
+      let active =
+        Active(..active, original_run: Some(ActiveRun(..run, down: proof)))
+      let state = State(..state, active: dict.insert(state.active, key, active))
+      case proof {
+        NormalDown -> finish_active_original(state, key)
+        AwaitingDown | LostDown ->
+          record_report(state, key, active, weft.RunLost(process.Killed))
+      }
+    }
+    _ -> state
+  }
+}
+
+fn finish_active_original(state: State, key: command.ServiceKey) -> State {
+  case dict.get(state.active, key) {
+    Ok(Active(result: Some(_), original_run: Some(run), ..) as active)
+      if run.delivery == Delivered && run.down == NormalDown
+    -> {
+      process.demonitor_process(run.watch)
+      let state =
+        joined_account(
+          state,
+          weft.scope_pid(run.detached),
+          json.to_string(command.encode_service(key)),
+        )
+      let state =
+        State(
+          ..state,
+          selector: process.deselect_specific_monitor(state.selector, run.watch),
+        )
+      finish_active(state, key, active)
+    }
+    _ -> state
+  }
+}
+
+fn original_control_report(
+  state: State,
+  id: Int,
+  metadata: Metadata,
+  report: weft.Pulled(ControlAnswer, Error),
+) -> State {
+  case metadata.original_run {
+    None -> state
+    Some(run) ->
+      case report {
+        weft.PulledOutcome(_) -> {
+          let state = record_control(state, id, metadata, report)
+          finish_control_original(state, id)
+        }
+        weft.AllDelivered -> {
+          let metadata =
+            Metadata(
+              ..metadata,
+              original_run: Some(ControlRun(..run, delivery: Delivered)),
+            )
+          finish_control_original(
+            State(..state, metadata: dict.insert(state.metadata, id, metadata)),
+            id,
+          )
+        }
+        weft.RunLost(_) ->
+          record_control(
+            state,
+            id,
+            Metadata(
+              ..metadata,
+              original_run: Some(ControlRun(..run, delivery: Lost)),
+            ),
+            report,
+          )
+        weft.NotYet -> state
+      }
+  }
+}
+
+fn control_down(state: State, id: Int, down: process.Down) -> State {
+  case dict.get(state.metadata, id) {
+    Ok(Metadata(original_run: Some(run), ..) as metadata) -> {
+      let proof = original_down(down)
+      let metadata =
+        Metadata(..metadata, original_run: Some(ControlRun(..run, down: proof)))
+      let state =
+        State(..state, metadata: dict.insert(state.metadata, id, metadata))
+      case proof {
+        NormalDown -> finish_control_original(state, id)
+        AwaitingDown | LostDown ->
+          record_control(state, id, metadata, weft.RunLost(process.Killed))
+      }
+    }
+    _ -> state
+  }
+}
+
+fn finish_control_original(state: State, id: Int) -> State {
+  case dict.get(state.metadata, id) {
+    Ok(Metadata(result: Some(_), original_run: Some(run), ..) as metadata)
+      if run.delivery == Delivered && run.down == NormalDown
+    -> {
+      process.demonitor_process(run.watch)
+      let state =
+        joined_account(
+          state,
+          weft.scope_pid(run.detached),
+          "metadata/" <> int.to_string(id),
+        )
+      let state =
+        State(
+          ..state,
+          selector: process.deselect_specific_monitor(state.selector, run.watch),
+        )
+      record_control(state, id, metadata, weft.AllDelivered)
+    }
+    _ -> state
+  }
+}
+
+fn original_down(down: process.Down) -> OriginalDown {
+  case down {
+    process.ProcessDown(reason: process.Normal, ..) -> NormalDown
+    process.ProcessDown(..) | process.PortDown(..) -> LostDown
+  }
+}
+
+fn joined_account(state: State, pid: process.Pid, label: String) -> State {
+  case
+    mp.encode(
+      mp.ArrayValue([
+        mp.StringValue("loom.compile.original-run/1"),
+        mp.BinaryValue(state.account),
+        mp.StringValue(string.inspect(pid)),
+        mp.StringValue(label),
+        mp.StringValue("outcome-delivered-original-normal"),
+      ]),
+    )
+  {
+    Ok(bytes) -> State(..state, account: crypto.hash(crypto.Sha256, bytes))
+    Error(_) -> State(..fence_service(state), original_close: LostOriginal)
+  }
+}
+
+fn preparation_error(error: preparation.Error) -> Error {
+  case error {
+    preparation.Invalid -> Invalid
+    preparation.Expired -> Expired
+    preparation.Uncertain -> Uncertain
+    preparation.Preparation(error) -> Preparation(error)
+    preparation.Custody(error) -> Custody(error)
+  }
+}
+
+fn begin_original_close(
+  state: State,
+  reply: process.Subject(Result(CompileCloseProof, Error)),
+) -> State {
+  case state.custody, state.original_close {
+    OriginalCustody, NotClosing -> {
+      let deadline = native.configuration(state.config.native).now() + 35_000
+      begin_close(
+        State(..state, original_close: JoiningOriginal(deadline, reply)),
+        process.new_subject(),
+      )
+    }
+    _, _ -> {
+      process.send(reply, Error(Closing))
+      state
+    }
+  }
+}
+
+fn finish_original_close(
+  state: State,
+  outcome: Result(Nil, Error),
+) -> actor.Next(State, Message) {
+  case state.original_close {
+    JoiningOriginal(deadline, reply) -> {
+      let proof = {
+        use Nil <- result.try(outcome)
+        use digest <- result.try(
+          close_digest(state, "loom.compile.original-close/1", []),
+        )
+        Ok(CompileCloseProof(
+          state.subject,
+          process.self(),
+          native.pid(state.config.native),
+          journal.pid(state.config.resources),
+          state.config.scope,
+          deadline,
+          digest,
+        ))
+      }
+      process.send(reply, proof)
+      let closed = case proof {
+        Ok(proof) -> AwaitingOriginalResources(proof)
+        Error(_) -> LostOriginal
+      }
+      actor.continue(State(..state, gate: Fenced, original_close: closed))
+      |> actor.with_selector(state.selector)
+    }
+    _ -> actor.continue(state) |> actor.with_selector(state.selector)
+  }
+}
+
+fn begin_release_preparations(
+  state: State,
+  proof: native.ScopeCloseProof,
+  reply: process.Subject(Result(CompileResourcesProof, Error)),
+) -> State {
+  case state.original_close {
+    AwaitingOriginalResources(closed) -> {
+      let allowed = {
+        use _ <- result.try(
+          native.validate_scope_close(state.config.native, proof)
+          |> result.replace_error(Invalid),
+        )
+        case native.configuration(state.config.native).now() < closed.deadline {
+          True -> Ok(Nil)
+          False -> Error(Expired)
+        }
+      }
+      case allowed {
+        Ok(Nil) ->
+          start_control(
+            State(
+              ..state,
+              original_close: ReleasingOriginal(closed, reply, None),
+            ),
+            ReleasePreparations(
+              proof,
+              dict.values(state.preparations),
+              closed.deadline,
+            ),
+            NoReply,
+          )
+        Error(error) -> {
+          process.send(reply, Error(error))
+          state
+        }
+      }
+    }
+    _ -> {
+      process.send(reply, Error(Closing))
+      state
+    }
+  }
+}
+
+fn continue_original_release(state: State) -> actor.Next(State, Message) {
+  let size = dict.size(state.metadata)
+  case state.original_close {
+    ReleasingOriginal(closed, reply, Some(result)) if size == 0 -> {
+      let resources = {
+        use digests <- result.try(result)
+        use digest <- result.try(close_digest(
+          state,
+          "loom.compile.original-resources/1",
+          digests,
+        ))
+        Ok(CompileResourcesProof(closed, digest))
+      }
+      process.send(reply, resources)
+      case resources {
+        Ok(_) -> actor.stop()
+        Error(_) ->
+          actor.continue(State(..state, original_close: LostOriginal))
+          |> actor.with_selector(state.selector)
+      }
+    }
+    _ -> actor.continue(state) |> actor.with_selector(state.selector)
+  }
+}
+
+fn close_digest(
+  state: State,
+  domain: String,
+  digests: List(generation.Digest),
+) -> Result(generation.Digest, Error) {
+  let config = native.configuration(state.config.native)
+  let #(session, workspace, executor, session_epoch, workspace_epoch) =
+    identity.scope_fields(config.scope)
+  let values =
+    list.map(digests, fn(digest) {
+      bit_array.base16_encode(generation.digest_bytes(digest))
+    })
+    |> list.sort(string.compare)
+    |> list.map(mp.StringValue)
+  use bytes <- result.try(
+    mp.encode(
+      mp.ArrayValue([
+        mp.StringValue(domain),
+        mp.StringValue(session),
+        mp.StringValue(workspace),
+        mp.StringValue(executor),
+        mp.IntValue(session_epoch),
+        mp.IntValue(workspace_epoch),
+        mp.IntValue(config.generation),
+        mp.StringValue(string.inspect(process.self())),
+        mp.StringValue(string.inspect(native.pid(state.config.native))),
+        mp.StringValue(string.inspect(journal.pid(state.config.resources))),
+        mp.BinaryValue(state.account),
+        mp.ArrayValue(values),
+      ]),
+    )
+    |> result.replace_error(Uncertain),
+  )
+  crypto.hash(crypto.Sha256, bytes)
+  |> generation.digest
+  |> result.replace_error(Uncertain)
+}
+
+fn expire_original_close(state: State) -> State {
+  let now = native.configuration(state.config.native).now()
+  case state.original_close {
+    JoiningOriginal(deadline, reply) if now >= deadline -> {
+      process.send(reply, Error(Uncertain))
+      cancel_all(state)
+      State(..state, gate: Fenced, original_close: LostOriginal)
+    }
+    ReleasingOriginal(closed, reply, _) if now >= closed.deadline -> {
+      process.send(reply, Error(Uncertain))
+      cancel_all(state)
+      State(..state, gate: Fenced, original_close: LostOriginal)
+    }
+    _ -> state
   }
 }
