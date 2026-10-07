@@ -441,13 +441,15 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // dev server has to outlive the default hour. `secrets` is
   // `client/secrets`'s: how the daemon obtains a named credential from
   // the host at boot, for the names `api_key_env` and `[tools] env`
-  // already mention.
+  // already mention. `retry` is `client/retryconf`'s: the provider retry
+  // ladder's attempts and delays, which `serve.load_config` reads beside the
+  // other operator tables and which is refused here if this list omits it.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
-      "profiles",
+      "profiles", "retry",
     ],
     "the top level",
   ))
