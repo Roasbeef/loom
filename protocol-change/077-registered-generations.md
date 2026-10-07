@@ -829,3 +829,95 @@ full-host ownership through the existing weft primitives. Preserve existing test
 dependencies, native-only host callers and ordinary LocalPhysical behavior. Add no FFI.
 Component gates, full repository gate, hosted CI and shipped separate-host acceptance
 remain distinct evidence; approved APIs do not establish any implementation outcome.
+
+
+## Addendum: native identity beneath a workspace request
+
+Approved October 7, 2026. The retained semantic Invocation and its cleared
+native command have different immutable payloads. Reusing their child address
+would conflict in owner custody. A derived identity preserves their original
+relationship without allocating another system ordinal or adding an effect
+before Broker clearance.
+
+Git/Initialize native execution beneath an admitted semantic Workspace invocation
+MUST use an explicit derived workspace-command identity. The identity contains the
+complete original semantic ChildOrigin and a closed command phase. Its parent MUST
+be a direct ToolChild with Workspace(n), or a direct actual SystemChild allocated
+through the original system-intent transaction. Derived commands MUST NOT parent
+other derived commands. Compile, Launch, legacy Capability and unrelated roles MUST
+NOT construct this identity. An admitted capability SemanticWorkspace child uses its
+existing exact-name/exact-ordinal NativeCommand counterpart instead of this wrapper.
+
+The constructor creates identity data only. It MUST NOT allocate an ordinal, clear a
+command, grant send permission or resolve a latest generation. Its address MUST be
+disjoint from the original semantic child's address and encode the original parent
+address plus the closed phase. Its canonical encoding MUST preserve the complete
+parent, including any real ToolKey's argument digest and result-entry identity, or the
+actual system service and lifetime ordinal. A distinct public fields variant MUST
+expose this derivation; it MUST NOT project as direct ToolFields or SystemFields.
+
+The derived child MUST share the original semantic parent's quota group. Its native
+request, terminal allowance, canonical origin and generation link are charged against
+the existing companion quotas and the same 64-children bound. A system-derived command
+MUST NOT mint another system ordinal or reset the existing service counter. Pending
+original system intents continue to count against that same bound.
+
+Before clearance, OwnerCommands MUST resolve the original semantic parent from its
+retained request UUID, check canonical Invocation equality, and check the exact
+original scope, operation, step, generation association and enrollment digest. The
+original system service or ToolKey provenance MUST come from retained typed data,
+never from command text, source-index defaults or a parsed address. Only a live
+original owner admission can proceed.
+
+Before any native send, the owner MUST atomically compare the original retained
+semantic parent UUID/input digest and original generation/enrollment association,
+refuse a cancelled/frozen parent, reserve the native request/result capacity, and
+COMMIT/read back the whole post-clearance native envelope plus its canonical origin
+and generation link. The envelope MUST preserve owner/full binding, actual physical
+operation/step, parent UUID/input digest, closed phase, and exact complete Prepared.
+The owner MUST compare the actual Prepared with the actual Broker-cleared Dispatch
+and the enrollment-derived fixed command template. The executor independently checks
+its actual registration, scope, generation, policy ceiling and admission deadline.
+
+Retry MUST resolve the original identity and bytes. Retained observation, unknown
+COMMIT, a lost reply or history read MUST NOT re-clear, refresh deadlines, mint a
+replacement UUID or grant another Submit. Cancellation MUST retain the exact derived
+identity, including before a native UUID exists, and fence later admission. Matching
+late native evidence remains retainable under the original UUID and Prepared digest;
+it does not authorize replay or establish physical retirement. Complete native
+receipt COMMIT/readback precedes DurableReceipt. The outer semantic completion and
+native receipt remain separate original evidence.
+
+The closed command phases are GitBranch, GitRepositoryProbe, GitRevision,
+GitStatus, GitWorkingTreeDiff, GitStagedDiff, GitSinceRevisionDiff and GitLog.
+The owner selects the phase from the original retained Git query and its fixed
+recipe; a peer cannot choose arbitrary argv or an integer subphase. Revision
+and log-limit inputs remain in the original Invocation and are compared by
+canonical bytes and digest. CurrentRevision may use the separate fixed
+repository-probe and HEAD commands needed by the existing starting-baseline
+behavior. A workspace initialization phase grants no command authority until
+its concrete bounded recipe is specified by trusted full-host assembly. The
+semantic Initialize label does not imply `git init` or require a native effect.
+
+Add a checked pure constructor and a distinct fields variant for the derived
+identity. Preserve every existing direct child encoding and address. The total
+decoder MUST reject nested derivation before recursive construction and retain
+the existing 8192-byte complete-identity ceiling. LSP/system-intent constructors
+MUST continue to accept only their declared direct families. In particular,
+`child_tool` returning an error is insufficient to classify a system origin;
+callers MUST match the explicit direct SystemFields variant.
+
+The owner resolves the semantic parent by its retained request UUID and checks
+full canonical Invocation equality. No semantic wire change is needed to put
+an omitted ChildOrigin into the executor callback. Existing canonical-origin
+and payload columns can retain the new identity. Fresh native admission MUST
+use a specialized same-transaction retained-parent check, not the generic
+same-session check. Receipt readback keeps that immutable relation after
+cancellation while granting no new execution.
+
+This addendum covers commands beneath an already admitted semantic request.
+A standalone NativeSystem intent has no such parent. Its separate original
+identity must be reserved before Broker clearance, with exact post-clearance
+payload admission afterward; that approved sequencing change is recorded
+separately and must preserve lifetime counters, reserved capacity and original
+COMMIT/readback semantics.
