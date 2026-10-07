@@ -25,17 +25,30 @@
 //// recover original evidence;
 //// `cancel_service` fences those links in one transaction. `collect` defers
 //// physical-service payload deletion until independent recovery transfer exists.
+//// `with_registered` validates closed placement before `boot_generation` commits
+//// the pin and full association on this actor's original connection.
+//// `registered_readback` separates original readiness from `HistoryOnly`;
+//// `reserve_tool`, `reserve_workspace`, `reserve_service`, `reserve_offer` and
+//// `reserve_command` use its private connection-bound live generation.
+//// `retain_intent` and `admit_system_child` preserve durable system ordinals.
+//// `reconciliation_intent` prevents fresh allocation by a fenced original owner.
+//// `receipt_readback` verifies exact original receipt and generation before ACK.
 
+import broker/enrollment
 import broker/internal/call
 import client/remote/outcome
 import codemode/service_input
 import core/command
+import core/generation
 import core/ids
 import core/msgpack
 import core/remote_tool
 import core/report_value
+import core/workspace
 import executor/remote/compile_completion
 import executor/remote/compile_wire
+import executor/remote/identity
+import executor/remote/registration
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process
@@ -43,7 +56,9 @@ import gleam/list
 import gleam/option
 import gleam/otp/supervision
 import gleam/result
+import gleam/string
 import runtime/effects
+import simplifile
 import storage/owner_custody as custody
 import storage/storage
 import weft
@@ -65,6 +80,8 @@ pub opaque type Config {
     task_ms: Int,
     /// Trusted host SHA-256 seam, absent for ordinary-only custody.
     sha256: option.Option(fn(BitArray) -> BitArray),
+    /// Closed placement contains metadata only, never a live connection token.
+    placement: Placement,
     /// Remote runner receives its pinned custodian and original runtime identity.
     runner: fn(Handle, remote_tool.ToolKey, effects.ToolRun) ->
       effects.ToolOutcome,
@@ -77,6 +94,10 @@ pub opaque type Handle {
   Handle(
     address: registry.Address(Message),
     destination: Destination,
+    /// Registered boot retains this original companion path before opening a writer.
+    path: String,
+    /// An address cannot be rebound to a different registered generation.
+    placement: Placement,
     task_ms: Int,
     /// Pre-send quota bound, rechecked against the actor store configuration.
     limits: custody.Limits,
@@ -89,8 +110,104 @@ type Destination {
   Pinned(process.Subject(Message))
 }
 
+/// Original ready custody, with no claim about executor activation acknowledgement.
+/// Only the live original actor can construct this pinned assembly projection.
+pub opaque type RegisteredOwner {
+  RegisteredOwner(
+    /// Original incarnation-pinned custodian, never the reclaimable address.
+    owner: Handle,
+    /// Actual committed and verified enrollment metadata.
+    pin: custody.EnrollmentPin,
+    /// Exact immutable association retained by the same connection.
+    association: generation.GenerationAssociation,
+  )
+}
+
+/// Ready custody and historical metadata cannot become the same authority.
+pub type RegisteredBoot {
+  /// Pin and association have committed; executor Activate is still a caller step.
+  ReadyForActivation(owner: RegisteredOwner)
+
+  /// Reopen grants only original history, never a replacement owner-use bundle.
+  HistoryOnly(
+    /// Exact original verified pin.
+    pin: custody.EnrollmentPin,
+    /// Complete original generation association.
+    association: generation.GenerationAssociation,
+  )
+}
+
+type ExistingCompanion {
+  NewCompanion
+  ExistingCompanion
+}
+
+type Placement {
+  OrdinaryPlacement
+  RegisteredPlacement(
+    pin: custody.EnrollmentPin,
+    association: generation.GenerationAssociation,
+    first_generation: Int,
+  )
+}
+
+type GenerationCustody {
+  OrdinaryCustody
+  OriginalGeneration(custody.LiveGeneration)
+  HistoricalGeneration(generation.GenerationAssociation)
+}
+
 /// Closed actor vocabulary; no caller can submit a query closure.
 pub opaque type Message {
+  /// Readiness retains only this actor's actual original connection disposition.
+  ReadRegistered(process.Subject(Result(RegisteredBoot, custody.Error)))
+
+  /// Exact ToolKey history cannot select the current generation.
+  ReadToolGeneration(
+    remote_tool.ToolKey,
+    process.Subject(Result(generation.GenerationAssociation, custody.Error)),
+  )
+
+  /// Complete native/workspace origin resolves its independently retained link.
+  ReadChildGeneration(
+    remote_tool.ChildOrigin,
+    process.Subject(Result(generation.GenerationAssociation, custody.Error)),
+  )
+
+  /// Complete service identity is validated before projecting its original link.
+  ReadServiceGeneration(
+    command.ServiceKey,
+    process.Subject(Result(generation.GenerationAssociation, custody.Error)),
+  )
+
+  /// Receipt and original generation are read by the same serialized writer.
+  ReadReceiptGeneration(
+    remote_tool.ChildOrigin,
+    ids.EntryId,
+    process.Subject(
+      Result(#(BitArray, generation.GenerationAssociation), custody.Error),
+    ),
+  )
+
+  /// Fixed trusted work intent retains its original UUID and eventual child slot.
+  RetainSystemIntent(
+    String,
+    custody.SystemService,
+    ids.OpId,
+    String,
+    ids.EntryId,
+    BitArray,
+    process.Subject(Result(custody.IntentReadback, custody.Error)),
+  )
+
+  /// Only the existing pure closed-family encoder enters atomic system allocation.
+  AdmitSystemChild(
+    custody.IntentReadback,
+    fn(remote_tool.ChildOrigin, ids.EntryId) ->
+      Result(custody.SystemReservationPayload, custody.Error),
+    process.Subject(Result(custody.SystemReservationReadback, custody.Error)),
+  )
+
   Execute(
     remote_tool.ToolKey,
     custody.FinalProfile,
@@ -126,6 +243,7 @@ pub opaque type Message {
     remote_tool.ChildOrigin,
     ids.EntryId,
     custody.WorkspaceCompletion,
+    BitArray,
     process.Subject(Result(Nil, custody.Error)),
   )
 
@@ -256,6 +374,7 @@ type State {
   State(
     config: Config,
     store: custody.Store,
+    generation: GenerationCustody,
     live: Dict(String, Held),
     admission: AdmissionState,
     owner: Handle,
@@ -288,6 +407,7 @@ pub fn config(
         active:,
         task_ms:,
         sha256: option.None,
+        placement: OrdinaryPlacement,
         runner:,
       ))
     False -> Error(custody.Invalid("invalid owner task capacity or lifetime"))
@@ -305,6 +425,8 @@ pub fn new(names: registry.Registry, config: Config) -> Handle {
   Handle(
     registry.new_address(names),
     Reclaimable,
+    config.path,
+    config.placement,
     config.task_ms,
     config.limits,
   )
@@ -328,6 +450,141 @@ pub fn config_with_reports(
 ) -> Result(Config, custody.Error) {
   config(path, session, limits, active, task_ms, runner)
   |> result.map(fn(config) { Config(..config, sha256: option.Some(sha256)) })
+}
+
+/// Checks registered metadata without opening storage or granting live admission.
+/// The trusted caller has already compared Describe with its immutable boot table.
+/// This boundary independently checks full enrollment, registration and association.
+///
+/// ## Examples
+///
+/// `with_registered(config, pin, association, 1)` still starts no owner or executor.
+pub fn with_registered(
+  config: Config,
+  pin: custody.EnrollmentPin,
+  association: generation.GenerationAssociation,
+  configured_first: Int,
+) -> Result(Config, custody.Error) {
+  let placement = RegisteredPlacement(pin, association, configured_first)
+  use Nil <- result.try(validate_registered(config, placement))
+  Ok(Config(..config, placement: placement))
+}
+
+/// Reads actual readiness after pin and association COMMIT/readback.
+/// ReadyForActivation does not attest that the executor has activated this bundle.
+///
+/// ## Examples
+///
+/// Reopening the same generation returns `HistoryOnly`, never another live token.
+pub fn registered(owner: Handle) -> Result(RegisteredBoot, custody.Error) {
+  ask(owner, ReadRegistered)
+}
+
+/// Projects the original pinned owner and exact committed immutable metadata.
+/// HistoryOnly has no value accepted by this function.
+///
+/// ## Examples
+///
+/// `registered_fields(ready)` supplies the original owner to registered dispatch.
+pub fn registered_fields(
+  ready: RegisteredOwner,
+) -> #(Handle, custody.EnrollmentPin, generation.GenerationAssociation) {
+  #(ready.owner, ready.pin, ready.association)
+}
+
+/// Resolves complete ToolKey history through its original generation association.
+///
+/// ## Examples
+///
+/// `tool_generation(owner, key)` never infers generation from the active owner.
+pub fn tool_generation(
+  owner: Handle,
+  key: remote_tool.ToolKey,
+) -> Result(generation.GenerationAssociation, custody.Error) {
+  ask(owner, fn(reply) { ReadToolGeneration(key, reply) })
+}
+
+/// Resolves complete child provenance, including tool-free system origins.
+///
+/// ## Examples
+///
+/// `child_generation(owner, origin)` refuses an absent original link.
+pub fn child_generation(
+  owner: Handle,
+  origin: remote_tool.ChildOrigin,
+) -> Result(generation.GenerationAssociation, custody.Error) {
+  ask(owner, fn(reply) { ReadChildGeneration(origin, reply) })
+}
+
+/// Validates complete retained service identity before reading its generation.
+///
+/// ## Examples
+///
+/// `service_generation(owner, key)` preserves Original versus rewritten Compile.
+pub fn service_generation(
+  owner: Handle,
+  key: command.ServiceKey,
+) -> Result(generation.GenerationAssociation, custody.Error) {
+  ask(owner, fn(reply) { ReadServiceGeneration(key, reply) })
+}
+
+/// Reads the exact committed child receipt and its independent generation link.
+/// The caller compares full family result bytes before constructing network ACK.
+///
+/// ## Examples
+///
+/// `receipt_generation(owner, origin, id)` refuses a changed original UUID.
+pub fn receipt_generation(
+  owner: Handle,
+  origin: remote_tool.ChildOrigin,
+  request_id: ids.EntryId,
+) -> Result(#(BitArray, generation.GenerationAssociation), custody.Error) {
+  ask(owner, fn(reply) { ReadReceiptGeneration(origin, request_id, reply) })
+}
+
+/// Retains one trusted durable work address before any system child allocation.
+/// History-only owners can inspect an exact intent but cannot insert a new one.
+///
+/// ## Examples
+///
+/// `retain_system_intent(owner, address, service, op, step, id, bytes)` mints no UUID.
+pub fn retain_system_intent(
+  owner: Handle,
+  work_address: String,
+  service: custody.SystemService,
+  operation: ids.OpId,
+  step: String,
+  request_id: ids.EntryId,
+  bytes: BitArray,
+) -> Result(custody.IntentReadback, custody.Error) {
+  use Nil <- result.try(input_bound(bytes, 131_072))
+  ask(owner, fn(reply) {
+    RetainSystemIntent(
+      work_address,
+      service,
+      operation,
+      step,
+      request_id,
+      bytes,
+      reply,
+    )
+  })
+}
+
+/// Allocates through the existing serialized child/link/counter transaction.
+/// The trusted encoder constructs closed native/workspace payloads and performs no I/O.
+/// History retries return Retained; an unallocated historical intent is Frozen.
+///
+/// ## Examples
+///
+/// `admit_system_child(owner, retained, build)` never resets the lifetime counter.
+pub fn admit_system_child(
+  owner: Handle,
+  intent: custody.IntentReadback,
+  build: fn(remote_tool.ChildOrigin, ids.EntryId) ->
+    Result(custody.SystemReservationPayload, custody.Error),
+) -> Result(custody.SystemReservationReadback, custody.Error) {
+  ask(owner, fn(reply) { AdmitSystemChild(intent, build, reply) })
 }
 
 /// Starts the actor; production embeds supervised instead.
@@ -360,6 +617,20 @@ pub fn supervised(
 
 fn builder(owner: Handle, config: Config) {
   actor.new_with_initialiser(5000, fn(subject) {
+    let original_path = case owner.placement {
+      OrdinaryPlacement -> True
+      RegisteredPlacement(_, _, _) -> owner.path == config.path
+    }
+    use Nil <- result.try(
+      case owner.placement == config.placement && original_path {
+        True -> Ok(Nil)
+        False -> Error("owner placement or companion path changed before boot")
+      },
+    )
+    use existed <- result.try(
+      simplifile.exists(config.path, False)
+      |> result.replace_error("owner custody placement unavailable"),
+    )
     use store <- result.try(
       case config.sha256 {
         option.None -> custody.open(config.path, config.session, config.limits)
@@ -372,6 +643,16 @@ fn builder(owner: Handle, config: Config) {
           )
       }
       |> result.replace_error("owner custody open failed"),
+    )
+    use generation <- result.try(
+      boot_generation(config, store, case existed {
+        True -> ExistingCompanion
+        False -> NewCompanion
+      })
+      |> result.map_error(fn(_) {
+        let _closed = custody.close(store)
+        "registered owner pin or generation boot failed"
+      }),
     )
     use Nil <- result.try(
       custody.validate_finals(store, fn(key, profile, reference, payload) {
@@ -411,15 +692,18 @@ fn builder(owner: Handle, config: Config) {
         "owner custody discharge probe failed"
       }),
     )
-    let admission = case outstanding {
-      custody.Unreleased -> RecoveryOnly
-      custody.Released -> Admitting
+    let admission = case outstanding, generation {
+      custody.Released, OrdinaryCustody
+      | custody.Released, OriginalGeneration(_)
+      -> Admitting
+      custody.Unreleased, _ | _, HistoricalGeneration(_) -> RecoveryOnly
     }
     let pinned = Handle(..owner, destination: Pinned(subject))
     Ok(
       actor.initialised(State(
         config:,
         store:,
+        generation:,
         live: dict.new(),
         admission:,
         owner: pinned,
@@ -555,8 +839,9 @@ pub fn receive_workspace_child(
   id: ids.EntryId,
   receipt: BitArray,
 ) -> Result(Nil, custody.Error) {
-  use receipt <- result.try(custody.workspace_completion(owner.limits, receipt))
-  ask(owner, fn(reply) { ReceiveWorkspace(origin, id, receipt, reply) })
+  let bytes = receipt
+  use receipt <- result.try(custody.workspace_completion(owner.limits, bytes))
+  ask(owner, fn(reply) { ReceiveWorkspace(origin, id, receipt, bytes, reply) })
 }
 
 /// Commits complete original Compile/Launch input before preparation or send.
@@ -912,6 +1197,49 @@ fn ask(
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
+    ReadRegistered(reply) -> {
+      process.send(reply, registered_readback(state))
+      resume(state)
+    }
+    ReadToolGeneration(key, reply) -> {
+      process.send(reply, custody.tool_generation(state.store, key))
+      resume(state)
+    }
+    ReadChildGeneration(origin, reply) -> {
+      process.send(reply, custody.child_generation(state.store, origin))
+      resume(state)
+    }
+    ReadServiceGeneration(key, reply) -> {
+      let readback = {
+        use _ <- result.try(custody.service_child(state.store, key))
+        custody.child_generation(state.store, command.service_origin(key))
+      }
+      process.send(reply, readback)
+      resume(state)
+    }
+    ReadReceiptGeneration(origin, id, reply) -> {
+      process.send(reply, receipt_readback(state, origin, id))
+      resume(state)
+    }
+    RetainSystemIntent(address, service, op, step, id, bytes, reply) -> {
+      process.send(
+        reply,
+        retain_intent(state, address, service, op, step, id, bytes),
+      )
+      resume(state)
+    }
+    AdmitSystemChild(intent, build, reply) -> {
+      let admitted = {
+        use associated <- result.try(current_association(state))
+        use Nil <- result.try(
+          exact(fn() { associated == custody.system_intent_fields(intent).0 }),
+        )
+        use intent <- result.try(reconciliation_intent(state, intent))
+        custody.admit_system_child(state.store, intent, build)
+      }
+      process.send(reply, admitted)
+      resume(state)
+    }
     Execute(key, profile, args, request, original, ticket, reply) ->
       begin(state, key, profile, args, request, original, ticket, reply)
     Lookup(key, args, request, reply) -> {
@@ -934,17 +1262,20 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       resume(state)
     }
     ReserveWorkspace(origin, id, request, reply) -> {
-      process.send(
-        reply,
-        custody.admit_workspace_child(state.store, origin, id, request),
-      )
+      process.send(reply, reserve_workspace(state, origin, id, request))
       resume(state)
     }
-    ReceiveWorkspace(origin, id, receipt, reply) -> {
-      process.send(
-        reply,
-        custody.receive_workspace_child(state.store, origin, id, receipt),
-      )
+    ReceiveWorkspace(origin, id, receipt, bytes, reply) -> {
+      let committed = {
+        use Nil <- result.try(custody.receive_workspace_child(
+          state.store,
+          origin,
+          id,
+          receipt,
+        ))
+        verify_receipt_readback(state, origin, id, bytes)
+      }
+      process.send(reply, committed)
       resume(state)
     }
     ReserveService(request, contract, reply) -> {
@@ -954,7 +1285,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           request,
           contract,
         ))
-        custody.admit_service_child(state.store, request)
+        reserve_service(state, request)
       }
       process.send(reply, checked)
       resume(state)
@@ -964,7 +1295,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       resume(state)
     }
     AdmitOffer(original, offer, reply) -> {
-      process.send(reply, custody.admit_offer(state.store, original, offer))
+      process.send(reply, reserve_offer(state, original, offer))
       resume(state)
     }
     ReadOffer(ref, reply) -> {
@@ -976,10 +1307,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       resume(state)
     }
     ReserveCommand(offer, candidate, request, reply) -> {
-      process.send(
-        reply,
-        custody.admit_command_child(state.store, offer, candidate, request),
-      )
+      process.send(reply, reserve_command(state, offer, candidate, request))
       resume(state)
     }
     ReadCommand(ref, reply) -> {
@@ -1003,7 +1331,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     ReceiveChild(origin, id, bytes, reply) -> {
       let outcome = {
         use payload <- result.try(custody.payload(state.config.limits, bytes))
-        custody.receive_child(state.store, origin, id, payload)
+        use Nil <- result.try(custody.receive_child(
+          state.store,
+          origin,
+          id,
+          payload,
+        ))
+        verify_receipt_readback(state, origin, id, bytes)
       }
       process.send(reply, outcome)
       resume(state)
@@ -1116,7 +1450,7 @@ fn begin(
         False -> Error(custody.Capacity)
       },
     )
-    custody.admit_fresh_with_profile(state.store, key, args, request, profile)
+    reserve_tool(state, key, args, request, profile)
   }
   case admitted {
     Ok(custody.Fresh) -> {
@@ -1174,27 +1508,28 @@ fn reserve(
   request: BitArray,
 ) -> Result(#(ids.EntryId, BitArray), custody.Error) {
   use payload <- result.try(custody.payload(state.config.limits, request))
-  case custody.child(state.store, origin) {
-    Ok(#(id, original, _)) -> {
-      use Nil <- result.try(custody.admit_child(
-        state.store,
-        origin,
-        id,
-        payload,
-      ))
-      Ok(#(id, custody.bytes(original)))
-    }
-    Error(custody.Missing) -> {
-      use Nil <- result.try(custody.admit_child(
-        state.store,
-        origin,
-        candidate,
-        payload,
-      ))
-      Ok(#(candidate, request))
-    }
+  use original_id <- result.try(case custody.child(state.store, origin) {
+    Ok(#(id, _, _)) -> Ok(id)
+    Error(custody.Missing) -> Ok(candidate)
     Error(error) -> Error(error)
-  }
+  })
+  use Nil <- result.try(case state.generation, state.admission {
+    OrdinaryCustody, _ ->
+      custody.admit_child(state.store, origin, original_id, payload)
+    OriginalGeneration(live), Admitting ->
+      custody.admit_registered_child(
+        state.store,
+        live,
+        origin,
+        original_id,
+        payload,
+      )
+      |> result.replace(Nil)
+    HistoricalGeneration(_), _ | OriginalGeneration(_), RecoveryOnly ->
+      Error(custody.Frozen)
+  })
+  use stored <- result.try(custody.child(state.store, origin))
+  Ok(#(stored.0, custody.bytes(stored.1)))
 }
 
 // The selector retains the report subject until weft confirms all delivery.
@@ -1449,5 +1784,360 @@ fn check_compile_reservation(
       |> result.replace(Nil)
       |> result.replace_error(custody.Conflict)
     }
+  }
+}
+
+// Registered metadata is validated without owner-side physical filesystem access.
+fn validate_registered(
+  config: Config,
+  placement: Placement,
+) -> Result(Nil, custody.Error) {
+  use #(pin, associated, first) <- result.try(case placement {
+    OrdinaryPlacement -> Error(custody.Invalid("registered placement required"))
+    RegisteredPlacement(pin, associated, first) -> Ok(#(pin, associated, first))
+  })
+  use sha256 <- result.try(option.to_result(
+    config.sha256,
+    custody.Invalid("registered custody requires SHA-256"),
+  ))
+  let #(session, binding, descriptor, digest, bytes) =
+    custody.enrollment_fields(pin)
+  let #(scope, key_digest, _) =
+    generation.key_fields(generation.association_key(associated))
+  use Nil <- result.try(
+    exact(fn() {
+      session == config.session
+      && workspace.scope(session, binding) == scope
+      && descriptor == key_digest
+      && digest == generation.association_fields(associated).1
+      && sha256(bytes) == generation.digest_bytes(digest)
+      && first > 0
+      && first <= generation.max_generation
+    }),
+  )
+
+  // The embedded native facts must describe this exact immutable association.
+  use enrolled <- result.try(
+    enrollment.decode(bytes) |> result.replace_error(custody.Conflict),
+  )
+  let native = enrollment.native_facts(enrolled)
+  use Nil <- result.try(exact(fn() { native.scope == scope }))
+  use native_scope <- result.try(executor_scope(native.scope))
+  use registered <- result.try(
+    registration.new(
+      native_scope,
+      native.working_roots,
+      native.ceiling,
+      native.demand,
+      Ok,
+    )
+    |> result.replace_error(custody.Conflict),
+  )
+
+  // Recomputing native registration prevents a canonical but substituted digest.
+  let actual =
+    identity.digest_bytes(registration.digest(registered))
+    |> bit_array.base16_encode
+    |> string.lowercase
+  exact(fn() { actual == enrollment.digests(enrolled).0 })
+}
+
+fn executor_scope(
+  scope: workspace.Scope,
+) -> Result(identity.Scope, custody.Error) {
+  let #(session, binding) = workspace.scope_fields(scope)
+  let #(selector, workspace_epoch, session_epoch) =
+    workspace.binding_fields(binding)
+  let #(executor, name) = workspace.selector_fields(selector)
+  use executor <- result.try(
+    identity.executor_id(executor) |> result.replace_error(custody.Conflict),
+  )
+  use name <- result.try(
+    identity.workspace_id(name) |> result.replace_error(custody.Conflict),
+  )
+  use workspace_epoch <- result.try(
+    identity.epoch(workspace_epoch) |> result.replace_error(custody.Conflict),
+  )
+  use session_epoch <- result.try(
+    identity.epoch(session_epoch) |> result.replace_error(custody.Conflict),
+  )
+  Ok(identity.scope(session, name, executor, session_epoch, workspace_epoch))
+}
+
+fn boot_generation(
+  config: Config,
+  store: custody.Store,
+  existed: ExistingCompanion,
+) -> Result(GenerationCustody, custody.Error) {
+  case config.placement {
+    OrdinaryPlacement ->
+      case custody.read_enrollment(store) {
+        Error(custody.Missing) -> Ok(OrdinaryCustody)
+        Ok(_) -> Error(custody.Frozen)
+        Error(error) -> Error(error)
+      }
+    RegisteredPlacement(pin, associated, first) -> {
+      use Nil <- result.try(validate_registered(config, config.placement))
+
+      // Existing missing metadata is never repaired by adopting today's enrollment.
+      use Nil <- result.try(case existed {
+        ExistingCompanion ->
+          custody.read_enrollment(store) |> result.map(fn(_) { Nil })
+        NewCompanion -> Ok(Nil)
+      })
+      use readback <- result.try(custody.pin_enrollment(store, pin))
+      use Nil <- result.try(exact(fn() { custody.pin_value(readback) == pin }))
+      use admitted <- result.try(custody.retain_generation(
+        store,
+        associated,
+        first,
+      ))
+      case admitted {
+        custody.FreshGeneration(live) -> Ok(OriginalGeneration(live))
+        custody.RetainedGeneration(original) ->
+          Ok(HistoricalGeneration(original))
+      }
+    }
+  }
+}
+
+fn current_association(
+  state: State,
+) -> Result(generation.GenerationAssociation, custody.Error) {
+  case state.generation {
+    OrdinaryCustody -> Error(custody.Invalid("registered owner required"))
+    OriginalGeneration(live) -> Ok(custody.live_association(live))
+    HistoricalGeneration(associated) -> Ok(associated)
+  }
+}
+
+fn registered_readback(state: State) -> Result(RegisteredBoot, custody.Error) {
+  use associated <- result.try(current_association(state))
+  use pin <- result.try(custody.read_enrollment(state.store))
+  use Nil <- result.try(case state.config.placement {
+    RegisteredPlacement(original, _, _) -> exact(fn() { pin == original })
+    OrdinaryPlacement -> Error(custody.Frozen)
+  })
+  use Nil <- result.try(validate_registered(
+    state.config,
+    RegisteredPlacement(pin, associated, case state.config.placement {
+      RegisteredPlacement(_, _, first) -> first
+      OrdinaryPlacement -> 0
+    }),
+  ))
+  use readback <- result.try(custody.read_generation(
+    state.store,
+    generation.association_key(associated),
+  ))
+  use Nil <- result.try(exact(fn() { readback == associated }))
+  case state.generation, state.admission {
+    OriginalGeneration(_), Admitting ->
+      Ok(ReadyForActivation(RegisteredOwner(state.owner, pin, associated)))
+    HistoricalGeneration(_), _ -> Ok(HistoryOnly(pin, associated))
+    OriginalGeneration(_), RecoveryOnly | OrdinaryCustody, _ ->
+      Error(custody.Frozen)
+  }
+}
+
+fn reserve_tool(
+  state: State,
+  key: remote_tool.ToolKey,
+  args: custody.Payload,
+  request: custody.Payload,
+  profile: custody.FinalProfile,
+) -> Result(custody.Admission, custody.Error) {
+  case state.generation, state.admission {
+    OrdinaryCustody, _ ->
+      custody.admit_fresh_with_profile(state.store, key, args, request, profile)
+    OriginalGeneration(live), Admitting ->
+      custody.admit_registered_fresh_with_profile(
+        state.store,
+        live,
+        key,
+        args,
+        request,
+        profile,
+      )
+    HistoricalGeneration(_), _ | OriginalGeneration(_), RecoveryOnly ->
+      Error(custody.Frozen)
+  }
+}
+
+fn reserve_workspace(
+  state: State,
+  origin: remote_tool.ChildOrigin,
+  id: ids.EntryId,
+  request: custody.WorkspaceRequest,
+) -> Result(Nil, custody.Error) {
+  case state.generation, state.admission {
+    OrdinaryCustody, _ ->
+      custody.admit_workspace_child(state.store, origin, id, request)
+    OriginalGeneration(live), Admitting ->
+      custody.admit_registered_workspace_child(
+        state.store,
+        live,
+        origin,
+        id,
+        request,
+      )
+      |> result.replace(Nil)
+    HistoricalGeneration(_), _ | OriginalGeneration(_), RecoveryOnly ->
+      Error(custody.Frozen)
+  }
+}
+
+fn reserve_service(
+  state: State,
+  request: custody.ServiceRequest,
+) -> Result(Nil, custody.Error) {
+  case state.generation, state.admission {
+    OrdinaryCustody, _ -> custody.admit_service_child(state.store, request)
+    OriginalGeneration(live), Admitting ->
+      custody.admit_registered_service_child(state.store, live, request)
+      |> result.replace(Nil)
+    HistoricalGeneration(_), _ | OriginalGeneration(_), RecoveryOnly ->
+      Error(custody.Frozen)
+  }
+}
+
+fn reserve_offer(
+  state: State,
+  original: custody.ServiceRequest,
+  offer: custody.CommandOfferPayload,
+) -> Result(custody.Admission, custody.Error) {
+  case state.generation, state.admission {
+    OrdinaryCustody, _ -> custody.admit_offer(state.store, original, offer)
+    OriginalGeneration(live), Admitting ->
+      custody.admit_registered_offer(state.store, live, original, offer)
+    HistoricalGeneration(_), _ | OriginalGeneration(_), RecoveryOnly ->
+      Error(custody.Frozen)
+  }
+}
+
+fn reserve_command(
+  state: State,
+  offer: custody.CommandOfferPayload,
+  candidate: ids.EntryId,
+  request: custody.Payload,
+) -> Result(#(ids.EntryId, custody.Payload), custody.Error) {
+  case state.generation, state.admission {
+    OrdinaryCustody, _ ->
+      custody.admit_command_child(state.store, offer, candidate, request)
+    OriginalGeneration(live), Admitting -> {
+      use admitted <- result.try(custody.admit_registered_command_child(
+        state.store,
+        live,
+        offer,
+        candidate,
+        request,
+      ))
+      Ok(#(admitted.1, admitted.2))
+    }
+    HistoricalGeneration(_), _ | OriginalGeneration(_), RecoveryOnly ->
+      Error(custody.Frozen)
+  }
+}
+
+fn receipt_readback(
+  state: State,
+  origin: remote_tool.ChildOrigin,
+  id: ids.EntryId,
+) -> Result(#(BitArray, generation.GenerationAssociation), custody.Error) {
+  use stored <- result.try(custody.child(state.store, origin))
+  use Nil <- result.try(exact(fn() { stored.0 == id }))
+  use receipt <- result.try(option.to_result(stored.2, custody.Missing))
+  use associated <- result.try(custody.child_generation(state.store, origin))
+  Ok(#(custody.bytes(receipt), associated))
+}
+
+fn verify_receipt_readback(
+  state: State,
+  origin: remote_tool.ChildOrigin,
+  id: ids.EntryId,
+  bytes: BitArray,
+) -> Result(Nil, custody.Error) {
+  case state.generation {
+    OrdinaryCustody -> Ok(Nil)
+    OriginalGeneration(_) | HistoricalGeneration(_) -> {
+      use readback <- result.try(receipt_readback(state, origin, id))
+      exact(fn() { readback.0 == bytes })
+    }
+  }
+}
+
+fn retain_intent(
+  state: State,
+  address: String,
+  service: custody.SystemService,
+  op: ids.OpId,
+  step: String,
+  id: ids.EntryId,
+  bytes: BitArray,
+) -> Result(custody.IntentReadback, custody.Error) {
+  use intent <- result.try(case state.generation, state.admission {
+    OrdinaryCustody, _ ->
+      Error(custody.Invalid("registered system intent required"))
+    OriginalGeneration(live), Admitting ->
+      custody.system_intent(live, address, service, op, step, id, bytes)
+    OriginalGeneration(live), RecoveryOnly ->
+      custody.historical_system_intent(
+        custody.live_association(live),
+        address,
+        service,
+        op,
+        step,
+        id,
+        bytes,
+      )
+    HistoricalGeneration(associated), _ ->
+      custody.historical_system_intent(
+        associated,
+        address,
+        service,
+        op,
+        step,
+        id,
+        bytes,
+      )
+  })
+  case state.generation, state.admission {
+    OriginalGeneration(_), Admitting ->
+      custody.retain_system_intent(state.store, intent)
+    HistoricalGeneration(_), _ | OriginalGeneration(_), RecoveryOnly ->
+      custody.read_system_intent(state.store, intent)
+    OrdinaryCustody, _ -> Error(custody.Frozen)
+  }
+}
+
+// Historical reconciliation reconstructs a read-only intent on this connection.
+// A previously retained opaque live intent cannot allocate after the owner fences.
+fn reconciliation_intent(
+  state: State,
+  retained: custody.IntentReadback,
+) -> Result(custody.IntentReadback, custody.Error) {
+  case state.generation, state.admission {
+    OriginalGeneration(_), Admitting -> Ok(retained)
+    OriginalGeneration(_), RecoveryOnly | HistoricalGeneration(_), _ -> {
+      let #(associated, address, service, op, step, id, bytes) =
+        custody.system_intent_fields(retained)
+      use original <- result.try(custody.historical_system_intent(
+        associated,
+        address,
+        service,
+        op,
+        step,
+        id,
+        bytes,
+      ))
+      custody.read_system_intent(state.store, original)
+    }
+    OrdinaryCustody, _ -> Error(custody.Frozen)
+  }
+}
+
+fn exact(agrees: fn() -> Bool) -> Result(Nil, custody.Error) {
+  case agrees() {
+    True -> Ok(Nil)
+    False -> Error(custody.Conflict)
   }
 }

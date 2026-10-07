@@ -23,16 +23,18 @@ import broker/dispatch
 import broker/enrollment
 import client/remote/command_binding
 import client/remote/custodian
+import core/generation
 import core/ids
 import core/msgpack as mp
 import core/remote_tool
+import core/workspace
 import executor/remote/beam_endpoint as connection
 import executor/remote/dispatcher
 import executor/remote/identity
 import executor/remote/journal_codec
 import executor/remote/wire
 import gleam/bit_array
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import storage/owner_custody as custody
 
@@ -42,6 +44,10 @@ pub opaque type Binding {
   Binding(
     /// The supervised address holding durable outgoing requests and receipts.
     owner: custodian.Handle,
+    /// Registered dispatch retains the original verified bundle, never latest lookup.
+    registered: Option(
+      #(generation.GenerationAssociation, enrollment.SessionEnrollment),
+    ),
     /// The exact configured connection and administrative session/workspace scope.
     connection: connection.Config,
     /// Materializes explicit stream, lifetime and registration without rewriting clearance.
@@ -87,6 +93,7 @@ pub fn new(
     True ->
       Ok(Binding(
         owner:,
+        registered: None,
         connection:,
         prepare:,
         mint:,
@@ -97,6 +104,61 @@ pub fn new(
       ))
     False -> Error(custody.Invalid("invalid remote dispatch binding"))
   }
+}
+
+/// Captures the original ready registered owner before constructing dispatch.
+/// HistoryOnly cannot supply this opaque value; activation remains an assembly step.
+/// The connection must name exactly this association's scope and generation.
+///
+/// ## Examples
+///
+/// `new_registered(ready, connection, prepare, mint, now, 1, 5000, fence)` creates no Broker.
+pub fn new_registered(
+  owner: custodian.RegisteredOwner,
+  connection: connection.Config,
+  prepare: fn(dispatch.Dispatch) -> Result(wire.Prepared, Nil),
+  mint: fn() -> ids.EntryId,
+  now: fn() -> Int,
+  incarnation: Int,
+  reconcile_ms: Int,
+  fatal_fence: fn(custody.Error) -> Nil,
+) -> Result(Binding, custody.Error) {
+  let #(pinned, pin, associated) = custodian.registered_fields(owner)
+  let #(scope, _, number) =
+    generation.key_fields(generation.association_key(associated))
+  let #(session, name, executor, session_epoch, workspace_epoch) =
+    identity.scope_fields(connection.scope)
+  use projected <- result.try(
+    workspace.scope_from_fields(
+      session,
+      name,
+      executor,
+      session_epoch,
+      workspace_epoch,
+    )
+    |> result.replace_error(custody.Conflict),
+  )
+  use Nil <- result.try(
+    case projected == scope && number == connection.generation {
+      True -> Ok(Nil)
+      False -> Error(custody.Conflict)
+    },
+  )
+  use enrolled <- result.try(
+    enrollment.decode(custody.enrollment_fields(pin).4)
+    |> result.replace_error(custody.Conflict),
+  )
+  use binding <- result.try(new(
+    pinned,
+    connection,
+    prepare,
+    mint,
+    now,
+    incarnation,
+    reconcile_ms,
+    fatal_fence,
+  ))
+  Ok(Binding(..binding, registered: Some(#(associated, enrolled))))
 }
 
 /// Projects the production callbacks over the same immutable custody binding.
@@ -137,6 +199,12 @@ pub fn with_commands(
   binding: Binding,
   enrolled: enrollment.SessionEnrollment,
 ) -> Result(dispatcher.Config, custody.Error) {
+  use Nil <- result.try(case binding.registered {
+    None -> Ok(Nil)
+    Some(#(_, original)) ->
+      enrollment.matches(original, enrolled)
+      |> result.replace_error(custody.Conflict)
+  })
   use commands <- result.try(command_binding.new(
     binding.owner,
     enrolled,
@@ -303,7 +371,21 @@ fn receive(
   // Receipt bytes retain output ordering and boundaries. A durable commit,
   // including an exact duplicate readback, must finish before success escapes.
   use receipt <- result.try(custodian.receipt(outputs, terminal) |> failed)
-  custodian.receive_child(binding.owner, origin, stored.0, receipt) |> failed
+  use Nil <- result.try(
+    custodian.receive_child(binding.owner, origin, stored.0, receipt) |> failed,
+  )
+  case binding.registered {
+    None -> Ok(Nil)
+    Some(#(associated, _)) -> {
+      use readback <- result.try(
+        custodian.receipt_generation(binding.owner, origin, stored.0) |> failed,
+      )
+      case readback == #(receipt, associated) {
+        True -> Ok(Nil)
+        False -> Error(Nil)
+      }
+    }
+  }
 }
 
 fn cancel_reserved(binding: Binding, request: dispatch.Dispatch) -> Nil {
