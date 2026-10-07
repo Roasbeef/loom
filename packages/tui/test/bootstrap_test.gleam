@@ -122,7 +122,7 @@ pub fn session_configuration_resolves_trusted_default_and_explicit_paths_test() 
     as "fixture workspace exists"
   assert simplifile.write(filepath.join(workspace, "loom.toml"), "untrusted")
     == Ok(Nil)
-  let options = bootstrap.Options(workspace, "", "", root, "")
+  let options = bootstrap.Options(workspace, "", "", root, "", "")
   assert bootstrap.session_configuration(options) == Ok("")
 
   let path = bootstrap.default_catalogue_path(root)
@@ -401,7 +401,7 @@ fn run_real_server_lifecycle(server: String) -> Nil {
     )
     as "a deterministic launch never uses environment-backed maintenance"
   let assert Ok(configuration) = host_bootstrap.absolute_path(configuration)
-  let options = bootstrap.Options(workspace, "", server, state, "")
+  let options = bootstrap.Options(workspace, "", server, state, "", "")
   assert bootstrap.session_configuration(options) == Ok(configuration)
   let terminal = process.self()
   let launched =

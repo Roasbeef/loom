@@ -106,7 +106,7 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
       "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \"http://127.0.0.1:9\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n[roles]\nmain = [\"fixture\"]\n",
     )
   let options =
-    bootstrap.Options(workspace, "", server, paths.root, configuration)
+    bootstrap.Options(workspace, "", server, paths.root, configuration, "")
   let assert Ok(connected) =
     bootstrap.resolve_daemon(options, process.self(), 40_000)
     as "the shipped daemon starts through native bootstrap"
@@ -123,6 +123,7 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       configuration,
+      "",
     )
   let session = created.expected.session
   await_resident(connected.control, session, paths)

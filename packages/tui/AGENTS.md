@@ -3130,3 +3130,18 @@ The approval panel uses `session_view/approval.remembered_authority` to explain
 that a wall-zero session decision covers the exact action on its requesting
 strand. The shared projection enables the session choice only for eligible
 grants. The panel does not broaden a request or parse shell commands.
+
+## Model profile flag (protocol 076)
+
+`loom --model-profile <name>` is kept in `bootstrap.Options.profile` beside
+`--config` and sent as `sessions.create`'s optional `profile` field when the
+terminal creates a session (`session_control.create_session_configured`, through
+`job.CreateSession` and `selection.create_named`). An empty profile is not sent.
+It affects creation only; an existing registration keeps its own profile. A launch that opens an existing session
+instead says so in one transcript line (`session_control.note_kept_profile`). The
+daemon's refusal arrives as `unknown_profile: <message>` naming the profiles its
+configuration defines. The flag is not `--profile`: the native launcher consumes
+that valueless flag for BEAM profiling before the application starts, so a bare
+`--profile` is still an unknown local option here (`tui.launch_options` is the
+test seam). A value beginning with `-` is refused so a forgotten name does not
+consume the next flag.

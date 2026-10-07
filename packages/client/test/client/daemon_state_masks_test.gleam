@@ -389,6 +389,7 @@ fn resolved_with(
       1,
       "masking",
       catalogue.Saved,
+      profile: option.None,
       subtitle: option.None,
     )
   let selected =

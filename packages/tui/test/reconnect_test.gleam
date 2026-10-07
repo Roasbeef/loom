@@ -40,6 +40,7 @@ fn options() -> bootstrap.Options {
     server: "",
     state_directory: "/state",
     config: "",
+    profile: "",
   )
 }
 

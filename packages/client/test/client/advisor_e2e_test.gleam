@@ -678,6 +678,7 @@ fn scripted_catalog() -> catalog.Catalog {
     // takes its advisor settings as given rather than deriving them from
     // the route; `serve.resolve` is the path that derives.
     roles: [#(model.Main, ["acme"]), #(catalog.advisor_role, ["sage"])],
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )

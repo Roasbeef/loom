@@ -556,6 +556,11 @@
   .home-create-share-text{display:flex;flex-direction:column;gap:1px;min-width:0;}
   .home-create-share-name{color:var(--color-fg);font:14px/1.4 var(--font-sans);}
   .home-create-share-hint{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  label.home-create-profile{display:flex;align-items:center;gap:8px;}
+  .home-create-profile-name{color:var(--color-fg);font:14px/1.4 var(--font-sans);}
+  .home-create-profile-select{min-width:0;padding:4px 8px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:13px/1.4 var(--font-sans);}
+  .home-create-profile-select:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
+  .home-create-profile-select:disabled{opacity:.6;}
   .home-create-hint{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-create-actions{display:flex;gap:8px;}
   .home-create-actions button{margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}

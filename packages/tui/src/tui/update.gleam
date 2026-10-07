@@ -141,6 +141,7 @@ fn install_locked(
       prefix <> "/bin/loomd",
       choices.state,
       choices.config,
+      "",
     )
   case choices.action {
     options.InstallOnly -> files.publish(stage, prefix, client)

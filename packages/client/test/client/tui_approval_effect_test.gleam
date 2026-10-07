@@ -242,7 +242,13 @@ fn create(serving: daemon_main.Serving(serve.Instance), directory) {
   let assert Ok(created) =
     manager.create_scoped(
       serving.ready.registry,
-      manager.Creation("approval-effect", workspace, "Approval effect", ""),
+      manager.Creation(
+        "approval-effect",
+        workspace,
+        "Approval effect",
+        "",
+        option.None,
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), 51),
       scope: domain.SessionOnly,

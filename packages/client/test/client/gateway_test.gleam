@@ -145,6 +145,7 @@ fn test_catalog() -> catalog.Catalog {
       ),
     ],
     roles: [#(model.Main, ["acme", "fallback"])],
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )

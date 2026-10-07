@@ -5770,3 +5770,36 @@ reopens held documents. This snapshot tracks dependency preparation inputs,
 not transactional workspace coverage. Profiles without the recipe skip these
 reads and retain their existing network authority. Protocol 064 records the
 new consent boundary and the refused external path-dependency scope.
+
+## Model profiles (protocol 076)
+
+`[profiles.<name>.roles]` tables name the roles a profile replaces
+([protocol 076](../../protocol-change/076-config-profiles.md)).
+`catalog.parse` validates every profile when the file loads, with the same
+`parse_role_table` as `[roles]` and the table's own path in each message, and
+`Catalog.profiles` holds each one already merged over the default role set.
+`catalog.select_profile` returns the catalogue with `roles` replaced, or
+`unknown_profile`'s message naming the profiles that exist.
+
+The profile is part of the registration (`catalogue.Registration.profile`, a
+name and never roles) and of `manager.Creation`. `serve.resolve_managed` passes
+it to `resolve`, whose `load_config` applies `select_profile` before
+`catalog.gateway` builds the session's gateway, so every consumer of roles reads
+its own session's `Settings.gateway` or `Settings.catalog` and nothing is cached
+daemon-wide. Every open resolves it again: a profile the file no longer defines
+fails the open with the file's message, which the registration's startup reason
+(055) carries, and never opens on the default roles. A profile with no config
+file fails the same way. `serve.build_domain` passes no profile, so the shared
+workspace domain's maintenance uses the default roles.
+
+`server.create_session` checks the profile before reserving an identity
+(`daemon/profiles.check` against the request's configuration, or the daemon's
+own), and answers the code `unknown_profile`. The control dispatch words it with
+the profiles that exist, the one refusal whose message is not "request refused";
+the owner check runs first. `sessions.create` decodes `profile` as optional and
+refuses a present value that is not a profile name
+(`storage/catalogue.is_profile_name`), never reading it as the default.
+`HomeAttachment.profiles` reads the names for the web form once, at page open,
+and only for a page that holds the creation capability; `ui_socket.create_for`
+takes the chosen profile and maps `unknown_profile` to
+`creations.UnknownProfile`.

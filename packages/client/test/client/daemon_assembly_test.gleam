@@ -124,6 +124,7 @@ fn create(
       workspace: settings.workspace,
       name: "session " <> string.inspect(seed),
       configuration: "",
+      profile: None,
     )
   let assert Ok(view) =
     manager.create(

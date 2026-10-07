@@ -97,6 +97,7 @@ fn home_start(manage: Option(Ask)) -> home.Start {
     manage:,
     create: None,
     folders: None,
+    profiles: [],
     signins: fn(deliver) { deliver(signins.Listed([])) },
     login: None,
     bookmark: None,

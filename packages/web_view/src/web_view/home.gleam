@@ -347,8 +347,21 @@ pub type Start {
     /// page, its ceiling, the principal and the workspace again, whatever this
     /// page said.
     create: Option(
-      fn(creations.Place, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
+      fn(
+        creations.Place,
+        String,
+        Sharing,
+        Option(String),
+        fn(creations.Answer) -> Nil,
+      ) -> Nil,
     ),
+    /// The model profile names the daemon's configuration defines, as the daemon
+    /// read them when the page opened (protocol-change/076). The new-session
+    /// forms offer them beside the default roles, and a creation carries one
+    /// only if it is in this list. It is `[]` unless `create` is `Some`, and
+    /// then the forms draw no select. The daemon checks the profile against its
+    /// configuration again when the creation runs, whatever this page said.
+    profiles: List(String),
     /// Reads and edits the owner's recent folders (protocol-change/074). It is
     /// `Some` exactly where `create` is, and a page with `None` lists no folder
     /// and ignores the messages. The daemon checks the page, its ceiling and the
@@ -608,22 +621,34 @@ pub type Msg {
   Cancelled
 
   /// The open form was submitted: ask the daemon to create the session. The
-  /// workspace is the one the form was drawn under; the name and the sharing are
-  /// what the browser's event listed (`view/create.fields`). The page asks only
-  /// for the form that is open, and only once.
-  Creating(workspace: String, name: String, sharing: Sharing)
+  /// workspace is the one the form was drawn under; the name, the sharing and
+  /// the profile are what the browser's event listed
+  /// (`view/create.fields_with_profile`), and the profile is one of
+  /// `Start.profiles` or `None` for the default roles. The page asks only for
+  /// the form that is open, and only once.
+  Creating(
+    workspace: String,
+    name: String,
+    sharing: Sharing,
+    profile: Option(String),
+  )
 
   /// The "New session in another folder" button was pressed: open its form. A
   /// page with no `Start.create` ignores it.
   OpeningElsewhere
 
   /// The form for another folder was submitted: ask the daemon to create the
-  /// session in the typed path. The path, the name and the sharing are what the
-  /// browser's event listed (`view/create.typed_fields`), and the path is the
-  /// browser's text and nothing else is: the daemon decides whether it names a
-  /// folder the owner may use. The page asks only for the form that is open, and
-  /// only once.
-  CreatingElsewhere(path: String, name: String, sharing: Sharing)
+  /// session in the typed path. The path, the name, the sharing and the profile
+  /// are what the browser's event listed (`view/create.typed_fields_with_profile`),
+  /// and the path is the browser's text and nothing else is: the daemon decides
+  /// whether it names a folder the owner may use. The page asks only for the form
+  /// that is open, and only once.
+  CreatingElsewhere(
+    path: String,
+    name: String,
+    sharing: Sharing,
+    profile: Option(String),
+  )
 
   /// A remembered folder's "Forget this folder" was pressed. The identity is the
   /// daemon's, fixed when the tree was drawn, so a press names an entry that was
@@ -994,12 +1019,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // The typed folder's submit is honoured only for its form while it is open,
     // as a workspace's is. The path is the browser's text, so the daemon is
     // the one that decides what it names.
-    CreatingElsewhere(path:, name:, sharing:) ->
+    CreatingElsewhere(path:, name:, sharing:, profile:) ->
       case model.start.create, model.status, model.creating {
-        Some(ask), Connected, create.Elsewhere -> #(
-          Model(..model, creating: create.Sending, note: None),
-          creation(ask, creations.Typed(path), name, sharing),
-        )
+        Some(ask), Connected, create.Elsewhere ->
+          case offered_profile(model, profile) {
+            True -> #(
+              Model(..model, creating: create.Sending, note: None),
+              creation(ask, creations.Typed(path), name, sharing, profile),
+            )
+            False -> #(model, effect.none())
+          }
         Some(_), _, _ | None, _, _ -> #(model, effect.none())
       }
 
@@ -1033,12 +1062,16 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // first is out, a submit for a form that is not drawn, and a page that may
     // not create ask nothing. These arms are the second layer: the daemon
     // refuses the same requests from the grant it holds.
-    Creating(workspace:, name:, sharing:) ->
+    Creating(workspace:, name:, sharing:, profile:) ->
       case model.start.create, model.status, model.creating {
-        Some(ask), Connected, create.Composing(open) if open == workspace -> #(
-          Model(..model, creating: create.Waiting(workspace), note: None),
-          creation(ask, creations.Drawn(workspace), name, sharing),
-        )
+        Some(ask), Connected, create.Composing(open) if open == workspace ->
+          case offered_profile(model, profile) {
+            True -> #(
+              Model(..model, creating: create.Waiting(workspace), note: None),
+              creation(ask, creations.Drawn(workspace), name, sharing, profile),
+            )
+            False -> #(model, effect.none())
+          }
         Some(_), _, _ | None, _, _ -> #(model, effect.none())
       }
 
@@ -1636,13 +1669,31 @@ fn resuming(
 // Starts the daemon's creation task and returns at once; the answer arrives
 // later as `Created`, dispatched from the task's own process.
 fn creation(
-  ask: fn(creations.Place, String, Sharing, fn(creations.Answer) -> Nil) -> Nil,
+  ask: fn(
+    creations.Place,
+    String,
+    Sharing,
+    Option(String),
+    fn(creations.Answer) -> Nil,
+  ) -> Nil,
   place: creations.Place,
   name: String,
   sharing: Sharing,
+  profile: Option(String),
 ) -> Effect(Msg) {
   use dispatch <- effect.from
-  ask(place, name, sharing, fn(answer) { dispatch(Created(answer)) })
+  ask(place, name, sharing, profile, fn(answer) { dispatch(Created(answer)) })
+}
+
+// Whether a submitted profile is one the page offered: the default roles always
+// are, and a name only if the daemon listed it when the page opened. The form's
+// decoder already resolves a position in this list, so a submit that fails this
+// check did not come from a form the page drew.
+fn offered_profile(model: Model, profile: Option(String)) -> Bool {
+  case profile {
+    None -> True
+    Some(name) -> list.contains(model.start.profiles, name)
+  }
 }
 
 // Starts the daemon's task that forgets one folder and returns at once; the list
@@ -2062,6 +2113,7 @@ fn create_offer(model: Model) -> Create(Msg) {
         OpeningElsewhere,
         CreatingElsewhere,
         model.creating,
+        model.start.profiles,
       )
     None -> create.Never
   }

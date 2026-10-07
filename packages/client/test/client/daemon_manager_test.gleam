@@ -39,6 +39,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     created_at: 1_700_000_000_000,
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
+    profile: option.None,
     subtitle: option.None,
   )
 }
@@ -148,6 +149,7 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
         record.workspace,
         record.name,
         record.configuration,
+        option.None,
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(at: 1), seed: 1),
@@ -219,6 +221,7 @@ pub fn archive_requires_owner_and_stopped_custody_test() {
         record.workspace,
         record.name,
         record.configuration,
+        option.None,
       ),
       directory: "/unused-creation-retry",
       generator: ids.generator(clock.fixed(1), 1),
@@ -362,6 +365,7 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
             example.1,
             "Session",
             example.2,
+            option.None,
           ),
           directory: "/domain-selection/sessions",
           generator: ids.generator(clock.fixed(1), example.0),
@@ -665,7 +669,13 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       Ok(record.id)
     })
   let request =
-    manager.Creation("create-once", "/workspace/project", "first", "")
+    manager.Creation(
+      "create-once",
+      "/workspace/project",
+      "first",
+      "",
+      option.None,
+    )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 411)
   let assert Ok(manager.View(record, manager.Opening(operation))) =
     manager.create(
@@ -739,7 +749,13 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
   await_status(registry, occupied.id, manager.Resident(operation))
   let assert Ok(_) = process.receive(builds, 1000) as "first assembly ran"
   let request =
-    manager.Creation("capacity-retry", "/workspace/project", "second", "")
+    manager.Creation(
+      "capacity-retry",
+      "/workspace/project",
+      "second",
+      "",
+      option.None,
+    )
   let generator = ids.generator(clock.fixed(at: 1_700_000_000_000), seed: 413)
   assert manager.create(
       registry,
@@ -1872,4 +1888,45 @@ fn string_digest(letter: String) -> access.Digest {
   let assert Ok(digest) = access.credential_digest(string.repeat(letter, 64))
     as "fixture uses a valid digest representation"
   digest
+}
+
+pub fn every_open_builds_from_the_profile_the_registration_stores_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let profiled =
+    catalogue.Registration(..registration(920), profile: option.Some("alt"))
+  assert catalogue.reserve(store, profiled) == Ok(profiled)
+  let assert Ok(profiled) = catalogue.confirm(store, profiled.id)
+    as "fixture represents initialized metadata"
+  let selected =
+    domain.Domain(
+      domain.key(domain.SessionOnly, profiled.workspace, profiled.id),
+      domain.SessionOnly,
+      profiled.workspace,
+      "",
+      "/fixture-domains/" <> profiled.id <> "/memory.db",
+      "/fixture-domains/" <> profiled.id <> "/search.db",
+    )
+  assert domain.bind(store, profiled.id, selected) == Ok(selected)
+  let built = process.new_subject()
+  let registry =
+    start(store, 1, fn(record, _) {
+      process.send(built, record.profile)
+      Ok(record.id)
+    })
+
+  // The first open and the open after a stop both hand the builder the stored
+  // name, which is what lets a resume resolve it again.
+  let assert Ok(manager.Opening(first)) = manager.open(registry, profiled.id)
+    as "the first open admits the session"
+  assert process.receive(built, 2000) == Ok(option.Some("alt"))
+  await_status(registry, profiled.id, manager.Resident(first))
+  let assert Ok(_) = manager.stop_session(registry, profiled.id)
+    as "the session is stopped"
+  await_status(registry, profiled.id, manager.Saved)
+  let assert Ok(manager.Opening(second)) = manager.open(registry, profiled.id)
+    as "the resume admits the session again"
+  assert process.receive(built, 2000) == Ok(option.Some("alt"))
+  await_status(registry, profiled.id, manager.Resident(second))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
 }

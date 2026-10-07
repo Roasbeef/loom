@@ -62,6 +62,7 @@ pub fn settings() -> serve.Settings {
         ),
       ],
       roles: [#(model.Main, ["test"])],
+      profiles: [],
       mcp_servers: [],
       lsp_servers: [],
     )

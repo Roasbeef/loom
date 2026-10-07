@@ -40,7 +40,13 @@ fn directory() {
 }
 
 fn request(key: String) {
-  manager.Creation(key, "/workspace/creation-recovery", "saved draft", "")
+  manager.Creation(
+    key,
+    "/workspace/creation-recovery",
+    "saved draft",
+    "",
+    option.None,
+  )
 }
 
 fn create(registry, directory, request, seed) {

@@ -153,7 +153,7 @@ fn exercise(
   // remain session-local because each registration names its own file.
   let assert Ok(connected) =
     bootstrap.resolve_daemon(
-      bootstrap.Options(workspace, "", server, paths.root, a_config),
+      bootstrap.Options(workspace, "", server, paths.root, a_config, ""),
       process.self(),
       40_000,
     )
@@ -175,6 +175,7 @@ fn exercise(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       a_config,
+      "",
     )
     as "A is explicitly created"
   let assert Ok(b) =
@@ -184,6 +185,7 @@ fn exercise(
       directory <> "/b",
       workspace.session_name(workspace.Context(directory <> "/b", None)),
       b_config,
+      "",
     )
     as "B uses its own ordinary configuration"
   let assert Ok(a_driver) = tui_driver.start(address, owner, a.expected.session)

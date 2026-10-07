@@ -63,7 +63,13 @@ fn shared_session(
   let assert Ok(view) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation("access-" <> int.to_string(seed), "/workspace", name, ""),
+      manager.Creation(
+        "access-" <> int.to_string(seed),
+        "/workspace",
+        name,
+        "",
+        None,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),
       scope: domain.SessionOnly,
@@ -680,6 +686,7 @@ pub fn membership_pages_stay_within_the_budget_and_resume_after_the_cursor_test(
               created_at: 0,
               request_key: id,
               state: catalogue.Reserved,
+              profile: option.None,
               subtitle: option.None,
             ),
           )
