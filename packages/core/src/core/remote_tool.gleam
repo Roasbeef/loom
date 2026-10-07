@@ -6,9 +6,14 @@
 //// The address excludes immutable content so changing a digest or result entry
 //// finds the original fence and conflicts rather than creating another request.
 
+import core/bounded_msgpack
+import core/corruption
 import core/ids.{type EntryId, type OpId, type SessionId}
 import core/json
+import core/json_wire
+import core/msgpack as m
 import core/workspace
+import gleam/bit_array
 import gleam/bool
 import gleam/list
 import gleam/result
@@ -81,6 +86,15 @@ pub type ChildRole {
 pub opaque type ChildOrigin {
   ToolChild(key: ToolKey, role: ChildRole)
   SystemChild(session: SessionId, service: String, ordinal: Int)
+}
+
+/// Complete checked provenance, projected without parsing a logical address.
+pub type ChildFields {
+  /// The actual parent and disjoint child role.
+  ToolFields(key: ToolKey, role: ChildRole)
+
+  /// The actual system coordinates, without a fabricated tool parent.
+  SystemFields(session: SessionId, service: String, ordinal: Int)
 }
 
 /// Validates bounds without computing the digest or allocating any identity.
@@ -392,4 +406,235 @@ pub fn child_role(origin: ChildOrigin) -> Result(ChildRole, Nil) {
     ToolChild(role:, ..) -> Ok(role)
     SystemChild(..) -> Error(Nil)
   }
+}
+
+/// Projects the complete typed parent without interpreting its address.
+///
+/// ## Examples
+///
+/// `child_fields(system)` returns its original service and ordinal.
+pub fn child_fields(origin: ChildOrigin) -> ChildFields {
+  case origin {
+    ToolChild(key:, role:) -> ToolFields(key, role)
+    SystemChild(session:, service:, ordinal:) ->
+      SystemFields(session, service, ordinal)
+  }
+}
+
+/// Encodes the complete original child for nested custody headers.
+/// Existing logical addresses keep their separate, unchanged spelling.
+///
+/// ## Examples
+///
+/// `decode_child_value(child_value(origin)) == Ok(origin)`.
+pub fn child_value(origin: ChildOrigin) -> m.MsgPackValue {
+  case origin {
+    ToolChild(key:, role:) ->
+      m.ArrayValue([
+        m.IntValue(1),
+        m.IntValue(0),
+        m.ArrayValue([
+          m.StringValue(ids.session_id_to_string(key.session)),
+          m.StringValue(ids.op_id_to_string(key.operation)),
+          m.StringValue(key.step),
+          m.IntValue(key.source_index),
+          m.StringValue(key.argument_digest),
+          m.StringValue(ids.entry_id_to_string(key.result_entry)),
+        ]),
+        role_value(role),
+      ])
+    SystemChild(session:, service:, ordinal:) ->
+      m.ArrayValue([
+        m.IntValue(1),
+        m.IntValue(1),
+        m.StringValue(ids.session_id_to_string(session)),
+        m.StringValue(service),
+        m.IntValue(ordinal),
+      ])
+  }
+}
+
+/// Encodes one bounded canonical child identity, containing no live authority.
+///
+/// ## Examples
+///
+/// `decode_child(encode_child(origin))` preserves every original field.
+pub fn encode_child(
+  origin: ChildOrigin,
+) -> Result(BitArray, corruption.CorruptionReport) {
+  use bytes <- result.try(
+    m.encode(child_value(origin))
+    |> result.map_error(fn(_) { child_corruption("encodable child identity") }),
+  )
+  use Nil <- result.try(child_size(bytes))
+  Ok(bytes)
+}
+
+/// Scans before term allocation and reconstructs through the checked constructors.
+///
+/// ## Examples
+///
+/// Nonminimal scalar widths, unknown roles and surplus fields are refused.
+pub fn decode_child(
+  bytes: BitArray,
+) -> Result(ChildOrigin, corruption.CorruptionReport) {
+  use Nil <- result.try(child_size(bytes))
+  use value <- result.try(bounded_msgpack.decode(bytes))
+  use origin <- result.try(decode_child_value(value))
+  use canonical <- result.try(encode_child(origin))
+  case canonical == bytes {
+    True -> Ok(origin)
+    False -> Error(child_corruption("canonical complete child identity"))
+  }
+}
+
+/// Decodes a nested original identity after its enclosing raw preflight.
+/// No abbreviated address or current-generation lookup supplies missing fields.
+///
+/// ## Examples
+///
+/// A changed tool digest remains part of the decoded complete parent.
+pub fn decode_child_value(
+  value: m.MsgPackValue,
+) -> Result(ChildOrigin, corruption.CorruptionReport) {
+  use child <- result.try(
+    parse_child(value) |> result.map_error(child_corruption),
+  )
+
+  // UUID parsers also accept uppercase input. Reprojection retains one spelling.
+  case child_value(child) == value {
+    True -> Ok(child)
+    False -> Error(child_corruption("canonical complete child identity"))
+  }
+}
+
+fn parse_child(value: m.MsgPackValue) -> Result(ChildOrigin, String) {
+  case value {
+    m.ArrayValue([
+      m.IntValue(1),
+      m.IntValue(0),
+      m.ArrayValue([
+        m.StringValue(session),
+        m.StringValue(operation),
+        m.StringValue(step),
+        m.IntValue(index),
+        m.StringValue(digest),
+        m.StringValue(entry),
+      ]),
+      role,
+    ]) -> {
+      use session <- result.try(
+        ids.parse_session_id(session)
+        |> result.replace_error("child session UUIDv7"),
+      )
+      use operation <- result.try(
+        ids.parse_op_id(operation)
+        |> result.replace_error("child operation UUIDv7"),
+      )
+      use entry <- result.try(
+        ids.parse_entry_id(entry) |> result.replace_error("child result UUIDv7"),
+      )
+      use parent <- result.try(key(
+        session,
+        operation,
+        step,
+        index,
+        digest,
+        entry,
+      ))
+      use role <- result.try(parse_role(role))
+      tool_child(parent, role)
+    }
+    m.ArrayValue([
+      m.IntValue(1),
+      m.IntValue(1),
+      m.StringValue(session),
+      m.StringValue(service),
+      m.IntValue(ordinal),
+    ]) -> {
+      use session <- result.try(
+        ids.parse_session_id(session)
+        |> result.replace_error("system session UUIDv7"),
+      )
+      system_child(session, service, ordinal)
+    }
+    _ -> Error("versioned complete child identity")
+  }
+}
+
+fn role_value(role: ChildRole) -> m.MsgPackValue {
+  let value = case role {
+    Compile -> json.Array([json.String("compile")])
+    CompileRewrite -> json.Array([json.String("compile_unused_import_rewrite")])
+    Launch -> json.Array([json.String("launch")])
+    CompileCommand -> json.Array([json.String("compile_command")])
+    CompileRewriteCommand ->
+      json.Array([json.String("compile_unused_import_rewrite_command")])
+    SatelliteCommand -> json.Array([json.String("satellite_command")])
+    Capability(ordinal) -> json.Array([json.String("cap"), json.Int(ordinal)])
+    Workspace(ordinal) ->
+      json.Array([json.String("workspace"), json.Int(ordinal)])
+    AdmittedCapability(name, ordinal, purpose) ->
+      json.Array([
+        json.String("admitted_cap"),
+        json.String(name),
+        json.Int(ordinal),
+        json.String(case purpose {
+          SemanticWorkspace -> "workspace"
+          NativeCommand -> "native"
+        }),
+      ])
+  }
+  json_wire.of_json(value)
+}
+
+fn parse_role(value: m.MsgPackValue) -> Result(ChildRole, String) {
+  case value {
+    m.ArrayValue([m.StringValue("compile")]) -> Ok(Compile)
+    m.ArrayValue([m.StringValue("compile_unused_import_rewrite")]) ->
+      Ok(CompileRewrite)
+    m.ArrayValue([m.StringValue("launch")]) -> Ok(Launch)
+    m.ArrayValue([m.StringValue("compile_command")]) -> Ok(CompileCommand)
+    m.ArrayValue([m.StringValue("compile_unused_import_rewrite_command")]) ->
+      Ok(CompileRewriteCommand)
+    m.ArrayValue([m.StringValue("satellite_command")]) -> Ok(SatelliteCommand)
+    m.ArrayValue([m.StringValue("cap"), m.IntValue(ordinal)]) ->
+      Ok(Capability(ordinal))
+    m.ArrayValue([m.StringValue("workspace"), m.IntValue(ordinal)]) ->
+      Ok(Workspace(ordinal))
+    m.ArrayValue([
+      m.StringValue("admitted_cap"),
+      m.StringValue(name),
+      m.IntValue(ordinal),
+      m.StringValue("workspace"),
+    ]) -> Ok(AdmittedCapability(name, ordinal, SemanticWorkspace))
+    m.ArrayValue([
+      m.StringValue("admitted_cap"),
+      m.StringValue(name),
+      m.IntValue(ordinal),
+      m.StringValue("native"),
+    ]) -> Ok(AdmittedCapability(name, ordinal, NativeCommand))
+    _ -> Error("closed child role")
+  }
+}
+
+fn child_size(bytes: BitArray) -> Result(Nil, corruption.CorruptionReport) {
+  case
+    bit_array.bit_size(bytes) > 0
+    && bit_array.bit_size(bytes) % 8 == 0
+    && bit_array.byte_size(bytes) <= 8192
+  {
+    True -> Ok(Nil)
+    False ->
+      Error(child_corruption("complete child identity at most 8192 bytes"))
+  }
+}
+
+fn child_corruption(expected: String) -> corruption.CorruptionReport {
+  corruption.report(
+    at: "core/remote_tool.decode_child",
+    on: "child",
+    expected:,
+    context: "",
+  )
 }
