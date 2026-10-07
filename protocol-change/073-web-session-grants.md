@@ -202,7 +202,10 @@ cannot supply it. `gateway.approval_via` records `login` with that fingerprint
 when it is present and otherwise the kind of the digest as before. A page opened
 with `loom ui --no-remember` has no sign-in and still records `device`: the
 credential it holds is the terminal's, and no browser login exists to name or to
-revoke. The wire format and the fact are unchanged.
+revoke. The wire format and the fact are unchanged. The fingerprint is
+the one the page was opened with: a `loom ui` page is admitted by the
+terminal's credential, so it stays open after its sign-in is revoked, and
+a grant it makes afterwards is listed as made from that revoked sign-in.
 
 A second finding of the same critique (F177) is outside this proposal's
 mechanism but touches what the page lets a person remember. The escalation
