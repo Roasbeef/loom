@@ -23,6 +23,13 @@
 ////    result.
 //// 6. At compaction, `hookserve_compaction_note` adds the `PreCompact` note.
 ////
+//// Registered assembly uses `load_registered` → `registered_serving` →
+//// `wire_registered`, over already acquired source bytes and the same gates.
+//// `registered_outcomes` indexes the original declaration inventory, and
+//// `run_occurrence` fixes every handler plan before one ordinary CAS/readback.
+//// Its actual managed worker allocates original one-use system permissions;
+//// historical bytes and mutable runner lookup cannot supply that authority.
+////
 //// # The load, and what trust means here
 ////
 //// Three sources merge, in the precedence the design note fixes: the
@@ -74,18 +81,22 @@ import client/hookdecisions
 import client/hookrunner
 import client/hooktrust
 import client/hookwire
+import client/registered_system_work as work
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
 import gleam/dict
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import runtime/api
 import runtime/effects.{type Effects}
 import runtime/residency
 import simplifile
+import weft
 import weft/actor
 
 /// One discovered source file, before parsing: where it is and which
@@ -143,6 +154,48 @@ pub type Serving {
     /// declarations it ignores, and events with no moment to fire on.
     notes: List(hookcompat.LoadNote),
   )
+}
+
+/// Actual acquired bytes supplied by trusted registered assembly, without probes.
+@internal
+pub type AcquiredDocument {
+  /// Absence keeps its original acquisition index without inventing a source.
+  AcquiredDocument(
+    /// The actual source label, parser shape and original trust class.
+    located: Located,
+    /// Already acquired complete bytes, or actual absence at this source position.
+    text: Option(String),
+  )
+}
+
+/// Original indexed definitions admitted by the existing source trust policy.
+@internal
+pub opaque type VerifiedSources {
+  VerifiedSources(
+    configs: List(hookwire.IndexedConfig),
+    inventory: JsonValue,
+    skipped: List(Skipped),
+    notes: List(hookcompat.LoadNote),
+  )
+}
+
+/// Registered execution retains the actual ready runner and original fact writer.
+@internal
+pub opaque type RegisteredServing {
+  RegisteredServing(
+    sources: VerifiedSources,
+    wiring: hookwire.Wiring,
+    runner: hookrunner.RegisteredContext,
+    facts: api.FactHandle,
+    entropy: fn() -> Int,
+  )
+}
+
+// This choice lives behind the unchanged local public constructors. A registered
+// gate can never resolve a replacement runner or convert historical work to live.
+type GateServing {
+  LocalServing(Serving)
+  RegisteredServingMode(RegisteredServing)
 }
 
 /// One located source that contributed no hooks, and why.
@@ -430,35 +483,39 @@ pub fn tool_gate(
   call_id: String,
   arguments: JsonValue,
 ) -> hookdecisions.ToolPermission {
-  let matched =
-    hookwire.matching_handlers(
-      serving.wiring,
-      hookcompat.PreToolUse,
-      hookwire.claude_tool_name(tool),
-    )
+  tool_gate_with(LocalServing(serving), tool, call_id, arguments)
+}
+
+// Both construction paths share this event payload and its exact decision fold.
+fn tool_gate_with(
+  serving: GateServing,
+  tool: String,
+  call_id: String,
+  arguments: JsonValue,
+) -> hookdecisions.ToolPermission {
   let payload =
     hookwire.common_payload(
-      serving.wiring,
+      wiring_of(serving),
       hookcompat.PreToolUse,
       hookwire.tool_fields(tool, arguments, call_id),
     )
-  matched
-  |> list.filter_map(fn(pair) {
-    let #(_description, handler) = pair
-    use outcome <- result.try(hookwire.ask(
-      serving.runner,
+  let outcomes =
+    outcomes(
+      serving,
       hookcompat.PreToolUse,
-      handler,
+      hookwire.claude_tool_name(tool),
       payload,
-    ))
-    Ok(hookdecisions.tool_permission(
-      outcome.code,
-      outcome.stderr,
-      outcome.stdout,
-      outcome.ending,
-    ))
-  })
-  |> hookwire.combine_permissions
+    )
+  let decisions =
+    list.map(outcomes, fn(outcome) {
+      hookdecisions.tool_permission(
+        outcome.code,
+        outcome.stderr,
+        outcome.stdout,
+        outcome.ending,
+      )
+    })
+  decisions |> hookwire.combine_permissions
 }
 
 /// The `Stop` continuation: asks every matching handler whether the
@@ -478,30 +535,31 @@ pub fn stop_gate(
   serving: Serving,
   cycle: hookwire.StopCycle,
 ) -> hookdecisions.Continuation {
-  let matched = hookwire.matching_handlers(serving.wiring, hookcompat.Stop, "")
+  stop_gate_with(LocalServing(serving), cycle)
+}
+
+// Both construction paths share this event payload and its exact decision fold.
+fn stop_gate_with(
+  serving: GateServing,
+  cycle: hookwire.StopCycle,
+) -> hookdecisions.Continuation {
   let payload =
     hookwire.common_payload(
-      serving.wiring,
+      wiring_of(serving),
       hookcompat.Stop,
       hookwire.stop_fields(cycle),
     )
-  matched
-  |> list.filter_map(fn(pair) {
-    let #(_description, handler) = pair
-    use outcome <- result.try(hookwire.ask(
-      serving.runner,
-      hookcompat.Stop,
-      handler,
-      payload,
-    ))
-    Ok(hookdecisions.continuation(
-      outcome.code,
-      outcome.stderr,
-      outcome.stdout,
-      outcome.ending,
-    ))
-  })
-  |> hookwire.combine_continuations
+  let outcomes = outcomes(serving, hookcompat.Stop, "", payload)
+  let decisions =
+    list.map(outcomes, fn(outcome) {
+      hookdecisions.continuation(
+        outcome.code,
+        outcome.stderr,
+        outcome.stdout,
+        outcome.ending,
+      )
+    })
+  decisions |> hookwire.combine_continuations
 }
 
 /// The `SessionStart` context: plain stdout and `additionalContext`
@@ -511,31 +569,31 @@ pub fn session_context(
   serving: Serving,
   source: String,
 ) -> hookdecisions.ContextInjection {
-  let matched =
-    hookwire.matching_handlers(serving.wiring, hookcompat.SessionStart, source)
+  session_context_with(LocalServing(serving), source)
+}
+
+// Both construction paths share this event payload and its exact decision fold.
+fn session_context_with(
+  serving: GateServing,
+  source: String,
+) -> hookdecisions.ContextInjection {
   let payload =
-    hookwire.common_payload(serving.wiring, hookcompat.SessionStart, [
+    hookwire.common_payload(wiring_of(serving), hookcompat.SessionStart, [
       #("source", json.String(source)),
     ])
-  matched
-  |> list.filter_map(fn(pair) {
-    let #(_description, handler) = pair
-    use outcome <- result.try(hookwire.ask(
-      serving.runner,
-      hookcompat.SessionStart,
-      handler,
-      payload,
-    ))
-    Ok(hookdecisions.context_injection(
-      "SessionStart",
-      hookdecisions.CannotBlock,
-      outcome.code,
-      outcome.stderr,
-      outcome.stdout,
-      outcome.ending,
-    ))
-  })
-  |> hookwire.combine_injections
+  let outcomes = outcomes(serving, hookcompat.SessionStart, source, payload)
+  let decisions =
+    list.map(outcomes, fn(outcome) {
+      hookdecisions.context_injection(
+        "SessionStart",
+        hookdecisions.CannotBlock,
+        outcome.code,
+        outcome.stderr,
+        outcome.stdout,
+        outcome.ending,
+      )
+    })
+  decisions |> hookwire.combine_injections
 }
 
 /// The `PostToolUse` feedback for one settled call.
@@ -545,66 +603,69 @@ pub fn tool_feedback(
   call_id: String,
   arguments: JsonValue,
 ) -> hookwire.Feedback {
-  let matched =
-    hookwire.matching_handlers(
-      serving.wiring,
-      hookcompat.PostToolUse,
-      hookwire.claude_tool_name(tool),
-    )
+  tool_feedback_with(LocalServing(serving), tool, call_id, arguments)
+}
+
+// Both construction paths share this event payload and its exact decision fold.
+fn tool_feedback_with(
+  serving: GateServing,
+  tool: String,
+  call_id: String,
+  arguments: JsonValue,
+) -> hookwire.Feedback {
   let payload =
     hookwire.common_payload(
-      serving.wiring,
+      wiring_of(serving),
       hookcompat.PostToolUse,
       hookwire.tool_fields(tool, arguments, call_id),
     )
-  matched
-  |> list.filter_map(fn(pair) {
-    let #(_description, handler) = pair
-    use outcome <- result.try(hookwire.ask(
-      serving.runner,
+  let outcomes =
+    outcomes(
+      serving,
       hookcompat.PostToolUse,
-      handler,
+      hookwire.claude_tool_name(tool),
       payload,
-    ))
-    Ok(hookdecisions.tool_feedback(
-      outcome.code,
-      outcome.stderr,
-      outcome.stdout,
-      outcome.ending,
-    ))
-  })
-  |> hookwire.combine_feedback
+    )
+  let decisions =
+    list.map(outcomes, fn(outcome) {
+      hookdecisions.tool_feedback(
+        outcome.code,
+        outcome.stderr,
+        outcome.stdout,
+        outcome.ending,
+      )
+    })
+  decisions |> hookwire.combine_feedback
 }
 
 /// The `PreCompact` note for one compaction, by its trigger's
 /// Claude-side name.
 pub fn compaction_note(serving: Serving, trigger: String) -> Option(String) {
-  let matched =
-    hookwire.matching_handlers(serving.wiring, hookcompat.PreCompact, trigger)
+  compaction_note_with(LocalServing(serving), trigger)
+}
+
+// Both construction paths share this event payload and its exact decision fold.
+fn compaction_note_with(
+  serving: GateServing,
+  trigger: String,
+) -> Option(String) {
   let payload =
-    hookwire.common_payload(serving.wiring, hookcompat.PreCompact, [
+    hookwire.common_payload(wiring_of(serving), hookcompat.PreCompact, [
       #("trigger", json.String(trigger)),
     ])
-  let notes =
-    matched
-    |> list.filter_map(fn(pair) {
-      let #(_description, handler) = pair
-      use outcome <- result.try(hookwire.ask(
-        serving.runner,
-        hookcompat.PreCompact,
-        handler,
-        payload,
-      ))
-      Ok(hookdecisions.context_injection(
+  let outcomes = outcomes(serving, hookcompat.PreCompact, trigger, payload)
+  let decisions =
+    list.map(outcomes, fn(outcome) {
+      hookdecisions.context_injection(
         "PreCompact",
         hookdecisions.CannotBlock,
         outcome.code,
         outcome.stderr,
         outcome.stdout,
         outcome.ending,
-      ))
+      )
     })
-  case hookwire.combine_injections(notes) {
+  case hookwire.combine_injections(decisions) {
     hookdecisions.Injected(text) -> Some(text)
     hookdecisions.NoContext | hookdecisions.Blocked(_) -> None
   }
@@ -647,6 +708,16 @@ pub const stop_block_cap = 8
 pub fn wire(
   effects: Effects,
   serving: Serving,
+  clock: Clock,
+  stops: fn(OpId) -> Bool,
+) -> Result(Effects, String) {
+  wire_with(effects, LocalServing(serving), clock, stops)
+}
+
+// The closed execution choice does not alter any harness gate ordering.
+fn wire_with(
+  effects: Effects,
+  serving: GateServing,
   clock: Clock,
   stops: fn(OpId) -> Bool,
 ) -> Result(Effects, String) {
@@ -799,7 +870,7 @@ type RunPosition {
 // field describes, since an operation is one conversational run.
 fn stop_block(
   operation: String,
-  serving: Serving,
+  serving: GateServing,
   counters: Subject(CounterMessage),
 ) -> hookdecisions.Continuation {
   let placed =
@@ -813,7 +884,7 @@ fn stop_block(
     // question, so a hook that trusts the field stops asking at the
     // moment the cap would have stopped asking anyway.
     False ->
-      stop_gate(serving, case placed {
+      stop_gate_with(serving, case placed {
         0 -> hookwire.FirstBlock
         _ -> hookwire.AlreadyBlocked
       })
@@ -863,7 +934,7 @@ fn hook_message(
 // `clear`) have no moment here, which is why the one this does fire
 // on is the one it names.
 fn started_context(
-  serving: Serving,
+  serving: GateServing,
   clock: Clock,
   counters: Subject(CounterMessage),
 ) -> List(AgentMessage) {
@@ -871,7 +942,7 @@ fn started_context(
     LaterRun -> []
 
     FirstRun ->
-      case session_context(serving, "startup") {
+      case session_context_with(serving, "startup") {
         hookdecisions.Injected(text) -> [
           hook_message(hookcompat.SessionStart, text, clock),
         ]
@@ -888,10 +959,10 @@ fn position(counters: Subject(CounterMessage)) -> RunPosition {
 
 // The PreCompact note for one cue, in the cue's own trigger names.
 fn hookserve_compaction_note(
-  serving: Serving,
+  serving: GateServing,
   cue: effects.CompactionCue,
 ) -> Option(String) {
-  compaction_note(serving, trigger_of(cue.cause))
+  compaction_note_with(serving, trigger_of(cue.cause))
 }
 
 fn trigger_of(cause: effects.CompactionCause) -> String {
@@ -908,7 +979,7 @@ fn trigger_of(cause: effects.CompactionCause) -> String {
 // a satellite for nothing and invites a second, contradictory
 // reason.
 fn cleared(
-  serving: Serving,
+  serving: GateServing,
   clear: fn(effects.ClearanceQuery) -> effects.Clearance,
   query: effects.ClearanceQuery,
 ) -> effects.Clearance {
@@ -916,7 +987,12 @@ fn cleared(
     effects.ClearanceRefused(..) as refused -> refused
     effects.Cleared(effective_arguments: _, replay: _) as clearance -> {
       let verdict =
-        tool_gate(serving, query.call.name, query.call.id, query.call.arguments)
+        tool_gate_with(
+          serving,
+          query.call.name,
+          query.call.id,
+          query.call.arguments,
+        )
       case verdict {
         hookdecisions.Proceed -> clearance
         hookdecisions.Deny(reason) ->
@@ -988,7 +1064,7 @@ fn recleared(
 // beside the original in one attributed text rather than three
 // fields.
 fn ran(
-  serving: Serving,
+  serving: GateServing,
   outcome: effects.ToolOutcome,
   run: effects.ToolRun,
 ) -> effects.ToolOutcome {
@@ -996,7 +1072,7 @@ fn ran(
     effects.ToolFailed(..) -> outcome
     effects.ToolCompleted(result:, terminate:) -> {
       let feedback =
-        tool_feedback(serving, run.call.name, run.call.id, run.arguments)
+        tool_feedback_with(serving, run.call.name, run.call.id, run.arguments)
       case feedback.replacement, feedback.context, feedback.reason {
         None, None, None -> outcome
         _, _, _ ->
@@ -1024,6 +1100,252 @@ fn retexted(result: AgentMessage, feedback: hookwire.Feedback) -> AgentMessage {
         content: annotated(original.content, feedback),
       )
     _ -> result
+  }
+}
+
+/// Parses acquired bytes and applies the existing exact trust rules.
+/// Only the configured owner trust record is read; document paths are labels.
+///
+/// ## Examples
+///
+/// `load_registered(documents, trust_root)` never discovers executor paths locally.
+@internal
+pub fn load_registered(
+  documents: List(AcquiredDocument),
+  trust_root: Option(String),
+) -> VerifiedSources {
+  let readings =
+    list.index_map(documents, fn(document, index) {
+      let reading = case document.text {
+        None -> Absent
+        Some(text) -> parsed(document.located, trust_root, text)
+      }
+      #(index, document.located, reading)
+    })
+  let #(configs, skipped, notes, inventory) =
+    list.fold(readings, #([], [], [], []), fn(state, one) {
+      let #(configs, skipped, notes, inventory) = state
+      let #(index, located, reading) = one
+      let source = [
+        #("index", json.Int(index)),
+        #("label", json.String(located.path)),
+        #("origin", json.String(hooktrust.origin_name(located.origin))),
+      ]
+      case reading {
+        Absent -> #(configs, skipped, notes, [
+          json.Object([#("status", json.String("absent")), ..source]),
+          ..inventory
+        ])
+        Refused(reason) -> #(
+          configs,
+          [Skipped(located.path, reason), ..skipped],
+          notes,
+          [
+            json.Object([#("status", json.String("refused")), ..source]),
+            ..inventory
+          ],
+        )
+        Loaded(config, found) -> #(
+          [hookwire.IndexedConfig(index, config), ..configs],
+          skipped,
+          [found, ..notes],
+          [
+            json.Object([
+              #("status", json.String("trusted")),
+              #("definition", json.String(hookcompat.to_toml(config))),
+              #("hash", json.String(hookcompat.hash(config))),
+              ..source
+            ]),
+            ..inventory
+          ],
+        )
+      }
+    })
+  VerifiedSources(
+    list.reverse(configs),
+    json.Array(list.reverse(inventory)),
+    list.reverse(skipped),
+    list.reverse(notes) |> list.flatten,
+  )
+}
+
+/// Constructs the registered gate over original verified documents and writer.
+/// Payload coordinates must equal the runner's actual captured coordinates.
+///
+/// ## Examples
+///
+/// `registered_serving(sources, wiring, runner, facts, entropy)` selects no fallback.
+@internal
+pub fn registered_serving(
+  sources: VerifiedSources,
+  wiring: hookwire.Wiring,
+  runner: hookrunner.RegisteredContext,
+  facts: api.FactHandle,
+  entropy: fn() -> Int,
+) -> Result(RegisteredServing, work.Error) {
+  let #(_, _, context, _) = hookrunner.registered_identity(runner)
+  case
+    wiring.session_id == context.session_id
+    && wiring.workspace == context.workspace
+    && wiring.transcript_path == context.transcript_path
+  {
+    True ->
+      Ok(RegisteredServing(
+        sources,
+        hookwire.Wiring(
+          ..wiring,
+          config: hookcompat.merge(
+            list.map(sources.configs, fn(source) { source.config }),
+          ),
+        ),
+        runner,
+        facts,
+        entropy,
+      ))
+    False -> Error(work.Refused)
+  }
+}
+
+/// Composes all five existing gate decisions over registered original custody.
+///
+/// ## Examples
+///
+/// `wire_registered(effects, serving, clock, stops)` preserves the harness priority.
+@internal
+pub fn wire_registered(
+  effects: Effects,
+  serving: RegisteredServing,
+  clock: Clock,
+  stops: fn(OpId) -> Bool,
+) -> Result(Effects, String) {
+  wire_with(effects, RegisteredServingMode(serving), clock, stops)
+}
+
+fn wiring_of(serving: GateServing) -> hookwire.Wiring {
+  case serving {
+    LocalServing(serving) -> serving.wiring
+    RegisteredServingMode(serving) -> serving.wiring
+  }
+}
+
+// Each gate builds its payload and applies its reducer once. Only this closed
+// execution arm differs, so authority changes cannot bypass a legacy gate rule.
+fn outcomes(
+  serving: GateServing,
+  event: hookcompat.Event,
+  field: String,
+  payload: JsonValue,
+) -> List(hookrunner.Outcome) {
+  case serving {
+    LocalServing(serving) ->
+      hookwire.matching_handlers(serving.wiring, event, field)
+      |> list.filter_map(fn(pair) {
+        hookwire.ask(serving.runner, event, pair.1, payload)
+      })
+    RegisteredServingMode(serving) ->
+      registered_outcomes(serving, event, field, payload)
+  }
+}
+
+fn registered_outcomes(
+  serving: RegisteredServing,
+  event: hookcompat.Event,
+  field: String,
+  payload: JsonValue,
+) -> List(hookrunner.Outcome) {
+  let matched = hookwire.matching_indexed(serving.sources.configs, event, field)
+  case matched {
+    [] -> []
+    [_, ..] -> run_occurrence(serving, event, matched, payload)
+  }
+}
+
+fn run_occurrence(
+  serving: RegisteredServing,
+  event: hookcompat.Event,
+  matched: List(hookwire.IndexedHandler),
+  payload: JsonValue,
+) -> List(hookrunner.Outcome) {
+  let runner = serving.runner
+  let facts = serving.facts
+  let #(owner, association, context, room) =
+    hookrunner.registered_identity(runner)
+
+  // The actual caller owns cancellation before retention or any handler effect.
+  let caller = process.self()
+  let #(accepted_ms, _) = clock.read(context.clock)
+  let #(id, generator) =
+    ids.mint_entry(ids.generator(context.clock, serving.entropy()))
+  let #(_, plans) =
+    list.map_fold(matched, generator, fn(generator, selected) {
+      let #(id, generator) = ids.mint_entry(generator)
+      let handler = selected.handler
+      let plan =
+        hookrunner.prepare_registered(
+          runner,
+          hookrunner.Command(
+            option.unwrap(handler.command, ""),
+            handler.args,
+            handler.timeout_s,
+          ),
+          hookwire.default_timeout_s(event),
+          accepted_ms,
+          selected.position,
+          id,
+          selected.definition,
+        )
+      #(generator, plan)
+    })
+  let backstop =
+    list.fold(plans, accepted_ms, fn(cap, plan) {
+      int.max(cap, plan.spec.budget.deadline_ms)
+    })
+    + room
+
+  // All declarations and deadlines are fixed before the sole occurrence write.
+  // Source and stdin bytes remain complete ordinary data rather than intent data.
+  let input =
+    work.HookOccurrenceInput(
+      id,
+      hookcompat.event_name(event),
+      serving.sources.inventory,
+      json.to_string(payload),
+      plans,
+      owner,
+      association,
+      caller,
+      accepted_ms,
+      backstop,
+    )
+  let #(now, _) = clock.read(context.clock)
+  case backstop > now {
+    False -> []
+    True -> {
+      let task = fn() {
+        use retained <- result.try(work.retain_hook_occurrence(facts, input))
+        Ok(
+          work.hook_works(retained)
+          |> list.filter_map(fn(work) {
+            hookrunner.run_registered(runner, work)
+          }),
+        )
+      }
+      weft.new([task])
+      |> weft.cancel_when_exits(caller)
+      |> weft.deadline(backstop - now)
+      |> weft.start
+      |> list.flat_map(fn(outcome) {
+        case outcome {
+          weft.Completed(value:, ..) -> value
+          weft.Failed(..)
+          | weft.Crashed(..)
+          | weft.Abandoned(..)
+          | weft.NeverStarted(..)
+          | weft.DrainProofLost(..)
+          | weft.CancellationUnconfirmed(..) -> []
+        }
+      })
+    }
   }
 }
 

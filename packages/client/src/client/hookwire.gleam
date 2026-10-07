@@ -35,6 +35,7 @@
 import client/hookcompat.{type Config, type Event}
 import client/hookdecisions
 import client/hookrunner
+import client/registered_system_work as work
 import core/json.{type JsonValue, Bool, Object, String}
 import gleam/list
 import gleam/option.{type Option}
@@ -63,6 +64,93 @@ pub type Wiring {
     /// The session workspace, the `cwd` field.
     workspace: String,
   )
+}
+
+/// A trust-checked original document at its pre-filter acquisition position.
+@internal
+pub type IndexedConfig {
+  /// The source index survives absent and refused documents ahead of this one.
+  IndexedConfig(
+    /// Original acquisition position before absent or refused sources were removed.
+    source_index: Int,
+    /// The full configuration accepted by the existing source trust checks.
+    config: Config,
+  )
+}
+
+/// One selected command still addresses its full original parsed inventory.
+@internal
+pub type IndexedHandler {
+  /// The full source and matcher group remain bound by the original definition.
+  IndexedHandler(
+    /// Original source, parsed event, group and handler positions.
+    position: work.HookPosition,
+    /// The actual original source label and trust class.
+    source: hookcompat.Source,
+    /// The complete parsed source's existing canonical trust digest.
+    config_hash: String,
+    /// Canonical selected event, matcher group and full handler declaration.
+    definition: String,
+    /// The original parsed command handler, including args and timeout.
+    handler: hookcompat.Handler,
+  )
+}
+
+/// Matches with the legacy rules while indexing every declaration beforehand.
+///
+/// ## Examples
+///
+/// `matching_indexed(configs, PreToolUse, "Bash")` never renumbers skipped rows.
+@internal
+pub fn matching_indexed(
+  configs: List(IndexedConfig),
+  event: Event,
+  field: String,
+) -> List(IndexedHandler) {
+  list.flat_map(configs, fn(source) {
+    let hash = hookcompat.hash(source.config)
+    source.config.entries
+    |> list.index_map(fn(entry, entry_index) {
+      let #(declared, groups) = entry
+      groups
+      |> list.index_map(fn(group, group_index) {
+        group.handlers
+        |> list.index_map(fn(handler, handler_index) {
+          let definition =
+            hookcompat.to_toml(hookcompat.Config(
+              entries: [
+                #(declared, [hookcompat.Group(group.matcher, [handler])]),
+              ],
+              source: source.config.source,
+            ))
+          #(
+            declared == event && group_matches(group, field),
+            IndexedHandler(
+              work.HookPosition(
+                source.source_index,
+                entry_index,
+                group_index,
+                handler_index,
+              ),
+              source.config.source,
+              hash,
+              definition,
+              handler,
+            ),
+          )
+        })
+      })
+      |> list.flatten
+    })
+    |> list.flatten
+    |> list.filter_map(fn(pair) {
+      let #(matching, indexed) = pair
+      case matching && indexed.handler.kind == hookcompat.Command {
+        True -> Ok(indexed)
+        False -> Error(Nil)
+      }
+    })
+  })
 }
 
 /// Whether a matcher group wants this occurrence, by the contract's
