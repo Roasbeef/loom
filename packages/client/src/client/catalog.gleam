@@ -160,6 +160,7 @@
 
 import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
 import client/daemon/limits as daemon_limits
+import client/distribution
 import client/lsp/profile.{type LspServer}
 import client/peer_defaults
 import codemode/vet/policy as vet_policy
@@ -450,12 +451,13 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
-      "profiles", "peers", "retry",
+      "profiles", "peers", "retry", "distribution",
     ],
     "the top level",
   ))
   use Nil <- result.try(validate_daemon(document))
   use Nil <- result.try(validate_peers(document))
+  use Nil <- result.try(validate_distribution(document))
   use model_tables <- result.try(
     table_entries(document, "models")
     |> result.replace_error("the catalogue needs a [models.<name>] table"),
@@ -485,6 +487,15 @@ fn validate_daemon(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
 // validated wherever the file is read, so a typo is refused by every parser.
 fn validate_peers(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
   peer_defaults.from_document(document) |> result.replace(Nil)
+}
+
+// `[distribution]` is the daemon owner's trust setting for Erlang distribution
+// (protocol-change/078). Only the daemon starts it, but a typo in a pin or a
+// credential path is refused wherever the file is read, as for `[peers]`.
+fn validate_distribution(
+  document: Dict(String, tom.Toml),
+) -> Result(Nil, String) {
+  distribution.from_document(document) |> result.replace(Nil)
 }
 
 // tom renders a TOML parse failure as a structured value; the server
