@@ -117,6 +117,12 @@ pub fn hidden_folders_are_refused_wherever_they_are_test() {
     == Error(creations.OutsideHome)
   assert new_folder.check_in("~/Library/Keychains", home, state)
     == Error(creations.OutsideHome)
+
+  // On a case-sensitive filesystem `~/library` is a different folder, and an
+  // absent one is refused as not a folder before its name is read. Creating it
+  // makes the name the only reason left, on macOS and Linux alike.
+  let assert Ok(Nil) = simplifile.create_directory_all(home <> "/library")
+    as "a lower-case library"
   assert new_folder.check_in("~/library", home, state)
     == Error(creations.OutsideHome)
 
