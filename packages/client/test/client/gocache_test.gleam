@@ -106,6 +106,8 @@ pub fn the_mirror_key_decodes_strictly_test() {
   assert result.is_error(parse("go_module_mirror = \"/has space/mod\"\n"))
   assert result.is_error(parse("go_module_mirror = \"/a,b\"\n"))
   assert result.is_error(parse("go_module_mirror = \"/\"\n"))
+  assert result.is_error(parse("go_module_mirror = \"/a/../b\"\n"))
+  assert result.is_error(parse("go_module_mirror = \"/a/./b\"\n"))
   assert result.is_error(parse("go_module_mirror = 3\n"))
   assert result.is_error(parse("go_cache_limit_mib = 0\n"))
   assert result.is_error(parse("go_cache_limit_mib = \"big\"\n"))
@@ -175,16 +177,29 @@ pub fn tools_may_not_set_names_the_server_owns_test() {
     gocache.fault(mirrored, "/work", [], tools_naming: ["GOPROXY"])
 }
 
-pub fn a_cache_over_the_limit_is_renamed_and_replaced_test() {
-  let root = scratch("trim")
-  let caches = caches_at(root, 1)
+// A root one level below a parent the test owns, like the real layout
+// `<cache>/loom/workspace/<digest>`.
+fn rooted(name: String) -> #(String, gocache.GoCaches) {
+  let base = scratch(name)
+  let root = base <> "/workspace/abc"
+  let assert Ok(Nil) = simplifile.create_directory_all(root)
+  #(base, caches_at(root, 1))
+}
+
+pub fn a_cache_over_the_limit_is_renamed_out_of_the_root_and_replaced_test() {
+  let #(base, caches) = rooted("trim")
+  let root = caches.root
   let build = gocache.build_cache(caches)
   let assert Ok(Nil) = simplifile.create_directory_all(build <> "/ab")
   let assert Ok(Nil) = simplifile.write(build <> "/ab/entry", "object")
 
   let assert Ok(gocache.Retired(size_kib: 5000, trash:)) =
     gocache.trim(caches, measuring: fn(_) { Ok(5000) }, unique: "t1")
-  assert trash == root <> "/trash-t1"
+
+  // The retired tree is a sibling of the root, in the parent the jail
+  // cannot write, and not anywhere beneath the root.
+  assert trash == root <> ".trash-t1"
+  assert !string.starts_with(trash, root <> "/")
 
   // The old tree moved whole, and the replacement is empty but has Go's
   // fan-out directories so a build that already opened it can write.
@@ -197,7 +212,7 @@ pub fn a_cache_over_the_limit_is_renamed_and_replaced_test() {
   assert gocache.sweep(caches) == Ok(1)
   assert simplifile.is_directory(trash) == Ok(False)
   assert simplifile.is_directory(build) == Ok(True)
-  let _cleanup = simplifile.delete(root)
+  let _cleanup = simplifile.delete(base)
 }
 
 pub fn a_cache_within_the_limit_is_left_alone_test() {
@@ -223,17 +238,49 @@ pub fn a_failed_measurement_trims_nothing_test() {
   let _cleanup = simplifile.delete(root)
 }
 
-pub fn the_sweep_removes_a_planted_link_without_following_it_test() {
-  let root = scratch("link")
-  let caches = caches_at(root, 1)
-  let victim = root <> "/victim"
+pub fn the_sweep_never_reads_inside_the_root_test() {
+  let #(base, caches) = rooted("inside")
+  let victim = base <> "/victim"
+  let assert Ok(Nil) = simplifile.create_directory_all(victim)
+  let assert Ok(Nil) = simplifile.write(victim <> "/keep", "precious")
+
+  // A jail can name anything inside the root `trash-x`, including a link
+  // to a host directory or a directory holding one. The sweep ignores all
+  // of it: only `<digest>.trash-*` siblings of the root are candidates.
+  let assert Ok(Nil) =
+    simplifile.create_symlink(victim, caches.root <> "/trash-planted")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(caches.root <> "/trash-dir")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(victim, caches.root <> "/trash-dir/link")
+  assert gocache.sweep(caches) == Ok(0)
+  assert simplifile.is_directory(caches.root <> "/trash-dir") == Ok(True)
+  assert simplifile.read(victim <> "/keep") == Ok("precious")
+  let _cleanup = simplifile.delete(base)
+}
+
+pub fn a_link_planted_as_the_cache_is_moved_and_unlinked_not_followed_test() {
+  let #(base, caches) = rooted("link")
+  let victim = base <> "/victim"
   let assert Ok(Nil) = simplifile.create_directory_all(victim)
   let assert Ok(Nil) = simplifile.write(victim <> "/keep", "precious")
   let assert Ok(Nil) =
-    simplifile.create_symlink(victim, root <> "/trash-planted")
+    simplifile.create_symlink(victim, gocache.build_cache(caches))
+  let assert Ok(gocache.Retired(..)) =
+    gocache.trim(caches, measuring: fn(_) { Ok(5000) }, unique: "t1")
   assert gocache.sweep(caches) == Ok(1)
   assert simplifile.read(victim <> "/keep") == Ok("precious")
-  let _cleanup = simplifile.delete(root)
+  let _cleanup = simplifile.delete(base)
+}
+
+pub fn a_workspace_that_contains_the_cache_place_gets_no_private_caches_test() {
+  // `$HOME` as the workspace makes the root part of a tree the jail writes.
+  assert gocache.locate(Some("/home/o/.cache"), "/home/o", None, 10_240) == None
+  assert gocache.locate(Some("/home/o/.cache"), "/home/o/", None, 10_240)
+    == None
+  assert gocache.locate(Some("/home/o"), "/home/o", None, 10_240) == None
+  let assert Some(_) =
+    gocache.locate(Some("/home/o/.cache"), "/home/o/work", None, 10_240)
 }
 
 pub fn du_output_is_read_as_kibibytes_test() {

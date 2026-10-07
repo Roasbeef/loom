@@ -3802,6 +3802,20 @@ fn assemble_in(
   // never the command's output.
   log_secret_failures(settings.secret_failures, logger)
 
+  // Logged once per session, after storage has accepted the identity, so a
+  // refused assembly stays silent.
+  case settings.go_caches {
+    Some(_) -> Nil
+    None ->
+      log.info(logger, "go_cache.disabled", [
+        field.text(
+          key: "reason",
+          value: "no per-user cache directory, or the workspace contains it;"
+            <> " Go caches stay under the tool HOME",
+        ),
+      ])
+  }
+
   // A routed advisor the gateway could not resolve is the same class of
   // event, and the same treatment: one warned line, and a session that
   // runs without a reviewer rather than a boot that refuses.

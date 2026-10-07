@@ -3930,10 +3930,13 @@ these forks because they define the same modules.
   existence and its non-overlap with the workspace, protected paths and
   the root. `[workspace] go_cache_limit_mib` (default 10240) bounds the
   build cache: at session start a weft task measures it with `du -sk`,
-  renames it to `<root>/trash-<unique>` when over the limit, creates an
-  empty replacement with Go's 256 fan-out directories, and sweeps every
-  `trash-*` with `del_dir_r` (which unlinks, never follows, a link the jail
-  planted). A rename keeps a live session's open files and fresh opens
+  renames it out of the jail-writable root to the sibling
+  `<root>.trash-<unique>` when over the limit, creates an empty
+  replacement with Go's 256 fan-out directories, and sweeps the parent's
+  `<digest>.trash-*` entries (never reading inside the root, since
+  `del_dir_r` is path based and the jail could swap a directory for a link
+  mid-delete). `locate` returns `None` when the workspace covers the cache
+  place, so the root is never inside a jail-writable tree. A rename keeps a live session's open files and fresh opens
   consistent; a build that wrote an entry before the rename and reads it
   back after fails once and a retry clears it. The caches are absent, and
   Go falls back to the tool `HOME`, when the daemon has no cache

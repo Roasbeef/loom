@@ -372,7 +372,7 @@ path or the private directory. `[tools]` may not name `GOCACHE`,
 `[workspace] go_cache_limit_mib` (default 10240) bounds the build cache.
 Go itself only drops entries unused for about five days. At session start
 a weft task measures the cache with `du -sk` and, when it is over the
-limit, renames it to `trash-<unique>` inside the same directory, creates
+limit, renames it to `<root>.trash-<unique>`, a sibling of the root in its non-writable parent, creates
 an empty replacement and deletes the renamed tree. The rename is atomic,
 so another live session in the workspace sees either the old cache or an
 empty one, never a half-deleted one: files it holds open stay readable and
@@ -381,10 +381,18 @@ Go creates on open so in-flight writes land. The residual case is a build
 that wrote an entry just before the rename and reads it back by path just
 after; that build fails once with a missing-file error and a retry
 succeeds. The trim only runs when the cache is already over the limit at
-session start. Deletion uses `del_dir_r`, which unlinks a symbolic link
-instead of following it, because the jail can write the directory and
-could plant a link named `trash-x`. A task cut short leaves a `trash-*`
-directory that the next session start sweeps. Only the build cache is
+session start. The tree leaves the root before it is deleted, because
+the root is writable from the jail and `del_dir_r` is path based: a
+jailed process could swap a directory for a link mid-delete and the
+daemon would delete the link target. The sweep lists the parent, never
+reads inside the root, and `rename` moves a planted link rather than
+following it. The residual is a jailed process that held a directory
+descriptor inside `go-build` across the rename, which can disturb the
+deletion but not redirect it. A task cut short leaves a `.trash-*`
+directory that the next session start sweeps. When the workspace
+contains the cache directory (a workspace of `$HOME`), the root would be
+jail-replaceable, so no private caches are set and Go keeps its old
+location. Only the build cache is
 trimmed: module-cache files are read-only by design, and the mirror
 refills the set.
 

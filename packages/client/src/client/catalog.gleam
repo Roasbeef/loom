@@ -1305,11 +1305,27 @@ fn mirror_path(path: String) -> Result(String, String) {
     True -> string.drop_end(path, 1)
     False -> path
   }
-  case string.starts_with(trimmed, "/"), trimmed, mirror_path_clean(trimmed) {
-    False, _, _ ->
+  let dotted =
+    list.any(string.split(trimmed, "/"), fn(segment) {
+      segment == ".." || segment == "."
+    })
+  case
+    string.starts_with(trimmed, "/"),
+    trimmed,
+    dotted,
+    mirror_path_clean(trimmed)
+  {
+    False, _, _, _ ->
       Error(place <> " = \"" <> path <> "\" must be an absolute path")
-    True, "", _ -> Error(place <> " may not be the root directory")
-    True, _, False ->
+    True, "", _, _ -> Error(place <> " may not be the root directory")
+    True, _, True, _ ->
+      Error(
+        place
+        <> " = \""
+        <> path
+        <> "\" has a . or .. segment; name the directory itself",
+      )
+    True, _, False, False ->
       Error(
         place
         <> " = \""
@@ -1317,7 +1333,7 @@ fn mirror_path(path: String) -> Result(String, String) {
         <> "\" may use only letters, digits and the characters . _ - + @ ~ /"
         <> " because it becomes part of the GOPROXY URL list",
       )
-    True, _, True -> Ok(trimmed)
+    True, _, False, True -> Ok(trimmed)
   }
 }
 

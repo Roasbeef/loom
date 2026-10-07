@@ -45,8 +45,9 @@
 //// Go removes build-cache entries unused for about five days and has no size
 //// limit, so a busy workspace grows without bound. When a session starts,
 //// a weft task measures the build cache and, over the configured limit,
-//// renames it to `<root>/trash-<unique>`, creates an empty replacement and
-//// deletes the renamed tree.
+//// renames it out of `root` to `<root>.trash-<unique>`, a sibling in the
+//// parent directory, creates an empty replacement and deletes the renamed
+//// tree.
 ////
 //// The rename is the point. Another session in the same workspace may be
 //// building against the cache while it is retired. Deleting the directory
@@ -65,14 +66,23 @@
 ////
 //// Deletion is the slow part (a large cache is hundreds of thousands of
 //// files), so it runs in a weft task off the session's critical path. It is
-//// resumable by construction: a task cut short leaves a `trash-` directory
-//// that the next session's sweep removes.
+//// resumable by construction: a task cut short leaves a `<digest>.trash-`
+//// directory that the next session's sweep removes.
 ////
-//// The sweep deletes with `file:del_dir_r`, which removes a symbolic link
-//// without following it. That matters because the root is writable from the
-//// jail, so a model can plant a link named `trash-x` pointing at a host
-//// directory. The sweep unlinks it and touches nothing behind it. Only the
-//// build cache is trimmed: module-cache files are read-only by Go's design,
+//// The retired tree leaves `root` before anything deletes it, because
+//// `root` is writable from the jail and `file:del_dir_r` is path based: it
+//// checks an entry, lists it and recurses by joined path, so a jailed
+//// process could swap a directory for a link between the check and the
+//// listing and the unjailed daemon would delete the link's target. The
+//// parent of `root` is not writable from the jail, so a tree renamed there
+//// is out of the jail's reach, and the sweep lists the parent and never
+//// reads inside `root`. `rename(2)` moves a planted link instead of
+//// following it. One residual remains: a jailed process that held a
+//// directory descriptor inside `go-build` across the rename can still
+//// modify the retired tree while it is deleted, which can fail or skip
+//// part of the deletion but cannot redirect it, since the tree is no longer
+//// reachable through any path the jail can write. Only the build cache is
+//// trimmed: module-cache files are read-only by Go's design,
 //// the set is bounded by the dependency graph, and the mirror refills it.
 
 import broker/policy
@@ -122,8 +132,9 @@ pub type Trimmed {
 /// The public proxy chain `GOPROXY` falls back to after the mirror.
 pub const fallback_proxy = "https://proxy.golang.org,direct"
 
-/// The prefix of a retired build cache's directory name inside `root`.
-const trash_prefix = "trash-"
+/// The infix of a retired build cache's directory name: the sibling of
+/// `root` named `<digest>.trash-<unique>`.
+const trash_infix = ".trash-"
 
 /// How long the whole maintenance task may run before weft cancels it. A
 /// cancelled sweep resumes at the next session start, so this bounds a
@@ -131,14 +142,21 @@ const trash_prefix = "trash-"
 const maintenance_deadline_ms = 900_000
 
 /// How long one `du` may run before it is killed.
-const measure_timeout_ms = 60_000
+const measure_timeout_ms = 300_000
 
 /// Locates the caches of `workspace`, or `None` when the daemon has no
 /// per-user cache directory to put them in. In that case the jail keeps
 /// the old behaviour and Go writes under the tool `HOME`.
 ///
-/// The digest is the one `serve.workspace_data_root` uses, so one workspace
-/// path has one identity in every place Loom derives a directory from it.
+/// The workspace path is hashed without a trailing slash, so the two
+/// spellings of one directory share one root. The digest is the same
+/// SHA-256 hex `serve.workspace_data_root` computes.
+///
+/// `None` also when the workspace covers the cache place (a workspace of
+/// `$HOME`, or an `XDG_CACHE_HOME` under it). The root would then sit inside
+/// a tree the jail writes, so the jail could replace it with a link and
+/// the daemon's host-side operations on it would follow. Such a session
+/// keeps the old behaviour.
 ///
 /// ## Examples
 ///
@@ -154,14 +172,18 @@ pub fn locate(
   mirror: Option(String),
   limit_mib: Int,
 ) -> Option(GoCaches) {
-  option.map(cache, fn(place) {
-    GoCaches(
-      root: strip_trailing_slash(place)
-        <> "/loom/workspace/"
-        <> workspace_digest(workspace),
-      mirror:,
-      limit_kib: limit_mib * 1024,
-    )
+  let workspace = strip_trailing_slash(workspace)
+  option.map(cache, strip_trailing_slash)
+  |> option.then(fn(place) {
+    case policy.covers(root: workspace, path: place) {
+      True -> None
+      False ->
+        Some(GoCaches(
+          root: place <> "/loom/workspace/" <> workspace_digest(workspace),
+          mirror:,
+          limit_kib: limit_mib * 1024,
+        ))
+    }
   })
 }
 
@@ -460,7 +482,7 @@ fn overlaps(left: String, right: String) -> Bool {
 ///
 /// ```gleam
 /// // gocache.trim(caches, measuring: fn(_) { Ok(20_000_000) }, unique: "1")
-/// // -> Ok(Retired(20_000_000, root <> "/trash-1"))
+/// // -> Ok(Retired(20_000_000, root <> ".trash-1"))
 /// ```
 ///
 pub fn trim(
@@ -485,7 +507,7 @@ fn retire(
   unique: String,
 ) -> Result(Trimmed, String) {
   let build = build_cache(caches)
-  let trash = caches.root <> "/" <> trash_prefix <> unique
+  let trash = caches.root <> trash_infix <> unique
   use Nil <- result.try(
     simplifile.rename(build, trash)
     |> result.map_error(fn(error) {
@@ -507,9 +529,10 @@ fn retire(
 // those writes land in the replacement.
 fn open_fresh(build: String) -> Result(Nil, String) {
   use Nil <- result.try(create(build))
-  list.repeat(Nil, 256)
-  |> list.index_map(fn(_, index) { index })
-  |> list.try_each(fn(index) { create(build <> "/" <> hex_pair(index)) })
+  int.range(from: 0, to: 256, with: Ok(Nil), run: fn(done, index) {
+    use Nil <- result.try(done)
+    create(build <> "/" <> hex_pair(index))
+  })
 }
 
 fn create(directory: String) -> Result(Nil, String) {
@@ -519,9 +542,10 @@ fn create(directory: String) -> Result(Nil, String) {
   })
 }
 
-/// Deletes every retired build cache under the root and returns how many.
-/// Only entries named `trash-*` are touched, whatever else a jail wrote
-/// into the root.
+/// Deletes every retired build cache of this workspace and returns how
+/// many. The parent of `root` is listed and only entries named
+/// `<digest>.trash-*` are touched. Nothing inside `root` is read or
+/// recursed into, whatever a jail wrote there.
 ///
 /// ## Examples
 ///
@@ -530,15 +554,17 @@ fn create(directory: String) -> Result(Nil, String) {
 /// ```
 ///
 pub fn sweep(caches: GoCaches) -> Result(Int, String) {
+  let parent = parent_directory(caches.root)
+  let prefix = last_segment(caches.root) <> trash_infix
   use names <- result.try(
-    simplifile.read_directory(caches.root)
+    simplifile.read_directory(parent)
     |> result.map_error(fn(error) {
-      "could not list " <> caches.root <> ": " <> string.inspect(error)
+      "could not list " <> parent <> ": " <> string.inspect(error)
     }),
   )
-  list.filter(names, string.starts_with(_, trash_prefix))
+  list.filter(names, string.starts_with(_, prefix))
   |> list.try_fold(0, fn(count, name) {
-    let path = caches.root <> "/" <> name
+    let path = parent <> "/" <> name
     use Nil <- result.try(
       simplifile.delete(path)
       |> result.map_error(fn(error) {
@@ -547,6 +573,20 @@ pub fn sweep(caches: GoCaches) -> Result(Int, String) {
     )
     Ok(count + 1)
   })
+}
+
+fn parent_directory(path: String) -> String {
+  case string.split(path, "/") |> list.reverse {
+    [_last, ..rest] -> string.join(list.reverse(rest), "/")
+    [] -> path
+  }
+}
+
+fn last_segment(path: String) -> String {
+  case string.split(path, "/") |> list.reverse {
+    [last, ..] -> last
+    [] -> path
+  }
 }
 
 /// The size of a directory in KiB, from the host's `du -sk`.
