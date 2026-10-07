@@ -93,11 +93,8 @@ is not in this list is refused.
 | `advisor` | table | What the advisor strand may read and how often it is fed. | [`[advisor]`](#advisor) |
 | `memory` | table | Memory distillation cadence and wall time. | [`[memory]`](#memory) |
 | `jobs` | table | Background job wall ceiling and idle heartbeat. | [`[jobs]`](#jobs) |
+| `retry` | table | Provider retry ladder. | [`[retry]`](#retry) |
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
-
-`[retry]` has a parser and is documented in [its own section](#retry), but the
-top-level list does not contain it, so a file that has the table is refused
-today. See the note there.
 
 ## `[models.<name>]`
 
@@ -407,12 +404,9 @@ starts and polls. See [effects](architecture/effects.md#background-jobs) and
 
 ## `[retry]`
 
-The provider retry ladder. The table has a parser (`client/retryconf`) and the
-daemon calls it, but `client/catalog` checks the top-level table names first and
-`retry` is not in its list. As the code stands, a file that contains a `[retry]`
-table is refused with an unknown-key error before this parser runs, so the table
-cannot be used. The keys are documented so that the page matches the decoder, and
-this note comes out when the top-level list is fixed. Without the table, the
+Optional. The provider retry ladder: how a run waits and retries after a
+retryable provider failure. Each key stands alone, so a table that sets only
+`max_delay_ms` keeps the default attempts and first wait. Without the table the
 ladder is the runtime default: unbounded attempts, a one-second first wait that
 doubles up to a one-minute cap.
 
