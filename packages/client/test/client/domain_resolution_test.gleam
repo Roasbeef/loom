@@ -147,7 +147,7 @@ fn resolve_profiled(
     catalogue.Registration(
       id,
       fixture.session_path,
-      fixture.workspace,
+      workspace.LocalBinding(fixture.workspace),
       "Profiled",
       config,
       1,
@@ -158,9 +158,13 @@ fn resolve_profiled(
     )
   let selected =
     domain.Domain(
-      domain.key(domain.SessionOnly, record.workspace, id),
+      domain.key(
+        domain.SessionOnly,
+        workspace.binding_key(record.workspace),
+        id,
+      ),
       domain.SessionOnly,
-      record.workspace,
+      workspace.binding_key(record.workspace),
       config,
       state <> "/profiled/" <> id <> "-memory.sqlite",
       state <> "/profiled/" <> id <> "-index.sqlite",
@@ -211,7 +215,7 @@ pub fn a_session_with_a_profile_needs_a_config_file_test() {
     catalogue.Registration(
       id,
       fixture.session_path,
-      fixture.workspace,
+      workspace.LocalBinding(fixture.workspace),
       "Profiled",
       "",
       1,
@@ -222,9 +226,13 @@ pub fn a_session_with_a_profile_needs_a_config_file_test() {
     )
   let selected =
     domain.Domain(
-      domain.key(domain.SessionOnly, record.workspace, id),
+      domain.key(
+        domain.SessionOnly,
+        workspace.binding_key(record.workspace),
+        id,
+      ),
       domain.SessionOnly,
-      record.workspace,
+      workspace.binding_key(record.workspace),
       "",
       state <> "/profiled/" <> id <> "-memory.sqlite",
       state <> "/profiled/" <> id <> "-index.sqlite",

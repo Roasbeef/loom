@@ -214,7 +214,6 @@ pub fn tui_daemon_real_control_create_default_stop_lazy_open_test() {
         ready.state_root,
         "Terminal session",
         ready.state_root <> "/tui-config.toml",
-        None,
         "",
       )
     let assert Ok(protocol.SessionReply(created)) =
@@ -371,14 +370,7 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
       server_protocol.SetDefault(workspace.LocalKey("/work"), id),
     ),
     #(
-      protocol.CreateSession(
-        "key",
-        workspace.LocalDirectory("/work"),
-        "é \\\"",
-        "/config",
-        None,
-        "",
-      ),
+      protocol.CreateSession("key", "/work", "é \\\"", "/config", ""),
       server_protocol.CreateSession(
         "key",
         workspace.LocalDirectory("/work"),
@@ -658,10 +650,9 @@ pub fn tui_daemon_disconnect_leaves_mutation_outcome_unknown_test() {
             control,
             protocol.CreateSession(
               "durable-key",
-              workspace.LocalDirectory("/work"),
+              "/work",
               "Name",
               "/config",
-              None,
               "",
             ),
             1000,

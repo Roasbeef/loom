@@ -1923,9 +1923,13 @@ pub fn every_open_builds_from_the_profile_the_registration_stores_test() {
     as "fixture represents initialized metadata"
   let selected =
     domain.Domain(
-      domain.key(domain.SessionOnly, profiled.workspace, profiled.id),
+      domain.key(
+        domain.SessionOnly,
+        workspace.binding_key(profiled.workspace),
+        profiled.id,
+      ),
       domain.SessionOnly,
-      profiled.workspace,
+      workspace.binding_key(profiled.workspace),
       "",
       "/fixture-domains/" <> profiled.id <> "/memory.db",
       "/fixture-domains/" <> profiled.id <> "/search.db",

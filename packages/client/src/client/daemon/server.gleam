@@ -2327,7 +2327,15 @@ fn dispatch(
       })
     }
     protocol.CreateSession(_, _, _, configuration, profile, _) ->
-      dispatch_class(config, state, digest, principal, reply_to, command)
+      dispatch_class(
+        config,
+        state,
+        digest,
+        principal,
+        reply_to,
+        command,
+        support,
+      )
       |> result.map_error(fn(code) {
         profile_refusal(config, configuration, profile, code)
       })
