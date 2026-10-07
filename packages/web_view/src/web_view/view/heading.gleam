@@ -26,6 +26,14 @@
 //// the page socket can name the button's path (`component.home_path`) and
 //// the children after it keep their places whether or not it is drawn.
 ////
+//// The session's name is wrapped, with the main strand's model beside it, in
+//// one `span` that holds the bar's fourth child, so the model sits next to the
+//// name without moving any child after it (the page socket names the figures'
+//// path, `component.context_refresh_path`). The model is the catalogue's name
+//// for it, quiet text with no colour of its own, and the wrapper is drawn
+//// whether or not a model is known. The `h1` stays alone in its own element,
+//// since `<loom-title>` reads the tab's title from its text.
+////
 //// The status is a pill whose colour and dot follow a `Tone` the component
 //// chooses from the connection, so the words and the colour cannot disagree.
 ////
@@ -82,7 +90,10 @@ pub type Tone {
 /// The context figure is the summary of a native `<details>`, and `breakdown`
 /// is the body it opens (`view/context_breakdown`), drawn by the component
 /// from the shared record; the heading places it and reads none of it.
-/// The cost is the session's running total across strands, and the bar's
+/// `model` is the catalogue's name for the model the main strand runs on, drawn
+/// beside the name as plain text, or `None` while the capture holds none; the
+/// model's upstream identifier is not drawn here. The cost is the session's
+/// running total across strands, and the bar's
 /// label says so. A figure with no value is not drawn: an empty `context`
 /// draws no `ctx`, and a `cost` that ends in the dash (`est —`, a model with
 /// no price) draws no `est`, since two dashes beside each other read as
@@ -91,13 +102,14 @@ pub type Tone {
 /// ## Examples
 ///
 /// ```gleam
-/// // heading.view("0192ab34cd", element.none(), Some("docs"), Some("/src/loom"), "connected", heading.Live, "ctx ~41%", element.none(), "est $0.04", element.none())
+/// // heading.view("0192ab34cd", element.none(), Some("docs"), Some("/src/loom"), Some("glm-5-3"), "connected", heading.Live, "ctx ~41%", element.none(), "est $0.04", element.none())
 /// ```
 pub fn view(
   session_id session_id: String,
   home home: Element(message),
   name name: Option(String),
   workspace workspace: Option(String),
+  model model: Option(String),
   status status: String,
   tone tone: Tone,
   context context: String,
@@ -111,8 +123,11 @@ pub fn view(
       html.span([attribute.class("brand")], [html.text("Loom")]),
       home,
       workspace_element(workspace, session_name(session_id, name)),
-      html.h1([attribute.title(session_id)], [
-        html.text(session_name(session_id, name)),
+      html.span([attribute.class("session-title")], [
+        html.h1([attribute.title(session_id)], [
+          html.text(session_name(session_id, name)),
+        ]),
+        model_element(model),
       ]),
       html.p(
         [
@@ -179,6 +194,23 @@ pub fn view(
       tab_title(),
     ],
   )
+}
+
+// The main strand's model as quiet text beside the name, or nothing while it
+// is unknown. The name is the catalogue's, which the owner wrote, and it is a
+// text node; the element has no handler and no colour of its own.
+fn model_element(model: Option(String)) -> Element(message) {
+  case model {
+    Some("") | None -> element.none()
+    Some(model) ->
+      html.span(
+        [
+          attribute.class("session-model"),
+          attribute.title("Model the main strand runs on"),
+        ],
+        [html.text(model)],
+      )
+  }
 }
 
 // The element that writes the tab's title (`web_client/title`): hidden, empty

@@ -3511,6 +3511,7 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
       cache: outlook(shared, line.id),
       running_ms: running_ms(shared, line.id),
       model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
+      own_model: apart_from_main(shared, line.id),
       recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
       answer: row |> option.then(answer_line),
     )
@@ -3541,9 +3542,28 @@ fn settled_chip(
     cache: None,
     running_ms: None,
     model: "",
+    own_model: None,
     recent: [],
     answer: None,
   )
+}
+
+// The catalogue's name for a strand's model, read from the capture the page
+// draws (`agent_view.catalogue_name`), or nothing before the first capture.
+fn model_of(shared: Session(socket), strand: String) -> Option(String) {
+  option.then(shared.captured, fn(shown) {
+    agent_view.catalogue_name(shown.1, strand)
+  })
+}
+
+// The strand's model name when it is not the main strand's. A strand with no
+// configuration in the capture, or a capture with none for `main`, has no
+// difference to report, since an unknown model is not evidence of another one.
+fn apart_from_main(shared: Session(socket), strand: String) -> Option(String) {
+  case model_of(shared, agent_roster.primary), model_of(shared, strand) {
+    Some(main), Some(own) if own != main -> Some(own)
+    _, _ -> None
+  }
 }
 
 // The first line of a strand's latest answer, or nothing while it has given
@@ -6419,6 +6439,7 @@ pub fn heading(
     },
     name: option.map(model.view.label, fn(label) { label.name }),
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
+    model: model_of(model.shared, agent_roster.primary),
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
     context: context_figure(model),
