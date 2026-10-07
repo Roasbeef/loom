@@ -347,6 +347,24 @@ class DriverTest(Fixture):
         self.assertFalse((logs / "image-id").is_symlink())
 
 
+    def test_pruning_keeps_the_current_runs_logs(self):
+        # An earlier run of this commit left its directory older than fifty
+        # newer ones, which is the case where mtime ordering would prune it.
+        parent = self.home / "loom-signoff-container/logs"
+        current = parent / self.pushed[:12]
+        current.mkdir(parents=True)
+        os.utime(current, (1, 1))
+        for n in range(55):
+            other = parent / f"other{n}"
+            other.mkdir()
+            os.utime(other, (1000 + n, 1000 + n))
+        result = subprocess.run(["bash", str(DRIVER)], env=self.env, capture_output=True,
+                                text=True, timeout=30, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((current / "signoff.log").exists())
+        self.assertEqual(len(list(parent.iterdir())), 50)
+
+
 class RemoteGateModeTest(Fixture):
     """signoff_remote.sh's side: what it sends, and to a gate, nothing else."""
 

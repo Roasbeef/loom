@@ -44,6 +44,12 @@ logs="$HOME/loom-signoff-container/logs/$short"
 container="$logs/container"
 mkdir -p "$container"
 
+# Pruning below keeps the fifty most recently modified directories. A rerun
+# of a commit reuses its directory, whose mtime is from the earlier run, so
+# without this touch the current run's own logs could be among the ones
+# pruned.
+touch "$logs"
+
 # Only $container is mounted into the run, at /logs, and it is the only
 # part of $logs the container, which runs as root and executes the commit
 # under test's code, can write. Everything this script reads back
