@@ -1,4 +1,4 @@
-//// Protocol 076's exact maps preserve ordinary formats and credited coordinates.
+//// Protocol 078's exact maps preserve ordinary formats and credited coordinates.
 
 import broker/framing
 import core/msgpack

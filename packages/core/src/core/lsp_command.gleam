@@ -105,7 +105,7 @@ pub opaque type SemanticInput {
     bytes: BitArray,
     /// The exact semantic body digest supplied by the checked adapter.
     digest: g.Digest,
-    /// The closed protocol-076 request discriminant.
+    /// The closed protocol-078 request discriminant.
     tag: Int,
   )
 }

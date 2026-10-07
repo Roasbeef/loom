@@ -1,7 +1,10 @@
-# 077: Registered deployment and immutable generations
+# 079: Registered deployment and immutable generations
 
 Status: approved 2026-10-06; option B and the history/system-generation amendment are
 accepted. Implementation and executable acceptance pending.
+
+Numbering note (2026-10-07): this approved proposal was originally numbered 077. It is renumbered 079 because current main already assigns 077 to web peer links. Approval and normative requirements are unchanged.
+The distributed image compatibility label remains `org.loom.distributed.protocol=077`; it is a retained compatibility token, not the current document number.
 
 ## Problem
 
@@ -32,7 +35,7 @@ fenced/removed results remain accessible through one independent history lane. C
 ToolKey, ChildOrigin, system intent and LSP identity links route all evidence to its
 original generation.
 
-This contract amends protocol 067 only at these named surfaces. Protocol 076 defines the
+This contract amends protocol 067 only at these named surfaces. Protocol 078 defines the
 required LSP attachment. Existing Compile attempts, native retirement, enrollment,
 original credit accounting and authority epochs remain obligations. C1-C3, mobility,
 automatic failover and workspace snapshot migration are outside this slice. Declarative
@@ -317,7 +320,7 @@ pub fn configure_full(provisioning: FullProvisioning)
 `NodeScope` is opaque and retains the original endpoint/owner Peer/labels/generation.
 `JournalProvisioning` names three private paths plus their existing checked Limits;
 `ScopedNativeProvisioning` contains the current helper SpawnConfig, pool size and
-retirement seam. `ApprovedLspProvisioning` is the protocol-076 opaque attachment, not a
+retirement seam. `ApprovedLspProvisioning` is the protocol-078 opaque attachment, not a
 callback factory. `Config` internally becomes NativeScope or FullScope; existing
 `start/supervised/close` operate on either and preserve native-only callers.
 
@@ -359,8 +362,8 @@ new monitored ledger, timer loop, poll implementation, dependency or FFI is need
 Session Close/archive performs full physical generation shutdown. Resident detach
 continues the existing runtime. Reopen/restore creates fresh work only through an
 explicitly admitted successor generation, with unchanged Binding, descriptor and
-canonical enrollment. This keeps protocol 076's permanent registration/slot-input fence
-unchanged (`076-registered-lsp.md`). The old Host never receives replacement callbacks:
+canonical enrollment. This keeps protocol 078's permanent registration/slot-input fence
+unchanged (`078-registered-lsp.md`). The old Host never receives replacement callbacks:
 `workspace_local.Host` retains concrete doors (`workspace_local.gleam`), and
 dispatch_binding retains the original custodian (`dispatch_binding.gleam`).
 
@@ -606,7 +609,7 @@ pub fn acknowledge_history(config: HistoryConfig,
 
 `OriginalHistoryRequest` has exactly Native, Workspace, Compile, Launch, LspLease,
 LspInvocation and LspCommand constructors, checked through their existing or
-protocol-076 total codecs. Native retains full key, Prepared digest and original
+protocol-078 total codecs. Native retains full key, Prepared digest and original
 canonical request; Workspace retains the complete Invocation; Compile/Launch retain
 complete ServiceKey and canonical input; LSP retains the complete original lease/timed
 invocation/command parent, request/offer and digests. They cannot be reconstructed from
@@ -639,7 +642,7 @@ recovered native journal. Each opened journal retains its original row/byte/deco
 inventory ceilings; history does not weaken them or load other families eagerly. Use
 only `inspect`, `payloads`, `inspect_compile`, `inspect_launch` and exact receipt
 operations; release temporary handles in reverse order before releasing the lane. LSP
-uses its protocol-076 custody DAL's inspection/receipt operations.
+uses its protocol-078 custody DAL's inspection/receipt operations.
 
 No Fresh, admit, reserve, claim, preparation, host, helper, service restart or physical
 effect is called. Frozen phases and recovery's existing Unknown treatment remain
@@ -656,7 +659,7 @@ back the exact receipt plus its generation link before constructing opaque
 and checks the exact retained result digest before applying existing receipt semantics:
 workspace `acknowledge` (`workspace_journal.gleam`), resource
 `acknowledge_compile/launch`, native `ConfirmOwnerReceipt` (`admission.gleam`), or the
-protocol-076 LSP exact receipt. Native receipt content is the original retained
+protocol-078 LSP exact receipt. Native receipt content is the original retained
 output/terminal inventory, validated by the existing native receipt scanner; its
 terminal digest is checked separately before the frozen native event. Missing output is
 not fabricated from retirement. ACK loss permits repeating only this exact original ACK.
@@ -676,7 +679,7 @@ codecs remain mandatory:
 | Native | Original request/Prepared at most 131,072 bytes; native wire metadata at most 262,144. At most 64 output records, each 16,384 bytes and 1,048,576 aggregate; terminal at most 32,768. Canonical complete receipt uses the existing 2,097,152-byte scanner (`launch_receipt.gleam`; `payload.gleam`). No generic MessagePack limit is substituted for it. |
 | Workspace | Invocation 9,437,184; completion 33,554,432 (`workspace_codec.gleam`), with its existing request-matched completion decoder. |
 | Compile/Launch | Complete service input envelope 9,437,184, including actual header/enrollment/source (`codemode/service_input.gleam`); outer completion 262,144 through their closed completion codecs. Associated native evidence follows the native profile above, without losing its distinct receipt. |
-| LSP | Preserve protocol 076's complete lease/command custody and finite input/result profiles: finite envelope 139,268 / 4,473,092 bytes, 8192-byte identity header, bounded Search projection/terminal/offer, and exact timing/parent fields. No JSON-RPC transcript is invented. The LSP attachment is approved by protocol 076. |
+| LSP | Preserve protocol 078's complete lease/command custody and finite input/result profiles: finite envelope 139,268 / 4,473,092 bytes, 8192-byte identity header, bounded Search projection/terminal/offer, and exact timing/parent fields. No JSON-RPC transcript is invented. The LSP attachment is approved by protocol 078. |
 
 Reserve input **and full result**, metadata and framing before admission, at both ends.
 The largest pair is workspace's 42,991,616 content bytes. Its 144 input plus 512 result
@@ -758,7 +761,7 @@ generation_key/enrollment_digest columns to their owner `lsp_lease`, `lsp_finite
 same LSP database. A command compares its exact lease/invocation parent's generation; an
 admitted tool/child reference compares the companion link. LSP receipt references
 include that generation, and both existing readbacks precede ACK. Preserve protocol
-076's cross-store commit order, slot pointer and timing/nonce rules. Lost replies
+078's cross-store commit order, slot pointer and timing/nonce rules. Lost replies
 inspect the original row; they do not allocate a lease incarnation, invocation or system
 ordinal. No mutable lease attachment or ordinal-zero restart is introduced.
 
@@ -786,7 +789,7 @@ absent from owner disk and owner canaries proving absence of physical fallback. 
 authenticated create/open, fs/search, Bash Foreground/Auto, jobs, goal checks, hooks,
 Git/guidance/initialization, real Compile/Launch, full LSP, rename and observation must
 work. Verify one original Broker per generation and complete 17,301,648-byte
-CodeModeReportV1 retention. Execute all protocol-076 acceptance controls.
+CodeModeReportV1 retention. Execute all protocol-078 acceptance controls.
 
 Close before the first tool, clean Close/reopen, archive/restore and compaction retain
 the same enrollment and reports. Fresh work uses exactly g+1 with new immutable doors.

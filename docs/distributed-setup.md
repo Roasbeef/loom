@@ -2,9 +2,9 @@
 
 An owner, or “brain,” retains the provider credentials, conversation, approvals and
 session catalogue. An executor, or “hands,” owns the checkout and performs the
-physical work. [Protocol 077](../protocol-change/077-registered-generations.md)
+physical work. [Protocol 079](../protocol-change/079-registered-generations.md)
 defines their registered deployment, enrollment and generation boundary;
-[protocol 076](../protocol-change/076-registered-lsp.md) defines the required
+[protocol 078](../protocol-change/078-registered-lsp.md) defines the required
 executor LSP attachment.
 
 The utility in [scripts/distributed/launch.py](../scripts/distributed/launch.py)
@@ -54,7 +54,7 @@ bounded ASCII `name@host` spellings. The utility supports up to 33 explicitly na
 instances in one inventory. Adding another hands or brain means another inventory
 row, unique full node/certificate, and private state directory.
 
-The owner TOML generator uses the exact protocol-077 fields: `schema`,
+The owner TOML generator uses the exact protocol-079 fields: `schema`,
 `endpoint_lifetime`, `owner`, `local_node`, membership paths, pinned peers and
 workspace selections. It fixes `endpoint_lifetime = "retired_slots_v1"` and
 `generation_policy = "clean_successor"`. Positive authority epochs and generation
@@ -86,7 +86,7 @@ exact configured peer node names. The utility checks the common schema, lifetime
 local node, membership paths and complete peer list after substitution. It
 preserves the remaining template declarations verbatim and records runtime
 validation as pending. Deployment inputs are bounded to eight MiB before parsing.
-The real runtime must still apply protocol-077 descriptor/row limits and reject
+The real runtime must still apply protocol-079 descriptor/row limits and reject
 all unknown or duplicate physical keys.
 
 Prepare a new coordinator bundle in an operator-private directory:
@@ -147,7 +147,7 @@ Never clone an exported bundle to boot the same node identity twice. Never reuse
 one state directory for different names, delete state to restart a generation, or
 use `docker compose --scale` for these identities. Each new role requires its own
 inventory row and enrollment. Retained state remains with its original host;
-workspace snapshot migration and automatic failover are outside protocol 077.
+workspace snapshot migration and automatic failover are outside protocol 079.
 
 ## Package and target the Docker roles
 
@@ -160,7 +160,9 @@ docker build -t loom-distributed:validated \
   -f docker/distributed/Dockerfile .
 ```
 
-The root integration must add `org.loom.distributed.protocol=077` and an exact
+The image compatibility token remains `077` after the proposal was renumbered
+079; the launcher validates that existing token. The root integration must add
+`org.loom.distributed.protocol=077` and an exact
 comma-separated `org.loom.distributed.roles` list only after real role/image
 validation. The current derived Dockerfile sets neither label. Pin a tested image
 digest in the inventory for repeatable deployment. The root image remains

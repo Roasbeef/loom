@@ -55,7 +55,7 @@ fn binding(epoch: Int) -> workspace.RegisteredBinding {
   binding
 }
 
-pub fn exact_protocol077_example_and_same_table_authority_test() {
+pub fn exact_protocol079_example_and_same_table_authority_test() {
   let assert Ok(table) = deployment.decode(document())
     as "exact approved example"
   let assert Ok(selected) = deployment.select(table, binding(1))

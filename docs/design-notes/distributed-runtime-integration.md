@@ -83,8 +83,8 @@ Compile/Launch assembly, remote LSP and daemon configuration remain required.
 Acceptance must drive ordinary tools and code mode with the owner and executor
 on separate hosts and no checkout on the owner's disk.
 
-The owner approved [registered LSP](../../protocol-change/076-registered-lsp.md)
-and [registered deployment and generations](../../protocol-change/077-registered-generations.md)
+The owner approved [registered LSP](../../protocol-change/078-registered-lsp.md)
+and [registered deployment and generations](../../protocol-change/079-registered-generations.md)
 on October 6, 2026. LSP keeps finite semantic requests separate from the original
 session-owned server lease and adds helper consumption credit. Administration uses
 sixteen live or unretired slots, with permanent bounded generation history. Exact

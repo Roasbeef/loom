@@ -1,4 +1,4 @@
-//// Executor-resident immutable deployment descriptors for protocol 077.
+//// Executor-resident immutable deployment descriptors for protocol 079.
 ////
 //// `load` totally decodes administration, checks actual canonical physical
 //// placement, then freezes bounded descriptors. `describe` derives a real

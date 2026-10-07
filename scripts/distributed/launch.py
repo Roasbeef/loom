@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare private, explicitly named protocol-077 launch bundles.
+"""Prepare private, explicitly named protocol-079 launch bundles.
 
 The operator plan is a local packaging inventory, not a runtime authority format.
 Owner deployments use the approved TOML contract. Executor templates retain the

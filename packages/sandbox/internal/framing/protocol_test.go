@@ -50,6 +50,6 @@ func TestOrdinaryStartHasNoModeAndProtocolVersionsStaySeparate(t *testing.T) {
 		t.Fatal("ordinary start gained protocol selector")
 	}
 	if EnvelopeVersion != 1 || ExecProtocolVersion != 4 {
-		t.Fatal("protocol076 moved the wrong version")
+		t.Fatal("protocol078 moved the wrong version")
 	}
 }

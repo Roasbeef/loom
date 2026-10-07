@@ -293,7 +293,7 @@ rule it had, "at least one `[[tool]]`" included. A table ignored would be
 a promise the author believes was kept: a tool nothing registers, or a
 server nothing starts.
 
-The `[lsp]` tables are decoded by `client/lsp/profile.decode_servers`,
+The `[lsp]` tables are decoded by `codemode/lsp_host/profile.decode_servers`,
 the decoder `loom.toml`'s catalogue uses, so a profile means the same
 thing in either file and is refused in the same words. Extension
 ownership is judged within the manifest exactly as within `loom.toml`.
@@ -553,7 +553,7 @@ current definition of the seam. Storing it means a widened seam becomes a
 question the operator is asked again.
 
 **Record format 3** (ADR-016 §3) adds `tier` and `lsp`, the approved
-profiles in full, encoded and decoded totally by `client/lsp/profile`
+profiles in full, encoded and decoded totally by `codemode/lsp_host/profile`
 (`encode_server`, `server_decoder`). Every field is written, the
 defaulted ones included, so a default that changes in a later release
 cannot change a profile an operator already approved. A profile record's
@@ -781,7 +781,7 @@ value the previous step produced.
 
 1. **At boot, discovery feeds the registry.** `serve.assemble` reads
    `installed.discover` for the extensions root before it builds the
-   registry (`extension_registrations` at `client/serve.gleam:2762`). A
+   registry (`extension_registrations` at `client/serve.gleam:2818`). A
    `Refused` is logged and registers nothing. A `Ready` on a host with no
    code-mode toolchain is also logged and registers nothing: with no
    `erl` there is no satellite to boot, and a tool definition that can
@@ -923,7 +923,7 @@ actor is alive, so a breach fails the next boot outright instead of
 silently lending it authority.
 
 **Who owns the hosts.** `client/extension/hosts` is one supervised actor
-per session (`extension_hosts.supervised` at `client/serve.gleam:4426`).
+per session (`extension_hosts.supervised` at `client/serve.gleam:4510`).
 It holds at most one host per installed extension, started lazily on that
 extension's first use under whichever call happened to be first. That is
 sound because every extension call in a session runs under one workspace
@@ -1556,7 +1556,7 @@ whose door serves `cap/lsp` and automatic post-edit diagnostics (ADR-015,
 | `client/extension/memory.gleam` | The durable half of those two arms: `Cell`, `Door`, `key` (the one composition of `ext/<name>/<key>`), `door` over a borrowed runtime, and `shut` for a host with no session. |
 | `packages/ext/src/ext/memory.gleam` | The author's side: `remember` and `recall` over `ext.remember` and `ext.recall`. |
 | `client/extension/dispatch.gleam` | An install record as `tools.Tool` values over the session's host: `tools` (`extension/dispatch.gleam:207`), `hosting` (`extension/dispatch.gleam:424`), the timeout clamp `within` (`extension/dispatch.gleam:691`), the jail's `requirements` (`extension/dispatch.gleam:335`), and `settle` (`extension/dispatch.gleam:888`). |
-| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2762`), the two refusals it logs, and the contribution it appends. |
+| `client/serve.gleam` | The boot that finds what is installed: `extension_registrations` (`client/serve.gleam:2818`), the two refusals it logs, and the contribution it appends. |
 | `client/contributions.gleam` | The tool registry as an ordered list of contributions: `registry` (`client/contributions.gleam:451`) and the collision that refuses a boot. |
 | `broker/egress.gleam` | The outbound HTTP surface: `request` (`broker/egress.gleam:374`), `one_host`, `Secret` (`broker/egress.gleam:159`), and a `Refusal` type with nowhere to put a credential. |
 | `broker/internal/ffi_egress.gleam` | One hop over `httpc` on a broker-private profile: `fetch` (`broker/internal/ffi_egress.gleam:61`). The only impurity in the path. |

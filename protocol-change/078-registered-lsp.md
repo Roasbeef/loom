@@ -1,6 +1,8 @@
-# 076: Registered LSP service and exact native leases
+# 078: Registered LSP service and exact native leases
 
 Status: approved 2026-10-06; implementation and executable acceptance pending.
+
+Numbering note (2026-10-07): this approved proposal was originally numbered 076. It is renumbered 078 because current main already assigns 076 to model profiles. Approval and normative requirements are unchanged.
 
 ## Problem
 
@@ -17,7 +19,7 @@ Use one session-scoped executor LSP manager behind a closed finite semantic rout
 a separate owner-cleared native ServerLease. JSON-RPC stays between the manager and its
 local helper. Semantic requests cross the authenticated BEAM endpoint using the
 identities, admission limits and original timing custody below. Protocol 067's unchanged
-native, workspace, Compile and Launch rules still apply. Protocol 077 supplies
+native, workspace, Compile and Launch rules still apply. Protocol 079 supplies
 deployment, generation links and historical access.
 
 The capitalized requirement words have their usual normative meaning. The state
@@ -582,7 +584,7 @@ a separate LSP preflight profile uses the existing raw scanner before term decod
 | Result body preflight | At most 200,000 total nodes, depth 16 for flat wire rows, arrays at most 10,000 entries, total UTF-8/binary allocation constrained by the byte ceiling. Integer fields use at most nine encoded bytes. Semantic depth of reconstructed outlines remains at most 256. |
 | Live local LSP JSON | Existing 16,777,216-byte JSON-RPC body and 8192-byte header caps (`lsp/framing.gleam`). Add a registered bounded parse profile: 200,000 aggregate nodes and depth at most existing JSON maximum 256. Retained document texts at most 4 MiB combined; retained diagnostic strings/sites at most 4 MiB combined; other retained runtime metadata/progress strings at most 4 MiB combined. Preserve existing 64 documents, 512 URIs, 200 diagnostics/URI and 64 progress tokens, and admit at most 128 outstanding protocol requests. Overflow fails the protocol rather than publishing clean diagnostics. |
 | Native process resources | Exact enrolled memory/pids/fsize policy, no wider than existing workspace defaults 2 GiB/512/1 GiB per file; three-helper reservation. Server lease stays network off with 64 MiB producer output per stream and its original twelve-hour deadline. Probe/Search have positive CPU copied from the session base and ten-second deadlines; Prepare retains its approved sixty-second CPU/wall and network profile. Session CPU is lifetime-owned, as existing policy specifies, rather than charged to each query. |
-| Semantic concurrency/deadline | One semantic managed child per scoped LSP service, no detached queue/fanout. The four data/two control endpoint credits remain node-wide; managed registration capacity follows protocol 077's sixteen live/unretired slots. Original invocation deadline is checked before every physical step and clamps Observe to 75 seconds. Defaults retain start 60 s, request 5 s, settle 1.5 s, readiness 60 s and quiet 300 ms (`manager.gleam`). |
+| Semantic concurrency/deadline | One semantic managed child per scoped LSP service, no detached queue/fanout. The four data/two control endpoint credits remain node-wide; managed registration capacity follows protocol 079's sixteen live/unretired slots. Original invocation deadline is checked before every physical step and clamps Observe to 75 seconds. Defaults retain start 60 s, request 5 s, settle 1.5 s, readiness 60 s and quiet 300 ms (`manager.gleam`). |
 | Journal reservations | Maximum 4096 permanent LSP identities and 256 MiB total logical retained/reserved content per scoped store, reduced by configured existing shared custody limits. Input plus full result capacity reserves before effects. Tombstones remain charged. Native Request/Authority/Terminal remain 128 KiB/1 KiB/32 KiB. No protocol stdout payload is reserved on disk. |
 
 The observation body is bounded by `4,194,304 + 131,072 + (16 * 8192) + 8192 + 256 = 4,464,896` bytes. The first term covers the existing fact budget; the echoed canonical
@@ -926,7 +928,7 @@ native admission retains positive CPU, at most 256 KiB output, 128 input frames/
 and at most 64 durable output records/1 MiB. The credited LSP protocol path does not
 widen those ordinary profiles or store its transcript in that native output inventory.
 
-Protocol 077's exact generation_key/enrollment_digest fields commit atomically with the
+Protocol 079's exact generation_key/enrollment_digest fields commit atomically with the
 first original lease, finite invocation and command reservations in each LSP custody
 database. Commands compare their actual lease/invocation parent's generation; admitted
 child references compare the companion's complete ChildOrigin link. Result references

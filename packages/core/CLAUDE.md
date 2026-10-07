@@ -92,7 +92,7 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   and additive `parse_profile` share the same grammar. Ordinary `parse` retains
   Standard behavior; Registered input charges keys and values before allocation
   against a single 200,000-node ceiling, preserving depth 256. The transport
-  caller supplies its byte ceiling (protocol 076).
+  caller supplies its byte ceiling (protocol 078).
 - `core/msgpack.MsgPackValue` — the canonical msgpack subset the
   effect-plane framing protocol uses (ADR-003).
 - `core/bounded_msgpack.decode` applies the fixed remote wire profile before
@@ -243,7 +243,7 @@ LSP headers and generation links. These codecs leave existing addresses unchange
 and grant no live admission authority.
 
 `core/generation` defines the shared immutable GenerationKey and association for
-protocol 077. A key includes the full workspace Scope, descriptor digest and
+protocol 079. A key includes the full workspace Scope, descriptor digest and
 positive signed-32-bit generation. Its association retains the enrollment digest,
 original owner-use UUID and closed FirstGeneration or predecessor-digest pair.
 Canonical frames are bounded to 1024 bytes. `checked_successor` requires g+1,
@@ -272,7 +272,7 @@ original 64-row ceiling unchanged.
 
 
 
-## Workspace command child identity (protocol 077)
+## Workspace command child identity (protocol 079)
 
 `workspace_command_child` wraps only a direct `Workspace(n)` or actual direct
 `SystemChild` with one closed `WorkspaceCommandPhase`. `WorkspaceCommandFields`
@@ -289,7 +289,7 @@ bounded recipe exists. `lsp_command` explicitly refuses the new child family at
 both direct parent checks; it does not reinterpret the wrapper as a system child.
 
 
-## Registered LSP identity (protocol 076)
+## Registered LSP identity (protocol 078)
 
 `lsp_command` retains complete original child and parent-control references.
 `LspServiceKey` owns the separate startup lease family; `FiniteCapture` keeps

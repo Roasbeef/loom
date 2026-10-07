@@ -331,7 +331,7 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 `start_effect_plane_in` (`client/serve.gleam:761`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2109`),
+fatal child of the instance (`instance_children`, `client/serve.gleam:2166`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is

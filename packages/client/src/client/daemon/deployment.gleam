@@ -106,7 +106,7 @@ pub fn load(path: String) -> Result(Table, DeploymentError) {
   decode(text)
 }
 
-/// Decodes the closed protocol-077 owner schema without effects.
+/// Decodes the closed protocol-079 owner schema without effects.
 /// TOML rejects duplicate keys before constructing the immutable table.
 ///
 /// ## Examples

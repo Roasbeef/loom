@@ -939,7 +939,7 @@ only Go module.
 
 ## Credited protocol executions
 
-Protocol 076 adds opt-in `protocol-credit-v1` to both hello feature sets. Body
+Protocol 078 adds opt-in `protocol-credit-v1` to both hello feature sets. Body
 protocol version four includes `protocol_start`, `protocol_input`,
 `protocol_input_accepted`, `protocol_input_refused`, `protocol_output`,
 `protocol_output_consumed` and `protocol_reusable`; envelope version one stays

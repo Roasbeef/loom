@@ -1200,7 +1200,7 @@ cgroup guarantee. See [exact-helper retirement](../../docs/architecture/launch-n
 
 ## Credited helper foundation
 
-Protocol 076's encoding uses body protocol four, envelope one, and negotiated
+Protocol 078's encoding uses body protocol four, envelope one, and negotiated
 `protocol-credit-v1`. `framing.ProtocolMode` fixes `ServerProtocol` versus
 `FiniteCollected`; named `InputEnd`, `OutputDisposition`, `InputRefusal` and
 `ProtocolDisposition` types decode their closed wire vocabulary. Input binds

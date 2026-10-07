@@ -68,7 +68,7 @@ pub type CodecError {
   DigestMismatch
 }
 
-/// The closed complete request vocabulary in protocol-076 declaration order.
+/// The closed complete request vocabulary in protocol-078 declaration order.
 pub type Request {
   /// Definitions for an original symbol query.
   Definition(

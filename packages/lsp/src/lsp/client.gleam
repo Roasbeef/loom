@@ -28,7 +28,7 @@
 //// Both transports are trusted local channel seams. Rule Zero keeps the actual
 //// server in the jail; neither variant can open an unjailed process. The ordinary
 //// channel preserves existing local behavior. The consumed variant selects the
-//// Registered JSON and retained-state profile specified by protocol 076.
+//// Registered JSON and retained-state profile specified by protocol 078.
 ////
 //// # The phases
 ////

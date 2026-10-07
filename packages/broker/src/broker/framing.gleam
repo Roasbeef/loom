@@ -110,7 +110,7 @@ pub const envelope_version = 1
 ///   frame, which a helper at 2 answers as an unknown kind rather than
 ///   by retiring.
 ///
-/// - **4** — `protocol-change/076`: opt-in credited protocol frames.
+/// - **4** — `protocol-change/078`: opt-in credited protocol frames.
 ///
 /// Two accepted changes touch Part 1.4 and are deliberately *not*
 /// counted. `protocol-change/012`'s `hook_call`/`hook_result` pair

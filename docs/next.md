@@ -380,14 +380,14 @@ another boundary's witness. See the
 [retirement architecture](architecture/launch-native-retirement.md).
 
 **Generation policy is approved.**
-[Protocol 077](../protocol-change/077-registered-generations.md) selects sixteen
+[Protocol 079](../protocol-change/079-registered-generations.md) selects sixteen
 live/unretired slots, 4,096 permanent identities and 256 MiB of logical metadata.
 Original removal acknowledgement and durable Removed precede slot reuse.
 Uncertain custody stays charged. Successors retain immutable original owner
 and system-child links; history reads and receipts cannot repeat an effect.
 
 **Workspace native commands retain their semantic parent.** The approved
-[protocol-077 addendum](../protocol-change/077-registered-generations.md#addendum-native-identity-beneath-a-workspace-request)
+[protocol-079 addendum](../protocol-change/079-registered-generations.md#addendum-native-identity-beneath-a-workspace-request)
 uses a distinct deterministic identity beneath the exact retained Workspace or
 system semantic request. It preserves the original quota group and adds no
 system ordinal. Admitted capabilities retain their existing purpose pair.
@@ -399,8 +399,8 @@ imply an invented native setup command.
 
 ## Deliberately open
 
-The approved [LSP contract](../protocol-change/076-registered-lsp.md) and
-[administration contract](../protocol-change/077-registered-generations.md) define
+The approved [LSP contract](../protocol-change/078-registered-lsp.md) and
+[administration contract](../protocol-change/079-registered-generations.md) define
 required implementation work. Full activation, original physical retirement and
 normal daemon assembly are unbuilt, not accepted limitations of the final
 feature. Durable original journal/enrollment provenance and restricted managed

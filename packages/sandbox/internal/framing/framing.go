@@ -35,7 +35,7 @@ const EnvelopeVersion = 1
 // bumps this constant and broker/framing.exec_protocol_version in the
 // same commit. 1 was the vocabulary as first frozen; 2 is
 // protocol-change/006's required exec_exit "cancelled" key; 3 is
-// protocol-change/014's shutdown frame; 4 is protocol-change/076's credited protocol mode. The Gleam constant's doc comment
+// protocol-change/014's shutdown frame; 4 is protocol-change/078's credited protocol mode. The Gleam constant's doc comment
 // carries the full mapping, and broker's protocol_version_test reads this
 // file to prove the two literals have not drifted apart.
 const ExecProtocolVersion = 4

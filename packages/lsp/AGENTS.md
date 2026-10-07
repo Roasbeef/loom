@@ -301,7 +301,7 @@ removes that pending id and sends `$/cancelRequest`; a late reply is ignored
 and the shared server keeps serving. Cancellation is a protocol request, so
 it does not prove that a server which ignores cancellation stopped computing.
 
-## Registered consumed channel (protocol 076)
+## Registered consumed channel (protocol 078)
 
 `ConsumedChannelTransport.connect(Sink)` installs one trusted original `Session`
 in its window owner. `Session.feed` must return only after the actual native

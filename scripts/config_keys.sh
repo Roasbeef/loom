@@ -76,7 +76,7 @@ packages/client/src/client/distillpass.gleam|known_keys|allowed|[memory]|
 packages/client/src/client/secrets.gleam|entry|call|[secrets]|
 packages/client/src/client/retryconf.gleam|policy_table|call|[retry]|
 packages/client/src/client/daemon/limits.gleam|from_fields|arms|[daemon]|
-packages/client/src/client/lsp/profile.gleam|table_keys|const|[lsp.<name>]|
+packages/codemode/src/codemode/lsp_host/profile.gleam|table_keys|const|[lsp.<name>]|
 ?packages/client/src/client/peer_defaults.gleam|from_fields|arms|[peers]|peers
 SPEC
 }

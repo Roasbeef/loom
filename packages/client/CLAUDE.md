@@ -23,7 +23,7 @@ unresolved close. Extension dispatch keeps its persistent launcher.
 
 ## Immutable registered deployment table
 
-`daemon/deployment.load` reads a closed protocol-077 owner configuration once.
+`daemon/deployment.load` reads a closed protocol-079 owner configuration once.
 Its opaque `Table` supplies both `server.WorkspaceAuthority` and exact
 `Selected` assembly projections. Unknown or duplicate TOML keys, uninstalled
 peers, repeated selectors, invalid epochs/digests and oversized inventories

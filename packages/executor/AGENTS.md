@@ -2,7 +2,7 @@
 
 ## Frozen deployment descriptors
 
-`remote/deployment.load` strictly decodes the protocol-077 executor schema,
+`remote/deployment.load` strictly decodes the protocol-079 executor schema,
 checks actual canonical files, directories, executables and the private state
 root, then freezes opaque `Descriptor` values in one `Table`. The common
 membership block is identical to the owner's. Each workspace explicitly names
@@ -175,7 +175,7 @@ transport and shipped registered deployment remain separate obligations.
 
 ## Managed endpoint publication and removal
 
-Protocol [077](../../protocol-change/077-registered-generations.md) adds the closed
+Protocol [079](../../protocol-change/079-registered-generations.md) adds the closed
 `remote/beam_endpoint.EndpointLifetime.RetiredSlots16` bootstrap.
 `configure_managed_server(Store, within_ms, RetiredSlots16)` starts with no hot
 rows and retains that exact original registry writer. Legacy `register` refuses
@@ -265,7 +265,7 @@ claim and permit once, order register/fence, verify actual original physical
 joins and endpoint removal, and validate full owner attestations. This registry
 component does not implement deployment, history transport or that assembly.
 
-## Registered LSP content (protocol 076)
+## Registered LSP content (protocol 078)
 
 `remote/lsp_wire` encodes all ten finite Request variants and thirteen complete
 Result variants using `lsp/query` and `lsp/observation`. Header, request and result
@@ -1244,7 +1244,7 @@ they do not establish actual owner/native provenance, power-loss durability,
 physical manager cleanup, ordinary Registered tools or separate-host acceptance.
 
 
-## Owned history connection custody (protocol 077)
+## Owned history connection custody (protocol 079)
 
 `remote/journal.RecoveryInput` retains an exact path, full native scope and
 capacity without opening a connection. `journal`, `workspace_journal` and
@@ -1366,7 +1366,7 @@ their exact Killed DOWN after successful AllDelivered, then original start signa
 cleanup after closure. Compiled no-cancel input/output mutants fail this check.
 
 
-## Original permanent-parent live journal custody (protocol 077)
+## Original permanent-parent live journal custody (protocol 079)
 
 `remote/journal`, `workspace_journal` and `resource_journal` now separate
 `FreshInput`, `ParkedFresh` and `LiveFresh`. Input checking opens nothing.
