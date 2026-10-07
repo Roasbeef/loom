@@ -20,7 +20,8 @@
 //// 3. `execute` refuses a seam the host does not serve through `unserved`,
 ////    then vets the source with the seam's own `seam_allowlist`.
 //// 4. `execute_after_vetting` prepares this execution's directories, after
-////    `check_socket_path` and `prepare_root`, and always removes them again.
+////    `check_socket_path` and `prepare_root`; witnessed Launch cleanup permits
+////    their deletion, while unresolved custody retains them.
 //// 5. `exec_config` assembles the pipeline's configuration under the
 ////    execution's `exec_root`, `pooled_budget` and `build_config`.
 //// 6. `watching` wraps the launcher so that a policy refusal at the run
@@ -156,7 +157,7 @@
 //// repeats no effect, and the action a human consents to is still the
 //// whole submitted program.
 ////
-//// The watching is done by wrapping the `satellite.Launcher` the pipeline
+//// The watching is done by wrapping the `run_channel.Launcher` the pipeline
 //// already takes as an injected value, and asking — only once the launch
 //// has already refused — the same policy question the launch asked:
 //// `policy.compose` over the same base, the same requirements (through
@@ -231,6 +232,7 @@ import codemode/notes
 import codemode/observation as codemode_observation
 import codemode/orchestration
 import codemode/physical
+import codemode/run_channel
 import codemode/satellite
 import codemode/search as search_router
 import codemode/seed
@@ -1810,20 +1812,15 @@ fn execute_after_vetting(
               parent,
             ),
             config.clock,
-            host_mounts: config.host_mounts,
+            local_launch: foreground_launch_config(config, request, root),
             reporting: shortfalls,
             until: deadline_ms,
           ),
         )
 
-      // The whole execution is over: the node is destroyed, the socket and
-      // token are unlinked by the host's own teardown, and nothing but the
-      // outcome outlives it. The seed clone is large and every build makes
-      // a fresh one, so the directory goes too, and the socket directory
-      // with it. The launcher's janitor may still unlink the socket after
-      // this; the unlink of a missing file is a no-op, and no other
-      // execution can have been given this directory.
-      remove_execution_directories(root, sockets)
+      // A program result says nothing about whether its original resource owners
+      // have joined. Preserve unresolved local roots for that original custody.
+      cleanup_local_execution(execution.custody, root, sockets)
       codemode_tool.Execution(
         result: translate(execution.outcome),
         enforcement: translate_enforcement(execution.enforcement),
@@ -1832,6 +1829,30 @@ fn execute_after_vetting(
         edits: execution.edits,
       )
     }
+  }
+}
+
+/// Removes caller-owned local roots only after Launch resource custody allows it.
+/// A known program result and a native enforcement report cannot substitute for
+/// that observation. Unresolved roots remain with their original resource owner.
+/// This function is for the local adapter's paths, never executor references.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cleanup_local_execution(satellite.LaunchResourcesUnresolved("lost close"), root, sockets)
+/// // Leaves both original local paths untouched.
+/// ```
+@internal
+pub fn cleanup_local_execution(
+  custody: satellite.RunCustody,
+  root: String,
+  sockets: String,
+) -> Nil {
+  case custody {
+    satellite.NoLaunchResources | satellite.LaunchResourcesReleased ->
+      remove_execution_directories(root, sockets)
+    satellite.LaunchResourcesUnresolved(_) -> Nil
   }
 }
 
@@ -1925,7 +1946,7 @@ fn approved_grants(request: codemode_tool.Request) -> List(Grant) {
 fn watching(
   exec: pipeline.ExecConfig,
   session_clock: Clock,
-  host_mounts host_mounts: List(policy.Mount),
+  local_launch local_launch: launch.ForegroundLaunchConfig,
   reporting shortfalls: Subject(codemode_tool.PolicyRefusal),
   until deadline_ms: Int,
 ) -> pipeline.ExecConfig {
@@ -1934,7 +1955,7 @@ fn watching(
     launch: watched_launcher(
       exec.launch,
       session_clock,
-      host_mounts,
+      local_launch,
       shortfalls,
       deadline_ms,
     ),
@@ -1956,30 +1977,68 @@ fn watching(
 // place a side effect should be hiding (`docs/gleam-style.md` Part III,
 // "Where the lineage stops").
 fn watched_launcher(
-  launcher: satellite.Launcher,
+  launcher: run_channel.Launcher,
   session_clock: Clock,
-  host_mounts: List(policy.Mount),
+  local_launch: launch.ForegroundLaunchConfig,
   shortfalls: Subject(codemode_tool.PolicyRefusal),
   deadline_ms: Int,
-) -> satellite.Launcher {
-  fn(spec) {
-    case launcher(spec) {
+) -> run_channel.Launcher {
+  fn(request) {
+    case launcher(request) {
       Ok(connection) -> Ok(connection)
-      Error(reason) -> {
-        let #(now, _clock) = clock.read(session_clock)
 
-        // Both variants named: a bare variable in the second arm would
-        // be a catch-all whatever it is called, and a third kind of
-        // refusal added later would start being reported here with
-        // nobody having decided that it should be.
-        case launch_refusal(spec, host_mounts, now, reason, deadline_ms) {
+      // Unknown dispatch cannot safely offer whole-program reexecution under
+      // broader grants. Only witnessed pre-dispatch refusal reaches the prompt.
+      Error(run_channel.LaunchOutcomeUnknown(_)) as unknown -> unknown
+      Error(run_channel.LaunchRefused(_, run_channel.ResourcesUnresolved(_))) as held ->
+        held
+      Error(run_channel.LaunchRefused(reason, run_channel.ResourcesReleased)) as refused -> {
+        let #(now, _clock) = clock.read(session_clock)
+        case
+          foreground_launch_refusal(
+            local_launch,
+            request,
+            now,
+            reason,
+            deadline_ms,
+          )
+        {
           codemode_tool.NothingRefused -> Nil
-          codemode_tool.RunRefused(..) as refused ->
-            process.send(shortfalls, refused)
+          codemode_tool.RunRefused(..) as shortfall ->
+            process.send(shortfalls, shortfall)
         }
-        Error(reason)
+        refused
       }
     }
+  }
+}
+
+fn foreground_launch_refusal(
+  config: launch.ForegroundLaunchConfig,
+  request: run_channel.LaunchRequest,
+  now_ms: Int,
+  reason: String,
+  deadline_ms: Int,
+) -> codemode_tool.PolicyRefusal {
+  use requirements <- or_nothing_refused(launch.foreground_requirements(
+    config,
+    request,
+    now_ms,
+  ))
+  let #(_, phase, base, _, _, _) = run_channel.execution(request)
+  let #(_, narrowings) =
+    policy.compose(base, requirements, identity.grants(phase))
+  case narrowings {
+    [] -> codemode_tool.NothingRefused
+    [_, ..] ->
+      codemode_tool.RunRefused(
+        denial: escalation.Denial(
+          reason:,
+          source: escalation.PolicyDenial,
+          wanted: policy.wanted_grants(narrowings),
+        ),
+        deadline_ms:,
+      )
   }
 }
 
@@ -2578,7 +2637,7 @@ fn exec_config_for(
       Some(parent) -> identity.for_managed_execution(parent, budget: pooled)
     }
       |> identity.widened_by(grants:),
-    satellite: satellite.SatelliteConfig(
+    satellite: satellite.RunConfig(
       base_policy:,
       demand: request.demand,
       // The program's own children inherit the driver's constructed
@@ -2586,11 +2645,8 @@ fn exec_config_for(
       // agent's toolchain, the same one `bash` would reach.
       env: request.env,
       cwd: request.workspace,
-      cap_socket_path: socket_path(sockets),
       entropy: config.entropy,
       clock: config.clock,
-      write_token_file: satellite.private_token_writer(root <> "/token"),
-      unlink_token_file: satellite.unlink_token_file,
       router: config.wrap_router(request, surface_router(config, request)),
       // The strand's tool list, asked in the call's worker. Bound to the
       // dispatching strand and call index, never to anything the program
@@ -2603,14 +2659,42 @@ fn exec_config_for(
       ceilings: surface_ceilings(config, request),
       call_timeout_ms: config.call_timeout_ms,
     ),
-    launch: launch.launcher(launch.LaunchConfig(
+    launch: launch.foreground_launcher(foreground_launch_config(
+      config,
+      request,
+      root,
+    )),
+  )
+}
+
+/// Selects this client's original token and socket paths before whole Launch.
+/// The physical adapter and pure policy-refusal view share these exact facts.
+/// Foreground host configuration carries authority without interpreting paths.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.foreground_launch_config(config, request, original_root)
+/// ```
+@internal
+pub fn foreground_launch_config(
+  config: Config,
+  request: codemode_tool.Request,
+  root: String,
+) -> launch.ForegroundLaunchConfig {
+  launch.ForegroundLaunchConfig(
+    local: launch.LaunchConfig(
       runner: physical.local(config.broker),
       clock: config.clock,
       erl_path: config.erl_path,
       host_mounts: config.host_mounts,
       demand: request.demand,
       accept_timeout_ms: config.accept_timeout_ms,
-    )),
+    ),
+    token_path: root <> "/token/cap-token",
+    cap_socket_path: socket_path(exec_socket_directory(config, request)),
+    write_token_file: satellite.private_token_writer(root <> "/token"),
+    unlink_token_file: satellite.unlink_token_file,
   )
 }
 
@@ -3771,6 +3855,8 @@ fn run_failure(error: satellite.RunError) -> codemode_tool.RunFailure {
     satellite.HostUnavailable(reason:) ->
       codemode_tool.StartFailed(reason: "the cap-channel host: " <> reason)
     satellite.LaunchRejected(reason:) -> codemode_tool.StartFailed(reason:)
+    satellite.LaunchOutcomeUnknown(reason:) ->
+      codemode_tool.LaunchOutcomeUnknown(reason:)
   }
 }
 

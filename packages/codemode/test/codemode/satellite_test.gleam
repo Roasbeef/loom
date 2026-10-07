@@ -11,6 +11,9 @@
 //// fan-out. Each peer computes its verdict and returns it through the
 //// program `Outcome`, which the blocking `satellite.run` hands straight
 //// back.
+//// ## Flow
+////
+//// `run_phase` → `config` → `run_calls`; `raw_terminal_run` drives the raw report boundary. The direct host controls also exercise `completed_reply_retains_call_slot_until_socket_consumption_test`.
 
 import broker/broker
 import broker/budget
@@ -21,6 +24,7 @@ import broker/token
 import codemode/compile
 import codemode/enforcement
 import codemode/identity
+import codemode/run_channel
 import codemode/satellite
 import core/clock
 import core/ids
@@ -30,14 +34,21 @@ import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import simplifile
 import support/fake_helper
 import support/satellite_peer.{type PeerCtx}
 import tools/call_record
+import weft
 
 const t = 1_700_000_000_000
+
+type TerminalCloseObservation {
+  OriginalConsumption(disposition: run_channel.Consumption)
+  OriginalClose
+}
 
 fn op_id() -> ids.OpId {
   let generator = ids.generator(clock.fixed(at: t), seed: 7)
@@ -70,17 +81,14 @@ fn fresh_dir(name: String) -> String {
   dir
 }
 
-fn config(dir: String) -> satellite.SatelliteConfig {
-  satellite.SatelliteConfig(
+fn config(_dir: String) -> satellite.RunConfig {
+  satellite.RunConfig(
     base_policy: policy.workspace_default("/work"),
     demand: exec.BestEffort,
     env: [#("PATH", "/usr/bin")],
     cwd: "/work",
-    cap_socket_path: dir <> "/sock",
     entropy: token.production_entropy(),
     clock: clock.fixed(at: t),
-    write_token_file: satellite.private_token_writer(dir),
-    unlink_token_file: satellite.unlink_token_file,
     precheck: satellite.no_precheck,
     router: satellite.default_router,
     ceilings: [],
@@ -123,7 +131,7 @@ pub fn happy_path_returns_the_program_outcome_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(finish_peer),
+      satellite_peer.foreground_launcher(finish_peer),
     ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
   assert value == msgpack.StringValue("done")
@@ -148,9 +156,13 @@ pub fn a_completed_run_carries_the_nodes_enforcement_report_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.reporting_launcher(connected_then_finish, report),
+      satellite_peer.foreground_reporting_launcher(
+        connected_then_finish,
+        report,
+      ),
     )
   assert ran.outcome == Ok(satellite.Completed(msgpack.StringValue("done")))
+
   // What the launcher learned on teardown reaches the caller *with* the
   // outcome. It used to be published on a side channel the host's own
   // teardown raced, so a run exactly like this one — healthy, prompt —
@@ -194,7 +206,7 @@ pub fn cap_calls_without_the_token_are_all_denied_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(denied_peer(3)),
+      satellite_peer.foreground_launcher(denied_peer(3)),
     ).outcome
   let assert Ok(satellite.Completed(msgpack.IntValue(denied))) = outcome
   assert denied == 3
@@ -222,7 +234,7 @@ pub fn satellite_that_never_returns_is_killed_at_the_deadline_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 200)),
       broker,
       cfg,
-      satellite_peer.launcher(satellite_peer.wait_for_close),
+      satellite_peer.foreground_launcher(satellite_peer.wait_for_close),
     ).outcome
   assert outcome == Error(satellite.DeadlineExceeded)
   broker.stop(broker)
@@ -238,6 +250,7 @@ pub fn satellite_that_never_returns_is_killed_at_the_deadline_test() {
 pub fn a_launch_outlasting_the_deadline_still_destroys_the_node_test() {
   let dir = fresh_dir("late-launch")
   let broker = start_broker(echoing())
+
   // The wall deadline is 100ms; the jail spawn takes four times that.
   let cfg = config(dir)
   let destroyed = process.new_subject()
@@ -247,9 +260,9 @@ pub fn a_launch_outlasting_the_deadline_still_destroys_the_node_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 100)),
       broker,
       cfg,
-      fn(_spec) {
+      fn(request) {
         process.sleep(400)
-        Ok(recording_connection(destroyed))
+        Ok(recording_connection(request, destroyed, None))
       },
     ).outcome
   assert outcome == Error(satellite.DeadlineExceeded)
@@ -262,6 +275,7 @@ pub fn a_connection_arriving_after_the_host_stops_is_destroyed_test() {
   let broker = start_broker(echoing())
   let cfg = config(dir)
   let destroyed = process.new_subject()
+
   // The cap channel closes before the launcher hands its connection back,
   // so the host settles and stops with the connection still in flight.
   let outcome =
@@ -270,10 +284,9 @@ pub fn a_connection_arriving_after_the_host_stops_is_destroyed_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      fn(spec) {
-        process.send(spec.wire, satellite.WireClosed(reason: "socket closed"))
+      fn(request) {
         process.sleep(100)
-        Ok(recording_connection(destroyed))
+        Ok(recording_connection(request, destroyed, Some("socket closed")))
       },
     ).outcome
   assert outcome == Error(satellite.SatelliteGone("socket closed"))
@@ -281,11 +294,37 @@ pub fn a_connection_arriving_after_the_host_stops_is_destroyed_test() {
   broker.stop(broker)
 }
 
-fn recording_connection(destroyed: Subject(Nil)) -> satellite.CapConnection {
-  satellite.CapConnection(send: fn(_bytes) { Nil }, destroy: fn() {
-    process.send(destroyed, Nil)
-    enforcement.Unreported("this test launcher runs no node")
-  })
+fn recording_connection(
+  request: run_channel.LaunchRequest,
+  destroyed: Subject(Nil),
+  reason: Option(String),
+) -> run_channel.Connection {
+  let incarnation = run_channel.new_incarnation()
+  let #(_host, events) = run_channel.endpoint(run_channel.host(request))
+  let assert Ok(grant) =
+    run_channel.prepare_direction(incarnation, run_channel.ToNode)
+    |> run_channel.activate_direction
+    |> result.try(run_channel.write_grant)
+    as "original recording grant"
+  run_channel.Connection(
+    incarnation:,
+    initial_write_grant: grant,
+    offer: fn(_reservation, _payload) { Ok(Nil) },
+    activate: fn() {
+      option.map(reason, fn(reason) {
+        process.send(events, run_channel.End(incarnation, reason))
+      })
+      Ok(Nil)
+    },
+    close: fn() {
+      process.send(destroyed, Nil)
+      run_channel.CloseResult(
+        node: enforcement.Unreported("this test launcher runs no node"),
+        transport: run_channel.TransportJoined,
+        resources: run_channel.ResourcesReleased,
+      )
+    },
+  )
 }
 
 // --- the real token buys no policy (CH-F4) -------------------------------
@@ -300,16 +339,17 @@ fn recording_connection(destroyed: Subject(Nil)) -> satellite.CapConnection {
 pub fn the_real_token_does_not_widen_policy_test() {
   let dir = fresh_dir("policy")
   let broker = start_broker(echoing())
-  let cfg = satellite.SatelliteConfig(..config(dir), router: network_router)
+  let cfg = satellite.RunConfig(..config(dir), router: network_router)
   let outcome =
     satellite.run(
       artifact(),
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(real_token_peer),
+      satellite_peer.foreground_launcher(real_token_peer),
     ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
+
   // The token was accepted (no `unauthorized`) and the call was refused
   // anyway, by the broker's per-call policy check.
   assert bool_field(value, "authenticated") == True
@@ -383,7 +423,7 @@ pub fn an_outcome_frame_of_another_version_is_rejected_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         satellite_peer.send_envelope(ctx, [
           #("v", msgpack.IntValue(2)),
           #("id", msgpack.IntValue(0)),
@@ -407,7 +447,7 @@ pub fn an_outcome_frame_missing_its_id_is_rejected_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         satellite_peer.send_envelope(ctx, [
           #("v", msgpack.IntValue(1)),
           #("kind", msgpack.StringValue(satellite.outcome_kind)),
@@ -434,6 +474,7 @@ fn is_channel_faulted(
 pub fn cap_calls_past_the_outstanding_cap_never_reach_the_broker_test() {
   let dir = fresh_dir("gate")
   let broker = start_broker(echoing())
+
   // A zero pooled outstanding cap admits no effect at all, and the broker
   // is stopped before the run. A refusal can therefore only come from the
   // host's own gate: a collector spawned to ask this broker would never
@@ -447,7 +488,7 @@ pub fn cap_calls_past_the_outstanding_cap_never_reach_the_broker_test() {
       run_phase(budget.Budget(max_outstanding: 0, deadline_ms: t + 5000)),
       broker,
       cfg,
-      satellite_peer.launcher(budget_peer(3)),
+      satellite_peer.foreground_launcher(budget_peer(3)),
     ).outcome
   let assert Ok(satellite.Completed(msgpack.IntValue(refused))) = outcome
   assert refused == 3
@@ -458,6 +499,7 @@ pub fn cap_calls_past_the_outstanding_cap_never_reach_the_broker_test() {
 pub fn parallel_results_preserve_input_order_test() {
   let dir = fresh_dir("order")
   let count = 3
+
   // A driver releases the gated executions in reverse of input order,
   // forcing out-of-order completion; the host must still tag each
   // cap_result with its own id so the peer reassembles input order.
@@ -479,9 +521,10 @@ pub fn parallel_results_preserve_input_order_test() {
       run_phase(budget.Budget(max_outstanding: 16, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(echo_peer(count)),
+      satellite_peer.foreground_launcher(echo_peer(count)),
     ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
+
   // Each result's stdout matched its own id (correlation held), and the
   // arrival order really was scrambled (the property is not vacuous).
   assert bool_field(value, "correct") == True
@@ -551,6 +594,7 @@ pub fn pooled_budget_refuses_fanout_past_the_cap_test() {
   let dir = fresh_dir("budget")
   let count = 4
   let broker = start_broker(holding())
+
   // One shared ledger of cap 2 for the whole execution: of four concurrent
   // cap_calls, exactly two are refused. Per-call budgets would refuse none.
   let cfg = config(dir)
@@ -560,7 +604,7 @@ pub fn pooled_budget_refuses_fanout_past_the_cap_test() {
       run_phase(budget.Budget(max_outstanding: 2, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(budget_peer(count)),
+      satellite_peer.foreground_launcher(budget_peer(count)),
     ).outcome
   let assert Ok(satellite.Completed(msgpack.IntValue(refused))) = outcome
   assert refused == 2
@@ -572,6 +616,7 @@ fn budget_peer(count: Int) -> fn(PeerCtx) -> Nil {
     each_id(count, fn(i) {
       satellite_peer.send_proc_run(ctx, ctx.token, i, ["b-" <> int.to_string(i)])
     })
+
     // The two admitted calls hold open; only the refusals answer promptly.
     let results = satellite_peer.drain_results(ctx, 1500)
     let refused =
@@ -592,9 +637,10 @@ pub fn cancel_kills_the_losers_clearance_only_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(cancel_peer),
+      satellite_peer.foreground_launcher(cancel_peer),
     ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
+
   // The cancelled clearance settled (cancel really fired at the broker),
   // with the cancel-driven exit code, while the other stayed outstanding.
   assert bool_field(value, "landed") == True
@@ -634,7 +680,7 @@ pub fn a_refused_precheck_settles_the_call_before_the_plan_runs_test() {
   let broker = start_broker(echoing())
   let ran = process.new_subject()
   let cfg =
-    satellite.SatelliteConfig(
+    satellite.RunConfig(
       ..config(dir),
       router: serving_router(ran),
       precheck: fn(_request) {
@@ -647,7 +693,7 @@ pub fn a_refused_precheck_settles_the_call_before_the_plan_runs_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(stalled_call_peer),
+      satellite_peer.foreground_launcher(stalled_call_peer),
     ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
   assert value == msgpack.StringValue("tool_not_held")
@@ -659,15 +705,14 @@ pub fn an_admitting_precheck_leaves_the_plan_to_run_test() {
   let dir = fresh_dir("precheck-admitted")
   let broker = start_broker(echoing())
   let ran = process.new_subject()
-  let cfg =
-    satellite.SatelliteConfig(..config(dir), router: serving_router(ran))
+  let cfg = satellite.RunConfig(..config(dir), router: serving_router(ran))
   let outcome =
     satellite.run(
       artifact(),
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(served_call_peer),
+      satellite_peer.foreground_launcher(served_call_peer),
     ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
   assert value == msgpack.StringValue("served")
@@ -720,7 +765,7 @@ pub fn a_timed_out_served_call_leaves_no_worker_behind_test() {
   let broker = start_broker(echoing())
   let workers = process.new_subject()
   let cfg =
-    satellite.SatelliteConfig(
+    satellite.RunConfig(
       ..config(dir),
       router: stalling_router(workers),
       call_timeout_ms: 200,
@@ -731,12 +776,14 @@ pub fn a_timed_out_served_call_leaves_no_worker_behind_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(stalled_call_peer),
+      satellite_peer.foreground_launcher(stalled_call_peer),
     ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
     as "the peer reported what it was told"
+
   // The program got an answer rather than silence…
   assert value == msgpack.StringValue("unsettled")
+
   // …and the work behind it was stopped rather than left running.
   let assert Ok(worker) = process.receive(workers, 1000)
     as "the served call named the process it ran on"
@@ -811,19 +858,21 @@ pub fn a_timed_out_cleared_call_releases_its_executor_test() {
   // call is admitted only if the first one's clearance really settled.
   let dir = fresh_dir("cleared-reap")
   let broker = start_broker(holding())
-  let cfg = satellite.SatelliteConfig(..config(dir), call_timeout_ms: 200)
+  let cfg = satellite.RunConfig(..config(dir), call_timeout_ms: 200)
   let outcome =
     satellite.run(
       artifact(),
       run_phase(budget.Budget(max_outstanding: 1, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(abandoned_call_peer),
+      satellite_peer.foreground_launcher(abandoned_call_peer),
     ).outcome
   let assert Ok(satellite.Completed(value)) = outcome
     as "the peer reported what it saw"
+
   // The program was answered rather than left hanging…
   assert bool_field(value, "first_unsettled") == True
+
   // …and the slot its abandoned executor held was given back. The second
   // call reaches a clearance of its own and dies on its own deadline;
   // an executor nobody cancelled would still hold the only slot, and the
@@ -840,10 +889,12 @@ fn abandoned_call_peer(ctx: PeerCtx) -> Nil {
     [#(1, outcome)] -> is_code(outcome, "unsettled")
     _other -> False
   }
+
   // The cancel, the settlement and the ledger release are three hops off
   // this process, so give them a window before asking.
   process.sleep(300)
   satellite_peer.send_proc_run(ctx, ctx.token, 2, ["second"])
+
   // Whether the second call was admitted is legible in *which* refusal
   // it gets: `unsettled` means it reached a clearance and outran the
   // same short deadline, `budget` means it never got a slot.
@@ -874,22 +925,18 @@ fn abandoned_call_peer(ctx: PeerCtx) -> Nil {
 fn run_calls(
   name: String,
   broker: broker.Broker,
-  cfg: satellite.SatelliteConfig,
+  cfg: satellite.RunConfig,
   limits: budget.Budget,
   script: fn(PeerCtx) -> Nil,
 ) -> satellite.Run {
-  let dir = fresh_dir(name)
-  let cfg = satellite.SatelliteConfig(..cfg, cap_socket_path: dir <> "/sock")
+  let _dir = fresh_dir(name)
   let ran =
     satellite.run(
       artifact(),
       run_phase(limits),
       broker,
-      satellite.SatelliteConfig(
-        ..cfg,
-        write_token_file: satellite.private_token_writer(dir),
-      ),
-      satellite_peer.launcher(script),
+      cfg,
+      satellite_peer.foreground_launcher(script),
     )
   broker.stop(broker)
   ran
@@ -981,10 +1028,7 @@ pub fn overlapping_calls_overlap_in_time_test() {
   // A stepping clock makes every read later than the last, so two calls
   // held open together must show intervals that overlap.
   let cfg =
-    satellite.SatelliteConfig(
-      ..config("x"),
-      clock: clock.stepping(from: t, by: 10),
-    )
+    satellite.RunConfig(..config("x"), clock: clock.stepping(from: t, by: 10))
   let ran =
     run_calls("rec-overlap", start_broker(holding()), cfg, roomy(), fn(ctx) {
       satellite_peer.send_proc_run(ctx, ctx.token, 1, ["a"])
@@ -1003,7 +1047,7 @@ pub fn overlapping_calls_overlap_in_time_test() {
 
 pub fn a_call_refused_by_a_ceiling_is_recorded_as_failed_test() {
   let cfg =
-    satellite.SatelliteConfig(..config("x"), ceilings: [
+    satellite.RunConfig(..config("x"), ceilings: [
       satellite.CapCeiling(cap: "proc.run", admissions: 1, code: "proc_ceiling"),
     ])
   let ran =
@@ -1224,7 +1268,7 @@ pub fn scoped_program_cancel_reaps_the_capture_worker_test() {
   let broker = start_broker(echoing())
   let workers = process.new_subject()
   let cfg =
-    satellite.SatelliteConfig(
+    satellite.RunConfig(
       ..config(dir),
       router: scoped_stalling_router(workers),
       call_timeout_ms: 60_000,
@@ -1235,7 +1279,7 @@ pub fn scoped_program_cancel_reaps_the_capture_worker_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         satellite_peer.send_cap_call(
           ctx,
           ctx.token,
@@ -1262,7 +1306,7 @@ pub fn scoped_host_deadline_reaps_the_capture_worker_test() {
   let broker = start_broker(echoing())
   let workers = process.new_subject()
   let cfg =
-    satellite.SatelliteConfig(
+    satellite.RunConfig(
       ..config(dir),
       router: scoped_stalling_router(workers),
       call_timeout_ms: 60_000,
@@ -1273,7 +1317,7 @@ pub fn scoped_host_deadline_reaps_the_capture_worker_test() {
       run_phase(budget.Budget(max_outstanding: 8, deadline_ms: t + 500)),
       broker,
       cfg,
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         satellite_peer.send_cap_call(
           ctx,
           ctx.token,
@@ -1346,7 +1390,7 @@ fn raw_terminal_run(
       run_phase(budget.Budget(8, t + 20_000)),
       broker,
       config(dir),
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         process.send(ctx.wire, satellite.WireBytes(bytes))
       }),
     )
@@ -1405,14 +1449,14 @@ pub fn ordinary_large_capability_arguments_still_reach_router_test() {
       }),
     )
   }
-  let cfg = satellite.SatelliteConfig(..config(dir), router:)
+  let cfg = satellite.RunConfig(..config(dir), router:)
   let ran =
     satellite.run(
       artifact(),
       run_phase(budget.Budget(8, t + 20_000)),
       broker,
       cfg,
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         satellite_peer.send_cap_call(ctx, ctx.token, 1, "test", args)
         let result = satellite_peer.collect_results(ctx, 1, 3000)
         assert result == [#(1, framing.CapOk(msgpack.StringValue("accepted")))]
@@ -1551,11 +1595,371 @@ pub fn unknown_kind_still_requires_semantically_valid_map_body_test() {
       run_phase(budget.Budget(8, t + 20_000)),
       broker,
       config(dir),
-      satellite_peer.launcher(fn(ctx) {
+      satellite_peer.foreground_launcher(fn(ctx) {
         process.send(ctx.wire, satellite.WireBytes(bytes))
         satellite_peer.send_outcome(ctx, msgpack.StringValue("done"))
       }),
     )
   assert ran.outcome == Ok(satellite.Completed(msgpack.StringValue("done")))
   broker.stop(broker)
+}
+
+// A completed reply keeps its original outstanding slot while the peer
+// withholds writer consumption. The third request must remain a budget refusal.
+pub fn completed_reply_retains_call_slot_until_socket_consumption_test() {
+  let dir = fresh_dir("reply-slots")
+  let owner = start_broker(echoing())
+  let routed = process.new_subject()
+  let gate_ready = process.new_subject()
+  let cfg =
+    satellite.RunConfig(
+      ..config(dir),
+      router: fn(request: satellite.CapRequest) {
+        case request.args {
+          msgpack.IntValue(3) -> process.send(routed, Nil)
+          _ -> Nil
+        }
+        Ok(satellite.ScopedService(fn() { framing.CapOk(request.args) }))
+      },
+    )
+  let task = fn() {
+    Ok(satellite.run(
+      artifact(),
+      run_phase(budget.Budget(2, t + 20_000)),
+      owner,
+      cfg,
+      satellite_peer.foreground_launcher(fn(ctx) {
+        let gate = process.new_subject()
+        process.send(gate_ready, gate)
+        satellite_peer.send_cap_call(
+          ctx,
+          ctx.token,
+          1,
+          "hold",
+          msgpack.IntValue(1),
+        )
+        satellite_peer.send_cap_call(
+          ctx,
+          ctx.token,
+          2,
+          "hold",
+          msgpack.IntValue(2),
+        )
+        let assert Ok(#(first_wire, consume_first)) =
+          satellite_peer.receive_unconsumed(ctx, 3000)
+          as "first completed reply holds its original writer acknowledgement"
+        let framing.Pushed(inbound:, ..) =
+          framing.push(framing.deframer(), first_wire)
+        let assert [
+          framing.Known(framing.Frame(
+            id: first_id,
+            body: framing.CapResult(framing.CapOk(_), _),
+          )),
+        ] = inbound
+          as "one actual computation has produced its held answer"
+        assert first_id == 1 || first_id == 2
+        satellite_peer.send_cap_call(
+          ctx,
+          ctx.token,
+          3,
+          "hold",
+          msgpack.IntValue(3),
+        )
+        let assert Ok(Nil) = process.receive(gate, 3000)
+          as "driver observed the original third routing before releasing writer credit"
+        consume_first()
+        let replies = satellite_peer.collect_results(ctx, 2, 3000)
+        let other_id = case first_id {
+          1 -> 2
+          2 -> 1
+          _ -> panic as "only originally admitted calls may hold writer credit"
+        }
+        let assert Ok(#(_id, framing.CapOk(_))) =
+          list.find(replies, fn(pair) { pair.0 == other_id })
+          as "the other originally admitted computation also answers"
+        let third = list.find(replies, fn(pair) { pair.0 == 3 })
+        let assert Ok(#(3, framing.CapErr(code: "budget", ..))) = third
+          as "the held response and second call still occupy their original outstanding slots"
+        satellite_peer.send_outcome(
+          ctx,
+          msgpack.StringValue("held credit verified"),
+        )
+      }),
+    ))
+  }
+  let detached =
+    weft.new([task]) |> weft.deadline(25_000) |> weft.start_detached
+  let assert Ok(gate) = process.receive(gate_ready, 3000)
+    as "the peer publishes its original observation gate"
+  let assert Ok(Nil) = process.receive(routed, 3000)
+    as "third request entered the serialized host while writer credit was held"
+  process.send(gate, Nil)
+  let assert weft.PulledOutcome(weft.Completed(value: ran, ..)) =
+    weft.pull(detached, within: 5000)
+    as "the original host returns its result"
+  assert weft.pull(detached, within: 1000) == weft.AllDelivered
+  assert ran.outcome
+    == Ok(satellite.Completed(msgpack.StringValue("held credit verified")))
+  assert list.length(ran.calls.items) == 3
+  let assert [first, second, third] = ran.calls.items
+    as "two computations and one host refusal were recorded"
+  assert first.status == call_record.CallOk
+  assert second.status == call_record.CallOk
+  assert third.status == call_record.CallFailed
+  assert third.error == Some("budget")
+  broker.stop(owner)
+}
+
+// The original possible-launch observation cannot become a no-native report.
+pub fn uncertain_launch_retains_independent_resource_custody_test() {
+  let owner = start_broker(echoing())
+  let ran =
+    satellite.run(
+      artifact(),
+      run_phase(roomy()),
+      owner,
+      config("unused"),
+      fn(_) {
+        Error(run_channel.LaunchOutcomeUnknown(
+          "original admission was not observed",
+        ))
+      },
+    )
+  assert ran.outcome
+    == Error(satellite.LaunchOutcomeUnknown(
+      "original admission was not observed",
+    ))
+  assert ran.custody
+    == satellite.LaunchResourcesUnresolved(
+      "original admission was not observed",
+    )
+  let assert enforcement.Unreported(reason) = ran.node
+    as "uncertainty carries no enforcement proof"
+  assert !string.contains(reason, "no node was launched")
+  broker.stop(owner)
+}
+
+// Known program completion and original cleanup uncertainty are separate facts.
+pub fn a_known_outcome_does_not_clear_unresolved_launch_resources_test() {
+  let owner = start_broker(echoing())
+  let peer = satellite_peer.foreground_launcher(finish_peer)
+  let ran =
+    satellite.run(
+      artifact(),
+      run_phase(roomy()),
+      owner,
+      config("unused"),
+      fn(request) {
+        peer(request)
+        |> result.map(fn(connection) {
+          run_channel.Connection(..connection, close: fn() {
+            let original = connection.close()
+            run_channel.CloseResult(
+              ..original,
+              resources: run_channel.ResourcesUnresolved(
+                "original physical closure remains held",
+              ),
+            )
+          })
+        })
+      },
+    )
+  assert ran.outcome == Ok(satellite.Completed(msgpack.StringValue("done")))
+  assert ran.custody
+    == satellite.LaunchResourcesUnresolved(
+      "original physical closure remains held",
+    )
+  broker.stop(owner)
+}
+
+// These notifications originate in the serialized host itself, so their order
+// witnesses Final publication before synchronous original close begins. The
+// transport fixture supplies observations only; real adapter controls join work.
+pub fn validated_terminal_consumption_precedes_original_close_test() {
+  let owner = start_broker(echoing())
+  let observed = process.new_subject()
+  let value = msgpack.StringValue("original terminal held")
+  let ran =
+    satellite.run(
+      artifact(),
+      run_phase(roomy()),
+      owner,
+      config("unused"),
+      fn(request) {
+        let incarnation = run_channel.new_incarnation()
+        let #(_host, events) = run_channel.endpoint(run_channel.host(request))
+        let envelope =
+          msgpack.MapValue([
+            #(msgpack.StringValue("v"), msgpack.IntValue(1)),
+            #(msgpack.StringValue("id"), msgpack.IntValue(0)),
+            #(
+              msgpack.StringValue("kind"),
+              msgpack.StringValue(satellite.outcome_kind),
+            ),
+            #(msgpack.StringValue("body"), satellite_peer.completed_body(value)),
+          ])
+        let assert Ok(bytes) = msgpack.encode(envelope)
+          as "the terminal uses the existing canonical envelope"
+        let assert Ok(length) =
+          run_channel.payload_length(bit_array.byte_size(bytes))
+          as "the bounded terminal length is admitted before publication"
+        let assert Ok(active) =
+          run_channel.activate_direction(run_channel.prepare_direction(
+            incarnation,
+            run_channel.ToHost,
+          ))
+          as "the original inbound direction prepares"
+        let assert Ok(#(_reserved, reservation)) =
+          run_channel.reserve_frame(active, length)
+          as "the original terminal is charged before host publication"
+        let assert Ok(payload) = run_channel.finish_payload(reservation, bytes)
+          as "the complete terminal matches its original reservation"
+        let assert Ok(delivery) =
+          run_channel.delivery(reservation, payload, fn(disposition) {
+            process.send(observed, OriginalConsumption(disposition))
+          })
+          as "only this original delivery owns the nonblocking consume"
+        let assert Ok(writer) =
+          run_channel.activate_direction(run_channel.prepare_direction(
+            incarnation,
+            run_channel.ToNode,
+          ))
+          |> result.try(run_channel.write_grant)
+          as "the fixture installs its original writer"
+        Ok(
+          run_channel.Connection(
+            incarnation:,
+            initial_write_grant: writer,
+            offer: fn(_reservation, _payload) {
+              Error(run_channel.ChannelRetired)
+            },
+            activate: fn() {
+              process.send(events, run_channel.Frame(delivery))
+              Ok(Nil)
+            },
+            close: fn() {
+              process.send(observed, OriginalClose)
+              run_channel.CloseResult(
+                node: enforcement.Unreported("the fixture owns no jailed node"),
+                transport: run_channel.TransportJoined,
+                resources: run_channel.ResourcesReleased,
+              )
+            },
+          ),
+        )
+      },
+    )
+  assert ran.outcome == Ok(satellite.Completed(value))
+  assert process.receive(observed, 0)
+    == Ok(OriginalConsumption(run_channel.Final))
+  assert process.receive(observed, 0) == Ok(OriginalClose)
+  assert process.receive(observed, 0) == Error(Nil)
+  broker.stop(owner)
+}
+
+// A terminal program frame does not join work which the host admitted earlier.
+pub fn terminal_outcome_with_held_admitted_work_retains_custody_test() {
+  let entered = process.new_subject()
+  let gate_ready = process.new_subject()
+  let owner = start_broker(echoing())
+  let cfg =
+    satellite.RunConfig(..config("held-drain"), router: fn(_request) {
+      Ok(
+        satellite.ScopedService(fn() {
+          process.send(entered, Nil)
+          let hold = process.new_subject()
+          let _ = process.receive(hold, 5000)
+          framing.CapOk(msgpack.NilValue)
+        }),
+      )
+    })
+  let task =
+    weft.new([
+      fn() {
+        Ok(satellite.run(
+          artifact(),
+          run_phase(roomy()),
+          owner,
+          cfg,
+          satellite_peer.foreground_launcher(fn(ctx) {
+            let gate = process.new_subject()
+            process.send(gate_ready, gate)
+            satellite_peer.send_cap_call(
+              ctx,
+              ctx.token,
+              1,
+              "held",
+              msgpack.NilValue,
+            )
+            let assert Ok(Nil) = process.receive(gate, 3000)
+              as "the original caller observed admitted work before permitting termination"
+            satellite_peer.send_outcome(ctx, msgpack.StringValue("done"))
+          }),
+        ))
+      },
+    ])
+    |> weft.deadline(10_000)
+    |> weft.start_detached
+  let assert Ok(gate) = process.receive(gate_ready, 3000)
+    as "the peer published its original terminal gate"
+  let assert Ok(Nil) = process.receive(entered, 3000)
+    as "original admitted work entered before the terminal frame"
+  process.send(gate, Nil)
+  let assert weft.PulledOutcome(weft.Completed(value: ran, ..)) =
+    weft.pull(task, within: 5000)
+    as "the host returns its terminal outcome and custody"
+  assert ran.outcome == Ok(satellite.Completed(msgpack.StringValue("done")))
+  let assert satellite.LaunchResourcesUnresolved(_) = ran.custody
+    as "successful connection close cannot join admitted capability work"
+  broker.stop(owner)
+}
+
+// Consuming an unsettled reply removes its reply slot, not its lost drain fact.
+pub fn consumed_timeout_reply_before_terminal_retains_custody_test() {
+  let owner = start_broker(holding())
+  let cfg =
+    satellite.RunConfig(
+      ..config("consumed-timeout"),
+      call_timeout_ms: 50,
+      router: fn(request: satellite.CapRequest) {
+        case request.cap {
+          "joined-proof" ->
+            Ok(
+              satellite.ScopedService(fn() { framing.CapOk(msgpack.NilValue) }),
+            )
+          _ -> satellite.default_router(request)
+        }
+      },
+    )
+  let ran =
+    satellite.run(
+      artifact(),
+      run_phase(roomy()),
+      owner,
+      cfg,
+      satellite_peer.foreground_launcher(fn(ctx) {
+        satellite_peer.send_proc_run(ctx, ctx.token, 1, ["held"])
+        let assert [#(1, first)] = satellite_peer.collect_results(ctx, 1, 3000)
+          as "the timeout reply was fully consumed"
+        assert is_code(first, "unsettled")
+
+        // The next successful round trip orders the original consumption before
+        // the terminal frame, while both completed reply slots are retired.
+        satellite_peer.send_cap_call(
+          ctx,
+          ctx.token,
+          2,
+          "joined-proof",
+          msgpack.NilValue,
+        )
+        let assert [#(2, framing.CapOk(msgpack.NilValue))] =
+          satellite_peer.collect_results(ctx, 1, 3000)
+          as "the host processed a later joined call and its consumption"
+        satellite_peer.send_outcome(ctx, msgpack.StringValue("done"))
+      }),
+    )
+  assert ran.outcome == Ok(satellite.Completed(msgpack.StringValue("done")))
+  let assert satellite.LaunchResourcesUnresolved(_) = ran.custody
+    as "retired replies cannot erase the original unobserved drain"
+  broker.stop(owner)
 }

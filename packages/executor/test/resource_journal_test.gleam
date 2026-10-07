@@ -7,6 +7,7 @@ import broker/enrollment
 import broker/exec
 import broker/policy
 import codemode/compile
+import codemode/enforcement
 import codemode/service_command
 import codemode/service_input as input
 import codemode/service_resources as resources
@@ -21,6 +22,7 @@ import executor/remote/compile_completion as completion
 import executor/remote/identity
 import executor/remote/journal as native_journal
 import executor/remote/journal_codec
+import executor/remote/launch_completion
 import executor/remote/native
 import executor/remote/payload
 import executor/remote/resource_journal as j
@@ -29,9 +31,11 @@ import executor/resource_schema
 import executor/sql
 import gleam/bit_array
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import gleam/time/timestamp
 import simplifile
@@ -330,11 +334,62 @@ pub fn exact_enrollment_quotas_and_schema_bind_recovery_test() {
     assert j.release_endpoint(book) == Ok(Nil)
     execute(
       path,
-      "PRAGMA ignore_check_constraints=ON; UPDATE resource_meta SET format=3",
+      "PRAGMA ignore_check_constraints=ON; UPDATE resource_meta SET format=4",
     )
     assert j.recover(path, enrolled(), limits(2, 30_000_000), native)
       == Error(j.Corrupt)
   })
+}
+
+pub fn post_ready_non_dispatch_completion_is_launch_only_test() {
+  // DDL and read guards must agree even when a damaged database bypassed CHECK.
+  // These scalar fixtures do not claim a live refusal witness or valid payload.
+  list.each(
+    [#(0, 2, 0), #(0, 3, 0), #(0, 4, 0), #(1, 2, 0), #(1, 3, 1), #(1, 4, 1)],
+    fn(control) {
+      fixture(
+        "closed-launch-shape",
+        limits(2, 30_000_000),
+        fn(path, book, _native) {
+          let original = compiled("pub fn main() { Nil }", 3)
+          let _ = prepared_resource(book, original)
+          assert j.release_endpoint(book) == Ok(Nil)
+          let assert Ok(connection) = sqlight.open(path)
+            as "Independent schema and scalar-guard control."
+          let change =
+            "UPDATE resource_call SET role="
+            <> int.to_string(control.0)
+            <> ",phase="
+            <> int.to_string(control.1)
+            <> ",completion=X'c0',completion_digest=zeroblob(32)"
+          case control.2 {
+            1 -> {
+              assert sqlight.exec(change, connection) == Ok(Nil)
+            }
+            _ -> {
+              let assert Error(_) = sqlight.exec(change, connection)
+                as "Compile and active Launch cannot retain non-dispatch completion."
+              assert sqlight.exec(
+                  "PRAGMA ignore_check_constraints=ON",
+                  connection,
+                )
+                == Ok(Nil)
+              assert sqlight.exec(change, connection) == Ok(Nil)
+            }
+          }
+
+          // The bounded header rejects the same illegal combinations before decoding
+          // either service payload; valid Launch rows still need semantic validation.
+          let query = sql.resource_headers(2)
+          let assert Ok([header]) =
+            sqlight.query(query.0, connection, [sqlight.int(2)], query.2)
+            as "The guard exposes the scalar relationship without payload decoding."
+          assert header.valid == control.2
+          assert sqlight.close(connection) == Ok(Nil)
+        },
+      )
+    },
+  )
 }
 
 pub fn malformed_oversized_or_wrong_type_stored_values_are_refused_test() {
@@ -680,7 +735,7 @@ pub fn ready_without_native_cannot_settle_before_and_launch_outcomes_are_closed_
     let launch = launched(original.key, 7)
     assert j.reserve(book, launch) == Ok(j.Reserved)
     assert j.inspect_compile(book, launch) == Error(j.UnsupportedRole)
-    assert j.inspect_native(book, launch) == Error(j.UnsupportedRole)
+    assert j.inspect_native(book, launch) == Ok(j.Unassociated)
     assert j.commit_compile(book, launch, failure) == Error(j.UnsupportedRole)
     assert j.acknowledge_compile(book, launch, hash_bytes(<<1>>))
       == Error(j.UnsupportedRole)
@@ -869,14 +924,18 @@ pub fn foreign_native_operation_and_pinned_scope_cannot_associate_test() {
 }
 
 pub fn legacy_format_is_refused_before_accessing_new_columns_test() {
-  fixture("legacy-format", limits(2, 30_000_000), fn(path, book, native) {
-    assert j.release_endpoint(book) == Ok(Nil)
-    execute(
-      path,
-      "DROP TABLE resource_call; DROP TABLE resource_meta; CREATE TABLE resource_meta(id INTEGER,format INTEGER); INSERT INTO resource_meta VALUES(1,1)",
-    )
-    assert j.recover(path, enrolled(), limits(2, 30_000_000), native)
-      == Error(j.BindingMismatch)
+  list.each([1, 2], fn(format) {
+    fixture("legacy-format", limits(2, 30_000_000), fn(path, book, native) {
+      assert j.release_endpoint(book) == Ok(Nil)
+      execute(
+        path,
+        "DROP TABLE resource_call; DROP TABLE resource_meta; CREATE TABLE resource_meta(id INTEGER,format INTEGER); INSERT INTO resource_meta VALUES(1,"
+          <> int.to_string(format)
+          <> ")",
+      )
+      assert j.recover(path, enrolled(), limits(2, 30_000_000), native)
+        == Error(j.BindingMismatch)
+    })
   })
 }
 
@@ -1457,7 +1516,7 @@ pub fn historical_launch_input_lookup_returns_data_without_a_compile_permit_test
     let native_key = native_key(producer, 9)
     let digest = hash_bytes(<<>>)
     assert j.associate_live_native(claim, compiled_ref, native_key, digest)
-      == Error(j.UnsupportedRole)
+      == Error(j.Conflict)
   })
 }
 
@@ -2047,4 +2106,510 @@ fn normalize(source: String) -> String {
   |> string.split(" ")
   |> list.filter(fn(part) { part != "" })
   |> string.join(" ")
+}
+
+pub fn launch_witnessed_refusal_preserves_ready_and_fences_association_test() {
+  list.each([1, 2], fn(phase) {
+    fixture(
+      "launch-refusal-" <> int.to_string(phase),
+      limits(3, 30_000_000),
+      fn(path, book, native) {
+        let producer = compiled("pub fn main() { Nil }", 3)
+        let original = launched(producer.key, 7)
+        let assert Ok(j.FreshClaim(claim)) = j.admit_preparation(book, original)
+          as "Original live Launch claim."
+        let ready = launch_ready(original.key, producer.key)
+        case phase {
+          2 -> {
+            assert j.commit_ready(claim, ready) == Ok(j.Prepared(ready))
+          }
+          _ -> Nil
+        }
+        let assert Ok(value) =
+          launch_completion.refused_before_native(
+            enrolled(),
+            original.key,
+            "owner clearance refused",
+          )
+          as "Definite owner refusal."
+        let assert Ok(retained) = j.fail_launch_preparation(claim, value)
+          as "Refusal COMMIT fences preparation."
+        let historical = case phase {
+          2 -> Some(ready)
+          _ -> None
+        }
+        assert j.inspect(book, original) == Ok(j.Unknown(historical))
+        assert j.commit_ready(claim, ready) == Error(j.Conflict)
+        assert j.inspect_launch(book, original)
+          == Ok(j.LaunchRetained(retained, j.ReceiptPending))
+        assert j.fail_launch_preparation(claim, value) == Ok(retained)
+        assert j.associate_live_native(
+            claim,
+            launch_ref(original),
+            native_key(original, 9),
+            hash_bytes(<<>>),
+          )
+          == Error(j.Conflict)
+        assert j.release_endpoint(book) == Ok(Nil)
+        let assert Ok(reopened) =
+          j.recover(path, enrolled(), limits(3, 30_000_000), native)
+          as "Closed refusal recovers with original cleanup paths."
+        assert j.inspect(reopened, original) == Ok(j.Unknown(historical))
+        assert j.inspect_launch(reopened, original)
+          == Ok(j.LaunchRetained(retained, j.ReceiptPending))
+        assert j.claim_preparation(reopened, original)
+          == Ok(j.Existing(j.Unknown(historical)))
+        assert j.acknowledge_launch(reopened, original, hash_bytes(<<1>>))
+          == Error(j.Conflict)
+        assert j.acknowledge_launch(
+            reopened,
+            original,
+            j.retained_launch_digest(retained),
+          )
+          == Ok(j.LaunchRetained(retained, j.ReceiptAcknowledged))
+        assert j.inspect_compile(reopened, original) == Error(j.UnsupportedRole)
+        assert j.release_endpoint(reopened) == Ok(Nil)
+      },
+    )
+  })
+}
+
+pub fn launch_exact_native_settlement_and_historical_no_permit_test() {
+  fixture("launch-settlement", limits(4, 40_000_000), fn(path, book, native) {
+    let #(producer, original, claim, prepared) = launch_fixture(book, native)
+    let key = native_key(original, 10)
+    let digest = retain_live_request(native, key, prepared)
+    let ref = launch_ref(original)
+    let assert Ok(permit) = j.associate_live_native(claim, ref, key, digest)
+      as "Only first live association yields native eligibility."
+    assert j.native_launch_binding(permit) == #(book, ref, key, digest)
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Conflict)
+    let assert Ok(refused) =
+      launch_completion.refused_before_native(
+        enrolled(),
+        original.key,
+        "false refusal after association",
+      )
+      as "Codec syntax alone supplies no witness."
+    assert j.fail_launch_preparation(claim, refused) == Error(j.Conflict)
+    let terminal = native_terminal(native, key, digest)
+    let assert Ok(value) =
+      launch_completion.settled_native(
+        enrolled(),
+        original.key,
+        key,
+        digest,
+        terminal,
+      )
+      as "Exact node settlement."
+    let assert Ok(wrong) =
+      launch_completion.settled_native(
+        enrolled(),
+        original.key,
+        native_key(original, 11),
+        digest,
+        terminal,
+      )
+      as "Different independent UUID."
+    assert j.commit_launch(book, original, wrong) == Error(j.Conflict)
+    let assert Ok(retained) = j.commit_launch(book, original, value)
+      as "Readback authenticated terminal commits."
+    assert j.commit_launch(book, original, value) == Ok(retained)
+    assert j.retained_launch_value(retained) == value
+    assert j.inspect_launch(book, producer) == Error(j.UnsupportedRole)
+    assert j.release_endpoint(book) == Ok(Nil)
+    assert native_journal.release(native) == Ok(Nil)
+    let assert Ok(reopened) =
+      j.recover(path, enrolled(), limits(4, 40_000_000), native)
+      as "Recovery uses original retained producer and exact native bytes."
+    assert j.commit_launch(reopened, original, value) == Ok(retained)
+    assert j.associate_native(reopened, original, ref, key, digest)
+      == Ok(j.Associated(ref, key, digest, prepared))
+    assert j.associate_live_native(claim, ref, key, digest) == Error(j.Closed)
+    assert j.release_endpoint(reopened) == Ok(Nil)
+  })
+}
+
+pub fn launch_native_terminal_requires_actual_settled_journal_test() {
+  fixture(
+    "launch-native-witness",
+    limits(4, 40_000_000),
+    fn(_path, book, native) {
+      let #(_, original, claim, prepared) = launch_fixture(book, native)
+      let key = native_key(original, 10)
+      let digest = retain_live_request(native, key, prepared)
+      let assert Ok(_) =
+        j.associate_live_native(claim, launch_ref(original), key, digest)
+        as "Original live association."
+      let terminal = terminal_bytes()
+      let assert Ok(value) =
+        launch_completion.settled_native(
+          enrolled(),
+          original.key,
+          key,
+          digest,
+          terminal,
+        )
+        as "Syntactically valid but not yet observed."
+      assert j.commit_launch(book, original, value) == Error(j.Conflict)
+      assert native_journal.put_payload(
+          native,
+          key,
+          digest,
+          payload.Terminal(terminal),
+        )
+        == Ok(Nil)
+      assert j.commit_launch(book, original, value) == Error(j.Conflict)
+      let assert Ok(_) =
+        native_journal.apply(native, key, digest, admission.AuthorizeLaunch)
+        as "Native launch intent."
+      let assert Ok(_) =
+        native_journal.apply(
+          native,
+          key,
+          digest,
+          admission.ObserveTerminal(hash_bytes(terminal)),
+        )
+        as "Native settlement COMMIT."
+      let assert Ok(dispatch.Completed(exit)) = native.decode_terminal(terminal)
+        as "Canonical observed zero exit."
+      let assert Ok(changed_terminal) =
+        native.encode_terminal(dispatch.Completed(
+          exec.ExecResult(..exit, code: 1),
+        ))
+        as "A different canonical terminal is not actual native evidence."
+      let assert Ok(changed) =
+        launch_completion.settled_native(
+          enrolled(),
+          original.key,
+          key,
+          digest,
+          changed_terminal,
+        )
+        as "Codec accepts another terminal observation as syntax."
+      assert j.commit_launch(book, original, changed) == Error(j.Conflict)
+      let assert Ok(_) = j.commit_launch(book, original, value)
+        as "Payload and reducer witness jointly establish settlement."
+      Nil
+    },
+  )
+}
+
+pub fn launch_missing_or_failed_producer_never_associates_test() {
+  fixture("launch-producer", limits(4, 40_000_000), fn(_path, book, native) {
+    let producer = compiled("pub fn main() { Nil }", 3)
+    let original = launched(producer.key, 7)
+    let assert Ok(j.FreshClaim(claim)) = j.admit_preparation(book, original)
+      as "Launch syntax does not prove producer success."
+    let ready = launch_ready(original.key, producer.key)
+    assert j.commit_ready(claim, ready) == Ok(j.Prepared(ready))
+    let prepared = raw_launch_prepared(original, producer, ready)
+    let key = native_key(original, 10)
+    let digest = retain_live_request(native, key, prepared)
+    assert j.associate_live_native(claim, launch_ref(original), key, digest)
+      == Error(j.Conflict)
+    assert j.reserve(book, producer) == Ok(j.Reserved)
+    let assert Ok(j.Claimed(producer_claim)) =
+      j.claim_preparation(book, producer)
+      as "Original producer preparation."
+    let assert Ok(_) =
+      j.fail_preparation(producer_claim, before(producer, "build refused"))
+      as "Closed failed producer."
+    assert j.associate_live_native(claim, launch_ref(original), key, digest)
+      == Error(j.Conflict)
+    assert j.inspect_native(book, original) == Ok(j.Unassociated)
+  })
+}
+
+fn launch_fixture(
+  book: j.Journal,
+  native: native_journal.Journal,
+) -> #(j.Input, j.Input, j.Claim, wire.Prepared) {
+  let #(producer, value) = successful_producer(book, native)
+  let compiled = completion.compiled(value)
+  let assert Ok(artifact) = compiled.result as "Successful executor artifact."
+  let assert Ok(decoded) =
+    input.launch_input(
+      enrolled(),
+      producer.key,
+      artifact,
+      [],
+      cw.root(),
+      base(),
+      hash("d"),
+    )
+    as "Launch consumes the exact retained artifact."
+  let body = input.encode_launch(decoded)
+  let original =
+    j.Input(
+      key(
+        command.LaunchService,
+        "physical:run",
+        7,
+        command.parent(producer.key),
+        body,
+      ),
+      body,
+    )
+  let assert Ok(j.FreshClaim(claim)) = j.admit_preparation(book, original)
+    as "First live Launch owner."
+  let ready = launch_ready(original.key, producer.key)
+  assert j.commit_ready(claim, ready) == Ok(j.Prepared(ready))
+  let assert resources.LaunchReady(locations) = ready
+    as "Canonical Launch resources."
+  let assert Ok(admitted) =
+    input.admit_launch(
+      original.key,
+      enrolled(),
+      decoded,
+      producer.key,
+      compiled,
+    )
+    as "Pure closed producer association."
+  let assert Ok(expected) =
+    service_command.launch(enrolled(), admitted, locations, 5)
+    as "Exact admitted SatelliteCommand."
+  #(producer, original, claim, launch_prepared(expected))
+}
+
+fn launch_ref(original: j.Input) -> command.CommandRef {
+  let assert Ok(ref) =
+    command.command_ref(original.key, command.SatelliteCommand)
+    as "Closed Launch physical purpose."
+  ref
+}
+
+fn launch_prepared(expected: service_command.ExpectedCommand) -> wire.Prepared {
+  let data = offer.data(service_command.offer(expected))
+  wire.Prepared(
+    "physical:run",
+    hash_bytes_from_hex(hash("b")),
+    wire.Finite(180_000),
+    exec.ExecRequest(
+      data.argv,
+      data.env,
+      data.cwd,
+      Some(data.requirements),
+      <<0:size(256)>>,
+      exec.PlatformEnforcement,
+    ),
+    wire.Logs,
+  )
+}
+
+fn raw_launch_prepared(
+  original: j.Input,
+  producer: j.Input,
+  ready: resources.Ready,
+) -> wire.Prepared {
+  let assert resources.LaunchReady(locations) = ready as "Fixed resources."
+  let assert Ok(decoded) = input.decode_launch(original.body)
+    as "Canonical original Launch."
+  let facts = input.launch_facts(decoded)
+  let fake =
+    compile.Compiled(
+      Ok(facts.artifact),
+      enforcement.Reported(["seatbelt"], False),
+    )
+  let assert Ok(admitted) =
+    input.admit_launch(original.key, enrolled(), decoded, producer.key, fake)
+    as "Caller-supplied producer claim deliberately lacks journal readback."
+  let assert Ok(expected) =
+    service_command.launch(enrolled(), admitted, locations, 5)
+    as "Physical bytes alone cannot prove producer success."
+  launch_prepared(expected)
+}
+
+pub fn launch_wrong_artifact_and_command_role_cannot_associate_test() {
+  fixture("launch-artifact", limits(5, 50_000_000), fn(_path, book, native) {
+    let #(producer, _) = successful_producer(book, native)
+    let wrong = launched(producer.key, 12)
+    let assert Ok(j.FreshClaim(claim)) = j.admit_preparation(book, wrong)
+      as "Syntactically valid but wrong producer artifact."
+    let ready = launch_ready(wrong.key, producer.key)
+    assert j.commit_ready(claim, ready) == Ok(j.Prepared(ready))
+    let raw = raw_launch_prepared(wrong, producer, ready)
+    let key = native_key(wrong, 13)
+    let digest = retain_live_request(native, key, raw)
+    assert j.associate_live_native(claim, launch_ref(wrong), key, digest)
+      == Error(j.Conflict)
+    assert j.inspect_native(book, wrong) == Ok(j.Unassociated)
+  })
+}
+
+pub fn launch_and_compile_canonical_completion_blobs_are_role_guarded_test() {
+  fixture("launch-role-codec", limits(3, 30_000_000), fn(path, book, _native) {
+    let producer = compiled("pub fn main() { Nil }", 3)
+    assert j.reserve(book, producer) == Ok(j.Reserved)
+    let assert Ok(j.Claimed(producer_claim)) =
+      j.claim_preparation(book, producer)
+      as "Original Compile claim."
+    let assert Ok(_) =
+      j.fail_preparation(producer_claim, before(producer, "failed"))
+      as "Closed Compile negative."
+    let original = launched(producer.key, 7)
+    let assert Ok(j.FreshClaim(claim)) = j.admit_preparation(book, original)
+      as "Original Launch claim."
+    let assert Ok(value) =
+      launch_completion.refused_before_native(
+        enrolled(),
+        original.key,
+        "refused",
+      )
+      as "Closed Launch negative."
+    let assert Ok(retained) = j.fail_launch_preparation(claim, value)
+      as "Role-specific retention."
+    let bytes = j.retained_launch_bytes(retained)
+    execute(
+      path,
+      "UPDATE resource_call SET completion=X'"
+        <> bit_array.base16_encode(bytes)
+        <> "',completion_digest=X'"
+        <> bit_array.base16_encode(j.digest(bytes))
+        <> "' WHERE role=0",
+    )
+    assert j.inspect_compile(book, producer) == Error(j.Corrupt)
+  })
+  fixture("compile-role-codec", limits(3, 30_000_000), fn(path, book, _native) {
+    let producer = compiled("pub fn main() { Nil }", 3)
+    let original = launched(producer.key, 7)
+    let assert Ok(j.FreshClaim(claim)) = j.admit_preparation(book, original)
+      as "Original Launch claim."
+    let assert Ok(value) =
+      launch_completion.refused_before_native(
+        enrolled(),
+        original.key,
+        "refused",
+      )
+      as "Closed Launch negative."
+    let assert Ok(_) = j.fail_launch_preparation(claim, value)
+      as "Original closed Launch."
+    let assert Ok(bytes) = completion.encode(before(producer, "failed"))
+      as "Valid Compile codec cannot inhabit Launch custody."
+    execute(
+      path,
+      "UPDATE resource_call SET completion=X'"
+        <> bit_array.base16_encode(bytes)
+        <> "',completion_digest=X'"
+        <> bit_array.base16_encode(j.digest(bytes))
+        <> "' WHERE role=1",
+    )
+    assert j.inspect_launch(book, original) == Error(j.Corrupt)
+  })
+}
+
+pub fn launch_refusal_racing_independent_native_association_has_one_winner_test() {
+  fixture("launch-race", limits(4, 40_000_000), fn(path, book, native) {
+    let #(_, original, claim, prepared) = launch_fixture(book, native)
+    let key = native_key(original, 10)
+    let digest = retain_live_request(native, key, prepared)
+    let assert Ok(other) =
+      j.recover(path, enrolled(), limits(4, 40_000_000), native)
+      as "Independent resource writer can race native readback."
+    let assert Ok(refused) =
+      launch_completion.refused_before_native(
+        enrolled(),
+        original.key,
+        "definite owner refusal",
+      )
+      as "Original live refusal continuation."
+    let outcomes =
+      [
+        fn() {
+          j.associate_native(other, original, launch_ref(original), key, digest)
+          |> result.map(fn(_) { Nil })
+        },
+        fn() {
+          j.fail_launch_preparation(claim, refused) |> result.map(fn(_) { Nil })
+        },
+      ]
+      |> weft.new
+      |> weft.limit(2)
+      |> weft.deadline(5000)
+      |> weft.start
+
+    assert weft.values(outcomes) == [Nil]
+    assert weft.failures(outcomes) == [j.Conflict]
+    assert j.associate_live_native(claim, launch_ref(original), key, digest)
+      == Error(j.Conflict)
+    assert j.release_endpoint(other) == Ok(Nil)
+  })
+}
+
+fn successful_producer(
+  book: j.Journal,
+  native: native_journal.Journal,
+) -> #(j.Input, completion.CompileCompletion) {
+  let producer = compiled("pub fn main() { Nil }", 3)
+  let _ = prepared_resource(book, producer)
+  let #(_, native_id, digest, _) =
+    admitted(native, book, producer, 9, prepared_command(producer))
+  let terminal = native_terminal(native, native_id, digest)
+  let value = success(producer, native_id, digest, terminal)
+  let assert Ok(_) = j.commit_compile(book, producer, value)
+    as "Journal-retained exact successful producer."
+  #(producer, value)
+}
+
+pub fn launch_refusal_fence_excludes_association_while_native_writer_is_blocked_test() {
+  fixture(
+    "launch-blocked-native",
+    limits(4, 40_000_000),
+    fn(path, book, native) {
+      let #(_, original, claim, prepared) = launch_fixture(book, native)
+      let key = native_key(original, 10)
+      let digest = retain_live_request(native, key, prepared)
+      let assert Ok(other) =
+        j.recover(path, enrolled(), limits(4, 40_000_000), native)
+        as "Independent resource connection."
+      let assert Ok(refused) =
+        launch_completion.refused_before_native(
+          enrolled(),
+          original.key,
+          "definite owner refusal",
+        )
+        as "Original owner continuation."
+      let native_path =
+        string.replace(path, "/resources.sqlite", "/native.sqlite")
+      let assert Ok(lock) = sqlight.open(native_path)
+        as "Independent native writer exclusion."
+      assert sqlight.exec("BEGIN IMMEDIATE", lock) == Ok(Nil)
+      let entered = process.new_subject()
+      let pending =
+        [
+          fn() {
+            process.send(entered, Nil)
+            j.associate_native(
+              other,
+              original,
+              launch_ref(original),
+              key,
+              digest,
+            )
+            |> result.map(fn(_) { Nil })
+          },
+        ]
+        |> weft.new
+        |> weft.limit(1)
+        |> weft.deadline(5000)
+        |> weft.start_detached
+      let assert Ok(Nil) = process.receive(entered, 1000)
+        as "Association continuation entered."
+
+      // The native writer stays locked throughout this overlap, so any queued
+      // native readback cannot supply admission before the refusal COMMIT.
+      process.sleep(50)
+      let assert Ok(_) = j.fail_launch_preparation(claim, refused)
+        as "Original resource writer closes while native readback is blocked."
+      assert sqlight.exec("ROLLBACK", lock) == Ok(Nil)
+      assert weft.pull(pending, 1000)
+        == weft.PulledOutcome(weft.Failed(0, j.Conflict))
+      assert weft.pull(pending, 1000) == weft.AllDelivered
+      assert j.inspect_native(book, original) == Ok(j.Unassociated)
+      assert j.associate_live_native(claim, launch_ref(original), key, digest)
+        == Error(j.Conflict)
+      assert sqlight.close(lock) == Ok(Nil)
+      assert j.release_endpoint(other) == Ok(Nil)
+    },
+  )
 }

@@ -246,8 +246,10 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
 
   let assert codemode.Ran(source:, artifact:, outcome:) = execution.outcome
     as "the program must vet, compile, and run to an outcome"
+
   // The source handed back for the durable entry is the source submitted.
   assert source == program_source()
+
   // A real artifact: the generated entry really was compiled, and the
   // manifest hash is a content address over the whole compiled set.
   let assert compile.Artifact(beam_dir:, ..) = artifact
@@ -256,12 +258,17 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
   assert string.starts_with(compile.artifact_hash(artifact), "sha256-")
   assert simplifile.is_file(beam_dir <> "/" <> compile.entry_module <> ".beam")
     == Ok(True)
+
   // The structured outcome carries what the jailed `/bin/echo` printed —
   // through the cap channel, the broker's policy check, a second jail, and
   // back. Nothing here is scraped from stdout.
   let assert satellite.Completed(msgpack.StringValue(text)) = outcome
     as "the program must complete with a text outcome"
   assert text == expected_outcome
+
+  // Known completion is independent of cleanup. Actual native settlement and
+  // original reader/writer joins must also release whole-Launch preparation.
+  assert execution.custody == satellite.LaunchResourcesReleased
 
   // The host's own record of what the program did, which is not read from
   // anything the program returned: one refused call and one that settled,
@@ -295,6 +302,7 @@ fn run_end_to_end(prerequisites: Prerequisites) -> Nil {
     repeat.outcome
     as "the pipeline must be repeatable over the same build root"
   assert repeated == outcome
+  assert repeat.custody == satellite.LaunchResourcesReleased
   assert !rig.exists(stale)
   assert compile.artifact_hash(again) == compile.artifact_hash(artifact)
 
@@ -383,6 +391,7 @@ fn assert_both_stages_reported(reports: enforcement.Enforcement) -> Nil {
 
 fn run_transitive_import(prerequisites: Prerequisites) -> Nil {
   let live = rig.start(name: "transitive", prerequisites:, pool_size: 2)
+
   // Vetting is deliberately told to allow `core/msgpack`, so this program
   // reaches the compiler. `core` is a dependency of the *prelude*, not of
   // the generated program, and the hermetic build compiles with warnings
@@ -408,6 +417,7 @@ fn run_transitive_import(prerequisites: Prerequisites) -> Nil {
     as "importing a transitive dependency must fail the build, not run"
   assert string.contains(diagnostics, "direct dependency")
   assert string.contains(diagnostics, "core")
+
   // The build really ran — inside a jail — so it reports; the node never
   // existed, and says that rather than nothing at all.
   let assert enforcement.Reported(..) = execution.enforcement.build
@@ -421,6 +431,7 @@ fn run_transitive_import(prerequisites: Prerequisites) -> Nil {
 
 fn run_deadline(prerequisites: Prerequisites) -> Nil {
   let live = rig.start(name: "deadline", prerequisites:, pool_size: 2)
+
   // A program that never returns and never makes a capability call. The
   // only thing that can end it is the wall deadline killing the node as a
   // unit — the host's timer plus `broker.abort` plus the jail's own wall
@@ -439,6 +450,7 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
     <> "  }\n"
     <> "}\n"
   let config = exec_config(live, prerequisites, "deadline")
+
   // Compile under the generous budget the rig hands out, then run under a
   // deliberately short one, so the test spends its seconds on the deadline
   // rather than on the build.
@@ -464,6 +476,7 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
     )
   let #(ended, _clock) = clock.read(rig.wall_clock())
   assert ran.outcome == Error(satellite.DeadlineExceeded)
+
   // The abort path answers too. This is the case the old side-channel lost
   // most reliably — the host aborts the operation and reports at once —
   // and it is the case where knowing whether the jail held matters most:
@@ -487,11 +500,13 @@ fn run_deadline(prerequisites: Prerequisites) -> Nil {
   io.println(
     "code-mode e2e: " <> rig.enforcement_line("the killed node", ran.node),
   )
+
   // Not vacuous: the node was alive right up to the deadline. Anything
   // that stopped it earlier — a node that would not boot, a satellite
   // that could not reach the socket — closes the cap channel and settles
   // as `SatelliteGone` within a second, not as a deadline six seconds in.
   assert ended - started >= 5000
+
   // Teardown really ran: the cap socket and the private token file are
   // gone, so nothing of this execution outlives it on disk. The host
   // reports its result before it finishes cleaning up, so give the
@@ -553,6 +568,7 @@ fn run_widened(prerequisites: Prerequisites) -> Nil {
   let assert enforcement.NotWidened(reason: unwidened) = refused.widening
     as "an execution nobody approved must not read as widened"
   assert string.contains(unwidened, "no approved escalation")
+
   // The build still ran, in its own jail, and reported — a refusal at the
   // launch is not a claim about the stage before it.
   let assert enforcement.Reported(..) = refused.enforcement.build
@@ -576,6 +592,7 @@ fn run_widened(prerequisites: Prerequisites) -> Nil {
     as "the approved grant must let the satellite run"
   let assert satellite.Completed(msgpack.StringValue(text)) = outcome
     as "the widened program must complete with a text outcome"
+
   // Through the cap channel the grant made reachable, into a second jail,
   // and back.
   assert text == expected_outcome
@@ -607,7 +624,7 @@ fn narrowed_config(
     )
   codemode.ExecConfig(
     ..full,
-    satellite: satellite.SatelliteConfig(..full.satellite, base_policy: base),
+    satellite: satellite.RunConfig(..full.satellite, base_policy: base),
   )
 }
 
@@ -615,6 +632,7 @@ fn narrowed_config(
 
 fn run_type_error(prerequisites: Prerequisites) -> Nil {
   let live = rig.start(name: "type-error", prerequisites:, pool_size: 2)
+
   // A mistyped capability call is caught here, cheaply, before any
   // satellite spins up — the type checker doing double duty as the
   // tool-argument validator.
@@ -757,28 +775,31 @@ fn exec_config(
       budget: pooled,
     )
       |> identity.with_own_build_ledger,
-    satellite: satellite.SatelliteConfig(
+    satellite: satellite.RunConfig(
       base_policy: live.base_policy,
       demand: exec.BestEffort,
       env: [#("PATH", path)],
       cwd: live.workspace,
-      cap_socket_path: live.cap_socket_path,
       entropy: token.production_entropy(),
       clock: rig.wall_clock(),
-      write_token_file: satellite.private_token_writer(live.token_dir),
-      unlink_token_file: satellite.unlink_token_file,
       precheck: satellite.no_precheck,
       router: satellite.default_router,
       ceilings: [],
       call_timeout_ms: 60_000,
     ),
-    launch: launch.launcher(launch.LaunchConfig(
-      runner: physical.local(live.broker),
-      clock: rig.wall_clock(),
-      erl_path: prerequisites.erl_path,
-      host_mounts: rig.toolchain_mounts(prerequisites),
-      demand: exec.BestEffort,
-      accept_timeout_ms: 30_000,
+    launch: launch.foreground_launcher(launch.ForegroundLaunchConfig(
+      token_path: live.token_dir <> "/cap-token",
+      cap_socket_path: live.cap_socket_path,
+      write_token_file: satellite.private_token_writer(live.token_dir),
+      unlink_token_file: satellite.unlink_token_file,
+      local: launch.LaunchConfig(
+        runner: physical.local(live.broker),
+        clock: rig.wall_clock(),
+        erl_path: prerequisites.erl_path,
+        host_mounts: rig.toolchain_mounts(prerequisites),
+        demand: exec.BestEffort,
+        accept_timeout_ms: 30_000,
+      ),
     )),
   )
 }

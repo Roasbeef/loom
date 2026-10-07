@@ -196,10 +196,10 @@ Unicode/prefixed seed errors. These are component fixtures with synthetic native
 verdicts; they do not establish jailed compiler execution or whole remote Compile
 assembly. The original whole Compile actor owns that integration boundary.
 
-## Resource preparation and Compile custody
+## Resource preparation and closed service custody
 
 `remote/resource_journal` owns one SQLite actor/database for original preparation,
-immutable native association and closed Compile completion. Format 2 reserves
+immutable native association and closed Compile or Launch completion. Format 3 reserves
 663826 bytes plus exact address/header/input lengths per lifetime row before the
 first preparation Claim: full Ready, 8-KiB CommandRef, canonical 106-byte native
 Admit identity, independent 36-byte native UUID, 128-KiB Prepared, 256-KiB outer
@@ -208,7 +208,7 @@ These logical limits do not bound SQLite pages/WAL, RSS or scheduler delay.
 
 `fresh` and `recover` pin enrollment, row/byte limits and a concrete native
 `journal.Journal` with the same full scope. Recovery reads a guarded format scalar
-before new columns and explicitly refuses format 1; this unreleased component has
+before new columns and explicitly refuses formats 1 and 2; this unreleased component has
 no silent migration. Native identity encoding omits scope, so the pinned scope is
 checked separately. Recovery never creates another preparation or native permit,
 wall, token, UUID, clearance or original whole-service deadline. Trusted physical
@@ -242,8 +242,37 @@ The opaque retention handle follows COMMIT and checked historical recovery only.
 receipt; the adapter must commit before sending that ACK. It creates no native
 receipt or retirement. Resource cleanup, native receipt/retirement and outer ACK
 stay separate. This component creates no physical resources and enables no remote
-production service by itself. Launch reserves the same fixed allowance but its
-outcome/association APIs refuse UnsupportedRole until a closed Launch codec exists.
+production service by itself. Compile-specific APIs remain role guarded.
+
+`remote/launch_completion` retains the full original Launch key and either a
+witnessed before-native refusal or exact independently settled native terminal.
+Enforcement derives from those canonical terminal bytes, bounded to 32 KiB,
+inside the existing 256-KiB completion slot. The codec stores no program outcome,
+report artifact, token, PID, socket, Claim or activation permission.
+
+The private retained slot is `NoCompletion | CompileCompletion | LaunchCompletion`.
+`inspect_launch`, `commit_launch`, `fail_launch_preparation` and
+`acknowledge_launch` expose typed `LaunchStatus`/`RetainedLaunch` data. A definite
+refusal uses the original live Claim and atomically closes phase 1 or 2 while
+requiring no retained association. The native Command route must commit its
+association before receiving the opaque permit and launching. That ordering
+excludes an existing permit when refusal wins and denies every future association,
+including a concurrent readback. The owner still owes an actual definite refusal
+continuation; missing replies, caller loss and timeouts remain uncertainty.
+Post-Ready Launch refusal preserves the exact original Ready paths for cleanup.
+Compile retains its stricter pre-Ready refusal invariant.
+
+Shared native association dispatches on the original role. Launch follows one
+bounded producer edge on the same SQLite connection, restricted to Compile
+before reading its body. Full original input, enrollment and retained canonical
+successful completion must pass `service_input.admit_launch`; a supplied
+`compile.Compiled` cannot replace that readback. `service_command.launch` derives
+the actual finite-wall SatelliteCommand from retained Launch resources. Exact
+Prepared, policy, argv, ordered environment, cwd, step, scope, registration and
+UUID ownership checks apply to both roles. Historical association supplies data
+and never a second permit. Native terminal readback releases the resource writer
+transaction before asking the native actor, then revalidates on the same original
+resource row. No resource actor synchronously asks itself for a producer.
 
 Named Parrot/sqlc queries persist all rows and enforce checked RETURNING cardinality;
 handwritten SQL is confined to transaction/PRAGMA control and generated schema
@@ -819,3 +848,68 @@ original epoch fence and every covered-key retirement confirmation must also
 succeed. `shutdown` terminates the service only after that complete result. The
 enclosing host must consume this service-owned proof rather than invoking the
 same native close independently.
+
+
+## Whole Launch local custody
+
+`remote/launch_service` owns a finite original Launch continuation over the
+existing resource journal and native command service. `configure` admits one
+through four active entries, with a separate equally bounded metadata lane.
+`resource_owner` exposes only the exact original writer PID for same-row
+registration checks. Authenticated `Caller` facts bind Owner, executor, full
+scope and transport generation before any local control operation.
+
+`PlaceToken(original, nonce, budget_ms, token)` is the closed token placement
+operation. It checks exactly 32 bytes against the original SHA-256 commitment,
+reads the retained successful Compile producer, calls `service_input.admit_launch`,
+and physically fingerprints the original producer's `ebin` directory. Those
+checks precede Claim admission and every Launch file or socket effect. The actor
+retains the fresh Claim, then retains the original `launch_channel.Owner`, before
+allowing exclusive canonical directory, token and listener creation. An existing
+allocation refuses; partial effects retain their original cleanup custody.
+
+The finite placement reply is `Observed(preparation, LaunchStatus)`. It can report
+Claim custody before Ready, so the owner can query the later historical Ready and
+clear its exact SatelliteCommand without holding a request credit while socket
+accept waits. `send_command_exchange` gives the existing native engine the exact
+live Claim and unchanged executor deadline. Historical routes use only checked
+native contexts. `Query` never grants preparation, native execution or connection
+activation permission.
+
+`install_host` accepts a trusted local HostEndpoint for the original active entry
+exactly once. Its finite `Installed(deadline_ms)` receipt carries the immutable
+active original deadline on the native clock. Repeated installation and history
+cannot mint another deadline. The separate handoff subject receives
+one paused `run_channel.Connection` after socket acceptance and adoption of both
+reader and writer by weft. The caller installs original send, close, incarnation
+and grants before activation. The socket owner independently mirrors the pure
+one-frame window and charges its lifetime allowance before body reads or writer
+publication. One inbound producer orders frames and End. Final consumption passes
+through the original owner before reader teardown. `launch_observation` reads the
+committed native phase before exact terminal payloads and never publishes cap End.
+
+`RefuseBeforeNative` is restricted to a definite original owner clearance refusal.
+It retains the original Claim and answers only after `fail_launch_preparation`
+atomically fences phases 1/2 and commits the closed refusal. Association winning
+first rejects that refusal. Timeout, caller loss and BrokerUnavailable use
+cancellation or uncertainty. A committed refusal plus actual transport joins and
+original preparation join and directory removal can commit ResourceOwnerCleaned.
+Cancellation may establish the same no-dispatch cleanup custody through a
+successful original fence followed by exact same-row Unassociated readback.
+That witness never fabricates a RefusedBeforeNative history result. Lost fence,
+readback or join remains unresolved. Associated native
+terminal evidence currently leaves resource retirement unresolved; neither node
+reporting nor transport join substitutes for a native resource witness.
+
+Cancellation and watchdog closure independently close the original accepted
+socket and listener before joining blocked I/O. Active slots remain occupied
+through unresolved native, resource or transport custody. Effect-owning entries
+require a completed original continuation, actual child joins and
+ResourcesReleased before releasing their slot. A drained historical observation
+owns no Claim or channel and releases its observation-only slot directly.
+The original execution deadline is immutable. A separate six-second observation
+grace can retain settlement and join evidence but cannot authorize dispatch.
+Each active original owns one cancellation lane independent of metadata credits.
+Closed local channel observations expire after six seconds; historical journal
+queries never recreate those callbacks or sockets. BEAM control/stream binding,
+owner client wiring and default daemon assembly are separate integration work.
