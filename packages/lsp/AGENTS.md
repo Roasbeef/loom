@@ -15,8 +15,8 @@ The package is the **protocol and the vocabulary**, not the wiring.
 server leases, jailed transport and the `Door` closures. `packages/client`
 loads `[lsp.<name>]` from `loom.toml` and checks approved profiles; shared
 landing and write diagnostics are `packages/tools`, and the `lsp.*`
-capabilities are `packages/codemode`. Nothing here performs I/O except
-the client actor, and nothing here imports `broker` (ADR-015 §2).
+capabilities are `packages/codemode`. I/O is confined to
+the client actor and the consumed channel owner, and nothing here imports `broker` (ADR-015 §2).
 
 The modules, in dependency order:
 
@@ -24,10 +24,13 @@ The modules, in dependency order:
 - `lsp/query` — the harness's vocabulary and the `Door` contract every
   surface calls through. Types only.
 - `lsp/jsonrpc` — the JSON-RPC 2.0 envelope over `core/json`: request,
-  notification, response and error_response encoders and a total `decode`.
+  notification, response and error_response encoders, total `decode`, and
+  additive `decode_profile` selecting the core JSON allocation profile.
   Ported from the codec `packages/mcp` carried before #669.
-- `lsp/transport` — the transport seam: `Transport` (one variant,
-  `ChannelTransport`), `Connection` and `TransportEvent`.
+- `lsp/transport` — `Transport(ChannelTransport | ConsumedChannelTransport)`,
+  ordinary `Connection` and `TransportEvent`; both variants are local seams.
+- `lsp/internal/consumed_channel` — the original actor-owned writer window,
+  two fixed output-credit slots, opaque `Sink` and one-shot `Grant`.
 - `lsp/framing` — the pure `Content-Length` framer, over bytes.
 - `lsp/protocol` — total codecs for every structure consumed, capability
   gating, answers to server requests, and `file://` URI conversion.
@@ -81,7 +84,7 @@ the shared decoding helpers close the file.
 - `lsp/client.{Client, Options, options, start, stop, pid,
   request_deadline, capabilities, feature_method}` — the opaque handle
   and its lifecycle. `start(Transport, Options) -> Result(Client,
-  StartError)` accepts only a `ChannelTransport` (the jail);
+  StartError)` accepts either trusted local channel variant;
   `StartError` is `BadRoot | TransportRefused | HandshakeFailed(
   RequestError) | EncodingUnsupported`. `stop(client, grace_ms) ->
   StopReport` is `Graceful | Forced | AlreadyGone | Unconfirmed`.
@@ -202,13 +205,14 @@ the shared decoding helpers close the file.
 - **URIs decode strictly.** `uri_to_path` refuses a bad `%` escape, a
   remote authority, a query or fragment, non-UTF-8 bytes and NUL; it
   never passes a malformed escape through.
-- **The client actor never blocks and never reads disk.** ADR-015 §1:
-  the jailed exec path has no backpressure. Every wait is a pending entry
-  plus a timer in actor state; the only I/O in a handler is
-  `Connection.send`. Document texts arrive in `sync`, read by the caller.
-- **Only a channel transport exists.** `lsp/transport.Transport` has no
-  port variant, so no wiring can run the server unjailed (Rule Zero) and
-  `start` has nothing to refuse.
+- **The actor reads no disk.** Document texts arrive in `sync` from the caller.
+  Ordinary writes preserve the cast channel. Consumed writes wait only on
+  admission; physical input waits run in the original managed pump. Consumed
+  output waits only on the completed local credit task's drain.
+- **Both variants are trusted local channels.** Neither transport creates an
+  unjailed server. Ordinary `ChannelTransport` preserves the local behavior;
+  `ConsumedChannelTransport` selects the checked original window and Registered
+  state profile. Native ServerLease validation remains its adapter's job.
 - **No caller is ever crashed by the client.** Every exchange is
   `lsp/call.try_call`; a dead or wedged client answers `Unavailable`.
 - **Death settles everyone, then is reported.** A transport close, a
@@ -218,12 +222,12 @@ the shared decoding helpers close the file.
 - **A timed-out request is cancelled and forgotten.** `TimedOut` is
   answered, `$/cancelRequest` sent for the id, and a late answer
   dropped; the actor keeps serving.
-- **At most 64 documents are open**, LRU by last sync: document versions
+- **At most 64 local documents are open**, LRU by last sync: document versions
   come from one counter shared by every document, so the smallest version
   is the least recently synced, and a reopened document never reuses a
   version an old publication carries. `synced_text` is exactly the last
   text sent.
-- **The diagnostics store is bounded**: 512 URIs (the oldest publication
+- **The ordinary diagnostics store is bounded**: 512 URIs (the oldest publication
   goes first) and 200 diagnostics per publication.
 - **Settlement is ADR-015 §3's two rules, and never a guess.** (a) the
   `documentSymbol` barrier on the first changed URI answered; (b) once the
@@ -277,7 +281,8 @@ hierarchy replies reach their method-specific decoder while retaining the
 failure, because three methods share one capability. Another typed semantic
 query must establish recovery. Informational messages do not poison ordinary
 misses.
-Malformed notifications are dropped by the existing total decoder.
+Ordinary channels drop malformed notifications through the existing total decoder;
+Registered channels fail before acknowledging them.
 
 ## Finite semantic observations
 
@@ -295,3 +300,76 @@ message. The client monitors each semantic request's reply owner. Owner death
 removes that pending id and sends `$/cancelRequest`; a late reply is ignored
 and the shared server keeps serving. Cancellation is a protocol request, so
 it does not prove that a server which ignores cancellation stopped computing.
+
+## Registered consumed channel (protocol 076)
+
+`ConsumedChannelTransport.connect(Sink)` installs one trusted original `Session`
+in its window owner. `Session.feed` must return only after the actual native
+input credit settles, and `Session.close` must request original cancellation
+without waiting on this client's output. The actor checks the actual client PID,
+original window subject, stream and current nonce before one-shot consumption.
+The sole output-credit worker owns its wait subject; a checked `CreditReady`
+message establishes that wait before delivery. Publisher success and the client
+consumption reply follow the matching task's `AllDelivered`, preventing a later
+close from cancelling an acknowledgment that was merely queued.
+
+Client sends acknowledge admission only. The window reserves each entire framed
+logical message before its first physical effect and retains that reservation
+until its last feed and managed task drain. It holds at most 16,785,408 bytes and
+128 messages, splits feeds at 8192 bytes and owns one pending input credit. Its
+30,000 ms weft deadline fences and cancels the original attachment on failure.
+The original lifetime allowance is at most 64 MiB and 8192 frames including a
+reserved EOF frame; completed writes never replenish it. The conservative local
+frame reservation permits 8191 full data feeds, or 67,100,672 bytes. Actual helper
+input and producer output limits remain independently enforced by the adapter.
+
+Only this transport selects `core/json.RegisteredLspJson`: 200,000 aggregate
+nodes including keys and values, depth 256, existing 16 MiB body and 8192-byte
+header bounds. Retained document texts, diagnostic strings/sites and other
+metadata/progress each have a separate 4 MiB ceiling. Diagnostics charge URI and
+path strings plus 128 bytes per publication and 128 per site. Before retaining
+Registered publications, all four diagnostic coordinates must be LSP `uinteger`
+values (0 through 2,147,483,647), and an optional publication version must be an
+LSP signed `integer` (-2,147,483,648 through 2,147,483,647). This bounds the numeric
+representation covered by those fixed charges. The shared decoder and ordinary
+channel retain their previous arbitrary-precision integer behavior. These ranges
+come from the [LSP base types](https://raw.githubusercontent.com/microsoft/language-server-protocol/gh-pages/_specifications/lsp/3.17/specification.md),
+[Position](https://raw.githubusercontent.com/microsoft/language-server-protocol/gh-pages/_specifications/lsp/3.17/types/position.md)
+and [PublishDiagnostics](https://raw.githubusercontent.com/microsoft/language-server-protocol/gh-pages/_specifications/lsp/3.17/language/publishDiagnostics.md). Metadata charges
+document URI/path plus 128, progress token/title plus 128, settlement waiter plus
+128 and target URI plus 64, pending/readier plus 128, stopper plus 64 and workspace
+folder URI/name plus 64; retained configuration/failure/encoding strings are also
+charged. These conservative logical charges are not heap, RSS or disk accounting.
+
+Registered state preserves 64 documents, 512 diagnostic URIs, 200 diagnostics per
+URI and 64 progress tokens, and permits at most 128 pending protocol requests.
+Prospective document, diagnostic, progress and waiter state is checked before its
+write or clean settlement/readiness effect. Overflow fails the protocol, retaining
+the reason; it does not evict or truncate registered evidence. Ordinary local
+channels keep their prior LRU, truncation, malformed-notification and parser
+behavior.
+
+Stdout is acknowledged only after framing, total bounded JSON parsing and state
+updates. Partial frames remain in the bounded framer. Stderr enters a private
+8192-byte tail ring before acknowledgment; no public stderr readback is added.
+Truncation, invalid credit, malformed protocol or exhaustion closes the original
+attachment. There is no stdout archive, callback-selected command, helper ID,
+replacement lookup or fabricated native retirement permission.
+
+The broker/executor ServerLease assembly is a later join: it must install only an
+exact validated original native session, preserve actual input/output credits,
+producer caps and independent close/retirement evidence, and retain uncertainty
+when any physical witness is missing. `Closed` reports attachment closure only;
+credit expiry, local actor DOWN and `AllDelivered` cannot prove helper retirement.
+
+The deterministic consumed peer tests drive this real client actor through blocked
+input, request timeout/cancellation, fragmented output, original one-shot grants,
+exact window/lifetime/state limits and failure closure. It supplies no native
+retirement proof. The stderr append/slice boundary is structurally reviewed and
+consumption-tested; there is no existing typed actor-state inspector in this package.
+
+The supplemental core JavaScript gate does not establish exact-limit JSON runtime
+success. Both Standard and Registered profiles hit the pre-existing sibling-stack
+limit on a 199,999-null array probe. Registered LSP executes on BEAM, where exact
+node edges pass; the approved additive parser seam preserves the existing sibling
+implementation.

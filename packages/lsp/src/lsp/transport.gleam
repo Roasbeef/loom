@@ -2,31 +2,27 @@
 //// server: write one framed message out, receive raw bytes and the close as
 //// messages, tear the peer down.
 ////
-//// `lsp/client` is written against `Transport` alone. The seam is the one
-//// place a server's process comes to exist, and for LSP that place is the
-//// jail: `client/lsp/jail` builds a `Transport` over the broker's exec, and
-//// `test/support/fake_server` builds one over an in-process peer. Nothing in
-//// this package opens a port or spawns a process. That is why `Transport`
-//// has a single variant. `gleam_mcp/transport` also has an unjailed
-//// `PortTransport`, and `lsp/client` had to refuse it at `start`. Here the
-//// type cannot say it, so no wiring mistake can run a server on the
-//// harness's own host (Rule Zero), and the refusal path is gone with it.
+//// `lsp/client` is written against two trusted local channel variants. Neither
+//// variant opens an unjailed server; the actual broker/native attachment belongs
+//// to its caller. Ordinary `ChannelTransport` retains its existing callbacks and
+//// events. `ConsumedChannelTransport` installs one original local `Session` in
+//// the checked window owner, selecting Registered parser and state bounds.
 ////
-//// The module is the channel half of the transport that Loom's own
-//// `packages/mcp` carried before the MCP client moved into `gleam_mcp`
-//// (commit `89247eb29`), kept to the types the LSP client uses.
+//// The ordinary client passes `Subject(TransportEvent)` to `connect` inside its
+//// actor. Its `Connection` writes framed messages and requests teardown; the peer
+//// sends raw `TransportData` and the original `TransportClosed` event. The
+//// consumed connect instead runs in the original window owner and receives an
+//// opaque producer `Sink`. Its physical feed must wait for actual input credit,
+//// while close requests original cancellation without waiting on client output.
+//// The original helper session adapter supplies those trusted callbacks later.
 ////
-//// ## How a connection is used
-////
-//// `lsp/client` creates a `Subject(TransportEvent)` inside the actor
-//// process and passes it to the `connect` function. `connect` returns a
-//// `Connection`: the actor writes through `send` and requests teardown
-//// through `close`. The peer delivers `TransportData` chunks to the subject
-//// as bytes arrive, at whatever boundary the pipe chose, and delivers
-//// `TransportClosed` exactly once when the wire is gone. No event follows
-//// the close.
+//// Consumed output carries a one-shot owner-checked grant. Stdout becomes consumed
+//// after framing, total JSON parsing and bounded state updates; stderr enters the
+//// private 8 KiB ring. Local close events establish attachment closure only.
+//// Executor/native retirement and durable lease association remain independent.
 
 import gleam/erlang/process.{type Subject}
+import lsp/internal/consumed_channel
 
 /// One inbound event from the transport, as the client actor sees it.
 pub type TransportEvent {
@@ -45,7 +41,12 @@ pub type TransportEvent {
 /// so a peer that ignores the request is still observed to be gone, or not,
 /// by the same event.
 pub type Connection {
-  Connection(send: fn(String) -> Result(Nil, Nil), close: fn() -> Nil)
+  Connection(
+    /// Writes one framed message through the installed local channel.
+    send: fn(String) -> Result(Nil, Nil),
+    /// Requests original peer teardown; its close event remains independent.
+    close: fn() -> Nil,
+  )
 }
 
 /// How the client actor reaches its language server.
@@ -56,4 +57,12 @@ pub type Transport {
   /// write through. Running it in the actor's process is what lets a peer
   /// that owns a port or a monitor address its messages to the actor.
   ChannelTransport(connect: fn(Subject(TransportEvent)) -> Connection)
+
+  /// Original trusted local consumed attachment. Its client profile bounds
+  /// JSON nodes and retained state, and its writer acknowledges admission only.
+  ConsumedChannelTransport(
+    /// Installs the actual original trusted session in its window owner.
+    connect: fn(consumed_channel.Sink) ->
+      Result(consumed_channel.Session, String),
+  )
 }

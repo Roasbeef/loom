@@ -154,7 +154,7 @@ hides. A refused path costs no request.
 The two servers ADR-015 measured disagree on everything a client could
 wait on, and `rust-analyzer` answers `[]` while it is still loading. So a
 freshly started server is asked whether its work-done progress has gone
-quiet (`ready`, `lsp/client.gleam:1167`), and a write's diagnostics are
+quiet (`ready`, `lsp/client.gleam:1194`), and a write's diagnostics are
 collected under two rules that both must hold (`settle`,
 `lsp/client.gleam:1126`). The answer is a type that says `Settled` or
 `Unsettled`, so a server that had not finished is never reported as clean

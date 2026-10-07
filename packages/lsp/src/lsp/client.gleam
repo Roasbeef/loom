@@ -11,14 +11,13 @@
 //// is the only place in the harness where LSP JSON-RPC ids, document
 //// versions and publications are correlated.
 ////
-//// **No handler blocks and no handler reads disk.** The production
-//// transport is the broker's jailed exec, and ADR-015 §1 records that the
-//// path has no backpressure: the relay forwards every stdout chunk as a
-//// message and stdin is a cast. So every wait — a request's deadline, a
-//// settlement, the handshake, the shutdown grace — lives in actor state as
-//// a pending entry plus a timer, and the only I/O a handler performs is
-//// `Connection.send`. The texts a document sync carries were read by the
-//// caller, which is why `sync` takes texts rather than paths to read.
+//// Handlers read no disk. Ordinary `ChannelTransport` keeps the existing cast
+//// writes and uncredited relay. `ConsumedChannelTransport` admits each logical
+//// write to its bounded original writer; the managed pump waits for native input
+//// independently of this actor. Output consumption waits only for that output's
+//// local managed credit task to drain, after framing, parsing and state checks.
+//// Request, settlement, handshake and shutdown waits remain actor state and timers.
+//// Document texts come from the caller, which is why `sync` takes texts.
 ////
 //// **Every request is gated on what the server advertised.** A measured
 //// server left an unadvertised request unanswered for as long as it was
@@ -26,11 +25,10 @@
 //// an unadvertised request answers `Unsupported` without a byte reaching
 //// the server.
 ////
-//// **Only a channel transport exists.** Rule Zero puts a language server in
-//// the jail, and the jail is reached through a `ChannelTransport` built over
-//// the broker's exec in `packages/client`. `lsp/transport.Transport` has no
-//// other variant, so no wiring mistake can run a server on the harness's own
-//// host, and `start` has no refusal to make for it.
+//// Both transports are trusted local channel seams. Rule Zero keeps the actual
+//// server in the jail; neither variant can open an unjailed process. The ordinary
+//// channel preserves existing local behavior. The consumed variant selects the
+//// Registered JSON and retained-state profile specified by protocol 076.
 ////
 //// # The phases
 ////
@@ -40,8 +38,8 @@
 //// life. `ShuttingDown` has sent `shutdown` and waits a caller-chosen
 //// grace for its answer; then `exit` is sent and the transport closed.
 //// `Retiring` has closed the transport and waits, bounded by `retire_ms`,
-//// for the `TransportClosed` that proves the server is gone — the
-//// transport's retirement witness, for which no deadline substitutes. The
+//// for the original attachment close event. Registered native retirement requires
+//// separate executor/helper evidence; no local close or deadline supplies it. The
 //// actor exits only from `Retiring`, or at once when the transport
 //// reports the close itself.
 ////
@@ -69,7 +67,7 @@
 //// | `Initializing` | stays; the `initialize` answer goes to `Serving`, a refusal or a framing fault to `Retiring` (Faulted) | actor exits, abnormally | ignored | `HandshakeExpired` goes to `Retiring` (Faulted); the others are ignored |
 //// | `Serving` | stays; a framing fault or a bad body goes to `Retiring` (Faulted) | actor exits, abnormally | handled; stays | all ignored |
 //// | `ShuttingDown` | stays; the `shutdown` answer goes to `Retiring` (Graceful), a fault to `Retiring` (Faulted) | actor exits normally, report Forced | `Expire` is handled; the rest are ignored | `GraceExpired` goes to `Retiring` (Forced); the others are ignored |
-//// | `Retiring` | drained and ignored | actor exits: normally after a requested stop, abnormally after a fault | ignored | `RetireExpired` exits abnormally and reports `Unconfirmed`; the others are ignored |
+//// | `Retiring` | drained; Registered trailing complete bodies remain validated | actor exits: normally after a requested stop, abnormally after a fault | ignored | `RetireExpired` exits abnormally and reports `Unconfirmed`; the others are ignored |
 ////
 //// A message that reaches a phase with nothing to do in it is dropped
 //// rather than refused, because every such message is either a timer whose
@@ -96,6 +94,9 @@
 //// death    peer_closed or fail -> settle_all -> close
 //// ```
 ////
+//// `from_consumed`, `feed_flow`, `checked_notification`, `progress_candidate`,
+//// `state_bounds`, `ready_admitted`, `settle_admitted`, `join_stopper` and
+//// `flush_close` and `registered_diagnostic_numbers` own Registered consumption.
 //// `handle` dispatches on the phase to `initializing`, `serving`,
 //// `shutting_down` or `retiring`. Handlers that may change the phase in
 //// the middle of their work return a `Flow` (a phase and its data), and
@@ -156,6 +157,7 @@
 import core/corruption
 import core/json.{type JsonValue}
 import gleam/bit_array
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/erlang/reference
@@ -167,6 +169,7 @@ import gleam/result
 import gleam/string
 import lsp/call
 import lsp/framing
+import lsp/internal/consumed_channel as consumed
 import lsp/jsonrpc.{type Id}
 import lsp/protocol.{
   type CallHierarchyItem, type DocumentSymbols, type Feature, type HoverResult,
@@ -464,6 +467,9 @@ pub opaque type Msg {
   /// Inbound bytes or the close, from the transport.
   FromTransport(event: transport.TransportEvent)
 
+  /// Original local output remains credited until the actor finishes consumption.
+  FromConsumed(event: consumed.Event)
+
   /// Nobody will stop this client: its owner died, or `start` gave up on
   /// the handshake reply.
   Abandoned
@@ -640,6 +646,12 @@ type Data {
     /// The write and close ends of the transport. Replaced by an inert
     /// connection once closed.
     connection: transport.Connection,
+    /// Selected by the closed transport, preserving ordinary local behavior.
+    profile: json.ParseProfile,
+    /// Close is deferred through current output consumption before cancellation.
+    deferred_close: Option(fn() -> Nil),
+    /// Registered stderr retains its latest bytes without an output archive.
+    stderr_ring: BitArray,
     /// Bytes read from the server that have not yet made a whole frame.
     buffer: framing.Buffer,
     /// What the server advertised; empty until `initialize` answers.
@@ -747,11 +759,20 @@ pub fn start(
     protocol.path_to_uri(options.root)
     |> result.replace_error(BadRoot(root: options.root)),
   )
-  let transport.ChannelTransport(connect:) = transport_spec
+  let profile = case transport_spec {
+    transport.ChannelTransport(_) -> json.StandardJson
+    transport.ConsumedChannelTransport(_) -> json.RegisteredLspJson
+  }
   let folders = [
     protocol.WorkspaceFolder(uri: root_uri, name: options.folder_name),
   ]
-  use client <- result.try(spawn(connect, options, root_uri, folders))
+  use client <- result.try(spawn(
+    transport_spec,
+    profile,
+    options,
+    root_uri,
+    folders,
+  ))
 
   // The actor answers at the handshake deadline itself; the margin only
   // covers an actor that cannot answer at all, which is abandoned so its
@@ -1342,7 +1363,8 @@ fn await_exit(client: Client, within: Int) -> Nil {
 // sources the actor listens to and maps each into `Msg`: its own command
 // mailbox, the transport's events, and the owner's death.
 fn spawn(
-  connect: fn(Subject(transport.TransportEvent)) -> transport.Connection,
+  transport_spec: Transport,
+  profile: json.ParseProfile,
   options: Options,
   root_uri: String,
   folders: List(WorkspaceFolder),
@@ -1352,10 +1374,12 @@ fn spawn(
     // The owner's death is the one stop nobody sends, so it is watched
     // from the first instruction the actor runs.
     let inbound = process.new_subject()
+    let credited = process.new_subject()
     let selector =
       process.new_selector()
       |> process.select(commands)
       |> process.select_map(inbound, FromTransport)
+      |> process.select_map(credited, FromConsumed)
       |> process.select_monitors(fn(down) { CallerDown(down.monitor) })
       |> process.select_specific_monitor(process.monitor(owner), fn(_) {
         Abandoned
@@ -1363,7 +1387,13 @@ fn spawn(
 
     // `connect` runs here, in the actor, so the transport's events are
     // addressed to the process that will select them.
-    let connection = connect(inbound)
+    use connection <- result.try(case transport_spec {
+      transport.ChannelTransport(connect) -> Ok(connect(inbound))
+      transport.ConsumedChannelTransport(connect) -> {
+        use connection <- result.map(consumed.open(connect, credited))
+        transport.Connection(connection.send, connection.close)
+      }
+    })
     let data =
       Data(
         server: options.server,
@@ -1375,6 +1405,9 @@ fn spawn(
         initialize_ms: int.max(options.initialize_ms, 1),
         commands:,
         connection:,
+        profile:,
+        deferred_close: None,
+        stderr_ring: <<>>,
         buffer: framing.new(),
         capabilities: nothing_advertised(),
         next_id: 1,
@@ -1474,6 +1507,7 @@ fn initializing(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
   case msg {
     Handshake(reply:) -> begin_handshake(data, reply)
     HandshakeExpired -> conclude(Initializing, handshake_expired(data))
+    FromConsumed(event) -> from_consumed(Initializing, data, event)
     FromTransport(transport.TransportData(bytes:)) ->
       feed(Initializing, data, bytes)
     FromTransport(transport.TransportClosed(reason:)) ->
@@ -1511,13 +1545,14 @@ fn serving(data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
     SettleExpired(token:) ->
       conclude(Serving, settle_expired(Flow(Serving, data), token))
     Ready(quiet_ms:, deadline_ms:, reply:) ->
-      sm.keep(begin_ready(data, quiet_ms, deadline_ms, reply))
+      conclude(Serving, ready_admitted(data, quiet_ms, deadline_ms, reply))
     ReadyQuiet(token:, epoch:) -> sm.keep(quiet_lapsed(data, token, epoch))
     ReadyExpired(token:) -> sm.keep(ready_expired(data, token))
     Read(reading) -> {
       answer_read(data, reading)
       sm.keep(data)
     }
+    FromConsumed(event) -> from_consumed(Serving, data, event)
     FromTransport(transport.TransportData(bytes:)) -> feed(Serving, data, bytes)
     FromTransport(transport.TransportClosed(reason:)) ->
       peer_closed(data, reason)
@@ -1545,6 +1580,7 @@ fn shutting_down(
 ) -> sm.Next(Phase, Data, Msg) {
   let reason = "the lsp client is shutting down"
   case msg {
+    FromConsumed(event) -> from_consumed(phase, data, event)
     FromTransport(transport.TransportData(bytes:)) -> feed(phase, data, bytes)
 
     // The server left before answering; the close is the witness.
@@ -1552,8 +1588,7 @@ fn shutting_down(
       witnessed(data, Requested(Forced), reason)
 
     GraceExpired -> conclude(phase, force_close(data))
-    Stop(reply:, ..) ->
-      sm.keep(Data(..data, stoppers: [reply, ..data.stoppers]))
+    Stop(reply:, ..) -> join_stopper(phase, data, reply)
     Expire(id:) -> conclude(phase, expire(Flow(phase, data), id))
     Ask(..) | Sync(..) | Settle(..) | Ready(..) ->
       refuse(data, reply_of(msg), reason)
@@ -1584,6 +1619,9 @@ fn retiring(
   msg: Msg,
 ) -> sm.Next(Phase, Data, Msg) {
   case msg {
+    FromConsumed(consumed.Closed(_)) -> witnessed(data, ending, reason)
+    FromConsumed(consumed.Failed(_)) | FromConsumed(consumed.Output(..)) ->
+      sm.keep(data)
     FromTransport(transport.TransportClosed(..)) ->
       witnessed(data, ending, reason)
     RetireExpired -> {
@@ -1592,8 +1630,7 @@ fn retiring(
         "the language server's transport never confirmed its close: " <> reason,
       )
     }
-    Stop(reply:, ..) ->
-      sm.keep(Data(..data, stoppers: [reply, ..data.stoppers]))
+    Stop(reply:, ..) -> join_stopper(Retiring(ending, reason), data, reply)
     Ask(..) | Sync(..) | Settle(..) | Ready(..) ->
       refuse(data, reply_of(msg), reason)
     Read(reading) -> {
@@ -1618,6 +1655,21 @@ fn retiring(
 
 // The four caller messages share one refusal. Returned as a closure so
 // the refusing phase does not repeat the four shapes.
+fn join_stopper(
+  phase: Phase,
+  data: Data,
+  reply: Subject(StopReport),
+) -> sm.Next(Phase, Data, Msg) {
+  let candidate = Data(..data, stoppers: [reply, ..data.stoppers])
+  case state_bounds(candidate) {
+    Ok(Nil) -> sm.keep(candidate)
+    Error(reason) -> {
+      process.send(reply, Unconfirmed)
+      conclude(phase, fail(data, reason))
+    }
+  }
+}
+
 fn reply_of(msg: Msg) -> fn(RequestError) -> Nil {
   case msg {
     Ask(reply:, ..) -> fn(error) { process.send(reply, Error(error)) }
@@ -1636,6 +1688,7 @@ fn reply_of(msg: Msg) -> fn(RequestError) -> Nil {
     | GraceExpired
     | RetireExpired
     | FromTransport(..)
+    | FromConsumed(..)
     | Abandoned -> fn(_) { Nil }
   }
 }
@@ -1653,6 +1706,11 @@ fn refuse(
 // actor stays put, which keeps the phase's state timeout armed; if it did,
 // `sm.transition` runs `entered` for the new phase.
 fn conclude(before: Phase, flow: Flow) -> sm.Next(Phase, Data, Msg) {
+  let flow = case state_bounds(flow.data) {
+    Ok(Nil) -> flow
+    Error(reason) -> fail(flow.data, reason)
+  }
+  let flow = Flow(..flow, data: flush_close(flow.data))
   case flow.phase == before {
     True -> sm.keep(flow.data)
     False -> sm.transition(to: flow.phase, data: flow.data)
@@ -1859,28 +1917,81 @@ fn feed(
   data: Data,
   bytes: BitArray,
 ) -> sm.Next(Phase, Data, Msg) {
+  conclude(phase, feed_flow(phase, data, bytes))
+}
+
+fn feed_flow(phase: Phase, data: Data, bytes: BitArray) -> Flow {
   case framing.push(data.buffer, bytes) {
     Error(fault) ->
-      conclude(
-        phase,
-        fail(
-          data,
-          "the language server's output is not lsp framing: "
-            <> describe_fault(fault),
-        ),
+      fail(
+        data,
+        "the language server's output is not lsp framing: "
+          <> describe_fault(fault),
       )
     Ok(#(buffer, bodies)) ->
-      conclude(
-        phase,
-        list.fold(bodies, Flow(phase, Data(..data, buffer:)), body),
-      )
+      list.fold(bodies, Flow(phase, Data(..data, buffer:)), body)
+  }
+}
+
+// Consumption belongs to the original client after every completed body and state
+// mutation. A failure withholds the grant and closes that original attachment.
+fn from_consumed(
+  phase: Phase,
+  data: Data,
+  event: consumed.Event,
+) -> sm.Next(Phase, Data, Msg) {
+  case event {
+    consumed.Closed(reason) -> {
+      case phase {
+        ShuttingDown(_) -> witnessed(data, Requested(Forced), reason)
+        Initializing | Serving -> peer_closed(data, reason)
+        Retiring(ending, why) -> witnessed(data, ending, why)
+      }
+    }
+    consumed.Failed(reason) -> conclude(phase, fail(data, reason))
+    consumed.Output(stream, bytes, grant) -> {
+      let flow = case stream {
+        consumed.Stdout -> feed_flow(phase, data, bytes)
+        consumed.Stderr -> {
+          let combined = bit_array.append(data.stderr_ring, bytes)
+          let size = bit_array.byte_size(combined)
+          let kept = int.min(size, 8192)
+          let ring =
+            bit_array.slice(combined, size - kept, kept)
+            |> result.lazy_unwrap(fn() { <<>> })
+          Flow(phase, Data(..data, stderr_ring: ring))
+        }
+      }
+      let checked = case flow.phase {
+        Retiring(Faulted, reason) -> Error(reason)
+        Initializing | Serving | ShuttingDown(_) | Retiring(Requested(_), _) ->
+          state_bounds(flow.data)
+      }
+      let checked = checked |> result.try(fn(_) { consumed.consume(grant) })
+      case checked {
+        Ok(Nil) -> conclude(phase, flow)
+        Error(reason) -> conclude(phase, fail(flow.data, reason))
+      }
+    }
   }
 }
 
 fn body(flow: Flow, text: String) -> Flow {
   case flow.phase {
     // A faulted client drains the rest of the chunk without acting on it.
-    Retiring(..) -> flow
+    Retiring(Faulted, _) -> flow
+    Retiring(Requested(_), _) -> {
+      case flow.data.profile {
+        json.StandardJson -> flow
+        json.RegisteredLspJson -> {
+          case jsonrpc.decode_profile(text, flow.data.profile) {
+            Ok(_) -> flow
+            Error(_) ->
+              fail(flow.data, "trailing consumed output is not JSON-RPC")
+          }
+        }
+      }
+    }
     Initializing | Serving | ShuttingDown(..) -> message(flow, text)
   }
 }
@@ -1889,7 +2000,7 @@ fn body(flow: Flow, text: String) -> Flow {
 // stream can no longer be trusted to carry the answers callers wait on.
 // A well-formed message the client does not act on is dropped.
 fn message(flow: Flow, text: String) -> Flow {
-  case jsonrpc.decode(text) {
+  case jsonrpc.decode_profile(text, flow.data.profile) {
     Error(jsonrpc.MalformedMessage(report:)) ->
       fail(
         flow.data,
@@ -1906,7 +2017,10 @@ fn message(flow: Flow, text: String) -> Flow {
     Ok(jsonrpc.ServerRequest(id:, method:, params:)) ->
       answer_server(flow, id, method, params)
     Ok(jsonrpc.Notification(method:, params:)) ->
-      Flow(..flow, data: notification(flow.data, method, params))
+      case checked_notification(flow.data, method, params) {
+        Ok(data) -> Flow(..flow, data:)
+        Error(reason) -> fail(flow.data, reason)
+      }
   }
 }
 
@@ -2042,11 +2156,133 @@ fn answer_server(
   }
 }
 
-// A malformed publication or progress is dropped rather than fatal: its
-// envelope was well formed, so the stream is still trustworthy, and the
-// next publication for that file replaces it anyway. A dropped progress
-// costs at most a wait: a lost `end` holds readiness until the caller's
-// deadline, and a lost `begin` comes back with the token's next report.
+// Ordinary channels retain their prior malformed-notification behavior. The
+// Registered path refuses malformed or oversized evidence before its state or
+// settlement changes, so discarded diagnostics cannot become a clean result.
+fn checked_notification(
+  data: Data,
+  method: String,
+  params: Option(JsonValue),
+) -> Result(Data, String) {
+  case data.profile {
+    json.StandardJson -> Ok(notification(data, method, params))
+    json.RegisteredLspJson -> {
+      use classified <- result.try(
+        protocol.classify_notification(method, params)
+        |> result.replace_error("malformed Registered LSP notification"),
+      )
+      case classified {
+        protocol.Published(published) -> {
+          use <- bool.guard(
+            when: !list.is_empty(list.drop(
+              published.diagnostics,
+              max_diagnostics_per_uri,
+            )),
+            return: Error("Registered diagnostics exceed the per-URI count"),
+          )
+          use Nil <- result.try(registered_diagnostic_numbers(published))
+          use <- bool.guard(
+            when: !dict.has_key(data.publications, published.uri)
+              && dict.size(data.publications) >= max_published_uris,
+            return: Error("Registered diagnostics exceed the URI count"),
+          )
+          use _ <- result.try(
+            protocol.uri_to_path(published.uri)
+            |> result.replace_error(
+              "Registered diagnostics have an invalid local URI",
+            ),
+          )
+          let next = record(data, published)
+          use Nil <- result.try(state_bounds(next))
+          Ok(release_settled(next))
+        }
+        protocol.Progressed(progress) -> {
+          let candidate = progress_candidate(data, progress)
+          use <- bool.guard(
+            when: dict.size(candidate.progress) > max_progress_tokens,
+            return: Error("Registered progress exceeds the token count"),
+          )
+          use Nil <- result.try(state_bounds(candidate))
+          Ok(progressed(data, progress))
+        }
+        protocol.ServerFailure(message) -> {
+          let next =
+            Data(
+              ..data,
+              server_failure: Some(server_failure(message)),
+              failure_epoch: data.failure_epoch + 1,
+            )
+          use Nil <- result.try(state_bounds(next))
+          Ok(next)
+        }
+        protocol.Ignored(_) | protocol.Unrecognised(_) -> Ok(data)
+      }
+    }
+  }
+}
+
+// The fixed publication/site charges cover bounded LSP integers, not arbitrary
+// precision values admitted by the shared ordinary decoder. Registered retention
+// applies the protocol's uinteger positions and signed integer publication version
+// before record or settlement can retain them or acknowledge the output.
+fn registered_diagnostic_numbers(
+  published: protocol.PublishDiagnostics,
+) -> Result(Nil, String) {
+  let version_valid = case published.version {
+    None -> True
+    Some(version) -> version >= -2_147_483_648 && version <= 2_147_483_647
+  }
+  let ranges_valid =
+    list.all(published.diagnostics, fn(diagnostic) {
+      let start = diagnostic.range.start
+      let end = diagnostic.range.end
+      start.line >= 0
+      && start.line <= 2_147_483_647
+      && start.character >= 0
+      && start.character <= 2_147_483_647
+      && end.line >= 0
+      && end.line <= 2_147_483_647
+      && end.character >= 0
+      && end.character <= 2_147_483_647
+    })
+  use <- bool.guard(
+    when: !version_valid || !ranges_valid,
+    return: Error("Registered diagnostics exceed the LSP integer ranges"),
+  )
+  Ok(Nil)
+}
+
+// Candidate progress preserves the count and bytes before any readiness reply.
+fn progress_candidate(data: Data, progress: protocol.WorkDoneProgress) -> Data {
+  case progress {
+    protocol.ProgressBegin(token, title) ->
+      Data(
+        ..data,
+        progress: dict.insert(
+          data.progress,
+          token,
+          Activity(title, data.next_activity),
+        ),
+      )
+    protocol.ProgressReport(token) -> {
+      case dict.has_key(data.progress, token) {
+        True -> data
+        False ->
+          Data(
+            ..data,
+            progress: dict.insert(
+              data.progress,
+              token,
+              Activity(token_text(token), data.next_activity),
+            ),
+          )
+      }
+    }
+    protocol.ProgressEnd(token) ->
+      Data(..data, progress: dict.delete(data.progress, token))
+  }
+}
+
 fn notification(data: Data, method: String, params: Option(JsonValue)) -> Data {
   case protocol.classify_notification(method, params) {
     Ok(protocol.Published(diagnostics:)) ->
@@ -2125,6 +2361,9 @@ fn open_or_change(
   let version = data.next_version
   let data = Data(..data, next_version: version + 1)
   let document = Document(path:, version:, text:, mark: data.sequence)
+  let proposed =
+    Data(..data, documents: dict.insert(data.documents, uri, document))
+  use Nil <- result.try(state_bounds(proposed))
   use data <- result.try(case dict.has_key(data.documents, uri) {
     True -> {
       use Nil <- result.map(send(data, protocol.did_change(uri, version, text)))
@@ -2256,6 +2495,32 @@ fn begin_settle(
       Target(uri:, version:)
     })
 
+  let candidate =
+    Data(
+      ..data,
+      waiters: dict.insert(
+        data.waiters,
+        token,
+        Waiter(reply, change_mark(data, uris), targets, BarrierUnavailable),
+      ),
+    )
+  case state_bounds(candidate) {
+    Error(reason) -> {
+      process.send(reply, Error(Unavailable(reason)))
+      fail(data, reason)
+    }
+    Ok(Nil) -> settle_admitted(data, uris, token, targets, deadline_ms, reply)
+  }
+}
+
+fn settle_admitted(
+  data: Data,
+  uris: List(String),
+  token: Int,
+  targets: List(Target),
+  deadline_ms: Int,
+  reply: Subject(Result(Settlement, RequestError)),
+) -> Flow {
   case open_barrier(data, uris, token) {
     Error(reason) -> {
       process.send(reply, Error(Unavailable(reason:)))
@@ -2413,6 +2678,30 @@ fn collect(
 // it is answered now and arms nothing. Otherwise its deadline is armed,
 // and — when nothing is active — its quiet window too, from this call; if
 // something is active the window is armed later, when the set empties.
+fn ready_admitted(
+  data: Data,
+  quiet_ms: Int,
+  deadline_ms: Int,
+  reply: Subject(Result(Readiness, RequestError)),
+) -> Flow {
+  let candidate =
+    Data(
+      ..data,
+      readiers: dict.insert(
+        data.readiers,
+        data.next_token,
+        Readier(reply, quiet_ms),
+      ),
+    )
+  case state_bounds(candidate) {
+    Ok(Nil) -> Flow(Serving, begin_ready(data, quiet_ms, deadline_ms, reply))
+    Error(reason) -> {
+      process.send(reply, Error(Unavailable(reason)))
+      fail(data, reason)
+    }
+  }
+}
+
 fn begin_ready(
   data: Data,
   quiet_ms: Int,
@@ -2753,8 +3042,34 @@ fn settle_all(data: Data, reason: String) -> Data {
 // Closes the transport once: the connection is replaced by an inert one,
 // so nothing later writes to, or closes again, a peer already told to go.
 fn close(data: Data) -> Data {
-  data.connection.close()
-  Data(..data, connection: inert_connection())
+  case data.profile {
+    json.StandardJson -> {
+      data.connection.close()
+      Data(..data, connection: inert_connection())
+    }
+    json.RegisteredLspJson -> {
+      case data.deferred_close {
+        Some(_) -> data
+        None ->
+          Data(
+            ..data,
+            connection: inert_connection(),
+            deferred_close: Some(data.connection.close),
+          )
+      }
+    }
+  }
+}
+
+// The output handler consumes its current grant before this original close runs.
+fn flush_close(data: Data) -> Data {
+  case data.deferred_close {
+    None -> data
+    Some(close) -> {
+      close()
+      Data(..data, deferred_close: None)
+    }
+  }
 }
 
 // A connection whose writes fail and whose close does nothing, used once
@@ -2767,10 +3082,112 @@ fn inert_connection() -> transport.Connection {
 // write means the server stopped reading, and the caller turns the reason
 // into a fault.
 fn send(data: Data, message: JsonValue) -> Result(Nil, String) {
-  data.connection.send(framing.frame(message))
+  use Nil <- result.try(state_bounds(data))
+  let frame = framing.frame(message)
+  use Nil <- result.try(case data.profile {
+    json.StandardJson -> Ok(Nil)
+    json.RegisteredLspJson -> {
+      case string.split_once(frame, "\r\n\r\n") {
+        Ok(#(_, body)) -> {
+          use <- bool.guard(
+            when: string.byte_size(body) > framing.max_frame_bytes,
+            return: Error(
+              "Registered outbound LSP body exceeds its framed limit",
+            ),
+          )
+          Ok(Nil)
+        }
+        Error(Nil) -> Error("Registered outbound framing is invalid")
+      }
+    }
+  })
+  data.connection.send(frame)
   |> result.map_error(fn(_) {
     "the language server " <> data.server <> " no longer accepts input"
   })
+}
+
+// These are retained logical budgets, separate from framed JSON and writer bytes.
+// Whole-document folds stay within the fixed count ceilings and precede publication.
+fn state_bounds(data: Data) -> Result(Nil, String) {
+  case data.profile {
+    json.StandardJson -> Ok(Nil)
+    json.RegisteredLspJson -> {
+      let documents =
+        dict.fold(data.documents, 0, fn(bytes, _, document) {
+          bytes + string.byte_size(document.text)
+        })
+      let diagnostics =
+        dict.fold(data.publications, 0, fn(bytes, uri, publication) {
+          bytes
+          + string.byte_size(uri)
+          + string.byte_size(publication.path)
+          + 128
+          + list.fold(publication.diagnostics, 0, fn(bytes, diagnostic) {
+            bytes
+            + string.byte_size(diagnostic.message)
+            + option.unwrap(option.map(diagnostic.source, string.byte_size), 0)
+            + 128
+          })
+        })
+      let document_metadata =
+        dict.fold(data.documents, 0, fn(bytes, uri, document) {
+          bytes + string.byte_size(uri) + string.byte_size(document.path) + 128
+        })
+      let progress =
+        dict.fold(data.progress, 0, fn(bytes, token, activity) {
+          bytes
+          + string.byte_size(token_text(token))
+          + string.byte_size(activity.title)
+          + 128
+        })
+      let waiters =
+        dict.fold(data.waiters, 0, fn(bytes, _, waiter) {
+          bytes
+          + 128
+          + list.fold(waiter.targets, 0, fn(bytes, target) {
+            bytes + string.byte_size(target.uri) + 64
+          })
+        })
+      let metadata =
+        document_metadata
+        + progress
+        + waiters
+        + string.byte_size(data.server)
+        + string.byte_size(data.language_id)
+        + string.byte_size(data.root_uri)
+        + list.fold(data.folders, 0, fn(bytes, folder) {
+          bytes
+          + string.byte_size(folder.uri)
+          + string.byte_size(folder.name)
+          + 64
+        })
+        + option.unwrap(option.map(data.server_failure, string.byte_size), 0)
+        + option.unwrap(
+          option.map(data.capabilities.position_encoding, string.byte_size),
+          0,
+        )
+        + dict.size(data.pending)
+        * 128
+        + dict.size(data.readiers)
+        * 128
+        + list.length(data.stoppers)
+        * 64
+      use <- bool.guard(
+        when: documents > 4_194_304
+          || diagnostics > 4_194_304
+          || metadata > 4_194_304
+          || dict.size(data.documents) > max_open_documents
+          || dict.size(data.publications) > max_published_uris
+          || dict.size(data.progress) > max_progress_tokens
+          || dict.size(data.pending) > 128,
+        return: Error(
+          "Registered LSP retained state or outstanding requests exceed their bounds",
+        ),
+      )
+      Ok(Nil)
+    }
+  }
 }
 
 // Renders a framing fault into the reason callers are given.
