@@ -184,6 +184,27 @@ pub fn pending(words: Words) -> Words {
   Words(..words, verb:)
 }
 
+/// Whether a verb is one `pending` produced, so the row already says the
+/// call is running and a host need not say it again. A verb the table does
+/// not know is unchanged by `pending` and is not present tense here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert step_words.is_present("Running")
+/// assert !step_words.is_present("Ran")
+/// ```
+pub fn is_present(verb: String) -> Bool {
+  list.contains(
+    [
+      "Running", "Reading", "Editing", "Writing", "Searching", "Spawning",
+      "Messaging", "Noting", "Listing notes", "Remembering", "Checking context",
+      "Waiting for",
+    ],
+    verb,
+  )
+}
+
 /// The words of the memory context the daemon attached to a run, counted in
 /// the digest's lines: `Memory · 4 lines`.
 ///

@@ -86,22 +86,27 @@ pub fn step(
     html.span([attribute.class("sr-only")], [html.text(state(standing))])
   openable(
     [attribute.class("step"), standing_class(standing)],
-    list.flatten([head, running_time(standing, since), [state]]),
+    list.flatten([head, running_time(standing, words, since), [state]]),
     body,
   )
 }
 
-// `Running · 1m 12s` for a call still running that has a start time, and
-// nothing for any other. The words are fixed, and the element's only input is
-// the start time, a number.
+// `Running · 1m 12s` for a call still running that has a start time and whose
+// verb does not already say it is running, `· 1m 12s` after a present-tense
+// verb (`Running make · 1m 12s`), and nothing for any other call. The words
+// are fixed, and the element's only input is the start time, a number.
 fn running_time(
   standing: turns.Standing,
+  words: Words,
   since: Option(Int),
 ) -> List(Element(message)) {
   case standing, since {
     turns.Pending, Some(start) -> [
       html.span([attribute.class("running-time")], [
-        html.text("Running · "),
+        html.text(case step_words.is_present(words.verb) {
+          True -> "· "
+          False -> "Running · "
+        }),
         element.element(
           "loom-elapsed",
           [attribute.attribute("since", int.to_string(start))],

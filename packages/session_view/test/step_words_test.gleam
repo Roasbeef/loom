@@ -400,4 +400,9 @@ pub fn a_pending_step_uses_the_present_tense_test() {
 
   let other = Words("custom_tool", Unnamed, None)
   assert step_words.pending(other) == other
+
+  // Only a verb `pending` produced counts as present tense.
+  assert step_words.is_present(step_words.pending(ran).verb)
+  assert !step_words.is_present(ran.verb)
+  assert !step_words.is_present(other.verb)
 }
