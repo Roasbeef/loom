@@ -160,6 +160,13 @@
 //// 6. `begin_close` stops admissions and cancels the live rows, and
 ////    `finish_closing` closes the pool and answers the closer.
 ////
+//// Registered finite collection follows `start_registered_protocol_pool` →
+//// `prepare_protocol_return` → `run_prepared_protocol`. `release_collected`
+//// installs the final observer before `release_protocol` requests the original
+//// deferred return. `collected_returned` validates the actual pool ACK before
+//// publishing `CollectedReturnProof` and deleting the row.
+//// `verify_collected_return` checks historical original identity.
+////
 //// ## Transitions
 ////
 //// <!-- transitions: executor.Phase -->
@@ -302,6 +309,37 @@ type ProtocolRow {
     monitor: process.Monitor,
     disposition: RowDisposition,
     release: ProtocolRelease,
+    collected: CollectedCustody,
+  )
+}
+
+// Registered collection has one original pre-Run capability and one receiver.
+// A failed or missing pool ACK leaves the row held and cannot renew release.
+type CollectedCustody {
+  LegacyCollected
+  RegisteredCollected(
+    original: exec.CollectedBorrow,
+    observer: CollectedObserver,
+  )
+}
+
+type CollectedObserver {
+  ObserverAbsent
+  ObserverInstalled(
+    receiver: Subject(Result(CollectedReturnProof, exec.CollectedReturnError)),
+  )
+}
+
+/// Historical actual check-in evidence tied to the exact local execution owner.
+@internal
+pub opaque type CollectedReturnProof {
+  CollectedReturnProof(
+    /// The exact local executor subject, sequence and original helper execution.
+    execution: ProtocolExecution,
+    /// The retained original pool registration, never reconstructed from lookup.
+    original: exec.CollectedBorrow,
+    /// Evidence emitted only by that pool's completed Available transition.
+    proof: exec.CollectedReturnProof,
   )
 }
 
@@ -335,6 +373,16 @@ pub opaque type Msg {
   CancelProtocol(id: Int, original: exec.ProtocolExecution)
   ReleaseProtocol(id: Int, original: exec.ProtocolExecution)
   ProtocolCheckedIn(id: Int, original: exec.ProtocolExecution)
+  ReleaseCollected(
+    id: Int,
+    original: exec.ProtocolExecution,
+    receiver: Subject(Result(CollectedReturnProof, exec.CollectedReturnError)),
+  )
+  CollectedReturned(
+    id: Int,
+    original: exec.ProtocolExecution,
+    outcome: Result(exec.CollectedReturnProof, exec.CollectedReturnError),
+  )
   ProtocolRetired(id: Int, outcome: Result(Nil, exec.RetirementFailure))
   Start(
     request: dispatch.Dispatch,
@@ -413,6 +461,7 @@ type State {
   State(
     config: ExecutorConfig,
     retirement: Option(RetirementSeam),
+    protocol_pool: Option(exec.Pool),
     subject: Subject(Msg),
     rows: Dict(Int, Row),
     protocols: Dict(Int, ProtocolRow),
@@ -532,7 +581,7 @@ const close_slack_ms = 1000
 /// ```
 ///
 pub fn start(config: ExecutorConfig) -> Result(Executor, actor.StartError) {
-  start_service(config, None)
+  start_service(config, None, None)
 }
 
 /// Starts the existing service with an exact original pool-registration seam.
@@ -545,12 +594,40 @@ pub fn start_with_retirement(
   config: ExecutorConfig,
   retirement: RetirementSeam,
 ) -> Result(Executor, actor.StartError) {
-  start_service(config, Some(retirement))
+  start_service(config, Some(retirement), None)
+}
+
+/// Starts local registered protocols on one immutable original pool.
+/// The frozen config and legacy constructors retain their existing behavior.
+///
+/// ## Examples
+///
+/// `start_registered_protocol_pool(pool, 7, log.discard())` owns original returns.
+@internal
+pub fn start_registered_protocol_pool(
+  pool: exec.Pool,
+  incarnation: Int,
+  log: Logger,
+) -> Result(Executor, actor.StartError) {
+  let config =
+    ExecutorConfig(
+      checkout: fn() { exec.checkout(pool, waiting: 15_000) },
+      checkin: fn(helper) { exec.checkin(pool, helper) },
+      custody: fn() { exec.pool_custody(pool, waiting: 1000) },
+      close_helpers: fn(ms) { exec.close_pool(pool, waiting: ms) },
+      incarnation:,
+      log:,
+    )
+  let retirement = fn(helper, done) {
+    exec.prepare_borrowed_retirement(pool, helper, done)
+  }
+  start_service(config, Some(retirement), Some(pool))
 }
 
 fn start_service(
   config: ExecutorConfig,
   retirement: Option(RetirementSeam),
+  protocol_pool: Option(exec.Pool),
 ) -> Result(Executor, actor.StartError) {
   state_machine.new_with_initialiser(1000, fn(subject) {
     // Relay deaths arrive as monitor messages, and the service takes a
@@ -564,6 +641,7 @@ fn start_service(
       State(
         config:,
         retirement:,
+        protocol_pool:,
         subject:,
         rows: dict.new(),
         protocols: dict.new(),
@@ -843,6 +921,10 @@ fn handle(
     }
     phase, ReleaseProtocol(id:, original:) ->
       conclude(phase, release_exact_protocol(state, id, original))
+    phase, ReleaseCollected(id, original, receiver) ->
+      conclude(phase, release_collected_original(state, id, original, receiver))
+    phase, CollectedReturned(id, original, outcome) ->
+      conclude(phase, collected_returned(state, id, original, outcome))
     phase, ProtocolCheckedIn(id:, original:) ->
       conclude(phase, protocol_checked_in(state, id, original))
     phase, ProtocolRetired(id:, outcome:) ->
@@ -1952,6 +2034,41 @@ pub fn release_protocol_execution(execution: ProtocolExecution) -> Nil {
   )
 }
 
+/// Installs one original observer before requesting the finite helper return.
+/// Admission is send-only; only the exact pool ACK establishes actual check-in.
+///
+/// ## Examples
+///
+/// `release_collected(original, returned)` never retries after a lost ACK.
+@internal
+pub fn release_collected(
+  execution: ProtocolExecution,
+  returned: Subject(Result(CollectedReturnProof, exec.CollectedReturnError)),
+) -> Nil {
+  process.send(
+    execution.subject,
+    ReleaseCollected(execution.seq, execution.original, returned),
+  )
+}
+
+/// Verifies completed historical check-in against the original executor execution.
+/// A later pool borrow does not erase or replace this completed transition.
+///
+/// ## Examples
+///
+/// `verify_collected_return(original, proof)` refuses copied foreign executions.
+@internal
+pub fn verify_collected_return(
+  execution: ProtocolExecution,
+  proof: CollectedReturnProof,
+) -> Result(Nil, exec.CollectedReturnError) {
+  use <- bool.guard(
+    when: execution != proof.execution,
+    return: Error(exec.ReturnRefused),
+  )
+  exec.verify_collected_return(proof.original, proof.proof)
+}
+
 fn begin_protocol(
   state: State,
   request: ProtocolDispatch,
@@ -2018,9 +2135,18 @@ fn dispatch_protocol(
       Error(ProtocolNotStarted(dispatch.NotStarted))
     }
   })
+  use prepared <- result.try(prepare_protocol_return(
+    state,
+    helper,
+    request.seq,
+    mode,
+    original,
+  ))
+  let #(reserved, collected) = prepared
   let monitor = process.monitor(request.caller)
   case
-    exec.run_protocol(
+    run_prepared_protocol(
+      reserved,
       helper,
       request.request,
       mode,
@@ -2040,6 +2166,7 @@ fn dispatch_protocol(
           monitor,
           original,
           ProtocolHeld,
+          collected,
         )
       Ok(#(
         State(
@@ -2059,6 +2186,7 @@ fn dispatch_protocol(
           monitor,
           original,
           ProtocolHeld,
+          collected,
         )
       let state =
         State(
@@ -2077,10 +2205,15 @@ fn dispatch_protocol(
     Error(exec.ProtocolRunRefused(_)) -> {
       process.demonitor_process(monitor)
       case original {
-        ReuseHelper -> {
-          exec.shutdown(helper)
-          state.config.checkin(helper)
-        }
+        ReuseHelper ->
+          case collected {
+            LegacyCollected -> {
+              exec.shutdown(helper)
+              state.config.checkin(helper)
+            }
+            RegisteredCollected(original, _) ->
+              exec.withdraw_collected(original)
+          }
         RetireHelper(retirement) -> exec.retire_borrowed(retirement)
       }
       Error(ProtocolNotStarted(dispatch.NotStarted))
@@ -2088,22 +2221,163 @@ fn dispatch_protocol(
   }
 }
 
+// Only the registered finite composition installs pre-Run return custody.
+// Lost registration withdraws that exact proposal; it never chooses another id.
+fn prepare_protocol_return(
+  state: State,
+  helper: Helper,
+  seq: Int,
+  mode: framing.ProtocolMode,
+  disposition: RowDisposition,
+) -> Result(
+  #(Option(exec.ProtocolExecution), CollectedCustody),
+  ProtocolStartFailure,
+) {
+  case state.protocol_pool, mode, disposition {
+    Some(pool), framing.FiniteCollected, ReuseHelper -> {
+      use original <- result.try(
+        exec.reserve_protocol(helper, run_wait_ms)
+        |> result.replace_error(ProtocolNotStarted(dispatch.NotStarted)),
+      )
+      let subject = state.subject
+      let completed = fn(outcome) {
+        process.send(subject, CollectedReturned(seq, original, outcome))
+      }
+      exec.prepare_collected_return(pool, original, completed)
+      |> result.map(fn(registered) {
+        #(Some(original), RegisteredCollected(registered, ObserverAbsent))
+      })
+      |> result.replace_error(ProtocolNotStarted(dispatch.NotStarted))
+    }
+    _, _, _ -> Ok(#(None, LegacyCollected))
+  }
+}
+
+fn run_prepared_protocol(
+  reserved: Option(exec.ProtocolExecution),
+  helper: Helper,
+  request: exec.ExecRequest,
+  mode: framing.ProtocolMode,
+  clock: clock.Clock,
+  deadline: Int,
+  events: Subject(exec.ProtocolEvent),
+  waiting timeout: Int,
+) -> Result(exec.ProtocolExecution, exec.ProtocolRunFailure) {
+  case reserved {
+    Some(original) ->
+      exec.run_reserved_protocol(
+        original,
+        request,
+        mode,
+        clock,
+        deadline,
+        events,
+        timeout,
+      )
+    None ->
+      exec.run_protocol(helper, request, mode, clock, deadline, events, timeout)
+  }
+}
+
+fn release_collected_original(
+  state: State,
+  id: Int,
+  original: exec.ProtocolExecution,
+  receiver: Subject(Result(CollectedReturnProof, exec.CollectedReturnError)),
+) -> State {
+  case find_protocol(state, id, original) {
+    Ok(
+      ProtocolRow(
+        collected: RegisteredCollected(registered, ObserverAbsent),
+        release: ProtocolHeld,
+        ..,
+      ) as row,
+    ) -> {
+      let row =
+        ProtocolRow(
+          ..row,
+          collected: RegisteredCollected(
+            registered,
+            ObserverInstalled(receiver),
+          ),
+        )
+      let state =
+        State(..state, protocols: dict.insert(state.protocols, id, row))
+      release_protocol(state, id)
+    }
+    Ok(_) | Error(Nil) -> {
+      process.send(receiver, Error(exec.ReturnRefused))
+      state
+    }
+  }
+}
+
+// ACK validation precedes publication and deletion. Failed returns stay charged.
+fn collected_returned(
+  state: State,
+  id: Int,
+  original: exec.ProtocolExecution,
+  outcome: Result(exec.CollectedReturnProof, exec.CollectedReturnError),
+) -> State {
+  case find_protocol(state, id, original) {
+    Ok(
+      ProtocolRow(
+        collected: RegisteredCollected(registered, observer),
+        release: ProtocolReleaseRequested,
+        ..,
+      ) as row,
+    ) -> {
+      let checked =
+        result.try(outcome, fn(proof) {
+          exec.verify_collected_return(registered, proof)
+          |> result.map(fn(_) {
+            CollectedReturnProof(
+              ProtocolExecution(state.subject, id, original),
+              registered,
+              proof,
+            )
+          })
+        })
+      case observer {
+        ObserverInstalled(receiver) -> process.send(receiver, checked)
+        ObserverAbsent -> Nil
+      }
+      case checked {
+        Ok(_) -> {
+          process.demonitor_process(row.monitor)
+          State(..state, protocols: dict.delete(state.protocols, id))
+        }
+        Error(_) -> state
+      }
+    }
+    Ok(_) | Error(Nil) -> state
+  }
+}
+
 fn release_protocol(state: State, id: Int) -> State {
   case dict.get(state.protocols, id) {
     Ok(ProtocolRow(release: ProtocolHeld, ..) as row) -> {
       case row.disposition {
-        ReuseHelper -> {
-          let subject = state.subject
-          let _registered =
-            exec.defer_protocol_checkin(
-              row.execution,
-              fn() {
-                process.send(subject, ProtocolCheckedIn(id, row.execution))
-              },
-              waiting: run_wait_ms,
-            )
-          Nil
-        }
+        ReuseHelper ->
+          case row.collected {
+            RegisteredCollected(original, _) -> {
+              let _registered =
+                exec.defer_collected_return(original, run_wait_ms)
+              Nil
+            }
+            LegacyCollected -> {
+              let subject = state.subject
+              let _registered =
+                exec.defer_protocol_checkin(
+                  row.execution,
+                  fn() {
+                    process.send(subject, ProtocolCheckedIn(id, row.execution))
+                  },
+                  waiting: run_wait_ms,
+                )
+              Nil
+            }
+          }
         RetireHelper(original) -> exec.retire_borrowed(original)
       }
       State(
@@ -2128,6 +2402,7 @@ fn protocol_checked_in(
     Ok(
       ProtocolRow(
         disposition: ReuseHelper,
+        collected: LegacyCollected,
         release: ProtocolReleaseRequested,
         ..,
       ) as row,

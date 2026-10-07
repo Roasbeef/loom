@@ -135,6 +135,11 @@
 //// `protocol_reusable` → `consume_protocol_reusable`. `Finishing` keeps the
 //// original borrow busy until the final consumer retains and consumes the
 //// exact witness. `defer_checkin` owns one immutable original return closure.
+//// Registered collection uses `reserve_protocol`, `prepare_collected_return`,
+//// and `run_reserved_protocol` before effects. `defer_collected_return` sends
+//// one original return after consumption, and `return_original_collected`
+//// records the actual pool transition. `verify_collected_return` compares
+//// that completed historical proof, never current availability.
 ////
 //// ## Transitions
 ////
@@ -585,6 +590,7 @@ type RunWindow {
 pub opaque type Msg {
   Begin
   ReserveProtocol(reply: Subject(Result(Int, ExecFailure)))
+  VerifyProtocolReservation(id: Int, reply: Subject(Result(Nil, ExecFailure)))
   RunProtocol(
     id: Int,
     request: ExecRequest,
@@ -1353,6 +1359,15 @@ fn handle(
       }
     _phase, ReserveProtocol(reply:) -> {
       process.send(reply, Error(NotReady))
+      state_machine.keep(data)
+    }
+
+    phase, VerifyProtocolReservation(id, reply) -> {
+      let outcome = case phase, data.reserved_protocol {
+        Idle(..), Some(actual) if actual == id -> Ok(Nil)
+        _, _ -> Error(NotReady)
+      }
+      process.send(reply, outcome)
       state_machine.keep(data)
     }
 
@@ -3243,6 +3258,12 @@ pub opaque type Pool {
 pub opaque type PoolMsg {
   Checkout(reply: Subject(Result(Helper, CheckoutError)))
   Checkin(helper: Helper)
+  PrepareCollected(
+    original: CollectedBorrow,
+    reply: Subject(Result(Nil, CollectedReturnError)),
+  )
+  ReturnCollected(original: CollectedBorrow)
+  WithdrawCollected(original: CollectedBorrow)
   PrepareBorrowed(
     helper: Helper,
     observer: TargetedObserver,
@@ -3429,6 +3450,7 @@ type PoolEntry {
     monitor: process.Monitor,
     availability: Availability,
     targeted: Option(TargetedObserver),
+    collected: Option(CollectedBorrow),
     // Which spawn this was, from one. Introspection only.
     ordinal: Int,
     // The hello features `await_ready` answered at spawn; empty until then.
@@ -3448,6 +3470,42 @@ type TargetedObserver {
 /// A retirement door for one originally observed borrow, never a lookup handle.
 pub opaque type BorrowedRetirement {
   BorrowedRetirement(pool: Pool, helper: Helper, registration: Subject(Nil))
+}
+
+/// One pre-Run registration on the original pool and helper reservation.
+/// The immutable observer survives lost release replies and cannot be replaced.
+@internal
+pub opaque type CollectedBorrow {
+  CollectedBorrow(
+    /// The actual pool that supplied this original helper.
+    pool: Pool,
+    /// The actual pre-Run helper reservation, including its full Helper.
+    execution: ProtocolExecution,
+    /// A fresh local identity distinguishing this registration from successors.
+    registration: Subject(Nil),
+    /// The one immutable send-only observer installed before native effects.
+    completed: fn(Result(CollectedReturnProof, CollectedReturnError)) -> Nil,
+  )
+}
+
+/// Evidence of the completed original Borrowed-to-Available transition.
+/// This remains historical evidence when that helper is borrowed again.
+@internal
+pub opaque type CollectedReturnProof {
+  CollectedReturnProof(
+    /// The exact registration whose Borrowed-to-Available transition completed.
+    original: CollectedBorrow,
+  )
+}
+
+/// An original return cannot be established or has already been requested.
+@internal
+pub type CollectedReturnError {
+  /// The original identity or current custody does not permit this operation.
+  ReturnRefused
+
+  /// The original pool did not answer; custody remains charged.
+  ReturnUnknown
 }
 
 /// Where one inventoried helper stands with respect to lending and to
@@ -3664,6 +3722,81 @@ pub fn checkin(pool: Pool, helper: Helper) -> Nil {
   process.send(pool.subject, Checkin(helper:))
 }
 
+/// Registers the actual reserved helper command before Run on its original pool.
+/// Registration uncertainty withdraws this same borrow without retrying.
+///
+/// ## Examples
+///
+/// `prepare_collected_return(pool, reserved, completed)` precedes Run.
+@internal
+pub fn prepare_collected_return(
+  pool: Pool,
+  execution: ProtocolExecution,
+  completed: fn(Result(CollectedReturnProof, CollectedReturnError)) -> Nil,
+) -> Result(CollectedBorrow, CollectedReturnError) {
+  let original =
+    CollectedBorrow(pool, execution, process.new_subject(), completed)
+  case
+    call.try_call(pool.subject, waiting: 1000, sending: fn(reply) {
+      PrepareCollected(original, reply)
+    })
+  {
+    Ok(Ok(Nil)) -> Ok(original)
+    Ok(Error(reason)) -> Error(reason)
+    Error(call.NoReply) | Error(call.CalleeGone) -> {
+      withdraw_collected(original)
+      Error(ReturnUnknown)
+    }
+  }
+}
+
+/// Requests one original return, deferred until actual helper reuse consumption.
+/// Only the helper's exact deferred callback can send the pool return request.
+/// A lost registration reply retains uncertainty and must not be retried.
+///
+/// ## Examples
+///
+/// `defer_collected_return(original, 1000)` follows retaining the final observer.
+@internal
+pub fn defer_collected_return(
+  original: CollectedBorrow,
+  waiting timeout: Int,
+) -> Result(Nil, ExecFailure) {
+  defer_protocol_checkin(
+    original.execution,
+    fn() { process.send(original.pool.subject, ReturnCollected(original)) },
+    timeout,
+  )
+}
+
+/// Withdraws the exact registered borrow through the pool's existing retirement.
+/// This is cleanup, never proof of an Available transition.
+///
+/// ## Examples
+///
+/// `withdraw_collected(original)` handles a definite Run refusal.
+@internal
+pub fn withdraw_collected(original: CollectedBorrow) -> Nil {
+  process.send(original.pool.subject, WithdrawCollected(original))
+}
+
+/// Checks historical return evidence against the original registration object.
+/// It does not query current pool availability or grant another checkout.
+///
+/// ## Examples
+///
+/// `verify_collected_return(original, proof)` preserves original identity.
+@internal
+pub fn verify_collected_return(
+  original: CollectedBorrow,
+  proof: CollectedReturnProof,
+) -> Result(Nil, CollectedReturnError) {
+  case proof.original == original {
+    True -> Ok(Nil)
+    False -> Error(ReturnRefused)
+  }
+}
+
 /// Installs exact retirement custody before dispatch without withdrawing the borrow.
 /// A lost acknowledgement triggers retirement through the same original door;
 /// it grants no dispatch permission and never checks the helper back in.
@@ -3774,6 +3907,35 @@ fn handle_pool(
       pool_step(PoolLive, handle_checkin(state, helper))
     PoolClosing, Checkin(..) | PoolFinished(..), Checkin(..) ->
       state_machine.keep(state)
+    PoolLive, PrepareCollected(original, reply) -> {
+      let #(state, outcome) = prepare_collected(state, original)
+      process.send(reply, outcome)
+      pool_step(PoolLive, state)
+    }
+    PoolClosing, PrepareCollected(_, reply)
+    | PoolFinished(..), PrepareCollected(_, reply)
+    -> {
+      process.send(reply, Error(ReturnRefused))
+      state_machine.keep(state)
+    }
+    PoolLive, ReturnCollected(original) ->
+      pool_step(PoolLive, return_original_collected(state, original))
+    PoolClosing, ReturnCollected(original)
+    | PoolFinished(..), ReturnCollected(original)
+    -> {
+      original.completed(Error(ReturnRefused))
+      state_machine.keep(state)
+    }
+    phase, WithdrawCollected(original) -> {
+      let entries =
+        list.map(state.entries, fn(entry) {
+          case entry.collected == Some(original) {
+            True -> retire_entry(entry, state.commands)
+            False -> entry
+          }
+        })
+      pool_step(phase, PoolState(..state, entries:))
+    }
     phase, PrepareBorrowed(helper, observer, reply) -> {
       let #(state, outcome) = prepare_targeted(state, helper, observer)
       process.send(reply, outcome)
@@ -3941,13 +4103,85 @@ fn pool_step(
   |> state_machine.with_selector(pool_selector(state))
 }
 
+// Registration compares the complete Helper and the still-live reserved id.
+// The pool owns this bounded inventory slot before any native effect begins.
+fn prepare_collected(
+  state: PoolState,
+  original: CollectedBorrow,
+) -> #(PoolState, Result(Nil, CollectedReturnError)) {
+  let helper = original.execution.helper
+  case list.find(state.entries, fn(entry) { entry.helper == helper }) {
+    Ok(PoolEntry(availability: Borrowed, targeted: None, collected: None, ..)) -> {
+      let checked =
+        call.try_call(helper.commands, waiting: 1000, sending: fn(reply) {
+          VerifyProtocolReservation(original.execution.id, reply)
+        })
+      case checked {
+        Ok(Ok(Nil)) -> {
+          let entries =
+            list.map(state.entries, fn(entry) {
+              case entry.helper == helper {
+                True -> PoolEntry(..entry, collected: Some(original))
+                False -> entry
+              }
+            })
+          #(PoolState(..state, entries:), Ok(Nil))
+        }
+        _ -> #(state, Error(ReturnRefused))
+      }
+    }
+    Ok(_) | Error(Nil) -> #(state, Error(ReturnRefused))
+  }
+}
+
+// Only this exact registration can move its original borrow to Available.
+// The observer is published from this transition, rather than from a Nil checkin.
+fn return_original_collected(
+  state: PoolState,
+  original: CollectedBorrow,
+) -> PoolState {
+  let helper = original.execution.helper
+  case
+    list.find(state.entries, fn(entry) { entry.collected == Some(original) })
+  {
+    Ok(PoolEntry(availability: Borrowed, targeted: None, ..)) -> {
+      case helper_ready(helper) {
+        True -> {
+          let entries =
+            list.map(state.entries, fn(entry) {
+              case entry.collected == Some(original) {
+                True ->
+                  PoolEntry(..entry, availability: Available, collected: None)
+                False -> entry
+              }
+            })
+          original.completed(Ok(CollectedReturnProof(original)))
+          PoolState(..state, entries:)
+        }
+        False -> {
+          let entries =
+            list.map(state.entries, fn(entry) {
+              case entry.collected == Some(original) {
+                True -> retire_entry(entry, state.commands)
+                False -> entry
+              }
+            })
+          original.completed(Error(ReturnRefused))
+          PoolState(..state, entries:)
+        }
+      }
+    }
+    Ok(_) | Error(Nil) -> state
+  }
+}
+
 fn prepare_targeted(
   state: PoolState,
   helper: Helper,
   observer: TargetedObserver,
 ) -> #(PoolState, Result(Nil, RetirementFailure)) {
   case list.find(state.entries, fn(entry) { entry.helper == helper }) {
-    Ok(PoolEntry(availability: Borrowed, targeted: None, ..)) -> {
+    Ok(PoolEntry(availability: Borrowed, targeted: None, collected: None, ..)) -> {
       let entries =
         list.map(state.entries, fn(entry) {
           case entry.helper == helper {
@@ -3970,7 +4204,11 @@ fn finish_targeted(
     Some(observer) -> observer.completed(outcome)
     None -> Nil
   }
-  PoolEntry(..entry, targeted: None)
+  case entry.collected {
+    Some(original) -> original.completed(Error(ReturnRefused))
+    None -> Nil
+  }
+  PoolEntry(..entry, targeted: None, collected: None)
 }
 
 fn retire_entry(entry: PoolEntry, commands: Subject(PoolMsg)) -> PoolEntry {
@@ -4049,9 +4287,9 @@ fn handle_checkin(state: PoolState, helper: Helper) -> PoolState {
     list.map(state.entries, fn(entry) {
       case entry.helper.pid == helper.pid, entry.availability {
         True, Borrowed ->
-          case entry.targeted, helper_ready(helper) {
-            None, True -> PoolEntry(..entry, availability: Available)
-            _, _ -> retire_entry(entry, state.commands)
+          case entry.targeted, entry.collected, helper_ready(helper) {
+            None, None, True -> PoolEntry(..entry, availability: Available)
+            _, _, _ -> retire_entry(entry, state.commands)
           }
         False, _
         | True, Available
@@ -4132,6 +4370,7 @@ fn spawn_new(state: PoolState) -> #(PoolState, Result(Helper, CheckoutError)) {
           ordinal: state.spawned + 1,
           features: [],
           targeted: None,
+          collected: None,
         )
       let state =
         PoolState(
@@ -4217,16 +4456,60 @@ pub fn run_protocol(
   events: Subject(ProtocolEvent),
   waiting timeout: Int,
 ) -> Result(ProtocolExecution, ProtocolRunFailure) {
-  use id <- result.try(
-    call.try_call(helper.commands, waiting: timeout, sending: ReserveProtocol)
-    |> or_unresponsive
-    |> result.map_error(ProtocolRunRefused),
+  use execution <- result.try(
+    reserve_protocol(helper, timeout) |> result.map_error(ProtocolRunRefused),
   )
-  let execution = ProtocolExecution(helper, id)
+  run_reserved_protocol(
+    execution,
+    request,
+    mode,
+    clock,
+    deadline,
+    events,
+    timeout,
+  )
+}
+
+/// Reserves the actual helper command identity before original pool registration.
+/// This grants no native Run authority by itself.
+///
+/// ## Examples
+///
+/// `reserve_protocol(helper, 1000)` fixes the original helper id.
+@internal
+pub fn reserve_protocol(
+  helper: Helper,
+  waiting timeout: Int,
+) -> Result(ProtocolExecution, ExecFailure) {
+  call.try_call(helper.commands, waiting: timeout, sending: ReserveProtocol)
+  |> or_unresponsive
+  |> result.map(fn(id) { ProtocolExecution(helper, id) })
+}
+
+/// Runs the exact previously reserved command without choosing a replacement id.
+/// The legacy run_protocol composes these same steps in their original order.
+///
+/// ## Examples
+///
+/// `run_reserved_protocol(original, request, mode, clock, deadline, events, 1000)`.
+@internal
+pub fn run_reserved_protocol(
+  execution: ProtocolExecution,
+  request: ExecRequest,
+  mode: framing.ProtocolMode,
+  clock: clock.Clock,
+  deadline: Int,
+  events: Subject(ProtocolEvent),
+  waiting timeout: Int,
+) -> Result(ProtocolExecution, ProtocolRunFailure) {
   case
-    call.try_call(helper.commands, waiting: timeout, sending: fn(reply) {
-      RunProtocol(id, request, mode, clock, deadline, events, reply)
-    })
+    call.try_call(
+      execution.helper.commands,
+      waiting: timeout,
+      sending: fn(reply) {
+        RunProtocol(execution.id, request, mode, clock, deadline, events, reply)
+      },
+    )
   {
     Ok(Ok(_)) -> Ok(execution)
     Ok(Error(failure)) -> Error(ProtocolRunRefused(failure))

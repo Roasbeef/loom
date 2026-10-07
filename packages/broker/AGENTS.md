@@ -1273,3 +1273,50 @@ collection still requires positive wall time no greater than sixty seconds.
 Ordinary `native_wall_fits` behavior remains unchanged. Output, network,
 enforcement demand, original token and exact retirement checks still apply.
 The helper frame has no clock authority, so the broker owns the elapsed check.
+
+## Original collected pool return
+
+`executor.start_registered_protocol_pool` derives its unchanged legacy config
+and targeted retirement seam from one privately retained original `exec.Pool`.
+Only its finite collected branch installs the new local return registration.
+`exec.reserve_protocol` retains the helper's actual opaque reservation before
+`prepare_collected_return` registers one immutable observer on the exact borrowed
+pool entry. `run_reserved_protocol` then submits that original reservation.
+Ordinary `run_protocol` composes the same reserve and Run steps in their existing
+order. Legacy executor constructors and the frozen `ExecutorConfig` are unchanged.
+
+A pool entry holds either targeted retirement or collected return custody.
+Registration verifies the complete Helper and its currently reserved helper id;
+foreign, duplicate and incompatible registrations refuse. Lost registration
+reply withdraws the same proposed registration through existing pool retirement.
+Definite Run refusal withdraws the installed original; unknown Run and owner loss
+retain its borrow. Legacy checkin of an observed borrow withdraws it instead of
+making it lendable. Retirement failure remains charged by the existing pool.
+
+`executor.release_collected` installs one final original receiver before requesting
+`exec.defer_collected_return`. The actual helper reducer runs its callback only
+after the exact finite reusable witness is consumed. That callback sends one
+original return request; uncertainty never retries it. The pool compares the
+retained registration, checks original Borrowed custody and helper readiness,
+and emits opaque `exec.CollectedReturnProof` from its actual Available transition.
+An old registration cannot return a successor borrow. Server protocols remain on
+the distinct targeted retirement path and cannot yield this proof.
+
+The native executor retains its `ProtocolRow` until that exact ACK is verified.
+`executor.CollectedReturnProof` also binds the original executor subject, sequence
+and helper execution. `verify_collected_return` compares those originals without
+asking pool census or inferring success from a Nil release, deleted row or current
+availability. Completed proof remains historical evidence if the helper is later
+borrowed. Explicit close still joins actual original pool retirement separately.
+The receiver and pool entry are bounded existing custody, without a waiter list,
+a replacement lookup, a lifecycle actor or a new dependency.
+
+The synthetic controls use actual pool, executor and helper reducers while their
+wire peer supplies native events. The held-ACK control suspends the original
+helper and executor with existing OTP system controls, resumes both before every
+assertion, and distinguishes the actual pool transition from native ACK handling.
+The separate real-helper control requires this checkout's normal helper build;
+it exercises both release/consumption orders, actual output and empty EOF,
+waitDone/reusable, historical original proof and another command on that same
+helper. This broker boundary does not assemble Service finite collection, owner
+clearance, Prepare readiness or the complete registered LSP runtime.
