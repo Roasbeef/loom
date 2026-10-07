@@ -1,23 +1,23 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `c08fd50d` on
+This edition records the registered-runtime integration through `850b6035` on
 October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
 protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
 hosted PR/main state were checked for this edition. Runtime assembly and
 separate-host acceptance remain in progress.
 
-The previous edition left original registry startup validation and native
-scope-close projections unimplemented. Both are now integrated and verified
-below. Native transport, registry startup and all four journal ownership
-boundaries are implemented; ordinary registered assembly and the remaining
-physical-close owners are still open. An earlier Launch readiness timeout remains unresolved
-despite a passing diagnostic retry. The managed endpoint is
-now implemented. The original owner custodian is wired through its generation DAL,
-and the registry retains complete original generation plans atomically with first
-admission. Restricted recovered journal owners now acquire managed custody before
-opening SQLite. The permanent registry now parks under its actual parent before
-opening SQLite and retains acquired connection custody before setup. These components do not by themselves enable ordinary registered
-sessions.
+The previous edition left finite LSP collection unimplemented. The fixed-plan
+verifier, strict search parser and retained collector are now integrated. Actual
+Service ownership, helper return, semantic results and normal registered LSP
+assembly remain open. Original registry startup and native scope-close witnesses
+are also integrated; their proofs still require FullHost to supply the actual
+pool and original physical joins. Compile preparation, workspace aggregate and
+Launch channel ownership remain under construction.
+
+An earlier Launch readiness timeout remains unresolved despite passing diagnostic
+retries. The managed endpoint, original owner custodian, durable generation plans,
+owned journal startup and restricted managed recovery are integrated. These
+components do not by themselves enable ordinary registered sessions.
 
 ## Where the tree is
 
@@ -28,6 +28,9 @@ integration work has not been pushed; publication and merge remain unauthorized.
 The integrated main commit `3ffb0bf52` has a
 [passing CI run](https://github.com/Roasbeef/loom/actions/runs/37580150259).
 That status belongs to main, not this unpublished integration candidate.
+The latest observed main run also passes at `142eba4a3`, with
+[its own CI receipt](https://github.com/Roasbeef/loom/actions/runs/37606780540).
+Those later main changes have not yet been integrated.
 
 | Boundary | Current integration state |
 | --- | --- |
@@ -37,7 +40,7 @@ That status belongs to main, not this unpublished integration candidate.
 | Original startup and close witnesses | `4b67e014` validates the original live registry claim and exact Plan. `c08fd50d` retains native scope-close evidence before Service exit. FullHost still must bind the real pool and original joins; workspace, Compile and Launch witness work remains pending. |
 | Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
 | Generation history | `3ade15ea9` and `77b3b217` add permanent original provenance. `40169105` adds restricted managed recovery of native, workspace and resource journals, with explicit close and original normal-exit evidence. Actual physical join validation and bounded history transport remain assembly obligations. |
-| LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. `7d256b402` and `e336f4a19` add original first-placement native custody and credited ServerLease transport, including actual Linux FullEnforcement controls. `d60d4d15` adds owned live startup and restricted recovery. Finite collection, semantic/result retirement and ordinary assembly remain pending. |
+| LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. `7d256b402` and `e336f4a19` add original first-placement native custody and credited ServerLease transport, including actual Linux FullEnforcement controls. `d60d4d15` adds owned live startup and restricted recovery. `850b6035` adds finite plan verification and retained collection. Actual Service ownership, semantic/result retirement and ordinary assembly remain pending. |
 | Deployment | `a58713277` and `45de677f` commit reviewed strict owner/executor loaders and their manifest. Shipped role bootstrap, admin transport, full host activation and ordinary daemon assembly remain unbuilt. |
 | Launch utilities | `ed4abd587` supplies named private role bundles, selected export, lifecycle commands and a setup guide. Current images deliberately lack runtime capability labels and cannot pass its startup gate. |
 | Distributed orchestration | Executor pools, C1 ownership, C2 routing, C3 durable cross-node messaging and M1 controlled movement remain required. |
@@ -49,6 +52,31 @@ review records describe their stated source revisions, not the entire current
 candidate.
 
 ## Verification and its limits
+
+The finite-collector integration passes all 547 executor tests in 207.15 seconds,
+224.59 seconds including build. The same integrated source passes all 755 tools
+tests and 483 code-mode tests after a normal seed with Gleam 1.19. Each command's
+own exit is zero. Formatting, affected lint, documentation and prelude checks
+also exit zero; all fourteen imported hashes match after the gates. The commits
+are `6398730c9` for strict search parsing, `2e353d001` for shared search argv and
+`850b6035` for the collector and journal checks.
+
+Independent review found that the initial projection used the native wire
+ceiling, which could reject valid Search results. The corrected bounded encoding
+accepts 129 hits, 200 hits and the maximum path inventory. Each real-SQLite
+control fails against the original source and passes after correction. All
+fifteen focused collector/plan controls pass. Four earlier compiled mutants fail
+the original-control, stream-cap, terminal-total and Fresh-placement assertions.
+The collector establishes exact projection COMMIT/readback before raw release;
+actual reusable consumption, helper check-in and managed drain remain separate
+Service assembly obligations.
+
+The owner identity foundation remains in its isolated worktree. Its first
+independent review found two actionable issues: composed routing could divert
+ordinary native capabilities to the semantic Git binding, and a cancellation
+control performed manual cleanup before asserting automatic cleanup. Corrections
+and their focused evidence are in progress. Its prior component passes do not
+certify the corrected or integrated candidate.
 
 The original-startup and native-close integration passes all 532 executor tests
 in 209.76 seconds, 226.38 seconds including build, with the command's own exit
@@ -266,9 +294,10 @@ placements, container execution and hosted CI have not passed on this candidate.
    authority survives reserve/clearance without renewal, and each physical owner
    supplies its actual close witness. Registry validation and the native close
    projection are integrated. Workspace aggregate evidence, Compile preparation
-   ownership and Launch channel joins remain required, alongside the finite LSP
-   collector and real Prepare readiness. Native transport, all four owned journals,
-   registry startup and restricted managed recovery are integrated. Preserve all
+   ownership and Launch channel joins remain required, alongside finite LSP
+   Service ownership and real Prepare readiness. The collector itself is integrated.
+   Native transport, all four owned journals, registry startup and restricted
+   managed recovery are integrated. Preserve all
    existing tests and ordinary local behavior.
 2. Build the approved ordinary registered path from protocols 076 and 077.
    Preserve one original owner Broker/custodian, exact-generation publication,
@@ -335,10 +364,18 @@ The approved [LSP contract](../protocol-change/076-registered-lsp.md) and
 required implementation work. Full activation, original physical retirement and
 normal daemon assembly are unbuilt, not accepted limitations of the final
 feature. Durable original journal/enrollment provenance and restricted managed
-recovery of native, workspace and resource writers are integrated. The next
-assembly prerequisite is original LSP live startup and restricted recovery,
-followed by the sole scope administrator and authenticated bounded history
-transport. C1-C3 and M1 also remain required by **#697**.
+recovery of native, workspace and resource writers are integrated. Original LSP
+live startup and restricted recovery are also integrated.
+Finite Service ownership, the sole scope administrator and authenticated bounded
+history transport remain assembly prerequisites. C1-C3 and M1 also remain
+required by **#697**.
+
+Two concrete proposals await owner approval: a typed Detached selector in weft
+with the exact Loom dependency-pin update, and the executor's existing-host
+metadata reader dependency. The selector supplies managed outcomes without
+losing the independent original scope monitor. The metadata reader supplies
+bounded actual Prepare readiness. Neither proposal is implemented or approved by
+elapsed time; independent implementation continues around these boundaries.
 
 The owner accepted inherited workspace/cache filesystem policy without an
 aggregate disk quota. New LSP transport and retained-state inventories keep their
