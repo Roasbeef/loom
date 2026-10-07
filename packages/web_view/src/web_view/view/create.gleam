@@ -532,13 +532,15 @@ pub fn typed_fields_with_profile(
 
 // The profile a form's `profile` entries choose: none sent is the default, one
 // with an empty value is the default, and one whose value is the position of an
-// offered name is that name. Two entries, or any other value, is a refusal.
+// offered name is that name. Two entries, or any other value, is a refusal, and
+// so is any `profile` entry at all when no profiles were offered.
 fn chosen_profile(
   chosen: List(#(String, String)),
   profiles: List(String),
 ) -> Result(Option(String), Nil) {
   case chosen {
-    [] | [#(_, "")] -> Ok(None)
+    [] -> Ok(None)
+    [#(_, "")] if profiles != [] -> Ok(None)
     [#(_, position)] ->
       case int.parse(position) {
         Ok(index) if index >= 0 ->

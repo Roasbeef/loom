@@ -148,3 +148,15 @@ pub fn a_profile_the_page_did_not_offer_is_refused_test() {
     )
     == Error(Nil)
 }
+
+// A `profile` field of any value, the empty one included, drops the event on a
+// page that offered no profiles, as 076 says.
+pub fn an_empty_profile_field_is_refused_when_none_were_offered_test() {
+  assert create.fields_with_profile([#("name", "x"), #("profile", "")], [])
+    == Error(Nil)
+  assert create.typed_fields_with_profile(
+      [#("path", "~/a"), #("name", ""), #("profile", "")],
+      [],
+    )
+    == Error(Nil)
+}
