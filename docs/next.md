@@ -1,12 +1,15 @@
 # Current handoff
 
-This edition records the distributed runtime integration through `81c7c83f7`
-on October 6, 2026. Source packets, independent command exits and live GitHub
-state were checked for this milestone. Rewrite this file when the next
-integration milestone changes those facts.
+This edition records the approved registered-service contracts and the main
+refresh through `1f8096b96` on October 6, 2026. The isolated `runtime/main-refresh`
+branch replays all 231 integration commits on `origin/main` at `3644b0790`.
+Compatibility work and new candidate gates are in progress. Earlier component
+results below describe the pre-rebase source, not this refreshed candidate.
 
-The previous edition left exact-helper retirement and immutable Compile rewrite
-identities in progress. Both are now implemented and committed. Ordinary
+The previous edition still required approval for registered LSP and administration.
+The owner has now approved both contracts, including option B and exact-generation
+history with system-child links. Exact-helper retirement and immutable Compile
+rewrite identities were already implemented and committed. Ordinary
 registered session assembly and remote LSP remain unbuilt, so this milestone
 does not complete distributed runtime acceptance.
 
@@ -14,20 +17,18 @@ does not complete distributed runtime acceptance.
 
 [PR #819](https://github.com/Roasbeef/loom/pull/819) remains draft and
 [issue #697](https://github.com/Roasbeef/loom/issues/697) remains open. The local
-integration commits have not been pushed. GitHub still names
-`b3bc47efdb2be7df421287aa437debdd034af9e5` as the PR head and reports no checks.
-The integration branch includes `origin/main` at `552e44033`; current main must
-be incorporated again before final validation. The latest observed main runs
-`37474395428` and `37447150575` failed at `5a9619d5e`. These runs are not evidence
-about this local candidate. No push or merge is authorized.
+integration commits have not been pushed. The previously observed hosted head was
+`b3bc47efdb2be7df421287aa437debdd034af9e5`, with no checks; hosted state has not been
+refreshed for this rebase. Local source now includes main at `3644b0790`. No push
+or merge is authorized.
 
 | Boundary | Current integration state |
 | --- | --- |
 | Owner custody and transport | Retained inputs/results, finite TLS BEAM controls, native forwarding and semantic workspace consumers are implemented. |
 | Compile | Exactly Original and UnusedImportRewrite identities preserve immutable inputs, checked predecessor evidence and the original authority/deadline. Protocol 071 and `85fa75c20` implement the approved contract. |
 | Launch | The consumed stream, original satellite, owner consumer and exact-helper retirement now compose. `23c6fabd9`, `a57c907f0` and `81c7c83f7` complete this component milestone. |
-| Ordinary daemon path | Registered default assembly, deployment configuration, enrollment pinning and full executor activation still need their proposed APIs approved and implemented. |
-| LSP | The physical host exists. The bounded registered LSP contract has completed source review but still requires owner approval and implementation. |
+| Ordinary daemon path | Protocol 077 is approved. Default assembly, deployment, pinning, complete generation custody and full executor activation still need implementation. |
+| LSP | Protocol 076 is approved, including consumed transport and original timing/retirement custody. Its registered service still needs implementation. |
 | Distributed orchestration | C1 ownership, C2 routing, C3 durable cross-node messaging and M1 controlled movement remain required and unimplemented. |
 | Preserved work | The unrelated owner-binding test runner and main checkout changes remain outside this work. |
 
@@ -39,7 +40,7 @@ Earlier review records remain evidence for their stated revisions.
 
 ## Verification and its limits
 
-Independent complete package gates passed core with 189 tests plus JavaScript
+Before this rebase, independent complete package gates passed core with 189 tests plus JavaScript
 checks, storage with 224, code mode with 483, broker with 444, executor with 370
 and client with 3,084. The final combined client gate returned exit zero.
 Fifteen explicit optional controls remain skipped: one Linux `/proc` witness,
@@ -59,6 +60,13 @@ runtime assertions. Source review and bounded correction reviews are complete.
 Earlier failed test runs remain recorded separately; focused passes and observed
 host load do not establish that every failure was a flake.
 
+On the refreshed source, SQL regeneration succeeds and produces no artifact drift.
+`make check-storage` passes all 235 tests, including populated migrations from
+both historical catalogue version-eight layouts and refusal of mixed/absent
+layouts. The catalogue now stamps version nine. Main's moved LSP inference
+implementation and tests survived the rebase; their runtime gate is pending.
+Shell-directory compatibility and the combined client/tools gates are in progress.
+
 Full repository gates, ordinary registered tools, separate-host acceptance and
 hosted CI have not passed on this candidate. Component results do not establish
 those outcomes. The new SSH user promised for host testing has not been supplied;
@@ -67,12 +75,9 @@ destination identity before transferring source.
 
 ## What to do next
 
-1. Finish and obtain approval for the concrete registered administration and LSP
-   contracts for **#697**. Ordinary close/reopen must define owner-process
-   lifetime and exact registration generations. The current permanent endpoint
-   fence cannot become a reusable idle witness. **Exit:** reviewed APIs cover
-   fresh work after close/reopen and archive/restore, with bounded capacity and
-   no automatic replacement after uncertainty.
+1. Finish verifying the main refresh without losing local shell cwd, job cwd
+   capture, recent folders or LSP scope inference. **Exit:** the combined source
+   passes its affected-package gates and independent compatibility review.
 2. Implement those contracts through ordinary daemon assembly. Preserve one
    original owner Broker/custodian, executor-only physical paths, full report
    admission, jobs, hooks, guidance, Git and LSP. **Exit:** default tools and
@@ -85,7 +90,7 @@ destination identity before transferring source.
    separate-host cancellation, partition, restart, lost-reply and controlled
    movement controls pass. Automatic failover and workspace snapshot migration
    remain deferred.
-4. Incorporate current main, run applicable model and full repository gates,
+4. Check for further main movement, run applicable model and full repository gates,
    then review the assembled system. **Exit:** exact candidate results justify
    the remaining integration checklist before requesting publication or merge.
 
@@ -117,12 +122,17 @@ replace another boundary's witness. See the
 
 ## Deliberately open
 
-Registered administration and LSP are proposed contracts, not approved public
-APIs. The lifecycle amendment must account for the current sixteen lifetime
-endpoint rows and immutable owner doors before implementation. Full filesystem
-quota policy is also distinct from bounding new LSP allocations. These are known
-design decisions; C1-C3 and M1 are known unbuilt scope. None is unfinished work
-somebody forgot.
+The approved [LSP contract](../protocol-change/076-registered-lsp.md) and
+[administration contract](../protocol-change/077-registered-generations.md) define
+implementation work, not completed capabilities. Administration selects sixteen
+live/unretired slots with 4096 permanent generation identities and 256 MiB of
+logical metadata. Clean successors retain immutable original owner doors and
+exact historical receipt routing. Uncertain custody remains charged.
+
+The owner accepted the inherited workspace/cache filesystem policy without an
+aggregate disk quota. All new LSP custody and transport inventories retain their
+explicit bounds. C1-C3 and M1 remain required unbuilt scope; automatic failover
+and workspace snapshot migration remain deferred.
 
 ## How to verify
 
