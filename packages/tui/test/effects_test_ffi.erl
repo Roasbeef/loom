@@ -12,7 +12,7 @@
 %% in the test tree so `src` keeps its FFI budget.
 -module(effects_test_ffi).
 
--export([socket_on/1, host_on/1]).
+-export([socket_on/1, host_on/1, control_on/1]).
 
 %% `host/websocket.Connection(subject)`.
 socket_on(Subject) ->
@@ -27,3 +27,9 @@ socket_on(Subject) ->
 host_on(Subject) ->
     Hello = {hello, nil, <<"operator">>, 65536, none, no_web_view},
     {host, {connection, Subject, self(), Hello}, nil, <<>>}.
+
+%% A `tui/daemon.Connection` alone, for the launch path that is handed a
+%% control connection and builds its own host around it.
+control_on(Subject) ->
+    Hello = {hello, nil, <<"operator">>, 65536, none, no_web_view},
+    {connection, Subject, self(), Hello}.
