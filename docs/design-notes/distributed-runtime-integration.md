@@ -83,6 +83,17 @@ Compile/Launch assembly, remote LSP and daemon configuration remain required.
 Acceptance must drive ordinary tools and code mode with the owner and executor
 on separate hosts and no checkout on the owner's disk.
 
+The owner approved [registered LSP](../../protocol-change/076-registered-lsp.md)
+and [registered deployment and generations](../../protocol-change/077-registered-generations.md)
+on October 6, 2026. LSP keeps finite semantic requests separate from the original
+session-owned server lease and adds helper consumption credit. Administration uses
+sixteen live or unretired slots, with permanent bounded generation history. Exact
+retirement, original endpoint removal acknowledgement and a durable Removed record
+precede slot reuse. Historical results remain accessible under their original
+generation after Close; neither a history read nor its receipt can repeat an effect
+or establish retirement. The complete system-child and LSP generation links are part
+of the accepted contract. Implementation and executable acceptance remain pending.
+
 Executor pools, trusted orchestrator routing, durable cross-node messaging and
 controlled session movement follow that first working remote path. These are
 required remaining work for issue #697. In the API plan, C1 implements the
