@@ -35,10 +35,10 @@ const EnvelopeVersion = 1
 // bumps this constant and broker/framing.exec_protocol_version in the
 // same commit. 1 was the vocabulary as first frozen; 2 is
 // protocol-change/006's required exec_exit "cancelled" key; 3 is
-// protocol-change/014's shutdown frame. The Gleam constant's doc comment
+// protocol-change/014's shutdown frame; 4 is protocol-change/076's credited protocol mode. The Gleam constant's doc comment
 // carries the full mapping, and broker's protocol_version_test reads this
 // file to prove the two literals have not drifted apart.
-const ExecProtocolVersion = 3
+const ExecProtocolVersion = 4
 
 // MaxFrameLen caps a frame's payload. The helper's own frames are small
 // (output is chunked well below this); the cap exists so a corrupt or
@@ -134,6 +134,83 @@ type ExecExit struct {
 	// `sh -c 'exit 143'` with no cancel at all. See
 	// protocol-change/006.
 	Cancelled bool `msgpack:"cancelled"`
+}
+
+// ProtocolCreditFeature names the opt-in consumption-credit vocabulary.
+const ProtocolCreditFeature = "protocol-credit-v1"
+
+const (
+	KindProtocolStart          = "protocol_start"
+	KindProtocolInput          = "protocol_input"
+	KindProtocolInputAccepted  = "protocol_input_accepted"
+	KindProtocolInputRefused   = "protocol_input_refused"
+	KindProtocolOutput         = "protocol_output"
+	KindProtocolOutputConsumed = "protocol_output_consumed"
+	KindProtocolReusable       = "protocol_reusable"
+	ProtocolServer             = "server_protocol"
+	ProtocolFinite             = "finite_collected"
+)
+
+// ProtocolStart preserves the cleared execution fields and adds a closed mode.
+type ProtocolStart struct {
+	Argv   []string           `msgpack:"argv"`
+	Env    map[string]string  `msgpack:"env"`
+	Cwd    string             `msgpack:"cwd"`
+	Policy msgpack.RawMessage `msgpack:"policy"`
+	Token  []byte             `msgpack:"token"`
+	Limits msgpack.RawMessage `msgpack:"limits"`
+	Mode   string             `msgpack:"mode"`
+}
+
+// ProtocolInput identifies the original execution and one bounded input admission.
+type ProtocolInput struct {
+	ExecutionID uint64 `msgpack:"execution_id"`
+	Ordinal     uint64 `msgpack:"ordinal"`
+	FrameID     uint64 `msgpack:"frame_id"`
+	Data        []byte `msgpack:"data"`
+	EOF         bool   `msgpack:"eof"`
+}
+
+// ProtocolInputAccepted attests queue admission, never child consumption.
+type ProtocolInputAccepted struct {
+	ExecutionID uint64 `msgpack:"execution_id"`
+	Ordinal     uint64 `msgpack:"ordinal"`
+	FrameID     uint64 `msgpack:"frame_id"`
+}
+
+// ProtocolInputRefused reports a definite rejection of the exact input frame.
+type ProtocolInputRefused struct {
+	ExecutionID uint64 `msgpack:"execution_id"`
+	Ordinal     uint64 `msgpack:"ordinal"`
+	FrameID     uint64 `msgpack:"frame_id"`
+	Reason      string `msgpack:"reason"`
+}
+
+// ProtocolOutput shares one credit across streams; Bytes remains cumulative per stream.
+type ProtocolOutput struct {
+	ExecutionID uint64 `msgpack:"execution_id"`
+	Ordinal     uint64 `msgpack:"ordinal"`
+	Stream      string `msgpack:"stream"`
+	Data        []byte `msgpack:"data"`
+	Bytes       uint64 `msgpack:"bytes"`
+	Truncated   bool   `msgpack:"truncated"`
+}
+
+// ProtocolOutputConsumed returns credit only for the exact offered output.
+type ProtocolOutputConsumed struct {
+	ExecutionID uint64 `msgpack:"execution_id"`
+	Ordinal     uint64 `msgpack:"ordinal"`
+}
+
+// ProtocolReusable witnesses cleanup after the original waitDone closed.
+type ProtocolReusable struct {
+	ExecutionID uint64 `msgpack:"execution_id"`
+}
+
+// ProtocolExit adds a checked protocol disposition only to credited terminals.
+type ProtocolExit struct {
+	ExecExit
+	Protocol string `msgpack:"protocol"`
 }
 
 // ErrorBody is the body of an error frame.
@@ -261,6 +338,12 @@ func (c *Conn) Write(id uint64, kind string, body any) error {
 	if err != nil {
 		return err
 	}
+	return c.WriteEncoded(buf)
+}
+
+// WriteEncoded flushes one already encoded frame under the same connection
+// serialization as Write. Credited slots own this sole retained sent copy.
+func (c *Conn) WriteEncoded(buf []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, err := c.w.Write(buf); err != nil {
@@ -272,4 +355,15 @@ func (c *Conn) Write(id uint64, kind string, body any) error {
 // WriteError emits an error frame correlated to id.
 func (c *Conn) WriteError(id uint64, code, msg string) error {
 	return c.Write(id, KindError, ErrorBody{Code: code, Msg: msg})
+}
+
+// Abort interrupts both a blocked channel writer and the frame reader. Credited
+// transport failure uses this fence before joining execution-owned workers.
+func (c *Conn) Abort() {
+	if closer, ok := c.r.(io.Closer); ok {
+		_ = closer.Close()
+	}
+	if closer, ok := c.w.(io.Closer); ok {
+		_ = closer.Close()
+	}
 }

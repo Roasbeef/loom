@@ -707,7 +707,9 @@ fn decode_body(
   scope: identity.Scope,
 ) -> Result(Body, Error) {
   case value {
-    mp.ArrayValue([mp.IntValue(0), mp.IntValue(3), mp.IntValue(2)]) -> Ok(Hello)
+    mp.ArrayValue([mp.IntValue(0), mp.IntValue(version), mp.IntValue(2)])
+      if version == framing.exec_protocol_version
+    -> Ok(Hello)
     mp.ArrayValue([mp.IntValue(1), key]) -> {
       use pair <- result.try(decode_key(key, scope))
       Ok(ChallengeRequest(pair.0, pair.1))

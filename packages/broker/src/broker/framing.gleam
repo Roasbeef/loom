@@ -110,12 +110,14 @@ pub const envelope_version = 1
 ///   frame, which a helper at 2 answers as an unknown kind rather than
 ///   by retiring.
 ///
+/// - **4** — `protocol-change/076`: opt-in credited protocol frames.
+///
 /// Two accepted changes touch Part 1.4 and are deliberately *not*
 /// counted. `protocol-change/012`'s `hook_call`/`hook_result` pair
 /// crosses only the capability socket, which carries no `hello` and so
 /// no `proto` — the exec helper neither sends nor parses those frames.
 /// `protocol-change/004` is still PROPOSED and unimplemented.
-pub const exec_protocol_version = 3
+pub const exec_protocol_version = 4
 
 /// The cap on a frame's msgpack payload, mirroring the Go helper's
 /// 16 MiB `MaxFrameLen`: a corrupt or hostile length prefix must not
@@ -136,9 +138,175 @@ pub type OutputStream {
   Stderr
 }
 
+/// The feature both hello messages require before credited execution.
+pub const protocol_credit_feature = "protocol-credit-v1"
+
+/// The two protocol lifetimes. Server mode requires exact helper retirement.
+pub type ProtocolMode {
+  /// A session-owned protocol server; finite reuse is forbidden.
+  ServerProtocol
+
+  /// One bounded collector with empty EOF input and consumed reuse evidence.
+  FiniteCollected
+}
+
+/// Whether a credited input seals the child's stdin queue.
+pub type InputEnd {
+  /// More admitted input may follow.
+  InputContinues
+
+  /// Queue admission seals input after this frame.
+  InputEOF
+}
+
+/// Whether the producer reached its per-stream output ceiling.
+pub type OutputDisposition {
+  /// The chunk remains within the producer ceiling.
+  OutputComplete
+
+  /// The final producer chunk reached the ceiling.
+  OutputTruncated
+}
+
+/// The checked credited protocol outcome, separate from native exit status.
+pub type ProtocolDisposition {
+  /// All offered output was consumed and workers joined.
+  ProtocolComplete
+
+  /// Credit or transport failed; a retained prefix is not complete.
+  ProtocolFailed
+}
+
+/// The closed reason for refusing one exact input admission.
+pub type InputRefusal {
+  /// Original identity or ordinal did not match.
+  InputIdentity
+
+  /// Input has already ended or failed.
+  InputSealed
+
+  /// The execution's one admission slot is occupied.
+  InputPending
+
+  /// A chunk or lifetime ceiling was exceeded.
+  InputLimit
+
+  /// Finite collectors accept only their one empty EOF.
+  FiniteInput
+
+  /// The existing stdin queue definitely rejected admission.
+  QueueRejected
+}
+
+/// A cleared start, preserving the ordinary request field vocabulary.
+pub type ProtocolRequest {
+  ProtocolRequest(
+    /// The nonempty cleared program and arguments.
+    argv: List(String),
+    /// The allowlist-constructed environment.
+    env: List(#(String, String)),
+    /// The cleared physical working directory.
+    cwd: String,
+    /// The cleared per-execution sandbox policy.
+    policy: Option(SandboxPolicy),
+    /// The nonempty original capability token.
+    token: BitArray,
+    /// The existing optional limits override.
+    limits: Option(Limits),
+  )
+}
+
+/// Native terminal fields decoded through the unchanged ordinary exit decoder.
+/// The opaque wrapper can contain only a checked ExecExit, never another body.
+pub opaque type ProtocolTerminal {
+  ProtocolTerminal(exit: Body)
+}
+
 /// The typed body of each frame kind. Field vocabulary matches the Go
 /// helper's structs byte for byte on the wire.
 pub type Body {
+  /// Opt-in cleared execution with a closed lifecycle mode.
+  ProtocolStart(
+    /// Original cleared native request fields.
+    request: ProtocolRequest,
+    /// Lifecycle fixed by trusted native assembly.
+    mode: ProtocolMode,
+  )
+
+  /// One original bounded queue-admission request.
+  ProtocolInput(
+    /// The immutable original wire execution identity.
+    execution_id: Int,
+    /// The exact contiguous credit ordinal.
+    ordinal: Int,
+    /// The independent original input frame identity.
+    frame_id: Int,
+    /// The bounded admitted payload.
+    data: BitArray,
+    /// Whether this admitted input seals stdin.
+    end: InputEnd,
+  )
+
+  /// Queue admission of that exact original frame.
+  ProtocolInputAccepted(
+    /// The immutable original wire execution identity.
+    execution_id: Int,
+    /// The exact contiguous credit ordinal.
+    ordinal: Int,
+    /// The independent original input frame identity.
+    frame_id: Int,
+  )
+
+  /// Definite refusal of that exact original frame.
+  ProtocolInputRefused(
+    /// The immutable original wire execution identity.
+    execution_id: Int,
+    /// The exact contiguous credit ordinal.
+    ordinal: Int,
+    /// The independent original input frame identity.
+    frame_id: Int,
+    /// The definite refusal of this original admission.
+    reason: InputRefusal,
+  )
+
+  /// One shared-credit output chunk with cumulative per-stream bytes.
+  ProtocolOutput(
+    /// The immutable original wire execution identity.
+    execution_id: Int,
+    /// The exact contiguous credit ordinal.
+    ordinal: Int,
+    /// The producer stream sharing this output credit.
+    stream: OutputStream,
+    /// The bounded admitted payload.
+    data: BitArray,
+    /// Cumulative admitted bytes for this stream, including this chunk.
+    bytes: Int,
+    /// The checked producer or protocol outcome.
+    disposition: OutputDisposition,
+  )
+
+  /// Final bounded-consumer admission of that exact chunk.
+  ProtocolOutputConsumed(
+    /// The immutable original wire execution identity.
+    execution_id: Int,
+    /// The exact contiguous credit ordinal.
+    ordinal: Int,
+  )
+
+  /// Post-waitDone evidence, still requiring trusted consumer validation.
+  ProtocolReusable(
+    /// The immutable original wire execution identity.
+    execution_id: Int,
+  )
+
+  /// Credited-only terminal disposition, independent of finite reuse.
+  ProtocolExit(
+    /// Native terminal fields checked through the ordinary decoder.
+    terminal: ProtocolTerminal,
+    /// The checked producer or protocol outcome.
+    disposition: ProtocolDisposition,
+  )
+
   /// The handshake: the helper sends its hello first; the broker must
   /// answer with its own before any other frame. `proto` is the peer's
   /// `exec_protocol_version`, and a mismatch is fatal to the channel on
@@ -310,6 +478,14 @@ pub fn encode_payload(frame: Frame) -> Result(BitArray, msgpack.EncodeError) {
 
 fn kind_name(body: Body) -> String {
   case body {
+    ProtocolStart(..) -> "protocol_start"
+    ProtocolInput(..) -> "protocol_input"
+    ProtocolInputAccepted(..) -> "protocol_input_accepted"
+    ProtocolInputRefused(..) -> "protocol_input_refused"
+    ProtocolOutput(..) -> "protocol_output"
+    ProtocolOutputConsumed(..) -> "protocol_output_consumed"
+    ProtocolReusable(..) -> "protocol_reusable"
+    ProtocolExit(..) -> "exec_exit"
     Hello(..) -> "hello"
     ExecStart(..) -> "exec_start"
     ExecStdin(..) -> "exec_stdin"
@@ -328,6 +504,74 @@ fn kind_name(body: Body) -> String {
 
 fn body_to_msgpack(body: Body) -> MsgPackValue {
   case body {
+    ProtocolStart(request: r, mode:) -> {
+      let entries =
+        map_entries(
+          body_to_msgpack(ExecStart(
+            r.argv,
+            r.env,
+            r.cwd,
+            r.policy,
+            r.token,
+            r.limits,
+          )),
+        )
+      msgpack.MapValue(
+        list.append(entries, [
+          entry("mode", msgpack.StringValue(mode_name(mode))),
+        ]),
+      )
+    }
+    ProtocolInput(execution_id:, ordinal:, frame_id:, data:, end:) ->
+      msgpack.MapValue(
+        list.append(input_identity(execution_id, ordinal, frame_id), [
+          entry("data", msgpack.BinaryValue(data)),
+          entry("eof", msgpack.BoolValue(end == InputEOF)),
+        ]),
+      )
+    ProtocolInputAccepted(execution_id:, ordinal:, frame_id:) ->
+      msgpack.MapValue(input_identity(execution_id, ordinal, frame_id))
+    ProtocolInputRefused(execution_id:, ordinal:, frame_id:, reason:) ->
+      msgpack.MapValue(
+        list.append(input_identity(execution_id, ordinal, frame_id), [
+          entry("reason", msgpack.StringValue(refusal_name(reason))),
+        ]),
+      )
+    ProtocolOutput(
+      execution_id:,
+      ordinal:,
+      stream:,
+      data:,
+      bytes:,
+      disposition:,
+    ) ->
+      msgpack.MapValue(
+        list.append(output_identity(execution_id, ordinal), [
+          entry("stream", msgpack.StringValue(stream_name(stream))),
+          entry("data", msgpack.BinaryValue(data)),
+          entry("bytes", msgpack.IntValue(bytes)),
+          entry("truncated", msgpack.BoolValue(disposition == OutputTruncated)),
+        ]),
+      )
+    ProtocolOutputConsumed(execution_id:, ordinal:) ->
+      msgpack.MapValue(output_identity(execution_id, ordinal))
+    ProtocolReusable(execution_id:) ->
+      msgpack.MapValue([entry("execution_id", msgpack.IntValue(execution_id))])
+    ProtocolExit(terminal: ProtocolTerminal(exit), disposition:) -> {
+      let entries = map_entries(body_to_msgpack(exit))
+      msgpack.MapValue(
+        list.append(entries, [
+          entry(
+            "protocol",
+            msgpack.StringValue(case disposition {
+              ProtocolComplete -> "complete"
+              ProtocolFailed -> "failed"
+            }),
+          ),
+        ]),
+      )
+    }
+
     Hello(proto:, peer:, features:) ->
       msgpack.MapValue([
         #(msgpack.StringValue("proto"), msgpack.IntValue(proto)),
@@ -670,11 +914,22 @@ fn decode_body(
 ) -> Result(Body, FrameError) {
   use entries <- result.try(body_map(kind, value))
   case kind {
+    "protocol_start" -> decode_protocol_start(entries)
+    "protocol_input" -> decode_protocol_input(entries)
+    "protocol_input_accepted" -> decode_input_ack(entries, "accepted")
+    "protocol_input_refused" -> decode_input_ack(entries, "refused")
+    "protocol_output" -> decode_protocol_output(entries)
+    "protocol_output_consumed" -> decode_protocol_consumed(entries)
+    "protocol_reusable" -> {
+      use Nil <- result.try(check_keys(entries, ["execution_id"]))
+      use execution_id <- result.try(positive_field(entries, "execution_id"))
+      Ok(ProtocolReusable(execution_id))
+    }
     "hello" -> decode_hello(entries)
     "exec_start" -> decode_exec_start(entries)
     "exec_stdin" -> decode_exec_stdin(entries)
     "exec_out" -> decode_exec_out(entries)
-    "exec_exit" -> decode_exec_exit(entries)
+    "exec_exit" -> decode_terminal(entries)
     "cap_call" -> decode_cap_call(entries)
     "cap_result" -> decode_cap_result(entries)
     "hook_call" -> decode_hook_call(entries)
@@ -1286,5 +1541,232 @@ fn body_strings(
       })
     msgpack.NilValue -> Ok([])
     _ -> Error(malformed(kind <> "." <> key, "an array of strings", ""))
+  }
+}
+
+// These entry builders retain the ordinary map ordering and field spellings.
+fn entry(key: String, value: MsgPackValue) -> #(MsgPackValue, MsgPackValue) {
+  #(msgpack.StringValue(key), value)
+}
+
+fn map_entries(value: MsgPackValue) -> Entries {
+  case value {
+    msgpack.MapValue(entries) -> entries
+    _ -> []
+  }
+}
+
+fn input_identity(id: Int, ordinal: Int, frame_id: Int) -> Entries {
+  list.append(output_identity(id, ordinal), [
+    entry("frame_id", msgpack.IntValue(frame_id)),
+  ])
+}
+
+fn output_identity(id: Int, ordinal: Int) -> Entries {
+  [
+    entry("execution_id", msgpack.IntValue(id)),
+    entry("ordinal", msgpack.IntValue(ordinal)),
+  ]
+}
+
+fn mode_name(mode: ProtocolMode) -> String {
+  case mode {
+    ServerProtocol -> "server_protocol"
+    FiniteCollected -> "finite_collected"
+  }
+}
+
+fn refusal_name(reason: InputRefusal) -> String {
+  case reason {
+    InputIdentity -> "identity"
+    InputSealed -> "sealed"
+    InputPending -> "pending"
+    InputLimit -> "limit"
+    FiniteInput -> "finite_input"
+    QueueRejected -> "queue_rejected"
+  }
+}
+
+fn positive_field(entries: Entries, key: String) -> Result(Int, FrameError) {
+  use value <- result.try(body_int(entries, "protocol", key))
+  case value > 0 {
+    True -> Ok(value)
+    False -> Error(malformed("protocol", "positive identity", key))
+  }
+}
+
+fn decode_protocol_start(entries: Entries) -> Result(Body, FrameError) {
+  use mode <- result.try(body_string(entries, "protocol_start", "mode"))
+  use mode <- result.try(case mode {
+    "server_protocol" -> Ok(ServerProtocol)
+    "finite_collected" -> Ok(FiniteCollected)
+    _ -> Error(malformed("protocol_start", "closed mode", mode))
+  })
+  use start <- result.try(
+    decode_exec_start(
+      list.filter(entries, fn(pair) { pair.0 != msgpack.StringValue("mode") }),
+    ),
+  )
+  case start {
+    ExecStart(argv:, env:, cwd:, policy:, token:, limits:) ->
+      Ok(ProtocolStart(
+        ProtocolRequest(argv, env, cwd, policy, token, limits),
+        mode,
+      ))
+    _ -> Error(malformed("protocol_start", "start fields", "decoder"))
+  }
+}
+
+fn decode_protocol_input(entries: Entries) -> Result(Body, FrameError) {
+  use Nil <- result.try(
+    check_keys(entries, ["execution_id", "ordinal", "frame_id", "data", "eof"]),
+  )
+  use execution_id <- result.try(positive_field(entries, "execution_id"))
+  use ordinal <- result.try(positive_field(entries, "ordinal"))
+  use frame_id <- result.try(positive_field(entries, "frame_id"))
+  use data <- result.try(body_binary(entries, "protocol_input", "data"))
+  use eof <- result.try(body_bool(entries, "protocol_input", "eof"))
+  case bit_array.byte_size(data) <= 8192 {
+    True ->
+      Ok(
+        ProtocolInput(execution_id, ordinal, frame_id, data, case eof {
+          True -> InputEOF
+          False -> InputContinues
+        }),
+      )
+    False -> Error(malformed("protocol_input", "8192 byte chunk", "data"))
+  }
+}
+
+fn decode_input_ack(
+  entries: Entries,
+  kind: String,
+) -> Result(Body, FrameError) {
+  let keys = case kind {
+    "accepted" -> ["execution_id", "ordinal", "frame_id"]
+    _ -> ["execution_id", "ordinal", "frame_id", "reason"]
+  }
+  use Nil <- result.try(check_keys(entries, keys))
+  use execution_id <- result.try(positive_field(entries, "execution_id"))
+  use ordinal <- result.try(positive_field(entries, "ordinal"))
+  use frame_id <- result.try(positive_field(entries, "frame_id"))
+  case kind {
+    "accepted" -> Ok(ProtocolInputAccepted(execution_id, ordinal, frame_id))
+    _ -> {
+      use reason <- result.try(body_string(
+        entries,
+        "protocol_input_refused",
+        "reason",
+      ))
+      use reason <- result.try(case reason {
+        "identity" -> Ok(InputIdentity)
+        "sealed" -> Ok(InputSealed)
+        "pending" -> Ok(InputPending)
+        "limit" -> Ok(InputLimit)
+        "finite_input" -> Ok(FiniteInput)
+        "queue_rejected" -> Ok(QueueRejected)
+        _ -> Error(malformed("protocol_input_refused", "closed reason", reason))
+      })
+      Ok(ProtocolInputRefused(execution_id, ordinal, frame_id, reason))
+    }
+  }
+}
+
+fn decode_protocol_output(entries: Entries) -> Result(Body, FrameError) {
+  use Nil <- result.try(
+    check_keys(entries, [
+      "execution_id",
+      "ordinal",
+      "stream",
+      "data",
+      "bytes",
+      "truncated",
+    ]),
+  )
+  use execution_id <- result.try(positive_field(entries, "execution_id"))
+  use ordinal <- result.try(positive_field(entries, "ordinal"))
+  use out <- result.try(
+    decode_exec_out(
+      list.filter(entries, fn(pair) {
+        pair.0 != msgpack.StringValue("execution_id")
+        && pair.0 != msgpack.StringValue("ordinal")
+      }),
+    ),
+  )
+  case out {
+    ExecOut(stream:, data:, bytes:, truncated:) ->
+      case bit_array.byte_size(data) <= 32_768 && bytes >= 0 {
+        True ->
+          Ok(
+            ProtocolOutput(
+              execution_id,
+              ordinal,
+              stream,
+              data,
+              bytes,
+              case truncated {
+                True -> OutputTruncated
+                False -> OutputComplete
+              },
+            ),
+          )
+        False ->
+          Error(malformed(
+            "protocol_output",
+            "bounded cumulative output",
+            "data",
+          ))
+      }
+    _ -> Error(malformed("protocol_output", "output fields", "decoder"))
+  }
+}
+
+fn decode_protocol_consumed(entries: Entries) -> Result(Body, FrameError) {
+  use Nil <- result.try(check_keys(entries, ["execution_id", "ordinal"]))
+  use execution_id <- result.try(positive_field(entries, "execution_id"))
+  use ordinal <- result.try(positive_field(entries, "ordinal"))
+  Ok(ProtocolOutputConsumed(execution_id, ordinal))
+}
+
+fn decode_terminal(entries: Entries) -> Result(Body, FrameError) {
+  case find(entries, "protocol") {
+    Error(Nil) -> decode_exec_exit(entries)
+    Ok(msgpack.StringValue(value)) -> {
+      use disposition <- result.try(case value {
+        "complete" -> Ok(ProtocolComplete)
+        "failed" -> Ok(ProtocolFailed)
+        _ -> Error(malformed("exec_exit", "closed protocol disposition", value))
+      })
+      use exit <- result.try(
+        decode_exec_exit(
+          list.filter(entries, fn(pair) {
+            pair.0 != msgpack.StringValue("protocol")
+          }),
+        ),
+      )
+      Ok(ProtocolExit(ProtocolTerminal(exit), disposition))
+    }
+    Ok(_) -> Error(malformed("exec_exit", "protocol string", "protocol"))
+  }
+}
+
+/// The ordinary native terminal inside an opaque checked credited report.
+///
+/// ## Examples
+///
+/// `protocol_terminal_body(report)` returns the checked `ExecExit` fields.
+pub fn protocol_terminal_body(terminal: ProtocolTerminal) -> Body {
+  terminal.exit
+}
+
+/// Wraps only an ordinary native exit report for credited terminal encoding.
+///
+/// ## Examples
+///
+/// `protocol_terminal(exit)` refuses any body other than `ExecExit`.
+pub fn protocol_terminal(exit: Body) -> Result(ProtocolTerminal, FrameError) {
+  case exit {
+    ExecExit(..) -> Ok(ProtocolTerminal(exit))
+    _ -> Error(malformed("exec_exit", "native terminal", "protocol"))
   }
 }

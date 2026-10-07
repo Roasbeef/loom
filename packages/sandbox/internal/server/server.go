@@ -20,10 +20,14 @@ import (
 
 // Server drives the protocol loop.
 type Server struct {
-	conn    *framing.Conn
-	feat    jail.Features
-	selfExe string
-	basePol policy.Policy
+	conn               *framing.Conn
+	feat               jail.Features
+	selfExe            string
+	basePol            policy.Policy
+	protocolNegotiated bool
+	protocol           *protocolRun
+	creditWriter       *creditWriter
+
 	nextID  uint64 // ids for frames the helper originates
 	running *jail.Exec
 
@@ -55,14 +59,20 @@ func (s *Server) Run() error {
 	// A native exit can witness retirement only after the execution's Wait
 	// completes. Keep this obligation on every return, including malformed
 	// traffic during an execution, rather than on selected dispatch branches.
-	defer s.reapRunning()
+	defer func() {
+		s.reapRunning()
+		if s.creditWriter != nil {
+			s.creditWriter.abort()
+			<-s.creditWriter.done
+		}
+	}()
 
 	// The helper introduces itself first: the broker learns the honest
 	// feature set before it commits any work to us.
 	if err := s.conn.Write(s.originID(), framing.KindHello, framing.Hello{
 		Proto:    framing.ExecProtocolVersion,
 		Peer:     "exec-helper",
-		Features: s.feat.List(),
+		Features: append(s.feat.List(), framing.ProtocolCreditFeature),
 	}); err != nil {
 		return err
 	}
@@ -75,12 +85,12 @@ func (s *Server) Run() error {
 		}
 		if err != nil {
 			// Malformed frame: report in-band, then close.
-			_ = s.conn.WriteError(0, framing.ErrCodeMalformed, err.Error())
+			_ = s.writeError(0, framing.ErrCodeMalformed, err.Error())
 			return fmt.Errorf("server: malformed frame: %w", err)
 		}
 
 		if !helloSeen && f.Kind != framing.KindHello {
-			_ = s.conn.WriteError(f.ID, framing.ErrCodeProto, "expected hello before "+f.Kind)
+			_ = s.writeError(f.ID, framing.ErrCodeProto, "expected hello before "+f.Kind)
 			return fmt.Errorf("server: %s before hello", f.Kind)
 		}
 
@@ -88,7 +98,7 @@ func (s *Server) Run() error {
 		case framing.KindHello:
 			var h framing.Hello
 			if err := framing.DecodeBody(f.Body, &h); err != nil {
-				_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, err.Error())
+				_ = s.writeError(f.ID, framing.ErrCodeMalformed, err.Error())
 				return err
 			}
 			// Name both numbers, not just the peer's. A helper and a
@@ -96,17 +106,40 @@ func (s *Server) Run() error {
 			// check exists for, and "unsupported proto 1" alone leaves
 			// the reader to guess what this binary wanted.
 			if h.Proto != framing.ExecProtocolVersion {
-				_ = s.conn.WriteError(f.ID, framing.ErrCodeProto,
+				_ = s.writeError(f.ID, framing.ErrCodeProto,
 					fmt.Sprintf("peer speaks exec protocol %d; this helper speaks %d",
 						h.Proto, framing.ExecProtocolVersion))
 				return fmt.Errorf("server: exec protocol mismatch: peer %d, helper %d",
 					h.Proto, framing.ExecProtocolVersion)
 			}
 			helloSeen = true
+			for _, feature := range h.Features {
+				if feature == framing.ProtocolCreditFeature {
+					s.protocolNegotiated = true
+				}
+			}
 
 		case framing.KindHeartbeat:
+			if s.creditWriter != nil {
+				_, _ = s.creditWriter.offer(creditControl, f.ID, framing.KindHeartbeat, map[string]any{})
+				continue
+			}
 			_ = s.conn.Write(f.ID, framing.KindHeartbeat, map[string]any{})
 
+		case framing.KindProtocolStart:
+			s.handleProtocolStart(f)
+		case framing.KindProtocolInput:
+			if s.protocol != nil {
+				s.protocol.input(f)
+			} else {
+				s.protocolError(f.ID, "no credited execution")
+			}
+		case framing.KindProtocolOutputConsumed:
+			if s.protocol != nil {
+				s.protocol.consume(f)
+			} else {
+				s.protocolError(f.ID, "no credited execution")
+			}
 		case framing.KindExecStart:
 			s.handleExecStart(f)
 
@@ -117,13 +150,16 @@ func (s *Server) Run() error {
 			// Idempotent by contract: with no (or an already-finished)
 			// execution there is nothing to do and no error to raise.
 			if s.running != nil {
+				if s.protocol != nil {
+					s.protocol.fail()
+				}
 				s.running.Cancel()
 			}
 
 		case framing.KindShutdown:
 			var body map[string]any
 			if err := framing.DecodeBody(f.Body, &body); err != nil || body == nil || len(body) != 0 {
-				_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "shutdown: expected empty map")
+				_ = s.writeError(f.ID, framing.ErrCodeMalformed, "shutdown: expected empty map")
 				return fmt.Errorf("server: shutdown requires an empty map")
 			}
 
@@ -137,12 +173,25 @@ func (s *Server) Run() error {
 			// Unknown kind: unlike a malformed frame this parses fine,
 			// so answer in-band and keep the channel; the broker may be
 			// newer than us and able to downgrade.
-			_ = s.conn.WriteError(f.ID, framing.ErrCodeUnknownKind, f.Kind)
+			_ = s.writeError(f.ID, framing.ErrCodeUnknownKind, f.Kind)
 		}
 	}
 }
 
 func (s *Server) handleExecStart(f framing.Frame) {
+	if s.protocol != nil {
+		if s.protocol.mode == framing.ProtocolServer {
+			s.protocolError(f.ID, "server execution requires exact helper retirement")
+			return
+		}
+		select {
+		case <-s.waitDone:
+			s.protocol = nil
+		default:
+			s.protocolError(f.ID, "original execution has not joined")
+			return
+		}
+	}
 	// Busy is decided by the child, not by the frame that reports it.
 	// execFreed closes when Wait returns, which is strictly before the
 	// exec_exit write; consulting waitDone here instead made a broker
@@ -153,22 +202,22 @@ func (s *Server) handleExecStart(f framing.Frame) {
 		case <-s.execFreed:
 			s.running = nil
 		default:
-			_ = s.conn.WriteError(f.ID, framing.ErrCodeBusy, "an execution is already running")
+			_ = s.writeError(f.ID, framing.ErrCodeBusy, "an execution is already running")
 			return
 		}
 	}
 
 	var body framing.ExecStart
 	if err := framing.DecodeBody(f.Body, &body); err != nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, err.Error())
+		_ = s.writeError(f.ID, framing.ErrCodeMalformed, err.Error())
 		return
 	}
 	if len(body.Argv) == 0 {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "exec_start: empty argv")
+		_ = s.writeError(f.ID, framing.ErrCodeMalformed, "exec_start: empty argv")
 		return
 	}
 	if len(body.Token) == 0 {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, "exec_start: missing token")
+		_ = s.writeError(f.ID, framing.ErrCodeMalformed, "exec_start: missing token")
 		return
 	}
 
@@ -176,7 +225,7 @@ func (s *Server) handleExecStart(f framing.Frame) {
 	if len(body.Policy) > 0 {
 		p, err := policy.Decode(body.Policy)
 		if err != nil {
-			_ = s.conn.WriteError(f.ID, framing.ErrCodeBadPolicy, err.Error())
+			_ = s.writeError(f.ID, framing.ErrCodeBadPolicy, err.Error())
 			return
 		}
 		pol = p
@@ -190,7 +239,7 @@ func (s *Server) handleExecStart(f framing.Frame) {
 		ID:     f.ID,
 	}, s.feat, s.selfExe, s.outputSink(f.ID))
 	if err != nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeSpawn, err.Error())
+		_ = s.writeError(f.ID, framing.ErrCodeSpawn, err.Error())
 		return
 	}
 
@@ -254,17 +303,21 @@ func (s *Server) handleExecStart(f framing.Frame) {
 // queued for a payload that is not reading, and the wall deadline and the
 // execution's end both still bound it.
 func (s *Server) handleExecStdin(f framing.Frame) {
+	if s.protocol != nil {
+		s.protocol.fence()
+		return
+	}
 	if s.running == nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, "no execution running")
+		_ = s.writeError(f.ID, framing.ErrCodeNoExec, "no execution running")
 		return
 	}
 	var body framing.ExecStdin
 	if err := framing.DecodeBody(f.Body, &body); err != nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeMalformed, err.Error())
+		_ = s.writeError(f.ID, framing.ErrCodeMalformed, err.Error())
 		return
 	}
 	if err := s.running.WriteStdin(body.Data, body.EOF); err != nil {
-		_ = s.conn.WriteError(f.ID, framing.ErrCodeNoExec, err.Error())
+		_ = s.writeError(f.ID, framing.ErrCodeNoExec, err.Error())
 	}
 }
 
@@ -297,6 +350,9 @@ func (s *Server) reapRunning() {
 	if s.running == nil {
 		return
 	}
+	if s.protocol != nil {
+		s.protocol.fail()
+	}
 	s.running.Cancel()
 	<-s.waitDone
 	s.running = nil
@@ -320,4 +376,19 @@ func ReadBasePolicy() (policy.Policy, error) {
 	}
 	defer f.Close()
 	return policy.ReadFrom(f)
+}
+
+// writeError keeps malformed credited traffic off the blocking writer path.
+func (s *Server) writeError(id uint64, code, message string) error {
+	if s.creditWriter == nil {
+		return s.conn.WriteError(id, code, message)
+	}
+	if len(message) > 64 {
+		message = message[:64]
+	}
+	_, ok := s.creditWriter.offer(creditControl, id, framing.KindError, framing.ErrorBody{Code: code, Msg: message})
+	if !ok {
+		return fmt.Errorf("credited error slot unavailable")
+	}
+	return nil
 }
