@@ -1005,3 +1005,93 @@ the original assignment permanently. A lost transport answer after known Install
 can release the finite credit after actual network retirement, while the caller
 remains Uncertain and original stream resources remain retained. There is no automatic bind retry or acceptance cache.
 `inspect_drain` observes finite metadata credits, never live-stream drain.
+
+
+## Registered LSP custody foundation
+
+`remote/lsp_journal` owns one executor-scoped LSP SQLite database through one
+original connection-owning weft actor. `fresh` refuses an existing path;
+`recover` validates bounded metadata and every original row before fencing all
+unfinished lease, finite and command phases as uncertain. It preserves the exact
+old nonce, E0, era, proposal and deadline even when the caller repeats its former
+clock era, tick or DAL-use UUID. `release` observes the original close ACK and
+normal DOWN; no replacement actor lookup or effect execution belongs to this DAL.
+
+A canonical lease input names the enrolled server, canonical project root and
+already retained original request UUID. Its digest participates in the complete
+lease identity. The current-slot pointer uses full Scope, label and root without
+generation, so a clean successor cannot bypass an unretired original. Only
+`retire_lease` with trusted original verification, exact full-row recheck and
+Retired COMMIT removes that pointer. Terminal, receipt, reusable completion,
+absence, monitor loss and timeout leave the original slot occupied. The verifier
+runs outside the SQL turn and must check actual original helper retirement and
+all independent managed-child, transport, endpoint and input-fence obligations.
+Canonical evidence and its digest name those joins; possession proves none.
+
+`capture_finite` charges exact request and full eventual result capacity before
+returning one historical anchor. `accept_finite` uses the core timing constructor
+to commit the original E0-plus-R deadline and the sole Started claim. The earlier
+1000ms capture window, zero deadline refusal and exact immutable timing digest
+remain checked. Duplicate Submit returns history, and recovery never returns a
+claim. Every physical finite action still needs its original trusted clock and
+parent-custody join; the owner/native adapters must enforce that same control.
+
+`reserve_command` admits only the core Startup or Search family and compares the
+actual parent's full generation, enrollment and original bytes in the same writer
+transaction. A unique parent/profile index prevents a second Search for one
+enrolled profile. Every command consumes a shared permanent identity. Fixed offer,
+owner-returned native association, terminal, projected result and consumed reusable
+witness each retain exact immutable bytes. `start_command` issues only the first
+committed closed finite or ServerLease claim. ServerLease forbids finite reuse;
+Search and Prepare terminal completion stays Finishing until its matching actual
+reusable witness is retained. Closing remains monotone through late placement and native admission; those
+callbacks retain cleanup history without restoring dispatch authority. Fenced
+uncertainty cannot reopen on a late witness. Command ancestry is bounded to one
+concrete Lease or Finite parent; corrupt command-to-command links are refused
+before parent validation.
+
+`finish` retains the request-matched full canonical result before returning its
+checked generation-bearing reference. `acknowledge_exact` compares the complete
+original request and exact result digest before ACK history commits. The owner
+still owes exact result COMMIT/readback followed by original companion reference
+COMMIT/readback before network acknowledgement. No owner store, companion link,
+transport endpoint or runtime LSP manager is wired by this module.
+
+The common ledger allows at most 4096 permanent identities and 268435456 logical
+reserved bytes, reduced by selected existing limits. This milestone permanently
+retains the full original reservation, including acknowledged result payloads;
+there is no reclamation, eviction or periodic compaction. A finite row reserves
+`5021952 + 8*header_bytes + request_bytes` bytes. At the permitted header/request
+ceilings it reserves 5218560 bytes, so at most 51 such maximum-envelope originals
+fit before other rows. Even the fixed portion alone limits a finite-only store to
+53 originals. Lease and command reservations reduce those counts. Production
+assembly must surface this checked exhaustion before effects.
+
+The new store profile checks 4096-byte pages, max_page_count 131072, DELETE rollback
+journal, MEMORY temporary storage, FULL synchronous and foreign keys before every
+transaction. The linked sqlight engine is pinned to SQLite 3.50.4 and source ID
+`2025-07-30 19:33:53 4d8adfb30e03f9cf27f800a2c1ba3c48fb4ca1b08b0f5ed59a4d5ecbf45e20a3`.
+Its esqlite binding calls built-in `sqlite3_open`, accepting no custom VFS or
+extension. The immutable schema uses one BEGIN IMMEDIATE transaction without
+ATTACH, VACUUM, savepoints or externally held reader transactions. Runtime
+scalar projections guard types and lengths before bounded payload reads.
+
+The 512MiB database ceiling is physical page allocation, separately from logical
+quota and BEAM RSS. SQLite's linked rollback implementation writes at most one
+original page preimage per transaction, with eight bytes of page/checksum framing
+and sector-aligned headers clamped by MAX_SECTOR_SIZE 65536. A deliberately loose
+bound permitting one extra header sector per page and a final sector is
+`131072*(4096+8+65536)+65536 = 9127919616` bytes for the one rollback file. The
+ordinary built-in VFS and one-database transaction assumptions are required;
+filesystem metadata, native caches, VM allocation and kernel page cache are not
+claimed equal to these counts. No raw Search/Prepare stdout, protocol transcript
+or alternate native output archive is stored here.
+
+`lsp_journal_test` exercises real SQLite first claims, canonical retries/conflicts,
+16 cold Search reservations, full byte edges, immutable timing and era recovery,
+result receipt, exact retirement-only slot reuse, terminal versus reusable, and
+schema/profile corruption. Suppressed INSERT and deferred COMMIT refusal emit no
+claim. The executable profile control observes the linked engine and actual page
+allocation refusal. Fixture callbacks are explicit synthetic trusted witnesses;
+they do not establish actual owner/native provenance, power-loss durability,
+physical manager cleanup, ordinary Registered tools or separate-host acceptance.
