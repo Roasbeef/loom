@@ -82,10 +82,41 @@ pub type ChildRole {
   )
 }
 
+/// The finite native recipes beneath a retained semantic workspace invocation.
+pub type WorkspaceCommandPhase {
+  /// Reads the current branch.
+  GitBranch
+
+  /// Checks whether the retained checkout is a repository.
+  GitRepositoryProbe
+
+  /// Reads the original HEAD revision.
+  GitRevision
+
+  /// Reads the checkout status.
+  GitStatus
+
+  /// Reads unstaged changes.
+  GitWorkingTreeDiff
+
+  /// Reads staged changes.
+  GitStagedDiff
+
+  /// Reads changes since the retained revision.
+  GitSinceRevisionDiff
+
+  /// Reads the retained bounded log query.
+  GitLog
+
+  /// Identifies initialization without enabling an unspecified native recipe.
+  WorkspaceInitialize
+}
+
 /// A child request belongs to a tool or an explicitly named system service.
 pub opaque type ChildOrigin {
   ToolChild(key: ToolKey, role: ChildRole)
   SystemChild(session: SessionId, service: String, ordinal: Int)
+  WorkspaceCommandChild(parent: ChildOrigin, phase: WorkspaceCommandPhase)
 }
 
 /// Complete checked provenance, projected without parsing a logical address.
@@ -95,6 +126,9 @@ pub type ChildFields {
 
   /// The actual system coordinates, without a fabricated tool parent.
   SystemFields(session: SessionId, service: String, ordinal: Int)
+
+  /// The complete direct semantic parent and its fixed native phase.
+  WorkspaceCommandFields(parent: ChildOrigin, phase: WorkspaceCommandPhase)
 }
 
 /// Validates bounds without computing the digest or allocating any identity.
@@ -277,6 +311,30 @@ pub fn system_child(
   Ok(SystemChild(session:, service:, ordinal:))
 }
 
+/// Derives identity data beneath a direct semantic workspace parent.
+/// Storage independently proves that a system parent was actually allocated.
+/// The constructor grants no clearance or execution permission.
+///
+/// ## Examples
+///
+/// `workspace_command_child(parent, GitStatus)` shares the parent's quota group.
+pub fn workspace_command_child(
+  parent: ChildOrigin,
+  phase: WorkspaceCommandPhase,
+) -> Result(ChildOrigin, String) {
+  use Nil <- result.try(case parent {
+    ToolChild(role: Workspace(_), ..) | SystemChild(..) -> Ok(Nil)
+    ToolChild(..) | WorkspaceCommandChild(..) ->
+      Error("workspace command requires a direct semantic workspace parent")
+  })
+  let origin = WorkspaceCommandChild(parent, phase)
+  use _ <- result.try(
+    encode_child(origin)
+    |> result.replace_error("complete child identity exceeds its bound"),
+  )
+  Ok(origin)
+}
+
 /// Returns the child origin's journal session.
 ///
 /// ## Examples
@@ -288,6 +346,7 @@ pub fn child_session(origin: ChildOrigin) -> SessionId {
   case origin {
     ToolChild(key:, ..) -> key.session
     SystemChild(session:, ..) -> session
+    WorkspaceCommandChild(parent:, ..) -> child_session(parent)
   }
 }
 
@@ -301,6 +360,7 @@ pub fn child_session(origin: ChildOrigin) -> SessionId {
 pub fn child_parent(origin: ChildOrigin) -> String {
   case origin {
     ToolChild(key:, ..) -> address(key)
+    WorkspaceCommandChild(parent:, ..) -> child_parent(parent)
     SystemChild(session:, service:, ..) ->
       json.to_string(
         json.Array([
@@ -351,6 +411,12 @@ pub fn child_address(origin: ChildOrigin) -> String {
       json.Array([json.String("workspace"), json.Int(ordinal)])
     SystemChild(ordinal:, ..) ->
       json.Array([json.String("system"), json.Int(ordinal)])
+    WorkspaceCommandChild(parent:, phase:) ->
+      json.Array([
+        json.String("workspace_command"),
+        json.String(child_address(parent)),
+        json.String(workspace_command_phase_name(phase)),
+      ])
   }
   json.to_string(json.Array([json.String(child_parent(origin)), role]))
 }
@@ -365,7 +431,7 @@ pub fn child_address(origin: ChildOrigin) -> String {
 pub fn child_tool(origin: ChildOrigin) -> Result(ToolKey, Nil) {
   case origin {
     ToolChild(key:, ..) -> Ok(key)
-    SystemChild(..) -> Error(Nil)
+    SystemChild(..) | WorkspaceCommandChild(..) -> Error(Nil)
   }
 }
 
@@ -404,7 +470,7 @@ pub fn provenance(key: ToolKey) -> #(Int, String) {
 pub fn child_role(origin: ChildOrigin) -> Result(ChildRole, Nil) {
   case origin {
     ToolChild(role:, ..) -> Ok(role)
-    SystemChild(..) -> Error(Nil)
+    SystemChild(..) | WorkspaceCommandChild(..) -> Error(Nil)
   }
 }
 
@@ -418,6 +484,8 @@ pub fn child_fields(origin: ChildOrigin) -> ChildFields {
     ToolChild(key:, role:) -> ToolFields(key, role)
     SystemChild(session:, service:, ordinal:) ->
       SystemFields(session, service, ordinal)
+    WorkspaceCommandChild(parent:, phase:) ->
+      WorkspaceCommandFields(parent, phase)
   }
 }
 
@@ -450,6 +518,13 @@ pub fn child_value(origin: ChildOrigin) -> m.MsgPackValue {
         m.StringValue(ids.session_id_to_string(session)),
         m.StringValue(service),
         m.IntValue(ordinal),
+      ])
+    WorkspaceCommandChild(parent:, phase:) ->
+      m.ArrayValue([
+        m.IntValue(1),
+        m.IntValue(2),
+        child_value(parent),
+        m.StringValue(workspace_command_phase_name(phase)),
       ])
   }
 }
@@ -510,6 +585,17 @@ pub fn decode_child_value(
 
 fn parse_child(value: m.MsgPackValue) -> Result(ChildOrigin, String) {
   case value {
+    m.ArrayValue([m.IntValue(1), m.IntValue(2), parent, m.StringValue(phase)]) -> {
+      // Only direct tags reach the parent parser, so nesting never recurses.
+      use Nil <- result.try(case parent {
+        m.ArrayValue([m.IntValue(1), m.IntValue(0), _, _])
+        | m.ArrayValue([m.IntValue(1), m.IntValue(1), _, _, _]) -> Ok(Nil)
+        _ -> Error("workspace command parent must be direct")
+      })
+      use parent <- result.try(parse_child(parent))
+      use phase <- result.try(parse_workspace_command_phase(phase))
+      workspace_command_child(parent, phase)
+    }
     m.ArrayValue([
       m.IntValue(1),
       m.IntValue(0),
@@ -637,4 +723,40 @@ fn child_corruption(expected: String) -> corruption.CorruptionReport {
     expected:,
     context: "",
   )
+}
+
+/// Returns the stable closed recipe spelling used in canonical identity bytes.
+///
+/// ## Examples
+///
+/// `workspace_command_phase_name(GitStatus)` returns `"git_status"`.
+pub fn workspace_command_phase_name(phase: WorkspaceCommandPhase) -> String {
+  case phase {
+    GitBranch -> "git_branch"
+    GitRepositoryProbe -> "git_repository_probe"
+    GitRevision -> "git_revision"
+    GitStatus -> "git_status"
+    GitWorkingTreeDiff -> "git_working_tree_diff"
+    GitStagedDiff -> "git_staged_diff"
+    GitSinceRevisionDiff -> "git_since_revision_diff"
+    GitLog -> "git_log"
+    WorkspaceInitialize -> "workspace_initialize"
+  }
+}
+
+fn parse_workspace_command_phase(
+  name: String,
+) -> Result(WorkspaceCommandPhase, String) {
+  case name {
+    "git_branch" -> Ok(GitBranch)
+    "git_repository_probe" -> Ok(GitRepositoryProbe)
+    "git_revision" -> Ok(GitRevision)
+    "git_status" -> Ok(GitStatus)
+    "git_working_tree_diff" -> Ok(GitWorkingTreeDiff)
+    "git_staged_diff" -> Ok(GitStagedDiff)
+    "git_since_revision_diff" -> Ok(GitSinceRevisionDiff)
+    "git_log" -> Ok(GitLog)
+    "workspace_initialize" -> Ok(WorkspaceInitialize)
+    _ -> Error("closed workspace command phase")
+  }
 }

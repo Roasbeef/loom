@@ -271,6 +271,24 @@ alias another role. This adds no dynamic admission authority and leaves the
 original 64-row ceiling unchanged.
 
 
+
+## Workspace command child identity (protocol 077)
+
+`workspace_command_child` wraps only a direct `Workspace(n)` or actual direct
+`SystemChild` with one closed `WorkspaceCommandPhase`. `WorkspaceCommandFields`
+projects that complete parent and phase. Nesting and unrelated roles refuse;
+the complete canonical frame still fits 8192 bytes. The new tag and escaped
+address leave all existing encodings and addresses unchanged. `child_parent`
+projects the original quota group, so the wrapper cannot obtain another group.
+The existing admitted `SemanticWorkspace`/`NativeCommand` pair keeps its original
+representation. Identity construction grants no admission or execution authority.
+
+The fixed phase vocabulary covers the declared Git operations and explicitly
+names `WorkspaceInitialize`. The owner binding refuses Initialize until a real
+bounded recipe exists. `lsp_command` explicitly refuses the new child family at
+both direct parent checks; it does not reinterpret the wrapper as a system child.
+
+
 ## Registered LSP identity (protocol 076)
 
 `lsp_command` retains complete original child and parent-control references.
