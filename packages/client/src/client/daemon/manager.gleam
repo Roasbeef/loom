@@ -600,6 +600,7 @@ type Message(instance) {
   StopSession(String, Subject(Result(Status, Error)))
   StopIncarnation(String, String, Subject(Result(Status, Error)))
   Get(String, Subject(Result(View, Error)))
+  Unshared(Subject(List(String)))
   Page(String, Subject(Result(#(Int, List(View)), Error)))
   Resolve(String, Subject(Result(instance, Error)))
   ResolveIncarnation(String, String, Subject(Result(instance, Error)))
@@ -1689,6 +1690,75 @@ pub fn get(manager: Manager(instance), id: String) -> Result(View, Error) {
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Lists the active sessions that have no member and no observer, in
+/// session-ID order, whether or not they are resident: the sessions only the
+/// daemon's owner can read (protocol-change/077).
+///
+/// A closed session is listed so that a model's roster can say it exists and
+/// is not running. Listing it grants nothing, because a message is delivered
+/// only into a resident session and nothing here opens one. A session that has
+/// any membership row, of either role, is left out, so a session another
+/// person can read is never linked to the owner's others by default. A session
+/// whose membership the catalogue cannot read is left out as well, and so is
+/// every session when the registry does not answer in five seconds, which
+/// refuses the default rather than widening it. The walk stops at
+/// `unshared_limit` sessions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.unshared_sessions(registry)
+/// ```
+@internal
+pub fn unshared_sessions(manager: Manager(instance)) -> List(String) {
+  call.try_call(manager.commands, waiting: 5000, sending: Unshared)
+  |> result.unwrap([])
+}
+
+/// The most sessions `unshared_sessions` considers.
+pub const unshared_limit = 256
+
+// The registry's own turn of `unshared_sessions`. It reads one catalogue page
+// at a time and one membership page per session, so its cost is bounded by
+// `unshared_limit`.
+fn unshared(book: Book(instance)) -> List(String) {
+  unshared_from(book, "", [], 0)
+  |> list.sort(string.compare)
+}
+
+fn unshared_from(
+  book: Book(instance),
+  after: String,
+  found: List(String),
+  seen: Int,
+) -> List(String) {
+  case seen >= unshared_limit, catalogue.page(book.catalogue, after:) {
+    True, _ | False, Error(_) -> found
+    False, Ok(page) ->
+      case list.last(page.records) {
+        Error(Nil) -> found
+        Ok(last) -> {
+          let held =
+            list.filter(page.records, fn(record) {
+              record.state == catalogue.Saved
+              && case
+                access.session_members_page(book.catalogue, record.id, "")
+              {
+                Ok(members) -> members.entries == []
+                Error(_) -> False
+              }
+            })
+          unshared_from(
+            book,
+            last.id,
+            list.append(list.map(held, fn(record) { record.id }), found),
+            seen + list.length(page.records),
+          )
+        }
+      }
+  }
+}
+
 /// Returns a bounded metadata page with current lifecycle observations.
 ///
 /// The revision covers durable metadata, not ephemeral runtime transitions.
@@ -2335,6 +2405,10 @@ fn handle(
         |> result.map_error(Catalogue)
         |> result.map(fn(record) { View(record, status(book, record)) })
       process.send(reply, view)
+      sm.keep(book)
+    }
+    Unshared(reply) -> {
+      process.send(reply, unshared(book))
       sm.keep(book)
     }
     Page(after, reply) -> {

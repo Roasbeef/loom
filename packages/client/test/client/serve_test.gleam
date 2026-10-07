@@ -169,6 +169,7 @@ fn settings_under(root: String) -> serve.Settings {
   let root = absolute(root)
   serve.Settings(
     peer_directory: None,
+    peer_defaults: None,
     first_prompt: None,
     codemode_sockets: None,
     secrets: secret.env(),

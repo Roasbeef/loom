@@ -19,6 +19,7 @@ import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/host
 import client/internal/ffi_os
+import client/peer_defaults
 import client/peer_mail
 import client/peers
 import client/serve
@@ -63,6 +64,9 @@ pub type Config {
     session_defaults: List(String),
     /// Whether the listener serves the web view (`--ui` or daemon.ui).
     view: WebView,
+    /// Whether sessions are linked to each other without a grant, read from
+    /// `[peers]` at startup and never reread (protocol-change/077).
+    peer_policy: peer_mail.Policy,
   )
 }
 
@@ -223,7 +227,8 @@ fn acquire_launch_lock(paths: endpoint.Paths) {
 /// ```
 @internal
 pub fn parse(arguments: List(String)) -> Result(Config, String) {
-  let initial = Config("", "127.0.0.1", 0, 8, "Owner", [], ViewOff)
+  let initial =
+    Config("", "127.0.0.1", 0, 8, "Owner", [], ViewOff, peer_defaults.off)
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
     "" ->
@@ -403,7 +408,11 @@ pub fn prepare_startup(
       }
     _ -> config.view
   }
-  let config = Config(..config, view:)
+  use peer_policy <- result.try(
+    peer_defaults.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  let config = Config(..config, view:, peer_policy:)
   root.start(
     root.Config(
       config.state_root,
@@ -440,6 +449,11 @@ pub fn prepare_startup(
             peer_directory: Some(
               peer_directory(directory, fn(resident: serve.Resident) {
                 resident.peer
+              }),
+            ),
+            peer_defaults: Some(
+              peer_mail.Defaults(policy: config.peer_policy, eligible: fn() {
+                manager.unshared_sessions(directory)
               }),
             ),
           )

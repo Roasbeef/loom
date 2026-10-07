@@ -4,6 +4,17 @@
 //// carries authenticated source metadata as data, never a Runtime borrowed
 //// from another session. The recipient's grant sequence and receipt absence
 //// are compared in the same writer transaction as the delivered prompt.
+////
+//// A grant is not the only way to be admitted. Under the owner's opt-in
+//// `[peers] default_links = "same_owner"` (protocol-change/077) a session is
+//// also admitted from every other session that the owner holds alone, `main`
+//// to `main`, with the policy's wake permission and no grant recorded. That
+//// decision lives in `implicit_wake` and nowhere else: delivery asks it when no
+//// grant exists, and the listings the model and the owner read (`Links`,
+//// `Grants`, `Roster`) ask it so that what they show is what delivery would
+//// admit. An explicit grant for a pair takes precedence over it, and an
+//// explicit unlink records a denial that ends it for that direction until the
+//// owner grants the pair again.
 
 import client/internal/message_inspection
 import core/clock
@@ -39,6 +50,59 @@ pub type Wake {
 
   /// Delivery may start a new run on the explicitly exported strand.
   MayWake
+}
+
+/// Whether sessions are linked without a per-pair grant
+/// (protocol-change/077).
+pub type DefaultLinks {
+  /// Every link is an explicit owner grant. This is the default.
+  NoDefaultLinks
+
+  /// The owner's own sessions are linked to each other, `main` to `main`, in
+  /// both directions. A session that has a member or an observer is not one
+  /// of them, so the implicit link never reaches a session another person can
+  /// read (`Defaults.eligible`).
+  SameOwner
+}
+
+/// The daemon-wide choice read from the `[peers]` table.
+pub type Policy {
+  Policy(
+    /// Whether implicit links exist at all.
+    links: DefaultLinks,
+    /// The wake permission every implicit link carries. An explicit grant for
+    /// the same pair carries its own and takes precedence.
+    wake: Wake,
+  )
+}
+
+/// What the daemon lends a session's admission so that it can decide an
+/// implicit link: the owner's policy and the one fact the session cannot see
+/// for itself, which sessions the owner holds alone.
+pub type Defaults {
+  Defaults(
+    /// The owner's choice.
+    policy: Policy,
+    /// The resident sessions that have no member and no observer, read from
+    /// the catalogue each time it is called. It is called only under
+    /// `SameOwner`, and it is read at the moment of each admission and listing
+    /// rather than remembered, so inviting a person into a session ends its
+    /// implicit links at once. A catalogue that cannot answer yields no
+    /// sessions, which refuses every implicit link.
+    eligible: fn() -> List(String),
+  )
+}
+
+/// The defaults of a host that links nothing implicitly: every embedded
+/// session, and a daemon whose configuration has no `[peers]` table.
+pub const no_defaults =
+  Defaults(
+    policy: Policy(links: NoDefaultLinks, wake: BusyOnly),
+    eligible: no_sessions,
+  )
+
+fn no_sessions() -> List(String) {
+  []
 }
 
 /// One directional, exact-strand communication grant.
@@ -138,6 +202,17 @@ const grant_prefix = "client/peers/grant/"
 
 const link_prefix = "client/peers/link/"
 
+// A denial records that the owner removed one directional link, so that a
+// default link does not bring it back. Both sessions of the pair record it:
+// the sender's copy decides what its roster lists and the recipient's decides
+// what it admits. Only the pair a default link could join is recorded.
+const denial_prefix = "client/peers/denial/"
+
+// The one strand a default link joins on each side. A session's other strands
+// (children, branches) are the model's own workers and are linked only by an
+// explicit grant naming them.
+const default_strand = "main"
+
 /// Maximum number of outgoing links recorded for one source strand.
 pub const outgoing_link_limit = 64
 
@@ -183,13 +258,7 @@ fn grant_value(grant: Grant) -> JsonValue {
     #("source_session", json.String(grant.source_session)),
     #("source_strand", json.String(grant.source_strand)),
     #("target_strand", json.String(grant.target_strand)),
-    #(
-      "wake",
-      json.String(case grant.wake {
-        BusyOnly -> "busy_only"
-        MayWake -> "may_wake"
-      }),
-    ),
+    #("wake", json.String(wake_word(grant.wake))),
   ])
 }
 
@@ -214,7 +283,8 @@ fn outgoing_links(
   )
 }
 
-/// Executes one endpoint command in the recipient's serialized Agency actor.
+/// Executes one endpoint command in the recipient's serialized Agency actor,
+/// for a host that links nothing implicitly.
 ///
 /// ## Examples
 ///
@@ -224,6 +294,23 @@ fn outgoing_links(
 pub fn handle(
   runtime: api.Runtime,
   clock: clock.Clock,
+  command: Command,
+) -> Result(JsonValue, String) {
+  handle_with(runtime, clock, no_defaults, command)
+}
+
+/// Executes one endpoint command in the recipient's serialized Agency actor
+/// under the daemon's `defaults`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peer_mail.handle_with(runtime, clock, defaults, command)
+/// ```
+pub fn handle_with(
+  runtime: api.Runtime,
+  clock: clock.Clock,
+  defaults: Defaults,
   command: Command,
 ) -> Result(JsonValue, String) {
   case command {
@@ -247,14 +334,32 @@ pub fn handle(
         config,
         "recipient strand does not exist",
       ))
-      api.put_reserved_fact(runtime, grant_key(grant), grant_value(grant))
-      |> result.replace(json.Null)
-      |> result.map_error(string.inspect)
+      let own = own_session(runtime)
+      put_clearing(
+        runtime,
+        grant_key(grant),
+        grant_value(grant),
+        denial_for(
+          grant.source_session,
+          grant.source_strand,
+          own,
+          grant.target_strand,
+        ),
+      )
     }
-    Revoke(grant) ->
-      api.delete_reserved_fact(runtime, grant_key(grant))
-      |> result.replace(json.Null)
-      |> result.map_error(string.inspect)
+    Revoke(grant) -> {
+      let own = own_session(runtime)
+      delete_denying(
+        runtime,
+        grant_key(grant),
+        denial_for(
+          grant.source_session,
+          grant.source_strand,
+          own,
+          grant.target_strand,
+        ),
+      )
+    }
     Link(source, session, target) -> {
       let value = link_value(source, session, target)
       let key = link_prefix <> digest(value)
@@ -267,20 +372,30 @@ pub fn handle(
             False -> Error("peer roster exceeds the 64-link bound")
           }
       })
-      api.put_reserved_fact(runtime, key, value)
-      |> result.replace(json.Null)
-      |> result.map_error(string.inspect)
+      put_clearing(
+        runtime,
+        key,
+        value,
+        denial_for(own_session(runtime), source, session, target),
+      )
     }
     Unlink(source, session, target) ->
-      api.delete_reserved_fact(
+      delete_denying(
         runtime,
         link_prefix <> digest(link_value(source, session, target)),
+        denial_for(own_session(runtime), source, session, target),
       )
-      |> result.replace(json.Null)
-      |> result.map_error(string.inspect)
     Links(source) -> {
       use links <- result.try(outgoing_links(runtime, source))
-      Ok(json.Array(list.map(links, fn(pair) { pair.1 })))
+      use implicit <- result.try(implicit_links(
+        runtime,
+        defaults,
+        source,
+        links,
+      ))
+      Ok(
+        json.Array(list.append(list.map(links, fn(pair) { pair.1 }), implicit)),
+      )
     }
     Grants(target) -> {
       use grants <- result.try(
@@ -290,15 +405,18 @@ pub fn handle(
       use grants <- result.try(
         list.try_map(grants, fn(pair) { decode_grant(pair.1) }),
       )
-      Ok(
-        grants
-        |> list.filter(fn(grant) { grant.target_strand == target })
-        |> list.map(grant_value)
-        |> json.Array,
-      )
+      let explicit =
+        list.filter(grants, fn(grant) { grant.target_strand == target })
+      use implicit <- result.try(implicit_grants(
+        runtime,
+        defaults,
+        target,
+        explicit,
+      ))
+      Ok(json.Array(list.append(list.map(explicit, grant_value), implicit)))
     }
     Deliver(source, target, id, body) ->
-      deliver(runtime, clock, source, target, id, body)
+      deliver(runtime, clock, defaults, source, target, id, body)
     Describe(strand, description) -> {
       case string.byte_size(description) <= 2048 {
         False -> Error("self-description exceeds 2048 bytes")
@@ -314,7 +432,7 @@ pub fn handle(
     }
     Activity(strand) -> activity(runtime, strand)
     Roster(source_session, source_strand) ->
-      roster(runtime, source_session, source_strand)
+      roster(runtime, defaults, source_session, source_strand)
     Overview -> overview(runtime)
   }
 }
@@ -322,6 +440,7 @@ pub fn handle(
 fn deliver(
   runtime: api.Runtime,
   clock: clock.Clock,
+  defaults: Defaults,
   source: Source,
   target: String,
   id: String,
@@ -341,18 +460,58 @@ fn deliver(
   use cell <- result.try(
     api.fact_cell(runtime, key) |> result.map_error(string.inspect),
   )
-  use cell <- result.try(option.to_result(cell, "no directional peer grant"))
-  use grant <- result.try(decode_grant(cell.value))
-  use Nil <- result.try(
-    case
-      grant.source_session == source.session
-      && grant.source_strand == source.strand
-      && grant.target_strand == target
-    {
-      True -> Ok(Nil)
-      False -> Error("peer grant identity mismatch")
-    },
-  )
+
+  // A recorded grant is the whole decision when there is one. Only a pair with
+  // no grant asks the default, so an explicit grant's wake permission
+  // overrides the policy's and an explicit unlink (a grant that is gone, and a
+  // denial in its place) is never read as an invitation.
+  use #(grant, guards) <- result.try(case cell {
+    Some(cell) -> {
+      use grant <- result.try(decode_grant(cell.value))
+      use Nil <- result.try(
+        case
+          grant.source_session == source.session
+          && grant.source_strand == source.strand
+          && grant.target_strand == target
+        {
+          True -> Ok(Nil)
+          False -> Error("peer grant identity mismatch")
+        },
+      )
+      Ok(#(grant, [tx.Expect(register.FactCustom, key, Some(cell.seq))]))
+    }
+    None -> {
+      use implicit <- result.try(implicit_wake(
+        runtime,
+        defaults,
+        source.session,
+        source.strand,
+        target,
+      ))
+      case implicit {
+        Some(wake) ->
+          Ok(
+            #(Grant(source.session, source.strand, target, wake), [
+              // The default holds only while no grant and no denial has
+              // appeared, so a concurrent explicit decision loses the admission
+              // as a changed grant does.
+              tx.Expect(register.FactCustom, key, None),
+              tx.Expect(
+                register.FactCustom,
+                denial_key(
+                  source.session,
+                  source.strand,
+                  own_session(runtime),
+                  target,
+                ),
+                None,
+              ),
+            ]),
+          )
+        None -> Error("no directional peer grant")
+      }
+    }
+  })
   let request =
     json.Object([
       #("source_session", json.String(source.session)),
@@ -385,10 +544,7 @@ fn deliver(
           timestamp: now,
           origin: Some(peer_origin),
         )
-      let mark =
-        api.GuardedMark(receipt_key, receipt, [
-          tx.Expect(register.FactCustom, key, Some(cell.seq)),
-        ])
+      let mark = api.GuardedMark(receipt_key, receipt, guards)
       let accepted = case grant.wake {
         BusyOnly ->
           api.steer_marking(api.on_strand(runtime, target), payload, mark)
@@ -431,6 +587,7 @@ fn same_receipt(
 
 fn roster(
   runtime: api.Runtime,
+  defaults: Defaults,
   source: String,
   strand: String,
 ) -> Result(JsonValue, String) {
@@ -441,10 +598,26 @@ fn roster(
   use grants <- result.try(
     list.try_map(grants, fn(pair) { decode_grant(pair.1) }),
   )
-  let targets =
+  let explicit =
     list.filter(grants, fn(grant) {
       grant.source_session == source && grant.source_strand == strand
     })
+
+  // A default link is one more row of the same shape, so a model reads it as it
+  // reads a grant, and an explicit grant for the pair has already answered.
+  use implicit <- result.try(
+    case
+      list.any(explicit, fn(grant) { grant.target_strand == default_strand })
+    {
+      True -> Ok(None)
+      False -> implicit_wake(runtime, defaults, source, strand, default_strand)
+    },
+  )
+  let targets = case implicit {
+    Some(wake) ->
+      list.append(explicit, [Grant(source, strand, default_strand, wake)])
+    None -> explicit
+  }
   use rows <- result.try(
     list.try_map(targets, fn(grant) {
       use state <- result.try(
@@ -477,18 +650,314 @@ fn roster(
             None -> json.Null
             Some(op) -> json.String(ids.op_id_to_string(op))
           }),
-          #(
-            "wake",
-            json.String(case grant.wake {
-              BusyOnly -> "busy_only"
-              MayWake -> "may_wake"
-            }),
-          ),
+          #("wake", json.String(wake_word(grant.wake))),
         ]),
       )
     }),
   )
   Ok(json.Array(rows))
+}
+
+fn wake_word(wake: Wake) -> String {
+  case wake {
+    BusyOnly -> "busy_only"
+    MayWake -> "may_wake"
+  }
+}
+
+// The session's own canonical identity, which a default link and a denial
+// both name as one end of the pair.
+fn own_session(runtime: api.Runtime) -> String {
+  ids.session_id_to_string(runtime.session_id)
+}
+
+// Decides whether a default link admits `source_strand` of `source_session`
+// into `target_strand` of this session, and with which wake permission.
+//
+// This is the only place a default link is decided. Delivery, the roster, the
+// outgoing list and the incoming list all call it or the same predicates it
+// is built from, so what they show is what delivery admits and no second path
+// can drift from the first. A pair is admitted only when every one of these
+// holds:
+//
+// 1. the owner chose `same_owner`;
+// 2. both strands are `main`, so a session's workers are never reachable
+//    without a grant naming them;
+// 3. the source is another session, since a session does not message itself
+//    by default;
+// 4. no denial of the pair is recorded here, which an explicit unlink writes;
+// 5. the source and this session are both among the sessions the owner holds
+//    alone (`Defaults.eligible`).
+//
+// The caller has already found no grant for the pair. The answer is the
+// policy's wake permission, or `None`.
+fn implicit_wake(
+  runtime: api.Runtime,
+  defaults: Defaults,
+  source_session: String,
+  source_strand: String,
+  target_strand: String,
+) -> Result(Option(Wake), String) {
+  let own = own_session(runtime)
+  case defaults.policy.links {
+    NoDefaultLinks -> Ok(None)
+    SameOwner ->
+      case default_pair(source_strand, target_strand) && source_session != own {
+        False -> Ok(None)
+        True -> {
+          use denied <- result.try(denied(
+            runtime,
+            denial_key(source_session, source_strand, own, target_strand),
+          ))
+          let held = defaults.eligible()
+          case
+            !denied
+            && list.contains(held, source_session)
+            && list.contains(held, own)
+          {
+            True -> Ok(Some(defaults.policy.wake))
+            False -> Ok(None)
+          }
+        }
+      }
+  }
+}
+
+fn default_pair(source_strand: String, target_strand: String) -> Bool {
+  source_strand == default_strand && target_strand == default_strand
+}
+
+fn denial_key(
+  source_session: String,
+  source_strand: String,
+  target_session: String,
+  target_strand: String,
+) -> String {
+  denial_prefix
+  <> digest(
+    json.Array([
+      json.String(source_session),
+      json.String(source_strand),
+      json.String(target_session),
+      json.String(target_strand),
+    ]),
+  )
+}
+
+fn denied(runtime: api.Runtime, key: String) -> Result(Bool, String) {
+  api.fact(runtime, key)
+  |> result.map(option.is_some)
+  |> result.map_error(string.inspect)
+}
+
+// One recorded denial, ready to write.
+type Denial {
+  Denial(key: String, value: JsonValue)
+}
+
+// The denial an explicit decision about this pair clears or records, or none
+// when the pair is not one a default link could join.
+fn denial_for(
+  source_session: String,
+  source_strand: String,
+  target_session: String,
+  target_strand: String,
+) -> Option(Denial) {
+  case default_pair(source_strand, target_strand) {
+    False -> None
+    True ->
+      Some(Denial(
+        denial_key(source_session, source_strand, target_session, target_strand),
+        json.Object([
+          #("source_session", json.String(source_session)),
+          #("source_strand", json.String(source_strand)),
+          #("target_session", json.String(target_session)),
+          #("target_strand", json.String(target_strand)),
+        ]),
+      ))
+  }
+}
+
+// Writes an explicit cell and, in the same transaction, removes the denial
+// that would otherwise outlive the owner's decision to link the pair again.
+fn put_clearing(
+  runtime: api.Runtime,
+  key: String,
+  value: JsonValue,
+  denial: Option(Denial),
+) -> Result(JsonValue, String) {
+  use cell <- result.try(
+    api.fact_cell(runtime, key) |> result.map_error(string.inspect),
+  )
+  let write =
+    api.ReservedFactSet(api.ReservedFactChange(
+      key:,
+      value:,
+      expected: option.map(cell, fn(held) { held.seq }),
+    ))
+  use clearing <- result.try(case denial {
+    None -> Ok([])
+    Some(Denial(key: denial_key, ..)) -> {
+      use held <- result.try(
+        api.fact_cell(runtime, denial_key) |> result.map_error(string.inspect),
+      )
+      Ok(case held {
+        Some(held) -> [api.ReservedFactRemove(denial_key, held.seq)]
+        None -> []
+      })
+    }
+  })
+  api.edit_reserved_facts(runtime, [write, ..clearing])
+  |> result.replace(json.Null)
+  |> result.map_error(string.inspect)
+}
+
+// Removes an explicit cell and, in the same transaction, records the denial
+// that stops a default link from bringing the pair back. The denial is written
+// even when the cell is already gone, because removing a pair that exists only
+// as a default link is exactly what the owner may ask for.
+fn delete_denying(
+  runtime: api.Runtime,
+  key: String,
+  denial: Option(Denial),
+) -> Result(JsonValue, String) {
+  use cell <- result.try(
+    api.fact_cell(runtime, key) |> result.map_error(string.inspect),
+  )
+  let removal = case cell {
+    Some(held) -> [api.ReservedFactRemove(key, held.seq)]
+    None -> []
+  }
+  use recording <- result.try(case denial {
+    None -> Ok([])
+    Some(Denial(key: denial_key, value:)) -> {
+      use held <- result.try(
+        api.fact_cell(runtime, denial_key) |> result.map_error(string.inspect),
+      )
+      Ok([
+        api.ReservedFactSet(api.ReservedFactChange(
+          key: denial_key,
+          value:,
+          expected: option.map(held, fn(held) { held.seq }),
+        )),
+      ])
+    }
+  })
+  api.edit_reserved_facts(runtime, list.append(recording, removal))
+  |> result.replace(json.Null)
+  |> result.map_error(string.inspect)
+}
+
+// Whether `id` already has a recorded outgoing link to this strand pair.
+fn recorded_link(explicit: List(#(String, JsonValue)), id: String) -> Bool {
+  list.any(explicit, fn(pair) {
+    text(pair.1, "session") == Ok(id)
+    && text(pair.1, "strand") == Ok(default_strand)
+  })
+}
+
+// This session's default outgoing links, as rows of the same shape as a
+// recorded link with `default: true`. A pair that already has a recorded link
+// is not repeated, a denied pair is left out, and the rows share the explicit
+// links' bound. The recipient's own denial is not consulted here: a pair the
+// owner unlinked is denied on both sides, so this side's copy is the one that
+// decides what the roster lists.
+fn implicit_links(
+  runtime: api.Runtime,
+  defaults: Defaults,
+  source_strand: String,
+  explicit: List(#(String, JsonValue)),
+) -> Result(List(JsonValue), String) {
+  let own = own_session(runtime)
+  case defaults.policy.links, source_strand == default_strand {
+    NoDefaultLinks, _ | SameOwner, False -> Ok([])
+    SameOwner, True -> {
+      let held = defaults.eligible()
+      case list.contains(held, own) {
+        False -> Ok([])
+        True -> {
+          use rows <- result.try(
+            held
+            |> list.filter(fn(id) { id != own && !recorded_link(explicit, id) })
+            |> list.try_map(fn(id) {
+              use denied <- result.try(denied(
+                runtime,
+                denial_key(own, source_strand, id, default_strand),
+              ))
+              Ok(case denied {
+                True -> None
+                False ->
+                  Some(
+                    json.Object([
+                      #("source_strand", json.String(source_strand)),
+                      #("session", json.String(id)),
+                      #("strand", json.String(default_strand)),
+                      #("default", json.Bool(True)),
+                    ]),
+                  )
+              })
+            }),
+          )
+          Ok(list.take(
+            option.values(rows),
+            int.max(outgoing_link_limit - list.length(explicit), 0),
+          ))
+        }
+      }
+    }
+  }
+}
+
+// The default links that reach this session's `target` strand, as rows of the
+// same shape as a recorded grant with `default: true`.
+fn implicit_grants(
+  runtime: api.Runtime,
+  defaults: Defaults,
+  target: String,
+  explicit: List(Grant),
+) -> Result(List(JsonValue), String) {
+  let own = own_session(runtime)
+  case defaults.policy.links, target == default_strand {
+    NoDefaultLinks, _ | SameOwner, False -> Ok([])
+    SameOwner, True -> {
+      let held = defaults.eligible()
+      case list.contains(held, own) {
+        False -> Ok([])
+        True -> {
+          use rows <- result.try(
+            held
+            |> list.filter(fn(id) {
+              id != own
+              && !list.any(explicit, fn(grant) {
+                grant.source_session == id
+                && grant.source_strand == default_strand
+              })
+            })
+            |> list.try_map(fn(id) {
+              use denied <- result.try(denied(
+                runtime,
+                denial_key(id, default_strand, own, target),
+              ))
+              Ok(case denied {
+                True -> None
+                False ->
+                  Some(
+                    json.Object([
+                      #("source_session", json.String(id)),
+                      #("source_strand", json.String(default_strand)),
+                      #("target_strand", json.String(target)),
+                      #("wake", json.String(wake_word(defaults.policy.wake))),
+                      #("default", json.Bool(True)),
+                    ]),
+                  )
+              })
+            }),
+          )
+          Ok(option.values(rows))
+        }
+      }
+    }
+  }
 }
 
 fn decode_grant(value: JsonValue) -> Result(Grant, String) {

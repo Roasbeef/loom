@@ -356,6 +356,10 @@ pub type Settings {
     domain_paths: Option(DomainPaths),
     /// Resident-only peer lookups supplied by the owning daemon.
     peer_directory: Option(peers.Directory),
+    /// The daemon's policy and eligibility check for default peer links
+    /// (protocol-change/077). `None` links nothing implicitly: an embedded
+    /// host, and a daemon whose `[peers]` table is absent.
+    peer_defaults: Option(peer_mail.Defaults),
     /// Told the first human prompt the session accepts on its main strand,
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
@@ -1489,6 +1493,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
     workspace:,
     domain_paths: None,
     peer_directory: None,
+    peer_defaults: None,
     first_prompt: None,
     codemode_sockets: None,
     base_policy: admitting_config_mounts(
@@ -3639,6 +3644,10 @@ fn assemble_in(
   let agency_config =
     agency.Config(
       ..agency.default_config(agency_name, clock),
+      peer_defaults: option.unwrap(
+        settings.peer_defaults,
+        peer_mail.no_defaults,
+      ),
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(

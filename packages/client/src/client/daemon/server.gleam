@@ -2318,16 +2318,7 @@ fn dispatch_class(
         |> result.map(view_json)
         |> result.map_error(error_code),
       )
-      let registry = state.registry
-      let directory =
-        peers.Directory(
-          resolve: fn(id) { peer_endpoint(config, registry, id) },
-          describe: fn(id) {
-            manager.get(registry, id)
-            |> result.map(view_json)
-            |> result.map_error(error_code)
-          },
-        )
+      let directory = peer_directory(config, state.registry)
       use empty_frame <- result.try(
         protocol.event(Some(reply_to), "peers.inspect", json.Null)
         |> result.map_error(fn(_) { "invalid inspection frame" }),
@@ -2353,16 +2344,7 @@ fn dispatch_class(
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
       use source <- result.try(peer_endpoint(config, state.registry, source))
-      let registry = state.registry
-      let directory =
-        peers.Directory(
-          resolve: fn(id) { peer_endpoint(config, registry, id) },
-          describe: fn(id) {
-            manager.get(registry, id)
-            |> result.map(view_json)
-            |> result.map_error(error_code)
-          },
-        )
+      let directory = peer_directory(config, state.registry)
       peers.send(
         peers.Wiring(source, json.Null, Some(directory)),
         from,
@@ -2377,20 +2359,8 @@ fn dispatch_class(
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
       use source <- result.try(peer_endpoint(config, state.registry, source))
-      let answer = case peer_endpoint(config, state.registry, target) {
-        Ok(endpoint) -> peers.unlink(source, endpoint, from, to)
-        Error(_) ->
-          source.call(peer_mail.Unlink(from, target, to))
-          |> result.replace(
-            json.Object([
-              #("outgoing_link_removed", json.Bool(True)),
-              #(
-                "recipient_grant",
-                json.String("unavailable; no outgoing authority remains"),
-              ),
-            ]),
-          )
-      }
+      let directory = peer_directory(config, state.registry)
+      let answer = peers.unlink_session(directory, source, from, target, to)
       answer |> result.map(fn(value) { #("peers.unlink", value) })
     }
     protocol.RenameSession(id, name, supplied) -> {
@@ -3462,6 +3432,22 @@ fn unknown_row(id: String) -> JsonValue {
     #("session_id", json.String(id)),
     #("state", json.String("unknown")),
   ])
+}
+
+// The daemon's resident-only peer lookups, which the control commands and an
+// owner's web page share so that both resolve a session the same way.
+fn peer_directory(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+) -> peers.Directory {
+  peers.Directory(
+    resolve: fn(id) { peer_endpoint(config, registry, id) },
+    describe: fn(id) {
+      manager.get(registry, id)
+      |> result.map(view_json)
+      |> result.map_error(error_code)
+    },
+  )
 }
 
 fn peer_endpoint(
