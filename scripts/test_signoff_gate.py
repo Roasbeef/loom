@@ -175,6 +175,80 @@ class GateTest(Fixture):
         self.assertIsNone(self.recorded())
 
 
+STUB_DOCKER = """#!/usr/bin/env bash
+echo "$*" >>"$STUB_DIR/docker.log"
+case $1 in
+build)
+	while [ $# -gt 0 ]; do
+		if [ "$1" = --iidfile ]; then echo sha256:stub >"$2"; fi
+		shift
+	done
+	;;
+run)
+	sleep "$STUB_RUN_SECONDS" &
+	echo $! >"$STUB_DIR/run.pid"
+	wait
+	;;
+kill) kill "$(cat "$STUB_DIR/run.pid")" ;;
+esac
+"""
+
+STUB_GH = """#!/usr/bin/env bash
+echo "$*" >>"$STUB_DIR/gh.log"
+"""
+
+
+class DriverSessionTest(Fixture):
+    """The driver's run belongs to the session that asked for it."""
+
+    def setUp(self):
+        super().setUp()
+        self.stubs = self.root / "stubs"
+        self.stubs.mkdir()
+        for name, text in (("docker", STUB_DOCKER), ("gh", STUB_GH)):
+            stub = self.stubs / name
+            stub.write_text(text)
+            stub.chmod(0o755)
+        checkout = self.root / "checkout"
+        subprocess.run(["git", "clone", "-q", str(self.origin), str(checkout)],
+                       check=True, env=self.env, capture_output=True)
+        self.env.update(
+            PATH=f"{self.stubs}:{self.env['PATH']}", STUB_DIR=str(self.stubs),
+            LOOM_DIR=str(checkout), LOOM_ORIGIN=str(self.origin), LOOM_SHA=self.pushed,
+            LOOM_POST="yes", LOOM_URL="", LOOM_HEARTBEAT="1",
+        )
+
+    def log(self, name):
+        path = self.stubs / f"{name}.log"
+        return path.read_text() if path.exists() else ""
+
+    def test_a_session_that_goes_away_cancels_the_run(self):
+        driver = subprocess.Popen(
+            ["bash", str(DRIVER)], env=dict(self.env, STUB_RUN_SECONDS="60"),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        self.addCleanup(lambda: driver.poll() is None and driver.kill())
+        self.assertIn("== building", driver.stdout.readline().decode())
+
+        # Closing the read end is what sshd does when the client's Ctrl-C
+        # ends the session.
+        driver.stdout.close()
+        self.assertEqual(driver.wait(timeout=20), 130)
+        self.assertRegex(self.log("docker"), r"(?m)^kill loom-signoff-[0-9a-f]{12}-[0-9]+$")
+        self.assertEqual(self.log("gh"), "")
+
+    def test_a_session_that_stays_gets_its_verdict(self):
+        result = subprocess.run(
+            ["bash", str(DRIVER)], env=dict(self.env, STUB_RUN_SECONDS="3"),
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("== running,", result.stdout)
+        self.assertIn("GREEN", result.stdout)
+        self.assertNotIn("kill", self.log("docker"))
+        self.assertEqual(self.log("gh").strip(), f"signoff --commit {self.pushed} linux")
+
+
 class RemoteGateModeTest(Fixture):
     """signoff_remote.sh's side: what it sends, and to a gate, nothing else."""
 

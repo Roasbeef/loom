@@ -20,7 +20,20 @@
 #   LOOM_PARALLEL optional; becomes SIGNOFF_PARALLEL in the container
 #   LOOM_CPUS     optional; a docker --cpus ceiling for the run
 #   LOOM_MEMORY   optional; a docker --memory ceiling, e.g. 16g
+#   LOOM_HEARTBEAT optional; seconds between progress lines (default 30)
+#
+# A run belongs to the session that asked for it. ssh gives the remote
+# side no signal when the client goes away without a terminal, which is
+# how both the driver protocol and a pinned key run, so a Ctrl-C on the
+# client used to leave the container running to the end with nobody to
+# report to. The driver therefore writes a progress line to the client
+# every LOOM_HEARTBEAT seconds while the container runs, with SIGPIPE
+# ignored so that a write to a session that has gone fails rather than
+# killing the driver outright; the first failed write kills the
+# container, and the run ends having posted nothing, since nobody asked
+# to see a verdict any more and a red mark would be one nobody earned.
 set -euo pipefail
+trap '' PIPE
 if [ ! -d "$LOOM_DIR/.git" ]; then git clone --quiet "$LOOM_ORIGIN" "$LOOM_DIR"; fi
 cd "$LOOM_DIR"
 git fetch --quiet origin "$LOOM_SHA"
@@ -112,9 +125,13 @@ if [ -n "${LOOM_CPUS:-}" ]; then
 	cpu_quota=$(awk -v cpus="$LOOM_CPUS" 'BEGIN { printf "%d", cpus * 100000 }')
 fi
 
+# The container is named for this run so the heartbeat below can kill
+# it; the PID keeps two runs of one commit, an owner's and a gated one,
+# from colliding on the name.
+name="loom-signoff-$short-$$"
 started=$(date +%s)
 set +e
-docker run --rm \
+docker run --rm --name "$name" \
 	${LOOM_CPUS:+--cpus "$LOOM_CPUS"} \
 	${LOOM_MEMORY:+--memory "$LOOM_MEMORY"} \
 	--cgroupns=host \
@@ -128,11 +145,35 @@ docker run --rm \
 	-v loom-signoff-go-mod-cache:/var/cache/loom-signoff/go/pkg/mod \
 	${LOOM_PARALLEL:+-e "SIGNOFF_PARALLEL=$LOOM_PARALLEL"} \
 	"$image" \
-	bash /logs/entrypoint.sh "$short" "$LOOM_SHA" "$(id -u):$(id -g)" "$memory_bytes" "$cpu_quota" >"$logs/signoff.log" 2>&1
+	bash /logs/entrypoint.sh "$short" "$LOOM_SHA" "$(id -u):$(id -g)" "$memory_bytes" "$cpu_quota" >"$logs/signoff.log" 2>&1 &
+run=$!
+
+# The heartbeat: a one-second poll, so a finished run is noticed at once,
+# and a progress line every LOOM_HEARTBEAT seconds, whose failure is the
+# only sign the session has gone.
+heartbeat=${LOOM_HEARTBEAT:-30}
+cancelled=no
+ticks=0
+while kill -0 "$run" 2>/dev/null; do
+	sleep 1
+	ticks=$((ticks + 1))
+	[ $((ticks % heartbeat)) -eq 0 ] || continue
+	kill -0 "$run" 2>/dev/null || break
+	if ! echo "== running, $(($(date +%s) - started))s" 2>/dev/null; then
+		cancelled=yes
+		docker kill "$name" >/dev/null 2>&1 || true
+		break
+	fi
+done
+wait "$run"
 verdict=$?
 set -e
 elapsed=$(($(date +%s) - started))
 docker image prune --force --filter label=loom-signoff >/dev/null || true
+if [ "$cancelled" = yes ]; then
+	echo "== cancelled after ${elapsed}s: the session that asked for this run went away; nothing posted" >>"$logs/signoff.log"
+	exit 130
+fi
 
 # The logs are the one thing a run keeps on the host; the newest fifty
 # runs' worth is kept and the rest go, so they cannot grow without bound

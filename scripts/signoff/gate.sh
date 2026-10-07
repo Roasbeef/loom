@@ -108,10 +108,18 @@ if [ ! -d "$checkout/.git" ]; then
 	exit 3
 fi
 
+# A request that gives up while it waits must not run once the lock comes
+# free, so the wait writes to the client every thirty seconds, with
+# SIGPIPE ignored so that a session that has gone fails the write rather
+# than killing this script, and a failed write ends the request. The
+# driver keeps the same watch over the run itself.
+trap '' PIPE
 exec 9>"$state/lock"
 if ! flock -n 9; then
 	echo "== another signoff is running; waiting for it"
-	flock 9
+	until flock -w 30 9; do
+		echo "== still waiting for the signoff ahead of this one" 2>/dev/null || exit 130
+	done
 fi
 
 cd "$checkout"

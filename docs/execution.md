@@ -432,7 +432,9 @@ rule, from a root-owned state directory holding the checkout and a token
 that may write commit statuses and nothing else; the key's account holds
 nothing and is not in the docker group. Optional `LOOM_CPUS` and
 `LOOM_MEMORY` ceilings keep a gated run from crowding out whatever else
-the box does. The gate's header has the installation, and what it does
+the box does. A run belongs to the session that asked for it: a Ctrl-C
+on the client cancels the container within thirty seconds and posts
+nothing, gated or not. The gate's header has the installation, and what it does
 not bound: the commit under test still runs as root in a container that
 is not a sandbox, so the commit, not the key, is the trust boundary.
 
