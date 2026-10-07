@@ -104,7 +104,24 @@ page keys and nonces, and the relay into the session's gateway.
   submit as well (protocol-change/067). `component.remembered_path`
   (`0\t3\t2\t5`) is the operator's list of remembered permissions, the pane's
   sixth child (protocol-change/073); the operator socket admits clicks beneath
-  it and the observer's admits none.
+  it and the observer's admits none. `component.peers_path` (`0\t3\t2\t6`) is the
+  owner's peer-link section, the pane's seventh and last child
+  (protocol-change/077); only an owner's socket admits an event beneath it.
+- **Peer links** (protocol-change/077). `peer_links` holds the vocabulary
+  (`Request`: `Read`, `Link`, `Unlink`; `Answer`: `Listed`, `Changed`,
+  `Declined` with a fixed `Reason`; `Board`/`Row`, `Reverse` for the Both
+  directions toggle) and the controls' state machine (`Control`: `Withheld` or
+  `Offered(board, asking, step, note)`; `Press`). `Transport.peers` is `Some`
+  only on an owner's operating page. `component.peering` applies a `Press`:
+  `PickSession` takes the name from the page's own sidebar list (running sessions
+  other than this one), `AskUnlink` opens only for a row the board holds, and
+  `ConfirmUnlink` builds edges from the board with `peer_links.edges`;
+  `component.linking` takes the one text field (the target strand) from the
+  `Linking` message and judges it. `peers_due` reads on open, on a tick past
+  `peers_refresh_ms` (15 s) and on a focus change, and a `Changed` answer reads at
+  once. `view/peer_links` draws every name and strand as a text node; the
+  section is `element.none()` on a page without the capability. Member and
+  observer pages never read a board.
 - **Allowing for the session, and what it kept** (protocol-change/073).
   Owner only: `component.may_remember` (the owner's `Standing.reader`) gates the
   session button, the list, `want_permissions`, `ask_forget` and the click; a

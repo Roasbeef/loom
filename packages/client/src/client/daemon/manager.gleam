@@ -68,6 +68,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
+import gleam/set
 import gleam/string
 import host/bootstrap
 import simplifile
@@ -600,6 +601,7 @@ type Message(instance) {
   StopSession(String, Subject(Result(Status, Error)))
   StopIncarnation(String, String, Subject(Result(Status, Error)))
   Get(String, Subject(Result(View, Error)))
+  Unshared(Subject(List(String)))
   Page(String, Subject(Result(#(Int, List(View)), Error)))
   Resolve(String, Subject(Result(instance, Error)))
   ResolveIncarnation(String, String, Subject(Result(instance, Error)))
@@ -1689,6 +1691,84 @@ pub fn get(manager: Manager(instance), id: String) -> Result(View, Error) {
   |> result.unwrap(Error(Unavailable))
 }
 
+/// Lists the active sessions that have no member and no observer, in
+/// session-ID order, whether or not they are resident: the sessions only the
+/// daemon's owner can read (protocol-change/077).
+///
+/// A closed session is listed so that a model's roster can say it exists and
+/// is not running. Listing it grants nothing, because a message is delivered
+/// only into a resident session and nothing here opens one. A session that has
+/// any membership row, of either role, is left out, so a session another
+/// person can read is never linked to the owner's others by default. A session
+/// whose membership the catalogue cannot read is left out as well, and so is
+/// every session when the registry does not answer in five seconds, which
+/// refuses the default rather than widening it. The answer holds at most
+/// `unshared_limit` sessions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.unshared_sessions(registry)
+/// ```
+@internal
+pub fn unshared_sessions(manager: Manager(instance)) -> List(String) {
+  call.try_call(manager.commands, waiting: 5000, sending: Unshared)
+  |> result.unwrap([])
+}
+
+/// The most sessions `unshared_sessions` considers.
+pub const unshared_limit = 256
+
+// The registry's own turn of `unshared_sessions`. One query names every
+// session that has a member, and the catalogue is read a page at a time and
+// filtered against that set, so the cost is one scan and the pages. The bound
+// is applied to the sorted answer, so no more than `unshared_limit` sessions
+// are ever returned.
+fn unshared(book: Book(instance)) -> List(String) {
+  case access.membered_sessions(book.catalogue) {
+    Error(_) -> []
+    Ok(membered) -> {
+      let excluded = set.from_list(membered)
+      unshared_from(book, "", excluded, [])
+      |> list.sort(string.compare)
+      |> list.take(unshared_limit)
+    }
+  }
+}
+
+// The catalogue's pages are in session-ID order and each is bounded, so the
+// walk ends at the last page or once it has found more than the limit.
+fn unshared_from(
+  book: Book(instance),
+  after: String,
+  excluded: set.Set(String),
+  found: List(String),
+) -> List(String) {
+  case
+    list.length(found) >= unshared_limit,
+    catalogue.page(book.catalogue, after:)
+  {
+    True, _ | False, Error(_) -> found
+    False, Ok(page) ->
+      case list.last(page.records) {
+        Error(Nil) -> found
+        Ok(last) -> {
+          let held =
+            list.filter(page.records, fn(record) {
+              record.state == catalogue.Saved
+              && !set.contains(excluded, record.id)
+            })
+          unshared_from(
+            book,
+            last.id,
+            excluded,
+            list.append(list.map(held, fn(record) { record.id }), found),
+          )
+        }
+      }
+  }
+}
+
 /// Returns a bounded metadata page with current lifecycle observations.
 ///
 /// The revision covers durable metadata, not ephemeral runtime transitions.
@@ -2335,6 +2415,10 @@ fn handle(
         |> result.map_error(Catalogue)
         |> result.map(fn(record) { View(record, status(book, record)) })
       process.send(reply, view)
+      sm.keep(book)
+    }
+    Unshared(reply) -> {
+      process.send(reply, unshared(book))
       sm.keep(book)
     }
     Page(after, reply) -> {

@@ -103,6 +103,7 @@ fn start_page(
         home: None,
         rename: None,
         shareable: None,
+        peers: None,
         worktree: None,
         logins: None,
         manage: None,

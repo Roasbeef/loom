@@ -1235,6 +1235,17 @@
   .remembered-what{font:12px/1.5 var(--font-mono);overflow-wrap:anywhere;}
   .remembered-ended{color:var(--color-danger-text);}
   button.remembered-forget{font-size:12px;}
+  /* The owner's peer-link section, the Session pane's last child
+     (web_view/view/peer_links). It is placed beside the People group, ahead of
+     the invitation control. */
+  .pane-session > section.peer-links{order:3;margin:0 0 14px 0;padding:0;border-top:0;font-size:13px;}
+  ul.peer-link-list,ul.peer-pick-list{list-style:none;margin:0 0 8px 0;padding:0;}
+  li.peer-link{margin:0 0 8px 0;}
+  li.peer-link p,.peer-links p{margin:0;}
+  .peer-link-text{overflow-wrap:anywhere;}
+  button.peer-unlink{font-size:12px;}
+  .peer-links [aria-pressed="true"]{border-color:var(--color-signal);color:var(--color-signal-text);}
+  .peer-links form.control-input{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;}
   /* The owner's invitation control at the foot of the Session pane
      (web_view/view/share). The command and the claim token are drawn by
      <loom-copy>, whose shadow root adopts this sheet, so its code box and

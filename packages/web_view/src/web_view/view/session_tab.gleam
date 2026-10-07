@@ -88,12 +88,15 @@ import session_view/session_summary.{
 /// other page, and is the pane's fifth child for the same reason. `remembered`
 /// is the operator's list of what "Allow for this session" kept
 /// (`view/remembered`), or `element.none()` on an observer's page, and is the
-/// pane's sixth and last child, beneath `component.remembered_path`.
+/// pane's sixth child, beneath `component.remembered_path`. `peers` is the
+/// owner's peer-link section (`view/peer_links`), or `element.none()` on any
+/// other page, and is the pane's seventh and last child, beneath
+/// `component.peers_path`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), element.none(), element.none(), element.none(), element.none())
+/// // session_tab.view([], "$0.12", component.jobs(model), Some(component.viewers(model)), Some("/src/loom"), element.none(), element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn view(
   goal: List(String),
@@ -105,6 +108,7 @@ pub fn view(
   controls: Element(message),
   rename: Element(message),
   remembered: Element(message),
+  peers: Element(message),
 ) -> Element(message) {
   html.section(
     [
@@ -119,6 +123,7 @@ pub fn view(
       controls,
       rename,
       remembered,
+      peers,
     ],
   )
 }

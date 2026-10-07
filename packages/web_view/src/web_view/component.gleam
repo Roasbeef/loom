@@ -199,6 +199,7 @@ import web_view/ending.{type Ending}
 import web_view/grants
 import web_view/image as web_image
 import web_view/invites
+import web_view/peer_links
 import web_view/remembered as holding
 import web_view/renames
 import web_view/sessions
@@ -215,6 +216,7 @@ import web_view/view/lane
 import web_view/view/live
 import web_view/view/nudges
 import web_view/view/panel
+import web_view/view/peer_links as peer_links_view
 import web_view/view/rename as rename_view
 import web_view/view/session_tab
 import web_view/view/shell
@@ -347,6 +349,26 @@ pub const rename_path = "0\t3\t2\t4"
 /// the daemon refusing a forget from an observer's attachment on its own.
 /// `page_events_test` fails if the view moves the list.
 pub const remembered_path = "0\t3\t2\t5"
+
+/// The Lustre event path of the owner's peer-link controls: the seventh and
+/// last child of the Session pane (`view/session_tab`), after the list of
+/// remembered permissions (`remembered_path`), so that placing it there moved
+/// no path the socket admits. Every handler beneath it is one of the
+/// section's buttons or its Link form's submit (`view/peer_links`,
+/// protocol-change/077). Only an owner's socket admits an event at or beneath
+/// this path (`client/daemon/ui_socket.owner_accepts`), so a member operator's
+/// browser and an observer's cannot press a control even by forging the path,
+/// and the daemon refuses the request a third time
+/// (`client/daemon/ui_socket.peer_links_for`). `peer_links_test` fails if the
+/// view moves the section.
+pub const peers_path = "0\t3\t2\t6"
+
+/// How long the peer links a page read stand before it reads them again, in
+/// milliseconds of the transport's clock. A link changes when the owner or a
+/// terminal changes it, and the read is several registry and session calls, so
+/// the page reads when it opens, when its focus moves to another strand, after
+/// its own change, and no more than once in this long otherwise.
+pub const peers_refresh_ms = 15_000
 
 /// The Lustre event path of the "Home" button, on both pages: it is the
 /// second child of the top bar (`view/heading`), after the brand, and the top
@@ -647,6 +669,18 @@ pub type Transport(socket) {
     logins: Option(
       fn(List(holding.Login), fn(List(holding.Login)) -> Nil) -> Nil,
     ),
+    /// Asks the daemon to read or change the peer links of one of this page's
+    /// strands, for an owner's page (protocol-change/077): a read of the
+    /// strand's links, a Link (and, on request, its reverse) or an Unlink. The
+    /// daemon checks that the page is open and that its credential still
+    /// authenticates as the daemon's owner each time it runs, takes the page's
+    /// own session from the attachment, and runs the same commands
+    /// `loomd peer` runs. It must return at once: the daemon runs the request
+    /// in a task of its own, which calls the function it is given with the
+    /// answer, and that call is dispatched as `PeersAnswered`. It is `None`
+    /// unless the page's principal is the daemon's owner, so a page with no
+    /// capability draws no section and reads nothing.
+    peers: Option(fn(peer_links.Request, fn(peer_links.Answer) -> Nil) -> Nil),
   )
 }
 
@@ -1013,6 +1047,10 @@ type View(socket) {
     /// form.
     renaming: renames.Control,
     renamed: Int,
+    /// What the owner's peer-link controls are doing, and when the page last
+    /// asked for the strand's links, on the transport's clock.
+    peering: peer_links.Control,
+    peers_asked_at: Option(Int),
     /// When the page opened or last asked for the strand's live jobs, on the
     /// transport's clock, so the next ask waits `jobs_refresh_ms` whether or
     /// not the daemon answered. A refused read is therefore not repeated on
@@ -1195,6 +1233,12 @@ pub type Msg(socket) {
   /// that the daemon did not store.
   Renamed(answer: renames.Answer)
 
+  /// The daemon answered a request about the strand's peer links. It is the
+  /// effect's own message, dispatched from the daemon's task, and no handler
+  /// carries it, so a browser cannot send one and cannot put a link on the page
+  /// that the daemon did not report.
+  PeersAnswered(answer: peer_links.Answer)
+
   /// The daemon answered a request to make the page's session shareable. It is
   /// the effect's own message, dispatched from the daemon's task, and no handler
   /// carries it, so a browser cannot send one and cannot make the page believe
@@ -1317,6 +1361,8 @@ pub fn new(start: Start(socket)) -> Model(socket) {
         None -> renames.Withheld
       },
       renamed: 0,
+      peering: peer_links.start(capable: option.is_some(start.transport.peers)),
+      peers_asked_at: None,
       jobs_asked_at: None,
       decided: Owed,
       holding: holding.new(),
@@ -1433,6 +1479,7 @@ pub fn update(
       let view = View(..model.view, jobs_asked_at: Some(at))
       stepping(Model(shared:, view:), [tick_at(at)], at)
       |> relisted(at)
+      |> peers_due(at)
     }
 
     // The relay could not attach. Whatever the gateway said is not drawn:
@@ -1472,6 +1519,7 @@ pub fn update(
     Ticked ->
       stepping(jobs_wanted(model, at), [tick_at(at)], at)
       |> relisted(at)
+      |> peers_due(at)
       |> reobserved(at)
 
     OlderRequested -> older_at(model, at)
@@ -1480,7 +1528,7 @@ pub fn update(
 
     FoldToggled(fold:) -> folded_at(model, fold, at)
 
-    FocusRequested(strand:) -> focus_at(model, strand, at)
+    FocusRequested(strand:) -> focus_at(model, strand, at) |> peers_due(at)
 
     GoingHome -> going_home(model)
 
@@ -1541,6 +1589,27 @@ pub fn update(
     Invited(answer:) -> #(invited(model, answer), effect.none())
 
     Renamed(answer:) -> #(renamed(model, answer), effect.none())
+
+    // The daemon's answer to a peer-link request is the page's own state. A
+    // change leaves the board stale, and the read it calls for is made at once
+    // rather than on the next tick.
+    PeersAnswered(answer:) -> {
+      let model =
+        Model(
+          ..model,
+          view: View(
+            ..model.view,
+            peering: peer_links.answered(model.view.peering, answer),
+          ),
+        )
+      case answer {
+        peer_links.Changed(..) -> peers_read(model, at)
+        peer_links.Listed(..) | peer_links.Declined(..) -> #(
+          model,
+          effect.none(),
+        )
+      }
+    }
 
     MadeShareable(answer:) -> #(made_shareable(model, answer), effect.none())
 
@@ -4887,6 +4956,223 @@ pub fn share(model: Model(socket)) -> invites.Share {
   model.view.share
 }
 
+// Reads the focused strand's peer links when the page has none for it, or
+// the last read is `peers_refresh_ms` old. Only `Opened`, `Ticked` and a focus
+// change come here. A page with no capability, or with a request outstanding,
+// asks nothing.
+fn peers_due(
+  done: #(Model(socket), Effect(Msg(socket))),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(model, effects) = done
+  let elapsed = case model.view.peers_asked_at {
+    Some(before) -> at - before >= peers_refresh_ms
+    None -> True
+  }
+  case
+    peer_links.stale(model.view.peering, model.shared.active_strand) || elapsed
+  {
+    False -> done
+    True -> {
+      let #(model, asked) = peers_read(model, at)
+      #(model, effect.batch([effects, asked]))
+    }
+  }
+}
+
+// Asks for the focused strand's links now, if the page may and nothing is
+// outstanding.
+fn peers_read(
+  model: Model(socket),
+  at: Int,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let #(model, asked) =
+    peers_ask(model, peer_links.Read(model.shared.active_strand))
+  #(Model(..model, view: View(..model.view, peers_asked_at: Some(at))), asked)
+}
+
+// Sends one request to the daemon from the component's own process and marks
+// the controls as waiting, or does nothing when the page has no capability,
+// the controls are not offered, or a request is already outstanding. The
+// answer arrives as `PeersAnswered`.
+fn peers_ask(
+  model: Model(socket),
+  request: peer_links.Request,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.transport.peers, model.view.peering {
+    Some(ask), peer_links.Offered(asking: peer_links.Idle, ..) -> #(
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          peering: peer_links.waiting(model.view.peering),
+        ),
+      ),
+      {
+        use dispatch <- effect.from
+        ask(request, fn(answer) { dispatch(PeersAnswered(answer)) })
+      },
+    )
+    Some(_), peer_links.Offered(asking: peer_links.Waiting, ..)
+    | Some(_), peer_links.Withheld
+    | None, _
+    -> #(model, effect.none())
+  }
+}
+
+/// Applies one button of the owner's peer-link section.
+///
+/// Opening, choosing and cancelling change the page's own state and send
+/// nothing. Choosing a session takes the session's name from the page's own
+/// sidebar list, so a session the page does not list as running cannot be
+/// chosen and the button's own name is never trusted. An Unlink question
+/// opens only for a row the board holds, and its answer removes only the
+/// links that row's pair showed when the question was drawn. A page that has
+/// no capability ignores every press, whatever message reaches it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.peering(model, peer_links.OpenLink)
+/// ```
+pub fn peering(
+  model: Model(socket),
+  press: peer_links.Press,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let control = model.view.peering
+  let held = fn(next) {
+    #(Model(..model, view: View(..model.view, peering: next)), effect.none())
+  }
+  case press {
+    peer_links.OpenLink -> held(peer_links.open_link(control))
+    peer_links.PickSession(session:, ..) ->
+      case list.find(peer_candidates(model), fn(entry) { entry.0 == session }) {
+        Ok(#(_, name)) -> held(peer_links.choose(control, session, name))
+        Error(Nil) -> held(control)
+      }
+    peer_links.ChooseWake(wake:) -> held(peer_links.choose_wake(control, wake))
+    peer_links.ChooseReverse(reverse:) ->
+      held(peer_links.choose_reverse(control, reverse))
+    peer_links.AskUnlink(row:) -> held(peer_links.ask_unlink(control, row))
+    peer_links.Cancel -> held(peer_links.cancel(control))
+    peer_links.ConfirmUnlink(removal:) ->
+      case control {
+        peer_links.Offered(
+          board: Some(board),
+          step: peer_links.Removing(row:),
+          asking: peer_links.Idle,
+          ..,
+        ) ->
+          case peer_links.edges(board, row, removal) {
+            Ok(edges) ->
+              peers_ask(model, peer_links.Unlink(board.strand, edges))
+            Error(Nil) ->
+              held(peer_links.answered(
+                control,
+                peer_links.Declined(peer_links.Unavailable),
+              ))
+          }
+        peer_links.Offered(..) | peer_links.Withheld -> held(control)
+      }
+  }
+}
+
+/// Submits the Link form: the owner chose a session and what the link allows,
+/// and typed the strand in that session. The text is trimmed and judged here
+/// (one to 128 bytes, no control character); the daemon judges it again and
+/// finds out whether the other session has such a strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.linking(model, "main")
+/// ```
+pub fn linking(
+  model: Model(socket),
+  typed: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.peering {
+    peer_links.Offered(
+      step: peer_links.Configuring(session:, wake:, reverse:, ..),
+      asking: peer_links.Idle,
+      ..,
+    ) -> {
+      let target = string.trim(typed)
+      let valid = strand_text_ok(target)
+      case valid {
+        False -> #(
+          Model(
+            ..model,
+            view: View(
+              ..model.view,
+              peering: peer_links.answered(
+                model.view.peering,
+                peer_links.Declined(peer_links.InvalidStrand),
+              ),
+            ),
+          ),
+          effect.none(),
+        )
+        True ->
+          peers_ask(
+            model,
+            peer_links.Link(
+              model.shared.active_strand,
+              session,
+              target,
+              wake,
+              reverse,
+            ),
+          )
+      }
+    }
+    peer_links.Offered(..) | peer_links.Withheld -> #(model, effect.none())
+  }
+}
+
+// Whether a typed strand is one a link may name: not empty, at most 128
+// bytes, and without a control character.
+fn strand_text_ok(target: String) -> Bool {
+  let controlled =
+    string.to_utf_codepoints(target)
+    |> list.any(fn(point) {
+      let number = string.utf_codepoint_to_int(point)
+      number < 32 || number == 127
+    })
+  target != "" && string.byte_size(target) <= 128 && !controlled
+}
+
+// The sessions the sidebar lists as running, other than this page's own, as
+// identity and name: the only sessions a link can be made to.
+fn peer_candidates(model: Model(socket)) -> List(#(String, String)) {
+  model.view.groups
+  |> list.flat_map(fn(group) { group.entries })
+  |> list.filter(fn(entry) {
+    entry.residency == sessions.Live && entry.id != model.shared.session
+  })
+  |> list.map(fn(entry) { #(entry.id, sessions.label(entry)) })
+}
+
+/// The owner's peer-link section, or `element.none()` on a page that has
+/// none. The wrapper decides the message type, as `rename_form` does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.peer_links_section(model, presses)
+/// ```
+pub fn peer_links_section(
+  model: Model(socket),
+  presses: peer_links_view.Presses(message),
+) -> Element(message) {
+  peer_links_view.view(
+    model.view.peering,
+    model.shared.active_strand,
+    peer_candidates(model),
+    presses,
+  )
+}
+
 /// Asks the daemon to rename this page's session, when an owner submitted the
 /// rename control.
 ///
@@ -6105,6 +6391,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       element.none(),
       element.none(),
       element.none(),
+      element.none(),
     ),
     needing(model),
     workspace_digest(model),
@@ -6162,12 +6449,13 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// page passes `element.none()`. `controls` is the operator's goal buttons and
 /// fork form, and `rename` the owner's rename control (`rename_form`), which
 /// every other page passes as `element.none()`, and `remembered` the operator's
-/// list of remembered permissions (`view/remembered`), likewise.
+/// list of remembered permissions (`view/remembered`), likewise, and `peers` the
+/// owner's peer-link section (`peer_links_section`), likewise.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none())
+/// // component.panel(model, FocusRequested, None, element.none(), element.none(), element.none(), element.none(), element.none())
 /// ```
 pub fn panel(
   model: Model(socket),
@@ -6177,6 +6465,7 @@ pub fn panel(
   controls: Element(message),
   rename: Element(message),
   remembered: Element(message),
+  peers: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -6201,6 +6490,7 @@ pub fn panel(
       controls,
       rename,
       remembered,
+      peers,
     ),
     trace.view(trace(model)),
     nudges.view(pending_nudges(model)),

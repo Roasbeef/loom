@@ -27,6 +27,7 @@ import client/daemon/ui_socket
 import client/daemon_claim_test
 import client/daemon_server_test
 import client/gateway
+import client/peers
 import core/clock
 import core/ids
 import core/json
@@ -64,6 +65,7 @@ import web_view/home
 import web_view/invites
 import web_view/names
 import web_view/page
+import web_view/peer_links
 import web_view/renames
 import web_view/sessions
 import web_view/signins
@@ -8274,5 +8276,127 @@ pub fn an_unknown_profile_is_declined_in_its_own_words_test() {
         within: 2000,
       )
       == creations.Declined(creations.UnknownProfile)
+  })
+}
+
+// --- peer links from a page (protocol-change/077) ----------------------------
+
+// A directory that resolves no session, so a request that passes the daemon's
+// authority checks is refused at the first resolution with the fixed words for
+// an unavailable read, and any refusal before that is the owner-only words.
+fn unreachable_directory() -> peers.Directory {
+  peers.Directory(resolve: fn(_) { Error("not resident") }, describe: fn(_) {
+    Error("not resident")
+  })
+}
+
+// The authority is re-derived at each request: a member of the very session, a
+// page that has ended, one minted to read and a principal the page was not
+// admitted as are all refused as the owner-only words before the request is
+// looked at, and only the owner's open operating page reaches it.
+pub fn a_page_peer_request_is_refused_unless_the_owner_still_asks_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "peers-held", 1121)
+    let _ = member(ready, "ui-peer-member", session, access.Operator)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let #(member_standing, _) =
+      standing_of(ready, "ui-peer-member", access.Operator)
+    let directory = unreachable_directory()
+    let ask = fn(standing, open) {
+      ui_socket.peer_links_for(
+        standing,
+        open,
+        directory,
+        session,
+        peer_links.Read("main"),
+      )
+    }
+    let refused = peer_links.Declined(peer_links.NotOwner)
+    assert ask(member_standing, page_open) == refused
+    assert ask(owner, fn() { Error(Nil) }) == refused
+    assert ask(ui_socket.Standing(..owner, ceiling: access.Observer), page_open)
+      == refused
+    assert ask(
+        ui_socket.Standing(..owner, principal: "someone-else"),
+        page_open,
+      )
+      == refused
+
+    // The owner's open page passes every check and stops at the directory.
+    assert ask(owner, page_open) == peer_links.Declined(peer_links.Unavailable)
+  })
+}
+
+// A link names its other session and strand as text, and each is judged again
+// by the daemon: an identity that is not a session's, the page's own session
+// and a strand that is blank are refused with their own words, and nothing is
+// resolved for any of them.
+pub fn a_page_link_judges_what_the_request_names_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "peers-judged", 1122)
+    let other = create_session(ready, "peers-other", 1123)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let link = fn(target_session, target) {
+      ui_socket.peer_links_for(
+        owner,
+        page_open,
+        unreachable_directory(),
+        session,
+        peer_links.Link(
+          "main",
+          target_session,
+          target,
+          peer_links.BusyOnly,
+          peer_links.OneWay,
+        ),
+      )
+    }
+    assert link(session, "main") == peer_links.Declined(peer_links.SameSession)
+    assert link(other, "") == peer_links.Declined(peer_links.InvalidStrand)
+    assert link(other, string.repeat("x", 129))
+      == peer_links.Declined(peer_links.InvalidStrand)
+    assert link("not a session", "main")
+      == peer_links.Declined(peer_links.NotRunning)
+
+    // A session that is not resident is not opened for the link.
+    assert link(other, "main") == peer_links.Declined(peer_links.NotRunning)
+  })
+}
+
+// The request runs in a task of its own and the answer is handed to the
+// function the page's runtime gave, from that task.
+pub fn the_peer_request_runs_in_a_task_and_delivers_its_answer_test() {
+  fixture(fn(ready, _, credential) {
+    let session = create_session(ready, "peers-task", 1124)
+    let owner = owner_standing(ready, credential, access.Operator)
+    let answered = process.new_subject()
+    ui_socket.peer_links_task(
+      owner,
+      page_open,
+      unreachable_directory(),
+      session,
+      peer_links.Read("main"),
+      fn(answer) { process.send(answered, #(process.self(), answer)) },
+    )
+    let assert Ok(#(from, answer)) = process.receive(answered, 5000)
+      as "the task answers"
+    assert from != process.self()
+    assert answer == peer_links.Declined(peer_links.Unavailable)
+  })
+}
+
+// --- default peer links' eligibility (protocol-change/077) -------------------
+
+// A session with a member is not one the owner holds alone, and one with none is. The registry answers from one query of
+// the membership table, in session-ID order.
+pub fn a_session_with_a_member_is_not_unshared_test() {
+  fixture(fn(ready, _, _) {
+    let alone = create_session(ready, "peers-alone", 1131)
+    let shared = create_session(ready, "peers-shared", 1132)
+    let _ = member(ready, "ui-peer-operator", shared, access.Operator)
+    let listed = manager.unshared_sessions(ready.registry)
+    assert list.contains(listed, alone)
+    assert !list.contains(listed, shared)
+    assert list.sort(listed, string.compare) == listed
   })
 }

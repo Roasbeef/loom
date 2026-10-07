@@ -240,6 +240,10 @@ pub type Config {
     /// The host catalogue's explicit choices, keyed by identity.provider.
     /// Selecting one seeds both identity and thinking before the child runs.
     models: List(#(machine_strand.ModelIdentity, machine_strand.ThinkingLevel)),
+    /// What the daemon lends peer admission to decide a default link
+    /// (protocol-change/077). `peer_mail.no_defaults` links nothing
+    /// implicitly, which is every embedded host.
+    peer_defaults: peer_mail.Defaults,
   )
 }
 
@@ -293,6 +297,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     // fills this from the gateway.
     subagent_model: fn() { Error(Nil) },
     models: [],
+    peer_defaults: peer_mail.no_defaults,
   )
 }
 
@@ -366,7 +371,15 @@ pub fn start(
         actor.continue(state)
       }
       PeerRequest(command:, reply:) -> {
-        process.send(reply, peer_mail.handle(state, config.clock, command))
+        process.send(
+          reply,
+          peer_mail.handle_with(
+            state,
+            config.clock,
+            config.peer_defaults,
+            command,
+          ),
+        )
         actor.continue(state)
       }
       SpawnChild(caller:, request:, custody:, reply:) -> {

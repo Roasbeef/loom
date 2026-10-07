@@ -50,6 +50,7 @@ fn start() -> component.Start(ui_relay.Relay) {
       home: None,
       rename: None,
       shareable: None,
+      peers: None,
       worktree: None,
       logins: None,
       manage: None,
@@ -1541,4 +1542,41 @@ pub fn an_observers_page_is_handed_no_way_to_judge_sign_ins_test() {
   assert ui_socket.logins_capability(ui_socket.Observing, ask) == None
   assert ui_socket.logins_capability(ui_socket.Operating, ask) == None
   assert option.is_some(ui_socket.logins_capability(ui_socket.Owning, ask))
+}
+
+// Protocol-change/077: only an owner's socket admits an event at or beneath the
+// peer-link section's path, whether a click or the Link form's submit. A member
+// operator's socket drops it, alone or inside a batch, and an observer's drops
+// it as it drops every submit and every click but its own.
+pub fn only_an_owners_socket_admits_the_peer_link_controls_test() {
+  let at = component.peers_path
+  list.each([at, at <> "\t0\t1\t0", at <> "\t1"], fn(path) {
+    assert ui_socket.owner_accepts(submit_on(path))
+    assert ui_socket.owner_accepts(click_on(path))
+    assert !ui_socket.operator_accepts(submit_on(path))
+    assert !ui_socket.operator_accepts(click_on(path))
+    assert !ui_socket.observer_accepts(click_on(path))
+    let batch =
+      "{\"kind\":3,\"messages\":["
+      <> click_on(component.sidebar_path <> "\t0")
+      <> ","
+      <> click_on(path)
+      <> "]}"
+    assert !ui_socket.operator_accepts(batch)
+    assert ui_socket.owner_accepts(batch)
+  })
+
+  // The path is the pane's seventh child, after the others, and a path that
+  // only begins with the same numbers is not the section.
+  assert component.peers_path == "0\t3\t2\t6"
+  assert ui_socket.operator_accepts(click_on("0\t3\t2\t60"))
+  assert ui_socket.operator_accepts(click_on(component.remembered_path))
+}
+
+// Only an owner's page is handed the capability to read and change peer links.
+pub fn only_an_owners_page_is_handed_the_peer_link_capability_test() {
+  let ask = fn(_request, _deliver) { Nil }
+  assert ui_socket.peer_links_capability(ui_socket.Observing, ask) == None
+  assert ui_socket.peer_links_capability(ui_socket.Operating, ask) == None
+  let assert Some(_) = ui_socket.peer_links_capability(ui_socket.Owning, ask)
 }

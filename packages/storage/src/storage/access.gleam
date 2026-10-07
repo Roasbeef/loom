@@ -1043,6 +1043,24 @@ fn credential_summary(
   }
 }
 
+/// Lists every session that has at least one member of either role, in
+/// session-ID order, with one scan of the membership table.
+///
+/// The default peer link needs this to know which sessions only the owner can
+/// read (protocol-change/077), and asking once per session would scan the
+/// table, which its primary key does not index, once for each.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // access.membered_sessions(store)
+/// ```
+@internal
+pub fn membered_sessions(store: Catalogue) -> Result(List(String), Error) {
+  use rows <- result.map(catalogue.query(store, sql.membered_sessions()))
+  list.map(rows, fn(row) { row.session_id })
+}
+
 /// Lists one principal's memberships after the session `after`, in
 /// session-ID order, with each session's current display name.
 ///
