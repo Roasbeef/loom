@@ -1,57 +1,43 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `9477061c2` on
-October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
-protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
-hosted PR/main state were checked for this edition. Runtime assembly and
-separate-host acceptance remain in progress.
+This file describes the current integration boundary, its evidence and the next
+required work. Rewrite it after each integration milestone. This edition is
+baselined against `f8eb3d5fc` on October 7, 2026, in the isolated
+`runtime/main-refresh` branch. Source joins, gate receipts and hosted state were
+checked for this edition; earlier component results are identified separately.
 
-The previous edition left owner identity corrections and original helper return
-open. Both are now integrated with independent review and component gates. The
-fixed-plan verifier, strict search parser and retained collector are also
-integrated. Actual Service ownership, semantic results and normal registered LSP
-assembly remain open. Original registry startup and native scope-close witnesses
-are also integrated; their proofs still require FullHost to supply the actual
-pool and original physical joins. Compile preparation, workspace aggregate and
-Launch channel ownership remain under construction.
-
-An earlier Launch readiness timeout remains unresolved despite passing diagnostic
-retries. The managed endpoint, original owner custodian, durable generation plans,
-owned journal startup and restricted managed recovery are integrated. These
-components do not by themselves enable ordinary registered sessions.
+The branch now includes main at `142eba4a3b0dca245993851b893e7479c70d50c7`.
+All 290 topic commits were rebased in their original order. The previous edition
+said that this main revision was not integrated and that catalogue/protocol
+collisions still needed resolution. Both statements are now false. Typed
+workspace creation composes with main's model profiles, the catalogue handles
+both historical version-nine layouts, and the registered proposals are numbered
+078 and 079. Ordinary registered assembly and separate-host acceptance remain
+unfinished.
 
 ## Where the tree is
 
-[PR #819](https://github.com/Roasbeef/loom/pull/819) remains open and draft at
-`b3bc47efdb2be7df421287aa437debdd034af9e5`, with no hosted checks on that head.
-[Issue #697](https://github.com/Roasbeef/loom/issues/697) remains open. The local
-integration work has not been pushed; publication and merge remain unauthorized.
-The integrated main commit `3ffb0bf52` has a
-[passing CI run](https://github.com/Roasbeef/loom/actions/runs/37580150259).
-That status belongs to main, not this unpublished integration candidate.
-The latest observed main run also passes at `142eba4a3`, with
-[its own CI receipt](https://github.com/Roasbeef/loom/actions/runs/37606780540).
-Those later main changes have not yet been integrated.
-The refreshed ref is `142eba4a3b0dca245993851b893e7479c70d50c7`. Rebase scoping
-found that main and this branch assign catalogue version nine to different
-schemas: profiles on main, retained workspace bindings here. The composed
-migration must recognize both layouts and preserve both additions. Main also
-uses protocol numbers 076 and 077 for configuration profiles and web peer links;
-the unpublished registered records need distinct numbers and qualified links.
+[PR #819](https://github.com/Roasbeef/loom/pull/819) was last verified open and
+draft at `b3bc47efdb2be7df421287aa437debdd034af9e5`, with no hosted checks on
+that head. [Issue #697](https://github.com/Roasbeef/loom/issues/697) remains open.
+The integration work is local; publication and merge are not authorized.
+The integrated main revision has a
+[passing CI run](https://github.com/Roasbeef/loom/actions/runs/37606780540).
+That result belongs to main, not the unpublished integration candidate.
 
 | Boundary | Current integration state |
 | --- | --- |
-| Owner custody and semantic transport | `f320f6c5b` wires registered admission, historical reopen and receipt readback to the original actor/connection/path. Original inputs, results, finite TLS BEAM controls, native forwarding and semantic consumers are implemented. Default daemon construction remains pending. |
-| Native system and workspace identity | `754d56990` through `0d5e50e72` retain derived workspace commands, pending system ordinals and original live permission through the Broker. Real owner COMMIT/readback and composed ordinary receipt routing are integrated. Ordinary goal/hook callers and full host wiring remain pending. |
+| Owner custody and semantic transport | `05a02a788` wires registered admission, historical reopen and receipt readback to the original actor/connection/path. Original inputs, results, finite TLS BEAM controls, native forwarding and semantic consumers are implemented. Default daemon construction remains pending. |
+| Native system and workspace identity | `bd2636b22` through `0ef51ba27` retain derived workspace commands, pending system ordinals and original live permission through the Broker. Real owner COMMIT/readback and composed ordinary receipt routing are integrated. Ordinary goal/hook callers and full host wiring remain pending. |
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
-| Managed endpoint | `5733967e9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
-| Original startup and close witnesses | `4b67e014` validates the original live registry claim and exact Plan. `c08fd50d` retains native scope-close evidence before Service exit. FullHost still must bind the real pool and original joins; workspace, Compile and Launch witness work remains pending. |
-| Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
-| Original helper return | `0efed9052` retains the original finite protocol row until the exact pool acknowledges its Available transition. Real helper reuse and both consumption/release orders pass. Service failed-row admission accounting and finite LSP assembly remain pending. |
-| Generation history | `3ade15ea9` and `77b3b217` add permanent original provenance. `40169105` adds restricted managed recovery of native, workspace and resource journals, with explicit close and original normal-exit evidence. Actual physical join validation and bounded history transport remain assembly obligations. |
-| LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. `7d256b402` and `e336f4a19` add original first-placement native custody and credited ServerLease transport, including actual Linux FullEnforcement controls. `d60d4d15` adds owned live startup and restricted recovery. `850b6035` adds finite plan verification and retained collection. Actual Service ownership, semantic/result retirement and ordinary assembly remain pending. |
-| Deployment | `a58713277` and `45de677f` commit reviewed strict owner/executor loaders and their manifest. Shipped role bootstrap, admin transport, full host activation and ordinary daemon assembly remain unbuilt. |
-| Launch utilities | `ed4abd587` supplies named private role bundles, selected export, lifecycle commands and a setup guide. Current images deliberately lack runtime capability labels and cannot pass its startup gate. |
+| Managed endpoint | `cfa36faa9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
+| Original startup and close witnesses | `ebc1a1417` validates the original live registry claim and exact Plan. `124bd33e2` retains native scope-close evidence before Service exit. FullHost still must bind the real pool and original joins; workspace, Compile and Launch witness work remains pending. |
+| Helper consumption | `a69bc30b0` adds bounded input/output consumption credits and current-version wire decoding. |
+| Original helper return | `0a2e46d95` retains the original finite protocol row until the exact pool acknowledges its Available transition. Real helper reuse and both consumption/release orders pass. Service failed-row admission accounting and finite LSP assembly remain pending. |
+| Generation history | `e8410fd0d` and `c6f647f32` add permanent original provenance. `6fada9a53` adds restricted managed recovery of native, workspace and resource journals, with explicit close and original normal-exit evidence. Actual physical join validation and bounded history transport remain assembly obligations. |
+| LSP | `e087fa42d` and `29bf7ecab` retain original custody and generated SQL. `3e78e49df` and `07fc05947` add reviewed bounded parsing and consumed transport/state. `d2ed9204d` and `8d51896d6` add original first-placement native custody and credited ServerLease transport, including actual Linux FullEnforcement controls. `787ab6eba` adds owned live startup and restricted recovery. `98c6fe01c` adds finite plan verification and retained collection. Actual Service ownership, semantic/result retirement and ordinary assembly remain pending. |
+| Deployment | `54be793bb` and `c2f30387d` commit reviewed strict owner/executor loaders and their manifest. Shipped role bootstrap, admin transport, full host activation and ordinary daemon assembly remain unbuilt. |
+| Launch utilities | `00a753071` supplies named private role bundles, selected export, lifecycle commands and a setup guide. Current images deliberately lack runtime capability labels and cannot pass its startup gate. |
 | Distributed orchestration | Executor pools, C1 ownership, C2 routing, C3 durable cross-node messaging and M1 controlled movement remain required. |
 
 The [integration guide](design-notes/distributed-runtime-integration.md) records
@@ -62,296 +48,101 @@ candidate.
 
 ## Verification and its limits
 
-The finite-collector integration passes all 547 executor tests in 207.15 seconds,
-224.59 seconds including build. The same integrated source passes all 755 tools
-tests and 483 code-mode tests after a normal seed with Gleam 1.19. Each command's
-own exit is zero. Formatting, affected lint, documentation and prelude checks
-also exit zero; all fourteen imported hashes match after the gates. The commits
-are `6398730c9` for strict search parsing, `2e353d001` for shared search argv and
-`850b6035` for the collector and journal checks.
+The rebased candidate passes the complete storage gate: 274 tests, with the
+command's own exit zero. Ninety-seven focused client controls pass across daemon
+protocol, server, manager, domain resolution, TUI encoding and UI profile
+selection. Client and conformance builds pass. Normal SQL generation produces
+no further diff. Formatting, affected lint, configuration-key, documentation and
+prelude gates pass. Documentation reports zero errors and 193 warnings; lint
+reports warnings, not a warning-free lint census. All 23 launcher tests pass
+with the existing image compatibility token.
 
-Independent review found that the initial projection used the native wire
-ceiling, which could reject valid Search results. The corrected bounded encoding
-accepts 129 hits, 200 hits and the maximum path inventory. Each real-SQLite
-control fails against the original source and passes after correction. All
-fifteen focused collector/plan controls pass. Four earlier compiled mutants fail
-the original-control, stream-cap, terminal-total and Fresh-placement assertions.
-The collector establishes exact projection COMMIT/readback before raw release;
-actual reusable consumption, helper check-in and managed drain remain separate
-Service assembly obligations.
+The first composed documentation gate failed on stale symbol citations and the
+configuration-key registry's old LSP profile path. Those references are corrected
+and the gate passes on its own subsequent exit. A source census found no named
+test removed from the 120 upstream-changed test files. That census checks
+preservation; it does not replace execution of those tests.
 
-The corrected owner identity foundation passes the integrated core gate with
-213 tests, storage with 264, broker with 461, client with 3,158 and executor with
-547. The client tests take 377.94 seconds, 405.77 including build; executor tests
-take 207.39 seconds, 224.96 including build. Every command's own exit is zero.
-Normal SQL generation and seed, formatting, affected lint, documentation and
-prelude checks pass. All 38 imported hashes remain unchanged after the gates.
+Independent rebase review found no unresolved source issue. Two low documentation
+errors were corrected: the catalogue header still named version nine, and a
+model-profile link had followed the unrelated registered-LSP renumbering. The
+review traced profile/binding creation retries, SQL field positions, feature
+refusal before local probes, and main's cache and peer-policy additions.
 
-Independent review found two actionable issues. Composed routing could divert
-ordinary native capabilities to semantic Git, and a cancellation control
-performed manual cleanup before asserting automatic cleanup. Both are corrected.
-Reservation now checks the original retained semantic counterpart, while receipt
-routing follows the retained envelope. The corrected cancellation control holds
-the actual reserve worker through a receiver it owns, then checks durable
-cancellation before manual cleanup. A compiled no-op callback mutant fails that
-first SQL assertion. The earlier passing fixture with the wrong receiver owner
-is withdrawn as evidence of a held worker; its receipt remains preserved.
+`17cfe2403` composes typed workspace creation with profile selection.
+`e6aa65d68` makes catalogue version ten preserve recent folders, profiles and
+workspace bindings. Historical version eight accepts either folders or bindings
+and installs the missing addition plus profiles. Historical version nine requires
+folders and exactly one of the two columns, then installs the missing column.
+Malformed or mixed historical shapes refuse without advancing. DDL and the
+version update share the existing transaction. Real SQLite controls retain rows,
+authentication, memberships, defaults and profiles; a column-limit fixture makes
+the second DDL fail and proves rollback of the first. Two compiled omission
+mutants fail their intended SQL assertions. The worker's 274-test result is
+separate from the composed root's 274-test result above.
 
-Original helper return passes all 474 broker tests on the composed candidate,
-with the command's own exit zero in 110.23 seconds including build. Formatting,
-normal helper build, broker lint, documentation and prelude checks also pass,
-with all ten imported hashes unchanged. The separate real-helper control passes
-both release/consumption orders and another command on the same helper. It uses
-the Darwin BestEffort posture; it does not establish Linux FullEnforcement.
-The broker gate retains its two ordinary Linux `/proc` witness exclusions.
+The earlier identity foundation passed core/storage/broker/client/executor
+component gates with 213/264/461/3158/547 tests before this rebase. Original helper
+return passed all 474 broker tests, and its real-helper control passed both
+consumption/release orders followed by another command on the same helper.
+That helper run used Darwin BestEffort, not Linux FullEnforcement. The finite
+collector passed executor/tools/code-mode gates with 547/755/483 tests.
+These receipts establish their original component revisions; they are not full
+post-rebase gate results.
 
-Independent helper-return review found no actionable issue. Twelve controls use
-the actual pool, helper and native reducers with a protocol peer; five compiled
-mutants fail intended assertions. The held-ACK control distinguishes the pool's
-Available transition from receipt by the original native actor. Failed return
-rows remain retained after physical retirement, so Service must keep their
-admission charge until explicit close. Pool size alone does not bound that
-retained row inventory. Ordinary finite LSP assembly remains required.
+The identity review corrected ordinary native commands being routed to semantic
+Git, and strengthened cancellation to assert durable automatic cleanup before
+manual cleanup. Its earlier wrong-receiver fixture is withdrawn as held-worker
+evidence. The helper-return review found no actionable issue. Its original row
+stays retained until the actual pool acknowledges check-in; failed return rows
+remain charged until Service close. Pool capacity alone does not bound those rows.
 
-The original-startup and native-close integration passes all 532 executor tests
-in 209.76 seconds, 226.38 seconds including build, with the command's own exit
-zero. Formatting, executor lint, documentation and prelude checks pass; all six
-frozen imported hashes matched afterward. Six startup controls use real SQLite;
-seven close controls distinguish actual helper/pool retirement from separately
-labeled protocol-peer ordering. Four warning-free compiled mutants fail the
-original-writer, complete-Plan, Service-handle and covered-confirmation assertions.
+Earlier Linux native-LSP controls proved FullEnforcement for initialize/hover,
+graceful stop and a native Completed/ProtocolComplete terminal. They independently
+observed native retirement and managed drain. Earlier Linux executor and sandbox
+checks likewise covered their stated component snapshots. None establishes an
+assembled owner on one physical machine driving the other machine's executor,
+or same-candidate acceptance in both placements.
 
-Independent review found no correctness issue and one low wording correction.
-The close digest includes every covered native key and the currently retained
-begun-LSP inventory. Previously pruned leases already proved Closed, positive
-native retirement, managed drain and independently observed DAL Retired; their
-native keys remain covered. The correction changes only source/package prose;
-executable source was compared unchanged. A subsequent warning-free build,
-formatting, lint, documentation and prelude checks pass. These observations
-certify the projection and startup check, not complete FullHost retirement.
-The root integration already had its normal code-mode seed from prior successful
-gates; the fresh worker's full gate and seed were not separately run.
+Two earlier timeout causes remain unresolved. A Launch readiness failure passed
+later diagnostic retries without a demonstrated startup fix. A code-mode build
+control passed alone and in subsequent unchanged full runs without a proved
+cause. Their original failures remain evidence; no assertion, deadline or test
+was removed to obtain green runs. Earlier optional client exclusions include
+one Linux `/proc` witness, thirteen shipped-server controls and rust-analyzer;
+those exclusions do not satisfy shipped-runtime acceptance. A large-array
+JavaScript parser probe still reaches the existing sibling-recursion stack limit
+in both parser profiles.
 
-The owned LSP integration at `d60d4d15` passes all 519 executor tests in
-206.91 seconds, 224.32 seconds including build, with the command's own exit
-zero. Formatting, executor lint, documentation and prelude checks pass; all
-four imported hashes remain unchanged. Independent review found no actionable
-issue. The original linked writer installs acquired connection custody before
-setup; restricted recovery self-adopts before opening SQLite and exposes no
-live Store, Clock or claim projection. Explicit close acknowledgement and that
-original writer's Normal exit are both required for release.
-
-All 18 new owned controls and 13 existing LSP controls pass separately. Five
-compiled runtime mutants fail their intended assertions, and three compiler
-negative controls reject history-to-live projection, private endpoint access
-and private claim construction. Held BEGIN contention uses actual SQLite;
-one-shot close refusal is synthetic. Neither parent death nor a returned
-history result establishes full physical retirement. Shared-clock construction,
-authenticated history routing and the complete managed aggregate remain
-assembly obligations.
-
-The corrected live-journal integration at `55bc1f61` passes all 501 executor
-tests in 202.25 seconds, 220.15 seconds including build, with the command's own
-exit zero. Formatting, executor lint, documentation and prelude checks pass;
-all six imported hashes remain unchanged. Independent review found one low
-compatibility issue: legacy native poison replies moved before rollback/close.
-The fix restores that ordering only for legacy custody and preserves the owned
-close-observation sequence. Both focused suites then pass: 17 native journal
-and 13 owned-live controls. The earlier worker full gate passed 473 tests before
-this small fix; the integrated gate is the full corrected-candidate receipt.
-Twelve compiled runtime mutants fail original link, checked close, Normal-DOWN
-or resource-binding assertions. Actual parent death still provides best-effort
-cleanup, not ordered physical retirement.
-
-The native LSP integration at `e336f4a19` passes all 488 executor tests and 461
-broker tests, plus the helper gate. Each command's own exit is zero; executor
-elapsed time is 195.32 seconds including build and 174.22 seconds for tests.
-Formatting, affected lint, documentation and prelude checks pass. All 25 imported
-hashes remain unchanged; only the executor document mirrors required composition
-with the earlier registry/history documentation.
-
-Independent review found one reachable cancellation-signal leak on successful
-input/output completion. The correction releases each original signal at
-AllDelivered and preserves the output-to-original-execution join. Three actual
-Service credit cycles observe the exact original signal PIDs terminate; compiled
-input and output no-cancel mutants fail that assertion. The bounded independent
-recheck is clean. An earlier component run had three Launch failures because its
-Erlang fixture matched the old private Service state tuple. Updating only those
-three patterns for the added LSP row field restored the unchanged ten Launch
-controls and the component's full 435-test gate. Their assertions and deadlines
-were not changed; the earlier failed receipt remains preserved.
-
-On Linux, both real-helper controls pass under a dedicated delegated user cgroup:
-initialize/hover plus graceful client stop, and separately an actual native
-Completed/ProtocolComplete terminal before local closure. The latter asserts
-FullEnforcement, code zero, no cancellation, timeout or truncation. Both independently
-observe original native retirement and managed drain while the DAL lease remains
-unretired. The source was the reviewed component base `f2dea5c38` plus its exact
-25-file overlay, archive SHA-256
-`eaf380fcadde98cc8ccec434f8749308d1137be8c9d89133eadc5a069202b0b7`;
-all overlay hashes matched again after testing. This establishes the Linux native
-component, not an assembled owner on one machine driving the other machine's
-executor or final same-candidate acceptance in both placements.
-
-The permanent-registry startup integration at `ee8ab8ae` passes all 475
-executor tests; the command's own exit is zero, with 186.97 seconds including
-build and 170.90 seconds of tests. Formatting, executor lint, documentation and
-prelude checks also exit zero, and all four imported hashes remain unchanged.
-Independent review found no actionable issue. The resource-free linked writer
-acknowledges its original parent before typed initialization; acquired connection
-custody is installed before shared SQL setup runs. A queued parent exit does not
-preempt an already admitted setup turn. Failed close retains the actual connection
-and cannot supply successful release. This fixes registry construction, not full
-host activation or physical retirement.
-
-The owned-history integration passes all 460 executor tests in 182.70 seconds,
-including build time. Formatting, executor lint, documentation and prelude checks
-exit zero; all six imported file hashes remain unchanged. Independent review found
-no production defect and two test gaps, both corrected before integration: worker
-death is observed before attempted adoption, and real SQLite writer locks remain
-held until the original recovery reaches failed-setup cleanup. Fifteen focused
-controls pass; ten executed mutants fail their intended assertions. The worker
-full gate separately passed all 444 tests on its older component base. These
-results establish restricted recovery and original handle release, not live Fresh
-startup, generation transport or complete physical retirement.
-
-The provenance integration passes all 445 executor tests in 165.46 seconds,
-including build time. Normal SQL regeneration, executor lint, documentation and
-prelude checks exit zero; all fourteen reviewed file hashes remain unchanged.
-Independent review found no actionable issue. Sixteen new real-SQLite controls
-cover atomic parent/plan admission, exact retained metadata, permanent quota
-charges, migration and corruption refusal. Four removed-check mutants fail their
-intended runtime assertions. Migration interruption after each DDL statement and
-power loss were not separately injected; rollback evidence there is the explicit
-transaction and error flow.
-
-The worker's full-suite log reported 445 passing tests but its original runner
-exit could not be recovered. That receipt remains uncertified. The separately
-executed integration gate above captured its own zero exit and complete gate
-footer; no product failure cause is inferred from the missing worker receipt.
-
-The endpoint milestone passed all 429 executor tests, all ten focused
-Launch controls and all 866 web-view tests. The subsequent owner-custodian
-integration passed all 3,147 client tests in 428.67 seconds including build time,
-with the same fifteen explicit optional exclusions described below. All nine new
-registered actor/SQLite controls ran. Independent owner-custodian review is clean. The full executor command exited zero
-in 171.75 seconds, including build time. Changed-source formatting, executor and
-client lint, documentation checking and the prelude gate pass. The latest
-documentation receipt has zero errors and 194 warnings. Independent endpoint
-review found no actionable issue; two removed-check mutants separately failed
-the intended original-writer and absent-row assertions before source restoration.
-
-An earlier post-rebase Launch run passed nine controls and failed its unused-import
-Compile/Launch control because the owner expired waiting for executor readiness.
-The executor output was lost when the owner failed before consuming the managed
-report. `f055709f0` persists returned role results without changing their Result,
-deadlines, assertions or lifecycle. The single diagnostic retry and subsequent
-full Launch module pass. The original cause remains unknown; those passing runs
-are not a startup fix. The original failed artifacts are retained.
-
-The owner worker's first full gate after its path-binding fix timed out in an
-existing code-mode build control. The unchanged control passed alone, the
-unchanged candidate then passed its full worker gate, and the integrated gate
-passed above. The timeout cause remains unproved; no deadline or exclusion was
-changed to obtain these results.
-
-The remaining receipts in this section predate the latest main rebase. They
-establish component coverage at their stated source revisions, not a full gate
-on the current candidate.
-
-The committed helper-credit integration passed broker with 458 tests, executor
-with 400, code mode with 483 and client with 3,130. The owner-generation DAL then
-passed storage with 253 tests. The client gate retains fifteen explicit optional
-skips: one Linux `/proc` witness, thirteen shipped-server controls and one
-rust-analyzer control. Formatting, affected lint and documentation checks passed;
-that documentation receipt had zero errors and 195 warnings.
-
-Adding the LSP custody DAL exposed a recurring Launch shutdown failure in the
-combined executor gate: 411 passed and one failed because a node logged
-`weft_drain_proof_lost`. A deterministic regression reproduced it against the old
-source. Channel shutdown could stop paused leaves before the asynchronous weft
-scope adopted them. `832f86095` queues cancellation through the original witnessed
-scope and accepts only its normal exit as transport join. Native retirement and
-resource cleanup retain separate witnesses; independent source review is clean.
-
-The first independent combined rerun then passed 414 tests and failed a separate
-parked-reservation fixture. That fixture expected its callback to notify completion
-after cancellation could kill it. Production instead admits the reservation to an
-independent custodian writer. `6b26739e` corrects the fixture: the exact callback
-must die before releasing the original SQLite writer, and reopening proves its
-COMMIT. Existing uncertain/no-submission/cleanup assertions and timeouts remain.
-Independent review is clean. The combined executor gate with deployment imported
-passes all 422 tests, with the required short scratch path, in 149.48 seconds.
-
-The Linux test host ran the executor suite on `cc668b1f2` plus seven portability
-fixture patches, all 384 tests passing. Those patches are committed locally as
-`c1754adae`. They select the host's temporary directory, account for OTP 29's
-64-MiB JIT mapping in compiler fixture file-size limits, and retain a test clock
-until shutdown joins. The Linux sandbox self-test and offline code-mode control
-also passed. This was component validation on Linux, not a remote owner driving
-the other machine's executor. Both physical placements still need the assembled
-runtime and the same exact candidate revision.
-
-All 23 imported launch-tooling tests pass. Independent review found and verified
-corrections for canonical mount targets and an unresolved marker in the shipped
-membership fragment; its bounded recheck is clean. Docker lifecycle calls in
-these tests are mocked. One test generates and checks real local certificates;
-it does not establish a live TLS deployment.
-
-The deployment slice passes six owner and seven executor focused controls.
-Independent review found no blocking source issue. Its isolated full package runs
-omitted the required short scratch root and refused existing Launch fixture
-enrollment before effects; those red receipts remain. The corrected integrated
-executor gate passes above. The integrated client gate passes all 3,136 tests in 436.55 seconds, retaining
-the fifteen explicit optional skips listed above.
-
-The consumed-LSP slice passes 211 LSP tests and 211 core tests, including existing
-JavaScript controls. Independent review found a retained-integer accounting gap:
-Registered diagnostic coordinates and versions had fixed charges without finite
-numeric ranges. The correction checks LSP unsigned/signed integer ranges before
-retention, settlement or consumption acknowledgement. Its bounded recheck is
-clean; Standard transport behavior stays unchanged. Integration updates two local
-transport test patterns to assert their existing ordinary variant explicitly.
-Root core and LSP gates each passed all 211 tests; affected lint reported zero
-errors. The combined pre-rebase executor and code-mode checks subsequently passed
-all 422 and 483 tests respectively. An extra large-array JavaScript probe
-exposes the same existing sibling-recursion stack limit in both parser profiles;
-no exact-limit JavaScript runtime success is claimed.
-
-Full repository gates, actual shipped registered tools, both physical-host
-placements, container execution and hosted CI have not passed on this candidate.
+Full repository gates, shipped registered tools, both physical-host placements,
+container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Rebase onto the fetched main and preserve its profiles, peer policy and local
-   Go caches. **Exit:** composed catalogue migration accepts both version-nine
-   layouts, original typed workspace retries remain enforced, and protocol
-   records have unambiguous references. Then repeat the affected gates.
-2. Complete the original physical-close prerequisites and ordinary system callers
-   for **#697**. Parent-derived workspace commands and two-stage NativeSystem
-   clearance are integrated. **Exit:** original
-   authority survives reserve/clearance without renewal, and each physical owner
-   supplies its actual close witness. Registry validation and the native close
-   projection are integrated. Workspace aggregate evidence, Compile preparation
-   ownership and Launch channel joins remain required, alongside finite LSP
-   Service ownership and real Prepare readiness. The collector itself is integrated.
-   Native transport, all four owned journals, registry startup and restricted
-   managed recovery are integrated. Preserve all
-   existing tests and ordinary local behavior.
-3. Build the approved ordinary registered path from protocols 076 and 077.
-   Preserve one original owner Broker/custodian, exact-generation publication,
-   executor-only physical paths, full reports, jobs, hooks, cwd, guidance, Git and
-   LSP. **Exit:** default tools and code mode run with the checkout absent from
-   the owner, and Close/restore retains original history and permits only proved
-   clean successors. Historical query alone does not establish fresh execution.
-4. Complete role packaging and the two physical-host placements, followed by
+1. Integrate ordinary registered goal checks and hooks for **#697**. The goal
+   component is under review correction in its isolated worktree; it is not in
+   this baseline. **Exit:** one actual Checking CAS and original system intent
+   precede launch, the original deadline and cancellation authority survive
+   clearance, UI publication follows successful persistence, and exact-source
+   component and composed checks pass. Preserve local callers and all tests.
+2. Complete original physical-close prerequisites. **Exit:** workspace aggregate,
+   Compile preparation and Launch channel ownership supply their actual original
+   close witnesses; finite LSP Service ownership retains failed-row charges,
+   semantic results and managed drain. The collector and exact pool return are
+   integrated, but do not supply the enclosing Service proof.
+3. Assemble the approved ordinary path from protocols 078 and 079. Preserve one
+   original owner Broker/custodian, exact-generation publication, executor-only
+   physical paths, full reports, jobs, hooks, cwd, guidance, Git and LSP.
+   **Exit:** default tools and code mode run with no checkout on the owner, and
+   Close/restore retains history and permits only proved clean successors.
+4. Complete role packaging and both physical-host placements, followed by
    executor pools and C1-C3/M1. **Exit:** the same candidate passes normal effects,
    cancellation, partition, restart, lost-reply, routing, durable messaging and
-   controlled-movement controls. Automatic failover and workspace snapshot
-   migration remain deferred.
-5. Check for later main changes, run applicable model and full repository gates, and
-   review the assembled system. **Exit:** exact candidate evidence closes the
-   integration checklist before publication or merge is requested.
+   controlled movement. Automatic failover and workspace snapshot migration stay
+   outside the approved scope.
+5. Check for later main changes, run applicable model and full repository gates,
+   and review the assembled system. **Exit:** exact candidate evidence closes
+   the integration checklist before publication or merge is requested.
 
 ## Rulings already made
 
