@@ -1734,7 +1734,8 @@ fn slow_close(
   inner: transport.Transport,
   closed: Subject(Nil),
 ) -> transport.Transport {
-  let transport.ChannelTransport(connect:) = inner
+  let assert transport.ChannelTransport(connect:) = inner
+    as "The local stop fixture wraps an ordinary channel transport."
 
   transport.ChannelTransport(connect: fn(inbound) {
     let connection = connect(inbound)

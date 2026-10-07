@@ -226,8 +226,19 @@ fn encode_id(id: Id) -> JsonValue {
 /// ```
 ///
 pub fn decode(text: String) -> Result(Inbound, MessageFault) {
+  decode_profile(text, json.StandardJson)
+}
+
+/// Decodes the same envelope with a closed allocation profile before nodes exist.
+///
+/// ## Examples
+/// `decode_profile(text, json.RegisteredLspJson)` shares the total JSON-RPC checks.
+pub fn decode_profile(
+  text: String,
+  profile: json.ParseProfile,
+) -> Result(Inbound, MessageFault) {
   use value <- result.try(
-    json.parse(text)
+    json.parse_profile(text, profile)
     |> result.map_error(fn(report) { MalformedMessage(report:) }),
   )
   use fields <- result.try(case value {
