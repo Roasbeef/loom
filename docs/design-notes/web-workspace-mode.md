@@ -86,10 +86,10 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:310`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:2081`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:2097`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:1418`)). The
+switching to another session (`ticket_for` (`ui_socket.gleam:1444`)). The
 exchange redeems it once (`redeem` (`ui_sessions.gleam:737`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
@@ -309,7 +309,7 @@ anyone who sees the cookie knows it, and the row's digest is the digest of
 it. The first edition of this note said a login presented as a bearer is
 refused because the daemon would hash the whole token; that was true and
 beside the point, because the daemon hashes any presented string
-(`credential` (`client/daemon/server.gleam:732`)), and `Authorization:
+(`credential` (`client/daemon/server.gleam:743`)), and `Authorization:
 Bearer <id>` would have hashed to the row and authenticated as the
 principal with no ceiling, no expiry, no key and no nonce: for the owner's
 login, owner authority on the control socket. The review of 2026-10-04
@@ -643,7 +643,7 @@ login add these cases.
 daemon's host, canonicalizes or inherits a configuration path, and runs
 `create_scoped` (`client/daemon/manager.gleam:1471`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
-counter (`CreateSession` (`tui/session_control.gleam:678`)), names the session
+counter (`CreateSession` (`tui/session_control.gleam:688`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
 of this: the ruling of 2026-09-27 says daemon control stays in the terminal.
 
@@ -730,7 +730,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:2099`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:2115`) makes;
 3. `open` (`client/daemon/manager.gleam:1149`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;

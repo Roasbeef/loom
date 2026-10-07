@@ -105,7 +105,7 @@ model and the strand rows come from `Activity`
 (`tui/daemon/protocol.gleam:325`) and `GlanceLine`
 (`tui/daemon/protocol.gleam:352`), which `observe`
 (`tui/session_selector.gleam:405`) folds in from the `sessions.activity` poll
-that `service_activity` (`tui/session_control.gleam:1329`) runs while the
+that `service_activity` (`tui/session_control.gleam:1340`) runs while the
 picker is open. The filter tabs are `Filter` (`tui/session_selector.gleam:75`)
 and the glyphs are `Presence` (`tui/session_selector.gleam:73`). The one
 figure that does not exist is an age for a resident session's last activity:
