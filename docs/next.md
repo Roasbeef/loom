@@ -1,6 +1,6 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `77b3b217` on
+This edition records the registered-runtime integration through `40169105` on
 October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
 protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
 hosted PR/main state were checked for this edition. Runtime assembly and
@@ -13,7 +13,9 @@ post-rebase checks below passed. A Launch readiness timeout during those checks
 remains unresolved despite a passing diagnostic retry. The managed endpoint is
 now implemented. The original owner custodian is wired through its generation DAL,
 and the registry retains complete original generation plans atomically with first
-admission. These components do not by themselves enable ordinary registered sessions.
+admission. Restricted recovered journal owners now acquire managed custody before
+opening SQLite. These components do not by themselves enable ordinary registered
+sessions.
 
 ## Where the tree is
 
@@ -31,7 +33,7 @@ That status belongs to main, not this unpublished integration candidate.
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
 | Managed endpoint | `5733967e9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
 | Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
-| Generation history | `3ade15ea9` and `77b3b217` add complete original journal/enrollment provenance, permanent byte charges and format-two migration without backfill. Earlier node claims, publication fences, retirement metadata and owner child/system links remain. Actual physical join validation and history transport remain assembly obligations. |
+| Generation history | `3ade15ea9` and `77b3b217` add permanent original provenance. `40169105` adds restricted managed recovery of native, workspace and resource journals, with explicit close and original normal-exit evidence. Actual physical join validation and bounded history transport remain assembly obligations. |
 | LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. Physical native and ordinary assembly joins remain pending. |
 | Deployment | `a58713277` and `45de677f` commit reviewed strict owner/executor loaders and their manifest. Shipped role bootstrap, admin transport, full host activation and ordinary daemon assembly remain unbuilt. |
 | Launch utilities | `ed4abd587` supplies named private role bundles, selected export, lifecycle commands and a setup guide. Current images deliberately lack runtime capability labels and cannot pass its startup gate. |
@@ -44,6 +46,17 @@ review records describe their stated source revisions, not the entire current
 candidate.
 
 ## Verification and its limits
+
+The owned-history integration passes all 460 executor tests in 182.70 seconds,
+including build time. Formatting, executor lint, documentation and prelude checks
+exit zero; all six imported file hashes remain unchanged. Independent review found
+no production defect and two test gaps, both corrected before integration: worker
+death is observed before attempted adoption, and real SQLite writer locks remain
+held until the original recovery reaches failed-setup cleanup. Fifteen focused
+controls pass; ten executed mutants fail their intended assertions. The worker
+full gate separately passed all 444 tests on its older component base. These
+results establish restricted recovery and original handle release, not live Fresh
+startup, generation transport or complete physical retirement.
 
 The provenance integration passes all 445 executor tests in 165.46 seconds,
 including build time. Normal SQL regeneration, executor lint, documentation and
@@ -153,11 +166,11 @@ placements, container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Finish native LSP and managed journal recovery
-   for **#697**. These remain isolated implementation work. **Exit:** exact source
-   passes meaningful failure controls, full affected package gates, independent
-   review and integrated verification. Durable generation provenance is integrated;
-   live startup still needs owned acquisition for the original journal handles,
+1. Finish native LSP and live journal acquisition for **#697**. These remain
+   isolated implementation work. **Exit:** exact source passes meaningful failure
+   controls, full affected package gates, independent review and integrated
+   verification. Durable generation provenance and restricted managed recovery
+   are integrated. Live startup still needs original parent-owned Fresh handles,
    including registry and LSP custody. Preserve every existing test and ordinary
    local behavior; earlier worker receipts do not certify later fixes.
 2. Build the approved ordinary registered path from protocols 076 and 077.
@@ -214,11 +227,11 @@ The approved [LSP contract](../protocol-change/076-registered-lsp.md) and
 [administration contract](../protocol-change/077-registered-generations.md) define
 required implementation work. Full activation, original physical retirement and
 normal daemon assembly are unbuilt, not accepted limitations of the final
-feature. Durable original journal/enrollment provenance is integrated. The next
-assembly prerequisites are managed acquisition of original live and recovered
-writers, followed by the sole
-scope administrator and authenticated bounded history transport. C1-C3 and M1
-also remain required by **#697**.
+feature. Durable original journal/enrollment provenance and restricted managed
+recovery of native, workspace and resource writers are integrated. The next
+assembly prerequisites are acquisition of original live writers and LSP recovery,
+followed by the sole scope administrator and authenticated bounded history
+transport. C1-C3 and M1 also remain required by **#697**.
 
 The owner accepted inherited workspace/cache filesystem policy without an
 aggregate disk quota. New LSP transport and retained-state inventories keep their
