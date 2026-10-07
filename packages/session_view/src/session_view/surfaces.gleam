@@ -1107,6 +1107,13 @@ pub const usage_refresh_interval_ms = 30_000
 /// usage and so starts no read, and neither do streaming tokens or unrelated
 /// captures.
 ///
+/// A usage row that lands inside the interval is deferred, not dropped: the
+/// selection records the instant the interval ends
+/// (`context_view.State.deferred_until_ms`) and the first transition at or
+/// after it reads. A host asks `context_deferred_until` for that instant so it
+/// can wake then, because a page with nothing else to do would otherwise
+/// leave the header on the earlier figure until the next unrelated event.
+///
 /// Over the shared record alone; it is one of the three edges
 /// `session_step.settle` runs after every event.
 ///
@@ -1126,18 +1133,26 @@ pub fn sync_context(
       session_model.queue_owner(after),
       after.active_strand,
     )
-  let changed =
+  let live = session_model.active_strand_live(after)
+  let now = after.stamp.now_ms
+  let reading =
     context_refresh_due(before, after)
     || context_usage_due(before, after, selected.marked_ms)
+    || deferred_read_due(selected.deferred_until_ms, now, live)
   let context = case after.peer {
     Attached ->
-      case changed {
+      case reading {
         True ->
           context_view.State(
             ..context_view.invalidate(selected),
-            marked_ms: Some(after.stamp.now_ms),
+            marked_ms: Some(now),
+            deferred_until_ms: None,
           )
-        False -> selected
+        False ->
+          context_view.State(
+            ..selected,
+            deferred_until_ms: deferral(before, after, selected, live),
+          )
       }
     Replaying -> selected
     Preview | Disconnected ->
@@ -1146,9 +1161,70 @@ pub fn sync_context(
         board: None,
         request: context_view.Idle,
         notice: "Context observation requires a live connection",
+        deferred_until_ms: None,
       )
   }
   shared_set.context(after, context)
+}
+
+/// The host-clock instant at which a deferred usage read falls due, or
+/// `None` when nothing is deferred.
+///
+/// A host that sleeps between events arms one wake-up for this instant, next
+/// to the lane's own (`session_channel.next_due`), and runs its ordinary tick
+/// when it fires; `sync_context` then starts the read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert surfaces.context_deferred_until(shared) == None
+/// ```
+pub fn context_deferred_until(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Option(Int) {
+  shared.context.deferred_until_ms
+}
+
+// The deferred instant a transition leaves behind. A row that landed inside
+// the interval sets it to the end of the interval, an earlier deferral is
+// kept, and a strand that is no longer live drops it, since the settling edge
+// reads the final figure and nothing is left to catch up.
+fn deferral(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+  selected: context_view.State,
+  live: Bool,
+) -> Option(Int) {
+  case live, selected.deferred_until_ms, selected.marked_ms {
+    False, _, _ -> None
+    True, Some(_) as kept, _ -> kept
+    True, None, Some(marked) ->
+      case usage_landed(before, after) {
+        True -> Some(marked + usage_refresh_interval_ms)
+        False -> None
+      }
+    True, None, None -> None
+  }
+}
+
+// Whether the deferred instant has arrived on a strand that is still running.
+fn deferred_read_due(deferred: Option(Int), now: Int, live: Bool) -> Bool {
+  case deferred {
+    Some(until) -> live && now >= until
+    None -> False
+  }
+}
+
+// Whether a provider usage row landed on this strand in this transition: the
+// ledger records the highest row admitted per strand, so a row is a changed
+// entry there.
+fn usage_landed(
+  before: Shared(socket, recorder, source, replay_source),
+  after: Shared(socket, recorder, source, replay_source),
+) -> Bool {
+  before.active_strand == after.active_strand
+  && dict.get(before.cache.seen, after.active_strand)
+  != dict.get(after.cache.seen, after.active_strand)
 }
 
 /// Whether this model transition is worth another automatic context read.
@@ -1186,9 +1262,8 @@ pub fn context_refresh_due(
 /// The usage ledger records the highest usage row it has admitted for each
 /// strand, so a row landing is a changed entry there; a tool result moves
 /// no ledger entry and cannot start a read. A row inside the interval is not
-/// remembered. The next row after the interval asks again and the settling
-/// edge reads regardless, so a stale header is bounded by one generation
-/// plus the interval.
+/// read here: `sync_context` defers it to the end of the interval, so a stale
+/// header is bounded by the interval.
 ///
 /// ## Examples
 ///
@@ -1201,16 +1276,12 @@ pub fn context_usage_due(
   after: Shared(socket, recorder, source, replay_source),
   marked_ms: Option(Int),
 ) -> Bool {
-  let landed =
-    dict.get(before.cache.seen, after.active_strand)
-    != dict.get(after.cache.seen, after.active_strand)
   let paced = case marked_ms {
     Some(marked) -> after.stamp.now_ms - marked >= usage_refresh_interval_ms
     None -> True
   }
-  before.active_strand == after.active_strand
+  usage_landed(before, after)
   && session_model.active_strand_live(after)
-  && landed
   && paced
 }
 

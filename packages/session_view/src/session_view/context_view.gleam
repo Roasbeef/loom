@@ -120,6 +120,11 @@ pub type State {
     /// for while a turn runs, so a long turn costs the server one read per
     /// interval and not one per generation.
     marked_ms: Option(Int),
+    /// The host-clock reading at which a usage row held back by that pacing
+    /// is read after all. A row that lands inside the interval sets it to
+    /// the end of the interval, and the read that follows clears it, so the
+    /// header never waits for a second row to learn about the first.
+    deferred_until_ms: Option(Int),
   )
 }
 
@@ -139,6 +144,7 @@ pub fn new() -> State {
     Requested,
     "Context has not been observed",
     0,
+    None,
     None,
   )
 }

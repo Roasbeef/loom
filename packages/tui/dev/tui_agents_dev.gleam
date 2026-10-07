@@ -334,6 +334,7 @@ fn fixture_context() -> context_view.State {
     "Illustrative observation; refresh pending without a provider",
     0,
     None,
+    None,
   )
 }
 
