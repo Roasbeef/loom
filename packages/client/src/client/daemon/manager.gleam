@@ -2830,6 +2830,7 @@ fn reserve_creation(
           created_at: ids.session_id_timestamp_ms(id),
           request_key: request.request_key,
           state: catalogue.Reserved,
+          profile: option.None,
           subtitle: option.None,
         )
       use selected <- result.try(select_creation_domain(

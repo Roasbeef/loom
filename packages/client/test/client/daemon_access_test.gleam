@@ -680,6 +680,7 @@ pub fn membership_pages_stay_within_the_budget_and_resume_after_the_cursor_test(
               created_at: 0,
               request_key: id,
               state: catalogue.Reserved,
+              profile: option.None,
               subtitle: option.None,
             ),
           )

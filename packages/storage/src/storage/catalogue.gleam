@@ -43,6 +43,7 @@ import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_logins_schema
 import storage/catalogue_names_schema
+import storage/catalogue_profiles_schema
 import storage/catalogue_recent_folders_schema
 import storage/catalogue_subtitles_schema
 import storage/sql
@@ -80,6 +81,12 @@ pub type Registration {
     name: String,
     /// The host configuration reference, not its secret values.
     configuration: String,
+    /// The model profile the session was created under, by name, or `None`
+    /// for the configuration's default roles. It is part of the immutable
+    /// creation request, so a retry compares it, and it is a name rather than
+    /// the roles it resolved to: the daemon resolves it again each time the
+    /// session opens (protocol-change/076).
+    profile: Option(String),
     /// Creation time in Unix milliseconds.
     created_at: Int,
     /// The immutable creation request key.
@@ -221,7 +228,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 8
+pub const current_version = 9
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -235,6 +242,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(6, catalogue_credential_kinds_schema.schema),
     #(7, catalogue_logins_schema.schema),
     #(8, catalogue_recent_folders_schema.schema),
+    #(9, catalogue_profiles_schema.schema),
   ]
 }
 
@@ -333,6 +341,7 @@ fn insert(
       configuration: record.configuration,
       created_at: record.created_at,
       request_key: record.request_key,
+      profile: option.unwrap(record.profile, ""),
     ),
   ))
   use Nil <- result.try(statement(catalogue, sql.increment_catalogue_revision()))
@@ -957,6 +966,7 @@ fn page_for(
             created_at: row.created_at,
             request_key: row.request_key,
             state: Reserved,
+            profile: stored_profile(row.profile),
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1011,6 +1021,7 @@ pub fn member_page(
             created_at: row.created_at,
             request_key: row.request_key,
             state: Reserved,
+            profile: stored_profile(row.profile),
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1124,6 +1135,7 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
         created_at: row.created_at,
         request_key: row.request_key,
         state: Reserved,
+        profile: stored_profile(row.profile),
         subtitle: None,
       ),
       row.state,
@@ -1210,11 +1222,69 @@ fn validate(record: Registration) -> Result(Nil, Error) {
     && record.request_key != ""
     && record.created_at >= 0
   {
-    True -> Ok(Nil)
+    True ->
+      case record.profile {
+        None -> Ok(Nil)
+        Some(name) ->
+          case is_profile_name(name) {
+            True -> Ok(Nil)
+            False ->
+              Error(Invalid("registration profile is not a profile name"))
+          }
+      }
     False ->
       Error(Invalid(
         "registration needs absolute paths, a request key and a nonnegative creation time",
       ))
+  }
+}
+
+/// The longest profile name, in bytes.
+pub const profile_name_limit = 32
+
+/// Whether text is a model profile name: one to `profile_name_limit` characters
+/// of lowercase ASCII letters, digits, `_` and `-`, beginning with a letter. It
+/// is the one grammar for a `[profiles.<name>]` table key, a `--profile`
+/// argument and a stored registration, so the same word means the same thing
+/// in the configuration file, on the wire and in the catalogue.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_profile_name("deepseek")
+/// assert catalogue.is_profile_name("glm-5_3")
+/// assert !catalogue.is_profile_name("")
+/// assert !catalogue.is_profile_name("9lives")
+/// assert !catalogue.is_profile_name("Deep Seek")
+/// ```
+pub fn is_profile_name(text: String) -> Bool {
+  case string.to_graphemes(text) {
+    [first, ..rest] ->
+      string.length(text) <= profile_name_limit
+      && is_letter(first)
+      && list.all(rest, fn(grapheme) {
+        is_letter(grapheme)
+        || grapheme == "_"
+        || grapheme == "-"
+        || list.contains(string.to_graphemes("0123456789"), grapheme)
+      })
+    [] -> False
+  }
+}
+
+fn is_letter(grapheme: String) -> Bool {
+  list.contains(string.to_graphemes("abcdefghijklmnopqrstuvwxyz"), grapheme)
+}
+
+// The column's default, the empty string, means no profile. Any other text is
+// kept as it was stored and judged by `validate`, so a value that is not a
+// profile name fails the read with `Invalid` instead of reading as no profile:
+// a session that was created under a profile must not quietly open under the
+// default roles because its row was damaged.
+fn stored_profile(text: String) -> Option(String) {
+  case text {
+    "" -> None
+    name -> Some(name)
   }
 }
 

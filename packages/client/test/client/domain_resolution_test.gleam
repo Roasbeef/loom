@@ -54,6 +54,7 @@ main = [\"session_b\"]
       1,
       "resolution",
       catalogue.Saved,
+      profile: option.None,
       subtitle: option.None,
     )
   let selected =

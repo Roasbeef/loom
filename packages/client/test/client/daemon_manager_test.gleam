@@ -39,6 +39,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     created_at: 1_700_000_000_000,
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
+    profile: option.None,
     subtitle: option.None,
   )
 }

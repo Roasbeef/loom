@@ -849,6 +849,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
         1000,
         "wire-archive",
         catalogue.Reserved,
+        profile: option.None,
         subtitle: option.None,
       )
     assert catalogue.reserve(store, registration) == Ok(registration)
