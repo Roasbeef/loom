@@ -2,7 +2,10 @@
 
 This report records the October 6, 2026 (America/Los_Angeles) fast-reasoning
 workload and the context-inventory optimization based on it. The branch starts
-at `8facdb0ea5f8c809fcb9be2e140afea64309f258`, after PR #903. Measurements use
+at `8facdb0ea5f8c809fcb9be2e140afea64309f258`, after PR #903, and rebased
+without conflicts onto `3ffb0bf522e037dcf8f973e64e3ab5e12c254ced` (#911).
+That upstream change touches only signoff/log access, its tests and execution
+docs; the context control is unchanged. Measurements use
 Gleam 1.19.0 and OTP 29.0.5, with four alternating fresh single-scheduler VMs.
 
 ## Live attribution
@@ -129,3 +132,10 @@ The existing release smoke additionally checks the shipped reader's true and
 false cases. The final rebuilt-release smoke, full affected gate and exact-head
 publication checks are recorded in the PR; earlier component results cannot
 certify a later commit.
+
+The first full affected invocation passed static checks and server preparation,
+then returned its own make status 2 (lane 124): the unchanged 20-second aggregate
+Python-suite deadline expired in upstream signoff fixtures on this Mac, which
+lacks `flock`. Its skip census found no undeclared skip. No test, assertion,
+deadline or platform declaration was changed. The final rebased gate and Linux
+signoff are separate publication checks, not inferred from component passes.
