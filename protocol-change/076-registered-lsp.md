@@ -950,3 +950,36 @@ Fabricated ToolKeys, query-owned server timing, renewable captures and receipt-b
 retirement cannot express the approved authority and custody rules. No generic timing
 service, automatic failover, workspace migration, quota poller, new dependency or FFI is
 introduced.
+
+### Original native attachment implementation mechanics
+
+The executor-local native foundation uses `lsp_journal.reserve_lease_live` to
+separate original first reservation from retained lease history. Its opaque
+`LeaseStartupClaim` retains the original Store and trusted clock era internally;
+`reserve_lease` preserves its prior readback projection. The existing original
+offer CAS returns FreshPlacement only after COMMIT/readback. RetainedPlacement
+cannot install another Service-owned pending context, including after a lost
+first installation reply or across competing actual Service actors.
+
+A checked plan freezes the actual descriptor, registration, full generation
+binding and enrollment, declared profile, placement, original policy and trusted
+environment. It grants no Broker clearance. The original native Service consumes
+one pending installation before Request/Authority/Admit and exact command
+association. Coverage begins before the first possibly committed Request write.
+One real consumed sink precedes Begin and first native AuthorizeLaunch. The
+existing credited retiring dispatcher and weft managed custodian preserve the
+original helper borrow and independent exact pool observer. A closed output join
+retains actual consumer success plus AllDelivered until the original native
+handle arrives; it returns the original ordinal once. No lease retirement is
+inferred from terminal, receipt, consumption, reusable or managed drain.
+
+The protocol-specific elapsed check at both broker checkpoints preserves the
+ServerLease's approved zero CPU/wall Session policy. Zero wall requires positive
+original remaining elapsed time bounded by twelve hours and refuses a zero
+sentinel deadline. The helper permits zero wall only in ProtocolServer, since its
+frame contains no clock proof. Finite collection keeps positive wall at most
+sixty seconds; positive server wall remains at most twelve hours. Network,
+output, enforcement, policy composition and exact helper retirement are unchanged.
+This split implements the already approved lifetime policy without changing wire
+or normative authority. Owner route/clearance, semantic timing, finite collectors
+and complete full-host installation remain separate joins.

@@ -193,6 +193,40 @@ pub opaque type LeaseReadback {
   LeaseReadback(row: sql.LspRead, key: id.LspServiceKey, phase: LeasePhase)
 }
 
+/// Original first-reservation custody, unavailable from a historical readback.
+pub opaque type LeaseStartupClaim {
+  /// Construction follows only the first original reservation COMMIT/readback.
+  LeaseStartupClaim(
+    /// Original DAL subject and connection incarnation, compared internally.
+    store: Store,
+    /// Exact immutable original lease bytes and deadline.
+    original: LeaseReadback,
+    /// Trusted original clock construction, separate from decoded era text.
+    era: id.ClockEra,
+  )
+}
+
+/// Only the first successful reservation transaction grants startup custody.
+pub type LeaseReservation {
+
+  /// The original reservation COMMIT and exact readback issued this token.
+  FreshLease(claim: LeaseStartupClaim)
+
+  /// Retry and recovery history can never reconstruct startup custody.
+  RetainedLease(history: LeaseReadback)
+}
+
+/// First original placement differs from retained immutable placement history.
+@internal
+pub type StartupPlacement {
+
+  /// Only the first original offer CAS committed this checked readback.
+  FreshPlacement(history: CommandReadback)
+
+  /// Matching history cannot install another live pending service context.
+  RetainedPlacement(history: CommandReadback)
+}
+
 /// Checked finite history retains its original capture even after recovery.
 pub opaque type FiniteReadback {
   /// Construction is restricted to checked original custody at this boundary.
@@ -340,12 +374,15 @@ type Mode {
 
 type Reply {
   LeaseReply(LeaseReadback)
+  LeaseReservationReply(LeaseReservation)
   FiniteReply(FiniteReadback)
   CommandReply(CommandReadback)
   AdmissionReply(FiniteAdmission)
   StartReply(CommandAdmission)
   ReceiptReply(ResultReceipt)
   RetirementReply(RetirementReceipt)
+  CountReply(Int)
+  PlacementReply(StartupPlacement)
   NilReply
 }
 
@@ -449,6 +486,32 @@ pub fn reserve_lease(
   configured_name: String,
   canonical_root: String,
 ) -> Result(LeaseReadback, Error) {
+  use reservation <- result.try(reserve_lease_live(
+    store,
+    key,
+    input,
+    configured_name,
+    canonical_root,
+  ))
+  case reservation {
+    FreshLease(claim) -> Ok(claim.original)
+    RetainedLease(history) -> Ok(history)
+  }
+}
+
+/// Reserves once and returns live startup custody only after its first COMMIT.
+/// Existing rows return history, including when their era and ticks repeat.
+///
+/// ## Examples
+/// `reserve_lease_live(store, key, input, name, root)` cannot renew an original.
+@internal
+pub fn reserve_lease_live(
+  store: Store,
+  key: id.LspServiceKey,
+  input: BitArray,
+  configured_name: String,
+  canonical_root: String,
+) -> Result(LeaseReservation, Error) {
   use bytes <- result.try(wire.encode_lease(key) |> invalid)
   use value <- result.try(mp.decode(bytes) |> invalid)
   use Nil <- result.try(validate_identity(store.binding, value, input, None))
@@ -467,7 +530,8 @@ pub fn reserve_lease(
         Ok(row) -> {
           use Nil <- result.try(exact(row, store.binding, bytes, input))
           use Nil <- result.try(check(row.slot == slot, Conflict))
-          lease_reply(row)
+          use history <- result.try(lease_history(row))
+          Ok(LeaseReservationReply(RetainedLease(history)))
         }
         Error(Missing) -> {
           use Nil <- result.try(admission_open(context))
@@ -512,13 +576,101 @@ pub fn reserve_lease(
             sql.lsp_insert_slot(slot, id.lease_address(key)),
           ))
           use row <- result.try(lookup(context, id.lease_address(key)))
-          lease_reply(row)
+          use history <- result.try(lease_history(row))
+          Ok(
+            LeaseReservationReply(
+              FreshLease(LeaseStartupClaim(store, history, context.clock.era)),
+            ),
+          )
         }
         Error(error) -> Error(error)
       }
     }),
   )
-  as_lease(reply)
+  case reply {
+    LeaseReservationReply(reservation) -> Ok(reservation)
+    _ -> Error(Corrupt)
+  }
+}
+
+/// Projects immutable original startup facts without exporting the Store door.
+///
+/// ## Examples
+/// This token's deadline and era survive exact retries unchanged.
+@internal
+pub fn lease_startup_fields(
+  claim: LeaseStartupClaim,
+) -> #(Binding, id.LspServiceKey, Int, id.ClockEra) {
+  // The ClockEra was admitted at construction; retaining the original typed
+  // clock avoids a decoder or a peer string becoming clock provenance.
+  #(
+    claim.store.binding,
+    claim.original.key,
+    claim.original.row.deadline_tick,
+    claim.era,
+  )
+}
+
+/// Rechecks original first-reservation custody without returning launch authority.
+/// The caller already holds the original Store and trusted native clock era.
+///
+/// ## Examples
+/// A copied token cannot pass verification against another connection owner.
+@internal
+pub fn verify_lease_startup(
+  store: Store,
+  binding: Binding,
+  claim: LeaseStartupClaim,
+  era: id.ClockEra,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(check(
+    store == claim.store && binding == store.binding && era == claim.era,
+    Conflict,
+  ))
+  use reply <- result.try(
+    exchange(store, fn(context) {
+      use Nil <- result.try(admission_open(context))
+      use row <- result.try(lookup(context, claim.original.row.address))
+      use Nil <- result.try(same_original(row, claim.original.row))
+      use Nil <- result.try(exact_binding(row, binding))
+      let now = context.clock.now()
+      use Nil <- result.try(check(
+        context.clock.era == era
+          && row.clock_era == id.era_string(era)
+          && row.deadline_tick == claim.original.row.deadline_tick
+          && row.phase >= 0
+          && row.phase <= 2
+          && signed_tick(now)
+          && now < row.deadline_tick,
+        Fenced,
+      ))
+      Ok(NilReply)
+    }),
+  )
+  as_nil(reply)
+}
+
+/// Observes the bounded current-slot inventory without granting cleanup rights.
+/// A freshly reserved incoming lease is already included in this count.
+///
+/// ## Examples
+/// Uncertain originals continue to occupy their slot until verified retirement.
+@internal
+pub fn unretired_lease_count(
+  store: Store,
+  binding: Binding,
+) -> Result(Int, Error) {
+  use Nil <- result.try(check(binding == store.binding, Conflict))
+  use reply <- result.try(
+    exchange(store, fn(context) {
+      use slots <- result.try(query(context, sql.lsp_slots()))
+      Ok(CountReply(list.length(slots)))
+    }),
+  )
+  case reply {
+    CountReply(count) -> Ok(count)
+    _ -> Error(Corrupt)
+  }
 }
 
 /// Reads exact complete lease history without constructing startup authority.
@@ -858,24 +1010,92 @@ pub fn retain_offer(
   offer: BitArray,
   verify: fn(id.LspCommandRef, BitArray) -> Result(Nil, Error),
 ) -> Result(CommandReadback, Error) {
+  use placement <- result.try(retain_offer_mode(
+    store,
+    history,
+    offer,
+    verify,
+    None,
+  ))
+  case placement {
+    FreshPlacement(history) | RetainedPlacement(history) -> Ok(history)
+  }
+}
+
+/// Consumes first original ServerLease placement under the existing offer CAS.
+/// A copied startup token and a lost reply can return only retained placement.
+///
+/// ## Examples
+/// Two services sharing this Store cannot both install original pending custody.
+@internal
+pub fn retain_startup_offer(
+  claim: LeaseStartupClaim,
+  history: CommandReadback,
+  offer: BitArray,
+  verify: fn(id.LspCommandRef, BitArray) -> Result(Nil, Error),
+) -> Result(StartupPlacement, Error) {
+  retain_offer_mode(claim.store, history, offer, verify, Some(claim))
+}
+
+fn retain_offer_mode(
+  store: Store,
+  history: CommandReadback,
+  offer: BitArray,
+  verify: fn(id.LspCommandRef, BitArray) -> Result(Nil, Error),
+  startup: Option(LeaseStartupClaim),
+) -> Result(StartupPlacement, Error) {
   use Nil <- result.try(canonical_record(offer, 131_072))
   use Nil <- result.try(verify(history.ref, offer))
-  command_mutation(store, history, fn(context, row) {
-    case row.offer {
-      <<>> -> {
-        use Nil <- result.try(check(row.phase == 0, Fenced))
-        use Nil <- result.try(admission_open(context))
-        let next = sql.LspRead(..row, phase: 1, offer: offer)
-        use Nil <- result.try(update(context, next, row.phase))
-        use Nil <- result.try(mirror_server(context, history.ref, next, 1))
-        Ok(next)
+  use reply <- result.try(
+    exchange(store, fn(context) {
+      use row <- result.try(lookup(context, history.row.address))
+      use Nil <- result.try(same_original(row, history.row))
+      use Nil <- result.try(exact_binding(row, store.binding))
+      use Nil <- result.try(case startup {
+        None -> Ok(Nil)
+        Some(claim) -> {
+          use Nil <- result.try(check(
+            claim.store == store
+              && id.lsp_startup_command(claim.original.key, id.ServerLease)
+              == Ok(history.ref),
+            Conflict,
+          ))
+          use parent <- result.try(lookup(context, claim.original.row.address))
+          use Nil <- result.try(same_original(parent, claim.original.row))
+          check(
+            parent.phase >= 0
+              && parent.phase <= 2
+              && context.clock.era == claim.era
+              && parent.deadline_tick == claim.original.row.deadline_tick
+              && context.clock.now() < parent.deadline_tick,
+            Fenced,
+          )
+        }
+      })
+      case row.offer {
+        <<>> -> {
+          use Nil <- result.try(check(row.phase == 0, Fenced))
+          use Nil <- result.try(admission_open(context))
+          let next = sql.LspRead(..row, phase: 1, offer: offer)
+          use Nil <- result.try(update(context, next, row.phase))
+          use Nil <- result.try(mirror_server(context, history.ref, next, 1))
+          use saved <- result.try(lookup(context, row.address))
+          use Nil <- result.try(check(saved == next, Uncertain))
+          use history <- result.try(command_history(saved, history.ref))
+          Ok(PlacementReply(FreshPlacement(history)))
+        }
+        original -> {
+          use Nil <- result.try(check(original == offer, Conflict))
+          use history <- result.try(command_history(row, history.ref))
+          Ok(PlacementReply(RetainedPlacement(history)))
+        }
       }
-      original -> {
-        use Nil <- result.try(check(original == offer, Conflict))
-        Ok(row)
-      }
-    }
-  })
+    }),
+  )
+  case reply {
+    PlacementReply(placement) -> Ok(placement)
+    _ -> Error(Corrupt)
+  }
 }
 
 /// Retains exact owner clearance after actual native admission verification.
@@ -990,6 +1210,59 @@ pub fn server_claim_fields(
     claim.lease.row.deadline_tick,
     claim.lease.row.clock_era,
   )
+}
+
+/// Rechecks exact original server dispatch custody without minting authority.
+/// A trusted native clock construction supplies the original era; history or
+/// decoded strings cannot substitute for that live construction.
+///
+/// ## Examples
+/// Verification refuses a closed lease even when its claim bytes still match.
+@internal
+pub fn verify_server_claim(
+  store: Store,
+  binding: Binding,
+  claim: ServerLeaseClaim,
+  era: id.ClockEra,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(check(
+    store == claim.claim.store && store.binding == binding,
+    Conflict,
+  ))
+  use reply <- result.try(
+    exchange(store, fn(context) {
+      use Nil <- result.try(admission_open(context))
+      use lease <- result.try(lookup(context, claim.lease.row.address))
+      use command <- result.try(lookup(
+        context,
+        claim.claim.original.row.address,
+      ))
+      use Nil <- result.try(same_original(lease, claim.lease.row))
+      use Nil <- result.try(same_original(command, claim.claim.original.row))
+      use Nil <- result.try(exact_binding(lease, binding))
+      let now = context.clock.now()
+
+      // Dispatch remains tied to both original rows, including immutable native
+      // association and deadline, rather than possession of a matching digest.
+      use Nil <- result.try(check(
+        command.phase == 3
+          && { lease.phase == 3 || lease.phase == 4 }
+          && context.clock.era == era
+          && lease.clock_era == id.era_string(era)
+          && lease.deadline_tick == claim.lease.row.deadline_tick
+          && command.deadline_tick == claim.claim.original.row.deadline_tick
+          && command.native_identity == claim.claim.original.row.native_identity
+          && command.native_prepared == claim.claim.original.row.native_prepared
+          && lease.native_identity == command.native_identity
+          && lease.native_prepared == command.native_prepared
+          && signed_tick(now)
+          && now < lease.deadline_tick,
+        Fenced,
+      ))
+      Ok(NilReply)
+    }),
+  )
+  as_nil(reply)
 }
 
 /// Marks Serving only from the original post-COMMIT server claim.

@@ -1288,3 +1288,79 @@ blocked native/workspace/resource writer locks, partial acquisition failure, exa
 retained results and receipts, lost replies, delayed DOWN, abnormal close failure
 and resource-before-native cancellation. This component does not assemble the
 registered history lane or prove complete generation/physical retirement.
+
+## Registered LSP original native attachment
+
+`remote/lsp_native` is the local checked wrapper around the existing
+`remote/service` actor. `internal/lsp_native_plan` resolves the actual declared
+profile, physical placement and trusted environment once, then compares complete
+scope, descriptor commitment, canonical enrollment, contract and registration.
+Its plan grants no Broker clearance. Production assembly must pass the actual
+original owner's cleared Session request and pair `ClockEra` with the same
+trusted elapsed-clock construction used by `service.Config.now` and the DAL.
+Decoded era text cannot attest that construction.
+
+`lsp_journal.reserve_lease_live` returns `FreshLease(LeaseStartupClaim)` only
+following the first reservation COMMIT and exact readback. `reserve_lease` keeps
+its historical compatibility projection. Retry, recovery and another Store
+incarnation return history; they cannot mint the original token. The existing
+immutable offer CAS supplies `FreshPlacement` or `RetainedPlacement`. Only Fresh
+installs a Service-owned `PendingServerLease`, so two actual Services copying one
+token cannot both own startup. Submit consumes that original pending door before
+Request, Authority, Admit, exact LSP association and first ServerLeaseClaim.
+Checked native key/digest coverage precedes the first Request write attempt;
+failed durable replies retain reconciliation obligations. Claim verification
+compares the original Store, full rows, era, association and original deadline,
+and returns no effect authority.
+
+The actor reserves each original row before checkout. Both its prospective row
+count and the observed unretired DAL slots must fit the actual pool size minus
+three; the incoming FreshLease is already counted. Distinct profiles share that
+capacity. Closing and uncertainty remain charged. Native rows can be removed
+only after input fencing, all managed drains, exact native proof and independently
+observed DAL Retired. This component never calls `retire_lease`.
+
+One actual consumed sink is installed before Begin and original native
+AuthorizeLaunch. The existing retiring credited dispatcher starts the server;
+one weft managed custodian preserves its caller and original borrow through lost
+replies, cancellation and owner death. One input credit accepts at most 8192
+bytes, and only the matching actual ProtocolInputAccepted supplies feed success.
+Admission permanently charges at most 64 MiB and 8192 frames including reserved
+EOF. A thirty-second original managed deadline fences pending credit. Shared
+stdout/stderr output credit returns only after actual `consumed.publish` success
+and AllDelivered. `internal/lsp_output_join` retains a consumed ordinal until
+`accept_lsp_started` installs the original execution, then returns it once.
+Fencing drops that ordinal without acknowledging a successful prefix.
+
+Cleanup independently reports original input fence, managed drain, bounded closed
+witness and exact helper retirement. The witness codec distinguishes actual
+ProtocolTerminal, definite startup refusal, possibly-started failure, lost reply
+and local protocol closure. FullEnforcement refusal remains a failure. Original
+native exit, ForgetRetired and normal DOWN enter the independent pool observer;
+client ACK, AllDelivered, terminal and ProtocolReusable cannot supply retirement.
+ServerProtocol never supplies finite reuse. No ordinary stdout archive is added.
+
+These controls reuse the existing client/parser/state profile, consumed grants,
+Broker clearance, native and LSP journals, credited helper protocol, retirement
+observer and weft lifetime/drain primitives. The new mechanisms are the checked
+plan, original first-placement door, bounded Service row and closed output join.
+Finite Search/Prepare collectors, semantic timing/manager, authenticated owner
+route, owner durable result/companion clearance, endpoint drain and shipped
+full-host installation remain integration work. Owned open/recover-before-adoption
+for the LSP DAL is also outside this slice. Component fixtures use the actual
+Broker at an explicit trusted owner boundary; they do not supply that missing
+production owner route.
+
+The real-helper fixture keeps Graceful client stop separate from child-driven
+native terminal: the latter leaves transport open until actual settlement and
+requires Linux FullEnforcement Completed with ProtocolComplete, then original
+native proof and managed drain. Darwin requires the actual DegradedExecution
+refusal. A handshake, local close or positive retirement alone is insufficient.
+
+Each original start/input/output task owns its external weft cancellation signal.
+Actual AllDelivered cancels that exact signal before dropping the input/start
+row or marking output drained. An output ordinal held for the original execution
+retains its join after signal release. The actual Service regression captures
+three successive original input/output signal PIDs before ACK/consume and observes
+their exact Killed DOWN after successful AllDelivered, then original start signal
+cleanup after closure. Compiled no-cancel input/output mutants fail this check.
