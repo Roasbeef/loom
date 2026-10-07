@@ -41,6 +41,11 @@ import tools/fs
 import weft/actor
 import weft/poll
 
+type ClockRequest {
+  ReadClock(reply: process.Subject(Int))
+  StopClock
+}
+
 type Fixture {
   Fixture(
     path: String,
@@ -685,12 +690,13 @@ pub fn elapsed_time_after_association_cannot_renew_native_deadline_test() {
     let claim = prepared(f, a)
     let assert Ok(counter) =
       actor.new(0)
-      |> actor.on_message(fn(count, reply) {
-        let count = count + 1
-        process.send(reply, count)
-        case count {
-          3 -> actor.stop()
-          _ -> actor.continue(count)
+      |> actor.on_message(fn(count, message) {
+        case message {
+          ReadClock(reply) -> {
+            process.send(reply, count + 1)
+            actor.continue(count + 1)
+          }
+          StopClock -> actor.stop()
         }
       })
       |> actor.start
@@ -698,7 +704,7 @@ pub fn elapsed_time_after_association_cannot_renew_native_deadline_test() {
     let subject = counter.data
     let now = fn() {
       let reply = process.new_subject()
-      process.send(subject, reply)
+      process.send(subject, ReadClock(reply))
       let assert Ok(count) = process.receive(reply, 1000)
         as "Finite clock probe."
       case count {
@@ -742,6 +748,16 @@ pub fn elapsed_time_after_association_cannot_renew_native_deadline_test() {
     assert exchange(server, context, ref(a), wire.Query(k, hash, 0))
       == Ok(wire.Terminal(k, hash, bytes))
     assert service.shutdown(server) == Ok(Nil)
+
+    // Retirement polling may read the elapsed clock until service shutdown joins.
+    let monitor = process.monitor(counter.pid)
+    process.send(counter.data, StopClock)
+    let assert Ok(_) =
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(down) { down })
+      |> process.selector_receive(1000)
+      as "The original clock actor joins after its last consumer."
+    Nil
   })
 }
 
@@ -1142,12 +1158,14 @@ fn toolchain_root(directory: String) -> String {
   }
 }
 
+// OTP 29 on Linux allocates a 64 MiB JIT memfd before compiling source.
+// RLIMIT_FSIZE covers that memory-backed file as well as disk output.
 fn base(path: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..executor.base_policy(path),
     writable_roots: [path <> "/work", path <> "/build", channel(path)],
     protected: [],
-    limits: policy.Limits(10, 10, 536_870_912, 64, 16_777_216, 262_144),
+    limits: policy.Limits(10, 10, 536_870_912, 64, 67_108_864, 262_144),
     env_allow: ["PATH", "TMPDIR"],
   )
 }

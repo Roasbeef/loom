@@ -39,7 +39,11 @@ fn fixture(
   let #(seconds, nanos) =
     timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
   let path =
-    "/private/tmp/lwc-" <> int.to_string(seconds) <> "-" <> int.to_string(nanos)
+    temporary_root()
+    <> "/lwc-"
+    <> int.to_string(seconds)
+    <> "-"
+    <> int.to_string(nanos)
   let parent = process.new_subject()
   let cancelled = process.new_subject()
   let closed = process.new_subject()
@@ -136,7 +140,8 @@ pub fn exclusive_collision_and_partial_directory_custody_test() {
   let #(seconds, nanos) =
     timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
   let path =
-    "/private/tmp/lwc-collision-"
+    temporary_root()
+    <> "/lwc-collision-"
     <> int.to_string(seconds)
     <> "-"
     <> int.to_string(nanos)
@@ -192,7 +197,8 @@ pub fn no_directory_removal_before_original_preparation_join_test() {
     timestamp.system_time()
     |> timestamp.to_unix_seconds_and_nanoseconds
   let path =
-    "/private/tmp/lwc-preparer-"
+    temporary_root()
+    <> "/lwc-preparer-"
     <> int.to_string(seconds)
     <> "-"
     <> int.to_string(nanos)
@@ -229,7 +235,8 @@ pub fn original_host_death_closes_blocked_accept_without_native_cleanup_proof_te
   let #(seconds, nanos) =
     timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
   let path =
-    "/private/tmp/lwc-host-"
+    temporary_root()
+    <> "/lwc-host-"
     <> int.to_string(seconds)
     <> "-"
     <> int.to_string(nanos)
@@ -281,7 +288,8 @@ pub fn immutable_deadline_closes_original_listener_without_fabricating_cleanup_t
   let #(seconds, nanos) =
     timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
   let path =
-    "/private/tmp/lwc-deadline-"
+    temporary_root()
+    <> "/lwc-deadline-"
     <> int.to_string(seconds)
     <> "-"
     <> int.to_string(nanos)
@@ -326,7 +334,8 @@ fn refused_partial(
   let #(seconds, nanos) =
     timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
   let path =
-    "/private/tmp/lwc-refused-"
+    temporary_root()
+    <> "/lwc-refused-"
     <> int.to_string(seconds)
     <> "-"
     <> int.to_string(nanos)
@@ -391,7 +400,8 @@ pub fn service_stop_without_waiter_preserves_original_close_reply_test() {
   let #(seconds, nanos) =
     timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
   let path =
-    "/private/tmp/lwc-waiter-"
+    temporary_root()
+    <> "/lwc-waiter-"
     <> int.to_string(seconds)
     <> "-"
     <> int.to_string(nanos)
@@ -469,4 +479,12 @@ pub fn service_stop_without_waiter_preserves_original_close_reply_test() {
   assert simplifile.read_bits(path <> "/t") == Ok(<<0:size(256)>>)
   close_peer(peer)
   assert simplifile.delete(path) == Ok(Nil)
+}
+
+// macOS resolves /tmp through /private; Linux has no /private directory.
+fn temporary_root() -> String {
+  case simplifile.is_directory("/private/tmp") {
+    Ok(True) -> "/private/tmp"
+    _ -> "/tmp"
+  }
 }

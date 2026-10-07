@@ -422,8 +422,12 @@ pub fn refusal_and_compacted_phases_keep_exact_historical_observation_test() {
 fn fixture(_name: String, run: fn(Fixture) -> Nil) {
   let #(seconds, nanos) =
     timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
+  let tmp = case simplifile.is_directory("/private/tmp") {
+    Ok(True) -> "/private/tmp"
+    _ -> "/tmp"
+  }
   let directory =
-    "/private/tmp/o-" <> int.to_string(seconds) <> "-" <> int.to_string(nanos)
+    tmp <> "/o-" <> int.to_string(seconds) <> "-" <> int.to_string(nanos)
   assert simplifile.create_directory(directory) == Ok(Nil)
   let enrolled = enrolled(directory)
   let assert Ok(input) =
