@@ -16,6 +16,7 @@ import machine/codec
 import machine/operation
 import session_view/snapshot
 import session_view/snapshot_view
+import session_view/strand_name
 import session_view/text_hygiene
 import session_view/tool_activity
 
@@ -210,12 +211,7 @@ pub fn lines(rows: List(Row), active: String) -> List(String) {
   let lines =
     list.flat_map(visible, fn(row) {
       [
-        "Reviewer "
-          <> text_hygiene.single_line(row.strand)
-          <> " · "
-          <> row.progress
-          <> " · "
-          <> row.pending,
+        who(row.strand) <> " · " <> row.progress <> " · " <> row.pending,
         "  Task: " <> described(row, active),
       ]
     })
@@ -225,6 +221,20 @@ pub fn lines(rows: List(Row), active: String) -> List(String) {
       list.append(lines, [
         "+" <> int.to_string(count) <> " more running · /agents to inspect",
       ])
+  }
+}
+
+// Who the row is about: its kind, then the name its parent chose. A
+// sub-agent is a `Sub-agent` under the slug of its minted identity, without
+// the parent or the suffix; the advisor keeps `Reviewer`, which is what it
+// does; any other strand is a `Strand` under its own name.
+fn who(strand: String) -> String {
+  let name = text_hygiene.single_line(strand_name.short(strand))
+  case strand, name {
+    "advisor", _ -> "Reviewer advisor"
+    "sub:" <> _, "sub:" <> bare -> "Sub-agent " <> bare
+    "sub:" <> _, _ -> "Sub-agent " <> name
+    _, _ -> "Strand " <> name
   }
 }
 

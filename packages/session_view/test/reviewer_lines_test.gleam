@@ -40,8 +40,32 @@ pub fn a_sub_agent_row_is_the_first_sentence_of_its_brief_test() {
     )
   assert lines
     == [
-      "Reviewer sub:tests · bash · no pending input",
+      "Sub-agent tests · bash · no pending input",
       "  Task: You are working in the workspace /Users/me/proj.",
+    ]
+}
+
+// A minted sub-agent identity carries its parent and a suffix. The band names
+// the agent by the slug its parent chose and by what it is, a sub-agent, and
+// never as a reviewer or by the raw handle.
+pub fn a_minted_sub_agent_shows_its_slug_and_no_suffix_test() {
+  let lines =
+    reviewer_status.lines(
+      [
+        Row(
+          "sub:main/slow-worker-fbb94c37026b490e",
+          "op-3",
+          "Think about it.",
+          "assistant",
+          "no pending input",
+        ),
+      ],
+      "main",
+    )
+  assert lines
+    == [
+      "Sub-agent slow-worker · assistant · no pending input",
+      "  Task: Think about it.",
     ]
 }
 
