@@ -44,7 +44,11 @@ The launcher's options are `--workspace`, `--session <id>`, `--server`
 `--config <loom.toml>`. An explicit `--session` selects and opens that
 saved session without the picker. `--config` supplies the model catalogue
 when launching a daemon; without it, the launcher uses
-`<state-dir>/loom.toml` if present. It never loads workspace configuration
+`<state-dir>/loom.toml` if present. `--model-profile <name>` creates new
+sessions under one of that file's `[profiles.<name>.roles]` tables (the
+default roles with the named roles replaced); an existing session keeps the
+profile it was created with. It is not `--profile`, which enables BEAM
+profiling. It never loads workspace configuration
 implicitly or runs the server from the workspace, because repository
 content is not launch authority. It also ignores relative `PATH` entries
 when looking for `loomd`. `loom --demo` renders a canned preview without a

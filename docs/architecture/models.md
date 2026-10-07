@@ -285,6 +285,45 @@ Resolution feeds dispatch. Since the M5 routing wave it also selects the
 dispatch target, but only where a chain walk cannot change what the intent
 promised.
 
+### Profiles
+
+One file can hold several role sets. A `[profiles.<name>.roles]` table names the
+roles that profile replaces, and every role it omits keeps the default
+`[roles]` chain:
+
+```toml
+[roles]
+main = ["slow"]
+subagent = ["slow"]
+
+[profiles.quick.roles]
+main = ["fast"]
+```
+
+Here `quick` routes `main` to `fast` and `subagent` to `slow`. Replacement is
+per role and whole: a profile's chain is never merged with the default's.
+`catalog.parse` checks every profile when the file loads, with the same checks
+as `[roles]`, so a typoed model or role in a profile nobody has chosen yet still
+refuses the file. A profile table accepts only `roles`, and a profile name is a
+lowercase letter followed by lowercase letters, numbers, `_` or `-`.
+`catalog.select_profile` returns the catalogue with `roles` replaced by a
+profile's set.
+
+A session chooses a profile when it is created (`loom --model-profile <name>`, or
+the select in the web home's new-session forms) and the catalogue stores the
+name, never the roles. Each session's builder loads the file itself and applies
+`select_profile` before it builds the gateway, so every consumer of roles reads
+its own session's gateway or catalogue: nothing about a profile is cached
+daemon-wide, and sessions on different profiles under one daemon share no role
+table. Every open resolves the name again, so a resume follows the file as it
+stands, and a profile the file no longer defines refuses the open with the
+file's own message; the session never opens on the default roles in its place.
+The one exception is the shared workspace domain's note distillation, which uses
+the default roles because several sessions share it. Everything outside the role
+table (models, tools, MCP, language servers, mounts) is shared by all profiles.
+[Protocol 076](../../protocol-change/076-config-profiles.md) records the
+decision.
+
 ### Role follows identity
 
 The rule is **role follows identity.** An effect intent commits the

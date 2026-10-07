@@ -15,7 +15,7 @@ shutdown, for an implementer. The main pieces are:
   listener, the catalogue, and admission against global limits;
 - the **catalogue**, a durable SQLite database of session metadata
   (identity, database path, workspace, domain, configuration reference,
-  lifecycle state), readable without opening any session;
+  model profile name, lifecycle state), readable without opening any session;
 - the **session manager and registry**, which serialize catalogue access,
   bound the number of live sessions, and hold cleanup custody for each one;
 - the per-session **instance**: one supervision tree from the
@@ -386,6 +386,14 @@ That reference does not replace each session's runtime configuration. A
 session can select different providers and tools while retaining the same
 owner-private domain paths; shared maintenance uses the domain's own
 configuration binding.
+
+The registration also stores the name of the model profile the session was
+created under, or none ([protocol 076](../../protocol-change/076-config-profiles.md)).
+It is a name and not the roles it resolved to: every open loads the session's
+configuration and resolves the profile again, so two resident sessions of one
+daemon can route their roles differently, and a profile the file no longer
+defines refuses the open instead of falling back to the default roles. Shared
+domain maintenance does not use it.
 
 Only saved registrations appear in paged domain source enumeration.
 Reserved registrations are excluded before the page limit is applied, so

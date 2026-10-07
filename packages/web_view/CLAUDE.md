@@ -1389,3 +1389,19 @@ surface does not leave the second host with an incompatible reducer path.
 - `docs/lustre.md`: how Lustre 5.7.1 server components work, how they map
   onto this package, `ui_socket` and `ui_relay`, the view's security and
   accessibility rules, and the checklist for a change here.
+
+## Model profiles in the new-session forms (protocol 076)
+
+`Start.profiles` is the list of profile names the daemon's configuration defines,
+read when the page opens and `[]` unless `Start.create` is `Some`.
+`view/create.Offered` carries it, and both forms draw a `profile` select after the
+Shareable box only when it is not empty. A profile name is the daemon's text, so
+it is an option's label and never an attribute; an option's value is its position
+in the list, and `create.fields_with_profile` / `typed_fields_with_profile` turn
+the submitted position back into the name from that same list, refusing a
+position outside it, a name, a repeat, and a `profile` field on a form that
+offered none. `home.Creating` and `home.CreatingElsewhere` carry the chosen
+`Option(String)`, the component ignores a profile that is not in `Start.profiles`,
+and `Start.create` passes it to the daemon. The daemon checks it again against its
+configuration; a profile removed since is `creations.UnknownProfile`, whose fixed
+words say to reload the page.

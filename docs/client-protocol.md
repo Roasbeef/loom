@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:324-180`).
+Source: `handle` (`client/daemon/server.gleam:331-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1732`).
+`hello_view` (`client/daemon/server.gleam:1748`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -536,7 +536,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:2676`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:2734`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -603,6 +603,7 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `name` | string | required | Display name, at most 256 bytes. Never becomes a filename. |
 | `configuration` | string | required | Configuration file path, at most 4096 bytes. Canonicalized by the server. |
 | `domain_scope` | string | optional | `workspace_private` (the default) or `session_only`. |
+| `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
 (`client/daemon/protocol.gleam:256-263`).
@@ -615,8 +616,12 @@ The reply body is a session record.
 Source: (`client/daemon/server.gleam:654-674`).
 
 Errors: `forbidden`; `invalid_workspace` and `invalid_configuration`
-when a path cannot be canonicalized; `conflict` when the key was reused
-with different metadata; `unavailable`.
+when a path cannot be canonicalized; `unknown_profile` when the
+configuration the session will load does not define `profile`, which is
+the one refusal whose `message` names the profiles that do exist
+(`unknown profile "x"; the configuration defines: a, b`); `conflict` when
+the key was reused with different metadata, a different `profile`
+included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 The server assigns the database path beneath its own private session
@@ -929,7 +934,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2051-1114`).
+`control_use` (`client/daemon/server.gleam:2067-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1077,7 +1082,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:825`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:850`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
