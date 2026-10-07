@@ -18,6 +18,7 @@ core = { path = "../core" }
 codemode = { path = "../codemode" }
 broker = { path = "../broker" }
 tools = { path = "../tools" }
+lsp = { path = "../lsp" }
 telemetry = { path = "../telemetry" }
 weft = { git = "https://github.com/Roasbeef/weft.git", ref = "368d01abcaaff3ef986317a89fe8b98e1e4a2ad6" }
 

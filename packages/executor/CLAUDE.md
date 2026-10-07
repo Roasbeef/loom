@@ -10,7 +10,7 @@ for one reason: its dependency list is the compile-time proof that the
 service needs no session runtime, provider, web view or daemon. It depends on
 `broker`, `core`, `codemode` and `telemetry` (for `log.discard()`), plus `weft`, `argv`,
 `envoy`, `gleam_json`, `gleam_time`, `gleam_erlang`, `simplifile` and
-`sqlight_loom`, `parrot`, `tools` and `codemode`, and never on `host` or `client`.
+`sqlight_loom`, `parrot`, `tools`, `lsp` and `codemode`, and never on `host` or `client`.
 `tools` supplies the closed semantic workspace host and codec; it imports
 `broker` but does not depend on this package, so this edge has no cycle.
 
@@ -117,6 +117,26 @@ The DAL's trusted witness callbacks are integration obligations. Production
 claim and permit once, order register/fence, verify actual original physical
 joins and endpoint removal, and validate full owner attestations. This registry
 component does not implement deployment, history transport or that assembly.
+
+## Registered LSP content (protocol 076)
+
+`remote/lsp_wire` encodes all ten finite Request variants and thirteen complete
+Result variants using `lsp/query` and `lsp/observation`. Header, request and result
+profiles run before MessagePack term allocation. Complete results retain shared
+row and byte accounting, including nested sites and partial rename landings.
+Observation separately charges its bounded scope shell and preserves every
+original outline entry, including aliases resolving to the same document.
+
+Lease, capture, timed invocation and command adapters retain the complete
+`core/lsp_command` identities. Timed encoders hash the actual canonical parent;
+result envelopes compare the exact retained timed header. AfterWrite compares
+the body's original write against its full PostWriteControl reference. Decoding
+history grants no effect authority. Durable capture, clock authentication,
+consumed helper joins and endpoint assembly remain separate implementation work.
+
+The existing local collector fills omitted Observe server/root fields before
+returning Batch.requested. The registered adapter must restore the original
+request echo while retaining the canonical Batch.root and selected profile.
 
 ## Closed native command routing
 
