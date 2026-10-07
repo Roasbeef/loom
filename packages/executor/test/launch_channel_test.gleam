@@ -15,6 +15,40 @@ import weft/poll
 
 type Peer
 
+type AdoptionGate
+
+type AdoptionFault {
+  CloseBeforeAdoption
+  LoseLeafBeforeAdoption
+}
+
+@external(erlang, "executor_launch_socket_fixture", "adoption_gate")
+fn adoption_gate(
+  fault: AdoptionFault,
+  ready: process.Subject(Nil),
+) -> AdoptionGate
+
+@external(erlang, "executor_launch_socket_fixture", "cancel_adoption_gate")
+fn cancel_adoption_gate(gate: AdoptionGate) -> Nil
+
+@external(erlang, "executor_launch_socket_fixture", "continue_adoption_gate")
+fn continue_adoption_gate(gate: AdoptionGate) -> Nil
+
+@external(erlang, "executor_launch_socket_fixture", "adoption_clock")
+fn adoption_clock(gate: AdoptionGate, now: Int) -> Int
+
+@external(erlang, "executor_launch_socket_fixture", "release_adoption_gate")
+fn release_adoption_gate(gate: AdoptionGate) -> Nil
+
+@external(erlang, "executor_launch_socket_fixture", "adoption_witness")
+fn adoption_witness(gate: AdoptionGate) -> Result(Nil, Nil)
+
+@external(erlang, "executor_launch_socket_fixture", "peer_closed")
+fn peer_closed(peer: Peer) -> Result(Nil, Nil)
+
+@external(erlang, "executor_launch_socket_fixture", "kill_channel_owner_and_join_leaves")
+fn kill_channel_owner_and_join_leaves(owner: channel.Owner) -> Result(Nil, Nil)
+
 @external(erlang, "executor_launch_socket_fixture", "connect_unix")
 fn connect(path: String) -> Result(Peer, Nil)
 
@@ -102,10 +136,11 @@ pub fn paused_terminal_final_and_native_observation_never_emits_end_test() {
 }
 
 pub fn independent_close_wakes_real_blocked_socket_reader_test() {
-  fixture(fn(_owner, connection, _events, _peer, _path) {
+  fixture(fn(_owner, connection, _events, peer, _path) {
     assert connection.activate() == Ok(Nil)
     let closed = connection.close()
     assert closed.transport == run.TransportJoined
+    assert peer_closed(peer) == Ok(Nil)
   })
 }
 
@@ -479,6 +514,108 @@ pub fn service_stop_without_waiter_preserves_original_close_reply_test() {
   assert simplifile.read_bits(path <> "/t") == Ok(<<0:size(256)>>)
   close_peer(peer)
   assert simplifile.delete(path) == Ok(Nil)
+}
+
+pub fn channel_owner_death_joins_leaves_and_closes_accepted_socket_test() {
+  let #(seconds, nanos) =
+    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
+  let path =
+    temporary_root()
+    <> "/lwc-owner-"
+    <> int.to_string(seconds)
+    <> "-"
+    <> int.to_string(nanos)
+  let closed = process.new_subject()
+  let assert Ok(owner) =
+    channel.start(
+      #(path, path <> "/s", path <> "/t"),
+      poll.monotonic().now() + 10_000,
+      poll.monotonic().now,
+      process.new_subject(),
+      fn() { Nil },
+      fn() { Ok(Nil) },
+      fn(result) { process.send(closed, result) },
+    )
+    as "Original owner retains native resource uncertainty."
+  assert channel.prepare(owner, <<0:size(256)>>) == Ok(Nil)
+  channel.preparation_joined(owner)
+  let handoff = process.new_subject()
+  channel.install(
+    owner,
+    run.host_endpoint(process.self(), process.new_subject()),
+    handoff,
+  )
+  let assert Ok(peer) = connect(path <> "/s") as "Original accepted socket."
+  let assert Ok(connection) = process.receive(handoff, 1000)
+    as "Both original leaves are under scope custody."
+  assert connection.activate() == Ok(Nil)
+  assert kill_channel_owner_and_join_leaves(owner) == Ok(Nil)
+  assert peer_closed(peer) == Ok(Nil)
+  assert process.receive(closed, 0) == Error(Nil)
+  assert simplifile.read_bits(path <> "/t") == Ok(<<0:size(256)>>)
+  close_peer(peer)
+  assert simplifile.delete(path) == Ok(Nil)
+}
+
+// The fixture queues original Stop while both leaves are alive and the relay
+// cannot yet run. Its normal scope DOWN must prove exits after adoption.
+fn close_before_adoption(fault: AdoptionFault) -> run.CloseResult {
+  let #(seconds, nanos) =
+    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
+  let path =
+    temporary_root()
+    <> "/lwc-adoption-"
+    <> int.to_string(seconds)
+    <> "-"
+    <> int.to_string(nanos)
+  let ready = process.new_subject()
+  let gate = adoption_gate(fault, ready)
+  let closed = process.new_subject()
+  let clock = poll.monotonic().now
+  let assert Ok(owner) =
+    channel.start(
+      #(path, path <> "/s", path <> "/t"),
+      clock() + 10_000,
+      fn() { adoption_clock(gate, clock()) },
+      process.new_subject(),
+      fn() { cancel_adoption_gate(gate) },
+      fn() { Ok(Nil) },
+      fn(result) {
+        release_adoption_gate(gate)
+        process.send(closed, result)
+      },
+    )
+    as "Original socket owner with bounded pre-adoption schedule."
+  assert channel.prepare(owner, <<0:size(256)>>) == Ok(Nil)
+  channel.preparation_joined(owner)
+  channel.install(
+    owner,
+    run.host_endpoint(process.self(), process.new_subject()),
+    process.new_subject(),
+  )
+  let assert Ok(Nil) = process.receive(ready, 1000)
+    as "Original cancellation reached the held managed run."
+  continue_adoption_gate(gate)
+  let assert Ok(result) = process.receive(closed, 3000)
+    as "Pre-activation shutdown retains its actual transport account."
+  assert adoption_witness(gate) == Ok(Nil)
+  assert result.resources
+    == run.ResourcesUnresolved(
+      "original native resource retirement not observed",
+    )
+  assert simplifile.read_bits(path <> "/t") == Ok(<<0:size(256)>>)
+  assert simplifile.delete(path) == Ok(Nil)
+  result
+}
+
+pub fn queued_stop_before_scope_adoption_joins_original_leaves_test() {
+  assert close_before_adoption(CloseBeforeAdoption).transport
+    == run.TransportJoined
+}
+
+pub fn absent_leaf_before_adoption_retains_unresolved_transport_test() {
+  assert close_before_adoption(LoseLeafBeforeAdoption).transport
+    == run.TransportUnresolved("original child drain unresolved")
 }
 
 // macOS resolves /tmp through /private; Linux has no /private directory.

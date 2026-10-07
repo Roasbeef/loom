@@ -17,7 +17,15 @@
     retiring_adapter/2,
     native_control_count/1,
     journal_owner/1,
-    confirmation_worker/2
+    confirmation_worker/2,
+    adoption_gate/2,
+    cancel_adoption_gate/1,
+    continue_adoption_gate/1,
+    adoption_clock/2,
+    release_adoption_gate/1,
+    adoption_witness/1,
+    peer_closed/1,
+    kill_channel_owner_and_join_leaves/1
 ]).
 
 %% The same connect the real satellite makes (cap_ffi:connect_unix/1):
@@ -167,3 +175,179 @@ journal_waiting(Pid) ->
             end, Frames);
         _ -> false
     end.
+
+
+%% Pin this bounded schedule to one scheduler. The channel runs at max
+%% priority while the managed run remains normal. Its injected clock queues
+%% Stop before startup; cancellation suspends the exact linked run process.
+%% With the historical relay, the leaves process already-queued Stop messages
+%% before adoption. With Witnessed, Ready may already have admitted activation. No timing sleep controls the order.
+%% The owning channel releases the scheduler block on its close callback;
+%% OTP also releases it if that channel itself dies.
+adoption_gate(Fault, Ready) ->
+    Gate = ets:new(launch_adoption_gate, [public, set]),
+    true = ets:insert(Gate, [{fault, Fault}, {ready, Ready}, {calls, 0}]),
+    Gate.
+
+adoption_clock(Gate, Now) ->
+    Count = ets:update_counter(Gate, calls, 1),
+    case Count of
+        5 ->
+            Leaves = paused_channel_leaves(self()),
+            2 = length(Leaves),
+            {subject, _Pid, Ref} = channel_commands(Leaves),
+            erlang:system_flag(multi_scheduling, block),
+            Previous = process_flag(priority, max),
+            put({adoption_priority, Gate}, Previous),
+            [{fault, Fault}] = ets:lookup(Gate, fault),
+            case Fault of
+                close_before_adoption -> ok;
+                lose_leaf_before_adoption -> exit(hd(Leaves), kill)
+            end,
+            self() ! {Ref, {stop, none}},
+            true = ets:insert(Gate, {witness, Leaves}),
+            Now;
+        _ -> Now
+    end.
+
+%% The channel's only PID link is the exact original managed run. It is the
+%% historical relay or the current witnessed scope; neither can consume its
+%% queued cancellation while this max-priority channel controls the scheduler.
+cancel_adoption_gate(Gate) ->
+    {links, Links} = process_info(self(), links),
+    [Relay] = [Pid || Pid <- Links, is_pid(Pid)],
+    true = erlang:suspend_process(Relay),
+    true = ets:insert(Gate, [{relay, Relay}, {owner, self()}]),
+    [{ready, {subject, Test, Ref}}] = ets:lookup(Gate, ready),
+    Test ! {Ref, nil},
+    receive {Gate, continue} -> ok after 1000 -> ok end,
+    true = erlang:resume_process(Relay),
+    true = ets:delete(Gate, relay),
+    nil.
+
+%% A system roundtrip follows all earlier stop messages in each leaf mailbox.
+%% The historical relay cannot adopt until these queued stops have landed.
+%% Witnessed may already have admitted the reader's accept, which blocks OTP
+%% system traffic; its scope monitor already owns that leaf, so skip that wait.
+continue_adoption_gate(Gate) ->
+    [{witness, Leaves}] = ets:lookup(Gate, witness),
+    lists:foreach(fun(Pid) ->
+        case process_info(Pid, current_stacktrace) of
+            {current_stacktrace, Frames} ->
+                case lists:any(fun
+                    ({codemode_ffi, accept_unix, _, _}) -> true;
+                    ({prim_inet, accept0, _, _}) -> true;
+                    (_) -> false
+                end, Frames) of
+                    true -> ok;
+                    false -> try sys:get_state(Pid, 1000) catch _:_ -> nil end
+                end;
+            undefined -> ok
+        end
+    end, Leaves),
+    [{owner, Owner}] = ets:lookup(Gate, owner),
+    Owner ! {Gate, continue},
+    nil.
+
+%% These are only this channel's two paused leaves, authenticated by their
+%% proc_lib parent and exact reader/writer state constructors. There is no
+%% global choice of an unrelated process and no modified production state.
+paused_channel_leaves(Owner) ->
+    lists:filter(fun(Pid) ->
+        case process_info(Pid, dictionary) of
+            {dictionary, Dictionary} ->
+                case proplists:get_value('$ancestors', Dictionary) of
+                    [Owner | _] ->
+                        case proc_lib:translate_initial_call(Pid) of
+                            {'weft@state_machine', _, _} -> channel_leaf(Pid);
+                            _ -> false
+                        end;
+                    _ -> false
+                end;
+            _ -> false
+        end
+    end, processes()).
+
+channel_leaf(Pid) ->
+    try sys:get_state(Pid, 1000) of
+        {read_accepting, Reader} when element(1, Reader) =:= channel_reader -> true;
+        {nil, Writer} when element(1, Writer) =:= channel_writer -> true;
+        _ -> false
+    catch _:_ -> false end.
+
+channel_commands([Leaf | _]) ->
+    {_Phase, State} = sys:get_state(Leaf, 1000),
+    case element(1, State) of
+        channel_reader -> element(7, State);
+        channel_writer -> element(4, State)
+    end.
+
+release_adoption_gate(Gate) ->
+    case erase({adoption_priority, Gate}) of
+        undefined -> nil;
+        Previous ->
+            case ets:lookup(Gate, relay) of
+                [{relay, Relay}] -> try erlang:resume_process(Relay) catch _:_ -> nil end;
+                [] -> ok
+            end,
+            process_flag(priority, Previous),
+            erlang:system_flag(multi_scheduling, unblock),
+            nil
+    end.
+
+adoption_witness(Gate) ->
+    case ets:lookup(Gate, witness) of
+        [{witness, Leaves}] ->
+            case lists:all(fun(Pid) -> not is_process_alive(Pid) end, Leaves) of
+                true -> {ok, nil};
+                false -> {error, nil}
+            end;
+        _ -> {error, nil}
+    end.
+
+peer_closed(Socket) ->
+    case gen_tcp:recv(Socket, 0, 1000) of
+        {error, closed} -> {ok, nil};
+        _ -> {error, nil}
+    end.
+
+
+%% The two leaf actors have no descendants. Observe their original monitors
+%% before killing the channel owner; the relay and scope must cancel them
+%% without any further channel message handler being available.
+kill_channel_owner_and_join_leaves({owner, {subject, Owner, _Ref}}) ->
+    Leaves = [Pid || Pid <- processes(),
+        case process_info(Pid, dictionary) of
+            {dictionary, Dictionary} ->
+                case {proplists:get_value('$ancestors', Dictionary),
+                      proc_lib:translate_initial_call(Pid)} of
+                    {[Owner | _], {'weft@state_machine', _, _}} -> true;
+                    _ -> false
+                end;
+            _ -> false
+        end],
+    2 = length(Leaves),
+    {links, Links} = process_info(Owner, links),
+    [Scope] = [Pid || Pid <- Links, is_pid(Pid)],
+    OriginalChildren = lists:usort([Scope | Leaves]),
+    %% No additional idle cancellation signal may outlive this owner.
+    DirectChildren = [Pid || Pid <- processes(),
+        case process_info(Pid, dictionary) of
+            {dictionary, Dictionary} ->
+                case proplists:get_value('$ancestors', Dictionary) of
+                    [Owner | _] -> true;
+                    _ -> false
+                end;
+            _ -> false
+        end],
+    true = lists:sort(DirectChildren) =:= lists:sort(OriginalChildren),
+    Watches = [{Pid, monitor(process, Pid)} || Pid <- OriginalChildren],
+    exit(Owner, kill),
+    Result = lists:all(fun({Pid, Watch}) ->
+        receive
+            {'DOWN', Watch, process, Pid, Reason} ->
+                Pid =/= Scope orelse Reason =:= normal
+        after 1500 -> false end
+    end, Watches),
+    lists:foreach(fun({_Pid, Watch}) -> demonitor(Watch, [flush]) end, Watches),
+    case Result of true -> {ok, nil}; false -> {error, nil} end.
