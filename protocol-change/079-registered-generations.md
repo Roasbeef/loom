@@ -1215,3 +1215,161 @@ constructors change no frozen Part-1 interface, storage schema, control envelope
 or product policy. Implementation review and component gates remain required.
 The separately pending weft Detached selector/pin and executor host-reader
 dependency remain unapproved.
+
+
+## Addendum: indexed historical system intent lookup
+
+Registered hook acquisition needs to discover the original source-read identity
+at a closed startup address after a lost preparation reply. The existing
+SystemIntent key already contains that address, scope, descriptor, generation
+and service. Operation and request UUID are retained fields, so discovering them
+requires an exact lookup rather than a new inventory or batch store.
+
+The following internal read interfaces are accepted:
+
+```gleam
+// storage/owner_custody.gleam.
+@internal
+pub fn lookup_system_intent(
+  store: Store,
+  association: generation.GenerationAssociation,
+  work_address: String,
+  service: SystemService,
+) -> Result(IntentReadback, Error)
+
+// client/remote/custodian.gleam.
+@internal
+pub fn lookup_workspace_administration_intent(
+  owner: Handle,
+  work_address: String,
+) -> Result(custody.IntentReadback, custody.Error)
+```
+
+Storage MUST use the existing canonical primary key and existing indexed header
+and body queries. Validate the address and header sizes before loading a body.
+A missing header is Missing; a present row with invalid, oversized or absent body
+is an invalid retained record. Reconstruct only a historical SystemIntent, then
+verify its complete association, service, work address, original metadata,
+retained charge and generation/child links using the existing checks. A returned
+IntentReadback MUST carry no LiveGeneration. It cannot allocate an unadmitted
+child, even while the original actor still admits fresh work.
+
+The custodian message fixes WorkspaceAdministration and derives the association
+from its own captured registered state. OrdinaryCustody refuses. Both original
+registered and historical custody may inspect their own exact evidence. The
+message MUST NOT retain a row, allocate identity, change admission state, renew
+a deadline, scan an inventory or select a replacement owner. An original Handle
+still addresses its original actor; this interface does not follow a reopened
+custodian or make a historical actor eligible for registered assembly.
+
+No schema, SQL query, generated SQL or transport change is required. The lookup
+reuses the existing charge and link validation rather than adding another cache
+or recovery protocol. Tests must distinguish Missing from malformed retained
+state, prove exact original identity after a discarded retain reply, reject
+wrong association/service/address, and prove that historical readback cannot
+admit a source read or alter the retained counters.
+
+This refinement was accepted under `docs/execution.md` section 7 after independent
+review of the fixed hook acquisition design. That review cut an exported
+PreparedBatch and a redundant retained-plan decoder from the subsequent loader
+plan. Those loader changes remain separate from this lookup. The subsequent acquisition addendum records the separately approved owner-source
+acceptance limit. This lookup adds no host-reader dependency.
+
+## Addendum: fixed registered hook source acquisition
+
+The original registered assembly captures its configured owner user settings
+once and reads project then local settings through the original executor's
+WorkspaceAdministration Read/Text service. The inventory is closed: configured
+`home/.claude/settings.json`, `.claude/settings.json`, then
+`.claude/settings.local.json`. Omitted home removes the owner position; a missing
+configured file retains its source position. All sources use ClaudeSettings and
+the existing UserSettings, ProjectSettings and LocalSettings origins. Executor
+display labels come from the original enrollment and never become owner file
+paths. Plugin discovery and trust administration remain separate work.
+
+The internal `client/remote/hook_source_acquisition` module exposes opaque
+`Config`, `OwnerBaseline` and `FixedBatchPlan` values. Its constructor captures
+RegisteredOwner, immutable deployment Table, concrete endpoint, custody Limits,
+a finite observation allowance and configured owner home. It reuses
+`workspace_client.new_system` to validate the original association and route.
+Its accepted acquisition interfaces are:
+
+```gleam
+@internal
+pub fn capture_owner(config: Config)
+  -> Result(OwnerBaseline, AcquisitionError)
+
+@internal
+pub fn fixed_batch_plan(
+  config: Config, baseline: OwnerBaseline,
+  generator: ids.Generator, deadline_ms: Int,
+) -> Result(#(FixedBatchPlan, ids.Generator), AcquisitionError)
+
+@internal
+pub fn acquire(
+  config: Config, baseline: OwnerBaseline, plan: FixedBatchPlan,
+) -> Result(hookserve.VerifiedSources, AcquisitionError)
+
+@internal
+pub fn observe(config: Config, baseline: OwnerBaseline)
+  -> Result(hookserve.VerifiedSources, AcquisitionError)
+```
+
+Original assembly captures OwnerBaseline and constructs FixedBatchPlan once,
+before its first acquisition attempt, retaining both outside the managed
+observer. The pure plan fixes the complete original association, source order,
+baseline presence/hash, original operation and request identities, and absolute
+monotonic deadline. It contains no live readback, generation capability, Fresh
+disposition or allocated child. All canonical metadata MUST fit the existing
+8192-byte SystemIntent ceiling before any write. Oversize refuses with zero
+writes or reads. The manifest and two source intents consume three existing
+reservations, including a permanently pending manifest reservation.
+
+One bounded acquire call checks the baseline and plan, looks up the closed batch
+address, prepares the complete manifest and both source intents when Missing,
+and only then invokes the two reads sequentially. A lookup hit takes historical
+observation only: it cannot fill missing preparation or admit an unadmitted
+source. A lost reply can retry only the identical externally retained plan.
+Acquire accepts neither a generator nor a replacement deadline. If both that
+plan and recoverable metadata are lost, acquisition remains incomplete.
+
+Equal overlapping original candidates may both continue after Missing. Existing
+serialized admission still allows only one actual Fresh submission per source.
+A dead observer stops its own continuation; it does not cancel another original
+caller. Ordinary startup retains its one-builder ownership. No separate batch
+winner, prepared-object export, retry actor or source cache is introduced.
+Observe grants no preparation or new effect authority, although existing receipt
+reconciliation and ACK may perform their idempotent writes.
+
+The manifest decoder reconstructs original SystemReadPlan metadata through the
+existing constructor and compares its complete canonical content with historical
+intent bytes. No new retained-plan decoder API is required. Every completion
+must pass original receipt and generation checks before becoming an acquired
+document. Only actual FsNotFound is absence. Other read errors, invalid text,
+wrong projection, pending outcomes and malformed evidence remain indexed typed
+failures. Complete documents pass through the existing registered parser and
+trust inventory, preserving refused positions and merge order.
+
+On October 7, the owner approved an 8-MiB accepted-text limit for the retained
+owner user settings source, with an explicit oversized-source error. Capture
+reads the actual configured owner file once, outside the acquisition observer.
+This post-read limit bounds accepted retained text, not read-time or peak file
+allocation. Existing trusted owner-file assumptions remain. Remote reads retain
+their existing text ceiling. Bodies stay outside intent metadata and facts;
+assembly retains only one original owner baseline, and acquisition releases
+transient raw documents and receipts after producing VerifiedSources.
+
+An original custodian Handle cannot follow its replacement, and reopening
+produces HistoryOnly. This component supplies neither custodian-restart nor
+whole-VM loader recovery, even with omitted home or preserved baseline bytes.
+Expired plans cannot produce a completed bundle. Independent historical custody
+remains inspectable. A baseline hash cannot reconstruct a lost body.
+
+Independent design review accepted this boundary after removing exported live
+preparation and preserving the pure candidate outside the observer. Required
+controls include lost preparation replies with identical plan reuse, zero reads
+on incomplete preparation, exact concurrent recovery, original caller death,
+owner-path canaries, bounded metadata, source-index preservation, explicit
+oversize refusal and historical/expired refusal. Normal parsing, trust and
+workspace regressions remain required. Default daemon activation, FullHost close
+and separate-host acceptance are subsequent integration obligations.
