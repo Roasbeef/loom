@@ -319,6 +319,10 @@ pub fn who(provenance: Provenance) -> String {
       <> case via {
         Login(fingerprint:) ->
           " from a browser sign-in " <> text_hygiene.single_line(fingerprint)
+
+        // A page opened with `loom ui --operate` is admitted on the terminal's
+        // bearer credential and has no browser sign-in, so the authority for
+        // its approvals did come from a terminal.
         Device(_) -> " from a terminal"
       }
     }
