@@ -6,7 +6,7 @@
          answer_waiting/1, joined_waiting/1, launch_snapshot/1]).
 
 credits(Server) ->
-    {state, _, Records, _} = sys:get_state(Server),
+    {state, _, Records, _, _} = sys:get_state(Server),
     [Subject || {credit_record, data, Subject, _, available} <- Records].
 
 capture(Subjects) ->
@@ -62,7 +62,7 @@ send({subject, Pid, Tag}, Value) -> Pid ! {Tag, Value}, ok.
 %% These probes observe concrete managed-task custody and inject only the captured
 %% original controller release. They cannot manufacture an answer or join witness.
 capture_release(Server) ->
-    {state, _, Records, _} = sys:get_state(Server),
+    {state, _, Records, _, _} = sys:get_state(Server),
     [{Subject, Original} | _] =
         [{Subject, Original} ||
             {credit_record, data, Subject, _, {assigned, Original}} <- Records],
@@ -74,14 +74,14 @@ inject_release({Subject, Original}, {server, Door, Server}) ->
     {ok, nil}.
 
 retire_idle(Server) ->
-    {state, _, Records, _} = sys:get_state(Server),
+    {state, _, Records, _, _} = sys:get_state(Server),
     [Subject | _] =
         [Subject || {credit_record, data, Subject, _, available} <- Records],
     send(Subject, close_credit),
     nil.
 
 retire_busy(Server) ->
-    {state, _, Records, _} = sys:get_state(Server),
+    {state, _, Records, _, _} = sys:get_state(Server),
     [Subject | _] =
         [Subject || {credit_record, data, Subject, _, {assigned, _}} <- Records],
     send(Subject, close_credit),
@@ -98,7 +98,7 @@ joined_waiting(Server) ->
     end).
 
 custody_matches(Server, Predicate) ->
-    {state, _, Records, _} = sys:get_state(Server),
+    {state, _, Records, _, _} = sys:get_state(Server),
     lists:any(fun({credit_record, _, {subject, Pid, _}, _, {assigned, _}}) ->
                       Predicate(sys:get_state(Pid));
                  (_) -> false

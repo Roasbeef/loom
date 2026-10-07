@@ -15,7 +15,13 @@
 //// ## Flow
 ////
 //// `registration` and `compile_registration` derive concrete authority;
-//// `configure_server`, `start` and `register` own bounded local enrollment.
+//// `configure_server`, `start` and `register` own bounded legacy enrollment.
+//// `configure_managed_server` pins the permanent writer; `publication_endpoint`
+//// binds concrete row owners. `register_generation` enters `register_managed`;
+//// `retire_registration` enters `retire_managed` and `remove_hot_row` only after
+//// registry checks and actual drain. `managed_endpoint` and `publication_digest`
+//// bind the original endpoint; `managed_binding` and `managed_enrollment` check
+//// immutable authority. `management_reply` applies one atomic actor result.
 //// `monitored_row` watches each local scope owner; `fence` permanently closes its
 //// row. `inspect_drain` uses `drain_snapshot` and `exact_row` to observe scoped
 //// custody. `handle` retains normal credit loss and `available_count` counts only
@@ -39,7 +45,10 @@
 
 import broker/enrollment
 import core/command
+import core/generation as g
+import core/msgpack as mp
 import core/workspace as cw
+import executor/generation_registry as generations
 import executor/internal/ffi_distribution
 import executor/remote/compile_service as compile
 import executor/remote/compile_wire
@@ -57,6 +66,8 @@ import executor/remote/workspace_service as workspace
 import executor/remote/workspace_transfer as transfer
 import gleam/bit_array
 import gleam/bool
+import gleam/crypto
+import gleam/dict.{type Dict}
 import gleam/dynamic
 import gleam/erlang/node
 import gleam/erlang/process
@@ -64,6 +75,7 @@ import gleam/erlang/reference
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import tools/workspace as tw
 import tools/workspace_codec as codec
 import weft
@@ -139,6 +151,28 @@ pub opaque type ServerConfig {
     registrations: List(Registration),
     /// Whole managed transport lifetime, independent of native retirement.
     within_ms: Int,
+    /// Closed legacy enrollment or original permanent generation writer.
+    bootstrap: Bootstrap,
+  )
+}
+
+/// Closed node-wide endpoint policy selected before any publication.
+pub type EndpointLifetime {
+  /// Sixteen live/unretired claims with permanently bounded retirement history.
+  RetiredSlots16
+}
+
+type Bootstrap {
+  Legacy
+  Managed(generations.Store)
+}
+
+type Management {
+  LegacyManagement
+  ManagedManagement(
+    store: generations.Store,
+    nonce: BitArray,
+    receipts: Dict(BitArray, BitArray),
   )
 }
 
@@ -190,7 +224,12 @@ type RowGate {
 }
 
 type Row {
-  Row(registration: Registration, owner_monitor: process.Monitor, gate: RowGate)
+  Row(
+    registration: Registration,
+    owner_monitor: process.Monitor,
+    gate: RowGate,
+    association: Option(g.GenerationAssociation),
+  )
 }
 
 type Assignment {
@@ -213,7 +252,12 @@ type CreditRecord {
 }
 
 type State {
-  State(rows: List(Row), credits: List(CreditRecord), gate: Gate)
+  State(
+    rows: List(Row),
+    credits: List(CreditRecord),
+    gate: Gate,
+    management: Management,
+  )
 }
 
 type Message {
@@ -221,6 +265,17 @@ type Message {
   Released(process.Subject(CreditMessage), Assignment)
   Down(process.Down)
   Register(Registration, process.Subject(Result(Nil, Error)))
+  PublicationEndpoint(Registration, process.Subject(Result(g.Digest, Error)))
+  RegisterGeneration(
+    Registration,
+    generations.StartupClaim,
+    process.Subject(Result(Nil, Error)),
+  )
+  RetireRegistration(
+    Registration,
+    generations.RetirementRecord,
+    process.Subject(Result(Nil, Error)),
+  )
   Fence(Registration, process.Subject(Result(Nil, Error)))
   InspectDrain(Registration, process.Subject(Result(DrainState, Error)))
   Inspect(process.Subject(Capacity))
@@ -421,7 +476,27 @@ pub fn configure_server(
     Error(InvalidConfiguration),
   )
   use checked <- result.try(list.try_fold(registrations, [], add_registration))
-  Ok(ServerConfig(checked, within_ms))
+  Ok(ServerConfig(checked, within_ms, Legacy))
+}
+
+/// Selects permanently bounded generation custody before endpoint startup.
+/// The original Store is retained; legacy register cannot bypass this mode.
+///
+/// ## Examples
+///
+/// `configure_managed_server(store, 5000, RetiredSlots16)` starts nothing.
+pub fn configure_managed_server(
+  store: generations.Store,
+  within_ms: Int,
+  lifetime: EndpointLifetime,
+) -> Result(ServerConfig, Error) {
+  use <- bool.guard(
+    within_ms < 100 || within_ms > 30_000,
+    Error(InvalidConfiguration),
+  )
+  case lifetime {
+    RetiredSlots16 -> Ok(ServerConfig([], within_ms, Managed(store)))
+  }
 }
 
 /// Starts six stable credits and publishes one fixed rendezvous.
@@ -452,6 +527,53 @@ pub fn register(
 ) -> Result(Nil, Error) {
   let reply = process.new_subject()
   process.send(server.subject, Register(registration, reply))
+  process.receive(reply, 1000) |> result.unwrap(Error(Uncertain))
+}
+
+/// Names this original endpoint and all concrete row owners before publication.
+/// The digest is scoped to this endpoint lifetime, never a replacement lookup.
+///
+/// ## Examples
+///
+/// `publication_endpoint(server, row)` supplies prepare_publication's endpoint.
+pub fn publication_endpoint(
+  server: Server,
+  row: Registration,
+) -> Result(g.Digest, Error) {
+  let reply = process.new_subject()
+  process.send(server.subject, PublicationEndpoint(row, reply))
+  process.receive(reply, 1000) |> result.unwrap(Error(Uncertain))
+}
+
+/// Publishes only an original configured claim whose Publishing COMMIT matches.
+/// The sole administrator must send publication and fencing in that order.
+///
+/// ## Examples
+///
+/// `register_generation(server, row, claim)` grants no replacement claim.
+pub fn register_generation(
+  server: Server,
+  row: Registration,
+  claim: generations.StartupClaim,
+) -> Result(Nil, Error) {
+  let reply = process.new_subject()
+  process.send(server.subject, RegisterGeneration(row, claim, reply))
+  process.receive(reply, 1000) |> result.unwrap(Error(Uncertain))
+}
+
+/// Removes only an exact committed published retirement after actual row drain.
+/// Lost acknowledgement can repeat this record only on its original endpoint.
+///
+/// ## Examples
+///
+/// `retire_registration(server, row, retired)` never recreates a credit.
+pub fn retire_registration(
+  server: Server,
+  row: Registration,
+  retired: generations.RetirementRecord,
+) -> Result(Nil, Error) {
+  let reply = process.new_subject()
+  process.send(server.subject, RetireRegistration(row, retired, reply))
   process.receive(reply, 1000) |> result.unwrap(Error(Uncertain))
 }
 
@@ -775,11 +897,22 @@ fn builder(
       |> process.select_map(rendezvous(process.self()), Reserve)
       |> process.select_monitors(Down)
     Ok(
-      actor.initialised(State(
-        list.map(config.registrations, monitored_row),
-        list.append(data, control),
-        Open,
-      ))
+      actor.initialised(
+        State(
+          list.map(config.registrations, monitored_row),
+          list.append(data, control),
+          Open,
+          case config.bootstrap {
+            Legacy -> LegacyManagement
+            Managed(store) ->
+              ManagedManagement(
+                store,
+                crypto.strong_random_bytes(32),
+                dict.new(),
+              )
+          },
+        ),
+      )
       |> actor.selecting(selector)
       |> actor.returning(subject),
     )
@@ -834,13 +967,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
     Down(process.PortDown(_, _, _)) -> actor.continue(state)
     Register(row, reply) -> {
-      let added = case state.gate {
-        Open ->
+      let added = case state.gate, state.management {
+        Open, LegacyManagement ->
           add_registration(
             list.map(state.rows, fn(row) { row.registration }),
             row,
           )
-        Closed -> Error(InvalidConfiguration)
+        Closed, _ | Open, ManagedManagement(_, _, _) ->
+          Error(InvalidConfiguration)
       }
       case added {
         Ok(_) -> {
@@ -856,6 +990,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
       }
     }
+    PublicationEndpoint(row, reply) -> {
+      process.send(reply, managed_endpoint(state, row))
+      actor.continue(state)
+    }
+    RegisterGeneration(row, claim, reply) ->
+      management_reply(state, reply, register_managed(state, row, claim))
+    RetireRegistration(row, retired, reply) ->
+      management_reply(state, reply, retire_managed(state, row, retired))
     Fence(exact, reply) -> {
       case exact_row(state, exact) {
         Error(error) -> {
@@ -901,8 +1043,227 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+fn management_reply(
+  state: State,
+  reply: process.Subject(Result(Nil, Error)),
+  outcome: Result(State, Error),
+) -> actor.Next(State, Message) {
+  case outcome {
+    Ok(next) -> {
+      process.send(reply, Ok(Nil))
+      actor.continue(next)
+    }
+    Error(error) -> {
+      process.send(reply, Error(error))
+      actor.continue(state)
+    }
+  }
+}
+
+fn register_managed(
+  state: State,
+  row: Registration,
+  claim: generations.StartupClaim,
+) -> Result(State, Error) {
+  use <- bool.guard(state.gate == Closed, Error(InvalidConfiguration))
+  use endpoint <- result.try(managed_endpoint(state, row))
+  use store <- result.try(managed_store(state))
+  let associated = generations.original(claim)
+  use Nil <- result.try(managed_binding(row, g.association_key(associated)))
+  use Nil <- result.try(managed_enrollment(row, associated))
+  use Nil <- result.try(
+    generations.validate_publication(store, claim, endpoint)
+    |> result.replace_error(InvalidConfiguration),
+  )
+  use _ <- result.try(add_registration(
+    list.map(state.rows, fn(row) { row.registration }),
+    row,
+  ))
+  let monitored = Row(..monitored_row(row), association: Some(associated))
+  Ok(State(..state, rows: [monitored, ..state.rows]))
+}
+
+fn retire_managed(
+  state: State,
+  exact: Registration,
+  retired: generations.RetirementRecord,
+) -> Result(State, Error) {
+  use endpoint <- result.try(managed_endpoint(state, exact))
+  use store <- result.try(managed_store(state))
+  let #(key, _, _, record_digest) = generations.retirement_fields(retired)
+  use Nil <- result.try(managed_binding(exact, key))
+  use Nil <- result.try(
+    generations.validate_removal(store, retired, endpoint)
+    |> result.replace_error(InvalidConfiguration),
+  )
+  let digest = g.digest_bytes(record_digest)
+  case state.management {
+    LegacyManagement -> Error(InvalidConfiguration)
+    ManagedManagement(store, nonce, receipts) -> {
+      case dict.get(receipts, digest) {
+        Ok(original) ->
+          case original == g.digest_bytes(endpoint) {
+            True -> Ok(state)
+            False -> Error(ConflictingRegistration)
+          }
+        Error(Nil) ->
+          remove_hot_row(
+            state,
+            exact,
+            key,
+            digest,
+            endpoint,
+            store,
+            nonce,
+            receipts,
+          )
+      }
+    }
+  }
+}
+
+fn remove_hot_row(
+  state: State,
+  exact: Registration,
+  key: g.GenerationKey,
+  digest: BitArray,
+  endpoint: g.Digest,
+  store: generations.Store,
+  nonce: BitArray,
+  receipts: Dict(BitArray, BitArray),
+) -> Result(State, Error) {
+  use row <- result.try(exact_row(state, exact))
+  use associated <- result.try(
+    row.association |> option.to_result(InvalidConfiguration),
+  )
+  use <- bool.guard(
+    g.association_key(associated) != key,
+    Error(ConflictingRegistration),
+  )
+  use drained <- result.try(drain_snapshot(state, exact))
+  use Nil <- result.try(case drained {
+    Drained -> Ok(Nil)
+    Busy | DrainUncertain -> Error(Uncertain)
+  })
+  use <- bool.guard(
+    dict.size(receipts) >= generations.max_rows,
+    Error(InvalidConfiguration),
+  )
+
+  // The actual removal and its exact acknowledgement share this actor turn.
+  // Each permanently charged ledger identity adds at most two 32-byte digests:
+  // 4096 entries reserve 262144 logical digest bytes, excluding map/VM overhead.
+  // No removed physical handle or monitor survives, and no credit is changed.
+  process.demonitor_process(row.owner_monitor)
+  Ok(
+    State(
+      ..state,
+      rows: list.filter(state.rows, fn(row) { row.registration != exact }),
+      management: ManagedManagement(
+        store,
+        nonce,
+        dict.insert(receipts, digest, g.digest_bytes(endpoint)),
+      ),
+    ),
+  )
+}
+
+fn managed_store(state: State) -> Result(generations.Store, Error) {
+  case state.management {
+    LegacyManagement -> Error(InvalidConfiguration)
+    ManagedManagement(store, _, _) -> Ok(store)
+  }
+}
+
+fn managed_endpoint(
+  state: State,
+  row: Registration,
+) -> Result(g.Digest, Error) {
+  case state.management {
+    LegacyManagement -> Error(InvalidConfiguration)
+    ManagedManagement(_, nonce, _) -> publication_digest(nonce, row)
+  }
+}
+
+fn publication_digest(
+  nonce: BitArray,
+  row: Registration,
+) -> Result(g.Digest, Error) {
+  use binding <- result.try(
+    protocol.header(row.binding, protocol.Native(protocol.Control))
+    |> result.replace_error(InvalidConfiguration),
+  )
+
+  // Public PID projections identify the concrete opaque service handles.
+  // inspect's spelling is stable only inside this original endpoint lifetime;
+  // the fresh nonce prevents a new VM or endpoint from interpreting it as a
+  // durable replacement address. No closure, native handle or PID is persisted.
+  let owners = [
+    Some(service.pid(row.native)),
+    option.map(row.workspace, workspace.pid),
+    option.map(row.compile, compile.pid),
+    option.map(row.launch, launch.pid),
+    Some(row.lifetime_owner),
+  ]
+  use bytes <- result.try(
+    mp.encode(
+      mp.ArrayValue([
+        mp.BinaryValue(nonce),
+        mp.BinaryValue(binding),
+        mp.StringValue(distribution.name(row.owner)),
+        mp.ArrayValue(
+          list.map(owners, fn(owner) {
+            case owner {
+              None -> mp.NilValue
+              Some(pid) -> mp.StringValue(string.inspect(pid))
+            }
+          }),
+        ),
+      ]),
+    )
+    |> result.replace_error(InvalidConfiguration),
+  )
+  crypto.hash(crypto.Sha256, bytes)
+  |> g.digest
+  |> result.replace_error(InvalidConfiguration)
+}
+
+fn managed_binding(
+  row: Registration,
+  key: g.GenerationKey,
+) -> Result(Nil, Error) {
+  let #(scope, _, number) = g.key_fields(key)
+  case
+    semantic_scope(row.binding.scope) == Ok(scope)
+    && row.binding.generation == number
+  {
+    True -> Ok(Nil)
+    False -> Error(InvalidConfiguration)
+  }
+}
+
+fn managed_enrollment(
+  row: Registration,
+  associated: g.GenerationAssociation,
+) -> Result(Nil, Error) {
+  case row.compile {
+    None -> Ok(Nil)
+    Some(whole) -> {
+      use bytes <- result.try(
+        enrollment.encode(compile.enrolled(whole))
+        |> result.replace_error(InvalidConfiguration),
+      )
+      let #(_, digest, _, _) = g.association_fields(associated)
+      case crypto.hash(crypto.Sha256, bytes) == g.digest_bytes(digest) {
+        True -> Ok(Nil)
+        False -> Error(InvalidConfiguration)
+      }
+    }
+  }
+}
+
 fn monitored_row(registration: Registration) -> Row {
-  Row(registration, process.monitor(registration.lifetime_owner), Active)
+  Row(registration, process.monitor(registration.lifetime_owner), Active, None)
 }
 
 fn exact_row(state: State, exact: Registration) -> Result(Row, Error) {

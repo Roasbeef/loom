@@ -111,6 +111,33 @@ fn inject_active(
   subject: process.Subject(Nil),
 ) -> Result(Nil, Nil)
 
+/// Holds the actual service actor through the existing fixed OTP fixture seam.
+///
+/// ## Examples
+///
+/// `hold_managed_service(pid)` never replaces a service callback or response.
+pub fn hold_managed_service(pid: process.Pid) -> Nil {
+  suspend(pid)
+}
+
+/// Releases that same original held actor through the existing fixture seam.
+///
+/// ## Examples
+///
+/// `release_managed_service(pid)` restores the original reply producer.
+pub fn release_managed_service(pid: process.Pid) -> Nil {
+  resume(pid)
+}
+
+/// Stops the actual assigned credit through the existing fixed test probe.
+///
+/// ## Examples
+///
+/// `retire_managed_busy(pid)` exposes no production assignment mutation door.
+pub fn retire_managed_busy(pid: process.Pid) -> Nil {
+  retire_busy(pid)
+}
+
 pub fn executor_main() {
   let #(root, provisioned) = inputs()
   let assert Ok(membership) = distribution.start(provisioned.executor_config)
