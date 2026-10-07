@@ -639,7 +639,7 @@ checked before the keys are fixed (open question 3).
 | Changes | `changes_view.fold` (`packages/session_view/src/session_view/changes_view.gleam:210`), `totals` (148), `label` (137); worktree observation (`worktree_view`) | Yes | No |
 | Trace | latest `code_mode` program, `transcript_lines.code_mode_program` (`packages/session_view/src/session_view/transcript_lines.gleam:3574`) | Program, state and result yes. The call list is not on the wire at all (`packages/tools/src/tools/codemode.gleam:1676`) | **Yes**: a call record, with timing in the same change (`protocol-change/NNN.md`) |
 | Session tab: jobs, viewers | `session_summary.jobs` (`packages/session_view/src/session_view/session_summary.gleam:99`), `viewers` (122), `live_jobs.lines` (`packages/session_view/src/session_view/live_jobs.gleam:107`) | Yes | No |
-| Session tab: context, cost | `context_view.footer` (`packages/session_view/src/session_view/context_view.gleam:370`), `Shared.usage` through `transcript_lines.money` (3058) | Yes | No |
+| Session tab: context, cost | `context_view.footer` (`packages/session_view/src/session_view/context_view.gleam:414`), `Shared.usage` through `transcript_lines.money` (3058) | Yes | No |
 | Session tab: goal, queue, schedules | `goal_view`, the cut's pending inputs, the schedule events | Yes | No |
 | Sessions column | `session_selector` catalogue page and the picker's activity answer | Terminal-side, from the control connection; absent on a launch with no control | No |
 | Collapsed repeats | a counted line over consecutive identical tool rows | New, in the line builders (`transcript_lines`) | No |
