@@ -1,15 +1,16 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `d60d4d15` on
+This edition records the registered-runtime integration through `c08fd50d` on
 October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
 protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
 hosted PR/main state were checked for this edition. Runtime assembly and
 separate-host acceptance remain in progress.
 
-The previous edition left owned LSP startup and recovery unimplemented. Both
-are now integrated and verified below. Native transport, registry startup and
-all four journal ownership boundaries are implemented; ordinary registered
-assembly remains open. An earlier Launch readiness timeout remains unresolved
+The previous edition left original registry startup validation and native
+scope-close projections unimplemented. Both are now integrated and verified
+below. Native transport, registry startup and all four journal ownership
+boundaries are implemented; ordinary registered assembly and the remaining
+physical-close owners are still open. An earlier Launch readiness timeout remains unresolved
 despite a passing diagnostic retry. The managed endpoint is
 now implemented. The original owner custodian is wired through its generation DAL,
 and the registry retains complete original generation plans atomically with first
@@ -33,6 +34,7 @@ That status belongs to main, not this unpublished integration candidate.
 | Owner custody and semantic transport | `f320f6c5b` wires registered admission, historical reopen and receipt readback to the original actor/connection/path. Original inputs, results, finite TLS BEAM controls, native forwarding and semantic consumers are implemented. Default daemon construction remains pending. |
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
 | Managed endpoint | `5733967e9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
+| Original startup and close witnesses | `4b67e014` validates the original live registry claim and exact Plan. `c08fd50d` retains native scope-close evidence before Service exit. FullHost still must bind the real pool and original joins; workspace, Compile and Launch witness work remains pending. |
 | Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
 | Generation history | `3ade15ea9` and `77b3b217` add permanent original provenance. `40169105` adds restricted managed recovery of native, workspace and resource journals, with explicit close and original normal-exit evidence. Actual physical join validation and bounded history transport remain assembly obligations. |
 | LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. `7d256b402` and `e336f4a19` add original first-placement native custody and credited ServerLease transport, including actual Linux FullEnforcement controls. `d60d4d15` adds owned live startup and restricted recovery. Finite collection, semantic/result retirement and ordinary assembly remain pending. |
@@ -47,6 +49,25 @@ review records describe their stated source revisions, not the entire current
 candidate.
 
 ## Verification and its limits
+
+The original-startup and native-close integration passes all 532 executor tests
+in 209.76 seconds, 226.38 seconds including build, with the command's own exit
+zero. Formatting, executor lint, documentation and prelude checks pass; all six
+frozen imported hashes matched afterward. Six startup controls use real SQLite;
+seven close controls distinguish actual helper/pool retirement from separately
+labeled protocol-peer ordering. Four warning-free compiled mutants fail the
+original-writer, complete-Plan, Service-handle and covered-confirmation assertions.
+
+Independent review found no correctness issue and one low wording correction.
+The close digest includes every covered native key and the currently retained
+begun-LSP inventory. Previously pruned leases already proved Closed, positive
+native retirement, managed drain and independently observed DAL Retired; their
+native keys remain covered. The correction changes only source/package prose;
+executable source was compared unchanged. A subsequent warning-free build,
+formatting, lint, documentation and prelude checks pass. These observations
+certify the projection and startup check, not complete FullHost retirement.
+The root integration already had its normal code-mode seed from prior successful
+gates; the fresh worker's full gate and seed were not separately run.
 
 The owned LSP integration at `d60d4d15` passes all 519 executor tests in
 206.91 seconds, 224.32 seconds including build, with the command's own exit
@@ -243,7 +264,10 @@ placements, container execution and hosted CI have not passed on this candidate.
    for **#697**. Parent-derived workspace commands and two-stage NativeSystem
    clearance are approved below and under implementation. **Exit:** original
    authority survives reserve/clearance without renewal, and each physical owner
-   supplies its actual close witness. Native transport, all four owned journals,
+   supplies its actual close witness. Registry validation and the native close
+   projection are integrated. Workspace aggregate evidence, Compile preparation
+   ownership and Launch channel joins remain required, alongside the finite LSP
+   collector and real Prepare readiness. Native transport, all four owned journals,
    registry startup and restricted managed recovery are integrated. Preserve all
    existing tests and ordinary local behavior.
 2. Build the approved ordinary registered path from protocols 076 and 077.
