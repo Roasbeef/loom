@@ -372,7 +372,7 @@ lanes on one checkout, a verdict, and then the status. Never type
 
 `make signoff` runs this platform's lane here. `LOOM_SIGNOFF_HOST=<ssh
 alias> make signoff-remote` runs the same gate for HEAD on a Linux box,
-in a checkout the script owns, and the host is named only in that
+through that box's signoff gate (below), and the host is named only in that
 variable and your ssh config, never in the tree. Push first: the box
 fetches by SHA and `gh signoff` refuses a commit no remote holds. Add
 `SIGNOFF_ARGS=--dry-run` to run the lanes and post nothing. Per-lane
@@ -418,6 +418,25 @@ needed and why, along with what was tried and turned out not to be
 necessary. The container runs `signoff.sh --dry-run` and posts the
 verdict itself afterward from the host's own `gh`, which is the
 arrangement that keeps a GitHub token out of the image.
+
+A key handed to agents should not be able to run whatever it sends, and
+the driver protocol is exactly that: `scripts/signoff/driver.sh` is
+streamed to `bash -s`. So `make signoff-remote` by default sends only
+`signoff <sha> [--dry-run] [--parallel N]`, to a host whose key is
+pinned in `authorized_keys` to `scripts/signoff/gate.sh`, and
+`LOOM_SIGNOFF_UNGATED=1` sends the branch's driver to an ordinary login
+instead, which is how a change to the driver itself is tried. The gate
+reads the request as data, refuses a commit on none of origin's branches,
+and runs an installed copy of the same driver as root through one sudo
+rule, from a root-owned state directory holding the checkout and a token
+that may write commit statuses and nothing else; the key's account holds
+nothing and is not in the docker group. Optional `LOOM_CPUS` and
+`LOOM_MEMORY` ceilings keep a gated run from crowding out whatever else
+the box does. A run belongs to the session that asked for it: a Ctrl-C
+on the client cancels the container within thirty seconds and posts
+nothing, gated or not. The gate's header has the installation, and what it does
+not bound: the commit under test still runs as root in a container that
+is not a sandbox, so the commit, not the key, is the trust boundary.
 
 ### Landing a `gh stack`, and a busy `main`
 
