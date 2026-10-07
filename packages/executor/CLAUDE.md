@@ -88,6 +88,36 @@ closed application messages do not contain a compromised member. Executor
 membership does not make it a Raft voter, and model-authored satellites must
 remain outside distribution.
 
+## Permanent generation custody
+
+`generation_registry.Store` retains the original connection-owning weft actor,
+its incarnation and fixed limits. The native SQLite connection stays in private
+`Context`; typed work messages serialize transactions, and release waits for
+both the original close acknowledgement and normal actor exit. Closed or dead
+handles return Uncertain. No registry address resolves a replacement actor.
+
+`admit` returns `Fresh(StartupClaim)` only after the first insertion commits;
+exact retries return historical `Retained`. `prepare_publication` commits
+Publishing before returning its original `PublishingPermit`. Close commits a
+permanent fence even before first activation, in which case it retains a
+NeverStarted record. Recovery marks unavailable original startup custody Unknown
+and keeps its live slot charged. History grants no new startup permission.
+
+`retire_started` validates original physical witnesses before committing and
+reading back `RetirementRecord`. `remove` additionally requires the exact
+original endpoint removal acknowledgement before the Removed commit releases a
+claimed live slot. `attest_predecessor` retains the original owner's close
+attestation; only the checked immediate successor can cite both owner and node
+records. Limits are sixteen live or unretired generations, 4096 permanent
+identities and 256 MiB of reserved logical metadata. Tombstones retain row and
+byte charges. Named SQL and its generated bindings own all durable transitions.
+
+The DAL's trusted witness callbacks are integration obligations. Production
+`scope_admin` must authenticate the configured owner, consume each original
+claim and permit once, order register/fence, verify actual original physical
+joins and endpoint removal, and validate full owner attestations. This registry
+component does not implement deployment, history transport or that assembly.
+
 ## Closed native command routing
 
 `remote/wire.CommandEnvelope` carries exactly one full `core/command.CommandRef`
