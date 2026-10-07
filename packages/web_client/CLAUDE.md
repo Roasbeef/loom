@@ -14,7 +14,10 @@ renders again just for it:
   second, on from a duration the server measured. With `remaining="<ms>"` it
   counts the time left down instead (`duration.remaining`: whole minutes rounded
   up, then seconds), which the admin page's `ends in 14m` pill uses; whichever
-  attribute arrived last sets the direction.
+  attribute arrived last sets the direction. With `since="<unix ms>"` it counts
+  up from a start the records give (`duration.since_offset`, never negative),
+  which a tool call still running uses (`Running · 1m 12s`); that count trusts
+  the browser's clock to agree with the daemon's.
 - `<loom-switcher>` is the session switcher Command or Control and K opens
   (`switcher_rule`: the shortcut, the filter and its order, the highlight). It
   reads the sidebar's `.sidebar .session-open` buttons from the page's root
