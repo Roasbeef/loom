@@ -610,6 +610,7 @@ pub type FindRegistrations {
     created_at: Int,
     request_key: String,
     state: String,
+    profile: String,
   )
 }
 
@@ -619,7 +620,7 @@ pub fn find_registrations(
   path path: String,
 ) {
   let sql =
-    "SELECT session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state
+    "SELECT session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile
 FROM catalogue_sessions
 WHERE session_id = ? OR request_key = ? OR path = ?"
   #(
@@ -643,6 +644,7 @@ pub fn find_registrations_decoder() -> decode.Decoder(FindRegistrations) {
   use created_at <- decode.field(6, decode.int)
   use request_key <- decode.field(7, decode.string)
   use state <- decode.field(8, decode.string)
+  use profile <- decode.field(9, decode.string)
   decode.success(FindRegistrations(
     session_id:,
     path:,
@@ -653,6 +655,7 @@ pub fn find_registrations_decoder() -> decode.Decoder(FindRegistrations) {
     created_at:,
     request_key:,
     state:,
+    profile:,
   ))
 }
 
@@ -664,11 +667,12 @@ pub fn insert_registration(
   configuration configuration: String,
   created_at created_at: Int,
   request_key request_key: String,
+  profile profile: String,
 ) {
   let sql =
     "INSERT INTO catalogue_sessions
-  (session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state)
-VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'reserved')"
+  (session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile)
+VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'reserved', ?)"
   #(sql, [
     dev.ParamString(session_id),
     dev.ParamString(path),
@@ -677,6 +681,7 @@ VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'reserved')"
     dev.ParamString(configuration),
     dev.ParamInt(created_at),
     dev.ParamString(request_key),
+    dev.ParamString(profile),
   ])
 }
 
@@ -689,11 +694,12 @@ pub fn insert_registered_registration(
   configuration configuration: String,
   created_at created_at: Int,
   request_key request_key: String,
+  profile profile: String,
 ) {
   let sql =
     "INSERT INTO catalogue_sessions
-  (session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved')"
+  (session_id, path, workspace, workspace_binding, name, configuration, created_at, request_key, state, profile)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?)"
   #(sql, [
     dev.ParamString(session_id),
     dev.ParamString(path),
@@ -705,6 +711,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved')"
     dev.ParamString(configuration),
     dev.ParamInt(created_at),
     dev.ParamString(request_key),
+    dev.ParamString(profile),
   ])
 }
 
@@ -780,6 +787,7 @@ pub type RegistrationPage {
     created_at: Int,
     request_key: String,
     state: String,
+    profile: String,
     subtitle: Option(String),
   )
 }
@@ -787,7 +795,7 @@ pub type RegistrationPage {
 pub fn registration_page(after after: String, archived archived: Int) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, s.workspace_binding, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
-       s.configuration, s.created_at, s.request_key, s.state, t.subtitle
+       s.configuration, s.created_at, s.request_key, s.state, s.profile, t.subtitle
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = s.session_id
@@ -813,7 +821,8 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
   use created_at <- decode.field(6, decode.int)
   use request_key <- decode.field(7, decode.string)
   use state <- decode.field(8, decode.string)
-  use subtitle <- decode.field(9, decode.optional(decode.string))
+  use profile <- decode.field(9, decode.string)
+  use subtitle <- decode.field(10, decode.optional(decode.string))
   decode.success(RegistrationPage(
     session_id:,
     path:,
@@ -824,6 +833,7 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
     created_at:,
     request_key:,
     state:,
+    profile:,
     subtitle:,
   ))
 }
@@ -853,6 +863,7 @@ pub type MemberRegistrationPage {
     created_at: Int,
     request_key: String,
     state: String,
+    profile: String,
     subtitle: Option(String),
   )
 }
@@ -863,7 +874,7 @@ pub fn member_registration_page(
 ) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, s.workspace_binding, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
-       s.created_at, s.request_key, s.state, t.subtitle
+       s.created_at, s.request_key, s.state, s.profile, t.subtitle
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
@@ -893,7 +904,8 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
   use created_at <- decode.field(6, decode.int)
   use request_key <- decode.field(7, decode.string)
   use state <- decode.field(8, decode.string)
-  use subtitle <- decode.field(9, decode.optional(decode.string))
+  use profile <- decode.field(9, decode.string)
+  use subtitle <- decode.field(10, decode.optional(decode.string))
   decode.success(MemberRegistrationPage(
     session_id:,
     path:,
@@ -904,6 +916,7 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
     created_at:,
     request_key:,
     state:,
+    profile:,
     subtitle:,
   ))
 }
