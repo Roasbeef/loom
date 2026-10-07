@@ -7,6 +7,12 @@
 //// jail has no `rg` binary the call settles as a structured error
 //// suggesting the bash tool as a fallback.
 ////
+//// The additive `registered_matches` path is stricter: it bounds complete raw
+//// output, folds one recognized event at a time and retains only path/line
+//// projections after fixed file/hit/byte checks. `registered_charge` carries the
+//// independent content reservation; it grants no native or filesystem authority.
+//// Ordinary `parse_matches` keeps its existing permissive skip behavior.
+////
 //// `replay: Safe` — a search is a read; re-executing it after a crash
 //// repeats no external effect. `execution_mode` is `Concurrent`.
 
@@ -18,6 +24,7 @@ import core/clock
 import core/json.{type JsonValue}
 import gleam/bit_array
 import gleam/bool
+import gleam/dict
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -256,6 +263,34 @@ fn rg_unavailable() -> ToolOutcome {
   )
 }
 
+/// Registered Search retains only a path and a positive canonical line.
+@internal
+pub type SearchHit {
+  /// Match text is temporary JSON input and is never retained in this projection.
+  SearchHit(
+    /// At most 8192 UTF-8 bytes, charged before construction.
+    path: String,
+    /// Positive signed-64-bit line, fitting the existing canonical wire integer.
+    line: Int,
+  )
+}
+
+/// Complete checked hits; constructors cannot hide a dropped suffix.
+@internal
+pub opaque type RegisteredHits {
+  RegisteredHits(hits: List(SearchHit), charged: Int)
+}
+
+/// A complete Registered stream has no silent malformed or over-budget suffix.
+@internal
+pub type RegisteredError {
+  /// Invalid UTF-8, JSON, event vocabulary or match fields.
+  MalformedRegisteredSearch
+
+  /// Raw, path, hit, per-file or distinct-file admission exceeds its bound.
+  RegisteredSearchLimit
+}
+
 /// One structured match from a search.
 pub type Match {
   Match(path: String, line: Int, text: String)
@@ -425,4 +460,143 @@ fn json_int_field(value: JsonValue, key: String) -> Result(Int, Nil) {
     Ok(json.Int(number)) -> Ok(number)
     _ -> Error(Nil)
   }
+}
+
+/// Parses complete Registered rg output without splitting a list of all events.
+/// Ordinary `parse_matches` retains its existing malformed-line skip behavior.
+/// Each temporary JSON event uses the existing bounded Registered scanner; only
+/// path/line survive, and all retained inventories are checked before insertion.
+///
+/// ## Examples
+/// Invalid JSON after a valid match returns Error rather than prefix success.
+@internal
+pub fn registered_matches(
+  stdout: BitArray,
+) -> Result(RegisteredHits, RegisteredError) {
+  use <- bool.guard(
+    bit_array.byte_size(stdout) > 4_194_304,
+    Error(RegisteredSearchLimit),
+  )
+  use text <- result.try(
+    bit_array.to_string(stdout)
+    |> result.replace_error(MalformedRegisteredSearch),
+  )
+  registered_lines(text, [], dict.new(), 0, 0)
+}
+
+/// Reads only the complete checked path/line projection.
+///
+/// ## Examples
+/// `registered_hits(hits)` contains no captured source or rg match text.
+@internal
+pub fn registered_hits(value: RegisteredHits) -> List(SearchHit) {
+  value.hits
+}
+
+/// Reports path bytes plus 32 bytes per row, separate from grouping inventory.
+///
+/// ## Examples
+/// The complete maximum Search projection charge is 1644800 bytes.
+@internal
+pub fn registered_charge(value: RegisteredHits) -> Int {
+  value.charged
+}
+
+// Only one current line and parsed event coexist with the original raw stream.
+fn registered_lines(
+  rest: String,
+  hits: List(SearchHit),
+  files: dict.Dict(String, Int),
+  count: Int,
+  charged: Int,
+) -> Result(RegisteredHits, RegisteredError) {
+  case rest {
+    "" -> Ok(RegisteredHits(list.reverse(hits), charged))
+    _ -> {
+      use #(line, tail) <- result.try(
+        string.split_once(rest, "\n")
+        |> result.replace_error(MalformedRegisteredSearch),
+      )
+      use event <- result.try(
+        json.parse_profile(line, json.RegisteredLspJson)
+        |> result.replace_error(MalformedRegisteredSearch),
+      )
+      use kind <- result.try(
+        json_string_field(event, "type")
+        |> result.replace_error(MalformedRegisteredSearch),
+      )
+      case kind {
+        "match" -> registered_match(event, tail, hits, files, count, charged)
+        "begin" | "end" | "summary" -> {
+          use data <- result.try(
+            json_field(event, "data")
+            |> result.replace_error(MalformedRegisteredSearch),
+          )
+          use Nil <- result.try(case data {
+            json.Object(_) -> Ok(Nil)
+            _ -> Error(MalformedRegisteredSearch)
+          })
+          registered_lines(tail, hits, files, count, charged)
+        }
+        _ -> Error(MalformedRegisteredSearch)
+      }
+    }
+  }
+}
+
+// Admission checks precede SearchHit, file-counter and retained-list construction.
+fn registered_match(
+  event: JsonValue,
+  rest: String,
+  hits: List(SearchHit),
+  files: dict.Dict(String, Int),
+  count: Int,
+  charged: Int,
+) -> Result(RegisteredHits, RegisteredError) {
+  use data <- result.try(
+    json_field(event, "data") |> result.replace_error(MalformedRegisteredSearch),
+  )
+  use path_value <- result.try(
+    json_field(data, "path") |> result.replace_error(MalformedRegisteredSearch),
+  )
+  use path <- result.try(
+    json_string_field(path_value, "text")
+    |> result.replace_error(MalformedRegisteredSearch),
+  )
+  use line <- result.try(
+    json_int_field(data, "line_number")
+    |> result.replace_error(MalformedRegisteredSearch),
+  )
+  use text_value <- result.try(
+    json_field(data, "lines") |> result.replace_error(MalformedRegisteredSearch),
+  )
+  use _ <- result.try(
+    json_string_field(text_value, "text")
+    |> result.replace_error(MalformedRegisteredSearch),
+  )
+  use <- bool.guard(
+    path == "" || line < 1 || line > 9_223_372_036_854_775_807,
+    Error(MalformedRegisteredSearch),
+  )
+  let bytes = string.byte_size(path)
+  let previous = dict.get(files, path)
+  let next_charge = charged + bytes + 32
+  use <- bool.guard(
+    bytes > 8192
+      || count >= 200
+      || next_charge > 1_644_800
+      || case previous {
+      Ok(n) -> n >= 4
+      Error(Nil) -> dict.size(files) >= 50
+    },
+    Error(RegisteredSearchLimit),
+  )
+  let seen = result.unwrap(previous, 0)
+  registered_lines(
+    rest,
+    [SearchHit(path, line), ..hits],
+    dict.insert(files, path, seen + 1),
+    count + 1,
+    next_charge,
+  )
 }

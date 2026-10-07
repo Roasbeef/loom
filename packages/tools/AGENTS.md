@@ -1168,3 +1168,15 @@ No codec call starts an effect or acknowledges durable receipt.
 `workspace_local.scope` exposes only the host's immutable registered scope. The
 remote service compares it with its journal before startup; this accessor
 performs no path lookup and grants no new workspace authority.
+
+## Registered Search projection
+
+The additive internal `grep.registered_matches` fold reuses `core/json`'s approved
+Registered profile one complete rg line at a time. It recognizes match, begin,
+end and summary explicitly and refuses malformed, unknown or unterminated output
+as a whole. Ordinary `parse_matches` keeps its existing skip behavior. The raw
+stdout guard is 4MiB; each match checks the nonempty path≤8192 bytes, positive
+signed64-bit line, 200 hits, 50 files, 4 hits per file and 1,644,800 path-plus32
+content charge before constructing a retained hit. Source text is validated and
+discarded. No all-event list or retained raw archive is introduced. The caller
+still owns physical completion, exact parent/timing and durable projection joins.
