@@ -1,14 +1,15 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `850b6035` on
+This edition records the registered-runtime integration through `9477061c2` on
 October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
 protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
 hosted PR/main state were checked for this edition. Runtime assembly and
 separate-host acceptance remain in progress.
 
-The previous edition left finite LSP collection unimplemented. The fixed-plan
-verifier, strict search parser and retained collector are now integrated. Actual
-Service ownership, helper return, semantic results and normal registered LSP
+The previous edition left owner identity corrections and original helper return
+open. Both are now integrated with independent review and component gates. The
+fixed-plan verifier, strict search parser and retained collector are also
+integrated. Actual Service ownership, semantic results and normal registered LSP
 assembly remain open. Original registry startup and native scope-close witnesses
 are also integrated; their proofs still require FullHost to supply the actual
 pool and original physical joins. Compile preparation, workspace aggregate and
@@ -31,14 +32,22 @@ That status belongs to main, not this unpublished integration candidate.
 The latest observed main run also passes at `142eba4a3`, with
 [its own CI receipt](https://github.com/Roasbeef/loom/actions/runs/37606780540).
 Those later main changes have not yet been integrated.
+The refreshed ref is `142eba4a3b0dca245993851b893e7479c70d50c7`. Rebase scoping
+found that main and this branch assign catalogue version nine to different
+schemas: profiles on main, retained workspace bindings here. The composed
+migration must recognize both layouts and preserve both additions. Main also
+uses protocol numbers 076 and 077 for configuration profiles and web peer links;
+the unpublished registered records need distinct numbers and qualified links.
 
 | Boundary | Current integration state |
 | --- | --- |
 | Owner custody and semantic transport | `f320f6c5b` wires registered admission, historical reopen and receipt readback to the original actor/connection/path. Original inputs, results, finite TLS BEAM controls, native forwarding and semantic consumers are implemented. Default daemon construction remains pending. |
+| Native system and workspace identity | `754d56990` through `0d5e50e72` retain derived workspace commands, pending system ordinals and original live permission through the Broker. Real owner COMMIT/readback and composed ordinary receipt routing are integrated. Ordinary goal/hook callers and full host wiring remain pending. |
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
 | Managed endpoint | `5733967e9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
 | Original startup and close witnesses | `4b67e014` validates the original live registry claim and exact Plan. `c08fd50d` retains native scope-close evidence before Service exit. FullHost still must bind the real pool and original joins; workspace, Compile and Launch witness work remains pending. |
 | Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
+| Original helper return | `0efed9052` retains the original finite protocol row until the exact pool acknowledges its Available transition. Real helper reuse and both consumption/release orders pass. Service failed-row admission accounting and finite LSP assembly remain pending. |
 | Generation history | `3ade15ea9` and `77b3b217` add permanent original provenance. `40169105` adds restricted managed recovery of native, workspace and resource journals, with explicit close and original normal-exit evidence. Actual physical join validation and bounded history transport remain assembly obligations. |
 | LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. `7d256b402` and `e336f4a19` add original first-placement native custody and credited ServerLease transport, including actual Linux FullEnforcement controls. `d60d4d15` adds owned live startup and restricted recovery. `850b6035` adds finite plan verification and retained collection. Actual Service ownership, semantic/result retirement and ordinary assembly remain pending. |
 | Deployment | `a58713277` and `45de677f` commit reviewed strict owner/executor loaders and their manifest. Shipped role bootstrap, admin transport, full host activation and ordinary daemon assembly remain unbuilt. |
@@ -71,12 +80,38 @@ The collector establishes exact projection COMMIT/readback before raw release;
 actual reusable consumption, helper check-in and managed drain remain separate
 Service assembly obligations.
 
-The owner identity foundation remains in its isolated worktree. Its first
-independent review found two actionable issues: composed routing could divert
-ordinary native capabilities to the semantic Git binding, and a cancellation
-control performed manual cleanup before asserting automatic cleanup. Corrections
-and their focused evidence are in progress. Its prior component passes do not
-certify the corrected or integrated candidate.
+The corrected owner identity foundation passes the integrated core gate with
+213 tests, storage with 264, broker with 461, client with 3,158 and executor with
+547. The client tests take 377.94 seconds, 405.77 including build; executor tests
+take 207.39 seconds, 224.96 including build. Every command's own exit is zero.
+Normal SQL generation and seed, formatting, affected lint, documentation and
+prelude checks pass. All 38 imported hashes remain unchanged after the gates.
+
+Independent review found two actionable issues. Composed routing could divert
+ordinary native capabilities to semantic Git, and a cancellation control
+performed manual cleanup before asserting automatic cleanup. Both are corrected.
+Reservation now checks the original retained semantic counterpart, while receipt
+routing follows the retained envelope. The corrected cancellation control holds
+the actual reserve worker through a receiver it owns, then checks durable
+cancellation before manual cleanup. A compiled no-op callback mutant fails that
+first SQL assertion. The earlier passing fixture with the wrong receiver owner
+is withdrawn as evidence of a held worker; its receipt remains preserved.
+
+Original helper return passes all 474 broker tests on the composed candidate,
+with the command's own exit zero in 110.23 seconds including build. Formatting,
+normal helper build, broker lint, documentation and prelude checks also pass,
+with all ten imported hashes unchanged. The separate real-helper control passes
+both release/consumption orders and another command on the same helper. It uses
+the Darwin BestEffort posture; it does not establish Linux FullEnforcement.
+The broker gate retains its two ordinary Linux `/proc` witness exclusions.
+
+Independent helper-return review found no actionable issue. Twelve controls use
+the actual pool, helper and native reducers with a protocol peer; five compiled
+mutants fail intended assertions. The held-ACK control distinguishes the pool's
+Available transition from receipt by the original native actor. Failed return
+rows remain retained after physical retirement, so Service must keep their
+admission charge until explicit close. Pool size alone does not bound that
+retained row inventory. Ordinary finite LSP assembly remains required.
 
 The original-startup and native-close integration passes all 532 executor tests
 in 209.76 seconds, 226.38 seconds including build, with the command's own exit
@@ -288,9 +323,13 @@ placements, container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Complete the approved owner identity and original physical-close prerequisites
+1. Rebase onto the fetched main and preserve its profiles, peer policy and local
+   Go caches. **Exit:** composed catalogue migration accepts both version-nine
+   layouts, original typed workspace retries remain enforced, and protocol
+   records have unambiguous references. Then repeat the affected gates.
+2. Complete the original physical-close prerequisites and ordinary system callers
    for **#697**. Parent-derived workspace commands and two-stage NativeSystem
-   clearance are approved below and under implementation. **Exit:** original
+   clearance are integrated. **Exit:** original
    authority survives reserve/clearance without renewal, and each physical owner
    supplies its actual close witness. Registry validation and the native close
    projection are integrated. Workspace aggregate evidence, Compile preparation
@@ -299,18 +338,18 @@ placements, container execution and hosted CI have not passed on this candidate.
    Native transport, all four owned journals, registry startup and restricted
    managed recovery are integrated. Preserve all
    existing tests and ordinary local behavior.
-2. Build the approved ordinary registered path from protocols 076 and 077.
+3. Build the approved ordinary registered path from protocols 076 and 077.
    Preserve one original owner Broker/custodian, exact-generation publication,
    executor-only physical paths, full reports, jobs, hooks, cwd, guidance, Git and
    LSP. **Exit:** default tools and code mode run with the checkout absent from
    the owner, and Close/restore retains original history and permits only proved
    clean successors. Historical query alone does not establish fresh execution.
-3. Complete role packaging and the two physical-host placements, followed by
+4. Complete role packaging and the two physical-host placements, followed by
    executor pools and C1-C3/M1. **Exit:** the same candidate passes normal effects,
    cancellation, partition, restart, lost-reply, routing, durable messaging and
    controlled-movement controls. Automatic failover and workspace snapshot
    migration remain deferred.
-4. Check for later main changes, run applicable model and full repository gates, and
+5. Check for later main changes, run applicable model and full repository gates, and
    review the assembled system. **Exit:** exact candidate evidence closes the
    integration checklist before publication or merge is requested.
 
@@ -354,8 +393,9 @@ system semantic request. It preserves the original quota group and adds no
 system ordinal. Admitted capabilities retain their existing purpose pair.
 Standalone native system commands separately reserve original identity before
 Broker clearance and admit exact cleared bytes afterward. These identity and
-sequencing changes are approved directions; their production wiring remains
-unimplemented. Initialize does not imply an invented native setup command.
+sequencing changes are integrated at the custodian and Broker boundary; ordinary
+goal/hook callers and full host wiring remain unimplemented. Initialize does not
+imply an invented native setup command.
 
 ## Deliberately open
 
