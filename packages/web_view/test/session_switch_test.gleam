@@ -235,6 +235,10 @@ pub fn a_peer_message_offers_open_for_a_running_listed_session_test() {
   assert string.contains(html, "class=\"peer-open\"")
   assert string.contains(html, ">Open census<")
 
+  // The card's head names the sender as the sidebar does, not by identity.
+  assert string.contains(html, "peer · census · main")
+  assert !string.contains(html, "peer · lint-cen")
+
   // Pressing it is the same request as the sidebar's.
   let clicked =
     simulate.application(
@@ -271,9 +275,14 @@ pub fn a_peer_message_offers_no_open_for_any_other_session_test() {
     )
   assert !string.contains(drawn(saved), "peer-open")
 
-  // No list at all: the peer's identity alone offers nothing.
+  // A saved session still has its name on the card, though no Open button.
+  assert string.contains(drawn(saved), "peer · census · main")
+
+  // No list at all: the peer's identity alone offers nothing, and the head
+  // abbreviates the identity rather than printing it whole.
   let #(bare, _) = page(operator_page_answer(), [])
   assert !string.contains(drawn(bare), "peer-open")
+  assert string.contains(drawn(bare), "peer · lint-cen · main")
 }
 
 // The catalogue's words reach the button as text, and a name that holds markup
@@ -295,6 +304,9 @@ pub fn the_open_button_escapes_the_catalogues_name_test() {
   let html = drawn(model)
   assert string.contains(html, ">Open &lt;b&gt;census&lt;/b&gt;<")
   assert !string.contains(html, "<b>census")
+
+  // The card's head carries the same name, escaped as a text node.
+  assert string.contains(html, "peer · &lt;b&gt;census&lt;/b&gt; · main")
 }
 
 // The observer's page draws no sidebar, no Open button and no switch element,

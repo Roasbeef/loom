@@ -298,6 +298,56 @@ pub fn quit_cancels_the_configuration_job_test() {
   assert late.view.configuring == None
 }
 
+// A second request while a creation is still unreconciled says so in plain
+// words. The creation key is an internal handle, here a process identity and
+// a clock reading, and the person at the terminal can do nothing with it.
+pub fn a_second_creation_names_no_internal_key_test() {
+  let #(asked, _effects) =
+    stepping.step(backend.KeyPress("n"), picker(absent_config()))
+  let assert Some(slot) = asked.view.configuring
+    as "the creation waits for its configuration job"
+  let resolved =
+    runtime.hold(
+      asked,
+      job.ConfigurationArrived(
+        job.key(slot),
+        weft.PulledOutcome(weft.Completed(0, "/cfg/loom.toml")),
+      ),
+    )
+  let #(created, _effects) = stepping.step(backend.Tick, resolved)
+  let assert Some(creation_key) = created.view.creation_key
+    as "the first creation retained its key"
+
+  let reopened =
+    view_set.overlay(
+      created.view,
+      tui_model.DaemonSelector(session_selector.new(
+        protocol.Page(0, [], None),
+        "",
+      )),
+    )
+  let #(again, _effects) =
+    stepping.step(
+      backend.KeyPress("n"),
+      tui_model.Model(..created, view: reopened),
+    )
+  let assert Some(second) = again.view.configuring
+    as "the second creation waits for its configuration job"
+  let refused =
+    runtime.hold(
+      again,
+      job.ConfigurationArrived(
+        job.key(second),
+        weft.PulledOutcome(weft.Completed(0, "/cfg/loom.toml")),
+      ),
+    )
+  let #(after, _effects) = stepping.step(backend.Tick, refused)
+
+  assert failures(after)
+    == ["the previous session creation did not finish; reopen /sessions"]
+  assert !string.contains(string.join(failures(after), "\n"), creation_key)
+}
+
 // Ticks through `tui.update` until the configuration slot is cleared, so a
 // real job's reply has been taken, or the budget of ticks runs out.
 fn tick_until_configured(
@@ -354,37 +404,33 @@ pub fn a_creation_carries_the_launch_profile_test() {
     )
 }
 
-// A launch that names a profile but opens an existing session says the profile
-// only applies to new sessions; a launch without one says nothing.
+// A launch that names a profile but opens an existing session owes the line
+// that says the profile only applies to new sessions; a launch without one
+// owes nothing.
 pub fn opening_an_existing_session_says_the_profile_is_kept_test() {
   let named =
-    session_control.note_kept_profile(picker(
+    session_control.kept_profile_line(picker(
       bootstrap.Options(..absent_config(), profile: "deepseek"),
     ))
-  assert list.any(named.shared.transcript, fn(line) {
-    case line {
-      transcript_line.Line(_, text) ->
-        string.contains(
-          text,
-          "--model-profile deepseek applies to new sessions",
-        )
-    }
-  })
-  let plain = picker(absent_config())
-  assert session_control.note_kept_profile(plain).shared.transcript
-    == plain.shared.transcript
+  let assert Some(line) = named as "a named profile is owed a line"
+  assert string.contains(
+    line,
+    "--model-profile deepseek applies to new sessions",
+  )
+  assert session_control.kept_profile_line(picker(absent_config())) == None
 }
 
 @external(erlang, "effects_test_ffi", "control_on")
 fn control_on(owner: Subject(Dynamic)) -> daemon.Connection
 
-// What `tui.attach_daemon` leaves in the transcript for one launch, through the
+// The line `tui.attach_daemon` leaves owed for one launch, through the
 // credential read, the control adoption and the first request a local launch
-// makes.
-fn attached_transcript(
+// makes. It is owed rather than written, because adopting the attach replaces
+// the transcript (`attempt_replay_test` drives that half).
+fn attached_note(
   options: bootstrap.Options,
   selected: String,
-) -> List(String) {
+) -> option.Option(String) {
   let token = "build/r8-attach-token"
   write(token, <<"token":utf8>>)
   let assert Ok(Nil) = simplifile.set_permissions_octal(token, 0o600)
@@ -404,14 +450,14 @@ fn attached_transcript(
     )
   let _ = simplifile.delete(token)
 
-  list.map(attached.shared.transcript, fn(line) {
-    let transcript_line.Line(_, text) = line
-    text
-  })
+  attached.view.launch_note
 }
 
-fn names_kept_profile(lines: List(String)) -> Bool {
-  list.any(lines, string.contains(_, "--model-profile beta applies to new"))
+fn names_kept_profile(note: option.Option(String)) -> Bool {
+  case note {
+    Some(line) -> string.contains(line, "--model-profile beta applies to new")
+    None -> False
+  }
 }
 
 // The flag is silently ignored on resume unless the local launch says so:
@@ -419,7 +465,7 @@ fn names_kept_profile(lines: List(String)) -> Bool {
 pub fn a_local_launch_opening_a_session_says_the_profile_is_kept_test() {
   let options = bootstrap.Options(..absent_config(), profile: "beta")
 
-  assert names_kept_profile(attached_transcript(options, "01a11401"))
+  assert names_kept_profile(attached_note(options, "01a11401"))
 }
 
 // Nothing is opened when the launch lands on the picker, and a launch that
@@ -427,9 +473,6 @@ pub fn a_local_launch_opening_a_session_says_the_profile_is_kept_test() {
 pub fn a_local_launch_that_opens_nothing_or_names_no_profile_is_silent_test() {
   let options = bootstrap.Options(..absent_config(), profile: "beta")
 
-  assert !names_kept_profile(attached_transcript(options, ""))
-  assert !list.any(
-    attached_transcript(absent_config(), "01a11401"),
-    string.contains(_, "--model-profile"),
-  )
+  assert attached_note(options, "") == None
+  assert attached_note(absent_config(), "01a11401") == None
 }

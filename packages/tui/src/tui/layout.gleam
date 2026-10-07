@@ -812,9 +812,15 @@ const notice_rows = 3
 
 // A notice as the rows it wraps to within `width` cells, the last one ending in
 // an ellipsis when the cap cut the text short.
+//
+// Rows break at spaces, so a refusal never reads `att` / `empts`. A single
+// word wider than the row cannot stay whole and is broken inside, which is
+// the one case `text.wrap` does that. A notice is one line of prose with no
+// cursor in it, unlike the composer's own wrap (`hard_wrap_line`), which must
+// keep every character where the cursor can find it.
 fn wrapped_notice(notice: String, width: Int) -> List(String) {
   let width = int.max(1, width)
-  let rows = hard_wrap_line(notice, width)
+  let rows = text.wrap(notice, width)
 
   case list.length(rows) > notice_rows {
     False -> rows
@@ -822,7 +828,7 @@ fn wrapped_notice(notice: String, width: Int) -> List(String) {
       list.take(rows, notice_rows - 1)
       |> list.append([
         text.truncate(
-          list.drop(rows, notice_rows - 1) |> string.join(""),
+          list.drop(rows, notice_rows - 1) |> string.join(" "),
           width,
           "…",
         ),

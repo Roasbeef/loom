@@ -706,6 +706,7 @@ pub fn new_model_with_clock(
       overlay: NoOverlay,
       strip_focus: agent_strip.Composing,
       local_options: None,
+      launch_note: None,
       workspace: project,
       candidate: attachment.idle(),
       daemon_host: None,

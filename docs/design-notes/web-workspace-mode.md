@@ -89,7 +89,7 @@ the page's cookie, key and nonce in one actor. A ticket for it is minted
 only by `UiLink` (`client/daemon/server.gleam:2103`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:1472`)). The
+switching to another session (`ticket_for` (`ui_socket.gleam:1483`)). The
 exchange redeems it once (`redeem` (`ui_sessions.gleam:737`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
@@ -643,7 +643,7 @@ login add these cases.
 daemon's host, canonicalizes or inherits a configuration path, and runs
 `create_scoped` (`client/daemon/manager.gleam:1477`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
-counter (`CreateSession` (`tui/session_control.gleam:731`)), names the session
+counter (`CreateSession` (`tui/session_control.gleam:741`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
 of this: the ruling of 2026-09-27 says daemon control stays in the terminal.
 

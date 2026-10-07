@@ -1507,7 +1507,10 @@ fn step(
   Step(
     key:,
     standing:,
-    words: step_words.of_call(call),
+    words: case standing {
+      Pending -> step_words.pending(step_words.of_call(call))
+      Done | Failed -> step_words.of_call(call)
+    },
     detail:,
     full:,
     images: transcript_image.of_outcome(call.outcome),

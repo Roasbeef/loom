@@ -226,13 +226,16 @@ pub fn begin_open(model: Model, session: String) -> Model {
 }
 
 /// Opens a session the operator chose, by picker or by `--session` at launch,
-/// and says so when the launch named a model profile.
+/// and owes them a line when the launch named a model profile.
 ///
 /// A profile applies only when a session is created, so a launch that names one
 /// and opens an existing session would otherwise ignore the flag without a word.
-/// The note is written before the attach starts, and only here: a reconnect
-/// reattaches through `begin_open` and must not repeat it, and creating a
-/// session uses the profile instead of keeping one.
+/// The line cannot be written now: adopting the attach replaces the transcript
+/// with the opened session's, so it waits in `View.launch_note` for
+/// `interaction.candidate_outcome` to write it after that cut. It is owed only
+/// when the attach actually started, which is when `next_attempt` advanced, and
+/// only here: a reconnect reattaches through `begin_open` and must not repeat
+/// it, and creating a session uses the profile instead of keeping one.
 ///
 /// ## Examples
 ///
@@ -241,7 +244,15 @@ pub fn begin_open(model: Model, session: String) -> Model {
 /// ```
 @internal
 pub fn open_chosen(model: Model, session: String) -> Model {
-  note_kept_profile(model) |> begin_open(session)
+  let opened = begin_open(model, session)
+  case opened.view.next_attempt == model.view.next_attempt {
+    True -> opened
+    False ->
+      Model(
+        ..opened,
+        view: view_set.launch_note(opened.view, kept_profile_line(model)),
+      )
+  }
 }
 
 /// Paging observes only authorized metadata in the requested revision.
@@ -663,26 +674,25 @@ fn apply_configuration_reply(
   }
 }
 
-/// Says, when the launch named a model profile but opens an existing session
-/// instead of creating one, that the session keeps the profile it was created
-/// with. The profile only applies at creation, so without the line the flag
-/// would be silently ignored. A launch with no `--model-profile` adds nothing.
+/// The line that says the launch's model profile is ignored because the session
+/// it opens already exists and keeps the profile it was created with. The
+/// profile only applies at creation, so without the line the flag would be
+/// silently ignored. A launch with no `--model-profile` has nothing to say.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_control.note_kept_profile(model)
+/// // session_control.kept_profile_line(model)
 /// ```
 @internal
-pub fn note_kept_profile(model: Model) -> Model {
+pub fn kept_profile_line(model: Model) -> Option(String) {
   case chosen_profile(model) {
-    "" -> model
+    "" -> None
     name ->
-      tui_model.append_notice(
-        model,
+      Some(
         "--model-profile "
-          <> name
-          <> " applies to new sessions; this session keeps the profile it was created with",
+        <> name
+        <> " applies to new sessions; this session keeps the profile it was created with",
       )
   }
 }
@@ -705,10 +715,13 @@ fn create_session_configured(model: Model, config: String) -> Model {
     model.view.daemon_host,
     attachment.busy(model.view.candidate)
   {
-    Some(key), _, _ ->
+    // An earlier creation never reported its outcome. The key names it for
+    // the daemon's reconciliation and means nothing to a reader, so the
+    // line says what to do and leaves the key out.
+    Some(_), _, _ ->
       tui_model.append_error(
         model,
-        "reconcile prior creation key before creating again: " <> key,
+        "the previous session creation did not finish; reopen /sessions",
       )
     None, None, _ ->
       tui_model.append_error(model, "daemon control is disconnected")

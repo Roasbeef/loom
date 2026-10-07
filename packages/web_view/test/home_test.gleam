@@ -1305,22 +1305,57 @@ pub fn the_answer_departs_or_words_the_refusal_test() {
   assert string.contains(html, "to=\"" <> ticket <> "\"")
   assert !string.contains(html, "<form")
 
-  let refuse = fn(reason) {
+  let answer = fn(answered) {
     let #(model, _) =
-      opened(
-        creator(fn(_, _, _, _, deliver) { deliver(creations.Declined(reason)) }),
-      )
+      opened(creator(fn(_, _, _, _, deliver) { deliver(answered) }))
     let model = run(model, home.Choosing("/src/loom"))
     run(model, home.Creating("/src/loom", "", creations.Private, None))
   }
+  let refuse = fn(reason) { answer(creations.Declined(reason)) }
   let invalid = drawn(refuse(creations.InvalidName))
   assert string.contains(invalid, creations.reason_words(creations.InvalidName))
   assert string.contains(invalid, "<form")
   assert !string.contains(invalid, " to=")
 
-  let unopened = drawn(refuse(creations.NotOpened))
-  assert string.contains(unopened, creations.reason_words(creations.NotOpened))
-  assert !string.contains(unopened, "<form")
+  // A session that was kept closes the form, since there is nothing to correct.
+  let kept = drawn(answer(creations.Unstarted(None, creations.InList)))
+  assert string.contains(
+    kept,
+    creations.unstarted_words(None, creations.InList),
+  )
+  assert !string.contains(kept, "<form")
+}
+
+// A creation that did not start says why, in the owner's own startup reason
+// and as a text node: markup in the reason is escaped and never drawn as markup.
+// A reservation the daemon released brings the form back, so the retry is the
+// same press once the cause is corrected, and a session that was kept closes it.
+pub fn an_unstarted_creation_says_why_as_text_test() {
+  let why =
+    Some("profile <script>fast</script> is not defined in /home/o/loom.toml")
+  let answer = fn(remains) {
+    let ask = fn(_, _, _, _, deliver) {
+      deliver(creations.Unstarted(why, remains))
+    }
+    let #(model, _) = opened(creator(ask))
+    let model = run(model, home.Choosing("/src/loom"))
+    drawn(run(model, home.Creating("/src/loom", "", creations.Private, None)))
+  }
+
+  let dropped = answer(creations.Dropped)
+  assert string.contains(
+    dropped,
+    "The session did not start, so nothing was kept.",
+  )
+  assert string.contains(dropped, "is not defined in /home/o/loom.toml")
+  assert string.contains(dropped, "&lt;script&gt;")
+  assert !string.contains(dropped, "<script>")
+  assert string.contains(dropped, "<form")
+
+  let kept = answer(creations.InList)
+  assert string.contains(kept, "did not open")
+  assert string.contains(kept, "&lt;script&gt;")
+  assert !string.contains(kept, "<form")
 }
 
 // What the browser's submit lists is decoded totally: one name, at most one
@@ -1365,7 +1400,6 @@ pub fn every_creation_refusal_has_its_own_words_test() {
     creations.InvalidName,
     creations.TooMany,
     creations.Full,
-    creations.NotOpened,
     creations.Unavailable,
     creations.NotAFolder,
     creations.OutsideHome,
@@ -1374,7 +1408,7 @@ pub fn every_creation_refusal_has_its_own_words_test() {
     creations.StateFolder,
   ]
   let words = list.map(reasons, creations.reason_words)
-  assert list.length(list.unique(words)) == 12
+  assert list.length(list.unique(words)) == 11
 }
 
 // A workspace, a name or a folder from the catalogue is a text node: it is
@@ -2273,12 +2307,13 @@ pub fn the_typed_folder_form_asks_once_test() {
 // in an attribute. A session that was made and did not open closes the form.
 pub fn a_refused_folder_says_why_and_never_the_path_test() {
   let typed = "~/<script>alert(1)</script>/secret-folder"
-  let refuse = fn(reason) {
-    let ask = fn(_, _, _, _, deliver) { deliver(creations.Declined(reason)) }
+  let refuse_with = fn(answered) {
+    let ask = fn(_, _, _, _, deliver) { deliver(answered) }
     let #(model, _) = opened(creator(ask))
     let model = run(model, home.OpeningElsewhere)
     run(model, home.CreatingElsewhere(typed, "", creations.Private, None))
   }
+  let refuse = fn(reason) { refuse_with(creations.Declined(reason)) }
   let outside = drawn(refuse(creations.OutsideHome))
   assert string.contains(outside, creations.reason_words(creations.OutsideHome))
   assert string.contains(outside, "name=\"path\"")
@@ -2303,9 +2338,9 @@ pub fn a_refused_folder_says_why_and_never_the_path_test() {
   )
   assert after != ""
 
-  let unopened = drawn(refuse(creations.NotOpened))
-  assert string.contains(unopened, creations.reason_words(creations.NotOpened))
-  assert !string.contains(unopened, "name=\"path\"")
+  let kept = drawn(refuse_with(creations.Unstarted(None, creations.InList)))
+  assert string.contains(kept, "did not open")
+  assert !string.contains(kept, "name=\"path\"")
 }
 
 // A remembered folder's refusal is drawn in the same section, since the folder

@@ -49,16 +49,16 @@
    input f99f5772599ade95771d8e90c7daecffa3eae388501469d50c04aa4ce15d0428  packages/web_view/src/web_view/admin.gleam
    input af33db48ebbd48c8d915fc2083ce6823c7d308c1ad8686c73611697de4cd84b4  packages/web_view/src/web_view/code_view.gleam
    input 50a0cb141f38c9f14e2a7b54b3a343efd181897a0e3da233beb8020515554526  packages/web_view/src/web_view/completion.gleam
-   input 98fcaed6260ef625793c964981217d4e3e3cf3b4c153d122bb40b08592adaf76  packages/web_view/src/web_view/component.gleam
-   input 3c1e486457be5809f80243fee34d9ec93397c579ecc2d20887e64d4eca69011b  packages/web_view/src/web_view/creations.gleam
+   input f02b8af1bca7d3447b81b0c1a0fd099f2171191de7c723084c8ad6a7eb7a085a  packages/web_view/src/web_view/component.gleam
+   input b2d6e2ba906fc8bbd9e5388801d79d9b50ed4393e46919a1299c969398cd31ba  packages/web_view/src/web_view/creations.gleam
    input e54b11846a242bbc2aa2e7353845d2b5b1fdafff909ff3e6911bd76cddc503c1  packages/web_view/src/web_view/ending.gleam
    input 293926b61e06c6940f80244ab88b706458a42cd3c95c74faaa42406f7a77fb6b  packages/web_view/src/web_view/grants.gleam
-   input 73c4d06441bb72a77af70b160a077e0d80f18fc6ce05c5e609e4fb85f8d87b9a  packages/web_view/src/web_view/home.gleam
+   input f505123fef584d4e724e0c2e01d773876a937287c65309a4f1d6e47e2b1fccd6  packages/web_view/src/web_view/home.gleam
    input 66f129b5d21f94c1f61d312c78720223300f13e9b3bdbe370b1aa340e12623d2  packages/web_view/src/web_view/image.gleam
    input 20ecaef145694bf83737c3e2e0e3a3588fbda978b26206223b248b2603afaf07  packages/web_view/src/web_view/invites.gleam
    input 2d6532f819991a3d67925dd4d5ec69402c5928210ce0baa89694dcd7a4e23b3a  packages/web_view/src/web_view/markdown_view.gleam
    input 305d0be7424c3d5ba8caaf6d2a83dbc82c335df1fdb8a6701f7e37ac18e5a7a3  packages/web_view/src/web_view/names.gleam
-   input 6b0843d0497d6e5948804d4807486172dbd6127c47749de4d69b7bdb62575e41  packages/web_view/src/web_view/operator_page.gleam
+   input c83f7c4d6dc902a6ec2d2fc30877068859f2f38c400b8002aa42892f949ce27c  packages/web_view/src/web_view/operator_page.gleam
    input aa0a493f61d0638af307e99b79bcc5831e62cc182764f6536cd0f47e906e238b  packages/web_view/src/web_view/page.gleam
    input 26cadefefe6723b9cd579a5bb4dea291b5aaa23ede46ff70d8bdeda21639e2e7  packages/web_view/src/web_view/peer_links.gleam
    input 1ea3d766230b36781f3b4d2d0efb442e30cf93a2384a6356854a86d9fab8d835  packages/web_view/src/web_view/remembered.gleam
@@ -80,12 +80,12 @@
    input d2b0cb02c09f7ba815383b8442434951f5ced00a866b34428078b885b8cf16d1  packages/web_view/src/web_view/view/diff.gleam
    input ec670b0798d86abebafb0335e522c2c6cc7046e9af77f649a984abc3d1f149c4  packages/web_view/src/web_view/view/ended.gleam
    input 8b98ce4c70ecf1380327ecd4a1126eb8e7e7d9571132623a52649dc86047d746  packages/web_view/src/web_view/view/expansion.gleam
-   input 49cf2e574c60514ac7fa6cc5bf8488ee42c10b06bfc042033b1d34784e503572  packages/web_view/src/web_view/view/fold_row.gleam
+   input ed97e959a403bebef77c87ff21c88660ab1cb0cdc473baaea7db09a4bf8cedbc  packages/web_view/src/web_view/view/fold_row.gleam
    input cc749e87d605e066e71b960a3d521b481ae8a6c75a2bcc54ff7de321693a223a  packages/web_view/src/web_view/view/folders.gleam
    input fee15f4adb1d29bc6c0f55180923b1c52269fa4f2fd751f6899c473798097814  packages/web_view/src/web_view/view/heading.gleam
    input 1750c51bfa6e2b4a31f9d92204c425e9199477e16f3d505cd155ccd93ad78ee6  packages/web_view/src/web_view/view/home_bar.gleam
    input 1686d0003e490b2ab1ce66e5c20ef10e5a079e00b44416bdacdd5f9842504f1a  packages/web_view/src/web_view/view/home_table.gleam
-   input 541983acc5cdc6545186a847b79dd21c9f427d2622080eb393d2bb532d92c884  packages/web_view/src/web_view/view/lane.gleam
+   input 5d031480f1c62635fe9281bed2dfc53525237cda11aa84e242003a92ac3a3313  packages/web_view/src/web_view/view/lane.gleam
    input 69884bbfe0c71d7379a9a02ca5617606ded1e28e1f15692f28da4c6d38eb5e7b  packages/web_view/src/web_view/view/live.gleam
    input 8ac4a964a8cc9533bc165f260bedd62aa834cfda13f87959b82160cc91a2f17e  packages/web_view/src/web_view/view/notice.gleam
    input b73fc47db8d46314a208fafdaa47629322aab80946ca9fd60fd1e1d1448742cb  packages/web_view/src/web_view/view/nudges.gleam
@@ -97,7 +97,7 @@
    input fd684b95747297453515e9711172dfc335b2b54cf89e771227c2f8b173f31371  packages/web_view/src/web_view/view/session_tab.gleam
    input 207dad1a0d483d7c74d76ef18840f20a349f89d7d46f3c23703f42711a57aece  packages/web_view/src/web_view/view/share.gleam
    input 00d5e62f9c93902eb942f1aa8ac33efc3d992d509309445036479f216444523e  packages/web_view/src/web_view/view/shell.gleam
-   input 57b0648e1d887f100aca9daa9698cf58762294d020b8c24ea085aa31419b93e4  packages/web_view/src/web_view/view/sidebar.gleam
+   input e0d8a4f31cd5abf2467322c553b4470aa89376697cb8b232d8f2cabd90d07d22  packages/web_view/src/web_view/view/sidebar.gleam
    input f04bcc6805572088179064721137c05e2f3b599676282124df2f3e5a90e70048  packages/web_view/src/web_view/view/signins.gleam
    input 03c02ad073b3a76507a29419b2df076458f0c714de8b0a34ae4d14cb0fc5e13d  packages/web_view/src/web_view/view/strand_detail.gleam
    input 9d93eb18b23a96fef85dfb1b98ac196f384c3dcf129b4b5e771d069ea6d61a4e  packages/web_view/src/web_view/view/strip.gleam

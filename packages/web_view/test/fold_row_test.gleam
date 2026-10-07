@@ -729,6 +729,30 @@ pub fn a_running_call_carries_its_start_time_for_the_browser_test() {
   assert string.contains(html, "class=\"glyph\">●</span>")
 }
 
+// A verb already in the present tense says the call is running, so the
+// counter is only the time: `Running sleep 600 · 5s`, not a second "Running".
+pub fn a_present_tense_verb_is_not_followed_by_running_test() {
+  let html =
+    drawn([
+      work([
+        turns.Step(
+          "2.0/0",
+          turns.Pending,
+          Words("Running", Mono("sleep 600"), None),
+          [],
+          [],
+          [],
+          Some(1_700_000_072_000),
+        ),
+      ]),
+    ])
+  assert string.contains(
+    html,
+    "<span class=\"running-time\">· <loom-elapsed since=\"1700000072000\"></loom-elapsed></span>",
+  )
+  assert !string.contains(html, "Running · ")
+}
+
 pub fn a_settled_call_draws_no_running_time_test() {
   let html =
     drawn([

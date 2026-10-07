@@ -153,6 +153,58 @@ pub fn of_call(call: tool_activity.Call) -> Words {
   }
 }
 
+/// The same words for a call that has not finished, with the verb in the
+/// present tense: `Running sleep 70` and not `Ran sleep 70`. The past tense
+/// claims an outcome the call has not reached; the host draws the settled
+/// words when the result lands. A verb this table does not know is left as
+/// it is, since it is the tool's own name and has no tense.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert step_words.pending(Words("Ran", Mono("make"), None))
+///   == Words("Running", Mono("make"), None)
+/// ```
+pub fn pending(words: Words) -> Words {
+  let verb = case words.verb {
+    "Ran" -> "Running"
+    "Read" -> "Reading"
+    "Edit" -> "Editing"
+    "Wrote" -> "Writing"
+    "Searched" -> "Searching"
+    "Spawned" -> "Spawning"
+    "Messaged" -> "Messaging"
+    "Noted" -> "Noting"
+    "Listed notes" -> "Listing notes"
+    "Remembered" -> "Remembering"
+    "Checked context" -> "Checking context"
+    "Waited for" -> "Waiting for"
+    other -> other
+  }
+  Words(..words, verb:)
+}
+
+/// Whether a verb is one `pending` produced, so the row already says the
+/// call is running and a host need not say it again. A verb the table does
+/// not know is unchanged by `pending` and is not present tense here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert step_words.is_present("Running")
+/// assert !step_words.is_present("Ran")
+/// ```
+pub fn is_present(verb: String) -> Bool {
+  list.contains(
+    [
+      "Running", "Reading", "Editing", "Writing", "Searching", "Spawning",
+      "Messaging", "Noting", "Listing notes", "Remembering", "Checking context",
+      "Waiting for",
+    ],
+    verb,
+  )
+}
+
 /// The words of the memory context the daemon attached to a run, counted in
 /// the digest's lines: `Memory · 4 lines`.
 ///

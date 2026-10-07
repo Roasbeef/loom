@@ -244,3 +244,33 @@ still learns nothing about the filesystem beyond whether the folder is usable.
 Each reason has its own fixed sentence, none repeats the path, and the
 sentence is drawn under the heading row of the "Other folders" section and not
 inside it.
+
+## Addendum (2026-10-07): a creation that did not start (F195)
+
+The live critique (F195) found that a creation refused by a bad configuration
+said "created and did not open" with no reason, left a `saved` row in the
+sidebar, and left a row the page could not resume. The creation answer was
+`Declined(NotOpened)`, one fixed sentence, and the page could not retry because
+it draws a fresh request key for every press.
+
+`creations.Answer` gains `Unstarted(why, remains)` and `Reason.NotOpened` is
+removed. `why` is the startup reason the registry already keeps for the exact
+operation the creation began (protocol-change/055), read through
+`manager.operation`, made one line by `text_hygiene.single_line`, and drawn as
+part of one text node. Only an owner's page can hold the answer, because
+`authorized_owner` refuses every other principal as `NotOwner` before any
+session exists. The page adds no path or detail the owner is not already shown
+at the terminal.
+
+`remains` says what is left. A creation that never initialized a database is
+`Dropped`: once its failed slot has drained, the page's creation task releases
+the reservation with the registry's own delete (the owner's Delete button, with
+the owner's digest and the daemon's epoch), and the form comes back so the same
+press is the retry once the cause is corrected. A session that was initialized
+before it failed to open is `InList`, as is one whose release the registry
+refused; its row stays for the owner's Resume or Delete. The release is only on
+the page's path. The control command and the terminal keep a reserved row,
+because the terminal retains its creation key and completes the same identity
+on a retry. The terminal's refusal to open a reserved row now also names delete.
+The sidebar words a row nothing can open "needs attention", as the home table
+does, rather than "saved".

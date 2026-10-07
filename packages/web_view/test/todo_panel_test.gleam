@@ -282,7 +282,7 @@ pub fn a_running_reviewer_draws_the_band_on_both_pages_test() {
   // The strand's name is session text and holds markup: it arrives escaped.
   assert has(operator(model), [
     "todo-reviewers",
-    "Reviewer sub:main/&lt;b&gt;review-1a2b3c",
+    "Sub-agent &lt;b&gt;review",
   ])
   assert has(observer(model), ["todo-reviewers", "Task:"])
   assert !string.contains(operator(model), "<b>review")
