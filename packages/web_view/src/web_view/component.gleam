@@ -5361,6 +5361,25 @@ pub fn openable(model: Model(socket), id: String) -> Option(sessions.Entry) {
   }
 }
 
+/// The catalogue's name for the listed session `id`, running or saved, as the
+/// sidebar calls it (`sessions.label`), or `None` for a session the page does
+/// not list. A peer's message names its source by identity, and the card says
+/// this name when there is one, so the page never shows a reader a raw
+/// identity in place of a name the sidebar already shows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_name(model, "0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a71")
+/// ```
+pub fn session_name(model: Model(socket), id: String) -> Option(String) {
+  model.view.groups
+  |> list.flat_map(fn(group) { group.entries })
+  |> list.find(fn(entry) { entry.id == id })
+  |> result.map(sessions.label)
+  |> option.from_result
+}
+
 /// Shows `strand`, and addresses the operator's input to it.
 ///
 /// The change is the shared step's (`step.focus`), which is the terminal's
