@@ -56,7 +56,7 @@ original_reader_monitor({door,{subject,Bridge,_}}) when node(Bridge)=:=node() ->
         {connection,_,_,_,_,Close}=Connection,
         {env,[{subject,Channel,_}]}=erlang:fun_info(Close,env),
         {_,ChannelOwned}=sys:get_state(Channel,1000),
-        true=tuple_size(ChannelOwned)=:=25,
+        true=tuple_size(ChannelOwned)=:=26,
         {some,{subject,Reader,_}}=element(17,ChannelOwned),
         {ok,{Reader,erlang:monitor(process,Reader)}}
     catch _:_ -> {error,nil} end;

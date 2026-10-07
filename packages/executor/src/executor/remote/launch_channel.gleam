@@ -3,8 +3,8 @@
 //// `start` retains canonical paths before `prepare` performs exclusive effects.
 //// `install` accepts the original host once, then hands off exactly one paused
 //// connection after acceptance. One reader orders every frame and End; Final
-//// consumption terminates that reader before teardown joins it. `stop` closes
-//// the socket and listener independently before asking blocked children to stop.
+//// consumption terminates that reader before teardown joins it. `stop` asks
+//// the original weft scope to close I/O after adopting its paused leaves.
 //// Native settlement and transport joins remain separate historical witnesses.
 //// Missing cleanup evidence leaves the original paths and active capacity held.
 ////
@@ -12,7 +12,7 @@
 ////
 //// `start` initializes original custody; `prepare` creates its private listener.
 //// `step` dispatches installation, activation and independent closure.
-//// `start_children` starts paused reader/writer leaves in a weft scope.
+//// `start_children` starts paused reader/writer leaves in a witnessed weft scope.
 //// `connection` exposes exact original callbacks; `offer` checks its own window.
 //// `begin_close` closes I/O before `finish_close` joins; `record_children` retains loss.
 //// `start_channel_reader` and `channel_read_step` own the inbound producer.
@@ -106,7 +106,7 @@ type ChannelEvent {
   Deadline
   CleanupDeadline
   ReleaseClosed
-  Children(weft.Pulled(Nil, Nil))
+  Children(process.ExitReason)
 }
 
 type Owned {
@@ -129,6 +129,7 @@ type Owned {
     reader: Option(Subject(ChannelRead)),
     writer: Option(Subject(ChannelWrite)),
     writer_custody: WriterCustody,
+    children: Option(weft.Witnessed),
     joined: Option(run_channel.TransportDrain),
     native_custody: NativeCustody,
     preparation: PreparationCustody,
@@ -153,7 +154,6 @@ type ChannelRead {
     frame: run_channel.FrameRef,
     disposition: run_channel.Consumption,
   )
-  ReadStop
 }
 
 type ChannelReader {
@@ -173,7 +173,6 @@ type ChannelReader {
 type ChannelWrite {
   WriteAttach(socket: Socket)
   WriteFrame(reservation: run_channel.Reservation, payload: run_channel.Payload)
-  WriteStop
 }
 
 type ChannelWriter {
@@ -231,6 +230,7 @@ pub fn start(
         reader: None,
         writer: None,
         writer_custody: AwaitingWriter,
+        children: None,
         joined: Some(run_channel.TransportJoined),
         native_custody: Unresolved,
         preparation: AwaitingPreparation,
@@ -596,19 +596,18 @@ fn start_children(
       owned.incarnation,
       owned.commands,
     ))
-    use writer <- result.try(
+
+    // A refused writer still leaves a live reader. Its original scope must
+    // adopt and join that leaf before reporting transport cleanup.
+    let writer =
       start_channel_writer(host, owned.incarnation, owned.commands)
-      |> result.map_error(fn(reason) {
-        process.send(reader.data, ReadStop)
-        reason
-      }),
-    )
+      |> result.map(Some)
+      |> result.unwrap(None)
     Ok(#(reader, writer, listener))
   }
   case started {
     Error(_) -> begin_close(owned, None)
     Ok(#(reader, writer, listener)) -> {
-      let reports = process.new_subject()
       let #(pid, _) = run_channel.endpoint(host)
       let monitor = process.monitor(pid)
       let selector =
@@ -617,45 +616,70 @@ fn start_children(
         |> process.select_specific_monitor(owned.parent_monitor, fn(_) {
           OwnerDied
         })
-        |> process.select_map(reports, Children)
         |> process.select_specific_monitor(monitor, fn(_) { OwnerDied })
+      let commands = owned.commands
       let tasks = [
         weft.prepared_leaf(
           owner: reader.pid,
           cancel: fn() {
+            // The reader controls the accepted OTP socket. Its leaf exit
+            // closes that socket even if the channel owner is already dead.
+            // Weft adopts every leaf before invoking either cancellation.
             ffi_unix.close_listener(listener)
-            process.send(reader.data, ReadStop)
+            process.kill(reader.pid)
           },
           begin: fn() {
-            process.send(reader.data, ReadAccept)
+            case writer {
+              Some(_) -> process.send(reader.data, ReadAccept)
+              None -> Nil
+            }
             Ok(Nil)
           },
         ),
-        weft.prepared_leaf(
-          owner: writer.pid,
-          cancel: fn() { process.send(writer.data, WriteStop) },
-          begin: fn() {
-            process.send(owned.commands, WriterReady)
-            Ok(Nil)
-          },
-        ),
+        ..case writer {
+          None -> []
+          Some(writer) -> [
+            weft.prepared_leaf(
+              owner: writer.pid,
+              cancel: fn() { process.kill(writer.pid) },
+              begin: fn() {
+                process.send(commands, WriterReady)
+                Ok(Nil)
+              },
+            ),
+          ]
+        }
       ]
-      let _ =
+
+      // These begin callbacks send typed activation messages and return Nil;
+      // they produce no semantic result or retirement evidence. The original
+      // scope's normal exit proves the two adopted socket leaves have exited,
+      // even when cancellation discards a begin worker's computation account.
+      // Native settlement and physical resource cleanup keep their own proofs.
+      let children =
         weft.new_prepared(tasks)
         |> weft.deadline(int.max(owned.deadline - owned.now(), 0))
         |> weft.cancel_grace(1000)
-        |> weft.start_relayed(to: reports)
-      sm.transition(
-        to: Installed,
-        data: Owned(
+        |> weft.start_witnessed
+      let child_monitor = process.monitor(weft.witness_pid(children))
+      let selector =
+        process.select_specific_monitor(selector, child_monitor, fn(down) {
+          Children(down.reason)
+        })
+      let owned =
+        Owned(
           ..owned,
           reader: Some(reader.data),
-          writer: Some(writer.data),
+          writer: option.map(writer, fn(writer) { writer.data }),
+          children: Some(children),
           host: Some(host),
           handoff: Some(handoff),
           joined: None,
-        ),
-      )
+        )
+      case writer {
+        Some(_) -> sm.transition(to: Installed, data: owned)
+        None -> begin_close(owned, None)
+      }
       |> sm.with_selector(selector)
     }
   }
@@ -765,10 +789,16 @@ fn begin_close(
   owned: Owned,
   reply: Option(Subject(run_channel.CloseResult)),
 ) -> sm.Next(Phase, Owned, ChannelEvent) {
-  option.map(owned.socket, ffi_unix.close_now)
-  option.map(owned.listener, ffi_unix.close_listener)
-  option.map(owned.reader, fn(reader) { process.send(reader, ReadStop) })
-  option.map(owned.writer, fn(writer) { process.send(writer, WriteStop) })
+  // Ready can precede adoption, so direct leaf stops would still race it.
+  // CancelRun stays in the original scope's mailbox until adoption completes.
+  case owned.children {
+    Some(children) -> weft.cancel_witnessed(children)
+    None -> {
+      option.map(owned.socket, ffi_unix.close_now)
+      option.map(owned.listener, ffi_unix.close_listener)
+      Nil
+    }
+  }
   case owned.native_custody {
     Unresolved | AwaitingOriginalRetirement -> owned.cancel()
     ExcludedBeforeDispatch | NativeRetired -> Nil
@@ -782,16 +812,16 @@ fn begin_close(
   )
 }
 
-fn record_children(owned: Owned, event: weft.Pulled(Nil, Nil)) -> Owned {
-  case event {
-    weft.AllDelivered ->
-      case owned.joined {
-        Some(run_channel.TransportUnresolved(_)) -> owned
-        None | Some(run_channel.TransportJoined) ->
-          Owned(..owned, joined: Some(run_channel.TransportJoined))
-      }
-    weft.PulledOutcome(weft.Completed(..)) | weft.NotYet -> owned
-    weft.RunLost(_) | weft.PulledOutcome(_) ->
+fn record_children(owned: Owned, reason: process.ExitReason) -> Owned {
+  // Absence, lost owner proof and grace expiry are abnormal scope exits.
+  // Only this original monitor's normal DOWN permits transport reclamation.
+  // A scope that finished before monitor installation therefore stays unknown.
+  case reason {
+    process.Normal -> {
+      option.map(owned.listener, ffi_unix.close_listener)
+      Owned(..owned, joined: Some(run_channel.TransportJoined))
+    }
+    process.Killed | process.Abnormal(_) ->
       Owned(
         ..owned,
         joined: Some(run_channel.TransportUnresolved(
@@ -973,7 +1003,6 @@ fn channel_read_step(
           |> sm.then_handle(ReadNext)
       }
     }
-    _, ReadStop -> sm.stop()
     ReadAccepting, ReadActivate
     | ReadAccepting, ReadNext
     | ReadAccepting, ReadConsumed(..)
@@ -1115,7 +1144,6 @@ fn channel_write_step(
   case event {
     WriteAttach(socket) ->
       sm.keep(ChannelWriter(..writer, socket: Some(socket)))
-    WriteStop -> sm.stop()
     WriteFrame(reservation, payload) -> {
       let wrote = case writer.socket {
         None -> Error("the original writer has no socket")
