@@ -2,6 +2,7 @@
 //// how the mirror is judged, and how a retired build cache is replaced.
 
 import broker/policy
+import broker/token
 import client/catalog
 import client/gocache
 import client/internal/ffi_os
@@ -340,8 +341,14 @@ pub fn du_output_is_read_as_kibibytes_test() {
 
 pub fn the_real_du_measures_a_directory_test() {
   let root = scratch("du")
-  let assert Ok(Nil) = simplifile.write(root <> "/f", string.repeat("x", 8192))
+
+  // `du` counts the blocks a file occupies, and a compressing filesystem (the
+  // Linux signoff box has one) stores a run of one repeated byte in almost
+  // nothing. Random bytes do not compress, so 64 KiB of them occupy at least
+  // half that on any filesystem this runs on.
+  let noise = token.production_entropy()(65_536)
+  let assert Ok(Nil) = simplifile.write_bits(root <> "/f", noise)
   let assert Ok(size) = gocache.du_kib(root)
-  assert size >= 8
+  assert size >= 32
   let _cleanup = simplifile.delete(root)
 }
