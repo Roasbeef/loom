@@ -198,6 +198,7 @@ import lustre
 import lustre/server_component
 import mist
 import session_view/snapshot
+import session_view/text_hygiene
 import session_view/transcript_image
 import session_view/worktree_view
 import storage/access
@@ -778,6 +779,16 @@ pub fn upgrade_home(
           tickets,
           open,
           attachment.create,
+          fn(session) {
+            manager.delete_session(
+              attachment.registry,
+              attachment.digest,
+              attachment.epoch,
+              session,
+              attachment.sessions_directory,
+            )
+            |> result.replace(Nil)
+          },
           new_folder.check(_, attachment.state_root),
           place,
           name,
@@ -2539,8 +2550,13 @@ pub fn resume_task(
 ///    command's own creation remembers the workspace among the recent folders.
 /// 6. The session is opened and its ticket minted as a resume's is
 ///    (`opened_ticket`), with the page's own ceiling, reach and deadline. A
-///    session that was created and did not open is `NotOpened`, which says it
-///    exists.
+///    session that was created and did not open is `Unstarted` (`unstarted`):
+///    it carries the startup reason the registry kept for the exact operation
+///    the creation began, which the control socket already shows the owner
+///    (protocol-change/055), and says whether the session was kept. A creation
+///    that never initialized a database is released from the catalogue through
+///    `release`, because this page draws a fresh key for every press and so no
+///    later request can complete it.
 ///
 /// A success is logged as `daemon.session_created` with the principal and the
 /// session, so a run of creations from a page is visible in the daemon's log.
@@ -2548,7 +2564,7 @@ pub fn resume_task(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.create_for(standing, tickets, open, create, new_folder.check, creations.Drawn("/work/loom"), "", creations.Private, None, within: 30_000)
+/// // ui_socket.create_for(standing, tickets, open, create, release, new_folder.check, creations.Drawn("/work/loom"), "", creations.Private, None, within: 30_000)
 /// ```
 @internal
 pub fn create_for(
@@ -2557,6 +2573,7 @@ pub fn create_for(
   open: fn() -> Result(Int, Nil),
   create: fn(access.Principal, manager.Creation, domain.Scope) ->
     Result(manager.View, String),
+  release: fn(String) -> Result(Nil, manager.AdminError),
   folder: fn(String) -> Result(String, creations.Reason),
   place: creations.Place,
   name: String,
@@ -2578,12 +2595,14 @@ pub fn create_for(
     let key = "web-" <> hex_entropy(16)
     manager.Creation(key, workspace, name, "", profile)
     |> create(principal, _, scope_of(sharing))
-    |> result.map(fn(view) { #(principal, view.registration.id) })
+    |> result.map(fn(view) { #(principal, view) })
     |> result.map_error(creation_refusal)
   }
   case outcome {
     Error(reason) -> creations.Declined(reason)
-    Ok(#(principal, session)) -> {
+    Ok(#(principal, view)) -> {
+      let session = view.registration.id
+
       // Both are identifiers the catalogue minted and carry no authority, so
       // they are written as `ident`: the free-text rule would replace a long
       // unbroken run, which a principal's identity can be, with a redaction
@@ -2595,9 +2614,74 @@ pub fn create_for(
       ])
       case opened_ticket(standing, tickets, open, session, within) {
         sessions.Ticketed(path:) -> creations.Ticketed(path)
-        sessions.Declined(_) -> creations.Declined(creations.NotOpened)
+        sessions.Declined(_) -> unstarted(standing.registry, release, view)
       }
     }
+  }
+}
+
+// Answers for a creation the registry accepted and could not open. The reason
+// comes from the registry's memo of the exact operation this creation began,
+// read before anything else can supersede it. The owner's own terminal reads
+// the same text through `operations.get` (protocol-change/055), so this adds
+// no path or detail the owner is not shown elsewhere, and only an owner's page
+// reaches here because `authorized_owner` ran first.
+//
+// Once the failed slot has drained, a row still `Reserved` has no database and
+// nothing holds it, and this page never keeps its request key, so no retry
+// could complete it: it is released instead of left as a row the page cannot
+// open. A row that was initialized is a saved session and stays. A release the
+// registry refuses leaves the row for the owner's Delete, which is how the
+// home already treats a reserved row.
+fn unstarted(
+  registry: manager.Manager(instance),
+  release: fn(String) -> Result(Nil, manager.AdminError),
+  view: manager.View,
+) -> creations.Answer {
+  let session = view.registration.id
+  let why = startup_reason(registry, session, view.status)
+  let _ = drained(registry, session)
+  let remains = case manager.get(registry, session) {
+    Ok(manager.View(status: manager.Reserved, ..)) ->
+      case release(session) {
+        Ok(Nil) -> creations.Dropped
+        Error(_) -> creations.InList
+      }
+    Ok(_) | Error(_) -> creations.InList
+  }
+  creations.Unstarted(why:, remains:)
+}
+
+// The line of text the registry kept for a failed opening, drawn safe for one
+// line. An operation that is not the creation's own opening, or one the
+// registry kept nothing for, has no reason.
+fn startup_reason(
+  registry: manager.Manager(instance),
+  session: String,
+  status: manager.Status,
+) -> Option(String) {
+  case status {
+    manager.Opening(operation:) ->
+      case manager.operation(registry, session, operation) {
+        Error(manager.StartFailed(reason:)) ->
+          case text_hygiene.single_line(reason) {
+            "" -> None
+            line -> Some(line)
+          }
+        Ok(_)
+        | Error(manager.Catalogue(_))
+        | Error(manager.NotInitialized)
+        | Error(manager.SessionArchived)
+        | Error(manager.Capacity)
+        | Error(manager.Unavailable)
+        | Error(manager.StaleOperation)
+        | Error(manager.Preparation(_)) -> None
+      }
+    manager.Reserved
+    | manager.Saved
+    | manager.Resident(_)
+    | manager.Stopping(_)
+    | manager.RecoveryBlocked(_) -> None
   }
 }
 
@@ -2738,7 +2822,7 @@ fn hex_entropy(bytes: Int) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.create_task(standing, tickets, open, create, new_folder.check, place, "", creations.Private, None, deliver)
+/// // ui_socket.create_task(standing, tickets, open, create, release, new_folder.check, place, "", creations.Private, None, deliver)
 /// ```
 @internal
 pub fn create_task(
@@ -2747,6 +2831,7 @@ pub fn create_task(
   open: fn() -> Result(Int, Nil),
   create: fn(access.Principal, manager.Creation, domain.Scope) ->
     Result(manager.View, String),
+  release: fn(String) -> Result(Nil, manager.AdminError),
   folder: fn(String) -> Result(String, creations.Reason),
   place: creations.Place,
   name: String,
@@ -2762,6 +2847,7 @@ pub fn create_task(
           tickets,
           open,
           create,
+          release,
           folder,
           place,
           name,

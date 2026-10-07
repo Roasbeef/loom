@@ -206,7 +206,7 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
     protocol.Reserved ->
       Error(
         "this session was reserved but never initialized; "
-        <> "retry its creation instead of opening it",
+        <> "retry its creation or delete it instead of opening it",
       )
 
     protocol.Saved

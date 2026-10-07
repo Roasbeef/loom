@@ -28,6 +28,7 @@
 //// filesystem is the daemon's (`client/daemon/folders`).
 
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import session_view/text_hygiene
 
@@ -83,10 +84,31 @@ pub type Answer {
   /// ticket is single use and lives 60 seconds.
   Ticketed(path: String)
 
-  /// Nothing was created, or a session was created and did not open. Every
-  /// page shows the fixed words for the reason (`reason_words`) and never the
-  /// daemon's own text.
+  /// Nothing was created. Every page shows the fixed words for the reason
+  /// (`reason_words`) and never the daemon's own text.
   Declined(reason: Reason)
+
+  /// The creation was accepted and the session did not start. This is the one
+  /// answer that carries the daemon's own text, and only for the owner: the
+  /// creation is the owner's act, and every other principal is refused as
+  /// `NotOwner` before any session exists, so no other page can hold this
+  /// answer. `why` is the startup reason the daemon already shows the owner at
+  /// the terminal (protocol-change/055), one bounded line, or `None` when the
+  /// daemon kept none. A page draws it as a text node and nowhere else.
+  Unstarted(why: Option(String), remains: Remains)
+}
+
+/// What an unstarted creation left behind, which says what the owner may do
+/// next.
+pub type Remains {
+  /// The session was initialized before it failed to open, so it is a saved
+  /// session in the list and the owner may resume it from there.
+  InList
+
+  /// The creation reserved an identity and never initialized a database, so
+  /// nothing could ever open it. The daemon released the reservation and the
+  /// list does not show it. The owner corrects the cause and creates again.
+  Dropped
 }
 
 /// Why no ticket was minted.
@@ -144,10 +166,6 @@ pub type Reason {
   /// The daemon has no room for another running session.
   Full
 
-  /// The session was created and did not become resident in time, or the
-  /// registry refused to open it. It exists and is in the list.
-  NotOpened
-
   /// The daemon could not answer: it was starting, stopping or slow, or the
   /// directory could not be used.
   Unavailable
@@ -182,9 +200,36 @@ pub fn reason_words(reason: Reason) -> String {
       "That model profile is not in the configuration now. Reload the page."
     TooMany -> "You have created many sessions this hour. Try again later."
     Full -> "The daemon has no room for another session. Stop one first."
-    NotOpened ->
-      "The session was created and did not open. It will appear in the list shortly; resume it from there."
     Unavailable -> "The daemon could not create the session. Try again."
+  }
+}
+
+/// The words for a creation that was accepted and did not start. The fixed
+/// sentence says what became of the session and what to do, and the daemon's
+/// reason, when there is one, ends it as part of the same text node. The
+/// reason is the owner's own configuration message, the one the terminal shows,
+/// so the words add no path or detail of their own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert creations.unstarted_words(None, creations.Dropped)
+///   == "The session did not start, so nothing was kept. Try again."
+/// assert creations.unstarted_words(Some("no such profile"), creations.Dropped)
+///   == "The session did not start, so nothing was kept. Correct the cause and create it again. The daemon said: no such profile"
+/// ```
+pub fn unstarted_words(why: Option(String), remains: Remains) -> String {
+  case remains, why {
+    Dropped, Some(reason) ->
+      "The session did not start, so nothing was kept. Correct the cause and create it again. The daemon said: "
+      <> reason
+    Dropped, None ->
+      "The session did not start, so nothing was kept. Try again."
+    InList, Some(reason) ->
+      "The session was created but did not open. It is in the list: resume it there once the cause is corrected, or delete it. The daemon said: "
+      <> reason
+    InList, None ->
+      "The session was created but did not open. It is in the list: resume it there once the cause is corrected, or delete it."
   }
 }
 

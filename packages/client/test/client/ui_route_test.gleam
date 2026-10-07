@@ -165,7 +165,13 @@ fn fixture_lasting(
             True -> process.sleep(slow_build_ms)
             False -> Nil
           }
-          Ok(record.id)
+
+          // A session named `broken-...` is refused as a bad configuration is,
+          // with the line the owner's terminal would show.
+          case string.starts_with(record.name, "broken-") {
+            True -> Error(broken_reason)
+            False -> Ok(record.id)
+          }
         },
         drain: fn(_, _) { Nil },
         fatal: fn(_) { [] },
@@ -628,6 +634,16 @@ fn creating_from_home(
       tickets,
       open,
       attachment.create,
+      fn(session) {
+        manager.delete_session(
+          attachment.registry,
+          attachment.digest,
+          attachment.epoch,
+          session,
+          attachment.sessions_directory,
+        )
+        |> result.replace(Nil)
+      },
       folder,
       place,
       name,
@@ -658,6 +674,8 @@ fn creating_from_home(
         Ok(creations.Ticketed(path)) -> reported(stub(290, path), reach)
         Ok(creations.Declined(reason)) ->
           reported(stub(291, string.inspect(reason)), reach)
+        Ok(creations.Unstarted(..) as unstarted) ->
+          reported(stub(292, string.inspect(unstarted)), reach)
         Error(Nil) -> stub(298, "the task never answered")
       }
     }
@@ -3664,6 +3682,100 @@ pub fn an_open_that_outlasts_the_wait_mints_nothing_test() {
   })
 }
 
+// A creation the registry accepts and whose session cannot start, for a
+// configuration that is bad, says why in the startup reason the registry kept
+// for that operation, and the reservation that never initialized a database is
+// released: the list holds nothing for it, and the same creation made again once
+// the cause is corrected succeeds. The release is the registry's own delete, so
+// it is what the owner's Delete button would do, made for them.
+pub fn a_creation_that_cannot_start_says_why_and_is_released_test() {
+  fixture(fn(ready, _, credential) {
+    let _known = create_session(ready, "failing-known", 1130)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let before = session_count(ready, credential)
+    let attempt = fn(name, seed) {
+      ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        registry_create(ready, seed),
+        registry_release(ready, credential),
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        name,
+        creations.Private,
+        None,
+        within: 3000,
+      )
+    }
+
+    assert attempt("broken-config", 1131)
+      == creations.Unstarted(Some(broken_reason), creations.Dropped)
+    assert session_count(ready, credential) == before
+
+    // The corrected configuration is the same press with a name the stub no
+    // longer refuses, and it opens.
+    let assert creations.Ticketed(path) = attempt("fixed-config", 1132)
+    assert string.starts_with(path, "/ui/sessions/")
+    assert session_count(ready, credential) == before + 1
+  })
+}
+
+// A release the registry refuses leaves the reserved row for the owner's Delete,
+// and the answer still carries the reason and does not claim the session was
+// dropped.
+pub fn a_refused_release_keeps_the_row_and_the_reason_test() {
+  fixture(fn(ready, _, credential) {
+    let _known = create_session(ready, "kept-known", 1133)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let before = session_count(ready, credential)
+    assert ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        registry_create(ready, 1134),
+        no_release,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        "broken-kept",
+        creations.Private,
+        None,
+        within: 3000,
+      )
+      == creations.Unstarted(Some(broken_reason), creations.InList)
+    assert session_count(ready, credential) == before + 1
+  })
+}
+
+// Only the owner's creation reaches a startup reason: a member's page is refused
+// as not the owner before any session exists, so it holds no reason and the
+// registry gains no row.
+pub fn a_member_page_learns_no_startup_reason_test() {
+  fixture(fn(ready, _, credential) {
+    let _known = create_session(ready, "member-known", 1135)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let before = session_count(ready, credential)
+    assert ui_socket.create_for(
+        ui_socket.Standing(..standing, principal: "someone-else"),
+        tickets,
+        page_open,
+        registry_create(ready, 1136),
+        registry_release(ready, credential),
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        "broken-member",
+        creations.Private,
+        None,
+        within: 3000,
+      )
+      == creations.Declined(creations.NotOwner)
+    assert session_count(ready, credential) == before
+  })
+}
+
 // The wait runs in a task of its own: the call that starts it returns before
 // the slow session has opened, and the answer arrives afterwards from the task,
 // as the message the page's component is waiting for.
@@ -4244,6 +4356,7 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         tickets,
         page_open,
         create,
+        no_release,
         new_folder.check(_, ready.state_root),
         creations.Drawn(ready.state_root),
         "x",
@@ -4267,6 +4380,7 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         tickets,
         fn() { Error(Nil) },
         create,
+        no_release,
         new_folder.check(_, ready.state_root),
         creations.Drawn(ready.state_root),
         "x",
@@ -4306,6 +4420,7 @@ pub fn the_eleventh_creation_in_an_hour_is_refused_test() {
         tickets,
         page_open,
         create,
+        no_release,
         new_folder.check(_, ready.state_root),
         creations.Drawn(workspace),
         name,
@@ -4355,6 +4470,7 @@ pub fn each_creation_draws_its_own_request_key_test() {
           tickets,
           page_open,
           create,
+          no_release,
           new_folder.check(_, ready.state_root),
           creations.Drawn(ready.state_root),
           "k",
@@ -4400,6 +4516,7 @@ pub fn a_session_that_does_not_open_is_reported_as_created_test() {
         tickets,
         page_open,
         create,
+        no_release,
         new_folder.check(_, ready.state_root),
         creations.Drawn(ready.state_root),
         "x",
@@ -4407,7 +4524,7 @@ pub fn a_session_that_does_not_open_is_reported_as_created_test() {
         None,
         within: 300,
       )
-      == creations.Declined(creations.NotOpened)
+      == creations.Unstarted(None, creations.InList)
     let assert Ok(_) = process.receive(asked, 0)
     Nil
   })
@@ -4436,6 +4553,7 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       tickets,
       page_open,
       slow,
+      no_release,
       new_folder.check(_, ready.state_root),
       creations.Drawn(ready.state_root),
       "slow",
@@ -4453,6 +4571,53 @@ pub fn the_creation_runs_off_the_callers_process_test() {
 }
 
 // --- a session in a folder that holds none (protocol-change/074) -------------
+
+// The startup reason a session named `broken-...` is refused with: the owner's
+// configuration message, with markup in it so a test can see it drawn as text.
+const broken_reason = "profile <b>fast</b> is not defined in /etc/loom/loom.toml"
+
+// A creation through the registry's own turn, as the control command makes it,
+// under a seed that gives each call its own identity.
+fn registry_create(
+  ready: root.Ready(String),
+  seed: Int,
+) -> fn(access.Principal, manager.Creation, domain.Scope) ->
+  Result(manager.View, String) {
+  fn(_, creation, scope) {
+    manager.create_scoped(
+      ready.registry,
+      creation,
+      directory: ready.sessions_directory,
+      generator: ids.generator(clock.fixed(0), seed),
+      scope:,
+      configuration: "",
+    )
+    |> result.replace_error("unavailable")
+  }
+}
+
+// The release a page's creation task holds: the registry's own delete, made
+// with the owner's credential and this daemon's epoch.
+fn registry_release(
+  ready: root.Ready(String),
+  credential: String,
+) -> fn(String) -> Result(Nil, manager.AdminError) {
+  fn(session) {
+    manager.delete_session(
+      ready.registry,
+      digest_of(credential),
+      ready.epoch,
+      session,
+      ready.sessions_directory,
+    )
+    |> result.replace(Nil)
+  }
+}
+
+// A release the registry would refuse, for a test that does not look at it.
+fn no_release(_session: String) -> Result(Nil, manager.AdminError) {
+  Error(manager.AdminUnavailable)
+}
 
 // A directory the test treats as the owner's home: canonical, empty, and made
 // afresh for each test, with a folder `proj` inside it.
@@ -4587,6 +4752,7 @@ pub fn a_remembered_folder_is_judged_again_at_the_press_test() {
         tickets,
         page_open,
         create,
+        no_release,
         new_folder.check_in(_, home, ready.state_root),
         creations.Drawn(path),
         "again",
@@ -8238,6 +8404,7 @@ pub fn a_page_creation_carries_the_chosen_profile_to_the_registry_test() {
         tickets,
         page_open,
         create,
+        no_release,
         new_folder.check(_, ready.state_root),
         creations.Drawn(ready.state_root),
         "x",
@@ -8268,6 +8435,7 @@ pub fn an_unknown_profile_is_declined_in_its_own_words_test() {
         tickets,
         page_open,
         refuse,
+        no_release,
         new_folder.check(_, ready.state_root),
         creations.Drawn(ready.state_root),
         "x",
