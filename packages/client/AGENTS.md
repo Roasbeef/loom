@@ -77,6 +77,53 @@ rollback and suppressed receipt readback, original dispatch envelopes and waitin
 caller cancellation. These component joins do not install daemon startup,
 executor activation, owner LSP custody or full runtime assembly.
 
+
+## Original native system permission and workspace Git binding
+
+`custodian.allocate_system_reservation` asks the existing original pinned actor
+to allocate one retained ordinary-work occurrence. The caller must own its
+actual events subject. Only Fresh SQLite allocation installs the actual opaque
+`PendingSystemChild` under a fresh BEAM reference in `live_system`; repeat calls
+return observation. One auxiliary typed subject joins the actor's existing
+selector via `with_selector`/`select_map`. No actor, registry fallback or PID
+ledger is added. Reserved companion slots bound the retained permission inventory.
+
+`ReserveSystem` consumes the entry before validation or transaction. It checks
+exact original subject/reference/origin/UUID/caller, declaration, full scope,
+absolute deadline, registration/enrollment and unchanged Prepared. Every error
+retains consumed state; only Fresh COMMIT plus full readback returns `Reserved`.
+`dispatch_binding` closes the same original Ref if static projection fails or a
+reserve reply is lost. Cancellation before or after admission preserves the
+permanent ordinal/slot/byte charge. Fencing consumes all live permissions while
+keeping their original cancellation metadata; reboot installs none from history.
+`cancel_system_intent` handles a lost allocation reply without reconstructing a
+permission. `native_envelope` preserves old version-1 native envelopes and adds
+a canonical deadline-bearing cleared envelope for this route.
+
+`with_workspace_commands(binding, enrolled, git)` composes the existing native
+and command callbacks with a closed `workspace_command_binding`. The trusted
+executor assembly supplies only its resolved Git executable beneath enrolled
+toolchain roots. The binding derives all argv, cwd and ordered environment from
+the actual retained semantic Invocation and enrollment. It verifies the actual
+Broker-cleared operation/physical phase/policy/demand/Prepared, and writes the
+original parent UUID, complete origin, input digest and association beside the
+unchanged native envelope. It accepts direct Workspace/System wrappers and the
+existing admitted SemanticWorkspace/NativeCommand pair. Initialize remains
+refused until a concrete bounded recipe exists. No owner filesystem probe or
+arbitrary recipe field is provided.
+
+Receipt verification reads the complete original semantic parent and native
+materialization, compares full scope/UUID/digest/association, then COMMITs and
+reads back the ordered receipt. Matching late receipts survive cancellation.
+The component controls use real SQLite, the original actor, actual Broker
+clearance and actual remote Dispatcher cancellation. Their ordinary-work
+occurrences are explicitly synthetic; the dispatcher control has no executor or
+helper effect. FullHost, real hook/check occurrence retention, workspace command
+assembly, executor activation and daemon selection remain required production
+caller work in the next slice. These foundation APIs do not satisfy that slice's
+end-to-end acceptance.
+
+
 ## Per-strand shell directories
 
 `client/working_directory` stores canonical shell defaults under reserved
@@ -3957,6 +4004,11 @@ these forks because they define the same modules.
 
 ## Invariants
 
+A static binding may close a failed native-system reservation only after matching its exact original custodian subject and context origin. A foreign binding refusal leaves the original permission usable; valid original projection failures consume it and retain its durable charge.
+
+Composed workspace-command reservation uses actual retained SemanticWorkspace evidence for NativeCommand pairs. Only a missing counterpart selects ordinary proc.run; malformed input, cancellation fences and conflicting semantic declarations refuse without fallback. Historical native receipts choose the decoder from the actual retained envelope family, so later semantic evidence cannot divert ordinary native history. The actual Dispatcher cancellation control observes durable cancellation immediately after Broker settlement, before any direct cancellation or repeated reservation.
+
+
 - Markdown skills are assembled from the daemon's configured home, not a
   terminal's filesystem. Metadata reads never disclose bodies. Automatic tool
   dispatch honors `disable-model-invocation`, while slash invocation honors
@@ -6060,7 +6112,8 @@ supervised custodian before canonical invocation bytes can be sent. A retry
 reads the original UUID first and compares the complete candidate; it cannot
 replace uncertain work with a new identity. The binding validates the parent
 ToolKey's operation, step and provenance, or an explicit named system origin.
-Derived physical child coordinates still need their own trusted assembly.
+The fixed Git binding derives approved physical phases from that original
+semantic invocation; ordinary production assembly remains required.
 
 `receive` checks the completion against its original typed request and rechecks
 the retained invocation before committing exact bytes. Only that commit creates
