@@ -1,15 +1,16 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `55bc1f61` on
+This edition records the registered-runtime integration through `d60d4d15` on
 October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
 protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
 hosted PR/main state were checked for this edition. Runtime assembly and
 separate-host acceptance remain in progress.
 
-The previous edition left native LSP transport and registry startup custody
-unimplemented. Both components are now integrated and verified below. Native/workspace/resource live journal startup is also integrated. Owned LSP
-startup/recovery and ordinary registered assembly remain open. A Launch readiness timeout during those checks
-remains unresolved despite a passing diagnostic retry. The managed endpoint is
+The previous edition left owned LSP startup and recovery unimplemented. Both
+are now integrated and verified below. Native transport, registry startup and
+all four journal ownership boundaries are implemented; ordinary registered
+assembly remains open. An earlier Launch readiness timeout remains unresolved
+despite a passing diagnostic retry. The managed endpoint is
 now implemented. The original owner custodian is wired through its generation DAL,
 and the registry retains complete original generation plans atomically with first
 admission. Restricted recovered journal owners now acquire managed custody before
@@ -34,7 +35,7 @@ That status belongs to main, not this unpublished integration candidate.
 | Managed endpoint | `5733967e9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
 | Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
 | Generation history | `3ade15ea9` and `77b3b217` add permanent original provenance. `40169105` adds restricted managed recovery of native, workspace and resource journals, with explicit close and original normal-exit evidence. Actual physical join validation and bounded history transport remain assembly obligations. |
-| LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. `7d256b402` and `e336f4a19` add original first-placement native custody and credited ServerLease transport, including actual Linux FullEnforcement controls. Owned LSP journal startup, finite collection, semantic/result retirement and ordinary assembly remain pending. |
+| LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. `7d256b402` and `e336f4a19` add original first-placement native custody and credited ServerLease transport, including actual Linux FullEnforcement controls. `d60d4d15` adds owned live startup and restricted recovery. Finite collection, semantic/result retirement and ordinary assembly remain pending. |
 | Deployment | `a58713277` and `45de677f` commit reviewed strict owner/executor loaders and their manifest. Shipped role bootstrap, admin transport, full host activation and ordinary daemon assembly remain unbuilt. |
 | Launch utilities | `ed4abd587` supplies named private role bundles, selected export, lifecycle commands and a setup guide. Current images deliberately lack runtime capability labels and cannot pass its startup gate. |
 | Distributed orchestration | Executor pools, C1 ownership, C2 routing, C3 durable cross-node messaging and M1 controlled movement remain required. |
@@ -46,6 +47,24 @@ review records describe their stated source revisions, not the entire current
 candidate.
 
 ## Verification and its limits
+
+The owned LSP integration at `d60d4d15` passes all 519 executor tests in
+206.91 seconds, 224.32 seconds including build, with the command's own exit
+zero. Formatting, executor lint, documentation and prelude checks pass; all
+four imported hashes remain unchanged. Independent review found no actionable
+issue. The original linked writer installs acquired connection custody before
+setup; restricted recovery self-adopts before opening SQLite and exposes no
+live Store, Clock or claim projection. Explicit close acknowledgement and that
+original writer's Normal exit are both required for release.
+
+All 18 new owned controls and 13 existing LSP controls pass separately. Five
+compiled runtime mutants fail their intended assertions, and three compiler
+negative controls reject history-to-live projection, private endpoint access
+and private claim construction. Held BEGIN contention uses actual SQLite;
+one-shot close refusal is synthetic. Neither parent death nor a returned
+history result establishes full physical retirement. Shared-clock construction,
+authenticated history routing and the complete managed aggregate remain
+assembly obligations.
 
 The corrected live-journal integration at `55bc1f61` passes all 501 executor
 tests in 202.25 seconds, 220.15 seconds including build, with the command's own
@@ -220,13 +239,13 @@ placements, container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Finish owned LSP startup/recovery for **#697**. Native LSP transport,
-   parent-owned registry startup and all three live service journals are integrated. **Exit:** exact source passes meaningful failure
-   controls, full affected package gates, independent review and integrated
-   verification. Durable generation provenance and restricted managed recovery
-   are integrated. LSP startup still needs its original parent-owned Fresh handle and restricted
-   recovery; the other three service journals and registry have that construction. Preserve every existing test and ordinary
-   local behavior; earlier worker receipts do not certify later fixes.
+1. Complete the approved owner identity and original physical-close prerequisites
+   for **#697**. Parent-derived workspace commands and two-stage NativeSystem
+   clearance are approved below and under implementation. **Exit:** original
+   authority survives reserve/clearance without renewal, and each physical owner
+   supplies its actual close witness. Native transport, all four owned journals,
+   registry startup and restricted managed recovery are integrated. Preserve all
+   existing tests and ordinary local behavior.
 2. Build the approved ordinary registered path from protocols 076 and 077.
    Preserve one original owner Broker/custodian, exact-generation publication,
    executor-only physical paths, full reports, jobs, hooks, cwd, guidance, Git and
