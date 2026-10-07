@@ -43,6 +43,7 @@
 
 import broker/token
 import client/daemon/manager
+import client/daemon/profiles
 import client/daemon/protocol
 import client/daemon/root
 import client/daemon/ui_assets
@@ -242,6 +243,12 @@ pub type HomeAttachment(instance) {
     /// but the owner.
     create: fn(access.Principal, manager.Creation, domain.Scope) ->
       Result(manager.View, String),
+    /// The model profile names the daemon's configuration defines, sorted, which
+    /// the owner's new-session forms offer (protocol-change/076). It reads the
+    /// configuration file, so it blocks briefly and a page's runtime never calls
+    /// it: the home socket asks once when the page opens. A configuration the
+    /// daemon cannot read has no names.
+    profiles: fn() -> List(String),
   )
 }
 
@@ -541,6 +548,10 @@ fn home_upgrade(
                 request,
                 scope,
               )
+            },
+            profiles: fn() {
+              profiles.names(config.domain_configuration)
+              |> result.unwrap([])
             },
           ),
           open,
@@ -2234,6 +2245,11 @@ fn dispatch(
       })
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
     }
+    protocol.CreateSession(_, _, _, configuration, profile, _) ->
+      dispatch_class(config, state, digest, principal, reply_to, command)
+      |> result.map_error(fn(code) {
+        profile_refusal(config, configuration, profile, code)
+      })
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
@@ -2242,6 +2258,43 @@ fn dispatch(
 
 fn control_refusal(code: String) -> #(String, String) {
   #(code, "request refused")
+}
+
+/// The code `create_session` answers when the profile a creation names is not
+/// one its configuration defines.
+pub const unknown_profile_code = "unknown_profile"
+
+// A refused creation's code and message. An unknown profile is the one refusal
+// that says more than "request refused": the owner who mistyped it needs the
+// names that exist, and the caller is the owner because `create_session`
+// checks that first. The message is worded again here, from the same check,
+// rather than carried out of `create_session`, so that function's error stays
+// the single code the home page's creation shares.
+fn profile_refusal(
+  config: Config(instance),
+  configuration: String,
+  profile: Option(String),
+  code: String,
+) -> #(String, String) {
+  case code, profile {
+    "unknown_profile", Some(name) -> {
+      let canonical = case configuration {
+        "" -> ""
+        path -> bootstrap.canonical_path(path) |> result.unwrap(path)
+      }
+      let words = case
+        profiles.check(
+          profiles.effective(canonical, config.domain_configuration),
+          name,
+        )
+      {
+        Error(message) -> message
+        Ok(Nil) -> "request refused"
+      }
+      #(code, words)
+    }
+    _, _ -> control_refusal(code)
+  }
 }
 
 fn dispatch_class(
@@ -2706,13 +2759,13 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.map(fn(view) { #("sessions.set_default", view_json(view)) })
     }
-    protocol.CreateSession(key, workspace, name, configuration, scope) ->
+    protocol.CreateSession(key, workspace, name, configuration, profile, scope) ->
       create_session(
         config,
         state.registry,
         state.sessions_directory,
         principal,
-        manager.Creation(key, workspace, name, configuration),
+        manager.Creation(key, workspace, name, configuration, profile),
         scope,
       )
       |> result.map(fn(view) { #("sessions.create", view_json(view)) })
@@ -2814,6 +2867,20 @@ pub fn create_session(
     }
     |> result.replace_error("invalid_configuration"),
   )
+
+  // A profile is judged against the configuration this session will load,
+  // before an identity is reserved, so a mistyped name stores nothing. The
+  // session's builder resolves it again on every open, which is what keeps a
+  // later edit of the file from being silently ignored.
+  use Nil <- result.try(case request.profile {
+    None -> Ok(Nil)
+    Some(name) ->
+      profiles.check(
+        profiles.effective(configuration, config.domain_configuration),
+        name,
+      )
+      |> result.replace_error(unknown_profile_code)
+  })
   use created <- result.map(
     manager.create_scoped(
       registry,

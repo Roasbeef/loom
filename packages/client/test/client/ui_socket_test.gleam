@@ -1061,7 +1061,7 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
 // operate, as the rename capability is, and the two are separate: each is given
 // by its own function and neither implies the other.
 pub fn only_an_owners_operating_home_may_create_test() {
-  let ask = fn(_place, _name, _sharing, _deliver) { Nil }
+  let ask = fn(_place, _name, _sharing, _profile, _deliver) { Nil }
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)
   let assert Some(_) =

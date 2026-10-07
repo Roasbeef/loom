@@ -117,7 +117,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
   let assert Ok(protocol.SessionReply(blocker)) =
     daemon.request(
       first.control,
-      protocol.CreateSession("occupy", workspace, "blocker", configuration),
+      protocol.CreateSession("occupy", workspace, "blocker", configuration, ""),
       5000,
     )
     as "explicit creation occupies the sole runtime slot"
@@ -131,6 +131,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       workspace,
       "target",
       configuration,
+      "",
     )
   let assert Error(daemon.Refused("capacity", _)) =
     daemon.request(first.control, request, 5000)

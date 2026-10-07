@@ -141,6 +141,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       workspace,
       "target",
       configuration,
+      "",
     )
   let assert Ok(protocol.SessionReply(created)) =
     daemon.request(first.control, request, 5000)

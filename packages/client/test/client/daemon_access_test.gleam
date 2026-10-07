@@ -63,7 +63,13 @@ fn shared_session(
   let assert Ok(view) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation("access-" <> int.to_string(seed), "/workspace", name, ""),
+      manager.Creation(
+        "access-" <> int.to_string(seed),
+        "/workspace",
+        name,
+        "",
+        None,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),
       scope: domain.SessionOnly,

@@ -1064,6 +1064,10 @@ type Flags {
     workspace: Option(String),
     helper: Option(String),
     config: Option(String),
+    // The model profile the session routes its roles by. It is not a command
+    // line flag: only a managed session has one, from its registration, so
+    // `resolve_managed` is the one place that sets it.
+    profile: Option(String),
     codemode_seed: Option(String),
     codemode_seams: Option(String),
     demand: Option(EnforcementDemand),
@@ -1082,6 +1086,7 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       workspace: None,
       helper: None,
       config: None,
+      profile: None,
       codemode_seed: None,
       codemode_seams: None,
       demand: None,
@@ -1118,6 +1123,7 @@ pub fn resolve_managed(
       session: Some(registration.path),
       workspace: Some(registration.workspace),
       config: configuration,
+      profile: registration.profile,
     ),
   ))
   use Nil <- result.try(
@@ -1212,7 +1218,7 @@ pub fn build_domain(
       _workspace,
       _advisor,
     )
-  <- result.try(load_config(configuration))
+  <- result.try(load_config(configuration, None))
 
   // The `[secrets]` table resolved before the gateway that will spend
   // what it holds, once per domain assembly rather than once per daemon.
@@ -1424,7 +1430,7 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       workspace_config,
       advisor_config,
     )
-  <- result.try(load_config(flags.config))
+  <- result.try(load_config(flags.config, flags.profile))
 
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
@@ -1712,6 +1718,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
 // on.
 fn load_config(
   flag: Option(String),
+  profile: Option(String),
 ) -> Result(
   #(
     catalog.Catalog,
@@ -1729,9 +1736,22 @@ fn load_config(
   String,
 ) {
   case flag {
-    None ->
+    None -> {
+      // The environment surface defines no profiles, so a session that was
+      // created under one cannot be served without the file that names it.
+      use catalogue <- result.try(case profile {
+        None -> Ok(env_catalog())
+        Some(name) ->
+          Error(
+            "profile \""
+            <> name
+            <> "\" needs a config file with a [profiles."
+            <> name
+            <> ".roles] table, and this host has none",
+          )
+      })
       Ok(#(
-        env_catalog(),
+        catalogue,
         [],
         [],
         schedule.default_policy,
@@ -1743,6 +1763,7 @@ fn load_config(
         catalog.default_workspace(),
         catalog.default_advisor(),
       ))
+    }
     Some(path) -> {
       use text <- result.try(
         simplifile.read(path)
@@ -1754,8 +1775,14 @@ fn load_config(
         }),
       )
       let named = fn(reason) { path <> ": " <> reason }
+      use parsed <- result.try(catalog.parse(text) |> result.map_error(named))
+
+      // The profile is resolved on every load, never remembered from an
+      // earlier one, so a resume reads the file as it stands. A profile the
+      // file no longer defines refuses here, in the file's own words, where
+      // the alternative is opening a profiled session on the default roles.
       use catalogue <- result.try(
-        catalog.parse(text) |> result.map_error(named),
+        with_profile(parsed, profile) |> result.map_error(named),
       )
       use rule_list <- result.try(rules.parse(text) |> result.map_error(named))
       use schedule_list <- result.try(
@@ -1799,6 +1826,18 @@ fn load_config(
         advisor_config,
       ))
     }
+  }
+}
+
+// The catalogue a session routes by: the default one, or the one carrying the
+// named profile's roles.
+fn with_profile(
+  catalogue: catalog.Catalog,
+  profile: Option(String),
+) -> Result(catalog.Catalog, String) {
+  case profile {
+    None -> Ok(catalogue)
+    Some(name) -> catalog.select_profile(catalogue, name)
   }
 }
 

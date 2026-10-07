@@ -420,7 +420,13 @@ fn with_daemon_instance(run) {
         let assert Ok(view) =
           manager.create(
             serving.ready.registry,
-            manager.Creation("serve-wire", settings.workspace, "Fixture", ""),
+            manager.Creation(
+              "serve-wire",
+              settings.workspace,
+              "Fixture",
+              "",
+              None,
+            ),
             directory: serving.ready.sessions_directory,
             generator: ids.generator(clock.fixed(1000), 887),
           )

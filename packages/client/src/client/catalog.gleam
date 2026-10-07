@@ -1917,7 +1917,7 @@ pub fn select_profile(
 ) -> Result(Catalog, String) {
   case list.find(catalog.profiles, fn(named) { named.name == name }) {
     Ok(Profile(roles:, ..)) -> Ok(Catalog(..catalog, roles:))
-    Error(Nil) -> Error(unknown_profile(catalog, name))
+    Error(Nil) -> Error(unknown_profile(profile_names(catalog), name))
   }
 }
 
@@ -1929,13 +1929,15 @@ pub fn select_profile(
 /// ## Examples
 ///
 /// ```gleam
-/// assert catalog.unknown_profile(catalogue_without_profiles, "x")
+/// assert catalog.unknown_profile([], "x")
 ///   == "unknown profile \"x\"; the configuration defines no profiles"
+/// assert catalog.unknown_profile(["a", "b"], "x")
+///   == "unknown profile \"x\"; the configuration defines: a, b"
 /// ```
 ///
-pub fn unknown_profile(catalog: Catalog, name: String) -> String {
+pub fn unknown_profile(known: List(String), name: String) -> String {
   let prefix = "unknown profile \"" <> name <> "\"; the configuration defines"
-  case profile_names(catalog) {
+  case known {
     [] -> prefix <> " no profiles"
     known -> prefix <> ": " <> string.join(known, ", ")
   }

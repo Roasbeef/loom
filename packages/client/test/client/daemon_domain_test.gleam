@@ -25,7 +25,7 @@ import weft/poll
 fn create(registry, key, workspace, scope) {
   manager.create_scoped(
     registry,
-    manager.Creation(int.to_string(key), workspace, "Session", ""),
+    manager.Creation(int.to_string(key), workspace, "Session", "", option.None),
     directory: "/unopened-domain-admission/sessions",
     generator: ids.generator(clock.fixed(1), key),
     scope:,
@@ -483,7 +483,13 @@ pub fn a_fenced_idle_domain_is_revived_by_the_next_open_test() {
   let admit = fn(key) {
     manager.create_scoped(
       registry,
-      manager.Creation(int.to_string(key), settings.workspace, "Session", ""),
+      manager.Creation(
+        int.to_string(key),
+        settings.workspace,
+        "Session",
+        "",
+        option.None,
+      ),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), key),
       scope: domain.WorkspacePrivate,
@@ -586,7 +592,13 @@ pub fn a_withdrawn_fences_late_account_does_not_settle_the_next_fence_test() {
   let admit = fn(key) {
     manager.create_scoped(
       registry,
-      manager.Creation(int.to_string(key), settings.workspace, "Session", ""),
+      manager.Creation(
+        int.to_string(key),
+        settings.workspace,
+        "Session",
+        "",
+        option.None,
+      ),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), key),
       scope: domain.WorkspacePrivate,
@@ -759,7 +771,13 @@ pub fn last_clean_close_waits_coalesced_real_cadence_before_domain_retirement_te
   let admit = fn(key) {
     manager.create_scoped(
       registry,
-      manager.Creation(int.to_string(key), settings.workspace, "Session", ""),
+      manager.Creation(
+        int.to_string(key),
+        settings.workspace,
+        "Session",
+        "",
+        option.None,
+      ),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), key),
       scope: domain.WorkspacePrivate,

@@ -54,6 +54,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         "/workspace",
         "name",
         "",
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -175,6 +176,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         "/workspace",
         "name",
         "/config",
+        None,
         domain.WorkspacePrivate,
       ),
     ),
@@ -542,6 +544,52 @@ pub fn principal_rename_refuses_malformed_requests_test() {
       assert result.is_error(
         protocol.decode(envelope(4, "principals.rename", fields)),
       )
+    },
+  )
+}
+
+pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("workspace", json.String("/workspace")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+  assert protocol.decode(
+      envelope(1, "sessions.create", [
+        #("profile", json.String("deepseek")),
+        ..fields
+      ]),
+    )
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/workspace",
+        "name",
+        "",
+        Some("deepseek"),
+        domain.WorkspacePrivate,
+      ),
+    ))
+
+  // Anything present that is not a profile name is refused, never read as the
+  // default: a misspelled profile must not create a default-roles session.
+  list.each(
+    [
+      json.String(""),
+      json.String("Deep Seek"),
+      json.String("9lives"),
+      json.String(string.repeat("a", 33)),
+      json.Null,
+      json.Int(1),
+    ],
+    fn(value) {
+      let assert Error(_) =
+        protocol.decode(
+          envelope(1, "sessions.create", [#("profile", value), ..fields]),
+        )
+        as "profile must be a profile name"
     },
   )
 }

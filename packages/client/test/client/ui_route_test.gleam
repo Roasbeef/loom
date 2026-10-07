@@ -616,7 +616,11 @@ fn creating_from_home(
     Ok(home) -> new_folder.check_in(_, home, attachment.state_root)
     Error(Nil) -> new_folder.check(_, attachment.state_root)
   }
-  let ask = fn(place, name, sharing, deliver) {
+  let profile = case req.get_header(request, "x-create-profile") {
+    Ok(chosen) -> Some(chosen)
+    Error(Nil) -> None
+  }
+  let ask = fn(place, name, sharing, profile, deliver) {
     ui_socket.create_task(
       standing,
       tickets,
@@ -626,6 +630,7 @@ fn creating_from_home(
       place,
       name,
       sharing,
+      profile,
       deliver,
     )
   }
@@ -644,7 +649,9 @@ fn creating_from_home(
         Ok(_) -> creations.Typed(workspace)
         Error(Nil) -> creations.Drawn(workspace)
       }
-      ask(place, name, sharing, fn(answer) { process.send(answers, answer) })
+      ask(place, name, sharing, profile, fn(answer) {
+        process.send(answers, answer)
+      })
       case process.receive(answers, 10_000) {
         Ok(creations.Ticketed(path)) -> reported(stub(290, path), reach)
         Ok(creations.Declined(reason)) ->
@@ -1315,7 +1322,7 @@ fn create_session(ready: root.Ready(String), key: String, seed: Int) -> String {
   let assert Ok(created) =
     manager.create(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, ""),
+      manager.Creation(key, ready.state_root, key, "", None),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
     )
@@ -3165,7 +3172,7 @@ fn create_shared_session(
   let assert Ok(created) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, ""),
+      manager.Creation(key, ready.state_root, key, "", None),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
       scope: domain.SessionOnly,
@@ -4239,6 +4246,7 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
+        None,
         within: 2000,
       )
     }
@@ -4261,6 +4269,7 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
+        None,
         within: 2000,
       )
       == creations.Declined(creations.NotOwner)
@@ -4299,6 +4308,7 @@ pub fn the_eleventh_creation_in_an_hour_is_refused_test() {
         creations.Drawn(workspace),
         name,
         creations.Shareable,
+        None,
         within: 2000,
       )
     }
@@ -4347,6 +4357,7 @@ pub fn each_creation_draws_its_own_request_key_test() {
           creations.Drawn(ready.state_root),
           "k",
           creations.Private,
+          None,
           within: 2000,
         )
       Nil
@@ -4391,6 +4402,7 @@ pub fn a_session_that_does_not_open_is_reported_as_created_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
+        None,
         within: 300,
       )
       == creations.Declined(creations.NotOpened)
@@ -4426,6 +4438,7 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       creations.Drawn(ready.state_root),
       "slow",
       creations.Private,
+      None,
       fn(answer) { process.send(answers, #(answer, process.self())) },
     )
     assert process.receive(answers, 0) == Error(Nil)
@@ -4571,6 +4584,7 @@ pub fn a_remembered_folder_is_judged_again_at_the_press_test() {
         creations.Drawn(path),
         "again",
         creations.Private,
+        None,
         within: 2000,
       )
     }
@@ -6447,6 +6461,7 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
           ready.state_root,
           "admin-scope-private",
           "",
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1231),
@@ -6484,6 +6499,7 @@ pub fn the_admin_read_summarises_each_listed_session_test() {
           ready.state_root,
           "admin-rows-private",
           "",
+          None,
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1241),
@@ -8197,5 +8213,61 @@ pub fn the_task_outlives_the_page_that_asked_for_it_test() {
       })
       as "the session becomes session-only and runs again"
     Nil
+  })
+}
+
+// The profile a page chose reaches the creation unchanged, and the default
+// roles are no profile at all: the daemon's registry stores what this hands it.
+pub fn a_page_creation_carries_the_chosen_profile_to_the_registry_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "profile-known", 1108)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let create = counting_create(ready, existing, asked)
+    let attempt = fn(profile) {
+      ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        create,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        "x",
+        creations.Private,
+        profile,
+        within: 2000,
+      )
+    }
+    let _ = attempt(Some("deepseek"))
+    let assert Ok(named) = process.receive(asked, 0)
+    assert named.profile == Some("deepseek")
+    let _ = attempt(None)
+    let assert Ok(plain) = process.receive(asked, 0)
+    assert plain.profile == None
+  })
+}
+
+// The registry's refusal of a profile its configuration does not define reaches
+// the page as the profile's own fixed words, not as a general failure.
+pub fn an_unknown_profile_is_declined_in_its_own_words_test() {
+  fixture(fn(ready, _, credential) {
+    let _existing = create_session(ready, "profile-unknown", 1109)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let refuse = fn(_, _, _) { Error("unknown_profile") }
+    assert ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        refuse,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        "x",
+        creations.Private,
+        Some("nope"),
+        within: 2000,
+      )
+      == creations.Declined(creations.UnknownProfile)
   })
 }
