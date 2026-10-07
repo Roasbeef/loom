@@ -1056,6 +1056,7 @@ fn scripted_catalog() -> catalog.Catalog {
       entry("sage", "https://" <> advisor_host, advisor_model, "SAGE_KEY"),
     ],
     roles: [#(model.Main, ["acme"]), #(catalog.advisor_role, ["sage"])],
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )
