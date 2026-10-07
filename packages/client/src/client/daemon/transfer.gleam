@@ -536,16 +536,34 @@ pub fn encoded_size(value: json.JsonValue, budget: Int) -> Result(Int, String) {
 }
 
 fn quoted_size(text: String) -> Int {
-  list.fold(string.to_utf_codepoints(text), 2, fn(size, point) {
-    let code = string.utf_codepoint_to_int(point)
-    let bytes = case code {
-      code if code < 32 -> 6
-      34 | 92 -> 2
-      code if code < 128 -> 1
-      code if code < 2048 -> 2
-      code if code < 65_536 -> 3
-      _ -> 4
-    }
-    size + bytes
-  })
+  quoted_bytes(bit_array.from_string(text), 2)
+}
+
+// Escapes are ASCII, so counting UTF-8 bytes preserves the codepoint model
+// without constructing a list. C0 controls still cost six bytes here, even
+// when the serializer uses a shorter escape: admission keeps its existing
+// conservative bound. Four ordinary bytes advance together, including bytes
+// within a multibyte codepoint; this count never slices or decodes the text.
+fn quoted_bytes(rest: BitArray, size: Int) -> Int {
+  case rest {
+    <<a, b, c, d, more:bits>>
+      if a >= 0x20
+      && a != 0x22
+      && a != 0x5C
+      && b >= 0x20
+      && b != 0x22
+      && b != 0x5C
+      && c >= 0x20
+      && c != 0x22
+      && c != 0x5C
+      && d >= 0x20
+      && d != 0x22
+      && d != 0x5C
+    -> quoted_bytes(more, size + 4)
+    <<byte, more:bits>> if byte < 0x20 -> quoted_bytes(more, size + 6)
+    <<byte, more:bits>> if byte == 0x22 || byte == 0x5C ->
+      quoted_bytes(more, size + 2)
+    <<_, more:bits>> -> quoted_bytes(more, size + 1)
+    _ -> size
+  }
 }

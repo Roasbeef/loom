@@ -9,11 +9,20 @@
 # driver to `bash -s` on the box, so any key that may run a signoff may
 # run anything at all as the account it logs in to. That is right for a
 # developer's own login and wrong for a key handed to agents. A key pinned
-# here can ask for exactly one thing — run the gate for a pushed commit,
-# and post its verdict — in a request read as data, word by word, against
-# a grammar small enough to check by eye:
+# here can ask for exactly two things — run the gate for a pushed commit
+# and post its verdict, or read what an earlier run logged — in a request
+# read as data, word by word, against a grammar small enough to check by
+# eye:
 #
 #   signoff <40-hex sha> [--dry-run] [--parallel <1-64>]
+#   logs <40-hex sha> [<lane>] [--tail <1-100000>]
+#
+# `logs` exists because a red mark names the lanes that failed and the
+# logs that say why live in this script's root-owned state, where the
+# key's account cannot read them; without it, whoever asked for the run
+# could see that it failed and never why. With no lane it prints the
+# run's own output and lists the lanes it kept; `image-build` is the
+# image build's log.
 #
 # Anything else is refused before a process is started. stdin is never
 # read, so a client still speaking the driver protocol gets a refusal
@@ -38,6 +47,9 @@
 #   config          optional, sourced: LOOM_CPUS and LOOM_MEMORY ceilings
 #   .gitconfig      user.name, which gh-signoff requires to post
 #   .local/share/gh the gh-signoff extension
+#   .ssh            the key and known_hosts for an ssh origin, read by
+#                   both the gate's fetch and the driver's; with an https
+#                   origin there is nothing to put here
 #
 # and the driver it runs is an installed copy of scripts/signoff/driver.sh
 # at /usr/local/libexec/loom-signoff/driver.sh, so the code that decides
@@ -45,6 +57,11 @@
 # LOOM_SIGNOFF_STATE and LOOM_SIGNOFF_DRIVER move both for the tests;
 # neither can reach a real run, because sudo resets the environment and a
 # `restrict` key cannot set one.
+#
+# Two requirements of the host. The key's account needs a POSIX login
+# shell, because sshd runs a forced command through the account's shell and
+# a nologin shell never runs it. And `gh` must be on sudo's secure_path,
+# because sudo replaces PATH and the driver posts with `gh` as root.
 #
 # --- What the key still grants ---
 #
@@ -63,9 +80,15 @@
 # checked out, so a run waits on a lock for the one before it.
 set -euo pipefail
 
+# The request's patterns use bracket ranges, and a locale may collate those
+# in an order other than ASCII's, so the gate reads the request in the C
+# locale.
+export LC_ALL=C
+
 refuse() {
 	echo "loom-signoff-gate: $*" >&2
 	echo "usage: signoff <40-hex sha> [--dry-run] [--parallel <1-64>]" >&2
+	echo "       logs <40-hex sha> [<lane>] [--tail <1-100000>]" >&2
 	exit 2
 }
 
@@ -77,9 +100,71 @@ request=${1-${SSH_ORIGINAL_COMMAND:-}}
 [[ $request != *$'\n'* ]] || refuse "a request is one line"
 read -r -a words <<<"$request" || true
 [ "${#words[@]}" -ge 2 ] || refuse "no request"
-[ "${words[0]}" = signoff ] || refuse "unknown request '${words[0]}'"
+verb=${words[0]}
+case $verb in
+signoff | logs) ;;
+*) refuse "unknown request '$verb'" ;;
+esac
 sha=${words[1]}
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || refuse "not a full commit sha: '$sha'"
+state=${LOOM_SIGNOFF_STATE:-/var/lib/loom-signoff}
+
+# Reading a log. The run's own output and image build log are written by
+# the driver, outside the container's mount; the lane logs are in that
+# mount, container/lanes, and so are whatever the commit under test left
+# there, a symbolic link to the token included. This runs as root, so a
+# file is printed only if it is a regular file, not a link, whose real
+# path is inside the run's directory, and a lane log only if it is inside
+# container/.
+if [ "$verb" = logs ]; then
+	lane=""
+	tail_lines=""
+	i=2
+	while [ "$i" -lt "${#words[@]}" ]; do
+		case ${words[$i]} in
+		--tail)
+			i=$((i + 1))
+			tail_lines=${words[$i]:-}
+			if ! [[ $tail_lines =~ ^[1-9][0-9]{0,4}$ ]] && [ "$tail_lines" != 100000 ]; then
+				refuse "--tail needs a number from 1 to 100000"
+			fi
+			;;
+		*)
+			[ -z "$lane" ] || refuse "unknown argument '${words[$i]}'"
+			lane=${words[$i]}
+			[[ $lane =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || refuse "not a lane name: '$lane'"
+			;;
+		esac
+		i=$((i + 1))
+	done
+	exec </dev/null
+
+	run="$state/loom-signoff-container/logs/${sha:0:12}"
+	[ -d "$run" ] && [ ! -L "$run" ] ||
+		{ echo "loom-signoff-gate: no logs for $sha" >&2; exit 4; }
+	case $lane in
+	"") file="$run/signoff.log" ;;
+	image-build) file="$run/image-build.log" ;;
+	*) file="$run/container/lanes/$lane.log" ;;
+	esac
+	inside=$(realpath -- "$run")
+	if [ -n "$lane" ] && [ "$lane" != image-build ]; then inside="$inside/container"; fi
+	real=$(realpath -e -- "$file" 2>/dev/null) || real=""
+	if [ -z "$real" ] || [ -L "$file" ] || [ ! -f "$real" ] || [[ $real != "$inside"/* ]]; then
+		echo "loom-signoff-gate: no such log '${lane:-signoff}' for $sha" >&2
+		lane=""
+		file=""
+	fi
+	if [ -n "$file" ]; then
+		if [ -n "$tail_lines" ]; then tail -n "$tail_lines" -- "$real"; else cat -- "$real"; fi
+	fi
+	lanes="$run/container/lanes"
+	if [ -z "$lane" ] && [ -d "$lanes" ] && [ ! -L "$lanes" ] && [ ! -L "$run/container" ]; then
+		echo "== lanes: $(cd "$lanes" && ls -1 -- *.log 2>/dev/null | sed 's/\.log$//' | tr '\n' ' ')"
+	fi
+	[ -n "$file" ] || exit 4
+	exit 0
+fi
 
 post=yes
 parallel=""
@@ -100,7 +185,6 @@ while [ "$i" -lt "${#words[@]}" ]; do
 done
 exec </dev/null
 
-state=${LOOM_SIGNOFF_STATE:-/var/lib/loom-signoff}
 driver=${LOOM_SIGNOFF_DRIVER:-/usr/local/libexec/loom-signoff/driver.sh}
 checkout="$state/loom-signoff"
 if [ ! -d "$checkout/.git" ]; then
@@ -122,10 +206,20 @@ if ! flock -n 9; then
 	done
 fi
 
+
+# HOME is the state directory for every git command from here on, the
+# fetch below included, so an ssh origin's keys and known_hosts and the
+# .gitconfig are read from one place. Left to sudo's env_reset, HOME would
+# be root's for this fetch and the state directory's for the driver's.
+export HOME="$state"
 cd "$checkout"
-git fetch --quiet --prune origin
-if ! git cat-file -e "$sha^{commit}" 2>/dev/null ||
-	[ -z "$(git branch -r --contains "$sha" 2>/dev/null)" ]; then
+
+# Only branches are fetched, whatever refspecs the checkout's config holds,
+# and --prune drops the tracking ref of a branch deleted at origin, so a
+# commit passes only while a branch there still holds it. A SHA the
+# checkout does not have is on no branch either, so one test covers both.
+git fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*'
+if [ -z "$(git branch -r --contains "$sha" 2>/dev/null)" ]; then
 	echo "loom-signoff-gate: $sha is on none of origin's branches; push it first" >&2
 	exit 2
 fi
@@ -142,7 +236,6 @@ if [ "$post" = yes ]; then
 	export GH_TOKEN
 fi
 
-export HOME="$state"
 export LOOM_DIR="$checkout"
 export LOOM_ORIGIN
 LOOM_ORIGIN=$(git remote get-url origin)
@@ -151,4 +244,5 @@ export LOOM_POST="$post"
 export LOOM_URL=""
 export LOOM_PARALLEL="$parallel"
 export LOOM_CPUS LOOM_MEMORY
+export LOOM_LOGS_HINT="read the logs with \`logs $sha [lane]\`"
 exec bash "$driver"

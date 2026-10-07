@@ -27,7 +27,7 @@ loom_profile_value_option() {
   esac
 }
 
-# A profile node has to be named before the daemon emulator starts. The release
+# A profile node has to be named before the application emulator starts. The release
 # supplies its existing TOML parser as this reader: reimplementing TOML in the
 # shell would silently disagree about equivalent key spellings.
 #
@@ -60,8 +60,8 @@ loom_profile_config_enabled() {
 #
 # The recognition mirrors the applications' own dispatch: `--help` and `-h`
 # win wherever they appear, `help` only in first position, and the
-# subcommand words only in first position. `ui` is deliberately absent from
-# the client list: the web view is a long-lived node and may be profiled.
+# subcommand words only in first position. The client's `ui` command and older
+# `--ui` spelling print a web link and exit; the daemon owns the web view.
 loom_profile_is_exit_only() {
   local role="$1"
   shift
@@ -72,11 +72,14 @@ loom_profile_is_exit_only() {
       --help | -h)
         return 0
         ;;
+      --ui)
+        [[ "$role" == client ]] && return 0
+        ;;
     esac
   done
 
   case "$role:${1:-}" in
-    client:help | client:ext | client:replay | client:sessions | client:version | client:--version | client:claim | client:enroll | client:access | client:update)
+    client:help | client:ui | client:ext | client:replay | client:sessions | client:version | client:--version | client:claim | client:enroll | client:access | client:update)
       return 0
       ;;
     daemon:help | daemon:access | daemon:peer | daemon:ext)
@@ -247,7 +250,7 @@ loom_profile_consume() {
     config_path="$state_root/loom.toml"
   fi
 
-  if [[ "$role" == daemon && "$LOOM_PROFILE_ENABLED" == 0 ]] \
+  if [[ "$LOOM_PROFILE_ENABLED" == 0 ]] \
     && loom_profile_config_enabled "$config_path"; then
     LOOM_PROFILE_ENABLED=1
   fi

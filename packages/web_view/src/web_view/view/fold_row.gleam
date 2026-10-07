@@ -259,23 +259,31 @@ pub fn step_body(
   rows: List(Line),
   draw: fn(Line) -> Element(message),
 ) -> List(Element(message)) {
-  let #(refusal, rest) =
-    list.partition(rows, fn(row) {
-      row.speaker == transcript_line.ToolResult
-      || row.speaker == transcript_line.ToolFailure
-    })
-  let engine =
-    refusal
-    |> list.map(refused_text)
-    |> string.join("\n")
-    |> string.trim
-  case standing, engine {
-    turns.Failed, "" | turns.Pending, _ | turns.Done, _ ->
-      list.map(rows, line_row(_, draw))
-    turns.Failed, _ -> [
-      failure(step_words.failure_sentence(words, engine), engine),
-      ..list.map(rest, line_row(_, draw))
-    ]
+  case standing {
+    // Only a failed step replaces its result rows with a refusal sentence.
+    // Successful and pending results can be large; joining and trimming them
+    // here would repeat work whose result those states never use.
+    turns.Pending | turns.Done -> list.map(rows, line_row(_, draw))
+
+    turns.Failed -> {
+      let #(refusal, rest) =
+        list.partition(rows, fn(row) {
+          row.speaker == transcript_line.ToolResult
+          || row.speaker == transcript_line.ToolFailure
+        })
+      let engine =
+        refusal
+        |> list.map(refused_text)
+        |> string.join("\n")
+        |> string.trim
+      case engine {
+        "" -> list.map(rows, line_row(_, draw))
+        _ -> [
+          failure(step_words.failure_sentence(words, engine), engine),
+          ..list.map(rest, line_row(_, draw))
+        ]
+      }
+    }
   }
 }
 
