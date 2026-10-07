@@ -39,15 +39,28 @@
 //// `check_tool_header` bounds profile, reservation and every payload projection.
 //// `initialize` uses `pragma` only for configuration metadata, never data queries.
 //// `profile_name` gives the immutable final profile its persisted schema tag.
+//// `pin_enrollment` → `read_enrollment` → `retain_generation` binds immutable
+//// enrollment before the original connection receives live generation custody.
+//// `retain_generation_close` checks full node bytes and trusted original joins;
+//// `read_generation_close` exposes history without rebuilding live authority.
+//// `admit_registered_fresh_with_profile` and `registered_child_inside` append
+//// exact generation links in the same transaction as the original admission.
+//// `retain_system_intent` reserves a pending child slot and link allowance;
+//// `admit_system_child` transfers it and advances the fixed lifetime counter.
+//// `validate_registered_rows` checks headers before indexed canonical readback.
 
+import core/bounded_msgpack
 import core/command
 import core/entry.{MessageEntry}
+import core/generation
 import core/ids.{type EntryId, type SessionId}
 import core/json
 import core/message.{type AgentMessage}
+import core/msgpack as mp
 import core/register
 import core/remote_tool.{type ChildOrigin, type ToolKey}
 import core/report_value
+import core/workspace
 import gleam/bit_array
 import gleam/bool
 import gleam/dict
@@ -239,6 +252,1884 @@ pub type RunCustody {
 type ReceiptPolicy {
   NativeReceipt
   WorkspaceReceipt
+}
+
+/// Canonical session enrollment metadata, independent of any generation.
+pub opaque type EnrollmentPin {
+  EnrollmentPin(
+    /// Original session UUID.
+    session: SessionId,
+    /// Immutable registered selector and authority epochs.
+    binding: workspace.RegisteredBinding,
+    /// Canonical descriptor digest.
+    descriptor: generation.Digest,
+    /// Canonical enrollment digest.
+    enrollment: generation.Digest,
+    /// Complete bounded canonical enrollment bytes, host validated later.
+    bytes: BitArray,
+  )
+}
+
+/// A committed exact enrollment readback; it grants no effect authority.
+pub opaque type PinReadback {
+  /// Exact canonical pin observed after its immutable COMMIT.
+  PinReadback(
+    /// The original session enrollment envelope.
+    pin: EnrollmentPin,
+  )
+}
+
+/// Original connection-bound association admission, unavailable from history.
+pub opaque type LiveGeneration {
+  /// The original transaction binds this admission to one concrete connection.
+  LiveGeneration(
+    /// Complete original association.
+    association: generation.GenerationAssociation,
+    /// Original serialized handle, never rebound by a historical decoder.
+    connection: sqlight.Connection,
+  )
+}
+
+/// Only an original successful association transaction supplies live custody.
+pub type GenerationAdmission {
+  /// This connection inserted the exact association for the first time.
+  FreshGeneration(live: LiveGeneration)
+
+  /// Exact immutable history; no replacement owner may execute through it.
+  RetainedGeneration(association: generation.GenerationAssociation)
+}
+
+/// Digests of the three independent original owner join witnesses.
+pub type OwnerJoins {
+  OwnerJoins(
+    /// Original runtime and effect-run joins.
+    runtime_effects: generation.Digest,
+    /// Original Broker join.
+    broker: generation.Digest,
+    /// Original custodian and managed task joins.
+    custodian_tasks: generation.Digest,
+  )
+}
+
+/// Full original node record and owner joins, still requiring live attestation.
+pub opaque type OwnerCloseRecord {
+  OwnerCloseRecord(
+    /// Full original generation association, including owner-use UUID.
+    association: generation.GenerationAssociation,
+    /// Exact node retirement record bytes.
+    node_record: BitArray,
+    /// Digest independently verified using the injected host SHA-256.
+    node_digest: generation.Digest,
+    /// Exact original owner witness identities.
+    joins: OwnerJoins,
+  )
+}
+
+/// Fixed trusted system families, matching the existing workspace caller codec.
+pub type SystemService {
+  /// Preparation for an approved command.
+  CommandPreparation
+
+  /// Original compilation service.
+  Compiler
+
+  /// Original satellite launch service.
+  SatelliteLaunch
+
+  /// Language server service; LSP custody itself remains separately owned.
+  LanguageServer
+
+  /// Git and other retained worktree observations.
+  WorktreeObservation
+
+  /// Initialization and other retained workspace administration.
+  WorkspaceAdministration
+}
+
+/// Complete trusted work intent before an ordinal or child request exists.
+pub opaque type SystemIntent {
+  SystemIntent(
+    /// Original immutable generation association.
+    association: generation.GenerationAssociation,
+    /// Original connection's live admission, never reconstructed by readback.
+    live: Option(LiveGeneration),
+    /// Durable caller work address, bounded independently of payload bytes.
+    work_address: String,
+    /// Fixed trusted service family.
+    service: SystemService,
+    /// Original durable work operation UUID.
+    operation: ids.OpId,
+    /// Closed trusted work phase.
+    step: String,
+    /// Once-minted original child UUID.
+    request_id: EntryId,
+    /// Complete bounded immutable intent bytes.
+    bytes: BitArray,
+  )
+}
+
+/// Committed system intent; reservation consumes its eventual slot exactly once.
+pub opaque type IntentReadback {
+  /// Original immutable metadata, without child send permission.
+  IntentReadback(
+    /// Full trusted work intent whose UUID must survive all retries.
+    intent: SystemIntent,
+  )
+}
+
+/// Preserves the existing native and complete-workspace request profiles.
+pub type SystemReservationPayload {
+  /// Existing native payload and receipt bounds.
+  NativeSystem(payload: Payload)
+
+  /// Complete workspace invocation and receipt bounds.
+  WorkspaceSystem(request: WorkspaceRequest)
+}
+
+/// Original serialized child reservation; Retained observations cannot send.
+pub type SystemReservationReadback {
+  SystemReservationReadback(
+    /// Only the original successful child insertion returns Fresh.
+    admission: Admission,
+    /// Original complete system origin with lifetime ordinal.
+    origin: ChildOrigin,
+    /// Original intent UUID, never a new retry candidate.
+    request_id: EntryId,
+    /// Exact admitted family payload.
+    payload: SystemReservationPayload,
+    /// Original generation, never a current-generation lookup.
+    generation: generation.GenerationKey,
+  )
+}
+
+/// Checks the immutable pin envelope before durable mutation.
+/// The host's enrollment codec additionally validates its complete content.
+///
+/// ## Examples
+///
+/// `enrollment_pin(session, binding, descriptor, digest, bytes)` allocates no identity.
+pub fn enrollment_pin(
+  session: SessionId,
+  binding: workspace.RegisteredBinding,
+  descriptor: generation.Digest,
+  enrollment: generation.Digest,
+  bytes: BitArray,
+) -> Result(EnrollmentPin, Error) {
+  use Nil <- result.try(metadata_bytes(bytes, 262_144))
+  Ok(EnrollmentPin(session, binding, descriptor, enrollment, bytes))
+}
+
+/// Projects the complete immutable pin for trusted assembly verification.
+///
+/// ## Examples
+///
+/// `enrollment_fields(pin)` does not select a generation.
+pub fn enrollment_fields(
+  pin: EnrollmentPin,
+) -> #(
+  SessionId,
+  workspace.RegisteredBinding,
+  generation.Digest,
+  generation.Digest,
+  BitArray,
+) {
+  #(pin.session, pin.binding, pin.descriptor, pin.enrollment, pin.bytes)
+}
+
+/// Projects a committed pin readback without granting physical authority.
+///
+/// ## Examples
+///
+/// `pin_value(readback)` is the exact immutable input to enrollment decoding.
+pub fn pin_value(readback: PinReadback) -> EnrollmentPin {
+  readback.pin
+}
+
+/// Commits the generation-free singleton once, then verifies its exact readback.
+/// Changed scope, digest or content cannot repair retained historical metadata.
+///
+/// ## Examples
+///
+/// Exact `pin_enrollment(store, pin)` retries preserve one immutable row.
+pub fn pin_enrollment(
+  store: Store,
+  pin: EnrollmentPin,
+) -> Result(PinReadback, Error) {
+  use Nil <- result.try(validate_pin(store, pin))
+  use Nil <- result.try(
+    transaction(store, fn() {
+      use existing <- result.try(enrollment_optional(store))
+      case existing {
+        Some(retained) -> same_pin(retained, pin)
+        None -> {
+          let binding = binding_bytes(pin.binding)
+          let reserved = pin_charge(pin)
+          use Nil <- result.try(reserve(store, 0, 0, reserved))
+          statement(
+            store,
+            sql.insert_owner_enrollment(
+              1,
+              1,
+              ids.session_id_to_string(pin.session),
+              binding,
+              generation.digest_bytes(pin.descriptor),
+              generation.digest_bytes(pin.enrollment),
+              pin.bytes,
+              reserved,
+            ),
+          )
+        }
+      }
+    }),
+  )
+  use retained <- result.try(read_enrollment(store))
+  use Nil <- result.try(same_pin(retained, pin))
+  Ok(PinReadback(retained))
+}
+
+/// Reads scalar types and lengths before materializing the immutable enrollment.
+/// Missing pin is a refusal for registered admission, while local APIs remain usable.
+///
+/// ## Examples
+///
+/// `read_enrollment(store)` never adopts the current deployment as old evidence.
+pub fn read_enrollment(store: Store) -> Result(EnrollmentPin, Error) {
+  use pin <- result.try(enrollment_optional(store))
+  option.to_result(pin, Missing)
+}
+
+fn enrollment_optional(store: Store) -> Result(Option(EnrollmentPin), Error) {
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use headers <- result.try(query(store, sql.owner_enrollment_header(1)))
+  case headers {
+    [] -> Ok(None)
+    [header] -> {
+      use Nil <- result.try(header_size(header.binding_size, 1024))
+      use Nil <- result.try(header_size(header.enrollment_bytes_size, 262_144))
+      use <- bool.guard(
+        when: header.schema != 1
+          || header.descriptor_digest_size != 32
+          || header.enrollment_digest_size != 32
+          || header.session_id != ids.session_id_to_string(store.session)
+          || header.reserved_bytes
+          < header.binding_size + header.enrollment_bytes_size + 228,
+        return: Error(Invalid("invalid owner enrollment header")),
+      )
+      use body <- result.try(one(query(store, sql.owner_enrollment_body(1))))
+      use binding <- result.try(decode_binding(body.binding))
+      use descriptor <- result.try(
+        generation.digest(body.descriptor_digest)
+        |> result.replace_error(Invalid("invalid descriptor digest")),
+      )
+      use enrollment <- result.try(
+        generation.digest(body.enrollment_digest)
+        |> result.replace_error(Invalid("invalid enrollment digest")),
+      )
+      use pin <- result.try(enrollment_pin(
+        store.session,
+        binding,
+        descriptor,
+        enrollment,
+        body.enrollment_bytes,
+      ))
+      use Nil <- result.try(validate_pin(store, pin))
+      Ok(Some(pin))
+    }
+    [_, _, ..] -> Error(Invalid("duplicate owner enrollment"))
+  }
+}
+
+fn validate_pin(store: Store, pin: EnrollmentPin) -> Result(Nil, Error) {
+  use Nil <- result.try(same_session(store, pin.session))
+  use Nil <- result.try(metadata_bytes(pin.bytes, 262_144))
+  use digest <- result.try(content_digest(store, pin.bytes))
+  equal(digest, generation.digest_bytes(pin.enrollment))
+}
+
+fn same_pin(left: EnrollmentPin, right: EnrollmentPin) -> Result(Nil, Error) {
+  case left == right {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  }
+}
+
+fn pin_charge(pin: EnrollmentPin) -> Int {
+  bit_array.byte_size(binding_bytes(pin.binding))
+  + bit_array.byte_size(pin.bytes)
+  + 228
+}
+
+fn binding_bytes(binding: workspace.RegisteredBinding) -> BitArray {
+  workspace.encode_binding(workspace.Registered(binding))
+  |> json.to_string
+  |> bit_array.from_string
+}
+
+fn decode_binding(
+  bytes: BitArray,
+) -> Result(workspace.RegisteredBinding, Error) {
+  use text <- result.try(
+    bit_array.to_string(bytes)
+    |> result.replace_error(Invalid("invalid binding text")),
+  )
+  use value <- result.try(
+    json.parse(text) |> result.replace_error(Invalid("invalid binding JSON")),
+  )
+  use binding <- result.try(
+    workspace.decode_binding(value)
+    |> result.replace_error(Invalid("invalid registered binding")),
+  )
+  case binding {
+    workspace.Registered(binding) -> {
+      use Nil <- result.try(equal(bytes, binding_bytes(binding)))
+      Ok(binding)
+    }
+    workspace.LocalBinding(_) ->
+      Error(Invalid("registered pin requires registered binding"))
+  }
+}
+
+/// Commits an immutable association and gives only the original transaction live custody.
+/// Successors require the original predecessor close and independently bound node digest.
+///
+/// ## Examples
+///
+/// Exact retries return `RetainedGeneration`, never a replacement live owner.
+pub fn retain_generation(
+  store: Store,
+  association: generation.GenerationAssociation,
+  configured_first: Int,
+) -> Result(GenerationAdmission, Error) {
+  use <- bool.guard(
+    when: configured_first < 1 || configured_first > generation.max_generation,
+    return: Error(Conflict),
+  )
+  use Nil <- result.try(check_association_pin(store, association))
+  let key = generation.association_key(association)
+  use admitted <- result.try(
+    transaction(store, fn() {
+      use existing <- result.try(generation_optional(store, key))
+      case existing {
+        Some(retained) -> {
+          use Nil <- result.try(same_association(retained, association))
+          use Nil <- result.try(case generation.association_fields(retained).3 {
+            generation.FirstGeneration ->
+              generation.checked_first(retained, configured_first)
+              |> result.replace_error(Conflict)
+            generation.Successor(_, _) -> Ok(Nil)
+          })
+          Ok(RetainedGeneration(retained))
+        }
+        None -> {
+          use Nil <- result.try(check_generation_lineage(
+            store,
+            association,
+            configured_first,
+          ))
+          use inventory <- result.try(
+            one(query(store, sql.owner_generation_inventory())),
+          )
+          use <- bool.guard(
+            when: inventory.associations < 0 || inventory.associations >= 4096,
+            return: Error(Capacity),
+          )
+          use key_bytes <- result.try(encoded_key(key))
+          use bytes <- result.try(encoded_association(association))
+          use digest <- result.try(content_digest(store, bytes))
+          let reserved =
+            bit_array.byte_size(key_bytes) + bit_array.byte_size(bytes) + 196
+          use Nil <- result.try(reserve(store, 0, 0, reserved))
+          use Nil <- result.try(statement(
+            store,
+            sql.insert_owner_generation(
+              key_bytes,
+              ids.entry_id_to_string(
+                generation.association_fields(association).2,
+              ),
+              bytes,
+              digest,
+              reserved,
+            ),
+          ))
+          use readback <- result.try(read_generation(store, key))
+          use Nil <- result.try(same_association(readback, association))
+          Ok(FreshGeneration(LiveGeneration(association, store.connection)))
+        }
+      }
+    }),
+  )
+  use committed <- result.try(read_generation(store, key))
+  use Nil <- result.try(same_association(committed, association))
+  Ok(admitted)
+}
+
+/// Reads complete immutable history without restoring a live owner-use bundle.
+///
+/// ## Examples
+///
+/// `read_generation(store, old_key)` never selects a successor.
+pub fn read_generation(
+  store: Store,
+  key: generation.GenerationKey,
+) -> Result(generation.GenerationAssociation, Error) {
+  use associated <- result.try(generation_optional(store, key))
+  option.to_result(associated, Missing)
+}
+
+/// Projects the original association retained by a live handle.
+///
+/// ## Examples
+///
+/// `live_association(live)` retains the same owner-use UUID after lost replies.
+pub fn live_association(
+  live: LiveGeneration,
+) -> generation.GenerationAssociation {
+  live.association
+}
+
+fn generation_optional(
+  store: Store,
+  key: generation.GenerationKey,
+) -> Result(Option(generation.GenerationAssociation), Error) {
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use key_bytes <- result.try(encoded_key(key))
+  use headers <- result.try(query(store, sql.owner_generation_header(key_bytes)))
+  case headers {
+    [] -> Ok(None)
+    [header] -> {
+      use Nil <- result.try(header_size(header.association_size, 1024))
+      use <- bool.guard(
+        when: header.generation_key_size != bit_array.byte_size(key_bytes)
+          || header.digest_size != 32
+          || header.reserved_bytes
+          < header.generation_key_size + header.association_size + 196,
+        return: Error(Invalid("invalid owner generation header")),
+      )
+      use body <- result.try(
+        one(query(store, sql.owner_generation_body(key_bytes))),
+      )
+      use Nil <- result.try(equal(body.generation_key, key_bytes))
+      use association <- result.try(
+        generation.decode_association(body.association)
+        |> result.replace_error(Invalid("invalid canonical association")),
+      )
+      use Nil <- result.try(same_generation_key(
+        generation.association_key(association),
+        key,
+      ))
+      use Nil <- result.try(check_association_pin(store, association))
+      use Nil <- result.try(equal_string(
+        header.owner_use,
+        ids.entry_id_to_string(generation.association_fields(association).2),
+      ))
+      use digest <- result.try(content_digest(store, body.association))
+      use Nil <- result.try(equal(digest, body.digest))
+      Ok(Some(association))
+    }
+    [_, _, ..] -> Error(Invalid("duplicate owner generation"))
+  }
+}
+
+fn check_association_pin(
+  store: Store,
+  association: generation.GenerationAssociation,
+) -> Result(Nil, Error) {
+  use pin <- result.try(read_enrollment(store))
+  let #(key, enrollment, _, _) = generation.association_fields(association)
+  let #(scope, descriptor, _) = generation.key_fields(key)
+  let #(session, binding) = workspace.scope_fields(scope)
+  case
+    session == pin.session
+    && binding == pin.binding
+    && descriptor == pin.descriptor
+    && enrollment == pin.enrollment
+  {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  }
+}
+
+fn check_generation_lineage(
+  store: Store,
+  association: generation.GenerationAssociation,
+  configured_first: Int,
+) -> Result(Nil, Error) {
+  let #(key, _, _, predecessor) = generation.association_fields(association)
+  let #(scope, descriptor, number) = generation.key_fields(key)
+  case predecessor {
+    generation.FirstGeneration -> {
+      use inventory <- result.try(
+        one(query(store, sql.owner_generation_inventory())),
+      )
+      use <- bool.guard(
+        when: inventory.associations != 0,
+        return: Error(Conflict),
+      )
+      generation.checked_first(association, configured_first)
+      |> result.replace_error(Conflict)
+    }
+    generation.Successor(_node, owner) -> {
+      use <- bool.guard(
+        when: configured_first < 1
+          || configured_first > generation.max_generation
+          || number <= configured_first,
+        return: Error(Conflict),
+      )
+      use previous_key <- result.try(
+        generation.key(scope, descriptor, number - 1)
+        |> result.replace_error(Conflict),
+      )
+      use previous <- result.try(read_generation(store, previous_key))
+      use close <- result.try(read_generation_close(store, previous_key))
+      use bytes <- result.try(encode_owner_close(close))
+      use digest <- result.try(content_digest(store, bytes))
+      use Nil <- result.try(equal(digest, generation.digest_bytes(owner)))
+      generation.checked_successor(
+        association,
+        previous,
+        close.node_digest,
+        owner,
+      )
+      |> result.replace_error(Conflict)
+    }
+  }
+}
+
+/// Frames full node retirement bytes and exact original owner witness digests.
+/// Construction checks representation only; actual joins require trusted live validation.
+///
+/// ## Examples
+///
+/// `owner_close_record(association, node_bytes, node_digest, joins)` starts nothing.
+pub fn owner_close_record(
+  association: generation.GenerationAssociation,
+  node_record: BitArray,
+  node_digest: generation.Digest,
+  joins: OwnerJoins,
+) -> Result(OwnerCloseRecord, Error) {
+  use Nil <- result.try(metadata_bytes(node_record, 131_072))
+  let value = OwnerCloseRecord(association, node_record, node_digest, joins)
+  use bytes <- result.try(encode_owner_close(value))
+  use Nil <- result.try(metadata_bytes(bytes, 262_144))
+  Ok(value)
+}
+
+/// Projects the complete original association, node bytes, digest and join witnesses.
+///
+/// ## Examples
+///
+/// `owner_close_fields(record)` provides the trusted witness validator its exact inputs.
+pub fn owner_close_fields(
+  value: OwnerCloseRecord,
+) -> #(
+  generation.GenerationAssociation,
+  BitArray,
+  generation.Digest,
+  OwnerJoins,
+) {
+  #(value.association, value.node_record, value.node_digest, value.joins)
+}
+
+/// Commits one exact owner close after trusted original live witness verification.
+/// A digest or historical decoder alone cannot authorize the first close record.
+///
+/// ## Examples
+///
+/// `retain_generation_close(store, close, validate)` preserves all old admissions.
+pub fn retain_generation_close(
+  store: Store,
+  record: OwnerCloseRecord,
+  validate: fn(OwnerCloseRecord) -> Result(Nil, String),
+) -> Result(generation.Digest, Error) {
+  use bytes <- result.try(encode_owner_close(record))
+  use Nil <- result.try(metadata_bytes(bytes, 262_144))
+  use digest <- result.try(content_digest(store, bytes))
+  use key <- result.try(
+    encoded_key(generation.association_key(record.association)),
+  )
+  use Nil <- result.try(
+    transaction(store, fn() {
+      use association <- result.try(read_generation(
+        store,
+        generation.association_key(record.association),
+      ))
+      use Nil <- result.try(same_association(association, record.association))
+      use node <- result.try(content_digest(store, record.node_record))
+      use Nil <- result.try(equal(
+        node,
+        generation.digest_bytes(record.node_digest),
+      ))
+      use existing <- result.try(close_optional(
+        store,
+        generation.association_key(record.association),
+      ))
+      case existing {
+        Some(retained) -> {
+          use old <- result.try(encode_owner_close(retained))
+          equal(old, bytes)
+        }
+        None -> {
+          use Nil <- result.try(validate(record) |> result.map_error(Invalid))
+          let reserved =
+            bit_array.byte_size(key) + bit_array.byte_size(bytes) + 160
+          use Nil <- result.try(reserve(store, 0, 0, reserved))
+          statement(
+            store,
+            sql.insert_owner_generation_close(key, bytes, digest, reserved),
+          )
+        }
+      }
+    }),
+  )
+  use retained <- result.try(read_generation_close(
+    store,
+    generation.association_key(record.association),
+  ))
+  use old <- result.try(encode_owner_close(retained))
+  use Nil <- result.try(equal(old, bytes))
+  generation.digest(digest)
+  |> result.replace_error(Invalid("invalid owner close digest"))
+}
+
+/// Reads complete canonical close history and validates both retained hashes.
+/// This observation is not a live witness of any original process join.
+///
+/// ## Examples
+///
+/// `read_generation_close(store, key)` grants no effect or replacement authority.
+pub fn read_generation_close(
+  store: Store,
+  key: generation.GenerationKey,
+) -> Result(OwnerCloseRecord, Error) {
+  use retained <- result.try(close_optional(store, key))
+  option.to_result(retained, Missing)
+}
+
+fn close_optional(
+  store: Store,
+  key: generation.GenerationKey,
+) -> Result(Option(OwnerCloseRecord), Error) {
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use key_bytes <- result.try(encoded_key(key))
+  use headers <- result.try(query(
+    store,
+    sql.owner_generation_close_header(key_bytes),
+  ))
+  case headers {
+    [] -> Ok(None)
+    [header] -> {
+      use Nil <- result.try(header_size(header.close_record_size, 262_144))
+      use <- bool.guard(
+        when: header.generation_key_size != bit_array.byte_size(key_bytes)
+          || header.digest_size != 32
+          || header.reserved_bytes
+          < header.generation_key_size + header.close_record_size + 160,
+        return: Error(Invalid("invalid owner close header")),
+      )
+      use body <- result.try(
+        one(query(store, sql.owner_generation_close_body(key_bytes))),
+      )
+      use Nil <- result.try(equal(body.generation_key, key_bytes))
+      use record <- result.try(decode_owner_close(body.close_record))
+      use Nil <- result.try(same_generation_key(
+        generation.association_key(record.association),
+        key,
+      ))
+      use associated <- result.try(read_generation(store, key))
+      use Nil <- result.try(same_association(associated, record.association))
+      use digest <- result.try(content_digest(store, body.close_record))
+      use Nil <- result.try(equal(digest, body.digest))
+      use node <- result.try(content_digest(store, record.node_record))
+      use Nil <- result.try(equal(
+        node,
+        generation.digest_bytes(record.node_digest),
+      ))
+      Ok(Some(record))
+    }
+    [_, _, ..] -> Error(Invalid("duplicate owner close"))
+  }
+}
+
+fn encode_owner_close(record: OwnerCloseRecord) -> Result(BitArray, Error) {
+  let OwnerJoins(runtime, broker, tasks) = record.joins
+  mp.encode(
+    mp.ArrayValue([
+      mp.IntValue(1),
+      mp.StringValue("loom.owner-generation-close/1"),
+      generation.association_value(record.association),
+      mp.BinaryValue(record.node_record),
+      mp.BinaryValue(generation.digest_bytes(record.node_digest)),
+      mp.ArrayValue([
+        mp.BinaryValue(generation.digest_bytes(runtime)),
+        mp.BinaryValue(generation.digest_bytes(broker)),
+        mp.BinaryValue(generation.digest_bytes(tasks)),
+      ]),
+    ]),
+  )
+  |> result.replace_error(Invalid("unencodable owner close"))
+}
+
+fn decode_owner_close(bytes: BitArray) -> Result(OwnerCloseRecord, Error) {
+  use Nil <- result.try(metadata_bytes(bytes, 262_144))
+  use value <- result.try(
+    bounded_msgpack.decode(bytes)
+    |> result.replace_error(Invalid("invalid owner close frame")),
+  )
+  use record <- result.try(case value {
+    mp.ArrayValue([
+      mp.IntValue(1),
+      mp.StringValue("loom.owner-generation-close/1"),
+      association,
+      mp.BinaryValue(node),
+      mp.BinaryValue(node_digest),
+      mp.ArrayValue([
+        mp.BinaryValue(runtime),
+        mp.BinaryValue(broker),
+        mp.BinaryValue(tasks),
+      ]),
+    ]) -> {
+      use association <- result.try(
+        generation.decode_association_value(association)
+        |> result.replace_error(Invalid("invalid close association")),
+      )
+      use node_digest <- result.try(checked_digest(node_digest))
+      use runtime <- result.try(checked_digest(runtime))
+      use broker <- result.try(checked_digest(broker))
+      use tasks <- result.try(checked_digest(tasks))
+      owner_close_record(
+        association,
+        node,
+        node_digest,
+        OwnerJoins(runtime, broker, tasks),
+      )
+    }
+    _ -> Error(Invalid("invalid closed owner join shape"))
+  })
+  use canonical <- result.try(encode_owner_close(record))
+  use Nil <- result.try(equal(canonical, bytes))
+  Ok(record)
+}
+
+fn require_live(store: Store, live: LiveGeneration) -> Result(Nil, Error) {
+  use <- bool.guard(
+    when: live.connection != store.connection,
+    return: Error(Frozen),
+  )
+  let key = generation.association_key(live.association)
+  use retained <- result.try(read_generation(store, key))
+  use Nil <- result.try(same_association(retained, live.association))
+  use close <- result.try(close_optional(store, key))
+  case close {
+    None -> Ok(Nil)
+    Some(_) -> Error(Frozen)
+  }
+}
+
+fn encoded_key(key: generation.GenerationKey) -> Result(BitArray, Error) {
+  generation.encode_key(key)
+  |> result.replace_error(Invalid("unencodable generation key"))
+}
+
+fn encoded_association(
+  association: generation.GenerationAssociation,
+) -> Result(BitArray, Error) {
+  generation.encode_association(association)
+  |> result.replace_error(Invalid("unencodable association"))
+}
+
+fn same_association(
+  left: generation.GenerationAssociation,
+  right: generation.GenerationAssociation,
+) -> Result(Nil, Error) {
+  case left == right {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  }
+}
+
+fn same_generation_key(
+  left: generation.GenerationKey,
+  right: generation.GenerationKey,
+) -> Result(Nil, Error) {
+  case left == right {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  }
+}
+
+fn content_digest(store: Store, bytes: BitArray) -> Result(BitArray, Error) {
+  case store.reports {
+    OrdinaryStore -> Error(Invalid("owner metadata hashing is not configured"))
+    ReportsEnabled(sha256) -> {
+      let digest = sha256(bytes)
+      use _ <- result.try(checked_digest(digest))
+      Ok(digest)
+    }
+  }
+}
+
+fn checked_digest(bytes: BitArray) -> Result(generation.Digest, Error) {
+  generation.digest(bytes)
+  |> result.replace_error(Invalid("invalid SHA-256 result"))
+}
+
+fn metadata_bytes(bytes: BitArray, maximum: Int) -> Result(Nil, Error) {
+  case
+    bit_array.bit_size(bytes) % 8 == 0
+    && bit_array.byte_size(bytes) > 0
+    && bit_array.byte_size(bytes) <= maximum
+  {
+    True -> Ok(Nil)
+    False -> Error(Capacity)
+  }
+}
+
+/// Admits a registered tool and its exact generation link in one transaction.
+/// The trusted profile is fixed before any effect, and retries retain original custody.
+///
+/// ## Examples
+///
+/// `admit_registered_fresh_with_profile(store, live, key, args, request, profile)` returns Fresh once.
+pub fn admit_registered_fresh_with_profile(
+  store: Store,
+  live: LiveGeneration,
+  key: ToolKey,
+  arguments: Payload,
+  request: Payload,
+  profile: FinalProfile,
+) -> Result(Admission, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.session(key)))
+  use Nil <- result.try(check_payload(store, arguments))
+  use Nil <- result.try(check_payload(store, request))
+  transaction(store, fn() {
+    use existing <- result.try(tool_row(store, key))
+    use Nil <- result.try(case existing {
+      None -> require_live(store, live)
+      Some(_) -> {
+        use associated <- result.try(tool_generation_inside(store, key))
+        same_association(associated, live.association)
+      }
+    })
+    use admission <- result.try(admit_tool_inside(
+      store,
+      key,
+      arguments,
+      request,
+      profile,
+    ))
+    use Nil <- result.try(retain_tool_generation(
+      store,
+      key,
+      live.association,
+      admission,
+    ))
+    Ok(admission)
+  })
+}
+
+/// Reads the exact original ToolKey association without admitting new work.
+///
+/// ## Examples
+///
+/// `tool_generation(store, key)` routes history to its original generation.
+pub fn tool_generation(
+  store: Store,
+  key: ToolKey,
+) -> Result(generation.GenerationAssociation, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.session(key)))
+  transaction(store, fn() { tool_generation_inside(store, key) })
+}
+
+fn tool_generation_inside(
+  store: Store,
+  key: ToolKey,
+) -> Result(generation.GenerationAssociation, Error) {
+  let address = remote_tool.address(key)
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use headers <- result.try(query(
+    store,
+    sql.owner_tool_generation_header(address),
+  ))
+  use header <- result.try(required_metadata_header(headers))
+  use Nil <- result.try(header_size(header.canonical_tool_size, 8192))
+  use Nil <- result.try(header_size(header.generation_key_size, 1024))
+  use <- bool.guard(
+    when: header.enrollment_digest_size != 32
+      || header.reserved_bytes
+      < string.byte_size(address)
+      + header.canonical_tool_size
+      + header.generation_key_size
+      + 160,
+    return: Error(Invalid("invalid tool generation header")),
+  )
+  use body <- result.try(
+    one(query(store, sql.owner_tool_generation_body(address))),
+  )
+  use Nil <- result.try(equal(body.canonical_tool, identity_bytes(key)))
+  use association <- result.try(association_from_link(
+    store,
+    body.generation_key,
+    body.enrollment_digest,
+  ))
+  use _ <- result.try(required_tool(store, key))
+  Ok(association)
+}
+
+fn retain_tool_generation(
+  store: Store,
+  key: ToolKey,
+  association: generation.GenerationAssociation,
+  admission: Admission,
+) -> Result(Nil, Error) {
+  case admission {
+    Retained -> {
+      use retained <- result.try(tool_generation_inside(store, key))
+      same_association(retained, association)
+    }
+    Fresh -> {
+      use key_bytes <- result.try(
+        encoded_key(generation.association_key(association)),
+      )
+      let identity = identity_bytes(key)
+      let reserved =
+        string.byte_size(remote_tool.address(key))
+        + bit_array.byte_size(identity)
+        + bit_array.byte_size(key_bytes)
+        + 160
+      use Nil <- result.try(reserve(store, 0, 0, reserved))
+      use Nil <- result.try(statement(
+        store,
+        sql.insert_owner_tool_generation(
+          remote_tool.address(key),
+          identity,
+          key_bytes,
+          generation.digest_bytes(generation.association_fields(association).1),
+          reserved,
+        ),
+      ))
+      use retained <- result.try(tool_generation_inside(store, key))
+      same_association(retained, association)
+    }
+  }
+}
+
+/// Atomically reserves native child bytes and their complete original generation link.
+///
+/// ## Examples
+///
+/// Exact retries of `admit_registered_child` return Retained, never send permission.
+pub fn admit_registered_child(
+  store: Store,
+  live: LiveGeneration,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  request: Payload,
+) -> Result(Admission, Error) {
+  use Nil <- result.try(check_payload(store, request))
+  registered_child(store, live, origin, request_id, request)
+}
+
+/// Atomically reserves complete workspace bytes and their original generation link.
+///
+/// ## Examples
+///
+/// `admit_registered_workspace_child` keeps the full configured completion allowance.
+pub fn admit_registered_workspace_child(
+  store: Store,
+  live: LiveGeneration,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  request: WorkspaceRequest,
+) -> Result(Admission, Error) {
+  use _ <- result.try(workspace_request(store.limits, request.payload.bytes))
+  registered_child(store, live, origin, request_id, request.payload)
+}
+
+fn registered_child(
+  store: Store,
+  live: LiveGeneration,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  request: Payload,
+) -> Result(Admission, Error) {
+  use Nil <- result.try(case remote_tool.child_fields(origin) {
+    remote_tool.ToolFields(_, _) -> Ok(Nil)
+    remote_tool.SystemFields(_, _, _) ->
+      Error(Invalid("registered system child requires retained intent"))
+  })
+  use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
+  transaction(store, fn() {
+    registered_child_inside(store, live, origin, request_id, request)
+  })
+}
+
+fn registered_child_inside(
+  store: Store,
+  live: LiveGeneration,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  request: Payload,
+) -> Result(Admission, Error) {
+  use Nil <- result.try(check_parent_generation(store, origin, live.association))
+  use existing <- result.try(child_row(store, origin))
+  use admission <- result.try(case existing {
+    None -> require_live(store, live) |> result.replace(Fresh)
+    Some(_) -> {
+      use associated <- result.try(child_generation_inside(store, origin))
+      use Nil <- result.try(same_association(associated, live.association))
+      Ok(Retained)
+    }
+  })
+  use Nil <- result.try(admit_child_inside(store, origin, request_id, request))
+  use Nil <- result.try(retain_child_generation(
+    store,
+    origin,
+    request_id,
+    request,
+    live.association,
+    admission,
+  ))
+  Ok(admission)
+}
+
+/// Reads the complete original ChildOrigin association including system provenance.
+///
+/// ## Examples
+///
+/// `child_generation(store, origin)` never infers a generation from scope or parent absence.
+pub fn child_generation(
+  store: Store,
+  origin: ChildOrigin,
+) -> Result(generation.GenerationAssociation, Error) {
+  use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
+  transaction(store, fn() { child_generation_inside(store, origin) })
+}
+
+fn child_generation_inside(
+  store: Store,
+  origin: ChildOrigin,
+) -> Result(generation.GenerationAssociation, Error) {
+  let address = remote_tool.child_address(origin)
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  use headers <- result.try(query(
+    store,
+    sql.owner_child_generation_header(address),
+  ))
+  use header <- result.try(required_metadata_header(headers))
+  use Nil <- result.try(header_size(header.canonical_origin_size, 8192))
+  use Nil <- result.try(header_size(header.generation_key_size, 1024))
+  use <- bool.guard(
+    when: header.enrollment_digest_size != 32
+      || header.input_digest_size != 32
+      || string.byte_size(header.original_request_id) != 36
+      || header.reserved_bytes
+      < string.byte_size(address)
+      + header.canonical_origin_size
+      + header.generation_key_size
+      + 228,
+    return: Error(Invalid("invalid child generation header")),
+  )
+  use body <- result.try(
+    one(query(store, sql.owner_child_generation_body(address))),
+  )
+  use original <- result.try(
+    remote_tool.decode_child(body.canonical_origin)
+    |> result.replace_error(Invalid("invalid complete child origin")),
+  )
+  use Nil <- result.try(equal_origin(original, origin))
+  use association <- result.try(association_from_link(
+    store,
+    body.generation_key,
+    body.enrollment_digest,
+  ))
+  use Nil <- result.try(check_parent_generation(store, origin, association))
+  use retained <- result.try(child_row(store, origin))
+  use #(child_header, value) <- result.try(option.to_result(retained, Missing))
+  use Nil <- result.try(equal_string(
+    child_header.request_id,
+    header.original_request_id,
+  ))
+  use Nil <- result.try(case child_header.state {
+    "frozen" -> Ok(Nil)
+    "retained" | "cancelled" -> {
+      use digest <- result.try(content_digest(store, value.request))
+      equal(digest, body.input_digest)
+    }
+    _ -> Error(Invalid("invalid child generation state"))
+  })
+  Ok(association)
+}
+
+fn check_parent_generation(
+  store: Store,
+  origin: ChildOrigin,
+  association: generation.GenerationAssociation,
+) -> Result(Nil, Error) {
+  case remote_tool.child_fields(origin) {
+    remote_tool.SystemFields(session, _, _) -> same_session(store, session)
+    remote_tool.ToolFields(key, _) -> {
+      use retained <- result.try(tool_generation_inside(store, key))
+      same_association(retained, association)
+    }
+  }
+}
+
+fn retain_child_generation(
+  store: Store,
+  origin: ChildOrigin,
+  request_id: EntryId,
+  request: Payload,
+  association: generation.GenerationAssociation,
+  admission: Admission,
+) -> Result(Nil, Error) {
+  case admission {
+    Retained -> {
+      use retained <- result.try(child_generation_inside(store, origin))
+      same_association(retained, association)
+    }
+    Fresh -> {
+      use canonical <- result.try(
+        remote_tool.encode_child(origin)
+        |> result.replace_error(Invalid("invalid child origin")),
+      )
+      use key <- result.try(
+        encoded_key(generation.association_key(association)),
+      )
+      use digest <- result.try(content_digest(store, request.bytes))
+      let address = remote_tool.child_address(origin)
+      let reserved =
+        string.byte_size(address)
+        + bit_array.byte_size(canonical)
+        + bit_array.byte_size(key)
+        + 228
+      use Nil <- result.try(reserve(store, 0, 0, reserved))
+      use Nil <- result.try(statement(
+        store,
+        sql.insert_owner_child_generation(
+          address,
+          canonical,
+          key,
+          generation.digest_bytes(generation.association_fields(association).1),
+          ids.entry_id_to_string(request_id),
+          digest,
+          reserved,
+        ),
+      ))
+      use retained <- result.try(child_generation_inside(store, origin))
+      same_association(retained, association)
+    }
+  }
+}
+
+fn association_from_link(
+  store: Store,
+  bytes: BitArray,
+  enrollment: BitArray,
+) -> Result(generation.GenerationAssociation, Error) {
+  use key <- result.try(
+    generation.decode_key(bytes)
+    |> result.replace_error(Invalid("invalid canonical linked generation")),
+  )
+  use associated <- result.try(read_generation(store, key))
+  use Nil <- result.try(equal(
+    generation.digest_bytes(generation.association_fields(associated).1),
+    enrollment,
+  ))
+  Ok(associated)
+}
+
+fn required_metadata_header(headers: List(a)) -> Result(a, Error) {
+  case headers {
+    [] -> Error(Missing)
+    [header] -> Ok(header)
+    [_, _, ..] -> Error(Invalid("duplicate owner metadata identity"))
+  }
+}
+
+fn equal_origin(left: ChildOrigin, right: ChildOrigin) -> Result(Nil, Error) {
+  case left == right {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  }
+}
+
+/// Admits a full outer service and its generation together before preparation.
+///
+/// ## Examples
+///
+/// `admit_registered_service_child(store, live, request)` binds its managed parent.
+pub fn admit_registered_service_child(
+  store: Store,
+  live: LiveGeneration,
+  request: ServiceRequest,
+) -> Result(Admission, Error) {
+  use Nil <- result.try(check_service_generation(request.key, live.association))
+  use Nil <- result.try(check_compile_predecessor(store, request.key))
+  admit_registered_workspace_child(
+    store,
+    live,
+    command.service_origin(request.key),
+    command.request_id(request.key),
+    request.request,
+  )
+}
+
+/// Retains an immutable offer only under its already linked original service.
+///
+/// ## Examples
+///
+/// A successor cannot supply `live` for an old offer's service.
+pub fn admit_registered_offer(
+  store: Store,
+  live: LiveGeneration,
+  original: ServiceRequest,
+  offer: CommandOfferPayload,
+) -> Result(Admission, Error) {
+  use _ <- result.try(command_offer_payload(
+    store.limits,
+    offer.ref,
+    offer.digest,
+    offer.bytes,
+  ))
+  transaction(store, fn() {
+    use associated <- result.try(child_generation_inside(
+      store,
+      command.service_origin(original.key),
+    ))
+    use Nil <- result.try(same_association(associated, live.association))
+    use existing <- result.try(offer_row(store, offer.ref))
+    use Nil <- result.try(case existing {
+      None -> require_live(store, live)
+      Some(_) -> Ok(Nil)
+    })
+    use admission <- result.try(admit_offer_inside(store, original, offer))
+    use retained <- result.try(offer_row(store, offer.ref))
+    use #(state, value) <- result.try(option.to_result(retained, Missing))
+    use <- bool.guard(when: state != "retained", return: Error(Frozen))
+    use Nil <- result.try(equal_offer(value, offer))
+    Ok(admission)
+  })
+}
+
+/// Joins complete accepted offer/native bytes and generation in one transaction.
+///
+/// ## Examples
+///
+/// Exact retries preserve the original cleared UUID and return Retained.
+pub fn admit_registered_command_child(
+  store: Store,
+  live: LiveGeneration,
+  accepted: CommandOfferPayload,
+  candidate: EntryId,
+  request: Payload,
+) -> Result(#(Admission, EntryId, Payload), Error) {
+  use Nil <- result.try(check_payload(store, request))
+  use _ <- result.try(command_offer_payload(
+    store.limits,
+    accepted.ref,
+    accepted.digest,
+    accepted.bytes,
+  ))
+  use envelope <- result.try(command_envelope(store, accepted, request))
+  transaction(store, fn() {
+    let service = command.service(accepted.ref)
+    use associated <- result.try(child_generation_inside(
+      store,
+      command.service_origin(service),
+    ))
+    use Nil <- result.try(same_association(associated, live.association))
+    let origin = command.native_origin(accepted.ref)
+    use existing <- result.try(child_row(store, origin))
+    use admission <- result.try(case existing {
+      None -> require_live(store, live) |> result.replace(Fresh)
+      Some(_) -> {
+        use associated <- result.try(child_generation_inside(store, origin))
+        use Nil <- result.try(same_association(associated, live.association))
+        Ok(Retained)
+      }
+    })
+    use #(id, payload) <- result.try(admit_command_inside(
+      store,
+      accepted,
+      candidate,
+      request,
+      envelope,
+    ))
+    use Nil <- result.try(retain_child_generation(
+      store,
+      origin,
+      id,
+      envelope,
+      live.association,
+      admission,
+    ))
+    Ok(#(admission, id, payload))
+  })
+}
+
+/// Constructs one trusted durable system work intent using original live custody.
+/// Service selection and work address come from trusted callers, never providers.
+///
+/// ## Examples
+///
+/// `system_intent(live, durable_address, service, op, phase, original_id, bytes)` mints nothing.
+pub fn system_intent(
+  live: LiveGeneration,
+  work_address: String,
+  service: SystemService,
+  operation: ids.OpId,
+  step: String,
+  request_id: EntryId,
+  bytes: BitArray,
+) -> Result(SystemIntent, Error) {
+  checked_system_intent(
+    live.association,
+    Some(live),
+    work_address,
+    service,
+    operation,
+    step,
+    request_id,
+    bytes,
+  )
+}
+
+/// Reconstructs exact historical intent metadata while withholding live authority.
+/// Every supplied original field must match persisted evidence before use.
+///
+/// ## Examples
+///
+/// A historical intent with no child returns Frozen from `admit_system_child`.
+pub fn historical_system_intent(
+  association: generation.GenerationAssociation,
+  work_address: String,
+  service: SystemService,
+  operation: ids.OpId,
+  step: String,
+  request_id: EntryId,
+  bytes: BitArray,
+) -> Result(SystemIntent, Error) {
+  checked_system_intent(
+    association,
+    None,
+    work_address,
+    service,
+    operation,
+    step,
+    request_id,
+    bytes,
+  )
+}
+
+fn checked_system_intent(
+  association: generation.GenerationAssociation,
+  live: Option(LiveGeneration),
+  work_address: String,
+  service: SystemService,
+  operation: ids.OpId,
+  step: String,
+  request_id: EntryId,
+  bytes: BitArray,
+) -> Result(SystemIntent, Error) {
+  use <- bool.guard(
+    when: string.byte_size(work_address) < 1
+      || string.byte_size(work_address) > 1024
+      || string.contains(work_address, "\u{0000}"),
+    return: Error(Invalid("invalid retained system work address")),
+  )
+  use _ <- result.try(
+    workspace.step(step)
+    |> result.replace_error(Invalid("invalid system intent phase")),
+  )
+  use <- bool.guard(
+    when: string.byte_size(step) > 128,
+    return: Error(Invalid("system intent phase exceeds bound")),
+  )
+  use Nil <- result.try(metadata_bytes(bytes, 8192))
+  Ok(SystemIntent(
+    association,
+    live,
+    work_address,
+    service,
+    operation,
+    step,
+    request_id,
+    bytes,
+  ))
+}
+
+/// Retains original intent UUID and eventual child capacity before any allocation.
+/// The original service counter and its metadata remain lifetime charged.
+///
+/// ## Examples
+///
+/// Exact retries of `retain_system_intent` retain one slot and one UUID.
+pub fn retain_system_intent(
+  store: Store,
+  intent: SystemIntent,
+) -> Result(IntentReadback, Error) {
+  use Nil <- result.try(check_association_pin(store, intent.association))
+  use Nil <- result.try(
+    transaction(store, fn() {
+      use existing <- result.try(system_intent_exists(store, intent))
+      case existing {
+        True -> Ok(Nil)
+        False -> {
+          use live <- result.try(option.to_result(intent.live, Frozen))
+          use Nil <- result.try(require_live(store, live))
+          let service = system_service_name(intent.service)
+          use Nil <- result.try(retain_system_counter(store, service))
+          use ordinal <- result.try(system_ordinal(store, service))
+          use pending <- result.try(
+            one(query(store, sql.owner_pending_system_count(service))),
+          )
+          use <- bool.guard(
+            when: pending.pending < 0 || ordinal + pending.pending >= 4096,
+            return: Error(Capacity),
+          )
+          use template <- result.try(
+            remote_tool.system_child(store.session, service, 0)
+            |> result.map_error(Invalid),
+          )
+          use count <- result.try(
+            one(query(
+              store,
+              sql.owner_child_count(remote_tool.child_parent(template)),
+            )),
+          )
+          use <- bool.guard(
+            when: count.children < 0 || count.children + pending.pending >= 64,
+            return: Error(Capacity),
+          )
+          use key <- result.try(
+            encoded_key(generation.association_key(intent.association)),
+          )
+          let reserved =
+            system_intent_charge(intent, bit_array.byte_size(key)) + 2048
+          use Nil <- result.try(reserve(store, 0, 1, reserved))
+          statement(
+            store,
+            sql.insert_owner_system_intent(
+              system_intent_address(intent),
+              key,
+              service,
+              ids.op_id_to_string(intent.operation),
+              intent.step,
+              ids.entry_id_to_string(intent.request_id),
+              intent.bytes,
+              reserved,
+            ),
+          )
+        }
+      }
+    }),
+  )
+  read_system_intent(store, intent)
+}
+
+/// Verifies every immutable intent field after COMMIT without allocating identity.
+/// Historical intent readbacks carry no live generation permission.
+///
+/// ## Examples
+///
+/// `read_system_intent(store, original)` is the sole unknown-COMMIT recovery path.
+pub fn read_system_intent(
+  store: Store,
+  intent: SystemIntent,
+) -> Result(IntentReadback, Error) {
+  use exists <- result.try(system_intent_exists(store, intent))
+  case exists {
+    True -> Ok(IntentReadback(intent))
+    False -> Error(Missing)
+  }
+}
+
+/// Projects the original work address, fixed family, operation, phase and UUID.
+///
+/// ## Examples
+///
+/// `system_intent_fields(readback)` preserves the original UUID on every retry.
+pub fn system_intent_fields(
+  readback: IntentReadback,
+) -> #(
+  generation.GenerationAssociation,
+  String,
+  SystemService,
+  ids.OpId,
+  String,
+  EntryId,
+  BitArray,
+) {
+  let intent = readback.intent
+  #(
+    intent.association,
+    intent.work_address,
+    intent.service,
+    intent.operation,
+    intent.step,
+    intent.request_id,
+    intent.bytes,
+  )
+}
+
+fn system_intent_exists(
+  store: Store,
+  intent: SystemIntent,
+) -> Result(Bool, Error) {
+  use Nil <- result.try(reserve(store, 0, 0, 0))
+  let address = system_intent_address(intent)
+  use headers <- result.try(query(
+    store,
+    sql.owner_system_intent_header(address),
+  ))
+  case headers {
+    [] -> Ok(False)
+    [header] -> {
+      use Nil <- result.try(header_size(header.generation_key_size, 1024))
+      use Nil <- result.try(header_size(header.intent_bytes_size, 8192))
+      use child <- result.try(
+        one(query(store, sql.owner_system_child_header(address))),
+      )
+      use Nil <- result.try(check_intent_child_header(child))
+      let link_charge = case child.child_address {
+        "" -> 2048
+        _ ->
+          string.byte_size(child.child_address)
+          + child.origin_size
+          + string.byte_size(child.child_profile)
+      }
+      use <- bool.guard(
+        when: header.reserved_bytes
+          < system_intent_charge(intent, header.generation_key_size)
+          - bit_array.byte_size(intent.bytes)
+          + header.intent_bytes_size
+          + link_charge,
+        return: Error(Invalid("invalid system intent reservation")),
+      )
+      use Nil <- result.try(equal_string(
+        header.service,
+        system_service_name(intent.service),
+      ))
+      use Nil <- result.try(equal_string(
+        header.operation,
+        ids.op_id_to_string(intent.operation),
+      ))
+      use Nil <- result.try(equal_string(header.step, intent.step))
+      use Nil <- result.try(equal_string(
+        header.request_id,
+        ids.entry_id_to_string(intent.request_id),
+      ))
+      use body <- result.try(
+        one(query(store, sql.owner_system_intent_body(address))),
+      )
+      use key <- result.try(
+        encoded_key(generation.association_key(intent.association)),
+      )
+      use Nil <- result.try(equal(body.generation_key, key))
+      use Nil <- result.try(equal(body.intent_bytes, intent.bytes))
+      use association <- result.try(read_generation(
+        store,
+        generation.association_key(intent.association),
+      ))
+      use Nil <- result.try(same_association(association, intent.association))
+      use _ <- result.try(system_ordinal(
+        store,
+        system_service_name(intent.service),
+      ))
+      Ok(True)
+    }
+    [_, _, ..] -> Error(Invalid("duplicate owner system intent"))
+  }
+}
+
+/// Allocates one lifetime system ordinal and commits child/link/counter together.
+/// The callback is a trusted pure encoder; it must perform no I/O or effects.
+/// Only the original successful insertion transaction returns Fresh.
+///
+/// ## Examples
+///
+/// Exact retries of `admit_system_child` compare full built bytes and return Retained.
+pub fn admit_system_child(
+  store: Store,
+  readback: IntentReadback,
+  build: fn(ChildOrigin, EntryId) -> Result(SystemReservationPayload, Error),
+) -> Result(SystemReservationReadback, Error) {
+  let intent = readback.intent
+  use admitted <- result.try(
+    transaction(store, fn() {
+      use _ <- result.try(read_system_intent(store, intent))
+      use child <- result.try(
+        one(query(
+          store,
+          sql.owner_system_child_header(system_intent_address(intent)),
+        )),
+      )
+      use Nil <- result.try(check_intent_child_header(child))
+      case child.child_address {
+        "" -> insert_system_child(store, intent, build)
+        _ -> retained_system_child(store, intent, child.child_address, build)
+      }
+    }),
+  )
+  let payload = admitted.payload
+  use committed <- result.try(
+    retained_system_child(
+      store,
+      intent,
+      remote_tool.child_address(admitted.origin),
+      fn(_, _) { Ok(payload) },
+    ),
+  )
+  use Nil <- result.try(equal_origin(committed.origin, admitted.origin))
+  Ok(admitted)
+}
+
+fn insert_system_child(
+  store: Store,
+  intent: SystemIntent,
+  build: fn(ChildOrigin, EntryId) -> Result(SystemReservationPayload, Error),
+) -> Result(SystemReservationReadback, Error) {
+  use live <- result.try(option.to_result(intent.live, Frozen))
+  use Nil <- result.try(require_live(store, live))
+  let service = system_service_name(intent.service)
+  use ordinal <- result.try(system_ordinal(store, service))
+  use <- bool.guard(when: ordinal >= 4096, return: Error(Capacity))
+  use origin <- result.try(
+    remote_tool.system_child(store.session, service, ordinal)
+    |> result.map_error(Invalid),
+  )
+  use existing <- result.try(child_row(store, origin))
+  use <- bool.guard(when: existing != None, return: Error(Conflict))
+  use built <- result.try(build(origin, intent.request_id))
+  use request <- result.try(system_request(store, built))
+  use canonical <- result.try(
+    remote_tool.encode_child(origin)
+    |> result.replace_error(Invalid("invalid system origin")),
+  )
+
+  use key_bytes <- result.try(
+    encoded_key(generation.association_key(intent.association)),
+  )
+  let address_size = string.byte_size(remote_tool.child_address(origin))
+  let origin_size = bit_array.byte_size(canonical)
+  let transfer =
+    2
+    * { address_size + origin_size }
+    + bit_array.byte_size(key_bytes)
+    + 228
+    + string.byte_size(system_payload_profile(built))
+  use <- bool.guard(when: transfer > 2048, return: Error(Capacity))
+
+  // Removing the pending slot and link allowance precedes insertion within the
+  // same transaction. Rollback restores both on every later failure.
+  use Nil <- result.try(statement(
+    store,
+    sql.attach_owner_system_child(
+      Some(remote_tool.child_address(origin)),
+      Some(canonical),
+      Some(system_payload_profile(built)),
+      system_intent_address(intent),
+    ),
+  ))
+  use Nil <- result.try(admit_child_inside(
+    store,
+    origin,
+    intent.request_id,
+    request,
+  ))
+  use Nil <- result.try(retain_child_generation(
+    store,
+    origin,
+    intent.request_id,
+    request,
+    intent.association,
+    Fresh,
+  ))
+  use Nil <- result.try(statement(
+    store,
+    sql.advance_owner_system_ordinal(ordinal + 1, service, ordinal),
+  ))
+  use next <- result.try(system_ordinal(store, service))
+  use <- bool.guard(
+    when: next != ordinal + 1,
+    return: Error(Invalid("system ordinal update was not applied")),
+  )
+  use retained <- result.try(retained_system_child(
+    store,
+    intent,
+    remote_tool.child_address(origin),
+    build,
+  ))
+  Ok(SystemReservationReadback(
+    Fresh,
+    retained.origin,
+    retained.request_id,
+    retained.payload,
+    retained.generation,
+  ))
+}
+
+fn retained_system_child(
+  store: Store,
+  intent: SystemIntent,
+  address: String,
+  build: fn(ChildOrigin, EntryId) -> Result(SystemReservationPayload, Error),
+) -> Result(SystemReservationReadback, Error) {
+  use body <- result.try(
+    one(query(store, sql.owner_system_child_body(system_intent_address(intent)))),
+  )
+  use bytes <- result.try(option.to_result(body.canonical_origin, Missing))
+  use origin <- result.try(
+    remote_tool.decode_child(bytes)
+    |> result.replace_error(Invalid("invalid retained system child")),
+  )
+  use Nil <- result.try(equal_string(remote_tool.child_address(origin), address))
+  use Nil <- result.try(case remote_tool.child_fields(origin) {
+    remote_tool.SystemFields(session, service, ordinal) -> {
+      use Nil <- result.try(same_session(store, session))
+      use Nil <- result.try(equal_string(
+        service,
+        system_service_name(intent.service),
+      ))
+      use next <- result.try(system_ordinal(store, service))
+      case ordinal < next {
+        True -> Ok(Nil)
+        False -> Error(Invalid("system child ordinal is not allocated"))
+      }
+    }
+    remote_tool.ToolFields(_, _) -> Error(Conflict)
+  })
+  use associated <- result.try(child_generation_inside(store, origin))
+  use Nil <- result.try(same_association(associated, intent.association))
+  use built <- result.try(build(origin, intent.request_id))
+  use stored <- result.try(
+    one(query(
+      store,
+      sql.owner_system_child_header(system_intent_address(intent)),
+    )),
+  )
+  use Nil <- result.try(equal_string(
+    stored.child_profile,
+    system_payload_profile(built),
+  ))
+  use request <- result.try(system_request(store, built))
+  use retained <- result.try(child_row(store, origin))
+  use #(header, value) <- result.try(option.to_result(retained, Missing))
+  use <- bool.guard(when: header.state == "frozen", return: Error(Frozen))
+  use Nil <- result.try(equal_string(
+    header.request_id,
+    ids.entry_id_to_string(intent.request_id),
+  ))
+  use Nil <- result.try(equal(value.request, request.bytes))
+  Ok(SystemReservationReadback(
+    Retained,
+    origin,
+    intent.request_id,
+    built,
+    generation.association_key(intent.association),
+  ))
+}
+
+fn system_request(
+  store: Store,
+  value: SystemReservationPayload,
+) -> Result(Payload, Error) {
+  case value {
+    NativeSystem(payload) -> {
+      use Nil <- result.try(check_payload(store, payload))
+      Ok(payload)
+    }
+    WorkspaceSystem(request) -> {
+      use _ <- result.try(workspace_request(store.limits, request.payload.bytes))
+      Ok(request.payload)
+    }
+  }
+}
+
+fn check_intent_child_header(
+  header: sql.OwnerSystemChildHeader,
+) -> Result(Nil, Error) {
+  case header.child_address {
+    "" if header.origin_size == 0 && header.child_profile == "" -> Ok(Nil)
+    "invalid" -> Error(Invalid("invalid system intent child address"))
+    _ -> {
+      use Nil <- result.try(header_size(header.origin_size, 8192))
+      use <- bool.guard(
+        when: header.origin_size == 0
+          || {
+          header.child_profile != "native"
+          && header.child_profile != "workspace"
+        },
+        return: Error(Invalid("missing system intent origin")),
+      )
+      Ok(Nil)
+    }
+  }
+}
+
+fn retain_system_counter(store: Store, service: String) -> Result(Nil, Error) {
+  use rows <- result.try(query(store, sql.owner_system_ordinal(service)))
+  case rows {
+    [] -> {
+      let reserved = string.byte_size(service) + 144
+      use Nil <- result.try(reserve(store, 0, 0, reserved))
+      statement(store, sql.insert_owner_system_ordinal(service, reserved))
+    }
+    [_] -> system_ordinal(store, service) |> result.replace(Nil)
+    [_, _, ..] -> Error(Invalid("duplicate system ordinal"))
+  }
+}
+
+fn system_ordinal(store: Store, service: String) -> Result(Int, Error) {
+  use row <- result.try(one(query(store, sql.owner_system_ordinal(service))))
+  use <- bool.guard(
+    when: row.next_ordinal < 0
+      || row.next_ordinal > 4096
+      || row.reserved_bytes < string.byte_size(service) + 144,
+    return: Error(Invalid("invalid lifetime system ordinal")),
+  )
+  Ok(row.next_ordinal)
+}
+
+fn system_intent_charge(intent: SystemIntent, key_size: Int) -> Int {
+  string.byte_size(system_intent_address(intent))
+  + key_size
+  + string.byte_size(system_service_name(intent.service))
+  + 36
+  + string.byte_size(intent.step)
+  + 36
+  + bit_array.byte_size(intent.bytes)
+  + 128
+}
+
+fn system_intent_address(intent: SystemIntent) -> String {
+  let #(scope, descriptor, number) =
+    generation.key_fields(generation.association_key(intent.association))
+  let #(session, binding) = workspace.scope_fields(scope)
+  json.to_string(
+    json.Array([
+      json.String("owner-system-intent/1"),
+      json.String(intent.work_address),
+      json.String(ids.session_id_to_string(session)),
+      workspace.encode_binding(workspace.Registered(binding)),
+      json.String(
+        generation.digest_bytes(descriptor) |> bit_array.base16_encode,
+      ),
+      json.Int(number),
+      json.String(system_service_name(intent.service)),
+    ]),
+  )
+}
+
+fn system_service_name(service: SystemService) -> String {
+  case service {
+    CommandPreparation -> "command-preparation"
+    Compiler -> "compiler"
+    SatelliteLaunch -> "satellite-launch"
+    LanguageServer -> "lsp"
+    WorktreeObservation -> "worktree-observation"
+    WorkspaceAdministration -> "workspace-administration"
+  }
 }
 
 /// Checks finite per-session row, byte and per-payload ceilings.
@@ -436,51 +2327,62 @@ fn admit_once(
   request: Payload,
   profile: FinalProfile,
 ) -> Result(Admission, Error) {
+  use Nil <- result.try(local_admission_allowed(store))
   use Nil <- result.try(same_session(store, remote_tool.session(key)))
   use Nil <- result.try(check_payload(store, arguments))
   use Nil <- result.try(check_payload(store, request))
   transaction(store, fn() {
-    use existing <- result.try(tool_row(store, key))
-    case existing {
-      None -> {
-        let identity = identity_bytes(key)
-        let reserved =
-          bit_array.byte_size(identity)
-          + string.byte_size(remote_tool.address(key))
-          + bit_array.byte_size(arguments.bytes)
-          + bit_array.byte_size(request.bytes)
-          + final_allowance(store, profile)
-          + 128
-        use Nil <- result.try(report_enabled(store, profile))
-        use Nil <- result.try(reserve(store, 1, 0, reserved))
-        statement(
-          store,
-          sql.insert_owner_tool(
-            remote_tool.address(key),
-            identity,
-            ids.entry_id_to_string(remote_tool.result_entry(key)),
-            arguments.bytes,
-            request.bytes,
-            profile_name(profile),
-            final_allowance(store, profile),
-            reserved,
-          ),
-        )
-        |> result.replace(Fresh)
-      }
-      Some(#("frozen", _row)) -> Error(Frozen)
-      Some(#("retained", row)) -> {
-        use retained_profile <- result.try(final_profile(store, key))
-        use <- bool.guard(
-          when: retained_profile != profile,
-          return: Error(Conflict),
-        )
-        use Nil <- result.try(equal(row.arguments, arguments.bytes))
-        equal(row.request, request.bytes) |> result.replace(Retained)
-      }
-      Some(#(_, _)) -> Error(Invalid("invalid owner tool state"))
-    }
+    admit_tool_inside(store, key, arguments, request, profile)
   })
+}
+
+fn admit_tool_inside(
+  store: Store,
+  key: ToolKey,
+  arguments: Payload,
+  request: Payload,
+  profile: FinalProfile,
+) -> Result(Admission, Error) {
+  use existing <- result.try(tool_row(store, key))
+  case existing {
+    None -> {
+      let identity = identity_bytes(key)
+      let reserved =
+        bit_array.byte_size(identity)
+        + string.byte_size(remote_tool.address(key))
+        + bit_array.byte_size(arguments.bytes)
+        + bit_array.byte_size(request.bytes)
+        + final_allowance(store, profile)
+        + 128
+      use Nil <- result.try(report_enabled(store, profile))
+      use Nil <- result.try(reserve(store, 1, 0, reserved))
+      statement(
+        store,
+        sql.insert_owner_tool(
+          remote_tool.address(key),
+          identity,
+          ids.entry_id_to_string(remote_tool.result_entry(key)),
+          arguments.bytes,
+          request.bytes,
+          profile_name(profile),
+          final_allowance(store, profile),
+          reserved,
+        ),
+      )
+      |> result.replace(Fresh)
+    }
+    Some(#("frozen", _row)) -> Error(Frozen)
+    Some(#("retained", row)) -> {
+      use retained_profile <- result.try(final_profile(store, key))
+      use <- bool.guard(
+        when: retained_profile != profile,
+        return: Error(Conflict),
+      )
+      use Nil <- result.try(equal(row.arguments, arguments.bytes))
+      equal(row.request, request.bytes) |> result.replace(Retained)
+    }
+    Some(#(_, _)) -> Error(Invalid("invalid owner tool state"))
+  }
 }
 
 /// Atomically reserves once and reports whether a runner may begin.
@@ -703,6 +2605,7 @@ fn admit_child_payload(
   request_id: EntryId,
   request: Payload,
 ) -> Result(Nil, Error) {
+  use Nil <- result.try(local_admission_allowed(store))
   use Nil <- result.try(same_session(store, remote_tool.child_session(origin)))
   transaction(store, fn() {
     admit_child_inside(store, origin, request_id, request)
@@ -1156,6 +3059,7 @@ pub fn admit_offer(
   original: ServiceRequest,
   offer: CommandOfferPayload,
 ) -> Result(Admission, Error) {
+  use Nil <- result.try(local_admission_allowed(store))
   use _ <- result.try(command_offer_payload(
     store.limits,
     offer.ref,
@@ -1166,60 +3070,63 @@ pub fn admit_offer(
     store,
     remote_tool.session(command.parent(original.key)),
   ))
-  transaction(store, fn() {
-    use Nil <- result.try(equal_service(
-      original.key,
-      command.service(offer.ref),
-    ))
-    use retained <- result.try(service_inside(store, original.key))
-    use Nil <- result.try(equal(
-      service_content(retained.0),
-      service_content(original),
-    ))
-    use Nil <- result.try(not_cancelled(
-      store,
-      command.service_origin(original.key),
-    ))
-    use existing <- result.try(offer_row(store, offer.ref))
-    case existing {
-      Some(#(state, stored)) -> {
-        use <- bool.guard(when: state != "retained", return: Error(Frozen))
-        use Nil <- result.try(equal_offer(stored, offer))
-        Ok(Retained)
-      }
-      None -> {
-        let parent = remote_tool.address(command.parent(original.key))
-        use count <- result.try(
-          one(query(store, sql.owner_command_offer_count(parent))),
-        )
-        use <- bool.guard(when: count.offers >= 3, return: Error(Capacity))
-        let identity = ref_bytes(offer.ref)
-        let reserved =
-          offer_reservation(
-            offer.ref,
-            offer.digest,
-            bit_array.byte_size(identity),
-            offer_allowance(store),
-          )
-        use Nil <- result.try(reserve_offer(store, reserved))
-        use Nil <- result.try(statement(
-          store,
-          sql.insert_owner_command_offer(
-            command.command_address(offer.ref),
-            parent,
-            remote_tool.child_address(command.service_origin(original.key)),
-            ids.entry_id_to_string(command.request_id(original.key)),
-            identity,
-            remote_tool.child_address(command.native_origin(offer.ref)),
-            offer.digest,
-            offer.bytes,
-            reserved,
-          ),
-        ))
-        Ok(Fresh)
-      }
+  transaction(store, fn() { admit_offer_inside(store, original, offer) })
+}
+
+fn admit_offer_inside(
+  store: Store,
+  original: ServiceRequest,
+  offer: CommandOfferPayload,
+) -> Result(Admission, Error) {
+  use Nil <- result.try(equal_service(original.key, command.service(offer.ref)))
+  use retained <- result.try(service_inside(store, original.key))
+  use Nil <- result.try(equal(
+    service_content(retained.0),
+    service_content(original),
+  ))
+  use Nil <- result.try(not_cancelled(
+    store,
+    command.service_origin(original.key),
+  ))
+  use existing <- result.try(offer_row(store, offer.ref))
+  case existing {
+    Some(#(state, stored)) -> {
+      use <- bool.guard(when: state != "retained", return: Error(Frozen))
+      use Nil <- result.try(equal_offer(stored, offer))
+      Ok(Retained)
     }
-  })
+    None -> {
+      let parent = remote_tool.address(command.parent(original.key))
+      use count <- result.try(
+        one(query(store, sql.owner_command_offer_count(parent))),
+      )
+      use <- bool.guard(when: count.offers >= 3, return: Error(Capacity))
+      let identity = ref_bytes(offer.ref)
+      let reserved =
+        offer_reservation(
+          offer.ref,
+          offer.digest,
+          bit_array.byte_size(identity),
+          offer_allowance(store),
+        )
+      use Nil <- result.try(reserve_offer(store, reserved))
+      use Nil <- result.try(statement(
+        store,
+        sql.insert_owner_command_offer(
+          command.command_address(offer.ref),
+          parent,
+          remote_tool.child_address(command.service_origin(original.key)),
+          ids.entry_id_to_string(command.request_id(original.key)),
+          identity,
+          remote_tool.child_address(command.native_origin(offer.ref)),
+          offer.digest,
+          offer.bytes,
+          reserved,
+        ),
+      ))
+      Ok(Fresh)
+    }
+  }
 }
 
 /// Reads original immutable offer evidence after checking header reservations.
@@ -1355,6 +3262,7 @@ pub fn admit_command_child(
   candidate: EntryId,
   request: Payload,
 ) -> Result(#(EntryId, Payload), Error) {
+  use Nil <- result.try(local_admission_allowed(store))
   use Nil <- result.try(check_payload(store, request))
   use _ <- result.try(command_offer_payload(
     store.limits,
@@ -1369,30 +3277,38 @@ pub fn admit_command_child(
   ))
   use envelope <- result.try(command_envelope(store, accepted, request))
   transaction(store, fn() {
-    use _ <- result.try(service_inside(store, key))
-    use Nil <- result.try(not_cancelled(store, command.service_origin(key)))
-    use row <- result.try(offer_row(store, accepted.ref))
-    use #(state, retained) <- result.try(option.to_result(row, Missing))
-    use <- bool.guard(when: state != "retained", return: Error(Frozen))
-    use Nil <- result.try(equal_offer(retained, accepted))
-    let origin = command.native_origin(accepted.ref)
-    use existing <- result.try(child_row(store, origin))
-    let id = case existing {
-      None -> Ok(candidate)
-      Some(#(header, value)) -> {
-        use <- bool.guard(
-          when: header.state != "retained",
-          return: Error(Frozen),
-        )
-        use Nil <- result.try(equal(value.request, envelope.bytes))
-        ids.parse_entry_id(header.request_id)
-        |> result.replace_error(Invalid("invalid native UUID"))
-      }
-    }
-    use id <- result.try(id)
-    use Nil <- result.try(admit_child_inside(store, origin, id, envelope))
-    Ok(#(id, request))
+    admit_command_inside(store, accepted, candidate, request, envelope)
   })
+}
+
+fn admit_command_inside(
+  store: Store,
+  accepted: CommandOfferPayload,
+  candidate: EntryId,
+  request: Payload,
+  envelope: Payload,
+) -> Result(#(EntryId, Payload), Error) {
+  let key = command.service(accepted.ref)
+  use _ <- result.try(service_inside(store, key))
+  use Nil <- result.try(not_cancelled(store, command.service_origin(key)))
+  use row <- result.try(offer_row(store, accepted.ref))
+  use #(state, retained) <- result.try(option.to_result(row, Missing))
+  use <- bool.guard(when: state != "retained", return: Error(Frozen))
+  use Nil <- result.try(equal_offer(retained, accepted))
+  let origin = command.native_origin(accepted.ref)
+  use existing <- result.try(child_row(store, origin))
+  let id = case existing {
+    None -> Ok(candidate)
+    Some(#(header, value)) -> {
+      use <- bool.guard(when: header.state != "retained", return: Error(Frozen))
+      use Nil <- result.try(equal(value.request, envelope.bytes))
+      ids.parse_entry_id(header.request_id)
+      |> result.replace_error(Invalid("invalid native UUID"))
+    }
+  }
+  use id <- result.try(id)
+  use Nil <- result.try(admit_child_inside(store, origin, id, envelope))
+  Ok(#(id, request))
 }
 
 /// Reads the complete original native content and its separately retained receipt.
@@ -1841,7 +3757,32 @@ fn initialize(store: Store) -> Result(Nil, Error) {
   use application <- result.try(pragma(store, "PRAGMA application_id"))
   use version <- result.try(pragma(store, "PRAGMA user_version"))
   use Nil <- result.try(case application, version {
-    1_281_253_199, 5 -> Ok(Nil)
+    1_281_253_199, 6 -> Ok(Nil)
+    1_281_253_199, 5 ->
+      transaction(store, fn() {
+        use Nil <- result.try(check_metadata(store))
+        use addition <- result.try(
+          string.split(
+            owner_custody_schema.schema,
+            "-- Registered generation custody.\n",
+          )
+          |> list.last
+          |> result.replace_error(Invalid("missing format-six migration")),
+        )
+        use Nil <- result.try(execute(store, addition))
+        use Nil <- result.try(reserve(store, 0, 0, 0))
+        use Nil <- result.try(validate_header_rows(
+          store,
+          "",
+          store.limits.tools,
+        ))
+        use Nil <- result.try(validate_report_rows(
+          store,
+          "",
+          store.limits.tools,
+        ))
+        execute(store, "PRAGMA user_version=6")
+      })
     0, 0 -> {
       use tables <- result.try(pragma(store, "PRAGMA schema_version"))
       use <- bool.guard(
@@ -1862,24 +3803,13 @@ fn initialize(store: Store) -> Result(Nil, Error) {
         ))
         execute(
           store,
-          "PRAGMA application_id=1281253199; PRAGMA user_version=5",
+          "PRAGMA application_id=1281253199; PRAGMA user_version=6",
         )
       })
     }
     _, _ -> Error(Invalid("unsupported owner custody database"))
   })
-  use metadata <- result.try(one(query(store, sql.owner_custody_metadata())))
-  use <- bool.guard(
-    when: metadata
-      != sql.OwnerCustodyMetadata(
-      ids.session_id_to_string(store.session),
-      store.limits.tools,
-      store.limits.children,
-      store.limits.bytes,
-      store.limits.payload,
-    ),
-    return: Error(Conflict),
-  )
+  use Nil <- result.try(check_metadata(store))
   use Nil <- result.try(reserve(store, 0, 0, 0))
   use Nil <- result.try(
     sqlite_policy.configure_database(store.connection, options)
@@ -1892,7 +3822,8 @@ fn initialize(store: Store) -> Result(Nil, Error) {
     return: Error(Invalid("owner requires synchronous FULL")),
   )
   use Nil <- result.try(validate_header_rows(store, "", store.limits.tools))
-  validate_report_rows(store, "", store.limits.tools)
+  use Nil <- result.try(validate_report_rows(store, "", store.limits.tools))
+  validate_registered_rows(store)
 }
 
 // The budget is checked before header or payload reads. Final and terminal
@@ -2695,4 +4626,346 @@ fn check_compile_predecessor(
       option.to_result(retained.1, Conflict) |> result.replace(Nil)
     }
   }
+}
+
+fn local_admission_allowed(store: Store) -> Result(Nil, Error) {
+  use headers <- result.try(query(store, sql.owner_enrollment_header(1)))
+  case headers {
+    [] -> Ok(Nil)
+    [_] ->
+      Error(Invalid("registered admission requires original live generation"))
+    [_, _, ..] -> Error(Invalid("duplicate owner enrollment"))
+  }
+}
+
+fn system_payload_profile(value: SystemReservationPayload) -> String {
+  case value {
+    NativeSystem(_) -> "native"
+    WorkspaceSystem(_) -> "workspace"
+  }
+}
+
+// Startup checks every scalar header before walking bounded metadata rows.
+// Canonical identity/digest verification then advances one indexed key at a time.
+fn validate_registered_rows(store: Store) -> Result(Nil, Error) {
+  use invalid <- result.try(
+    one(query(store, sql.owner_registered_invalid_headers())),
+  )
+  use inventory <- result.try(
+    one(query(store, sql.owner_generation_inventory())),
+  )
+  use <- bool.guard(
+    when: invalid.invalid != 0
+      || inventory.associations < 0
+      || inventory.associations > 4096
+      || inventory.closes < 0
+      || inventory.closes > inventory.associations
+      || inventory.tools < 0
+      || inventory.tools > store.limits.tools
+      || inventory.children < 0
+      || inventory.children > store.limits.children
+      || inventory.intents < 0
+      || inventory.intents > store.limits.children,
+    return: Error(Invalid("invalid registered custody inventory")),
+  )
+  use _ <- result.try(enrollment_optional(store))
+  use Nil <- result.try(validate_generation_inventory(store, <<>>, 4096))
+  use Nil <- result.try(validate_close_inventory(store, <<>>, 4096))
+  use Nil <- result.try(validate_tool_link_inventory(
+    store,
+    "",
+    store.limits.tools,
+  ))
+  use Nil <- result.try(validate_child_link_inventory(
+    store,
+    "",
+    store.limits.children,
+  ))
+  validate_intent_inventory(store, "", store.limits.children)
+}
+
+fn validate_generation_inventory(
+  store: Store,
+  after: BitArray,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(store, sql.owner_next_generation(after)))
+  case rows {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 -> {
+      use key <- result.try(
+        generation.decode_key(row.generation_key)
+        |> result.replace_error(Invalid("invalid generation inventory key")),
+      )
+      use _ <- result.try(read_generation(store, key))
+      validate_generation_inventory(store, row.generation_key, remaining - 1)
+    }
+    _ -> Error(Invalid("generation inventory exceeds bound"))
+  }
+}
+
+fn validate_close_inventory(
+  store: Store,
+  after: BitArray,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(store, sql.owner_next_close(after)))
+  case rows {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 -> {
+      use key <- result.try(
+        generation.decode_key(row.generation_key)
+        |> result.replace_error(Invalid("invalid close inventory key")),
+      )
+      use _ <- result.try(read_generation_close(store, key))
+      validate_close_inventory(store, row.generation_key, remaining - 1)
+    }
+    _ -> Error(Invalid("close inventory exceeds bound"))
+  }
+}
+
+fn validate_tool_link_inventory(
+  store: Store,
+  after: String,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(store, sql.owner_next_tool_generation(after)))
+  case rows {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 -> {
+      use key <- result.try(key_at(store, row.address))
+      use _ <- result.try(tool_generation_inside(store, key))
+      validate_tool_link_inventory(store, row.address, remaining - 1)
+    }
+    _ -> Error(Invalid("tool link inventory exceeds bound"))
+  }
+}
+
+fn validate_child_link_inventory(
+  store: Store,
+  after: String,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(store, sql.owner_next_child_generation(after)))
+  case rows {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 -> {
+      use body <- result.try(
+        one(query(store, sql.owner_child_generation_body(row.address))),
+      )
+      use origin <- result.try(
+        remote_tool.decode_child(body.canonical_origin)
+        |> result.replace_error(Invalid("invalid child link inventory origin")),
+      )
+      use Nil <- result.try(equal_string(
+        remote_tool.child_address(origin),
+        row.address,
+      ))
+      use _ <- result.try(child_generation_inside(store, origin))
+      validate_child_link_inventory(store, row.address, remaining - 1)
+    }
+    _ -> Error(Invalid("child link inventory exceeds bound"))
+  }
+}
+
+fn validate_intent_inventory(
+  store: Store,
+  after: String,
+  remaining: Int,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(store, sql.owner_next_system_intent(after)))
+  case rows {
+    [] -> Ok(Nil)
+    [row] if remaining > 0 -> {
+      use intent <- result.try(intent_at(store, row.intent_address))
+      use _ <- result.try(read_system_intent(store, intent))
+      use Nil <- result.try(validate_system_intent_link(store, intent))
+      validate_intent_inventory(store, row.intent_address, remaining - 1)
+    }
+    _ -> Error(Invalid("system intent inventory exceeds bound"))
+  }
+}
+
+fn intent_at(store: Store, address: String) -> Result(SystemIntent, Error) {
+  use header <- result.try(
+    one(query(store, sql.owner_system_intent_header(address))),
+  )
+  use body <- result.try(
+    one(query(store, sql.owner_system_intent_body(address))),
+  )
+  use key <- result.try(
+    generation.decode_key(body.generation_key)
+    |> result.replace_error(Invalid("invalid intent generation")),
+  )
+  use association <- result.try(read_generation(store, key))
+  use service <- result.try(decode_system_service(header.service))
+  use operation <- result.try(
+    ids.parse_op_id(header.operation)
+    |> result.replace_error(Invalid("invalid system operation")),
+  )
+  use request_id <- result.try(
+    ids.parse_entry_id(header.request_id)
+    |> result.replace_error(Invalid("invalid system intent UUID")),
+  )
+  use value <- result.try(
+    json.parse(address)
+    |> result.replace_error(Invalid("invalid retained system address")),
+  )
+  use work_address <- result.try(case value {
+    json.Array([
+      json.String("owner-system-intent/1"),
+      json.String(work_address),
+      _,
+      _,
+      _,
+      _,
+      _,
+    ]) -> Ok(work_address)
+    _ -> Error(Invalid("invalid complete system address"))
+  })
+  use intent <- result.try(historical_system_intent(
+    association,
+    work_address,
+    service,
+    operation,
+    header.step,
+    request_id,
+    body.intent_bytes,
+  ))
+  use Nil <- result.try(equal_string(system_intent_address(intent), address))
+  Ok(intent)
+}
+
+fn validate_system_intent_link(
+  store: Store,
+  intent: SystemIntent,
+) -> Result(Nil, Error) {
+  let service = system_service_name(intent.service)
+  use next <- result.try(system_ordinal(store, service))
+  use pending <- result.try(
+    one(query(store, sql.owner_pending_system_count(service))),
+  )
+  use template <- result.try(
+    remote_tool.system_child(store.session, service, 0)
+    |> result.map_error(Invalid),
+  )
+  use count <- result.try(
+    one(query(store, sql.owner_child_count(remote_tool.child_parent(template)))),
+  )
+  use <- bool.guard(
+    when: pending.pending < 0
+      || count.children < 0
+      || count.children + pending.pending > 64
+      || next + pending.pending > 4096,
+    return: Error(Invalid("invalid system intent slot accounting")),
+  )
+  use child <- result.try(
+    one(query(
+      store,
+      sql.owner_system_child_header(system_intent_address(intent)),
+    )),
+  )
+  case child.child_address {
+    "" -> Ok(Nil)
+    _ -> {
+      use body <- result.try(
+        one(query(
+          store,
+          sql.owner_system_child_body(system_intent_address(intent)),
+        )),
+      )
+      use bytes <- result.try(option.to_result(body.canonical_origin, Missing))
+      use origin <- result.try(
+        remote_tool.decode_child(bytes)
+        |> result.replace_error(Invalid("invalid retained intent child")),
+      )
+      use Nil <- result.try(equal_string(
+        remote_tool.child_address(origin),
+        child.child_address,
+      ))
+      use Nil <- result.try(case remote_tool.child_fields(origin) {
+        remote_tool.ToolFields(_, _) -> Error(Conflict)
+        remote_tool.SystemFields(session, family, ordinal) -> {
+          use Nil <- result.try(same_session(store, session))
+          use Nil <- result.try(equal_string(family, service))
+          case ordinal < next {
+            True -> Ok(Nil)
+            False -> Error(Invalid("unallocated retained system ordinal"))
+          }
+        }
+      })
+      use association <- result.try(child_generation_inside(store, origin))
+      use Nil <- result.try(same_association(association, intent.association))
+      use link <- result.try(
+        one(query(store, sql.owner_child_generation_header(child.child_address))),
+      )
+      equal_string(
+        link.original_request_id,
+        ids.entry_id_to_string(intent.request_id),
+      )
+    }
+  }
+}
+
+fn decode_system_service(value: String) -> Result(SystemService, Error) {
+  case value {
+    "command-preparation" -> Ok(CommandPreparation)
+    "compiler" -> Ok(Compiler)
+    "satellite-launch" -> Ok(SatelliteLaunch)
+    "lsp" -> Ok(LanguageServer)
+    "worktree-observation" -> Ok(WorktreeObservation)
+    "workspace-administration" -> Ok(WorkspaceAdministration)
+    _ -> Error(Invalid("invalid fixed system service"))
+  }
+}
+
+fn check_metadata(store: Store) -> Result(Nil, Error) {
+  use metadata <- result.try(one(query(store, sql.owner_custody_metadata())))
+  use <- bool.guard(
+    when: metadata
+      != sql.OwnerCustodyMetadata(
+      ids.session_id_to_string(store.session),
+      store.limits.tools,
+      store.limits.children,
+      store.limits.bytes,
+      store.limits.payload,
+    ),
+    return: Error(Conflict),
+  )
+  Ok(Nil)
+}
+
+fn check_service_generation(
+  service: command.ServiceKey,
+  association: generation.GenerationAssociation,
+) -> Result(Nil, Error) {
+  case
+    command.coordinates(service).0
+    == generation.key_scope(generation.association_key(association))
+  {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  }
+}
+
+/// Encodes exact original node bytes and owner join digests for attestation transport.
+/// Representation checks grant neither original join nor successor authority.
+///
+/// ## Examples
+///
+/// `decode_owner_close_record(owner_close_bytes(record))` preserves its full frame.
+pub fn owner_close_bytes(record: OwnerCloseRecord) -> Result(BitArray, Error) {
+  encode_owner_close(record)
+}
+
+/// Decodes historical owner close content through scalar/node bounds and canonical equality.
+/// The trusted live witness validator remains mandatory for first durable close admission.
+///
+/// ## Examples
+///
+/// `decode_owner_close_record(<<>>)` refuses without constructing a live generation.
+pub fn decode_owner_close_record(
+  bytes: BitArray,
+) -> Result(OwnerCloseRecord, Error) {
+  decode_owner_close(bytes)
 }
