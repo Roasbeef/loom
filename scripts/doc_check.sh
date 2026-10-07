@@ -1,7 +1,7 @@
 #!/bin/sh
 # doc_check.sh — gate the per-package documentation graph.
 #
-# Four checks. Three run over every package under packages/ that has
+# Five checks. Three run over every package under packages/ that has
 # real source (Gleam modules under src/, or Go files outside build/):
 #
 #   1. coverage — the package has a CLAUDE.md.                    (error)
@@ -13,6 +13,12 @@
 #   4. citations — docs/**/*.md cite `file.gleam:431`; the file must
 #      resolve and still hold the symbol the prose names.  (error, with
 #      three exemptions below)
+#
+# The fifth checks one document against the code:
+#
+#   5. configuration keys — docs/configuration.md has a row for every key
+#      the loom.toml decoders accept and none for a key they refuse.
+#      (error; scripts/config_keys.sh says how the keys are read)
 #
 # Resolution is a suffix match against the tracked tree, so a bare
 # `planner.gleam` and a package-relative `machine/planner.gleam` both
@@ -366,6 +372,24 @@ printf '%s\n' "$cite_body" |
 	done
 errors=$((errors + cite_errors))
 warnings=$((warnings + cite_warnings))
+
+# ---------------------------------------------------------------------
+# 5. configuration keys
+# ---------------------------------------------------------------------
+#
+# docs/configuration.md must have a row for every key the loom.toml decoders
+# accept, and no row for a key they refuse. scripts/config_keys.sh reads the
+# decoders' own key lists (its header says how, and where that is only an
+# approximation), and takes about a third of a second.
+
+config_out=$(scripts/config_keys.sh) && config_status=0 || config_status=$?
+echo
+printf '%s\n' "$config_out" | grep -v '^config-keys FAILED' || true
+if [ "$config_status" -ne 0 ]; then
+	config_errors=$(printf '%s\n' "$config_out" | grep -c '^ERROR' || true)
+	[ "$config_errors" -gt 0 ] || config_errors=1
+	errors=$((errors + config_errors))
+fi
 
 echo
 if [ "$errors" -gt 0 ]; then
