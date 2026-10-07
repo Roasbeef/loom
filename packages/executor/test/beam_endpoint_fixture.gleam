@@ -4,25 +4,38 @@
 //// closures or substitutes native history for a fresh whole-service Claim.
 
 import broker/broker
+import broker/enrollment
 import broker/exec
 import broker/executor as local
 import broker/policy
+import codemode/compile
+import codemode/run_channel as channel
+import codemode/service_input as input
+import codemode/vet/policy as vet_policy
 import core/clock
+import core/command
 import core/ids
+import core/remote_tool
 import core/workspace as cw
 import distribution_fixture as fixture
 import envoy
 import executor/remote/admission
 import executor/remote/beam_endpoint as endpoint
+import executor/remote/compile_service as compile_whole
 import executor/remote/distribution
 import executor/remote/identity
 import executor/remote/internal/beam_protocol as protocol
 import executor/remote/journal
+import executor/remote/launch_beam as bridge
+import executor/remote/launch_service as launch
+import executor/remote/launch_wire
+import executor/remote/resource_journal as j
 import executor/remote/service
 import executor/remote/wire
 import executor/remote/workspace_journal as wj
 import executor/remote/workspace_service as ws
 import executor/remote/workspace_transfer as transfer
+import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic
 import gleam/erlang/process
@@ -30,7 +43,9 @@ import gleam/erlang/reference
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
+import launch_stream_preparation_fixture as preparation
 import simplifile
 import telemetry/log
 import tools/directory_access
@@ -43,6 +58,24 @@ import weft
 import weft/actor
 import weft/poll
 
+type BindPrepared {
+  BindPrepared(command.ServiceKey)
+}
+
+type BindSocket
+
+@external(erlang, "executor_launch_socket_fixture", "connect_unix")
+fn bind_connect(path: String) -> Result(BindSocket, Nil)
+
+@external(erlang, "executor_launch_socket_fixture", "peer_send")
+fn bind_send(socket: BindSocket, bytes: BitArray) -> Result(Nil, Nil)
+
+@external(erlang, "executor_launch_socket_fixture", "peer_recv")
+fn bind_receive(socket: BindSocket, within_ms: Int) -> Result(BitArray, Nil)
+
+@external(erlang, "executor_launch_socket_fixture", "peer_close")
+fn bind_close(socket: BindSocket) -> Nil
+
 // Existing OTP primitives park the concrete service, never a mocked exchange.
 @external(erlang, "erlang", "suspend_process")
 fn suspend(pid: process.Pid) -> Nil
@@ -52,6 +85,9 @@ fn resume(pid: process.Pid) -> Nil
 
 // These fixed test probes capture and inject one actual previous local handoff.
 // Production exposes neither private subjects nor a state-replacement API.
+@external(erlang, "executor_beam_endpoint_test_ffi", "launch_snapshot")
+fn launch_snapshot(pid: process.Pid) -> String
+
 type HandoffProbe
 
 @external(erlang, "executor_beam_endpoint_test_ffi", "credits")
@@ -85,9 +121,63 @@ pub fn executor_main() {
   let first = native_service(root, native, 1)
   let second = native_service(root, native, 2)
   let semantic = semantic_service(root)
-  let assert Ok(row) =
+  let assert Ok(base_row) =
     endpoint.registration(owner, first, Some(semantic), process.self())
     as "concrete scope registration"
+  let assert Ok(capacity) = j.limits(8, 30_000_000)
+    as "finite Launch history capacity"
+  let assert Ok(book) =
+    j.fresh(
+      root <> "/launch.sqlite",
+      control_enrolled(),
+      capacity,
+      service.configuration(first).journal,
+    )
+    as "same original native resource binding"
+  let assert Ok(whole) =
+    launch.configure(book, first, 2) |> result.try(launch.start)
+    as "concrete whole Launch owner"
+  let assert Ok(contract) =
+    input.trusted_contract(
+      control_enrolled(),
+      input.WorkspaceProgram,
+      vet_policy.workspace_effects(),
+      [],
+    )
+    as "trusted source contract on original enrollment"
+  let assert Ok(compiled_owner) =
+    compile_whole.configure(book, first, contract, 1)
+    |> result.try(compile_whole.start)
+    as "original whole Compile owner"
+  assert endpoint.attach_launch(base_row, whole) |> result.is_ok
+  assert compile_whole.resource_owner(compiled_owner) == j.pid(book)
+  assert launch.resource_owner(whole) == j.pid(book)
+  let assert Ok(shared_row) =
+    endpoint.compile_registration(
+      owner,
+      compiled_owner,
+      Some(semantic),
+      process.self(),
+    )
+    as "Compile retains the original resource writer"
+  let assert Ok(other_book) =
+    j.fresh(
+      root <> "/other-launch.sqlite",
+      control_enrolled(),
+      capacity,
+      service.configuration(first).journal,
+    )
+    as "equal enrollment with a different live resource writer"
+  let assert Ok(other_whole) =
+    launch.configure(other_book, first, 2) |> result.try(launch.start)
+    as "different writer passes independent service configuration"
+  assert endpoint.attach_launch(shared_row, other_whole)
+    == Error(endpoint.InvalidConfiguration)
+  let assert Ok(row) = endpoint.attach_launch(shared_row, whole)
+    as "same-row Launch attachment"
+  assert endpoint.attach_launch(row, whole)
+    == Error(endpoint.InvalidConfiguration)
+  assert launch.configure(book, second, 2) == Error(launch.InvalidConfiguration)
   let assert Ok(other) =
     endpoint.registration(owner, second, None, process.self())
     as "second exact scope"
@@ -119,6 +209,23 @@ pub fn executor_main() {
   assert endpoint.inspect(server) == Ok(endpoint.Capacity(16, 4, 2))
   let original_credits = credits(endpoint.pid(server))
   mark(root, "ready")
+  await(root, "launch-suspend")
+  suspend(launch.pid(whole))
+  mark(root, "launch-suspended")
+  await(root, "launch-held")
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(16, 0, 0))
+  assert endpoint.inspect_drain(server, row) == Ok(endpoint.Busy)
+  resume(launch.pid(whole))
+  let assert poll.Answered(Nil) =
+    poll.until(2000, 10, fn() {
+      case endpoint.inspect(server) {
+        Ok(endpoint.Capacity(16, 4, 2)) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "actual Launch replies and producer retirement return all six finite credits"
+  assert endpoint.inspect_drain(server, row) == Ok(endpoint.Busy)
+  mark(root, "launch-drained")
   await(root, "suspend")
   suspend(service.pid(first))
   mark(root, "suspended")
@@ -172,9 +279,26 @@ pub fn executor_main() {
       }
     })
     as "new run keeps its own service ask and transport drain"
+  await(root, "launch-loss")
+  suspend(launch.pid(whole))
+  mark(root, "launch-loss-suspended")
+  await(root, "launch-loss-held")
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(16, 4, 1))
+  process.kill(launch.pid(whole))
+  assert endpoint.fence(server, row) == Ok(Nil)
+  let assert poll.Answered(Nil) =
+    poll.until(500, 10, fn() {
+      case endpoint.inspect_drain(server, row) {
+        Ok(endpoint.DrainUncertain) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "Launch owner loss preserves its original unresolved finite assignment"
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(16, 4, 1))
+  mark(root, "launch-loss-observed")
   await(root, "quiesce")
   endpoint.quiesce(server)
-  assert endpoint.inspect(server) == Ok(endpoint.Capacity(16, 4, 2))
+  assert endpoint.inspect(server) == Ok(endpoint.Capacity(16, 4, 1))
   assert endpoint.register(server, row) == Error(endpoint.InvalidConfiguration)
   mark(root, "quiesced")
   await(root, "done")
@@ -199,6 +323,52 @@ pub fn owner_main() {
   assert endpoint.validate(config) == Ok(Nil)
   assert endpoint.validate(endpoint.Config(..config, within_ms: 0))
     == Error(endpoint.InvalidConfiguration)
+  let launch_original =
+    control_launched(control_compiled("pub fn main() { Nil }", 3).key, 5)
+  let assert Ok(launch_bytes) =
+    launch_wire.encode_input(control_enrolled(), launch_original)
+    as "canonical full Launch envelope"
+  let assert Ok(#(challenge, None)) =
+    endpoint.launch_exchange(config, launch_wire.ChallengeRequest, launch_bytes)
+    as "actual finite Launch challenge route"
+  let assert Ok(launch_wire.Challenge(returned, nonce, 1000)) =
+    launch_wire.decode_reply(
+      control_enrolled(),
+      launch_original,
+      challenge,
+      None,
+    )
+    as "actual service answer preserves full original key"
+  assert returned == launch_original.key
+  let assert Ok(placement) =
+    launch_wire.encode_placement(control_enrolled(), launch_original, <<
+      7:size(256),
+    >>)
+    as "closed token transport body"
+  let assert Ok(#(refusal, None)) =
+    endpoint.launch_exchange(
+      config,
+      launch_wire.PlaceToken(nonce, 1000),
+      placement,
+    )
+    as "actual token admission refusal still returns metadata"
+  assert launch_wire.decode_reply(
+      control_enrolled(),
+      launch_original,
+      refusal,
+      None,
+    )
+    == Error(launch_wire.Refused)
+  let assert Ok(#(query, None)) =
+    endpoint.launch_exchange(config, launch_wire.Query, launch_bytes)
+    as "actual historical query reaches Launch"
+  assert launch_wire.decode_reply(
+      control_enrolled(),
+      launch_original,
+      query,
+      None,
+    )
+    == Error(launch_wire.Refused)
   assert endpoint.exchange(config, wire.Hello) == Ok(wire.Hello)
   assert endpoint.exchange(
       endpoint.Config(..config, scope: scope(2)),
@@ -215,6 +385,48 @@ pub fn owner_main() {
       wire.Hello,
     )
     == Error(endpoint.Uncertain)
+  let assert Ok(satellite_ref) =
+    command.command_ref(launch_original.key, command.SatelliteCommand)
+    as "exact role-bound Satellite command"
+  let assert Ok(rejected) =
+    endpoint.exchange_command(
+      config,
+      satellite_ref,
+      wire.ChallengeRequest(key(), control_digest()),
+    )
+    as "unclaimed command receives actual whole-owner refusal"
+  let assert wire.Rejected(_) = rejected
+    as "a missing retained Launch Claim never falls back to native Challenge"
+  mark(root, "launch-suspend")
+  await(root, "launch-suspended")
+  let launch_operations = [
+    launch_wire.ChallengeRequest,
+    launch_wire.ChallengeRequest,
+    launch_wire.ChallengeRequest,
+    launch_wire.ChallengeRequest,
+    launch_wire.Query,
+    launch_wire.Query,
+  ]
+  let held =
+    weft.new(
+      list.map(launch_operations, fn(operation) {
+        fn() {
+          Ok(endpoint.launch_exchange(
+            endpoint.Config(..config, within_ms: 250),
+            operation,
+            launch_bytes,
+          ))
+        }
+      }),
+    )
+    |> weft.deadline(1000)
+    |> weft.start
+  assert list.length(weft.values(held)) == 6
+  list.each(weft.values(held), fn(answer) {
+    assert answer == Error(endpoint.Uncertain)
+  })
+  mark(root, "launch-held")
+  await(root, "launch-drained")
   let bytes = invocation()
   let submitted = endpoint.workspace_exchange(config, protocol.Submit, bytes)
   assert submitted == Ok(wj.Accepted) || submitted == Ok(wj.Unknown)
@@ -271,6 +483,16 @@ pub fn owner_main() {
   assert returned_key == key()
   assert returned_digest == digest
   mark(root, "reuse-complete")
+  mark(root, "launch-loss")
+  await(root, "launch-loss-suspended")
+  assert endpoint.launch_exchange(
+      endpoint.Config(..config, within_ms: 250),
+      launch_wire.Query,
+      launch_bytes,
+    )
+    == Error(endpoint.Uncertain)
+  mark(root, "launch-loss-held")
+  await(root, "launch-loss-observed")
   mark(root, "quiesce")
   await(root, "quiesced")
   assert endpoint.exchange(
@@ -487,11 +709,13 @@ type RawReply {
   Granted(reference.Reference, process.Subject(RawFrame))
   Consumed(reference.Reference, Int)
   Returned(reference.Reference, Int, BitArray)
+  BindReturned(reference.Reference, BitArray, bridge.Door)
 }
 
 type RawFrame {
   Input(reference.Reference, Int, BitArray)
   ReplyConsumed(reference.Reference, Int)
+  BindInput(reference.Reference, BitArray, bridge.Door)
 }
 
 /// Fixed scoped-lifecycle executor role with distinct pools, journals and owners.
@@ -860,4 +1084,603 @@ fn raw_output(
     transfer.Receiving(receiver) ->
       raw_output(receiver, incoming, reply, ref, ordinal + 1)
   }
+}
+
+fn control_scope() -> cw.Scope {
+  let assert Ok(scope) =
+    cw.scope_from_fields(
+      "00000000-0000-7000-8000-000000000001",
+      "checkout",
+      "executor",
+      1,
+      1,
+    )
+    as "Full original scope."
+  scope
+}
+
+fn control_hash(c: String) -> String {
+  string.repeat(c, 64)
+}
+
+fn control_base() -> policy.SandboxPolicy {
+  policy.SandboxPolicy(
+    writable_roots: ["/work", "/alloc"],
+    readable_roots: ["/tc", "/seed", "/work"],
+    protected: ["/work/.git"],
+    network: policy.NetworkOff,
+    limits: policy.Limits(11, 12, 13, 14, 15, 16),
+    env_allow: ["PATH", "HOME"],
+    scratch: policy.ScratchTmpfs,
+    mounts: [
+      policy.Mount("/tc", policy.MountReadOnly, policy.MountRequired),
+      policy.Mount("/seed", policy.MountReadOnly, policy.MountOptional),
+    ],
+  )
+}
+
+fn control_enrolled() -> enrollment.SessionEnrollment {
+  let assert Ok(enrolled) =
+    enrollment.new(
+      enrollment.NativeFacts(
+        control_scope(),
+        ["/"],
+        control_base(),
+        exec.PlatformEnforcement,
+      ),
+      enrollment.CodeModeFacts(
+        "/work",
+        "/alloc/build",
+        "/alloc/channel",
+        "/tc/bin/gleam",
+        "/tc/bin/erl",
+        "/seed",
+        ["/tc"],
+        control_base().mounts,
+        "/tc/bin",
+      ),
+      control_hash("b"),
+      control_hash("c"),
+    )
+    as "Exact isolated trusted enrollment."
+  enrolled
+}
+
+fn control_id(number: Int) -> ids.EntryId {
+  let assert Ok(id) =
+    ids.parse_entry_id(
+      "00000000-0000-7000-8000-"
+      <> string.pad_start(int.to_string(number), 12, "0"),
+    )
+    as "Original UUID."
+  id
+}
+
+fn control_parent(
+  step: String,
+  index: Int,
+  digest: String,
+  result: Int,
+) -> remote_tool.ToolKey {
+  let assert Ok(session) =
+    ids.parse_session_id("00000000-0000-7000-8000-000000000001")
+    as "Session UUID."
+  let assert Ok(operation) =
+    ids.parse_op_id("00000000-0000-7000-8000-000000000002")
+    as "Operation UUID."
+  let assert Ok(parent) =
+    remote_tool.key(session, operation, step, index, digest, control_id(result))
+    as "Complete original managed parent."
+  parent
+}
+
+fn control_key(
+  role: command.ServiceRole,
+  step: String,
+  number: Int,
+  parent: remote_tool.ToolKey,
+  body: BitArray,
+) -> command.ServiceKey {
+  let assert Ok(step) = cw.step(step) as "Physical coordinate."
+  let digest = string.lowercase(bit_array.base16_encode(j.digest(body)))
+  let assert Ok(key) =
+    command.service_key(
+      parent,
+      role,
+      control_scope(),
+      remote_tool.operation(parent),
+      step,
+      control_id(number),
+      digest,
+      control_hash("b"),
+      control_hash("c"),
+    )
+    as "Digest-linked complete service key."
+  key
+}
+
+fn control_compiled(source: String, number: Int) -> j.Input {
+  let assert Ok(decoded) =
+    input.compile_input(
+      control_enrolled(),
+      input.WorkspaceProgram,
+      source,
+      [],
+      compile.default_dependencies(),
+      control_base(),
+      180_000,
+    )
+    as "Canonical compile input."
+  let body = input.encode_compile(decoded)
+  j.Input(
+    control_key(
+      command.CompileService,
+      "physical:build",
+      number,
+      control_parent("parent", 3, control_hash("a"), 4),
+      body,
+    ),
+    body,
+  )
+}
+
+fn control_launched(producer: command.ServiceKey, number: Int) -> j.Input {
+  let #(scope, operation, step) = command.coordinates(producer)
+  let #(digest, _, contract) = command.digests(producer)
+  let artifact =
+    compile.ExecutorArtifact(
+      scope,
+      operation,
+      step,
+      ids.entry_id_to_string(command.request_id(producer)),
+      digest,
+      "issued-artifact",
+      contract,
+      compile.entry_module,
+      "sha256-" <> control_hash("e"),
+    )
+  let assert Ok(decoded) =
+    input.launch_input(
+      control_enrolled(),
+      producer,
+      artifact,
+      [],
+      cw.root(),
+      control_base(),
+      control_hash("d"),
+    )
+    as "Canonical launch body, without successful artifact proof."
+  let body = input.encode_launch(decoded)
+  j.Input(
+    control_key(
+      command.LaunchService,
+      "physical:run",
+      number,
+      command.parent(producer),
+      body,
+    ),
+    body,
+  )
+}
+
+fn control_digest() -> identity.Digest {
+  let assert Ok(digest) = identity.digest(<<9:size(256)>>)
+    as "bounded physical-command digest"
+  digest
+}
+
+// These roles compose the actual finite endpoint with a separately owned stream.
+// No prepared service or paused local connection crosses the distribution hop.
+/// Drives finite endpoint installation against real original preparation.
+///
+/// ## Examples
+/// `bind_executor_main()` runs in the trusted parent TLS fixture only.
+pub fn bind_executor_main() {
+  let #(root, provisioned) = inputs()
+  let assert Ok(membership) = distribution.start(provisioned.executor_config)
+    as "Real executor TLS bootstrap."
+  let assert Ok(owner) = distribution.peer(membership, provisioned.owner_name)
+    as "Authenticated owner peer."
+  await(root, "bind-owner-started")
+  assert distribution.connect(owner, 3000) == Ok(Nil)
+  preparation.with_prepared(fn(whole, key, paths) {
+    let assert Ok(row) =
+      endpoint.registration(
+        owner,
+        launch.native_service(whole),
+        None,
+        process.self(),
+      )
+      |> result.try(fn(row) { endpoint.attach_launch(row, whole) })
+      as "Same original Launch row."
+    let assert Ok(server) =
+      endpoint.configure_server([row], 3000)
+      |> result.try(endpoint.start)
+      as "Six actual finite credit actors."
+    let assert Ok(owner_pid) = distribution.endpoint(owner, 3000)
+      as "Test-only owner rendezvous."
+    assert distribution.send(bind_prepared(owner_pid), BindPrepared(key))
+      == distribution.Sent
+    await(root, "bind-missing-refused")
+    bind_all_credits(server)
+    mark(root, "bind-missing-capacity")
+    await(root, "bind-duplicate-refused")
+    bind_all_credits(server)
+    mark(root, "bind-duplicate-capacity")
+    await(root, "bind-installed")
+    assert endpoint.inspect(server) == Ok(endpoint.Capacity(1, 4, 2))
+    assert endpoint.inspect_drain(server, row) == Ok(endpoint.Busy)
+    let assert Ok(socket) = bind_connect(paths.1)
+      as "Socket acceptance starts after finite credit restoration."
+    assert bind_send(socket, <<3:32, 4, 5, 6, 3:32, 10, 11, 12>>) == Ok(Nil)
+    let assert Ok(bytes) = bind_receive(socket, 5000)
+      as "Original actual Unix writer."
+    assert bytes == <<3:32, 7, 8, 9>>
+    await(root, "bind-live")
+    assert endpoint.inspect(server) == Ok(endpoint.Capacity(1, 4, 2))
+    mark(root, "bind-credits-live")
+    await(root, "bind-owner-closed")
+    bind_close(socket)
+    assert endpoint.inspect(server) == Ok(endpoint.Capacity(1, 4, 2))
+    assert simplifile.write(
+        root <> "/bind-original-before-close",
+        launch_snapshot(launch.pid(whole)),
+      )
+      == Ok(Nil)
+    endpoint.stop(server)
+  })
+  mark(root, "bind-first-closed")
+
+  // A lost ACK after a known Installed answer retires only transport custody.
+  preparation.with_prepared(fn(whole, key, _paths) {
+    let assert Ok(row) =
+      endpoint.registration(
+        owner,
+        launch.native_service(whole),
+        None,
+        process.self(),
+      )
+      |> result.try(fn(row) { endpoint.attach_launch(row, whole) })
+      as "Original known-install row."
+    let assert Ok(server) =
+      endpoint.configure_server([row], 1000)
+      |> result.try(endpoint.start)
+      as "Finite lost-ACK endpoint."
+    let assert Ok(owner_pid) = distribution.endpoint(owner, 3000)
+      as "Original test rendezvous."
+    assert distribution.send(bind_prepared(owner_pid), BindPrepared(key))
+      == distribution.Sent
+    await(root, "bind-ack-withheld")
+    bind_all_credits(server)
+    mark(root, "bind-ack-retired")
+    await(root, "bind-ack-duplicate")
+    bind_all_credits(server)
+    mark(root, "bind-ack-duplicate-capacity")
+    await(root, "bind-ack-closed")
+    assert simplifile.write(
+        root <> "/bind-lost-ack-before-close",
+        launch_snapshot(launch.pid(whole)),
+      )
+      == Ok(Nil)
+    endpoint.stop(server)
+  })
+  mark(root, "bind-ack-fixture-closed")
+
+  // A second real original entry holds installation itself, rather than a socket.
+  preparation.with_prepared(fn(whole, key, _paths) {
+    let assert Ok(row) =
+      endpoint.registration(
+        owner,
+        launch.native_service(whole),
+        None,
+        process.self(),
+      )
+      |> result.try(fn(row) { endpoint.attach_launch(row, whole) })
+      as "Second original Launch row."
+    let assert Ok(server) =
+      endpoint.configure_server([row], 3000)
+      |> result.try(endpoint.start)
+      as "Fresh bounded finite endpoint."
+    suspend(launch.pid(whole))
+    let assert Ok(owner_pid) = distribution.endpoint(owner, 3000)
+      as "Original owner test rendezvous."
+    assert distribution.send(bind_prepared(owner_pid), BindPrepared(key))
+      == distribution.Sent
+    await(root, "bind-lost")
+    let assert poll.Answered(Nil) =
+      poll.until(3000, 10, fn() {
+        case endpoint.inspect(server) {
+          Ok(endpoint.Capacity(1, 4, 1)) -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      as "Lost installation answer retains original control custody."
+    assert endpoint.fence(server, row) == Ok(Nil)
+    let assert poll.Answered(Nil) =
+      poll.until(3000, 10, fn() {
+        case endpoint.inspect_drain(server, row) {
+          Ok(endpoint.DrainUncertain) -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      as "Actual uncertain installation retires the original credit without refund."
+    resume(launch.pid(whole))
+    mark(root, "bind-lost-retained")
+    await(root, "bind-second-closed")
+    assert simplifile.write(
+        root <> "/bind-held-install-before-close",
+        launch_snapshot(launch.pid(whole)),
+      )
+      == Ok(Nil)
+    endpoint.stop(server)
+  })
+  mark(root, "bind-executor-success")
+}
+
+/// Proves finite binding and original stream consumption on the owner node.
+///
+/// ## Examples
+/// `bind_owner_main()` runs in the trusted parent TLS fixture only.
+pub fn bind_owner_main() {
+  let #(root, provisioned) = inputs()
+  let assert Ok(membership) = distribution.start(provisioned.owner_config)
+    as "Real owner TLS bootstrap."
+  let assert Ok(executor) =
+    distribution.peer(membership, provisioned.executor_name)
+    as "Authenticated executor peer."
+  assert distribution.register_endpoint(process.self()) == Ok(Nil)
+  mark(root, "bind-owner-started")
+  let assert Ok(BindPrepared(key)) =
+    process.receive(bind_prepared(process.self()), 35_000)
+    as "Real prepared original key."
+  let pin = bind_pin(key)
+  let config =
+    endpoint.Config(
+      executor,
+      pin.owner,
+      pin.executor,
+      pin.scope,
+      pin.generation,
+      1000,
+    )
+  let events = process.new_subject()
+  let assert Ok(owner) =
+    bridge.start_owner(
+      executor,
+      pin,
+      key,
+      channel.host_endpoint(process.self(), events),
+      poll.monotonic().now() + 20_000,
+      poll.monotonic().now,
+    )
+    as "Original local host projection."
+
+  // Registration checks reject altered peer labels and generation before admission.
+  assert endpoint.bind_launch(
+      endpoint.Config(..config, owner: "other"),
+      bridge.offer(owner),
+    )
+    == Error(endpoint.Uncertain)
+  assert endpoint.bind_launch(
+      endpoint.Config(..config, generation: 2),
+      bridge.offer(owner),
+    )
+    == Error(endpoint.Uncertain)
+  let #(session, workspace, executor_id, _epoch, workspace_epoch) =
+    identity.scope_fields(pin.scope)
+  let assert Ok(session) = ids.parse_session_id(session) as "Original session. "
+  let assert Ok(workspace) = identity.workspace_id(workspace)
+    as "Original workspace. "
+  let assert Ok(executor_id) = identity.executor_id(executor_id)
+    as "Original executor. "
+  let assert Ok(workspace_epoch) = identity.epoch(workspace_epoch)
+    as "Original workspace epoch. "
+  let assert Ok(epoch) = identity.epoch(3) as "Different valid scope epoch."
+  let wrong_scope =
+    identity.scope(session, workspace, executor_id, epoch, workspace_epoch)
+  assert endpoint.bind_launch(
+      endpoint.Config(..config, scope: wrong_scope),
+      bridge.offer(owner),
+    )
+    == Error(endpoint.Uncertain)
+
+  // A different original key is canonical but owns no prepared listener.
+  let #(scope, operation, step) = command.coordinates(key)
+  let #(input_digest, registration_digest, contract_digest) =
+    command.digests(key)
+  let assert Ok(request) =
+    ids.parse_entry_id("00000000-0000-7000-8000-00000000000f")
+    as "Distinct original request."
+  let assert Ok(missing) =
+    command.service_key(
+      command.parent(key),
+      command.LaunchService,
+      scope,
+      operation,
+      step,
+      request,
+      input_digest,
+      registration_digest,
+      contract_digest,
+    )
+    as "Full different canonical original key."
+  let assert Ok(unprepared) =
+    bridge.start_owner(
+      executor,
+      pin,
+      missing,
+      channel.host_endpoint(process.self(), events),
+      poll.monotonic().now() + 20_000,
+      poll.monotonic().now,
+    )
+    as "Original unprepared host projection."
+  assert endpoint.bind_launch(config, bridge.offer(unprepared))
+    == Error(endpoint.Uncertain)
+  mark(root, "bind-missing-refused")
+  await(root, "bind-missing-capacity")
+  let _closed = bridge.close(unprepared)
+
+  let assert Ok(accepted) = endpoint.bind_launch(config, bridge.offer(owner))
+    as "Finite binding returns before Unix accept."
+  let #(bytes, executor_door) = bridge.acceptance_fields(accepted)
+  let assert Ok(foreign) =
+    bridge.offer_from_wire(executor, bytes, executor_door)
+    as "Real executor-owned door used in an owner offer."
+  assert endpoint.bind_launch(config, foreign) == Error(endpoint.Uncertain)
+  assert bridge.install(owner, accepted) == Ok(Nil)
+  assert endpoint.bind_launch(config, bridge.offer(owner))
+    == Error(endpoint.Uncertain)
+  mark(root, "bind-duplicate-refused")
+  await(root, "bind-duplicate-capacity")
+  assert bridge.await_connection(owner, 1) == Error(bridge.Uncertain)
+  mark(root, "bind-installed")
+  let assert Ok(connection) = bridge.await_connection(owner, 3000)
+    as "Actual paused original handoff."
+  assert process.receive(events, 0) == Error(Nil)
+  assert connection.activate() == Ok(Nil)
+  let assert Ok(channel.Frame(frame)) = process.receive(events, 3000)
+    as "Actual original host frame."
+  assert channel.payload(channel.delivered(frame).1) == <<4, 5, 6>>
+  assert process.receive(events, 0) == Error(Nil)
+  let assert Ok(payload) = channel.from_wire(<<3:32, 7, 8, 9>>)
+    as "Closed actual write payload."
+  let assert Ok(#(held, reservation)) =
+    channel.reserve_write(connection.initial_write_grant, payload)
+    as "Original actual writer grant."
+  assert connection.offer(reservation, payload) == Ok(Nil)
+  let assert Ok(channel.WriteConsumed(written)) = process.receive(events, 3000)
+    as "Actual Unix writer consumption."
+  assert channel.consume_write(held, written).1 == channel.Consumed
+  mark(root, "bind-live")
+  await(root, "bind-credits-live")
+  channel.consume(frame, channel.Final)
+  bridge.cancel(owner)
+  let closed = connection.close()
+  assert closed.transport == channel.TransportJoined
+  assert closed.resources != channel.ResourcesReleased
+  mark(root, "bind-owner-closed")
+  await(root, "bind-first-closed")
+  let assert Ok(BindPrepared(lost_ack)) =
+    process.receive(bind_prepared(process.self()), 35_000)
+    as "Known installation with deliberately withheld acceptance ACK."
+  let lost_pin = bind_pin(lost_ack)
+  let events = process.new_subject()
+  let assert Ok(retained) =
+    bridge.start_owner(
+      executor,
+      lost_pin,
+      lost_ack,
+      channel.host_endpoint(process.self(), events),
+      poll.monotonic().now() + 20_000,
+      poll.monotonic().now,
+    )
+    as "Original host retained without retry."
+  bind_without_ack(executor, lost_pin, bridge.offer(retained))
+  mark(root, "bind-ack-withheld")
+  await(root, "bind-ack-retired")
+  assert endpoint.bind_launch(config, bridge.offer(retained))
+    == Error(endpoint.Uncertain)
+  mark(root, "bind-ack-duplicate")
+  await(root, "bind-ack-duplicate-capacity")
+  let _closed = bridge.close(retained)
+  mark(root, "bind-ack-closed")
+  await(root, "bind-ack-fixture-closed")
+  let assert Ok(BindPrepared(second)) =
+    process.receive(bind_prepared(process.self()), 35_000)
+    as "Second real original entry."
+  let pin = bind_pin(second)
+  let events = process.new_subject()
+  let assert Ok(owner) =
+    bridge.start_owner(
+      executor,
+      pin,
+      second,
+      channel.host_endpoint(process.self(), events),
+      poll.monotonic().now() + 20_000,
+      poll.monotonic().now,
+    )
+    as "Held-install original host."
+  assert endpoint.bind_launch(
+      endpoint.Config(..config, within_ms: 50),
+      bridge.offer(owner),
+    )
+    == Error(endpoint.Uncertain)
+  mark(root, "bind-lost")
+  await(root, "bind-lost-retained")
+  let _closed = bridge.close(owner)
+  mark(root, "bind-second-closed")
+  await(root, "bind-executor-success")
+  mark(root, "bind-owner-success")
+}
+
+fn bind_prepared(pid: process.Pid) -> process.Subject(BindPrepared) {
+  process.unsafely_create_subject(
+    pid,
+    dynamic.string("loom.executor.endpoint/1"),
+  )
+}
+
+fn bind_pin(key: command.ServiceKey) -> protocol.Binding {
+  let #(scope, _, _) = command.coordinates(key)
+  let #(session, registered) = cw.scope_fields(scope)
+  let #(selected, second, first) = cw.binding_fields(registered)
+  let #(executor, workspace) = cw.selector_fields(selected)
+  let assert Ok(workspace) = identity.workspace_id(workspace)
+    as "Original workspace."
+  let assert Ok(executor) = identity.executor_id(executor)
+    as "Original executor."
+  let assert Ok(first) = identity.epoch(first) as "Original session epoch."
+  let assert Ok(second) = identity.epoch(second) as "Original workspace epoch."
+  protocol.Binding(
+    "owner",
+    "linux",
+    1,
+    identity.scope(session, workspace, executor, first, second),
+  )
+}
+
+fn bind_all_credits(server: endpoint.Server) {
+  let assert poll.Answered(Nil) =
+    poll.until(3000, 10, fn() {
+      case endpoint.inspect(server) {
+        Ok(endpoint.Capacity(1, 4, 2)) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "Definite invalid installation restores all original finite credits."
+}
+
+fn bind_without_ack(
+  peer: distribution.Peer,
+  pin: protocol.Binding,
+  offered: bridge.Offer,
+) {
+  let assert Ok(endpoint) = distribution.endpoint(peer, 1000)
+    as "Actual finite endpoint."
+  let assert Ok(header) = protocol.header(pin, protocol.LaunchBind)
+    as "Canonical route five."
+  let reservation =
+    process.unsafely_create_subject(
+      endpoint,
+      dynamic.string("loom.executor.endpoint/1"),
+    )
+  let reply = process.new_subject()
+  let correlation = reference.new()
+  assert distribution.send(
+      reservation,
+      Reservation(header, correlation, process.self(), reply),
+    )
+    == distribution.Sent
+  let assert Ok(Granted(actual, incoming)) = process.receive(reply, 1000)
+    as "Actual checked control grant."
+  assert actual == correlation
+  let #(bytes, door) = bridge.offer_fields(offered)
+  assert distribution.send(incoming, BindInput(correlation, bytes, door))
+    == distribution.Sent
+  let assert Ok(BindReturned(actual, returned, door)) =
+    process.receive(reply, 1000)
+    as "Actual Installed answer before withholding ACK."
+  assert actual == correlation
+  assert returned == bytes
+  assert bridge.acceptance_from_wire(peer, returned, door) |> result.is_ok
 }

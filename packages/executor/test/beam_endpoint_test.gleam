@@ -87,3 +87,76 @@ pub fn real_two_node_scopes_workspace_and_caller_loss_test() {
     == Ok("canonical_multichunk_workspace_exact_ack")
   assert simplifile.delete(root) == Ok(Nil)
 }
+
+pub fn real_two_node_finite_launch_bind_and_live_stream_test() {
+  let assert Ok(here) = simplifile.current_directory() as "package directory"
+  let #(seconds, nanos) =
+    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds
+  let suffix = int.to_string(seconds) <> int.to_string(nanos)
+  let root = here <> "/build/beam-bind-" <> suffix
+  let assert Ok(provisioned) = fixture.provision(root, "finitebind")
+    as "real pinned certificates"
+  assert fixture.write_provisioned(provisioned, root <> "/fixture.term")
+    == Ok(Nil)
+  let executable = fixture.current_executable()
+  let previous = envoy.get("LOOM_BEAM_ENDPOINT_FIXTURE")
+  envoy.set("LOOM_BEAM_ENDPOINT_FIXTURE", root)
+  let roles = [
+    #(
+      provisioned.executor_config,
+      provisioned.executor_options,
+      "beam_endpoint_fixture:bind_executor_main(),halt(0).",
+    ),
+    #(
+      provisioned.owner_config,
+      provisioned.owner_options,
+      "beam_endpoint_fixture:bind_owner_main(),halt(0).",
+    ),
+  ]
+  let outcomes =
+    weft.new_prepared(
+      list.map(roles, fn(role) {
+        let #(config, options, entrypoint) = role
+        weft.managed(fn(_) {
+          fixture.run_node(
+            executable,
+            list.append(fixture.node_arguments(options), [
+              "-noshell",
+              "-eval",
+              entrypoint,
+            ]),
+            here,
+            distribution.bootstrap_home(config),
+          )
+        })
+      }),
+    )
+    |> weft.deadline(40_000)
+    |> weft.start
+  case previous {
+    Ok(value) -> envoy.set("LOOM_BEAM_ENDPOINT_FIXTURE", value)
+    Error(_) -> envoy.unset("LOOM_BEAM_ENDPOINT_FIXTURE")
+  }
+  let values = weft.values(outcomes)
+  list.index_map(values, fn(value, index) {
+    let #(exit_code, output) = value
+    let report = int.to_string(exit_code) <> "\n" <> output
+    assert simplifile.write(
+        root <> "/role-" <> int.to_string(index) <> ".log",
+        report,
+      )
+      == Ok(Nil)
+  })
+  assert list.length(values) == 2
+  list.each(values, fn(value) {
+    let #(exit_code, output) = value
+    assert exit_code == 0 as output
+    assert !string.contains(output, "=CRASH REPORT=")
+    assert !string.contains(output, "=ERROR REPORT=")
+    assert !string.contains(output, "exception error")
+    assert !string.contains(output, "gleam_error")
+  })
+  assert simplifile.read(root <> "/bind-executor-success") == Ok("ready")
+  assert simplifile.read(root <> "/bind-owner-success") == Ok("ready")
+  assert simplifile.delete(root) == Ok(Nil)
+}

@@ -20,11 +20,14 @@
 //// row. `inspect_drain` uses `drain_snapshot` and `exact_row` to observe scoped
 //// custody. `handle` retains normal credit loss and `available_count` counts only
 //// canonical Available records. Scope owner DOWN applies the same row fence.
-//// `exchange`, `workspace_exchange` and `compile_exchange` enter `owner_exchange`;
+//// `attach_launch` checks original shared resource custody before publication.
+//// `exchange`, `workspace_exchange`, `compile_exchange` and `launch_exchange` enter `owner_exchange`;
+//// `bind_launch` enters `owner_bind`; `serve_bind` retains a checked finite
+//// installation answer until `receive_acceptance` acknowledges its door.
 //// `exchange_command` preserves the complete original physical command route.
 //// `reserve` assigns one stable credit. `begin_credit` starts managed transport;
 //// `admit` hands off one decoded operation to its concrete service.
-//// `native_replied`, `workspace_replied` and `compile_replied` settle asks;
+//// `native_replied`, `workspace_replied`, `compile_replied` and `launch_replied` settle asks;
 //// `network_finished` checks any selectable exact-run handoff before
 //// `available` restores capacity; late old handoffs cannot enter a reused credit.
 //// `serve` receives bounded content and waits for the stable service answer;
@@ -34,6 +37,7 @@
 //// a time. Process references correlate exchanges but never replace durable
 //// operation IDs. Distribution is a trusted full-node membership boundary.
 
+import broker/enrollment
 import core/command
 import core/workspace as cw
 import executor/internal/ffi_distribution
@@ -42,6 +46,9 @@ import executor/remote/compile_wire
 import executor/remote/distribution
 import executor/remote/identity
 import executor/remote/internal/beam_protocol as protocol
+import executor/remote/launch_beam
+import executor/remote/launch_service as launch
+import executor/remote/launch_wire
 import executor/remote/resource_journal as resources
 import executor/remote/service
 import executor/remote/wire
@@ -117,6 +124,8 @@ pub opaque type Registration {
     workspace: Option(workspace.Service),
     /// Optional concrete whole Compile owner retaining original live Claims.
     compile: Option(compile.Service),
+    /// Concrete whole Launch owner on this same original registration.
+    launch: Option(launch.Service),
     /// Concrete local scope owner; its applied DOWN permanently fences this row.
     lifetime_owner: process.Pid,
   )
@@ -233,15 +242,27 @@ type Reply {
   Consumed(reference.Reference, Int)
   Returned(reference.Reference, Int, BitArray)
   WorkspaceStatus(reference.Reference, BitArray)
+  BindReturned(reference.Reference, BitArray, launch_beam.Door)
 }
 
 type Frame {
   Input(reference.Reference, Int, BitArray)
   ReplyConsumed(reference.Reference, Int)
   StatusConsumed(reference.Reference)
+  BindInput(reference.Reference, BitArray, launch_beam.Door)
 }
 
 type Request {
+  BindRequest(
+    launch_beam.Offer,
+    process.Subject(Result(launch_beam.Acceptance, Nil)),
+  )
+  LaunchRequest(
+    launch_wire.Command,
+    resources.Input,
+    Option(BitArray),
+    process.Subject(Result(BitArray, Nil)),
+  )
   NativeRequest(wire.Envelope, process.Subject(Result(BitArray, Nil)))
   CompileRequest(
     compile_wire.Command,
@@ -258,6 +279,7 @@ type Request {
 
 type Pending {
   NoAsk
+  LaunchAsk(command.ServiceKey, process.Subject(Result(BitArray, Nil)))
   CompileAsk(command.ServiceKey, process.Subject(Result(BitArray, Nil)))
   CommandAsk(command.CommandRef, process.Subject(Result(BitArray, Nil)))
   NativeHello(wire.Envelope, process.Subject(Result(BitArray, Nil)))
@@ -271,6 +293,7 @@ type CreditMessage {
   NativeReply(Result(wire.Body, service.Error))
   WorkspaceReply(Result(journal.Status, workspace.Error))
   CompileReply(Result(compile.Reply, compile.Error))
+  LaunchReply(Result(launch.Reply, launch.Error))
   NetworkReport(weft.Pulled(Nil, Nil))
   ServiceDown
   CloseCredit
@@ -286,6 +309,7 @@ type Credit {
     native_reply: process.Subject(Result(wire.Body, service.Error)),
     workspace_reply: process.Subject(Result(journal.Status, workspace.Error)),
     compile_reply: process.Subject(Result(compile.Reply, compile.Error)),
+    launch_reply: process.Subject(Result(launch.Reply, launch.Error)),
     selector: process.Selector(CreditMessage),
     network: Option(process.Subject(weft.Pulled(Nil, Nil))),
     registration: Option(Registration),
@@ -325,7 +349,7 @@ pub fn registration(
     },
     Error(InvalidConfiguration),
   )
-  Ok(Registration(owner, binding, native, semantic, None, lifetime_owner))
+  Ok(Registration(owner, binding, native, semantic, None, None, lifetime_owner))
 }
 
 /// Derives native and enrollment authority from the concrete whole Compile owner.
@@ -349,6 +373,39 @@ pub fn compile_registration(
     Error(InvalidConfiguration),
   )
   Ok(Registration(..row, compile: Some(whole)))
+}
+
+/// Attaches a concrete Launch owner without creating a second same-scope row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// beam_endpoint.attach_launch(original_row, whole_launch) // -> Ok(same_row).
+/// ```
+pub fn attach_launch(
+  row: Registration,
+  whole: launch.Service,
+) -> Result(Registration, Error) {
+  use <- bool.guard(
+    row.launch != None
+      || row.native != launch.native_service(whole)
+      || semantic_scope(row.binding.scope) != Ok(launch.scope(whole)),
+    Error(InvalidConfiguration),
+  )
+  use <- bool.guard(
+    case row.compile {
+      None -> False
+      Some(compiled) ->
+        compile.resource_owner(compiled) != launch.resource_owner(whole)
+        || enrollment.matches(
+          compile.enrolled(compiled),
+          launch.enrolled(whole),
+        )
+        != Ok(Nil)
+    },
+    Error(InvalidConfiguration),
+  )
+  Ok(Registration(..row, launch: Some(whole)))
 }
 
 /// Checks the same finite table used by later local registrations.
@@ -492,7 +549,7 @@ pub fn exchange(config: Config, body: wire.Body) -> Result(wire.Body, Error) {
   })
 }
 
-/// Routes a physical command only through the registered whole Compile owner.
+/// Routes each physical command through its matching retained whole-service owner.
 ///
 /// ## Examples
 /// `exchange_command(config, original_reference, body)` retains the live Claim route.
@@ -567,6 +624,48 @@ pub fn compile_exchange(
     ))
     decode_segments(returned)
   })
+}
+
+/// Exchanges finite Launch control data without creating a live channel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// beam_endpoint.launch_exchange(config, launch_wire.Query, canonical_input)
+/// ```
+pub fn launch_exchange(
+  config: Config,
+  operation: launch_wire.Command,
+  bytes: BitArray,
+) -> Result(#(BitArray, Option(BitArray)), Error) {
+  use binding <- result.try(client_binding(config))
+  use _ <- result.try(
+    launch_wire.encode_command(operation)
+    |> result.replace_error(InvalidInvocation),
+  )
+  bounded(config.within_ms, fn() {
+    use returned <- result.try(owner_exchange(
+      config,
+      binding,
+      protocol.Launch(operation),
+      bytes,
+    ))
+    decode_segments(returned)
+  })
+}
+
+/// Installs the original Launch host through one finite control credit.
+/// A lost answer remains uncertain and must not cause a new bind attempt.
+/// Socket acceptance and stream drain belong to the returned bridge actor.
+///
+/// ## Examples
+/// `bind_launch(config, launch_beam.offer(owner))` returns its checked acceptance.
+pub fn bind_launch(
+  config: Config,
+  offered: launch_beam.Offer,
+) -> Result(launch_beam.Acceptance, Error) {
+  use binding <- result.try(client_binding(config))
+  bounded(config.within_ms, fn() { owner_bind(config, binding, offered) })
 }
 
 /// Exchanges one exact semantic invocation and validates any completion.
@@ -912,6 +1011,7 @@ fn start_credit(
     let native_reply = process.new_subject()
     let workspace_reply = process.new_subject()
     let compile_reply = process.new_subject()
+    let launch_reply = process.new_subject()
     let selector =
       process.new_selector()
       |> process.select(subject)
@@ -924,6 +1024,7 @@ fn start_credit(
       |> process.select_map(native_reply, NativeReply)
       |> process.select_map(workspace_reply, WorkspaceReply)
       |> process.select_map(compile_reply, CompileReply)
+      |> process.select_map(launch_reply, LaunchReply)
     Ok(
       actor.initialised(Credit(
         parent,
@@ -934,6 +1035,7 @@ fn start_credit(
         native_reply,
         workspace_reply,
         compile_reply,
+        launch_reply,
         selector,
         None,
         None,
@@ -971,6 +1073,7 @@ fn handle_credit(
     NativeReply(reply) -> native_replied(state, reply)
     WorkspaceReply(reply) -> workspace_replied(state, reply)
     CompileReply(reply) -> compile_replied(state, reply)
+    LaunchReply(reply) -> launch_replied(state, reply)
     NetworkReport(weft.AllDelivered) -> network_finished(state)
     NetworkReport(weft.RunLost(_)) | ServiceDown | CloseCredit -> actor.stop()
     NetworkReport(weft.PulledOutcome(_)) | NetworkReport(weft.NotYet) ->
@@ -1019,6 +1122,19 @@ fn begin_credit(
         }
       }
 
+      let #(selector, monitors) = case row.launch {
+        None -> #(selector, monitors)
+        Some(whole) -> {
+          let monitor = process.monitor(launch.pid(whole))
+          #(
+            process.select_specific_monitor(selector, monitor, fn(_) {
+              ServiceDown
+            }),
+            [monitor, ..monitors],
+          )
+        }
+      }
+
       // Stable credit subjects own service custody; managed tasks own only transport.
       weft.new_prepared([
         weft.managed(fn(_) { serve(row, route, reservation, requests) }),
@@ -1045,6 +1161,35 @@ fn begin_credit(
 
 fn admit(state: Credit, request: Request) -> actor.Next(Credit, CreditMessage) {
   case state.registration, state.pending, request {
+    Some(row), NoAsk, BindRequest(offered, reply) -> {
+      case row.launch {
+        None -> {
+          process.send(reply, Error(Nil))
+          available(state)
+        }
+        Some(whole) -> {
+          // Only the finite local Installed acknowledgement runs in this credit.
+          // The original stream actor owns socket acceptance and its deadline.
+          case launch_beam.serve(whole, row.owner, row.binding, offered) {
+            Ok(executor) -> {
+              process.send(reply, Ok(launch_beam.acceptance(executor)))
+              available(state)
+            }
+            Error(launch_beam.Invalid) -> {
+              process.send(reply, Error(Nil))
+              available(state)
+            }
+            Error(launch_beam.Uncertain) -> {
+              process.send(reply, Error(Nil))
+
+              // Installation may have reached original owner custody. Actor loss
+              // retains this assignment after the network worker retires.
+              actor.stop()
+            }
+          }
+        }
+      }
+    }
     Some(row), NoAsk, NativeRequest(envelope, reply) -> {
       service.send_exchange(
         row.native,
@@ -1104,22 +1249,86 @@ fn admit(state: Credit, request: Request) -> actor.Next(Credit, CreditMessage) {
           actor.continue(Credit(..state, pending: CompileAsk(key, reply)))
         }
       }
-    Some(row), NoAsk, CommandRequest(envelope, reply) ->
-      case row.compile {
+    Some(row), NoAsk, LaunchRequest(operation, original, token, reply) -> {
+      case row.launch {
         None -> {
           process.send(reply, Error(Nil))
           available(state)
         }
         Some(whole) -> {
-          compile.send_command_exchange(whole, envelope, state.native_reply)
+          let key = original.key
+          let operation = case operation, token {
+            launch_wire.ChallengeRequest, None ->
+              Ok(launch.ChallengeRequest(key))
+            launch_wire.PlaceToken(nonce, budget), Some(token) ->
+              Ok(launch.PlaceToken(original, nonce, budget, token))
+            launch_wire.Query, None -> Ok(launch.Query(key))
+            launch_wire.Cancel, None -> Ok(launch.Cancel(original))
+            launch_wire.Acknowledge(digest), None ->
+              Ok(launch.Acknowledge(key, digest))
+            launch_wire.RefuseBeforeNative, None ->
+              Ok(launch.RefuseBeforeNative(
+                original,
+                "owner clearance refused before native dispatch",
+              ))
+            _, _ -> Error(Nil)
+          }
+          case operation {
+            Error(Nil) -> actor.stop()
+            Ok(operation) -> {
+              launch.send_operation(
+                whole,
+                launch.Caller(
+                  wire.Owner,
+                  row.binding.owner,
+                  row.binding.executor,
+                  row.binding.generation,
+                  launch.scope(whole),
+                ),
+                operation,
+                state.launch_reply,
+              )
+              actor.continue(Credit(..state, pending: LaunchAsk(key, reply)))
+            }
+          }
+        }
+      }
+    }
+    Some(row), NoAsk, CommandRequest(envelope, reply) -> {
+      let routed = case
+        command.service_role(command.service(wire.command_ref(envelope)))
+      {
+        command.CompileService ->
+          case row.compile {
+            None -> Error(Nil)
+            Some(whole) -> {
+              compile.send_command_exchange(whole, envelope, state.native_reply)
+              Ok(Nil)
+            }
+          }
+        command.LaunchService ->
+          case row.launch {
+            None -> Error(Nil)
+            Some(whole) -> {
+              launch.send_command_exchange(whole, envelope, state.native_reply)
+              Ok(Nil)
+            }
+          }
+      }
+      case routed {
+        Error(Nil) -> {
+          process.send(reply, Error(Nil))
+          available(state)
+        }
+        Ok(Nil) ->
           actor.continue(
             Credit(
               ..state,
               pending: CommandAsk(wire.command_ref(envelope), reply),
             ),
           )
-        }
       }
+    }
     _, _, _ -> actor.stop()
   }
 }
@@ -1186,6 +1395,33 @@ fn compile_replied(
       }
     }
     NoAsk
+    | LaunchAsk(_, _)
+    | CommandAsk(_, _)
+    | NativeHello(_, _)
+    | NativeAsk(_)
+    | WorkspaceAsk(_) -> actor.stop()
+  }
+}
+
+fn launch_replied(
+  state: Credit,
+  answer: Result(launch.Reply, launch.Error),
+) -> actor.Next(Credit, CreditMessage) {
+  case state.pending {
+    LaunchAsk(key, reply) -> {
+      let encoded =
+        launch_wire.encode_reply(key, answer)
+        |> result.replace_error(Nil)
+        |> result.try(encode_segments)
+      process.send(reply, encoded)
+      case answer {
+        Error(launch.Uncertain) | Error(launch.Custody(resources.Uncertain)) ->
+          actor.stop()
+        Ok(_) | Error(_) -> available(Credit(..state, pending: NoAsk))
+      }
+    }
+    NoAsk
+    | CompileAsk(_, _)
     | CommandAsk(_, _)
     | NativeHello(_, _)
     | NativeAsk(_)
@@ -1210,6 +1446,7 @@ fn workspace_replied(
       }
     }
     NoAsk
+    | LaunchAsk(_, _)
     | CompileAsk(_, _)
     | CommandAsk(_, _)
     | NativeHello(_, _)
@@ -1283,12 +1520,48 @@ fn serve(
     reservation.reply,
     Granted(reservation.correlation, incoming),
   ))
-  use bytes <- result.try(receive_input(route, reservation, incoming))
+  case route {
+    protocol.LaunchBind -> serve_bind(row, reservation, incoming, requests)
+    protocol.Native(_)
+    | protocol.NativeCommand(_)
+    | protocol.Workspace(_)
+    | protocol.Compile(_)
+    | protocol.Launch(_) -> {
+      use bytes <- result.try(receive_input(route, reservation, incoming))
+      let reply = process.new_subject()
+      use request <- result.try(decode_request(row, route, bytes, reply))
+      process.send(requests, #(reservation.correlation, request))
+      use bytes <- result.try(process.receive_forever(reply))
+      return_output(route, reservation, incoming, bytes)
+    }
+  }
+}
+
+// The exact acceptance stays in this transport task until its single ACK.
+fn serve_bind(
+  row: Registration,
+  reservation: Reservation,
+  incoming: process.Subject(Frame),
+  requests: process.Subject(#(reference.Reference, Request)),
+) -> Result(Nil, Nil) {
+  use offered <- result.try(case process.receive_forever(incoming) {
+    BindInput(ref, bytes, door) if ref == reservation.correlation ->
+      launch_beam.offer_from_wire(row.owner, bytes, door)
+      |> result.replace_error(Nil)
+    BindInput(_, _, _)
+    | Input(_, _, _)
+    | ReplyConsumed(_, _)
+    | StatusConsumed(_) -> Error(Nil)
+  })
   let reply = process.new_subject()
-  use request <- result.try(decode_request(row, route, bytes, reply))
-  process.send(requests, #(reservation.correlation, request))
-  use bytes <- result.try(process.receive_forever(reply))
-  return_output(route, reservation, incoming, bytes)
+  process.send(requests, #(reservation.correlation, BindRequest(offered, reply)))
+  use accepted <- result.try(process.receive_forever(reply))
+  let #(bytes, door) = launch_beam.acceptance_fields(accepted)
+  use _ <- result.try(sent(
+    reservation.reply,
+    BindReturned(reservation.correlation, bytes, door),
+  ))
+  consumed(incoming, reservation.correlation, 0)
 }
 
 fn decode_request(
@@ -1299,6 +1572,7 @@ fn decode_request(
 ) -> Result(Request, Nil) {
   let binding = row.binding
   case route {
+    protocol.LaunchBind -> Error(Nil)
     protocol.Native(lane) -> {
       use envelope <- result.try(protocol.native(binding, wire.Owner, bytes))
       use actual <- result.try(protocol.lane(envelope.body))
@@ -1338,6 +1612,27 @@ fn decode_request(
             |> result.replace_error(Nil),
           )
           Ok(CompileRequest(operation, original, reply))
+        }
+      }
+    protocol.Launch(operation) ->
+      case row.launch {
+        None -> Error(Nil)
+        Some(whole) -> {
+          use #(original, token) <- result.try(case operation {
+            launch_wire.PlaceToken(_, _) ->
+              launch_wire.decode_placement(launch.enrolled(whole), bytes)
+              |> result.map(fn(pair) { #(pair.0, Some(pair.1)) })
+              |> result.replace_error(Nil)
+            launch_wire.ChallengeRequest
+            | launch_wire.Query
+            | launch_wire.Cancel
+            | launch_wire.Acknowledge(_)
+            | launch_wire.RefuseBeforeNative ->
+              launch_wire.decode_input(launch.enrolled(whole), bytes)
+              |> result.map(fn(original) { #(original, None) })
+              |> result.replace_error(Nil)
+          })
+          Ok(LaunchRequest(operation, original, token, reply))
         }
       }
     protocol.Workspace(operation) -> {
@@ -1388,7 +1683,10 @@ fn input_frame(
   case process.receive_forever(incoming) {
     Input(ref, index, bytes) if ref == correlation && index == ordinal ->
       Ok(bytes)
-    Input(_, _, _) | ReplyConsumed(_, _) | StatusConsumed(_) -> Error(Nil)
+    Input(_, _, _)
+    | ReplyConsumed(_, _)
+    | StatusConsumed(_)
+    | BindInput(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1424,6 +1722,7 @@ fn return_output(
   bytes: BitArray,
 ) -> Result(Nil, Nil) {
   case route, bytes {
+    protocol.LaunchBind, _ -> Error(Nil)
     protocol.Workspace(_), <<1, 2, completion:bytes>> -> {
       use _ <- result.try(workspace_status(reservation, incoming, <<1, 2>>))
       return_content(route, reservation, incoming, completion)
@@ -1435,6 +1734,7 @@ fn return_output(
     protocol.Native(_), _
     | protocol.NativeCommand(_), _
     | protocol.Compile(_), _
+    | protocol.Launch(_), _
     -> return_content(route, reservation, incoming, bytes)
   }
 }
@@ -1452,7 +1752,10 @@ fn workspace_status(
   ))
   case process.receive_forever(incoming) {
     StatusConsumed(ref) if ref == reservation.correlation -> Ok(Nil)
-    Input(_, _, _) | ReplyConsumed(_, _) | StatusConsumed(_) -> Error(Nil)
+    Input(_, _, _)
+    | ReplyConsumed(_, _)
+    | StatusConsumed(_)
+    | BindInput(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1482,7 +1785,10 @@ fn consumed(
   case process.receive_forever(incoming) {
     ReplyConsumed(ref, index) if ref == correlation && index == ordinal ->
       Ok(Nil)
-    Input(_, _, _) | ReplyConsumed(_, _) | StatusConsumed(_) -> Error(Nil)
+    Input(_, _, _)
+    | ReplyConsumed(_, _)
+    | StatusConsumed(_)
+    | BindInput(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1541,7 +1847,74 @@ fn owner_exchange(
     Granted(_, _)
     | Consumed(_, _)
     | Returned(_, _, _)
-    | WorkspaceStatus(_, _) -> Error(Nil)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
+  }
+}
+
+fn owner_bind(
+  config: Config,
+  binding: protocol.Binding,
+  offered: launch_beam.Offer,
+) -> Result(launch_beam.Acceptance, Nil) {
+  use _ <- result.try(
+    distribution.connect(config.peer, config.within_ms)
+    |> result.replace_error(Nil),
+  )
+  use endpoint <- result.try(
+    distribution.endpoint(config.peer, config.within_ms)
+    |> result.replace_error(Nil),
+  )
+  use header <- result.try(protocol.header(binding, protocol.LaunchBind))
+  let reply = process.new_subject()
+  let correlation = reference.new()
+  use _ <- result.try(sent(
+    rendezvous(endpoint),
+    Reservation(header, correlation, process.self(), reply),
+  ))
+  case process.receive_forever(reply) {
+    Granted(ref, incoming) if ref == correlation -> {
+      use <- bool.guard(
+        case process.subject_owner(incoming) {
+          Ok(pid) -> !distribution.owns(config.peer, pid)
+          Error(Nil) -> True
+        },
+        Error(Nil),
+      )
+      let #(bytes, door) = launch_beam.offer_fields(offered)
+      use _ <- result.try(sent(incoming, BindInput(correlation, bytes, door)))
+      receive_acceptance(config.peer, bytes, correlation, incoming, reply)
+    }
+    Granted(_, _)
+    | Consumed(_, _)
+    | Returned(_, _, _)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
+  }
+}
+
+fn receive_acceptance(
+  peer: distribution.Peer,
+  original_binding: BitArray,
+  correlation: reference.Reference,
+  incoming: process.Subject(Frame),
+  reply: process.Subject(Reply),
+) -> Result(launch_beam.Acceptance, Nil) {
+  case process.receive_forever(reply) {
+    BindReturned(ref, bytes, door) if ref == correlation -> {
+      use <- bool.guard(bytes != original_binding, Error(Nil))
+      use accepted <- result.try(
+        launch_beam.acceptance_from_wire(peer, bytes, door)
+        |> result.replace_error(Nil),
+      )
+      use _ <- result.try(sent(incoming, ReplyConsumed(correlation, 0)))
+      Ok(accepted)
+    }
+    Granted(_, _)
+    | Consumed(_, _)
+    | Returned(_, _, _)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1569,7 +1942,8 @@ fn input_consumed(
     Granted(_, _)
     | Consumed(_, _)
     | Returned(_, _, _)
-    | WorkspaceStatus(_, _) -> Error(Nil)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1620,10 +1994,14 @@ fn receive_status_or_output(
         Granted(_, _)
         | Consumed(_, _)
         | Returned(_, _, _)
-        | WorkspaceStatus(_, _) -> Error(Nil)
+        | WorkspaceStatus(_, _)
+        | BindReturned(_, _, _) -> Error(Nil)
       }
-    protocol.Native(_) | protocol.NativeCommand(_) | protocol.Compile(_) ->
-      receive_output(route, correlation, incoming, reply)
+    protocol.Native(_)
+    | protocol.NativeCommand(_)
+    | protocol.Compile(_)
+    | protocol.Launch(_) -> receive_output(route, correlation, incoming, reply)
+    protocol.LaunchBind -> Error(Nil)
   }
 }
 
@@ -1646,7 +2024,8 @@ fn receive_output(
     Granted(_, _)
     | Consumed(_, _)
     | Returned(_, _, _)
-    | WorkspaceStatus(_, _) -> Error(Nil)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
   }
 }
 
@@ -1672,7 +2051,8 @@ fn returned_chunks(
     Granted(_, _)
     | Consumed(_, _)
     | Returned(_, _, _)
-    | WorkspaceStatus(_, _) -> Error(Nil)
+    | WorkspaceStatus(_, _)
+    | BindReturned(_, _, _) -> Error(Nil)
   }
 }
 

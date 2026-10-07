@@ -1,4 +1,4 @@
-//// Whole Compile keeps its original preparation continuation outside ingress.
+//// Whole Launch keeps its original preparation continuation outside ingress.
 ////
 //// The actor retains complete input before a managed admission ask. Only atomic
 //// first admission returns a Claim; the actor stores that Claim before allowing
@@ -7,7 +7,8 @@
 //// assembly owes one original continuation rather than a recoverable bearer ID.
 ////
 //// One monotonic cap starts when an original challenge is consumed. Preparation,
-//// Ready persistence, native admission and completion observation spend that cap.
+//// Ready persistence and native admission spend that cap. Completion observation
+//// has a separate bounded six-second cleanup grace that cannot dispatch work.
 //// The native engine receives the unchanged cap and the listener's original final
 //// reply endpoint. A forwarding task's drain cannot settle that native ask.
 ////
@@ -23,8 +24,8 @@
 ////
 //// `configure` checks pinned assembly; `start` and `supervised` use `builder`.
 //// `send_operation` enters `handle`; `operation_key` selects the complete key; `submit` consumes a ticket before `launch`.
-//// `perform` re-vets and admits; `begin_preparation` stores the original Claim.
-//// `prepare` creates the allocation; `observe` finalizes once after real terminal.
+//// `perform` verifies producer files and admits; `begin_preparation` stores the original Claim.
+//// `prepare` creates the original listener; `observe` retains actual native settlement.
 //// `launch_control` bounds metadata asks before phase changes; `control` fences before native cancel.
 //// `control_definite` classifies both the result transition and final metadata drain.
 //// `route` forwards live claims directly and historical contexts through control.
@@ -35,13 +36,16 @@ import broker/enrollment
 import broker/internal/call
 import codemode/build
 import codemode/compile
+import codemode/run_channel
 import codemode/service_input as input
 import codemode/service_resources as resources
 import core/command
 import core/workspace
-import executor/remote/compile_completion as completion
-import executor/remote/compile_observation as observation
+import executor/remote/compile_completion
 import executor/remote/identity
+import executor/remote/launch_channel
+import executor/remote/launch_completion as completion
+import executor/remote/launch_observation as observation
 import executor/remote/resource_journal as journal
 import executor/remote/service as native
 import executor/remote/wire
@@ -55,12 +59,11 @@ import gleam/otp/actor as otp_actor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
-import simplifile
 import weft
 import weft/actor
 import weft/poll
 
-/// Trusted exact endpoints and source contract, with explicit finite concurrency.
+/// Trusted exact endpoints with explicit finite concurrency.
 pub opaque type Config {
   /// Private checked constructor; administrative callers use configure.
   Config(
@@ -68,8 +71,6 @@ pub opaque type Config {
     resources: journal.Journal,
     /// The one existing native admission engine.
     native: native.Service,
-    /// Trusted effective policy and exact generated catalogue, checked on Submit.
-    contract: input.CompilationContract,
     /// Physical and independent metadata task bounds, each in one through four.
     max_active: Int,
     /// Complete enrolled administrative scope.
@@ -87,7 +88,7 @@ pub opaque type Service {
     native: native.Service,
     /// Original checked resource enrollment for canonical listener decoding.
     enrolled: enrollment.SessionEnrollment,
-    /// Original live resource writer identity, without its authority.
+    /// Exact resource writer identity for same-row registration validation.
     resource_owner: process.Pid,
     /// Private closed message door.
     subject: process.Subject(Message),
@@ -117,20 +118,30 @@ pub type Caller {
 /// Whole-service operations contain data only, never effect callbacks.
 @internal
 pub type Operation {
-  /// Issues a short single-use ticket for one complete Compile key.
+  /// Issues a short single-use ticket for one complete Launch key.
   ChallengeRequest(
     /// Complete key, including the original input and enrollment digests.
     key: command.ServiceKey,
   )
 
   /// Offers exact canonical input and the original remaining attempt budget.
-  Submit(
+  PlaceToken(
     /// Exact bounded canonical input; full identity is retained before admission.
     original: journal.Input,
     /// Original single-use 32-byte ticket.
     nonce: BitArray,
     /// Positive remaining whole-service duration, never a Unix deadline.
     budget_ms: Int,
+    /// Closed placement bytes checked before Claim admission and never retained.
+    token: BitArray,
+  )
+
+  /// Definite original owner clearance refusal, never a timeout or lost reply.
+  RefuseBeforeNative(
+    /// Exact original admitted input.
+    original: journal.Input,
+    /// Bounded witnessed diagnostic, without token bytes.
+    reason: String,
   )
 
   /// Reads historical preparation and committed outer result only.
@@ -172,7 +183,7 @@ pub type Reply {
     /// Historical allocation evidence, without a resource lease.
     preparation: journal.Status,
     /// Committed outer result and independent owner receipt, if present.
-    completion: journal.CompileStatus,
+    completion: journal.LaunchStatus,
   )
 
   /// Committed input/scope fence, without cleanup or native retirement proof.
@@ -187,7 +198,7 @@ pub type Error {
   /// Endpoint, enrollment or finite capacity differs before start.
   InvalidConfiguration
 
-  /// Caller, key, canonical body or trusted source contract differs.
+  /// Caller, key, canonical body, token or producer artifact differs.
   Invalid
 
   /// No bounded task or challenge slot was admitted.
@@ -211,8 +222,13 @@ pub type Error {
   /// Concrete pre-native preparation error.
   Preparation(
     /// Concrete known error before Ready and native association.
-    error: compile.CompileError,
+    error: String,
   )
+}
+
+type Observation {
+  Recorded(completion.LaunchCompletion)
+  FencedBeforeAssociation(journal.Status)
 }
 
 type Ticket {
@@ -243,11 +259,26 @@ type Active {
     reply: Option(process.Subject(Result(Reply, Error))),
     result: Option(Result(Reply, Error)),
     drain: Drain,
+    channel: Option(launch_channel.Owner),
+    host_install: HostInstall,
+    closed: Option(run_channel.CloseResult),
+    local_cancel: LocalCancelState,
   )
+}
+
+type LocalCancelState {
+  CancelAvailable
+  CancelStarted
+}
+
+type HostInstall {
+  Available
+  HostInstalled
 }
 
 type Control {
   Read(key: command.ServiceKey, digest: Option(identity.Digest))
+  Refuse(claim: journal.Claim, reason: String)
   Fence(original: journal.Input)
   Route(
     envelope: wire.CommandEnvelope,
@@ -257,6 +288,10 @@ type Control {
 }
 
 type ControlAnswer {
+  FenceObserved(
+    fence: journal.PreparationFence,
+    association: journal.NativeStatus,
+  )
   Answer(value: Reply)
   Forwarded
   BarrierDone
@@ -307,6 +342,21 @@ type State {
 }
 
 type Message {
+  ChannelClosed(command.ServiceKey, run_channel.CloseResult)
+
+  ChannelOwned(
+    command.ServiceKey,
+    launch_channel.Owner,
+    process.Subject(Result(Nil, Error)),
+  )
+  InstallHost(
+    command.ServiceKey,
+    run_channel.HostEndpoint,
+    process.Subject(run_channel.Connection),
+    process.Subject(Result(Installation, Error)),
+  )
+  LocalCancel(command.ServiceKey)
+
   Operation(
     caller: Caller,
     operation: Operation,
@@ -330,18 +380,17 @@ type Message {
 }
 
 /// Checks exact endpoints and administrative scope without reading peer input.
-/// Source and opaque contract enrollment are revalidated on Submit before effects.
+/// Producer history, enrollment and physical artifact are checked before effects.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.configure(resources, native, contract, 2)
+/// launch_service.configure(resources, native, 2)
 /// // -> Ok(config) for the exact enrolled assembly.
 /// ```
 pub fn configure(
   resources: journal.Journal,
   native: native.Service,
-  contract: input.CompilationContract,
   max_active: Int,
 ) -> Result(Config, Error) {
   let config = native.configuration(native)
@@ -364,7 +413,7 @@ pub fn configure(
     && max_active >= 1
     && max_active <= 4
   {
-    True -> Ok(Config(resources, native, contract, max_active, scope))
+    True -> Ok(Config(resources, native, max_active, scope))
     False -> Error(InvalidConfiguration)
   }
 }
@@ -374,7 +423,7 @@ pub fn configure(
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.start(config) // -> Ok(service).
+/// launch_service.start(config) // -> Ok(service).
 /// ```
 pub fn start(config: Config) -> Result(Service, Error) {
   builder(config)
@@ -398,7 +447,7 @@ pub fn start(config: Config) -> Result(Service, Error) {
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.supervised(config) // -> a Temporary child specification.
+/// launch_service.supervised(config) // -> a Temporary child specification.
 /// ```
 pub fn supervised(config: Config) -> supervision.ChildSpecification(Service) {
   supervision.worker(fn() {
@@ -426,7 +475,7 @@ pub fn supervised(config: Config) -> supervision.ChildSpecification(Service) {
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.scope(service) // -> the enrolled scope.
+/// launch_service.scope(service) // -> the enrolled scope.
 /// ```
 pub fn scope(service: Service) -> workspace.Scope {
   service.scope
@@ -438,11 +487,20 @@ pub fn scope(service: Service) -> workspace.Scope {
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.native_service(service) == native // -> exact endpoint equality.
+/// launch_service.native_service(service) == native // -> exact endpoint equality.
 /// ```
 @internal
 pub fn native_service(service: Service) -> native.Service {
   service.native
+}
+
+/// Reads exact resource writer identity without exposing journal authority.
+///
+/// ## Examples
+///
+/// `resource_owner(service)` must equal the writer retained by registration.
+pub fn resource_owner(service: Service) -> process.Pid {
+  service.resource_owner
 }
 
 /// Reads original checked enrollment for canonical listener input and Ready codecs.
@@ -451,22 +509,11 @@ pub fn native_service(service: Service) -> native.Service {
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.enrolled(service) // -> the original resource enrollment.
+/// launch_service.enrolled(service) // -> the original resource enrollment.
 /// ```
 @internal
 pub fn enrolled(service: Service) -> enrollment.SessionEnrollment {
   service.enrolled
-}
-
-/// Projects the original resource writer identity without exposing its authority.
-///
-/// ## Examples
-///
-/// ```gleam
-/// compile_service.resource_owner(service) // -> original_writer_pid.
-/// ```
-pub fn resource_owner(service: Service) -> process.Pid {
-  service.resource_owner
 }
 
 /// Exposes only actor lifetime; endpoint death proves no resource cleanup.
@@ -474,7 +521,7 @@ pub fn resource_owner(service: Service) -> process.Pid {
 /// ## Examples
 ///
 /// ```gleam
-/// process.monitor(compile_service.pid(service)) // -> an endpoint monitor.
+/// process.monitor(launch_service.pid(service)) // -> an endpoint monitor.
 /// ```
 pub fn pid(service: Service) -> process.Pid {
   service.pid
@@ -486,7 +533,7 @@ pub fn pid(service: Service) -> process.Pid {
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.send_operation(service, caller, compile_service.Query(key), reply)
+/// launch_service.send_operation(service, caller, launch_service.Query(key), reply)
 /// // -> Nil; a later reply describes committed history.
 /// ```
 @internal
@@ -505,7 +552,7 @@ pub fn send_operation(
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.send_command_exchange(service, envelope, reply) // -> Nil.
+/// launch_service.send_command_exchange(service, envelope, reply) // -> Nil.
 /// ```
 @internal
 pub fn send_command_exchange(
@@ -522,7 +569,7 @@ pub fn send_command_exchange(
 /// ## Examples
 ///
 /// ```gleam
-/// compile_service.close(service) // -> Ok(Nil) only after local drain evidence.
+/// launch_service.close(service) // -> Ok(Nil) only after local drain evidence.
 /// ```
 pub fn close(service: Service) -> Result(Nil, Error) {
   call.try_call(service.subject, waiting: 35_000, sending: Close)
@@ -567,6 +614,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       operation(state, caller, requested, reply)
     Begin(key, claim, reply) -> begin_preparation(state, key, claim, reply)
     Ready(key) -> ready(state, key)
+    ChannelClosed(key, closed) -> channel_closed(state, key, closed)
+    ChannelOwned(key, channel, reply) ->
+      retain_channel(state, key, channel, reply)
+    InstallHost(key, host, handoff, reply) ->
+      install_original_host(state, key, host, handoff, reply)
+    LocalCancel(key) -> local_cancel(state, key)
     Report(key, report) -> reported(state, key, report)
     ControlReport(id, report) -> control_reported(state, id, report)
     Command(envelope, reply) -> route(state, envelope, reply)
@@ -595,7 +648,9 @@ fn operation(
 fn operation_key(operation: Operation) -> command.ServiceKey {
   case operation {
     ChallengeRequest(key) | Query(key) | Acknowledge(key, _) -> key
-    Submit(original, _, _) | Cancel(original) -> original.key
+    PlaceToken(original, _, _, _)
+    | Cancel(original)
+    | RefuseBeforeNative(original, _) -> original.key
   }
 }
 
@@ -612,7 +667,7 @@ fn validate_caller(
     && caller.generation == native.generation
     && caller.scope == config.scope
     && command.coordinates(key).0 == config.scope
-    && command.service_role(key) == command.CompileService
+    && command.service_role(key) == command.LaunchService
   {
     True -> Ok(Nil)
     False -> Error(Invalid)
@@ -626,9 +681,11 @@ fn dispatch(
 ) -> State {
   case requested {
     ChallengeRequest(key) -> challenge(state, key, reply)
-    Submit(original, nonce, budget) ->
-      submit(state, original, nonce, budget, reply)
+    PlaceToken(original, nonce, budget, token) ->
+      submit(state, original, nonce, budget, token, reply)
     Query(key) -> launch_control(state, Read(key, None), Whole(reply))
+    RefuseBeforeNative(original, reason) ->
+      refuse_original(state, original, reason, reply)
     Acknowledge(key, digest) ->
       launch_control(state, Read(key, Some(digest)), Whole(reply))
     Cancel(original) -> {
@@ -675,6 +732,7 @@ fn submit(
   original: journal.Input,
   nonce: BitArray,
   budget: Int,
+  token: BitArray,
   reply: process.Subject(Result(Reply, Error)),
 ) -> State {
   case dict.get(state.active, original.key) {
@@ -687,7 +745,7 @@ fn submit(
         }
       }
     }
-    Error(Nil) -> submit_fresh(state, original, nonce, budget, reply)
+    Error(Nil) -> submit_fresh(state, original, nonce, budget, token, reply)
   }
 }
 
@@ -696,6 +754,7 @@ fn submit_fresh(
   original: journal.Input,
   nonce: BitArray,
   budget: Int,
+  token: BitArray,
   reply: process.Subject(Result(Reply, Error)),
 ) -> State {
   let now = native.configuration(state.config.native).now()
@@ -718,7 +777,8 @@ fn submit_fresh(
         False -> Error(Expired)
       },
     )
-    validate_input(state.config, original)
+    use decoded <- result.try(validate_input(state.config, original))
+    validate_token(decoded, token)
   }
   case permitted {
     Error(error) -> {
@@ -735,7 +795,7 @@ fn submit_fresh(
             ticket.nonce != nonce
           }),
         )
-      launch(state, original, now + budget, reply)
+      launch(state, original, now + budget, token, reply)
     }
   }
 }
@@ -751,19 +811,19 @@ fn admission_capacity(state: State) -> Result(Nil, Error) {
 fn validate_input(
   config: Config,
   original: journal.Input,
-) -> Result(input.CompileInput, Error) {
+) -> Result(input.LaunchInput, Error) {
   use decoded <- result.try(
-    input.decode_compile(original.body) |> result.replace_error(Invalid),
+    input.decode_launch(original.body) |> result.replace_error(Invalid),
   )
   use Nil <- result.try(
     enrollment.matches(
       journal.enrolled(config.resources),
-      input.compile_facts(decoded).enrolled,
+      input.launch_facts(decoded).enrolled,
     )
     |> result.replace_error(Invalid),
   )
   use _ <- result.try(
-    input.compile_envelope(original.key, decoded)
+    input.launch_envelope(original.key, decoded)
     |> result.replace_error(Invalid),
   )
   case
@@ -779,6 +839,7 @@ fn launch(
   state: State,
   original: journal.Input,
   deadline: Int,
+  token: BitArray,
   reply: process.Subject(Result(Reply, Error)),
 ) -> State {
   let reports = process.new_subject()
@@ -788,9 +849,11 @@ fn launch(
   let now = native.configuration(config.native).now
   let _ =
     weft.new_prepared([
-      weft.managed(fn(_ledger) { perform(config, subject, original, deadline) }),
+      weft.managed(fn(_ledger) {
+        perform(config, subject, original, deadline, token)
+      }),
     ])
-    |> weft.deadline(deadline - now())
+    |> weft.deadline(deadline - now() + 6000)
     |> weft.cancel_grace(1000)
     |> weft.cancel_with(cancel)
     |> weft.cancel_when_exits(process.self())
@@ -805,6 +868,10 @@ fn launch(
       Some(reply),
       None,
       Awaiting,
+      None,
+      Available,
+      None,
+      CancelAvailable,
     )
   State(
     ..state,
@@ -847,7 +914,7 @@ fn accept_begin(
       let active = Active(..active, phase: Preparing(claim), reply: None)
       send_whole(
         active_reply(state, key),
-        Ok(Observed(journal.Unknown(None), journal.CompilePending)),
+        Ok(Observed(journal.Unknown(None), journal.LaunchPending)),
       )
       process.send(reply, BeginPreparation)
       State(..state, active: dict.insert(state.active, key, active))
@@ -895,12 +962,11 @@ fn perform(
   subject: process.Subject(Message),
   original: journal.Input,
   deadline: Int,
+  token: BitArray,
 ) -> Result(Reply, Error) {
   use decoded <- result.try(validate_input(config, original))
-  use admitted <- result.try(
-    input.admit_compile(original.key, config.contract, decoded)
-    |> result.replace_error(Invalid),
-  )
+  use Nil <- result.try(validate_token(decoded, token))
+  use admitted <- result.try(validate_producer(config, original, decoded))
   use Nil <- result.try(remaining(config, deadline))
   use first <- result.try(
     journal.admit_preparation(config.resources, original)
@@ -909,7 +975,7 @@ fn perform(
   case first {
     journal.Retained(status) -> {
       use completion <- result.try(
-        journal.inspect_compile(config.resources, original)
+        journal.inspect_launch(config.resources, original)
         |> result.map_error(Custody),
       )
       Ok(Observed(status, completion))
@@ -922,7 +988,7 @@ fn perform(
         claim,
         deadline,
       ))
-      let prepared = prepare(config, admitted, claim, deadline)
+      let prepared = prepare(config, subject, admitted, claim, deadline, token)
       case prepared {
         Ok(Nil) -> {
           process.send(subject, Ready(original.key))
@@ -953,75 +1019,154 @@ fn handoff(
 
 fn prepare(
   config: Config,
-  admitted: input.AdmittedCompile,
+  subject: process.Subject(Message),
+  admitted: input.AdmittedLaunch,
   claim: journal.Claim,
   deadline: Int,
+  token: BitArray,
 ) -> Result(Nil, Error) {
-  let #(key, decoded, vetted) = input.admitted_compile(admitted)
-  let facts = input.compile_facts(decoded)
+  let #(key, decoded) = input.admitted_launch(admitted)
+  let facts = input.launch_facts(decoded)
   let enrolled = journal.enrolled(config.resources)
-  use root <- result.try(
-    enrollment.compile_path(enrolled, key) |> result.replace_error(Invalid),
+  use paths <- result.try(
+    enrollment.launch_paths(enrolled, key) |> result.replace_error(Invalid),
   )
   use Nil <- result.try(remaining(config, deadline))
 
-  // Exclusive mkdir refuses a preexisting allocation. No cleanup or alternative
-  // suffix can erase lifetime identity or make a failed preparation retry safe.
-  use Nil <- result.try(
-    simplifile.create_directory(root)
-    |> result.replace_error(
-      Preparation(compile.WorkspaceSetupFailed(
-        "allocation already exists or cannot be created",
-      )),
-    ),
-  )
-  use Nil <- result.try(remaining(config, deadline))
-  use _ <- result.try(
-    compile.prepare_workspace(vetted, root, facts.dependencies)
-    |> result.map_error(Preparation),
-  )
-  use Nil <- result.try(remaining(config, deadline))
-  let code = enrollment.code_mode_facts(enrolled)
-  use Nil <- result.try(
-    build.prepare_seed(
-      build.PreparationConfig(code.seed_root, facts.dependencies),
-      root,
-      facts.generated,
+  // The original Claim is already retained by the service actor. This child owns
+  // the exclusive paths and listener, including a lost preparation reply.
+  let book = config.resources
+  let original = journal.original(claim)
+  use channel <- result.try(
+    launch_channel.start(
+      paths,
+      deadline,
+      native.configuration(config.native).now,
+      subject,
+      fn() { process.send(subject, LocalCancel(key)) },
+      fn() {
+        journal.mark_released(book, original, journal.ResourceOwnerCleaned)
+        |> result.replace(Nil)
+        |> result.replace_error(
+          "original resource release COMMIT was not observed",
+        )
+      },
+      fn(closed) { process.send(subject, ChannelClosed(key, closed)) },
     )
     |> result.map_error(Preparation),
   )
-  use Nil <- result.try(remaining(config, deadline))
-  use locations <- result.try(
-    resources.admit_compile_locations(enrolled, key, root)
+  use Nil <- result.try(
+    call.try_call(subject, waiting: 1000, sending: ChannelOwned(key, channel, _))
+    |> result.unwrap(Error(Uncertain)),
+  )
+  use Nil <- result.try(
+    launch_channel.prepare(channel, token)
+    |> result.map_error(fn(error) {
+      case error {
+        launch_channel.Definite(reason) -> Preparation(reason)
+        launch_channel.Uncertain -> Uncertain
+      }
+    }),
+  )
+  use ready <- result.try(
+    resources.admit_launch_resources(
+      enrolled,
+      key,
+      facts.compiled_by,
+      paths.0,
+      paths.1,
+      paths.2,
+    )
     |> result.replace_error(Invalid),
   )
   use _ <- result.try(
-    journal.commit_ready(claim, resources.CompileReady(locations))
+    journal.commit_ready(claim, resources.LaunchReady(ready))
     |> result.map_error(Custody),
   )
   remaining(config, deadline)
 }
 
+// Only the closed placement operation sees token bytes. Its digest comparison
+// precedes Claim admission, so rejection cannot consume physical authority.
+fn validate_token(
+  decoded: input.LaunchInput,
+  token: BitArray,
+) -> Result(Nil, Error) {
+  case
+    bit_array.byte_size(token) == 32
+    && string.lowercase(bit_array.base16_encode(journal.digest(token)))
+    == input.launch_facts(decoded).token_commitment
+  {
+    True -> Ok(Nil)
+    False -> Error(Invalid)
+  }
+}
+
+// Producer evidence comes from the same journal, and physical files must still
+// match that retained manifest before any listener, token or native effects.
+fn validate_producer(
+  config: Config,
+  original: journal.Input,
+  decoded: input.LaunchInput,
+) -> Result(input.AdmittedLaunch, Error) {
+  let facts = input.launch_facts(decoded)
+  use producer <- result.try(
+    journal.retained_input(config.resources, facts.compiled_by)
+    |> result.map_error(Custody),
+  )
+  use closed <- result.try(
+    journal.inspect_compile(config.resources, producer)
+    |> result.map_error(Custody),
+  )
+  use built <- result.try(case closed {
+    journal.CompileRetained(retained, _) ->
+      Ok(compile_completion.compiled(journal.retained_compile_value(retained)))
+    journal.CompilePending -> Error(Invalid)
+  })
+  use admitted <- result.try(
+    input.admit_launch(
+      original.key,
+      journal.enrolled(config.resources),
+      decoded,
+      producer.key,
+      built,
+    )
+    |> result.replace_error(Invalid),
+  )
+  use root <- result.try(
+    enrollment.compile_path(journal.enrolled(config.resources), producer.key)
+    |> result.replace_error(Invalid),
+  )
+  use actual <- result.try(
+    build.fingerprint_directory(root <> "/" <> build.beam_directory)
+    |> result.replace_error(Invalid),
+  )
+  case actual == compile.artifact_hash(facts.artifact) {
+    True -> Ok(admitted)
+    False -> Error(Invalid)
+  }
+}
+
 fn before(
   config: Config,
   claim: journal.Claim,
-  error: compile.CompileError,
+  error: String,
 ) -> Result(Reply, Error) {
   let original = journal.original(claim)
   use value <- result.try(
-    completion.failed_before_native(
+    completion.refused_before_native(
       journal.enrolled(config.resources),
       original.key,
-      observation.bounded_error(error),
+      error,
     )
     |> result.replace_error(Invalid),
   )
   use retained <- result.try(
-    journal.fail_preparation(claim, value) |> result.map_error(Custody),
+    journal.fail_launch_preparation(claim, value) |> result.map_error(Custody),
   )
   Ok(Observed(
     journal.Unknown(None),
-    journal.CompileRetained(retained, journal.ReceiptPending),
+    journal.LaunchRetained(retained, journal.ReceiptPending),
   ))
 }
 
@@ -1030,17 +1175,40 @@ fn observe(
   original: journal.Input,
   deadline: Int,
 ) -> Result(Reply, Error) {
-  use Nil <- result.try(remaining(config, deadline))
   let now = native.configuration(config.native).now
   let observed =
     poll.until_on(
       poll.Clock(now, process.sleep),
-      deadline - now(),
+      deadline + 6000 - now(),
       poll.Fixed(25),
       fn() {
-        case observation.observe(config.resources, original) {
-          Ok(Some(value)) -> poll.Done(value)
-          Ok(None) -> poll.Retry
+        let observed = {
+          use historical <- result.try(journal.inspect_launch(
+            config.resources,
+            original,
+          ))
+          case historical {
+            journal.LaunchRetained(retained, _) ->
+              Ok(Some(journal.retained_launch_value(retained)))
+            journal.LaunchPending ->
+              observation.observe(config.resources, original)
+          }
+        }
+        case observed {
+          Ok(Some(value)) -> poll.Done(Recorded(value))
+          Ok(None) -> {
+            case journal.inspect(config.resources, original) {
+              Ok(journal.Unknown(_) as status) ->
+                case journal.inspect_native(config.resources, original) {
+                  Ok(journal.Unassociated) ->
+                    poll.Done(FencedBeforeAssociation(status))
+                  Ok(journal.Associated(..)) -> poll.Retry
+                  Error(_) -> poll.Fail(Uncertain)
+                }
+              Ok(_) -> poll.Retry
+              Error(_) -> poll.Fail(Uncertain)
+            }
+          }
           Error(_) -> poll.Fail(Uncertain)
         }
       },
@@ -1050,19 +1218,41 @@ fn observe(
     poll.Failed(error) -> Error(error)
     poll.Expired -> Error(Expired)
   })
-  use Nil <- result.try(remaining(config, deadline))
-  use completion <- result.try(
-    observation.finalize(value) |> result.replace_error(Uncertain),
-  )
-  use Nil <- result.try(remaining(config, deadline))
+  case value {
+    FencedBeforeAssociation(status) ->
+      Ok(Observed(status, journal.LaunchPending))
+    Recorded(value) -> retain_observation(config, original, value)
+  }
+}
+
+// An observation allowance can retain committed history after cancellation;
+// it cannot create another Claim, file effect or native dispatch permission.
+fn retain_observation(
+  config: Config,
+  original: journal.Input,
+  completion: completion.LaunchCompletion,
+) -> Result(Reply, Error) {
   use retained <- result.try(
-    journal.commit_compile(config.resources, original, completion)
+    case completion.observation(completion) {
+      completion.NativeSettled ->
+        journal.commit_launch(config.resources, original, completion)
+      completion.RefusedBeforeNative(_) -> {
+        use historical <- result.try(journal.inspect_launch(
+          config.resources,
+          original,
+        ))
+        case historical {
+          journal.LaunchRetained(retained, _) -> Ok(retained)
+          journal.LaunchPending -> Error(journal.Conflict)
+        }
+      }
+    }
     |> result.map_error(Custody),
   )
   use status <- result.try(
     journal.inspect(config.resources, original) |> result.map_error(Custody),
   )
-  Ok(Observed(status, journal.CompileRetained(retained, journal.ReceiptPending)))
+  Ok(Observed(status, journal.LaunchRetained(retained, journal.ReceiptPending)))
 }
 
 fn remaining(config: Config, deadline: Int) -> Result(Nil, Error) {
@@ -1139,7 +1329,7 @@ fn launch_control(state: State, task: Control, reply: ControlReply) -> State {
       // A capacity refusal must leave the original Claim and phase unchanged.
       let state = case task {
         Fence(original) -> stop_entry(state, original.key)
-        Read(_, _) | Route(_, _) | Barrier(_) -> state
+        Read(_, _) | Refuse(_, _) | Route(_, _) | Barrier(_) -> state
       }
       start_control(state, task, reply)
     }
@@ -1178,16 +1368,17 @@ fn control(config: Config, task: Control) -> Result(ControlAnswer, Error) {
         journal.inspect(config.resources, original) |> result.map_error(Custody),
       )
       let completed = case digest {
-        None -> journal.inspect_compile(config.resources, original)
+        None -> journal.inspect_launch(config.resources, original)
         Some(digest) ->
-          journal.acknowledge_compile(config.resources, original, digest)
+          journal.acknowledge_launch(config.resources, original, digest)
       }
       use completed <- result.try(completed |> result.map_error(Custody))
       Ok(Answer(Observed(prepared, completed)))
     }
+    Refuse(claim, reason) -> before(config, claim, reason) |> result.map(Answer)
     Fence(original) -> {
-      use fenced <- result.try(fence_original(config, original))
-      Ok(Answer(Cancelled(fenced)))
+      use #(fenced, association) <- result.try(fence_original(config, original))
+      Ok(FenceObserved(fenced, association))
     }
     Route(envelope, reply) -> {
       // Historical lookup stays inside a managed bounded metadata task. Passing
@@ -1227,14 +1418,17 @@ fn control(config: Config, task: Control) -> Result(ControlAnswer, Error) {
 fn fence_original(
   config: Config,
   original: journal.Input,
-) -> Result(journal.PreparationFence, Error) {
+) -> Result(#(journal.PreparationFence, journal.NativeStatus), Error) {
   use fenced <- result.try(
     journal.fence_preparation(config.resources, original)
     |> result.map_error(Custody),
   )
-  let associated = journal.inspect_native(config.resources, original)
-  use Nil <- result.try(follow_native(config, associated))
-  Ok(fenced)
+  use associated <- result.try(
+    journal.inspect_native(config.resources, original)
+    |> result.map_error(Custody),
+  )
+  use Nil <- result.try(follow_native(config, Ok(associated)))
+  Ok(#(fenced, associated))
 }
 
 fn follow_native(
@@ -1291,7 +1485,7 @@ fn fenced_entry(state: State, key: command.ServiceKey) -> State {
       let active = Active(..active, phase: Stopped(phase_claim(active.phase)))
       case active.result, active.drain {
         Some(Error(Closing)), Delivered ->
-          State(..state, active: dict.delete(state.active, key))
+          State(..state, active: dict.insert(state.active, key, active))
         _, _ -> State(..state, active: dict.insert(state.active, key, active))
       }
     }
@@ -1338,6 +1532,25 @@ fn record_report(
     weft.PulledOutcome(outcome) -> {
       let result = whole_outcome(outcome)
       send_whole(active.reply, result)
+      case result {
+        Ok(Observed(_, journal.LaunchRetained(retained, _))) ->
+          option.map(active.channel, fn(channel) {
+            let value = journal.retained_launch_value(retained)
+            case completion.observation(value) {
+              completion.RefusedBeforeNative(_) ->
+                launch_channel.excluded(
+                  channel,
+                  completion.enforcement_report(value),
+                )
+              completion.NativeSettled ->
+                launch_channel.settled(
+                  channel,
+                  completion.enforcement_report(value),
+                )
+            }
+          })
+        Ok(_) | Error(_) -> None
+      }
       let active = Active(..active, reply: None, result: Some(result))
       let next = State(..state, active: dict.insert(state.active, key, active))
       case result {
@@ -1378,34 +1591,45 @@ fn finish_active(
   key: command.ServiceKey,
   active: Active,
 ) -> State {
-  weft.cancel(active.cancel)
   let next =
     State(..state, selector: process.deselect(state.selector, active.reports))
-  case active.result, active.phase {
-    Some(Ok(_)), _
-    | Some(Error(Invalid)), _
-    | Some(Error(Closing)), Stopped(_)
-    -> State(..next, active: dict.delete(state.active, key))
-    Some(Error(Closing)), Stopping(_) ->
-      State(
-        ..next,
-        active: dict.insert(
-          state.active,
-          key,
-          Active(..active, drain: Delivered),
-        ),
-      )
-    None, _ | Some(Error(_)), _ ->
-      fence_service(
-        State(
-          ..next,
-          active: dict.insert(
-            state.active,
-            key,
-            Active(..active, drain: Delivered),
-          ),
-        ),
-      )
+  option.map(active.channel, launch_channel.preparation_joined)
+  let active = Active(..active, drain: Delivered)
+  case active.phase, active.result, active.channel {
+    // A drained historical observation owns no Claim, channel or resources.
+    Admitting, Some(Ok(_)), None | Admitting, Some(Error(Invalid)), None ->
+      State(..next, active: dict.delete(next.active, key))
+    _, _, _ -> maybe_release(next, key, active)
+  }
+}
+
+fn maybe_release(
+  state: State,
+  key: command.ServiceKey,
+  active: Active,
+) -> State {
+  case active.drain, active.closed, active.result {
+    Delivered,
+      Some(run_channel.CloseResult(
+        transport: run_channel.TransportJoined,
+        resources: run_channel.ResourcesReleased,
+        ..,
+      )),
+      Some(Ok(_))
+    -> State(..state, active: dict.delete(state.active, key))
+    _, _, _ -> State(..state, active: dict.insert(state.active, key, active))
+  }
+}
+
+fn channel_closed(
+  state: State,
+  key: command.ServiceKey,
+  closed: run_channel.CloseResult,
+) -> State {
+  case dict.get(state.active, key) {
+    Ok(active) ->
+      maybe_release(state, key, Active(..active, closed: Some(closed)))
+    Error(Nil) -> state
   }
 }
 
@@ -1508,6 +1732,35 @@ fn control_result(
   result: Result(ControlAnswer, Error),
 ) -> State {
   case task, result {
+    Refuse(claim, _),
+      Ok(Answer(Observed(_, journal.LaunchRetained(retained, _))))
+    -> {
+      case dict.get(state.active, journal.original(claim).key) {
+        Ok(active) -> {
+          option.map(active.channel, fn(channel) {
+            launch_channel.excluded(
+              channel,
+              completion.enforcement_report(journal.retained_launch_value(
+                retained,
+              )),
+            )
+          })
+          state
+        }
+        Error(Nil) -> state
+      }
+    }
+    Refuse(_, _), _ -> state
+    Fence(original), Ok(FenceObserved(_, journal.Unassociated)) -> {
+      case dict.get(state.active, original.key) {
+        Ok(active) ->
+          option.map(active.channel, launch_channel.fenced_before_native)
+        Error(Nil) -> None
+      }
+      let next = fenced_entry(state, original.key)
+      cancel_entry(next, original.key)
+      next
+    }
     Fence(original), _ -> {
       // Cancellation follows the fence attempt, including ambiguous replies.
       // A lost ask still fences admission and cannot restore the original slot.
@@ -1552,6 +1805,8 @@ fn control_definite(
     _, Ok(_) -> True
     Read(_, _), Error(Custody(journal.Missing))
     | Read(_, _), Error(Custody(journal.Conflict))
+    | Refuse(_, _), Error(Custody(journal.Conflict))
+    | Refuse(_, _), Error(Invalid)
     | Route(_, _), Error(Invalid)
     -> True
     _, Error(_) -> False
@@ -1574,6 +1829,8 @@ fn send_control(
 ) -> Nil {
   case reply, value {
     Whole(reply), Ok(Answer(value)) -> process.send(reply, Ok(value))
+    Whole(reply), Ok(FenceObserved(fence, _)) ->
+      process.send(reply, Ok(Cancelled(fence)))
     Whole(reply), Error(error) -> process.send(reply, Error(error))
     Whole(reply), Ok(Forwarded) | Whole(reply), Ok(BarrierDone) ->
       process.send(reply, Error(Uncertain))
@@ -1605,7 +1862,7 @@ fn begin_close(
         list.find(dict.values(state.metadata), fn(metadata) {
           case metadata.task {
             Barrier(_) -> True
-            Read(_, _) | Fence(_) | Route(_, _) -> False
+            Read(_, _) | Refuse(_, _) | Fence(_) | Route(_, _) -> False
           }
         })
       case barrier {
@@ -1648,14 +1905,26 @@ fn continue_or_close(state: State) -> actor.Next(State, Message) {
 
 fn cancel_entry(state: State, key: command.ServiceKey) -> Nil {
   case dict.get(state.active, key) {
-    Ok(active) -> weft.cancel(active.cancel)
+    Ok(active) -> {
+      option.map(active.channel, launch_channel.stop)
+      case active.channel {
+        None -> weft.cancel(active.cancel)
+        Some(_) -> Nil
+      }
+    }
     Error(Nil) -> Nil
   }
 }
 
 fn cancel_all(state: State) -> Nil {
   dict.values(state.active)
-  |> list.each(fn(active) { weft.cancel(active.cancel) })
+  |> list.each(fn(active) {
+    option.map(active.channel, launch_channel.stop)
+    case active.channel {
+      None -> weft.cancel(active.cancel)
+      Some(_) -> Nil
+    }
+  })
   dict.values(state.metadata)
   |> list.each(fn(metadata) { weft.cancel(metadata.cancel) })
 }
@@ -1665,4 +1934,152 @@ fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
   // cannot promise any durable write. Temporary supervision never restarts work.
   let _ = journal.seal(state.config.resources)
   cancel_all(state)
+}
+
+/// Receipt of the single live original host installation.
+/// Historical evidence cannot reconstruct this deadline or repeat installation.
+@internal
+pub type Installation {
+  /// The immutable executor deadline, using the native service monotonic clock.
+  Installed(
+    /// Original active entry deadline; no fresh duration is admitted here.
+    deadline_ms: Int,
+  )
+}
+
+/// Installs the trusted local original host once, returning finite acceptance.
+/// The paused connection arrives separately after original socket acceptance.
+/// Historical Query cannot call this door or reconstruct a connection.
+///
+/// ## Examples
+///
+/// `install_host(service, key, host, handoff)` does not wait for socket accept.
+@internal
+pub fn install_host(
+  service: Service,
+  key: command.ServiceKey,
+  host: run_channel.HostEndpoint,
+  handoff: process.Subject(run_channel.Connection),
+) -> Result(Installation, Error) {
+  call.try_call(service.subject, waiting: 1000, sending: InstallHost(
+    key,
+    host,
+    handoff,
+    _,
+  ))
+  |> result.unwrap(Error(Uncertain))
+}
+
+fn retain_channel(
+  state: State,
+  key: command.ServiceKey,
+  channel: launch_channel.Owner,
+  reply: process.Subject(Result(Nil, Error)),
+) -> State {
+  case dict.get(state.active, key), state.gate {
+    Ok(Active(phase: Preparing(_), channel: None, ..) as active), Serving -> {
+      process.send(reply, Ok(Nil))
+      State(
+        ..state,
+        active: dict.insert(
+          state.active,
+          key,
+          Active(..active, channel: Some(channel)),
+        ),
+      )
+    }
+    _, _ -> {
+      launch_channel.stop(channel)
+      process.send(reply, Error(Closing))
+      state
+    }
+  }
+}
+
+fn install_original_host(
+  state: State,
+  key: command.ServiceKey,
+  host: run_channel.HostEndpoint,
+  handoff: process.Subject(run_channel.Connection),
+  reply: process.Subject(Result(Installation, Error)),
+) -> State {
+  let now = native.configuration(state.config.native).now()
+  case dict.get(state.active, key), state.gate {
+    Ok(
+      Active(
+        phase: Observing(_),
+        channel: Some(channel),
+        host_install: Available,
+        ..,
+      ) as active,
+    ),
+      Serving
+      if active.deadline > now
+    -> {
+      launch_channel.install(channel, host, handoff)
+      process.send(reply, Ok(Installed(active.deadline)))
+      State(
+        ..state,
+        active: dict.insert(
+          state.active,
+          key,
+          Active(..active, host_install: HostInstalled),
+        ),
+      )
+    }
+    _, _ -> {
+      process.send(reply, Error(Invalid))
+      state
+    }
+  }
+}
+
+fn local_cancel(state: State, key: command.ServiceKey) -> State {
+  case dict.get(state.active, key) {
+    Error(Nil) -> state
+    Ok(Active(local_cancel: CancelStarted, ..)) -> state
+    Ok(active) -> {
+      // This one original cleanup lane is charged to the retained active entry,
+      // independently of occupied normal metadata credits. Repeated close or
+      // watchdog events cannot start another fence continuation.
+      option.map(active.channel, launch_channel.stop)
+      let next =
+        State(
+          ..state,
+          active: dict.insert(
+            state.active,
+            key,
+            Active(..active, local_cancel: CancelStarted),
+          ),
+        )
+      start_control(stop_entry(next, key), Fence(active.original), NoReply)
+    }
+  }
+}
+
+// The live Claim supplies the original fence identity. The journal atomically
+// rejects this refusal if any native association won first; missing association
+// alone is never used to certify the owner's clearance outcome.
+fn refuse_original(
+  state: State,
+  original: journal.Input,
+  reason: String,
+  reply: process.Subject(Result(Reply, Error)),
+) -> State {
+  case dict.get(state.active, original.key) {
+    Ok(active) -> {
+      case phase_claim(active.phase), active.original == original {
+        Some(claim), True ->
+          launch_control(state, Refuse(claim, reason), Whole(reply))
+        _, _ -> {
+          process.send(reply, Error(Invalid))
+          state
+        }
+      }
+    }
+    Error(Nil) -> {
+      process.send(reply, Error(Invalid))
+      state
+    }
+  }
 }

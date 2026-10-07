@@ -4,6 +4,7 @@ import core/ids
 import executor/remote/compile_wire
 import executor/remote/identity
 import executor/remote/internal/beam_protocol as protocol
+import executor/remote/launch_wire
 import executor/remote/wire
 import executor/remote/workspace_journal as journal
 import executor/remote/workspace_transfer as transfer
@@ -40,6 +41,13 @@ pub fn canonical_header_exact_scope_generation_and_closed_routes_test() {
     protocol.Compile(compile_wire.Query),
     protocol.Compile(compile_wire.Cancel),
     protocol.Compile(compile_wire.Acknowledge(digest)),
+    protocol.Launch(launch_wire.ChallengeRequest),
+    protocol.Launch(launch_wire.PlaceToken(<<1:size(256)>>, 2000)),
+    protocol.Launch(launch_wire.Query),
+    protocol.Launch(launch_wire.Cancel),
+    protocol.Launch(launch_wire.Acknowledge(digest)),
+    protocol.Launch(launch_wire.RefuseBeforeNative),
+    protocol.LaunchBind,
   ]
   list.each(routes, fn(route) {
     let assert Ok(bytes) = protocol.header(binding(), route) as "closed header"
@@ -143,4 +151,35 @@ pub fn statuses_are_closed_and_do_not_accept_trailing_bytes_test() {
   )
   assert protocol.decode_status(<<1, 0, 0>>) == Error(Nil)
   assert protocol.decode_status(<<1, 5>>) == Error(Nil)
+}
+
+// Route five admits only a finite checked stream installation.
+pub fn launch_route_four_and_bind_route_five_are_finite_test() {
+  assert protocol.route_lane(protocol.Launch(launch_wire.ChallengeRequest))
+    == protocol.Data
+  assert protocol.route_lane(
+      protocol.Launch(launch_wire.PlaceToken(<<1:size(256)>>, 1)),
+    )
+    == protocol.Data
+  assert protocol.route_lane(protocol.Launch(launch_wire.RefuseBeforeNative))
+    == protocol.Control
+  assert protocol.route_lane(protocol.Launch(launch_wire.Query))
+    == protocol.Control
+  let assert Ok(bytes) =
+    protocol.header(binding(), protocol.Launch(launch_wire.Query))
+    as "finite route four encodes"
+  let assert <<1, 4, rest:bytes>> = bytes as "Launch uses its new route"
+  assert protocol.decode_header(binding(), <<1, 5, rest:bits>>) == Error(Nil)
+  let assert Ok(bind) = protocol.header(binding(), protocol.LaunchBind)
+    as "finite bind encodes"
+  assert protocol.route_lane(protocol.LaunchBind) == protocol.Control
+  assert protocol.decode_header(binding(), bind) == Ok(protocol.LaunchBind)
+  assert protocol.receiver(protocol.LaunchBind, transfer.Invocation, <<
+      "LWC",
+      1,
+      0,
+      1:32,
+      0:size(256),
+    >>)
+    == Error(Nil)
 }
