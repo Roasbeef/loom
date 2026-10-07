@@ -55,8 +55,9 @@ error instead of a setting that silently does nothing.
 is created, opened, or resumed. It keeps what it read for as long as it runs, so
 an edit reaches a running session only after that session is stopped and opened
 again. Two tables are read once, when the daemon starts, and need a daemon
-restart: [`[daemon]`](#daemon) and [`[peers]`](#peers) (from protocol-change
-077). The MCP, language-server, rule and schedule tables are trust decisions and
+restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077)
+and [`[distribution]`](#distribution) (from protocol-change 078), which the
+daemon also needs its VM booted for. The MCP, language-server, rule and schedule tables are trust decisions and
 have no flag, no discovery and no reload path; editing the file and reopening the
 session is the decision.
 
@@ -95,6 +96,7 @@ is not in this list is refused.
 | `jobs` | table | Background job wall ceiling and idle heartbeat. | [`[jobs]`](#jobs) |
 | `retry` | table | Provider retry ladder. | [`[retry]`](#retry) |
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
+| `distribution` | table and array of `[[distribution.peers]]` | Trusted TLS Erlang distribution (from protocol-change 078). | [`[distribution]`](#distribution) |
 
 ## `[models.<name>]`
 
@@ -433,6 +435,71 @@ for explicit links.
 | --- | --- | --- | --- | --- |
 | `default_links` | string | `off` | `off`, `same_owner` | `same_owner` admits a `main` to `main` message between two different sessions that the owner holds alone and that have no recorded unlink. |
 | `default_wake` | string | `busy_only` | `busy_only`, `may_wake` | The wake permission of a default link. `busy_only` adds to a running strand and does nothing to an idle one. `may_wake` may start a run on the recipient's `main`. An explicit grant for the pair overrides it. |
+
+## `[distribution]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[daemon]`. It lets this daemon join other Loom daemons as a trusted Erlang node
+over TLS. Without the table the daemon never starts distribution and nothing
+about it changes. This release provides membership only: the daemon starts
+distribution, accepts the listed peers and can connect to them. The executor role
+and remote tool calls build on it later.
+
+A connected peer has the full privileges of a distributed Erlang node, so list
+only machines you administer. The daemon is hidden, `dist_auto_connect` is
+`never` (a message to a node that nobody connected to is dropped, not dialed),
+and only the listed peers may connect. Every certificate chain is verified
+against `ca`. The peer's leaf certificate must also hash to the configured
+`sha256` and carry the peer's exact node name as its only DNS name that contains
+an `@`, and both sides of a connection check this. The certificate may carry
+other DNS names and IP addresses, which TLS needs for the host name check, such as
+the host in the node name. The certificate of this daemon must carry its own
+`node` name in the same way, or the daemon refuses to start.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | `name@host`, ASCII letters, digits, `_`, `-` and `.`, with a dot in the host, at most 255 bytes | The full name of this node. |
+| `ca` | string | required | absolute path | PEM file of the trusted roots. |
+| `certificate` | string | required | absolute path | PEM file of this node's certificate chain. |
+| `key` | string | required | absolute path, mode 0600 | PEM file of this node's private key. |
+| `cookie` | string | required | absolute path, mode 0600 | The daemon's `$HOME/.erlang.cookie`: at least 16 characters of `A-Z`, `a-z`, `0-9`, `_` and `-`, no trailing newline. The emulator reads its cookie from that file, so the daemon refuses any other path. |
+| `listen_port` | integer | any free port | 1 to 65535 | Fixes the port of the distribution listener, for a firewall. Peers still find it through `epmd`. |
+| `peers` | array of tables | required | one to 32 `[[distribution.peers]]` rows | The nodes allowed to connect, and the nodes this daemon may connect to. |
+
+## `[[distribution.peers]]`
+
+One row per trusted node. A node may not list itself, and no two rows may share a
+node name or a pin.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | `name@host`, same form as `distribution.node` | The peer's full node name. |
+| `sha256` | string | required | 64 hexadecimal characters | SHA-256 of the DER of the peer's leaf certificate, for example `openssl x509 -in peer.pem -outform DER \| openssl dgst -sha256`. |
+
+The VM has to be booted for distribution before any Gleam code runs, so starting
+the daemon takes two steps. First write the options file from the same
+configuration:
+
+```sh
+loomd distribution options ~/.loom/loom.toml ~/.loom/distribution.options
+```
+
+The file names the credential paths and the public pins and holds no secret. It is
+written with mode 0600, and the daemon refuses an options file that other users
+can write or that was not generated from the current `[distribution]` table, so
+rerun the command after editing the table. Then start the daemon through
+`bin/loomd` with the file named in `LOOM_DISTRIBUTION_OPTFILE`:
+
+```sh
+LOOM_DISTRIBUTION_OPTFILE=~/.loom/distribution.options bin/loomd --config ~/.loom/loom.toml
+```
+
+The launcher appends `-proto_dist inet_tls -ssl_dist_optfile <file>` to any
+`ERL_FLAGS` already set, and does nothing when the variable is unset. A daemon that
+has the table but was started without the variable exits at startup, names this
+step, and opens no catalogue. `ERL_FLAGS` must not also set `-name`, `-sname`,
+`-setcookie` or `-ssl_dist_opt`. Code-mode satellites and other child VMs never
+inherit these flags or the credential files.
 
 ## What this file does not configure
 

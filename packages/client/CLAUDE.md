@@ -5867,3 +5867,67 @@ refuses a present value that is not a profile name
 and only for a page that holds the creation capability; `ui_socket.create_for`
 takes the chosen profile and maps `unknown_profile` to
 `creations.UnknownProfile`.
+
+## Trusted distribution membership (protocol 078)
+
+`client/distribution` is the membership layer for orchestrator and executor
+daemons that trust each other as Erlang nodes. It starts TLS distribution on a
+VM that was booted for it and connects to the configured peers. It sends no
+message, registers no name and runs no service; the executor role and remote
+tool calls are later slices that use the `Peer` it returns.
+
+`Config` is built by `configure` (names, absolute credential paths, one to 32
+distinct peers each with a 32-byte pin, optional `listen_port`) or read from
+the `[distribution]` table by `from_document` / `parse`; both return a sentence
+naming the key, and `None` when the table is absent, which means distribution
+stays off. `catalog.parse` validates the same table, so a typo is refused
+wherever the file is read. `tls_options` renders the `ssl_dist_optfile` text
+and `boot_arguments` the three flags. `start` returns a `Membership`; `peer`
+resolves a configured name to a `Peer`, `connect` makes an explicit hidden
+connection under a weft deadline, and `describe` words a `Fault` for the
+operator.
+
+`client/internal/ffi_distribution` and `src/client_distribution_ffi.erl` are
+the only foreign code: the ssl `verify_fun`, `net_kernel:start/2` and
+`hidden_connect_node/1`, and the checks of the emulator's own boot arguments.
+None of it is expressible in `gleam_erlang`, `gleam_otp` or `weft`. The verify
+callback keeps every PKIX failure, and for the leaf it requires the SHA-256 pin
+and the exact node name (the certificate's only DNS name containing an `@`) of
+one configured peer, in both directions. Network input never makes an atom:
+peer names become atoms once inside `start`, and `peer` looks them up by string.
+
+Invariants that break things when violated:
+
+- `start` checks the boot before it reads a credential: not already distributed,
+  OTP 29 or newer, `-proto_dist inet_tls`, `-ssl_dist_optfile` present, no
+  `-name`, `-sname`, `-setcookie`, `-nocookie` or `-ssl_dist_opt`, and an options
+  file that is private and equals `tls_options` for this configuration. Each
+  failure is its own `BootRefusal`, so the operator is told what to change.
+- The configured cookie path must be the emulator's `$HOME/.erlang.cookie`,
+  since the emulator reads the cookie from the init home when it opens its
+  listener. The key and cookie must be mode 0600.
+- `dist_auto_connect` is `never` and the node is hidden. Do not add a code path
+  that dials a node that is not a configured peer, and never connect from
+  inside a satellite: satellites boot with `-proto_dist none` and their
+  environment is built from an allowlist, so `ERL_FLAGS` is not inherited.
+- A failed `start` stops the partial distribution (`net_kernel:stop/0`) and
+  returns no `Membership`.
+
+The daemon calls `start` from `daemon/main.prepare_startup` before the
+catalogue is opened and refuses to start with `describe`'s sentence, so a VM
+booted without the flags fails before any state is touched. The launcher
+`bin/loomd` (Makefile `server-shipment`) appends `-proto_dist inet_tls
+-ssl_dist_optfile "$LOOM_DISTRIBUTION_OPTFILE"` to `ERL_FLAGS` when that
+variable is set and is otherwise unchanged. `daemon/distribution_cli` is
+`loomd distribution options CONFIG OUTPUT`, which writes the options file with
+mode 0600 from the same table.
+
+`test/client/distribution_test.gleam` covers configuration refusals in process
+and drives `test/client_distribution_fixture_ffi.erl`, which mints certificates
+and boots separate emulators with the production flags: a correct pair connects
+and exchanges a message; a wrong leaf pin (either side), a pin that matches but
+carries another node name, a pin that matches but was issued by an untrusted
+CA, and a cookie mismatch are each refused; a send to an unconnected peer does
+not connect; and the boot and credential refusals leave the VM non-distributed.
+Removing the pin comparison, the name comparison, the PKIX failure or
+`dist_auto_connect = never` from the callback fails exactly its own scenario.

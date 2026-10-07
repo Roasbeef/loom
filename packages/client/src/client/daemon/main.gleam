@@ -17,6 +17,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/distribution
 import client/host
 import client/internal/ffi_os
 import client/peer_defaults
@@ -339,6 +340,30 @@ fn bind_address(value: String) -> Result(#(String, Int), String) {
   }
 }
 
+// Trusted distribution is started first, before the catalogue or any session
+// resource is opened, so a VM booted wrongly is refused with nothing to undo.
+// Without a `[distribution]` table nothing happens and the VM stays
+// non-distributed. The membership is not kept: this slice only joins the
+// cluster, and the code that connects to peers takes it from here.
+fn start_distribution(
+  document: dict.Dict(String, tom.Toml),
+  configuration: String,
+) -> Result(Nil, String) {
+  use found <- result.try(
+    distribution.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  case found {
+    None -> Ok(Nil)
+    Some(settings) ->
+      distribution.start(settings)
+      |> result.replace(Nil)
+      |> result.map_error(fn(fault) {
+        configuration <> ": " <> distribution.describe(fault)
+      })
+  }
+}
+
 /// Prepares the root before acquiring any daemon file or session resource.
 /// The caller retains the returned handle through listen or shutdown failures.
 ///
@@ -412,6 +437,7 @@ pub fn prepare_startup(
     peer_defaults.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+  use Nil <- result.try(start_distribution(document, configuration))
   let config = Config(..config, view:, peer_policy:)
   root.start(
     root.Config(

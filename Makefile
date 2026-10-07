@@ -225,6 +225,13 @@ server-shipment: codemode-seed ## Package the server: build/erlang-shipment + bi
 		'LOOM_BUILD_COMMIT="$(BUILD_COMMIT)"' \
 		'LOOM_BUILD_PLATFORM="$(shell scripts/platform.sh)"' \
 		'export LOOM_BUILD_VERSION LOOM_BUILD_COMMIT LOOM_BUILD_PLATFORM' \
+		'# Trusted TLS distribution is opt-in (protocol-change/078). The VM must be' \
+		'# booted with these flags before any Gleam runs, so the operator names the' \
+		'# options file `loomd distribution options` wrote. Unset, nothing changes.' \
+		'if [ -n "$${LOOM_DISTRIBUTION_OPTFILE:-}" ]; then' \
+		'  ERL_FLAGS="$${ERL_FLAGS:+$$ERL_FLAGS }-proto_dist inet_tls -ssl_dist_optfile \"$$LOOM_DISTRIBUTION_OPTFILE\""' \
+		'  export ERL_FLAGS' \
+		'fi' \
 		'exec "$$(dirname "$$0")/../build/erlang-shipment/entrypoint.sh" run "$$@"' \
 		> bin/loomd
 	@chmod +x bin/loomd
