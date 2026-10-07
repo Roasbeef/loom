@@ -159,7 +159,7 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 `start_effect_plane_in` (`client/serve.gleam:767`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2198`),
+fatal child of the instance (`instance_children`, `client/serve.gleam:2207`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is
@@ -178,7 +178,7 @@ git-identity step. Code mode reaches the broker through the opaque `Broker`
 handle at fifteen call sites in the `codemode` package, so any design that
 changes the handle's type touches all of them. One non-broker borrower exists:
 the boot-time `degraded` probe checks a helper out directly
-(`client/serve.gleam:6576`).
+(`client/workspace_policy.gleam:1445`).
 
 Some native processes never go through the pool, and "all execution goes
 through the service" must not be read to include them: MCP servers (an open

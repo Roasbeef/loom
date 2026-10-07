@@ -190,7 +190,7 @@ PR #819's parallel reimplementation lost.
 When a workspace host starts it returns what the orchestrator needs to build
 the prompt and the tool table: platform and enforcement level, the toolchain
 probe, available language servers, helper degradation, the shell, the Git
-program (`host_git.program`, `serve.gleam:4108`, probes the host it runs on),
+program (`host_git.program`, `serve.gleam:4045`, probes the host it runs on),
 the workspace root as an opaque string, the guidance files' text, the project
 hook files' bytes and the base policy summary. The orchestrator renders and
 pins the prompt from it, exactly as it pins guidance today, and checks the

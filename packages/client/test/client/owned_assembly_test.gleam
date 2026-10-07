@@ -15,6 +15,7 @@ import client/jobs
 import client/retryconf
 import client/schedule
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import gleam/erlang/process
@@ -79,7 +80,7 @@ pub fn settings() -> serve.Settings {
     bind_port: -1,
     token_path: root <> "/never-created.token",
     workspace: root <> "/work",
-    base_policy: serve.base_policy(root <> "/work"),
+    base_policy: workspace_policy.base_policy(root <> "/work"),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: "owned",

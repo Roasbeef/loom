@@ -2518,6 +2518,20 @@ catalogue without opening runtimes. Explicit admission invokes
   composes the same arms to answer an `OwnerCapCall` from plain data.
   `peer.*` is still composed by `serve.with_code_mode_peers` and is not yet
   part of `owner_capability`.
+- `client/workspace_policy.{Basis, session_base, session_toolchain,
+  base_policy_for, base_policy_fault, go_cache_fault, protecting_*,
+  admitting_*, widening_*, allowing_*, under_tools_config, merging_mounts,
+  tool_environment, session_environment, prepare_directories, degraded,
+  lsp_server_roots, lsp_places, env_text, ...}` — the sandbox policy,
+  environment and directory layout of a session's workspace, as functions of
+  plain values (a workspace path, the `[tools]` table, the Go caches, the
+  owner's protected files). They moved out of `serve` so that the workspace
+  half of session assembly can use them without importing `serve`, and so
+  that an executor holding only a workspace can run the same composition. `Basis` is the four values `session_base`,
+  `session_toolchain` and `go_cache_fault` read; `serve.workspace_basis`
+  derives it from `Settings`. `prepare_directories` takes the owner's
+  directory as an `Option` first argument, so the workspace half does not
+  need the session path. Nothing here reads a session, a store or a mailbox.
 - `client/jobs.{JobsPolicy, Request, Audience, Released, Started, Cursors,
   Polled, Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
   max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,
@@ -3275,7 +3289,7 @@ The rest of the path is phase 1's own, and each module is one question:
   `/private/tmp` and refuses either by name, starts `serve.start_check_plane` over it, prints the
   probe's `enforcement.Report` (`manager.probe_server`), starts a
   `manager` over the one approved server (roots via
-  `serve.lsp_server_roots` and `Setup.places`, `toolchain: None`), runs
+  `workspace_policy.lsp_server_roots` and `Setup.places`, `toolchain: None`), runs
   `profile_check.run_all` through `manager.door`, and stops the manager,
   waits for its lease, aborts the operation, stops the plane and deletes
   the scratch on every path out. **Invariant: the profile proved is the
@@ -3573,7 +3587,7 @@ question each, and one composition point in `serve`:
   grant the hook could widen. **The requirement is the keys of that
   environment under `RefuseNarrowed`**, so every name it carries has to
   be on the session base's allowlist or the whole call is refused before
-  a process exists; `serve.allowing_imported_hook_env` is what grants
+  a process exists; `workspace_policy.allowing_imported_hook_env` is what grants
   `CLAUDE_PROJECT_DIR` there, beside `allowing_tool_tmpdir`'s `TMPDIR`.
   Nothing rewrites the command string: `Context.env` carries `HOME` and
   the shell expands `~` against it, so the substitution
@@ -3923,7 +3937,7 @@ these forks because they define the same modules.
   refuses by name rather than leaving a strand with a driver, a model and
   nothing it can say.
 - **A linked git worktree widens the session base to its git directories.**
-  `serve.widening_linked_worktree` reads `<workspace>/.git`; when it is a
+  `workspace_policy.widening_linked_worktree` reads `<workspace>/.git`; when it is a
   `gitdir:` file, the named directory and the main repository's `.git`
   its `commondir` points at join `writable_roots`, because a jailed
   `git commit` must write the index lock and objects there and both sit
@@ -3931,7 +3945,7 @@ these forks because they define the same modules.
   already has. A primary checkout, a non-repository, or an unreadable
   `.git` file leaves the base untouched.
 - **A jailed child's environment reserves five names per session.**
-  `serve.session_environment` gives every tool shell, satellite and hook
+  `workspace_policy.session_environment` gives every tool shell, satellite and hook
   host the same `PATH`. The bundled toolchain stays first, followed by the
   explicit additions and host PATH, so arbitrary installations are discoverable
   without naming language-manager directories. Lookup does not widen filesystem
@@ -3975,7 +3989,7 @@ these forks because they define the same modules.
 - **A jailed Go tool's caches live outside the checkout, per workspace.**
   `client/gocache` locates `<cache>/loom/workspace/<sha256 of the
   workspace path>` (`<cache>` as `lsp_places` resolves it) and
-  `serve.session_environment` points `GOCACHE`, `GOMODCACHE` and
+  `workspace_policy.session_environment` points `GOCACHE`, `GOMODCACHE` and
   `GOLANGCI_LINT_CACHE` beneath it; they used to land under the tool
   `HOME` inside the operator's checkout (20 GB measured). The root joins
   `writable_roots` through `gocache.admitting` in `session_base`, the same
@@ -3988,7 +4002,7 @@ these forks because they define the same modules.
   mirror degrades to the public proxy, and sets `GOPROXY` to
   `file://<mirror>/cache/download,https://proxy.golang.org,direct`;
   `[tools]` may not name the owned names (`GOPROXY` only with a mirror),
-  checked by `serve.go_cache_fault` at boot together with the mirror's
+  checked by `workspace_policy.go_cache_fault` at boot together with the mirror's
   existence and its non-overlap with the workspace, protected paths and
   the root. `[workspace] go_cache_limit_mib` (default 10240) bounds the
   build cache: at session start a weft task measures it with `du -sk`,
@@ -4010,8 +4024,8 @@ these forks because they define the same modules.
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
   (full is the default and what an absent table means) plus `env` names
   read from the host at boot and `[tools.set]` literals;
-  `serve.tool_environment` appends them *after* the five server-owned
-  names, and `serve.under_tools_config` puts the chosen network on the
+  `workspace_policy.tool_environment` appends them *after* the five server-owned
+  names, and `workspace_policy.under_tools_config` puts the chosen network on the
   session base and every configured name on its `env_allow`. The daemon
   `--network off|full` flag overrides the selected file at session resolution. Both halves
   are load-bearing and neither implies the other: the meet takes the
@@ -4593,7 +4607,7 @@ these forks because they define the same modules.
   execution directory. Extension hosts use `host_socket_directory`, keyed
   on the extension name like `host_root`, and keep it for the session.
   `daemon/root.directories` creates `<state root>/run` mode 0700 at
-  startup, and `serve.established_masks` masks it from **every** jail.
+  startup, and `workspace_policy.established_masks` masks it from **every** jail.
   Only the satellite's own base reaches its directory:
   `codemode.reaching_socket` adds that directory as a readable root and
   drops a protected entry only when it lies inside the socket root and
@@ -5245,7 +5259,7 @@ read-only broker, deadline and byte bounds; no repository ignore file is edited.
 
 Session assembly keeps the same two directories out of the operator's own
 `git status` without editing a repository file either: `prepare_directories`
-writes `serve.ignore_everything` as `.gitignore` inside each, where none
+writes `workspace_policy.ignore_everything` as `.gitignore` inside each, where none
 exists. An ignore file inside an untracked directory hides the directory
 itself, so no git metadata is resolved, and a linked worktree needs nothing
 different. An operator's replacement file is left alone. `$TMPDIR` under
@@ -5458,7 +5472,7 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   `writable` root written `<cache>/loom[/...]` (compared by component, so
   `<cache>/./loom` too) is refused at decode, record decode included, and
   `private_cache_fault(server, places)` — called from
-  `serve.lsp_server_roots` at boot and by `loom ext check` — refuses an
+  `workspace_policy.lsp_server_roots` at boot and by `loom ext check` — refuses an
   absolute or `~/` root that resolves inside `<cache>/loom`, or a
   `writable` one that holds it (`~/.cache`): each would let a server swap
   a private cache for a link.
@@ -5634,7 +5648,7 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   plane only when the effective server list is non-empty. Each server's `readable`/`writable`
   `~/` and `<cache>/` roots are expanded once with
   `profile.expand_path(_, places)`, where `places` is
-  `serve.home_directory()` and `profile.cache_place` over
+  `workspace_policy.home_directory()` and `profile.cache_place` over
   `ffi_os.platform`'s OS name and the daemon's `XDG_CACHE_HOME`; a server
   whose roots will not resolve, or every
   server when the lease counter will not start, is refused with one

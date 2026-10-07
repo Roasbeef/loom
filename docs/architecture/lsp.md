@@ -868,7 +868,7 @@ form whose place is unknown (no `HOME`) refuses that server at boot, as
 does a relative path, a `..` component, or a bare `~/` or `<cache>/`.
 `<cache>/loom` and anything beneath it is refused however it is spelled
 ("Loom's private cache is not a root a table may name"), and at boot
-(`profile.private_cache_fault`, from `serve.lsp_server_roots`) so is an
+(`profile.private_cache_fault`, from `workspace_policy.lsp_server_roots`) so is an
 absolute or `~/` root that resolves there, or a `writable` one that
 holds it, such as `~/.cache` on Linux.
 

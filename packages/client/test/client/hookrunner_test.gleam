@@ -10,6 +10,7 @@ import broker/token
 import client/hookrunner
 import client/internal/ffi_os
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import gleam/int
@@ -91,7 +92,7 @@ pub fn without_a_home_the_jail_home_stands_test() {
     hookrunner.Context(
       ..ctx,
       env: serve.hook_environment(
-        serve.session_environment(ctx.workspace, None, None),
+        workspace_policy.session_environment(ctx.workspace, None, None),
         None,
         ctx.workspace,
       ),
@@ -99,7 +100,8 @@ pub fn without_a_home_the_jail_home_stands_test() {
   let cmd = hookrunner.Command("echo ~/x", None, Some(3))
   let assert Ok(outcome) = hookrunner.run(ctx, cmd, "{}", 30)
   assert outcome.code == 0
-  assert outcome.stdout == serve.tool_home_directory(ctx.workspace) <> "/x\n"
+  assert outcome.stdout
+    == workspace_policy.tool_home_directory(ctx.workspace) <> "/x\n"
 }
 
 pub fn a_timed_out_hook_reports_no_output_test() {
@@ -134,7 +136,7 @@ pub fn the_env_allowlist_reaches_the_hook_test() {
 /// allow does not reach the hook as an empty variable — it refuses the
 /// call outright, before any process exists.
 ///
-/// That is the whole reason `serve.allowing_imported_hook_env` has to
+/// That is the whole reason `workspace_policy.allowing_imported_hook_env` has to
 /// widen the base for `CLAUDE_PROJECT_DIR`: `call_spec` derives its
 /// `env_allow` requirement from the keys of `ctx.env`, `policy.meet`
 /// intersects it with the base, and the spec's `RefuseNarrowed`
@@ -180,13 +182,14 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
     here
     <> "/build/hookrunner-"
     <> int.to_string(ffi_os.unique_positive_integer())
-  let home = serve.tool_home_directory(workspace)
-  let temp = serve.tool_tmp_directory(workspace)
+  let home = workspace_policy.tool_home_directory(workspace)
+  let temp = workspace_policy.tool_tmp_directory(workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(home)
   let assert Ok(Nil) = simplifile.create_directory_all(temp)
   let assert Ok(Nil) = simplifile.create_directory_all(operator_home(workspace))
 
-  let base = serve.base_policy(workspace) |> serve.merging_mounts
+  let base =
+    workspace_policy.base_policy(workspace) |> workspace_policy.merging_mounts
 
   // The base grants every name these tests put in `ctx.env`, because
   // that is what the session base does: `call_spec` asks for the keys
@@ -244,7 +247,7 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
       step_id: "hookcompat-fixture",
       workspace:,
       env: serve.hook_environment(
-        serve.session_environment(workspace, None, None),
+        workspace_policy.session_environment(workspace, None, None),
         Some(operator_home(workspace)),
         workspace,
       ),

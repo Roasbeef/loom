@@ -29,6 +29,7 @@ import client/serve
 import client/server
 import client/session_socket_test as transfer
 import client/system_prompt
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/json
@@ -162,7 +163,7 @@ fn absolute(path: String) -> String {
 
 fn settings_under(root: String) -> serve.Settings {
   // Absolute, because the workspace root really is: it becomes the base
-  // policy's writable root, and `serve.base_policy_fault` refuses a boot
+  // policy's writable root, and `workspace_policy.base_policy_fault` refuses a boot
   // on a policy whose paths the jail could not accept. A test that
   // booted on a relative one was proving a server can start in a posture
   // no tool call could ever run under.
@@ -180,7 +181,7 @@ fn settings_under(root: String) -> serve.Settings {
     bind_port: 0,
     token_path: root <> "/session.db.token",
     workspace: root <> "/work",
-    base_policy: serve.base_policy(root <> "/work"),
+    base_policy: workspace_policy.base_policy(root <> "/work"),
     // First activation observes Git before model work, so even this fixture
     // needs a helper that speaks the protocol and proves retirement.
     helper_path: absolute("../sandbox/loom-exec"),
@@ -230,7 +231,7 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
   // the workspace is the one root the jail lets a tool write — and under
   // its dot-directory, so what a toolchain writes to either stays out of
   // the operator's tree.
-  assert serve.session_environment("/work", None, None)
+  assert workspace_policy.session_environment("/work", None, None)
     == [
       #("PATH", "/usr/local/bin:/usr/bin:/bin"),
       #("HOME", "/work/.codemode/home"),
@@ -241,12 +242,12 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
   let toolchain = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
   let assert Ok(path) =
     list.key_find(
-      serve.session_environment("/work", Some(toolchain), None),
+      workspace_policy.session_environment("/work", Some(toolchain), None),
       "PATH",
     )
   assert path == toolchain
-  assert serve.tool_tmp_directory("/work") == "/work/.codemode/tmp"
-  assert serve.tool_home_directory("/work") == "/work/.codemode/home"
+  assert workspace_policy.tool_tmp_directory("/work") == "/work/.codemode/tmp"
+  assert workspace_policy.tool_home_directory("/work") == "/work/.codemode/home"
 }
 
 pub fn boot_publishes_git_defaults_before_model_work_test() {
@@ -262,7 +263,7 @@ pub fn boot_publishes_git_defaults_before_model_work_test() {
       as "each activation prepares identity before exposing the runtime"
     let projected =
       simplifile.read(
-        serve.tool_home_directory(settings.workspace) <> "/gitconfig",
+        workspace_policy.tool_home_directory(settings.workspace) <> "/gitconfig",
       )
     serve.shutdown(booted)
     let assert Ok(config) = projected as "boot must publish the Git defaults"
@@ -283,9 +284,9 @@ pub fn boot_keeps_its_workspace_directories_out_of_git_status_test() {
   let assert Ok(booted) = serve.boot(settings) as "a fresh workspace boots"
   serve.shutdown(booted)
   assert simplifile.read(work_directory <> "/.gitignore")
-    == Ok(serve.ignore_everything)
+    == Ok(workspace_policy.ignore_everything)
   assert simplifile.read(blob_directory <> "/.gitignore")
-    == Ok(serve.ignore_everything)
+    == Ok(workspace_policy.ignore_everything)
 
   // An operator who replaced the file keeps their rules across a reboot.
   let assert Ok(Nil) =
@@ -299,7 +300,7 @@ pub fn boot_keeps_its_workspace_directories_out_of_git_status_test() {
 
 pub fn imported_hooks_keep_the_operator_git_configuration_test() {
   let environment =
-    serve.session_environment("/work", None, None)
+    workspace_policy.session_environment("/work", None, None)
     |> serve.hook_environment(Some("/operator"), "/work")
   assert list.key_find(environment, "HOME") == Ok("/operator")
   assert list.key_find(environment, "GIT_CONFIG_GLOBAL") == Error(Nil)
@@ -322,16 +323,24 @@ pub fn a_linked_worktree_widens_the_base_to_its_git_directories_test() {
     simplifile.write(work <> "/.git", "gitdir: " <> gitdir <> "\n")
   let assert Ok(Nil) = simplifile.write(gitdir <> "/commondir", "../..\n")
 
-  assert serve.linked_git_directories(work) == [gitdir, repo <> "/.git"]
-  let widened = serve.widening_linked_worktree(serve.base_policy(work), work)
+  assert workspace_policy.linked_git_directories(work)
+    == [gitdir, repo <> "/.git"]
+  let widened =
+    workspace_policy.widening_linked_worktree(
+      workspace_policy.base_policy(work),
+      work,
+    )
   assert widened.writable_roots == [work, gitdir, repo <> "/.git"]
 
   // A primary checkout: .git is a directory, so reading it fails and
   // nothing is widened.
   let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/src")
-  assert serve.linked_git_directories(repo) == []
-  assert serve.widening_linked_worktree(serve.base_policy(repo), repo)
-    == serve.base_policy(repo)
+  assert workspace_policy.linked_git_directories(repo) == []
+  assert workspace_policy.widening_linked_worktree(
+      workspace_policy.base_policy(repo),
+      repo,
+    )
+    == workspace_policy.base_policy(repo)
   let _cleanup = simplifile.delete(root)
 }
 
@@ -1066,7 +1075,7 @@ pub fn boot_pins_the_system_prompt_and_reuses_it_test() {
   // not a placeholder: the workspace, the shell, and the repository's own
   // guidance are all in it, framed as project-authored data.
   assert string.contains(pinned, "Workspace root: " <> absolute(workspace))
-  assert string.contains(pinned, "Shell: " <> serve.shell_path)
+  assert string.contains(pinned, "Shell: " <> workspace_policy.shell_path)
   assert string.contains(pinned, "<project-guidance>")
   assert string.contains(pinned, "Build with make.")
   serve.shutdown(first)
@@ -1570,7 +1579,10 @@ fn monitored_by(pid: process.Pid) -> List(process.Pid)
 // --- the base policy the server refuses to boot on -------------------------
 
 pub fn a_base_policy_the_sandbox_can_enforce_boots_test() {
-  assert serve.base_policy_fault(serve.base_policy("/work")) == Ok(Nil)
+  assert workspace_policy.base_policy_fault(workspace_policy.base_policy(
+      "/work",
+    ))
+    == Ok(Nil)
 }
 
 // --- what the daemon masks under its state root ----------------------------
@@ -1581,7 +1593,7 @@ pub fn the_state_root_masks_name_the_secrets_and_not_the_root_test() {
   // and every jailed call came back `getcwd: cannot access parent
   // directories`. The list must therefore name what a jail must not
   // reach and stop there.
-  let masks = serve.state_root_mask_candidates("/home/o/.loom")
+  let masks = workspace_policy.state_root_mask_candidates("/home/o/.loom")
 
   let secrets = [
     "/home/o/.loom/owner.token",
@@ -1623,7 +1635,7 @@ pub fn the_state_root_masks_carry_the_sqlite_side_files_test() {
   // A write to `catalogue.db-wal` is the same forgery one filename to
   // the right: WAL frame checksums are not cryptographic, so a crafted
   // frame is served as content on the next read.
-  let masks = serve.state_root_mask_candidates("/home/o/.loom")
+  let masks = workspace_policy.state_root_mask_candidates("/home/o/.loom")
   list.each(["-wal", "-shm", "-journal"], fn(suffix) {
     assert list.contains(masks, "/home/o/.loom/catalogue.db" <> suffix)
       as { "catalogue side file " <> suffix }
@@ -1641,11 +1653,11 @@ pub fn a_workspace_on_the_state_root_is_a_policy_the_server_boots_on_test() {
   // `loom.toml`. The masks are composed exactly as `resolve_managed`
   // composes them, and the workspace survives.
   let base =
-    serve.protecting_state_root(
-      serve.base_policy("/home/o/.loom"),
+    workspace_policy.protecting_state_root(
+      workspace_policy.base_policy("/home/o/.loom"),
       "/home/o/.loom",
     )
-  assert serve.base_policy_fault(base) == Ok(Nil)
+  assert workspace_policy.base_policy_fault(base) == Ok(Nil)
 
   // And the secrets are still masked from that session's jail, which is
   // the half the fix must not have traded away.
@@ -1655,11 +1667,11 @@ pub fn a_workspace_on_the_state_root_is_a_policy_the_server_boots_on_test() {
 
 pub fn a_workspace_equal_to_a_masked_entry_refuses_the_boot_test() {
   let base =
-    serve.protecting_state_root(
-      serve.base_policy("/home/o/.loom/sessions"),
+    workspace_policy.protecting_state_root(
+      workspace_policy.base_policy("/home/o/.loom/sessions"),
       "/home/o/.loom",
     )
-  let assert Error(reason) = serve.base_policy_fault(base)
+  let assert Error(reason) = workspace_policy.base_policy_fault(base)
     as "a workspace on the sessions directory refuses the boot"
   assert string.contains(reason, "/home/o/.loom/sessions")
   assert string.contains(reason, "Choose another directory")
@@ -1669,11 +1681,11 @@ pub fn a_workspace_under_a_masked_entry_refuses_the_boot_test() {
   // Under rather than equal, and the refusal must name the *entry* so
   // the operator knows which directory is the one they cannot have.
   let base =
-    serve.protecting_state_root(
-      serve.base_policy("/home/o/.loom/tokens/scratch"),
+    workspace_policy.protecting_state_root(
+      workspace_policy.base_policy("/home/o/.loom/tokens/scratch"),
       "/home/o/.loom",
     )
-  let assert Error(reason) = serve.base_policy_fault(base)
+  let assert Error(reason) = workspace_policy.base_policy_fault(base)
     as "a workspace under the tokens directory refuses the boot"
   assert string.contains(reason, "`/home/o/.loom/tokens`")
   assert string.contains(reason, "/home/o/.loom/tokens/scratch")
@@ -1690,8 +1702,10 @@ pub fn a_relative_protected_entry_refuses_the_boot_test() {
   // because the alternative is learning about it from the first tool
   // call of a live session.
   let base =
-    policy.SandboxPolicy(..serve.base_policy("/work"), protected: [".git"])
-  let assert Error(reason) = serve.base_policy_fault(base)
+    policy.SandboxPolicy(..workspace_policy.base_policy("/work"), protected: [
+      ".git",
+    ])
+  let assert Error(reason) = workspace_policy.base_policy_fault(base)
     as "a relative protected entry refuses the boot"
   assert string.contains(reason, "base policy")
   assert string.contains(reason, ".git")
@@ -1703,19 +1717,22 @@ pub fn a_relative_writable_root_refuses_the_boot_test() {
   // every path a policy names, and this server refuses on all of them
   // rather than on the one that prompted the check.
   let base =
-    policy.SandboxPolicy(..serve.base_policy("/work"), writable_roots: [
-      "work",
-    ])
-  let assert Error(reason) = serve.base_policy_fault(base)
+    policy.SandboxPolicy(
+      ..workspace_policy.base_policy("/work"),
+      writable_roots: [
+        "work",
+      ],
+    )
+  let assert Error(reason) = workspace_policy.base_policy_fault(base)
     as "a relative writable root refuses the boot"
   assert string.contains(reason, "`work` is not absolute")
 }
 
 pub fn a_negative_limit_refuses_the_boot_naming_the_field_test() {
-  let base = serve.base_policy("/work")
+  let base = workspace_policy.base_policy("/work")
   let limits = policy.Limits(..base.limits, wall_s: -1)
   let assert Error(reason) =
-    serve.base_policy_fault(policy.SandboxPolicy(..base, limits:))
+    workspace_policy.base_policy_fault(policy.SandboxPolicy(..base, limits:))
     as "a negative limit refuses the boot"
   assert string.contains(reason, "wall_s")
   assert string.contains(reason, "cannot be negative")
@@ -1724,10 +1741,10 @@ pub fn a_negative_limit_refuses_the_boot_naming_the_field_test() {
 pub fn a_scratch_of_the_host_root_refuses_the_boot_test() {
   let base =
     policy.SandboxPolicy(
-      ..serve.base_policy("/work"),
+      ..workspace_policy.base_policy("/work"),
       scratch: policy.ScratchPath(path: "/"),
     )
-  let assert Error(reason) = serve.base_policy_fault(base)
+  let assert Error(reason) = workspace_policy.base_policy_fault(base)
     as "a scratch of the host root refuses the boot"
   assert string.contains(reason, "Landlock")
 }
@@ -1859,7 +1876,7 @@ fn host_reading(name: String) -> Result(String, Nil) {
 
 pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
   let #(environment, unset) =
-    serve.tool_environment(
+    workspace_policy.tool_environment(
       "/work",
       None,
       None,
@@ -1883,7 +1900,7 @@ pub fn configured_tools_precede_system_launchers_test() {
   // The bundled compiler wins, while configured Git and Python installations
   // precede the system launchers that need an additional SDK.
   let #(environment, _unset) =
-    serve.tool_environment(
+    workspace_policy.tool_environment(
       "/work",
       Some("/tool/bin:/usr/bin:/bin"),
       None,
@@ -1900,7 +1917,13 @@ pub fn an_unset_configured_name_is_skipped_and_reported_test() {
   let tools =
     catalog.ToolsConfig(..networked_tools(), env: ["GH_TOKEN", "NO_SUCH_VAR"])
   let #(environment, unset) =
-    serve.tool_environment("/work", None, None, tools, reading: host_reading)
+    workspace_policy.tool_environment(
+      "/work",
+      None,
+      None,
+      tools,
+      reading: host_reading,
+    )
   assert list.key_find(environment, "NO_SUCH_VAR") == Error(Nil)
   assert list.key_find(environment, "GH_TOKEN") == Ok("gho_secret")
   assert unset == ["NO_SUCH_VAR"]
@@ -1908,20 +1931,21 @@ pub fn an_unset_configured_name_is_skipped_and_reported_test() {
 
 pub fn the_default_tools_table_leaves_the_environment_alone_test() {
   let #(environment, unset) =
-    serve.tool_environment(
+    workspace_policy.tool_environment(
       "/work",
       None,
       None,
       catalog.default_tools(),
       reading: host_reading,
     )
-  assert environment == serve.session_environment("/work", None, None)
+  assert environment
+    == workspace_policy.session_environment("/work", None, None)
   assert unset == []
 }
 
 pub fn host_path_discovery_needs_no_per_tool_directory_list_test() {
   let #(environment, unset) =
-    serve.tool_environment(
+    workspace_policy.tool_environment(
       "/work",
       Some("/bundled/bin:/usr/bin:/bin"),
       None,
@@ -1949,10 +1973,10 @@ pub fn a_full_network_table_opens_the_base_policy_test() {
   // the same meet dropping the names out of the shell's environment.
   let base =
     policy.SandboxPolicy(
-      ..serve.base_policy("/work"),
+      ..workspace_policy.base_policy("/work"),
       network: policy.NetworkOff,
     )
-  let opened = serve.under_tools_config(base, networked_tools())
+  let opened = workspace_policy.under_tools_config(base, networked_tools())
   assert opened.network == policy.NetworkFull
   assert list.contains(opened.env_allow, "GH_TOKEN")
   assert list.contains(opened.env_allow, "GH_CONFIG_DIR")
@@ -1962,8 +1986,9 @@ pub fn a_full_network_table_opens_the_base_policy_test() {
 }
 
 pub fn the_default_tools_table_keeps_the_development_policy_test() {
-  let base = serve.base_policy("/work")
-  let unchanged = serve.under_tools_config(base, catalog.default_tools())
+  let base = workspace_policy.base_policy("/work")
+  let unchanged =
+    workspace_policy.under_tools_config(base, catalog.default_tools())
   assert unchanged == base
 }
 
@@ -1981,8 +2006,8 @@ pub fn the_imported_hook_environment_is_a_subset_of_the_base_test() {
   // a step dropped from `session_base` has to be what this notices.
   let settings = settings_under("build/serve-test-hook-env")
   let base =
-    serve.session_base(
-      settings,
+    workspace_policy.session_base(
+      serve.workspace_basis(settings),
       settings.session_path <> ".index",
       settings.session_path <> ".memory",
       settings.session_path <> ".digest",
@@ -1994,7 +2019,7 @@ pub fn the_imported_hook_environment_is_a_subset_of_the_base_test() {
   let asked =
     list.append(
       list.map(
-        serve.session_environment(settings.workspace, None, None),
+        workspace_policy.session_environment(settings.workspace, None, None),
         fn(pair) { pair.0 },
       ),
       ["CLAUDE_PROJECT_DIR"],
@@ -2037,7 +2062,10 @@ fn a_toolchain() -> codemode.Toolchain {
 
 pub fn the_base_admits_the_toolchain_as_mounts_test() {
   let admitted =
-    serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
+    workspace_policy.admitting_codemode(
+      workspace_policy.base_policy("/work"),
+      Ok(a_toolchain()),
+    )
   assert list.map(admitted.mounts, fn(mount) { mount.path })
     == ["/usr/lib/erlang", "/opt/loom/share/codemode-seed", "/opt/homebrew/bin"]
 }
@@ -2048,8 +2076,11 @@ pub fn the_base_admits_the_toolchain_as_mounts_test() {
 // narrowed run. Admitting twice must be admitting once.
 pub fn admitting_the_toolchain_twice_admits_it_once_test() {
   let once =
-    serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
-  let twice = serve.admitting_codemode(once, Ok(a_toolchain()))
+    workspace_policy.admitting_codemode(
+      workspace_policy.base_policy("/work"),
+      Ok(a_toolchain()),
+    )
+  let twice = workspace_policy.admitting_codemode(once, Ok(a_toolchain()))
   assert twice == once
   assert policy.validate(twice) == Ok(Nil)
 }
@@ -2057,8 +2088,9 @@ pub fn admitting_the_toolchain_twice_admits_it_once_test() {
 pub fn a_host_without_a_toolchain_admits_nothing_test() {
   // A host that registers no `code_mode` tool launches no satellite, so a
   // mount for it would be a region granted for nothing.
-  let base = serve.base_policy("/work")
-  assert serve.admitting_codemode(base, Error("no gleam on PATH")) == base
+  let base = workspace_policy.base_policy("/work")
+  assert workspace_policy.admitting_codemode(base, Error("no gleam on PATH"))
+    == base
 }
 
 pub fn the_admitted_base_is_one_the_sandbox_can_enforce_test() {
@@ -2068,8 +2100,11 @@ pub fn the_admitted_base_is_one_the_sandbox_can_enforce_test() {
   // them in one region would fail the boot rather than this test, which is
   // why the check is worth stating here where the shape is visible.
   let admitted =
-    serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
-  assert serve.base_policy_fault(admitted) == Ok(Nil)
+    workspace_policy.admitting_codemode(
+      workspace_policy.base_policy("/work"),
+      Ok(a_toolchain()),
+    )
+  assert workspace_policy.base_policy_fault(admitted) == Ok(Nil)
 }
 
 pub fn the_base_and_the_node_compose_without_narrowing_test() {
@@ -2078,7 +2113,10 @@ pub fn the_base_and_the_node_compose_without_narrowing_test() {
   // lost on the way into the jail.
   let mounts = codemode.toolchain_mounts(a_toolchain())
   let base =
-    serve.admitting_codemode(serve.base_policy("/work"), Ok(a_toolchain()))
+    workspace_policy.admitting_codemode(
+      workspace_policy.base_policy("/work"),
+      Ok(a_toolchain()),
+    )
   let requirements = policy.SandboxPolicy(..base, mounts:)
   let #(effective, narrowings) =
     policy.compose(base:, requirements:, grants: [])
@@ -2091,7 +2129,7 @@ pub fn a_base_missing_a_toolchain_mount_refuses_the_node_test() {
   // narrowed base would produce a satellite that boots into a jail with no
   // ERTS tree and dies with nothing to read.
   let mounts = codemode.toolchain_mounts(a_toolchain())
-  let base = serve.base_policy("/work")
+  let base = workspace_policy.base_policy("/work")
   let requirements = policy.SandboxPolicy(..base, mounts:)
   let #(_effective, narrowings) =
     policy.compose(base:, requirements:, grants: [])
@@ -2106,10 +2144,10 @@ pub fn the_state_root_masks_do_not_meet_the_toolchain_mounts_test() {
   // and the toolchain lives in an install prefix, but the check is cheap
   // and the failure would be a daemon that refuses every session.
   let admitted =
-    serve.base_policy("/work")
-    |> serve.protecting_state_root("/home/o/.loom")
-    |> serve.admitting_codemode(Ok(a_toolchain()))
-  assert serve.base_policy_fault(admitted) == Ok(Nil)
+    workspace_policy.base_policy("/work")
+    |> workspace_policy.protecting_state_root("/home/o/.loom")
+    |> workspace_policy.admitting_codemode(Ok(a_toolchain()))
+  assert workspace_policy.base_policy_fault(admitted) == Ok(Nil)
 }
 
 pub fn a_hook_runs_under_the_assembled_session_base_test() {
@@ -2123,8 +2161,10 @@ pub fn a_hook_runs_under_the_assembled_session_base_test() {
   let settings = settings_under("hook-base")
   let assembled =
     settings.base_policy
-    |> serve.protecting_index(settings.workspace <> "/.loom/index.sqlite")
-    |> serve.admitting_codemode(Ok(a_toolchain()))
+    |> workspace_policy.protecting_index(
+      settings.workspace <> "/.loom/index.sqlite",
+    )
+    |> workspace_policy.admitting_codemode(Ok(a_toolchain()))
   assert assembled != settings.base_policy
   let at =
     serve.hook_coordinates(settings, assembled, 7, clock.fixed(at: 0), [])
@@ -2142,10 +2182,10 @@ pub fn a_toolchain_inside_the_state_root_refuses_the_boot_test() {
       seed_root: "/home/o/.loom/sessions/seed",
     )
   let admitted =
-    serve.base_policy("/work")
-    |> serve.protecting_state_root("/home/o/.loom")
-    |> serve.admitting_codemode(Ok(inside))
-  assert serve.base_policy_fault(admitted) != Ok(Nil)
+    workspace_policy.base_policy("/work")
+    |> workspace_policy.protecting_state_root("/home/o/.loom")
+    |> workspace_policy.admitting_codemode(Ok(inside))
+  assert workspace_policy.base_policy_fault(admitted) != Ok(Nil)
 }
 
 // A merged-usr host with `/bin` first on PATH: `erl` is found at
@@ -2169,16 +2209,19 @@ fn a_root_prefixed_toolchain() -> codemode.Toolchain {
 // shape itself.
 pub fn a_root_prefixed_toolchain_would_refuse_the_boot_test() {
   let admitted =
-    serve.admitting_codemode(
-      serve.base_policy("/work"),
+    workspace_policy.admitting_codemode(
+      workspace_policy.base_policy("/work"),
       Ok(a_root_prefixed_toolchain()),
     )
-  let assert Error(reason) = serve.base_policy_fault(admitted)
+  let assert Error(reason) = workspace_policy.base_policy_fault(admitted)
   assert string.contains(reason, "the mount `/` overlaps the protected entry")
 
   let unmasked =
-    serve.admitting_codemode(
-      policy.SandboxPolicy(..serve.base_policy("/work"), protected: []),
+    workspace_policy.admitting_codemode(
+      policy.SandboxPolicy(
+        ..workspace_policy.base_policy("/work"),
+        protected: [],
+      ),
       Ok(a_root_prefixed_toolchain()),
     )
   assert policy.validate(unmasked)
@@ -2190,12 +2233,15 @@ pub fn a_root_prefixed_toolchain_would_refuse_the_boot_test() {
 // boots, and `code_mode_seam` sees an `Error` and registers no tool,
 // logging the sentence instead.
 pub fn admission_refuses_a_toolchain_that_shadows_the_workspace_test() {
-  let base = serve.base_policy("/work")
+  let base = workspace_policy.base_policy("/work")
   let admitted =
-    serve.admissible_toolchain(Ok(a_root_prefixed_toolchain()), base)
+    workspace_policy.admissible_toolchain(Ok(a_root_prefixed_toolchain()), base)
   let assert Error(reason) = admitted
   assert string.contains(reason, "code mode would mount / read-only")
-  assert serve.base_policy_fault(serve.admitting_codemode(base, admitted))
+  assert workspace_policy.base_policy_fault(workspace_policy.admitting_codemode(
+      base,
+      admitted,
+    ))
     == Ok(Nil)
 }
 
@@ -2205,10 +2251,13 @@ pub fn admission_refuses_a_toolchain_that_shadows_the_workspace_test() {
 // would shadow `git commit` in every jail just the same.
 pub fn admission_judges_the_toolchain_against_every_writable_root_test() {
   let base =
-    policy.SandboxPolicy(..serve.base_policy("/work"), writable_roots: [
-      "/work",
-      "/home/o/repo/.git",
-    ])
+    policy.SandboxPolicy(
+      ..workspace_policy.base_policy("/work"),
+      writable_roots: [
+        "/work",
+        "/home/o/repo/.git",
+      ],
+    )
   let linked =
     codemode.Toolchain(
       ..codemode.toolchain(
@@ -2218,16 +2267,17 @@ pub fn admission_judges_the_toolchain_against_every_writable_root_test() {
       ),
       gleam_binary: codemode.GleamSymlink,
     )
-  let assert Error(reason) = serve.admissible_toolchain(Ok(linked), base)
+  let assert Error(reason) =
+    workspace_policy.admissible_toolchain(Ok(linked), base)
   assert string.contains(reason, "contains /home/o/repo/.git")
 }
 
 // An ordinary toolchain, and a host with none, pass through unchanged.
 pub fn admission_passes_an_ordinary_toolchain_through_test() {
-  let base = serve.base_policy("/work")
-  assert serve.admissible_toolchain(Ok(a_toolchain()), base)
+  let base = workspace_policy.base_policy("/work")
+  assert workspace_policy.admissible_toolchain(Ok(a_toolchain()), base)
     == Ok(a_toolchain())
-  assert serve.admissible_toolchain(Error("no gleam on PATH"), base)
+  assert workspace_policy.admissible_toolchain(Error("no gleam on PATH"), base)
     == Error("no gleam on PATH")
 }
 
@@ -2250,9 +2300,9 @@ pub fn the_session_judges_the_toolchain_against_its_assembled_base_test() {
       gleam_binary: codemode.GleamSymlink,
     )
   let judged = fn(discovered) {
-    serve.session_toolchain(
+    workspace_policy.session_toolchain(
       discovered,
-      settings,
+      serve.workspace_basis(settings),
       settings.session_path <> ".index",
       settings.session_path <> ".memory",
       settings.session_path <> ".digest",
@@ -2297,7 +2347,7 @@ fn access_of(base: policy.SandboxPolicy, path: String) -> Result(_, Nil) {
 }
 
 pub fn developer_reads_do_not_depend_on_toolchain_locations_test() {
-  let base = serve.base_policy("/work")
+  let base = workspace_policy.base_policy("/work")
   assert base.readable_roots == ["/"]
   assert base.writable_roots == ["/work"]
   assert base.mounts == []
@@ -2306,7 +2356,7 @@ pub fn developer_reads_do_not_depend_on_toolchain_locations_test() {
 }
 
 pub fn restricted_reads_require_explicit_external_mounts_test() {
-  let base = serve.base_policy_for("/work", catalog.WorkspaceReads)
+  let base = workspace_policy.base_policy_for("/work", catalog.WorkspaceReads)
   let external = "/arbitrary/installation"
   let requirement =
     policy.SandboxPolicy(..policy.workspace_default("/work"), readable_roots: [
@@ -2315,7 +2365,7 @@ pub fn restricted_reads_require_explicit_external_mounts_test() {
   let #(_final, missing) = policy.compose(base, requirement, [])
   assert list.contains(missing, policy.NarrowedReadableRoot(external))
   let configured =
-    serve.admitting_config_mounts(base, [
+    workspace_policy.admitting_config_mounts(base, [
       catalog.WorkspaceMount(external, policy.MountReadOnly),
     ])
   assert access_of(configured, external) == Ok(policy.MountReadOnly)
@@ -2350,9 +2400,10 @@ pub fn a_misspelled_read_scope_never_falls_back_to_host_reads_test() {
 
 pub fn protected_paths_survive_both_read_scopes_test() {
   list.each([catalog.HostReads, catalog.WorkspaceReads], fn(scope) {
-    let base = serve.base_policy_for("/work", scope)
+    let base = workspace_policy.base_policy_for("/work", scope)
     assert base.protected == ["/work/.blobs"]
-    let final = serve.under_tools_config(base, catalog.default_tools())
+    let final =
+      workspace_policy.under_tools_config(base, catalog.default_tools())
     assert final.protected == base.protected
     assert final.readable_roots == base.readable_roots
     assert final.writable_roots == base.writable_roots
@@ -2372,7 +2423,7 @@ pub fn a_sibling_path_dependency_is_mounted_read_only_test() {
     )
     as "the manifest must be writable"
   let base =
-    serve.widening_path_dependencies(
+    workspace_policy.widening_path_dependencies(
       policy.workspace_default(workspace),
       workspace,
     )
@@ -2396,7 +2447,7 @@ pub fn a_path_dependency_inside_the_workspace_is_not_mounted_test() {
     )
     as "the manifest must be writable"
   let base =
-    serve.widening_path_dependencies(
+    workspace_policy.widening_path_dependencies(
       policy.workspace_default(workspace),
       workspace,
     )
@@ -2405,12 +2456,12 @@ pub fn a_path_dependency_inside_the_workspace_is_not_mounted_test() {
 
 pub fn a_workspace_with_no_manifest_widens_nothing_test() {
   let root = scratch_root("bare")
-  assert serve.path_dependencies(root) == []
+  assert workspace_policy.path_dependencies(root) == []
 }
 
 pub fn configured_mounts_are_required_at_the_access_stated_test() {
   let base =
-    serve.admitting_config_mounts(policy.workspace_default("/work"), [
+    workspace_policy.admitting_config_mounts(policy.workspace_default("/work"), [
       catalog.WorkspaceMount(path: "/srv/data", access: policy.MountReadOnly),
       catalog.WorkspaceMount(path: "/var/shared", access: policy.MountReadWrite),
     ])
@@ -2422,7 +2473,7 @@ pub fn configured_mounts_are_required_at_the_access_stated_test() {
   assert list.all(base.mounts, fn(mount) {
     mount.requirement == policy.MountRequired
   })
-  assert serve.base_policy_fault(base) == Ok(Nil)
+  assert workspace_policy.base_policy_fault(base) == Ok(Nil)
 }
 
 pub fn a_configured_mount_over_a_mask_refuses_the_boot_test() {
@@ -2433,13 +2484,13 @@ pub fn a_configured_mount_over_a_mask_refuses_the_boot_test() {
     policy.SandboxPolicy(..policy.workspace_default("/work"), protected: [
       "/state/secrets",
     ])
-    |> serve.admitting_config_mounts([
+    |> workspace_policy.admitting_config_mounts([
       catalog.WorkspaceMount(
         path: "/state/secrets",
         access: policy.MountReadOnly,
       ),
     ])
-  let assert Error(reason) = serve.base_policy_fault(base)
+  let assert Error(reason) = workspace_policy.base_policy_fault(base)
     as "a mount over a mask must refuse the boot"
   assert string.contains(reason, "/state/secrets")
 }
@@ -2458,14 +2509,14 @@ pub fn an_explicit_toolchain_mount_merges_with_discovery_test() {
   let home = scratch_root("linux-home")
   make(home <> "/.local/bin")
   let base =
-    policy.SandboxPolicy(..serve.base_policy("/work"), mounts: [
+    policy.SandboxPolicy(..workspace_policy.base_policy("/work"), mounts: [
       policy.Mount(
         home <> "/.local/bin",
         policy.MountReadOnly,
         policy.MountOptional,
       ),
     ])
-    |> serve.admitting_codemode(
+    |> workspace_policy.admitting_codemode(
       Ok(codemode.toolchain(
         gleam_path: home <> "/.local/bin/gleam",
         erl_path: "/usr/lib/erlang/bin/erl",
@@ -2476,7 +2527,7 @@ pub fn an_explicit_toolchain_mount_merges_with_discovery_test() {
   // path, so the base validates as assembled and the closing merge is a
   // no-op on it.
   assert policy.validate(base) == Ok(Nil)
-  let merged = serve.merging_mounts(base)
+  let merged = workspace_policy.merging_mounts(base)
   assert merged == base
   assert list.count(mount_paths(merged), fn(path) {
       path == home <> "/.local/bin"
@@ -2513,10 +2564,12 @@ pub fn a_discovered_prefix_merges_with_an_existing_mount_test() {
       requirement: policy.MountOptional,
     )
   let base =
-    policy.SandboxPolicy(..serve.base_policy("/work"), mounts: [shared])
-    |> serve.admitting_codemode(Ok(toolchain))
+    policy.SandboxPolicy(..workspace_policy.base_policy("/work"), mounts: [
+      shared,
+    ])
+    |> workspace_policy.admitting_codemode(Ok(toolchain))
   assert policy.validate(base) == Ok(Nil)
-  let merged = serve.merging_mounts(base)
+  let merged = workspace_policy.merging_mounts(base)
   assert merged == base
   assert mount_paths(merged)
     == ["/opt/homebrew", "/opt/loom/share/codemode-seed"]
@@ -2539,7 +2592,7 @@ pub fn a_read_write_twin_at_a_toolchain_path_stays_read_only_test() {
         requirement: policy.MountRequired,
       ),
     ])
-  let merged = serve.merging_mounts(base)
+  let merged = workspace_policy.merging_mounts(base)
   assert merged.mounts
     == [
       policy.Mount(
@@ -2567,21 +2620,21 @@ pub fn a_mount_inside_another_mount_is_not_a_duplicate_test() {
         requirement: policy.MountOptional,
       ),
     ])
-  assert serve.merging_mounts(base).mounts == base.mounts
+  assert workspace_policy.merging_mounts(base).mounts == base.mounts
 }
 
 pub fn a_discovered_toolchain_beside_host_reads_validates_test() {
   let base =
-    serve.base_policy("/work")
-    |> serve.admitting_codemode(
+    workspace_policy.base_policy("/work")
+    |> workspace_policy.admitting_codemode(
       Ok(codemode.toolchain(
         gleam_path: "/arbitrary/compiler/bin/gleam",
         erl_path: "/arbitrary/runtime/bin/erl",
         seed_root: "/arbitrary/cache/seed",
       )),
     )
-    |> serve.merging_mounts
-  assert serve.base_policy_fault(base) == Ok(Nil)
+    |> workspace_policy.merging_mounts
+  assert workspace_policy.base_policy_fault(base) == Ok(Nil)
   assert base.readable_roots == ["/"]
 }
 
@@ -2643,7 +2696,10 @@ pub fn code_mode_defaults_to_both_isolated_surfaces_test() {
 // --- where a managed session binds its code-mode sockets (#611) ------------
 
 pub fn a_session_binds_its_sockets_under_the_daemon_runtime_root_test() {
-  assert serve.codemode_socket_root(serve.base_policy("/work"), "/home/o/.loom")
+  assert serve.codemode_socket_root(
+      workspace_policy.base_policy("/work"),
+      "/home/o/.loom",
+    )
     == Some("/home/o/.loom/run")
 }
 
@@ -2651,12 +2707,12 @@ pub fn a_session_that_can_write_the_runtime_root_binds_in_its_workspace_test() {
   // A session on the home directory could replace `run` from a jail, so
   // it keeps the mask and binds under its own work root instead.
   assert serve.codemode_socket_root(
-      serve.base_policy("/home/o"),
+      workspace_policy.base_policy("/home/o"),
       "/home/o/.loom",
     )
     == None
   assert serve.codemode_socket_root(
-      serve.base_policy("/home/o/.loom"),
+      workspace_policy.base_policy("/home/o/.loom"),
       "/home/o/.loom",
     )
     == None
@@ -2672,8 +2728,8 @@ pub fn the_session_base_and_environment_carry_the_private_go_caches_test() {
     )
   let with_caches = serve.Settings(..settings, go_caches: Some(caches))
   let base =
-    serve.session_base(
-      with_caches,
+    workspace_policy.session_base(
+      serve.workspace_basis(with_caches),
       settings.session_path <> ".index",
       settings.session_path <> ".memory",
       settings.session_path <> ".digest",
@@ -2689,7 +2745,7 @@ pub fn the_session_base_and_environment_carry_the_private_go_caches_test() {
     && mount.access == policy.MountReadOnly
   })
   let environment =
-    serve.session_environment(settings.workspace, None, Some(caches))
+    workspace_policy.session_environment(settings.workspace, None, Some(caches))
   assert list.all(environment, fn(pair) {
     list.contains(base.env_allow, pair.0)
   })
@@ -2703,8 +2759,8 @@ pub fn the_session_base_and_environment_carry_the_private_go_caches_test() {
 
   // Without caches the base and environment are what they were.
   let plain =
-    serve.session_base(
-      settings,
+    workspace_policy.session_base(
+      serve.workspace_basis(settings),
       settings.session_path <> ".index",
       settings.session_path <> ".memory",
       settings.session_path <> ".digest",
@@ -2712,7 +2768,7 @@ pub fn the_session_base_and_environment_carry_the_private_go_caches_test() {
     )
   assert !list.contains(plain.writable_roots, caches.root)
   assert list.key_find(
-      serve.session_environment(settings.workspace, None, None),
+      workspace_policy.session_environment(settings.workspace, None, None),
       "GOCACHE",
     )
     == Error(Nil)

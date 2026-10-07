@@ -67,6 +67,7 @@ import client/extension/record
 import client/extension/source
 import client/internal/ffi_os
 import client/serve
+import client/workspace_policy
 import codemode/identity
 import codemode/launch
 import codemode/satellite
@@ -1269,7 +1270,7 @@ fn install_fixture(ready: Ready, host: String) -> Result(Installed, String) {
             // composition takes the meet, so a base without them refuses
             // every extension node. `client/serve.admitting_codemode` is
             // the same call the boot makes.
-            base_policy: serve.admitting_codemode(
+            base_policy: workspace_policy.admitting_codemode(
               plane.base_policy,
               Ok(plane.toolchain),
             ),

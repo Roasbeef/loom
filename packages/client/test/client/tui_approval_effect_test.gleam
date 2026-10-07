@@ -20,6 +20,7 @@ import client/serve
 import client/session_socket_test
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import client/tui_v2_test
+import client/workspace_policy
 import core/clock
 import core/entry
 import core/ids
@@ -188,7 +189,7 @@ fn start() {
               selected.memory_path,
             ))
             == Ok(Nil)
-          let base = serve.base_policy(record.workspace)
+          let base = workspace_policy.base_policy(record.workspace)
           serve.assemble_in_domain(
             serve.Settings(
               ..settings,

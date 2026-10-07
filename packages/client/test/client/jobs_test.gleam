@@ -92,7 +92,7 @@ import client/jobtools
 import client/notice
 import client/owner_services
 import client/protocol
-import client/serve
+import client/workspace_policy
 import core/clock.{type Clock}
 import core/ids
 import core/json
@@ -1116,7 +1116,7 @@ pub fn a_default_wall_is_met_with_the_session_policys_own_test() {
 
 pub fn the_real_policy_admits_a_default_and_refuses_a_longer_wall_test() {
   // The scripted broker composes no policy, so nothing else in this file
-  // can see the meet the real one performs. `serve.base_policy` is what
+  // can see the meet the real one performs. `workspace_policy.base_policy` is what
   // a session hands this actor and its wall is ten minutes, so the two
   // halves of `granted_wall` land on opposite sides of the composition.
   let name = start_over_a_real_broker()
@@ -1194,7 +1194,7 @@ fn start_over_a_real_broker() -> address.Address(jobs.Message) {
         clock,
         tool.broker_runner(broker: broker_actor, waiting: 1000),
         1000,
-        serve.base_policy("/workspace"),
+        workspace_policy.base_policy("/workspace"),
       ),
     )
     as "the jobs actor must start"

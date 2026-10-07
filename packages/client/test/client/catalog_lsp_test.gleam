@@ -7,7 +7,7 @@
 
 import client/catalog
 import client/lsp/profile
-import client/serve
+import client/workspace_policy
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
@@ -567,10 +567,10 @@ pub fn a_root_resolving_into_the_private_cache_is_refused_test() {
       <> " start binds it, so name a directory that does not hold it",
     )
 
-  // Boot resolves every root through `serve.lsp_server_roots`, and that
+  // Boot resolves every root through `workspace_policy.lsp_server_roots`, and that
   // is where the refusal has to reach an operator.
   let assert Error("lsp.x.writable entry \"~/.cache\" resolves to" <> _) =
-    serve.lsp_server_roots(
+    workspace_policy.lsp_server_roots(
       profile.LspServer(..base, writable: [profile.HomePath(".cache")]),
       places,
     )

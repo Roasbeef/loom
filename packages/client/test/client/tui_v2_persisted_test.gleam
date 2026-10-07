@@ -12,6 +12,7 @@ import client/daemon/root
 import client/daemon/session_socket
 import client/owned_assembly_test
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/entry
 import core/ids
@@ -102,7 +103,7 @@ fn start(settings: serve.Settings, arrivals: process.Subject(Arrival)) {
             )
             == Ok(Nil)
           assert bootstrap.ensure_private_directory(domain) == Ok(Nil)
-          let base = serve.base_policy(record.workspace)
+          let base = workspace_policy.base_policy(record.workspace)
           serve.assemble_in_domain(
             serve.Settings(
               ..settings,

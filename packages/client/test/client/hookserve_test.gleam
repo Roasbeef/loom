@@ -25,6 +25,7 @@ import client/hooktrust
 import client/hookwire
 import client/internal/ffi_os
 import client/serve
+import client/workspace_policy
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json
@@ -431,9 +432,11 @@ fn jailed_rig() -> #(Rig, exec.Helper) {
   let assert Ok(here) = simplifile.current_directory()
     as "the test process must know where it is"
   let assert Ok(Nil) =
-    simplifile.create_directory_all(serve.tool_home_directory(ground.workspace))
+    simplifile.create_directory_all(workspace_policy.tool_home_directory(
+      ground.workspace,
+    ))
     as "the jail home must be creatable"
-  let temp = serve.tool_tmp_directory(ground.workspace)
+  let temp = workspace_policy.tool_tmp_directory(ground.workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(temp)
     as "the jail temp directory must be creatable"
 
@@ -509,10 +512,10 @@ fn ground() -> Ground {
 // *before* a helper is asked for, and the gate tests would count zero
 // for a reason that has nothing to do with what they assert.
 fn hook_base(workspace: String) -> policy.SandboxPolicy {
-  serve.base_policy(workspace)
-  |> serve.merging_mounts
-  |> serve.allowing_tool_tmpdir
-  |> serve.allowing_imported_hook_env
+  workspace_policy.base_policy(workspace)
+  |> workspace_policy.merging_mounts
+  |> workspace_policy.allowing_tool_tmpdir
+  |> workspace_policy.allowing_imported_hook_env
 }
 
 // One rig over a broker that is already standing. The runner's
@@ -542,7 +545,7 @@ fn assembled(
       step_id: "hookserve-fixture",
       workspace: ground.workspace,
       env: serve.hook_environment(
-        serve.session_environment(ground.workspace, None, None),
+        workspace_policy.session_environment(ground.workspace, None, None),
         Some(ground.home),
         ground.workspace,
       ),

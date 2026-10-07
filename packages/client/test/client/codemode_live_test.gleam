@@ -40,6 +40,7 @@ import client/scheduleseam
 import client/scratch
 import client/serve
 import client/working_directory
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/json
@@ -2482,7 +2483,7 @@ fn rig_sized(
       protected:,
       mounts: codemode.toolchain_mounts(toolchain),
     )
-    |> serve.merging_mounts
+    |> workspace_policy.merging_mounts
   let assert Ok(pool) =
     exec.start_pool(size: helpers, spawn: fn() {
       exec.spawn_helper(exec.SpawnConfig(

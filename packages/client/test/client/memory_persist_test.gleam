@@ -29,6 +29,7 @@ import client/memory
 import client/retryconf
 import client/schedule
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids as core_ids
 import core/json as core_json
@@ -175,13 +176,13 @@ pub fn memory_is_protected_where_a_write_could_reach_it_test() {
   // workspace, so nothing writable reaches these files and nothing is
   // added to the mask list.
   let outside = policy.workspace_default("/repo/work")
-  let unreached = serve.protecting_memory(outside, store, digest)
+  let unreached = workspace_policy.protecting_memory(outside, store, digest)
   assert unreached.protected == outside.protected
 
   // The layout where it matters: a writable root covers the session
   // directory, so both files — and the store's WAL family — are barred.
   let inside = policy.workspace_default("/repo")
-  let reached = serve.protecting_memory(inside, store, digest)
+  let reached = workspace_policy.protecting_memory(inside, store, digest)
   assert list.contains(reached.protected, store)
   assert list.contains(reached.protected, digest)
   assert list.contains(reached.protected, store <> "-wal")
@@ -233,7 +234,7 @@ fn settings(
     bind_port: 0,
     token_path: root <> "/" <> file <> ".token",
     workspace: root <> "/work",
-    base_policy: serve.base_policy(root <> "/work"),
+    base_policy: workspace_policy.base_policy(root <> "/work"),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: file,
@@ -359,7 +360,7 @@ fn a_clock() -> clock.Clock {
 }
 
 // Absolute, because the workspace root becomes the base policy's
-// writable root and `serve.base_policy_fault` refuses a boot on a policy
+// writable root and `workspace_policy.base_policy_fault` refuses a boot on a policy
 // whose paths the jail could not accept.
 fn fresh_root(lane: String) -> String {
   let relative = "build/test_db/memory-persist-" <> lane

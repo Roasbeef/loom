@@ -19,9 +19,9 @@ import broker/framing
 import broker/policy
 import broker/token
 import client/escalate
-import client/serve
 import client/system_prompt
 import client/wiring
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/json
@@ -879,17 +879,17 @@ pub fn a_helper_that_will_not_spawn_reads_as_degraded_test() {
   let assert Ok(pool) =
     exec.start_pool(size: 1, spawn: fn() { Error(exec.PortOpenFailed) })
     as "the pool must start"
-  assert serve.degraded(pool)
+  assert workspace_policy.degraded(pool)
   exec.stop_pool(pool)
 }
 
 pub fn the_helpers_hello_is_what_answers_the_question_test() {
   let honest = pool_of(["bwrap", "landlock", "seccomp"])
-  assert !serve.degraded(honest)
+  assert !workspace_policy.degraded(honest)
   exec.stop_pool(honest)
 
   let hobbled = pool_of(["bwrap", "degraded"])
-  assert serve.degraded(hobbled)
+  assert workspace_policy.degraded(hobbled)
   exec.stop_pool(hobbled)
 }
 

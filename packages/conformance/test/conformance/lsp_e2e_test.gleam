@@ -50,6 +50,7 @@ import client/jobs
 import client/retryconf
 import client/schedule
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/json.{type JsonValue}
 import core/message
@@ -1067,7 +1068,7 @@ fn settings(
     bind_port: -1,
     token_path: rig.root <> "/transport-only/daemon.token",
     workspace: rig.workspace,
-    base_policy: serve.base_policy(rig.workspace),
+    base_policy: workspace_policy.base_policy(rig.workspace),
     helper_path:,
     // The smallest pool the boot allows, which is also the one where the
     // lease cap (`pool_size - 3`) admits exactly the one server.

@@ -15,6 +15,7 @@ import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/owned_assembly_test
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/message
@@ -142,7 +143,7 @@ fn assembly(
             selected.memory_path,
             selected.index_path,
           )),
-          base_policy: serve.base_policy(record.workspace),
+          base_policy: workspace_policy.base_policy(record.workspace),
           gateway:,
         ),
         identity,

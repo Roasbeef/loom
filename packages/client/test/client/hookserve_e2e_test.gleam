@@ -62,6 +62,7 @@ import client/retryconf
 import client/schedule
 import client/serve
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import client/workspace_policy
 import core/clock
 import core/json
 import core/message
@@ -569,7 +570,7 @@ fn settings(rig: Rig, script: Subject(ScriptMessage)) -> serve.Settings {
     bind_port: -1,
     token_path: rig.root <> "/transport-only/daemon.token",
     workspace: rig.workspace,
-    base_policy: serve.base_policy(rig.workspace),
+    base_policy: workspace_policy.base_policy(rig.workspace),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: "hookserve-e2e",

@@ -16,6 +16,7 @@ import client/daemon/transfer
 import client/host_git
 import client/serve
 import client/session_git
+import client/workspace_policy
 import client/worktree_diff
 import core/clock
 import core/ids
@@ -496,7 +497,7 @@ fn with_fixture(label: String, run: fn(worktree_diff.Wiring) -> Nil) -> Nil {
 // Starts the production broker and pool over `workspace` and runs the test
 // with the wiring a session would capture with. A linked worktree's metadata
 // directories are admitted as `serve.boot` admits them
-// (`serve.widening_linked_worktree`), so a workspace whose `.git` is a file
+// (`workspace_policy.widening_linked_worktree`), so a workspace whose `.git` is a file
 // is observed as it is in production.
 fn serve_workspace(
   repository: String,
@@ -514,7 +515,7 @@ fn serve_workspace(
 
   // Keep ancestor repositories outside this fixture's readable scope.
   // Host reads would let the empty workspace discover the CI checkout.
-  let base = serve.base_policy_for(workspace, catalog.WorkspaceReads)
+  let base = workspace_policy.base_policy_for(workspace, catalog.WorkspaceReads)
 
   // Apple ships the real Git executable with Xcode; /usr/bin/git is a
   // launcher whose discovery needs unrelated host preferences. Admit only
@@ -529,7 +530,7 @@ fn serve_workspace(
     )
     Ok(False) | Error(_) -> #(base, "/usr/local/bin:/usr/bin:/bin")
   }
-  let base = serve.widening_linked_worktree(base, workspace)
+  let base = workspace_policy.widening_linked_worktree(base, workspace)
   let clock = clock.from_function(bootstrap.system_time_ms)
   let assert Ok(#(_pool, broker, service)) =
     serve.start_effect_plane(
