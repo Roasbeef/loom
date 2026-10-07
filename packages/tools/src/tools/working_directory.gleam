@@ -3,6 +3,8 @@
 //// A host stores one default per strand. Every command captures its selected
 //// canonical directory before execution; changing the default cannot move a
 //// running job or change where native file and LSP paths resolve.
+//// Local projection precedes host callbacks or path inspection, so registered
+//// identity cannot borrow the owner's filesystem or shell-directory store.
 
 import core/json
 import gleam/list
@@ -33,15 +35,20 @@ pub type Door {
 /// // working_directory.workspace_only().read(ctx)
 /// ```
 pub fn workspace_only() -> Door {
-  Door(read: fn(ctx) { Ok(ctx.workspace) }, write: fn(_ctx, _path) {
-    Error("this host has no directory store")
-  })
+  Door(
+    read: fn(ctx) {
+      tool.require_local_workspace(ctx)
+      |> result.map(fn(local) { local.root })
+      |> result.replace_error("working directory requires a local workspace")
+    },
+    write: fn(_ctx, _path) { Error("this host has no directory store") },
+  )
 }
 
 /// Resolves a selection against the strand default without widening authority.
 ///
 /// Absolute selections allow recovery when the previous directory is gone.
-/// Native tools continue to resolve paths against `ctx.workspace`.
+/// Native tools continue to resolve paths against the local workspace root.
 ///
 /// ## Examples
 ///
@@ -53,13 +60,24 @@ pub fn select(
   ctx: Ctx,
   path: Option(String),
 ) -> Result(String, String) {
+  // The host's default callback may inspect disk, so scope is checked even
+  // when no override was supplied.
+  use local <- result.try(
+    tool.require_local_workspace(ctx)
+    |> result.replace_error("working directory requires a local workspace"),
+  )
   case path {
     None -> door.read(ctx)
-    Some(path) -> select_path(door, ctx, path)
+    Some(path) -> select_path(door, ctx, local, path)
   }
 }
 
-fn select_path(door: Door, ctx: Ctx, path: String) -> Result(String, String) {
+fn select_path(
+  door: Door,
+  ctx: Ctx,
+  local: tool.LocalWorkspaceAccess,
+  path: String,
+) -> Result(String, String) {
   use chosen <- result.try(case path {
     "" -> Error("cwd must not be empty")
     path ->
@@ -70,7 +88,7 @@ fn select_path(door: Door, ctx: Ctx, path: String) -> Result(String, String) {
   })
   let access = directory_access.approved(ctx.directory_access, ctx.grants)
   use canonical <- result.try(
-    fs.resolve_readable(ctx.filesystem, ctx.workspace, access.readable, chosen)
+    fs.resolve_readable(local.filesystem, local.root, access.readable, chosen)
     |> result.map_error(fn(error) { "invalid cwd: " <> string.inspect(error) }),
   )
   use exists <- result.try(
@@ -117,6 +135,9 @@ pub fn tool(door: Door) -> tool.Tool {
 }
 
 fn run(door: Door, ctx: Ctx, args: json.JsonValue) -> tool.ToolOutcome {
+  use local <- tool.or_outcome(tool.require_local_workspace(ctx), fn(outcome) {
+    outcome
+  })
   use path <- tool.with_arg(tool.optional_string(args, "path"))
   use ctx <- tool.or_outcome(permissions.authorize(ctx, args), fn(outcome) {
     outcome
@@ -128,17 +149,12 @@ fn run(door: Door, ctx: Ctx, args: json.JsonValue) -> tool.ToolOutcome {
   })
   let tmp = list.key_find(ctx.env, "TMPDIR") |> result.unwrap("")
   tool.success(
-    "shell cwd: "
-    <> cwd
-    <> "\nworkspace: "
-    <> ctx.workspace
-    <> "\nTMPDIR: "
-    <> tmp,
+    "shell cwd: " <> cwd <> "\nworkspace: " <> local.root <> "\nTMPDIR: " <> tmp,
   )
   |> tool.with_details(
     json.Object([
       #("cwd", json.String(cwd)),
-      #("workspace", json.String(ctx.workspace)),
+      #("workspace", json.String(local.root)),
       #("tmpdir", json.String(tmp)),
     ]),
   )
