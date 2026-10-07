@@ -359,6 +359,33 @@ model consumption. The daemon routes to resident endpoints only;
 discovery can list saved sessions without opening them. An unavailable
 link remains one unavailable roster row.
 
+### Default links
+
+[Protocol 077](../../protocol-change/077-web-peer-links.md) adds an opt-in
+default. With `[peers] default_links = "same_owner"`, `main` of one session may
+message `main` of another with no grant, in both directions, when both sessions
+are ones the owner holds alone: active sessions with no member and no observer.
+The setting and `default_wake` are read once at startup
+(`client/peer_defaults`) and default to `off` and `busy_only`.
+
+The decision is one function in the recipient's admission,
+`peer_mail.implicit_wake`. Delivery calls it when no grant exists, and the
+roster, the outgoing list and the incoming list call it so they show what
+delivery would admit. An explicit grant for the pair decides alone, so its wake
+permission overrides the default's. An explicit unlink of a `main` to `main`
+pair records a denial in both sessions (`client/peers/denial/<digest>`), and
+granting the pair again removes it. Eligibility is read from the registry at each
+call (`manager.unshared_sessions`), so inviting a person into a session ends its
+default links at once.
+
+A default link never opens a session. `peer_roster` lists every eligible session
+and marks each `running: true` or `false`, and a send to one that is not running
+is refused with `that session is not running; the owner has to open it`, since
+opening on a message would let one model start another session's runtime. The
+default entries share the 64-link bound with explicit links, listed after them in
+session-ID order; the rest are not addressable.
+`loomd peer inspect` and the web page mark a default link with `default`.
+
 Both steering an active operation and starting an idle strand place the
 same `UserMessage` with a host-bound `PeerOrigin(session, strand)`. The
 message body contains the sender's text. `core/origin` serializes the

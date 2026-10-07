@@ -5282,6 +5282,36 @@ grants confer no lineage or custody.
 `peer_mail.Link` enforces 64 outgoing links per source strand before writing the
 source index. Replacing an exact link at the limit remains idempotent.
 
+Default peer links (protocol-change/077). `client/peer_defaults` decodes the
+`[peers]` table (`default_links = "off" | "same_owner"`, `default_wake`),
+strictly, and `catalog` validates it with every other table; `daemon/main`
+captures it once at startup in `Config.peer_policy` and never rereads it. The
+daemon hands each session `peer_mail.Defaults(policy, eligible)` through
+`serve.Settings.peer_defaults` and `agency.Config.peer_defaults`; `Agency`
+calls `peer_mail.handle_with`, and `handle` is the same with `no_defaults`.
+`eligible` is `manager.unshared_sessions`, a registry read of the active
+sessions with no membership row (resident or not, at most 256), evaluated at
+each admission and listing. `peer_mail.implicit_wake` is the only place a
+default link is decided (same_owner, both strands `main`, different sessions, no
+denial, both sessions eligible), and delivery, `Roster`, `Links` and `Grants` all
+use it: an explicit grant decides alone, a default delivery commits under the
+guard that neither a grant nor a denial exists. `Revoke` and `Unlink` record
+`client/peers/denial/<digest>` for a `main` to `main` pair and `Allow` and `Link`
+clear it, each in one `api.edit_reserved_facts` transaction. Default rows carry
+`default: true` in `Links`, `Grants` and `peers.inspect`; roster rows carry
+`running`. `peers.send` refuses a closed recipient with `peers.not_running`, and
+nothing opens a session. Default entries share the 64-link bound after the
+explicit ones. A new `[peers]` key means `peer_defaults` and its test.
+
+An owner's web page manages links through `daemon/ui_peers`: `run` executes a
+`web_view/peer_links.Request` against `peers.inspect`, `peers.link` and
+`peers.unlink_session` (also what the `peers.unlink` control calls), judges strands
+and session identities again, resolves only resident sessions, and maps a refusal
+to a fixed `Reason`. `ui_socket.peer_links_for` re-derives the page's owner at
+each request, `peer_links_capability` hands the capability to an `Owning` page
+alone, and `owner_accepts` alone admits events beneath `component.peers_path`.
+`server.Attachment.peers` is the daemon's `peers.Directory`.
+
 Epoch-checked `sessions.activity` (`protocol.SessionActivity`)
 takes 1 to 24 distinct canonical ids and reports what each resident is doing.
 The owner is answered for any id; a member only for ids its credential holds a

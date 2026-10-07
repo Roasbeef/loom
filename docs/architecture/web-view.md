@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4337`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4464`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1530,6 +1530,21 @@ would try to trick the person into approving:
   (`component.remembered_path`); an observer's page draws none and its socket
   admits none, and the gateway refuses `permissions` and
   `permission_forget` to an observer on its own.
+- **Peer links** (protocol-change/077). The Session pane's seventh child
+  (`component.peers_path`, `view/peer_links`) is the owner's list of the focused
+  strand's peer links as `this › target` and `source › this` rows, with a mark
+  on a link that may wake its target and on one the daemon's `[peers]` default
+  supplies. The owner may Link a running session (chosen from the sidebar's own
+  list, with a wake choice, a **Both directions** toggle and a target strand that
+  starts as `main`) and Unlink a row; a two-way pair asks which direction or
+  both. The page asks by value through `Transport.peers`, which is `Some` only on
+  an owner's operating page, and `ui_socket.peer_links_for` re-derives the owner
+  at each request before `client/daemon/ui_peers` runs the same `peers.inspect`,
+  `peers.link` and `peers.unlink` code the terminal uses. The socket admits events
+  beneath the path only for an owner, a member's or observer's page draws nothing
+  and reads nothing, every name and strand is a text node, and a refusal is one of
+  seven fixed sentences. The page reads on open, on a focus change, after its own
+  change and every 15 seconds.
 - Cards are keyed by the record's sequence, so a click in flight while the
   list shifts reaches the same card or none.
 

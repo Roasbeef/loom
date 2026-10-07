@@ -578,3 +578,15 @@ network = "full"
 # ui = true # Enable browser access when ordinary loom starts the daemon.
 max_connections = 64
 max_reserved_message_bytes = 536870912 # 512 MiB; twelve normal terminal pairs.
+
+# Peer links let one session's model put text into another session's prompt.
+# They are granted pair by pair (`/peers`, `loomd peer link`, or the Peer links
+# section of an owner's web page). `same_owner` links `main` to `main`, in both
+# directions, between the sessions you hold alone, meaning those with no
+# invited member or observer, so a model's peer_roster lists them and peer_send
+# needs no grant. It never opens a closed session, and an explicit unlink of a
+# pair ends the default for that direction. Leave it off unless you want every
+# one of your own sessions able to prompt every other. Read at daemon startup.
+[peers]
+default_links = "off" # "off" | "same_owner"
+default_wake = "busy_only" # "busy_only" | "may_wake"; may_wake can start an idle main.

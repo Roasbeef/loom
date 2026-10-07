@@ -15,6 +15,20 @@
 //// admit. An explicit grant for a pair takes precedence over it, and an
 //// explicit unlink records a denial that ends it for that direction until the
 //// owner grants the pair again.
+////
+//// ## Flow
+////
+//// `handle` → `handle_with` → `deliver` → `implicit_wake`
+////
+//// 1. `handle_with` receives one `Command` in the recipient's Agency actor;
+////    `handle` is the same call for a host with no defaults.
+//// 2. `put_clearing` and `delete_denying` change a grant or link together with
+////    the denial that a default would otherwise contradict.
+//// 3. `deliver` finds the grant's cell, or asks `implicit_wake` when there is
+////    none, and commits the message under the guard that matches the decision.
+//// 4. `roster`, `implicit_links` and `implicit_grants` list what `deliver`
+////    would admit, through the same decision.
+//// 5. `overview` summarizes the whole session for the owner's picker.
 
 import client/internal/message_inspection
 import core/clock
@@ -91,18 +105,6 @@ pub type Defaults {
     /// sessions, which refuses every implicit link.
     eligible: fn() -> List(String),
   )
-}
-
-/// The defaults of a host that links nothing implicitly: every embedded
-/// session, and a daemon whose configuration has no `[peers]` table.
-pub const no_defaults =
-  Defaults(
-    policy: Policy(links: NoDefaultLinks, wake: BusyOnly),
-    eligible: no_sessions,
-  )
-
-fn no_sessions() -> List(String) {
-  []
 }
 
 /// One directional, exact-strand communication grant.
@@ -196,6 +198,18 @@ pub type Endpoint {
     /// One bounded request to the recipient's Agency actor.
     call: fn(Command) -> Result(JsonValue, String),
   )
+}
+
+/// The defaults of a host that links nothing implicitly: every embedded
+/// session, and a daemon whose configuration has no `[peers]` table.
+pub const no_defaults =
+  Defaults(
+    policy: Policy(links: NoDefaultLinks, wake: BusyOnly),
+    eligible: no_sessions,
+  )
+
+fn no_sessions() -> List(String) {
+  []
 }
 
 const grant_prefix = "client/peers/grant/"

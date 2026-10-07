@@ -35,6 +35,19 @@
 //// The composer is an uncontrolled form: the browser owns the text as the
 //// operator types, and one submit carries it to the server, where its
 //// fields are decoded totally and anything unexpected refuses the event.
+////
+//// ## Flow
+////
+//// `app` → `init` → `update` → `view` → `composition`
+////
+//// 1. `app` builds the Lustre application over the observer's `component.Model`.
+//// 2. `init` and `update` turn each `Msg` into one call on the component,
+////    which owns the state; `update` also renews the notice that changed.
+//// 3. `view` draws the frame: the heading, the lane, the dock, and the panel
+////    whose controls (invitation, rename, remembered permissions, peer links)
+////    each have a fixed place.
+//// 4. `composer` and `approvals` draw the dock's two inputs, and `composition`
+////    decodes the composer's submit totally.
 
 import core/json
 import core/origin

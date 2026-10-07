@@ -282,6 +282,7 @@ pub fn inspect(
             Ok(_) -> json.Null
           }
       }
+
       // A link the owner's `[peers]` default supplies is marked, so the
       // owner can tell it from a grant (protocol-change/077). A recorded
       // link carries no mark.

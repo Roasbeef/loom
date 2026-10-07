@@ -313,7 +313,8 @@ fn array(value: JsonValue, key: String) -> Result(List(JsonValue), String) {
 fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   case value {
     json.Object(fields) ->
-      list.key_find(fields, key) |> result.replace_error("missing " <> key)
+      list.key_find(fields, key)
+      |> result.map_error(fn(_) { "missing " <> key })
     _ -> Error("expected object")
   }
 }
