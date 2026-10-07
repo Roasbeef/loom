@@ -537,3 +537,25 @@ additions and declared permissions) and
 [041](../../protocol-change/041-session-approval-dialog.md) (the dialog and
 remembered permissions) hold the wire contracts. Design intent is in
 `docs/loom-design.md` §5.3.
+
+## Configuration edit consent
+
+The `loom_config` tool proposes one literal replacement in the explicit
+operator-selected configuration file. A 2 KiB canonical argument ceiling keeps
+the entire action inside the durable approval preview. Both the terminal and
+web operator page show the path, base digest and complete removed/added rows.
+The existing escalation binds the original action and call scope, consumes
+consent once and grants no filesystem authority. General sandbox writes to the
+configuration remain forbidden.
+
+Assembly prepares the stable file lock before publishing the sandbox policy.
+An unavailable lock disables configuration edits while preserving ordinary
+tools and read-only configuration startup. Config questions are keyed by their
+validated base revision, keeping retries bounded without limiting later edits
+to three approvals. The client validates the complete document before asking
+and before saving. After consent it acquires the existing crash-released file lock,
+rechecks the base, writes privately and atomically, and asks the resident holder
+to refresh. Active operations retain their pins; later operations use supported
+new settings. Boot-owned changes are saved with restart guidance. A concurrent
+external editor does not share Loom's lock: the final digest check is optimistic
+with respect to saves outside Loom.

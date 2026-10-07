@@ -1,5 +1,15 @@
 # session_view
 
+## Configuration approval projection
+
+`approval.presentation` recognizes `loom_config` proposals and decodes the
+complete path, base digest, removed text and replacement. Every document row
+is escaped literally before adding its removal/addition prefix. Missing or
+malformed preview fields disable presentation; sandbox grants are refused for
+this consent surface. The ordinary exact action/sequence decision encoder is
+shared by both hosts, and empty-grant consent cannot be remembered.
+
+
 ## Operator diagnostic metadata
 
 Protocol 055 adds optional `tool_availability.extension_refusals` to credited

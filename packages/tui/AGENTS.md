@@ -1,5 +1,15 @@
 # tui
 
+## Configuration approval
+
+`approval_panel` displays `loom_config` as an exact configuration diff, with
+semantic removal/addition colors and an `Approve edit` choice. The existing
+captured action/sequence, raw inspection, scrolling, deferred Escape and
+select-then-Enter confirmation rules remain in force. Configuration consent
+cannot be remembered for a session. Reload/restart guidance comes from the
+shared `session_view/approval` projection.
+
+
 ## Operator startup diagnostics
 
 Protocol 055 uses the existing daemon error envelope and credited snapshot.

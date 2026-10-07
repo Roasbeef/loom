@@ -1,5 +1,15 @@
 # web_view
 
+## Configuration approval
+
+`operator_page.card` displays the shared `loom_config` projection as literal
+HTML text with styled removal/addition rows. `Approve edit` sends the captured
+exact action and sequence through the existing component decision path; it
+carries no sandbox grants. Deny remains first and the existing arming interval
+still applies. The card explains subsequent-operation reload and restart-owned
+settings. The stylesheet is generated from `web_client` by `make gen-client`.
+
+
 ## Purpose
 
 The web view's host and view for one session: two Lustre server components

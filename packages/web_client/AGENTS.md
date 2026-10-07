@@ -1,5 +1,13 @@
 # web_client
 
+## Configuration consent styling
+
+`web_client.css` assigns the existing danger and added semantic colors to
+`config-removed` and `config-added` rows from `web_view/operator_page`. Document
+content remains server-rendered HTML text. Rebuild the generated stylesheet
+with `make gen-client` after changing this source.
+
+
 ## Purpose
 
 The browser half of the web view: Lustre client components, written in
