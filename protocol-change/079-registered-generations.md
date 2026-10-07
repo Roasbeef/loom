@@ -1038,3 +1038,180 @@ computed timeout cannot replace that durable work address. SystemIntent's
 8192-byte metadata bound does not permit truncating the ordinary input or moving
 unbounded content into control metadata. Local behavior remains unchanged where
 this registered admission path is not selected.
+
+
+## Addendum: fresh registered workspace system reads
+
+The ordinary workspace consumer reads an existing child before reserving its
+candidate. Pre-admitting a WorkspaceSystem child and then calling ordinary
+`workspace_client.invoke` cannot perform its first Submit: the registered
+reservation path rejects a system origin before transport, and its ordinary
+retained-child branch only observes. The independent acquisition review
+identified the missing first-submit seam against
+`d84b60a91d7bb413fe0a422d070c17af61081ade`; the real registered control confirms
+the earlier reservation rejection. Its four corrections are accepted as an
+internal refinement of this proposal under `docs/execution.md` section 7. The
+original source approval and authority mapping above remain unchanged.
+
+Add the following internal, closed construction and invocation surface in
+`client/remote/workspace_client`:
+
+```gleam
+pub opaque type SystemConfig
+pub opaque type SystemReadPlan
+pub fn new_system(owner: custodian.RegisteredOwner,
+  table: deployment.Table, endpoint: connection.Config,
+  limits: custody.Limits, within_ms: Int)
+  -> Result(SystemConfig, ConfigurationError)
+pub fn system_read_plan(config: SystemConfig, work_address: String,
+  operation: ids.OpId, step: scope.Step, request_id: ids.EntryId,
+  path: scope.RelativePath, deadline_ms: Int)
+  -> Result(SystemReadPlan, custody.Error)
+pub fn system_read_content(plan: SystemReadPlan) -> BitArray
+pub fn invoke_system(config: SystemConfig, plan: SystemReadPlan,
+  intent: custody.IntentReadback) -> Result(Outcome, SystemError)
+```
+
+The minimum internal binding helpers are:
+
+```gleam
+pub fn system_reservation(owner: custodian.Handle,
+  admitted: custody.SystemReservationReadback,
+  expected: workspace.Invocation) -> Result(binding.Reservation, custody.Error)
+pub fn retained_completion(reservation: binding.Reservation)
+  -> Result(Option(BitArray), custody.Error)
+pub fn system_origin(reservation: binding.Reservation)
+  -> Result(remote_tool.ChildOrigin, custody.Error)
+```
+
+The first helper compares the admitted WorkspaceSystem payload with the exact
+canonical expected invocation, then rechecks the original child row; it performs
+no allocation or mint. The second rechecks that same UUID and request before
+projecting optional receipt bytes. The third projects the original opaque
+reservation's system origin for the registered receipt-generation readback;
+it rejects ordinary origins. A private Consumer carries only the concrete
+endpoint and ReceiptAuthority: Ordinary or the original Registered handle and
+association. The existing ordinary completion/ACK behavior is preserved.
+
+Construction MUST capture the actual RegisteredOwner's original pinned handle,
+complete association and canonical enrollment. It selects and verifies the
+original pin against the immutable deployment Table, compares the endpoint's
+full scope and exact generation, owner and selected peer, and validates finite
+transport settings. It starts no process or exchange. ReadyForActivation is
+readiness for later activation, never an activation acknowledgement.
+
+SystemReadPlan is pure bounded metadata for one fixed `Read(path, Text)` under
+WorkspaceAdministration. It includes the complete original association, work
+address, operation, step, once-retained request UUID, checked relative path and
+absolute monotonic deadline. Its canonical bytes MUST fit SystemIntent's 8192
+bytes. The caller retains these exact bytes through the original custodian's
+existing `retain_system_intent`; this slice adds no batch discovery or lookup.
+It mints neither an activation UUID nor a ToolKey. Actual companion quotas are
+checked again by the serialized writer; the supplied existing Limits are only
+the encoder's preflight profile.
+
+`invoke_system` MUST compare the supplied retained intent with the whole fixed
+plan, then call the original custodian's actual `admit_system_child` itself.
+Its closed pure encoder uses only the admitted real origin/UUID and fixed plan
+coordinates. Before Submit it MUST compare the complete canonical request,
+origin, UUID and actual child generation to the original association, and
+revalidate the same deployment pin. Only that invocation's real Fresh result
+permits one first Submit. Retained, repeated and concurrent admissions observe
+the original request. A lost admission reply or failed readback is explicit
+uncertainty and MUST NOT replay. No caller-supplied Fresh, origin, reusable send
+token or authority-selecting callback is accepted. Ordinary invoke is unchanged.
+
+Registered settlement MUST decode the completion against that exact retained
+Read request, reuse the canonical request-matched owner receipt transaction,
+and compare `receipt_generation`'s complete bytes and association with the
+original plan before ACK or returning Completed. Failure withholds both, and
+recovery targets the original request only. No second receipt cache is added.
+The fixed original deadline bounds admission and exchanges; retries cannot
+renew it. Receipt custody remains independently inspectable after expiry.
+
+Caller death ends observation and prevents later caller-owned batch dispatch.
+An already admitted semantic read remains owned by its original workspace
+service, which commits completion independently. Its enclosing original host
+owns physical seal/cancel/join. Native system allocation/cancellation does not
+apply to WorkspaceSystem; this seam adds no semantic Cancel frame.
+
+Use one synchronous exchange per invocation and the existing transport,
+workspace codec and companion profiles. Assembly retains the existing maximum
+of four concurrent consumers. The existing filesystem text acceptance limit is
+eight MiB after `filesystem.read`; it is not a peak allocation guarantee.
+Source bodies stay in workspace receipts, outside client metadata. This slice
+establishes first-submit and settlement mechanics only. Indexed acquisition,
+parsing/trust, default registered assembly, activation and full host close
+remain subsequent dependencies and are not claimed complete here.
+
+
+## Addendum: original-writer Effects construction
+
+The original owner can bind registered hooks to its actual runtime writer before
+recovered drivers start. This is an assembly prerequisite; it does not select
+registered operation in the shipped daemon or supply the missing FullHost.
+Existing `Config`, `Options`, `Runtime`, `Effects`, `open` and `open_published`
+shapes and ordinary behavior remain unchanged.
+
+The following two assembly-only constructors are accepted:
+
+```gleam
+@internal
+pub fn open_fact_effects_published(
+  session: Session, base: Effects, options: Options,
+  bind: fn(FactHandle) -> Result(Effects, String),
+  publish: fn(Runtime) -> Result(Nil, String),
+) -> Result(Runtime, String)
+
+@internal
+pub fn start_effects_published(
+  build: fn(Address(writer.Message)) -> Result(#(Config, Effects), String),
+  publish: fn(SessionTree, Effects) -> Result(Nil, String),
+) -> Result(#(SessionTree, Effects), actor.StartError)
+```
+
+Session seeding and identity use the original base clock and entropy. The
+supervisor allocates one namespace and its original drain, registry and writer
+addresses. It invokes `build` once, before starting the root. API constructs the
+private `FactHandle` from that actual writer address and invokes `bind` once.
+Binding MUST perform no I/O, actor startup, fact access or fresh admission. The
+finished Effects retain the base clock and entropy and supply every strand's
+options, the publisher and the returned Runtime. Restart closures retain those
+finished Effects, never `build` or `bind`.
+
+The first existing root child publishes the actual root and direct drain
+capability before registry, writer, factories or recovery start. Acknowledged
+custody is required before subsequent children start. The writer address has no
+live recipient during binding or publication. Construction cannot manufacture
+fresh Checking work, hook occurrences, generation authority or system permission.
+Build refusal disposes the original namespace. Publication refusal uses the
+existing failed-root disposal. Successful startup preserves the existing root
+and namespace unlink handoff and root-death namespace retention.
+
+The independent construction review found that existing `wire_registered` starts
+a counter actor; it cannot be called inside pure binding. Split that startup
+from the shared pure gate wrappers. An opaque prepared registered gate retains
+ONE original counter PID and Subject, acquired before opening. Its explicit
+release requests that counter's stop and joins its actual normal exit; timeout,
+abnormal exit or missing evidence refuses cleanup success. Legacy `wire` and
+`wire_registered` keep their existing start-and-compose behavior and shared gate
+reducers. No counter is rebuilt per strand or writer/factory restart.
+
+Assembly publishes the prepared gate's complete release capability through the
+existing original `instance_owner` Services boundary before opening. Refused
+publication or refused opening must explicitly retire the acquired counter even
+when the assembly owner remains alive. Successful opening retains it through the
+Runtime drain, then retires it through Services cleanup. `instance_owner` already
+orders Runtime before Services and blocks later cleanup on a failed release.
+The runtime cleanup retains the projected SessionTree rather than the entire
+Runtime or Effects graph. A lost opening reply after custody acknowledgement
+leaves these original capabilities responsible for cleanup; it never authorizes
+a second opener.
+
+This refinement was accepted after the independent original-writer Effects
+construction review and its counter-ownership correction, under the delegated
+protocol review process in `docs/execution.md` section 7. These additive internal
+constructors change no frozen Part-1 interface, storage schema, control envelope
+or product policy. Implementation review and component gates remain required.
+The separately pending weft Detached selector/pin and executor host-reader
+dependency remain unapproved.
