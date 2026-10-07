@@ -1460,3 +1460,52 @@ This component supplies connection custody. Actual full-host plan and trusted
 clock assembly, authenticated original-owner history routing, the fixed global
 history lane, semantic LSP manager/timing, finite Search/Prepare collector B and
 endpoint/native/semantic joins before lease retirement remain required later.
+
+## Registered finite collector foundation
+
+`remote/internal/lsp_finite_plan` freezes only the actual descriptor, enrollment,
+registration, declared placement and existing Probe/Search/Prepare recipes. The
+Search argv comes from `codemode/lsp_host/manager.search_argv`; its symbol split
+uses the unchanged resolver. Constructors retain the exact original admitted
+finite control before offer. `verify` compares that same control and retained
+ceiling while helper wall remains ten seconds for Probe/Search and sixty seconds
+for Prepare. A valid plan does not prove enough original remaining time for Run,
+owner clearance, dependency metadata readiness or native execution.
+
+`lsp_journal.verify_finite_claim` and `verify_command_claim` compare the original
+live Store, complete request/ref/parent, exact generation/enrollment, original
+era/E0/R/D and retained association in the same writer turn. They return no new
+authority. `retain_finite_offer` shares the existing offer transaction: copied
+claims have at most one FreshPlacement after original COMMIT/readback; duplicates
+retain history. History-only and recovered Stores cannot adopt these claims.
+No schema, clock policy, reservation limit or legacy construction changes.
+
+`lsp_finite_collector` is a closed pure reducer, not another lifecycle actor. It
+admits at most 32KiB chunks under one shared stdout/stderr credit, checks producer
+totals, original era/deadline, fatal truncation and exact terminal totals, then
+strictly projects complete output. Raw references release only after exact
+terminal/projection SQL readback or absorbing cancellation fence. Terminal,
+projection COMMIT, raw release, reusable evidence and actual helper consumption
+remain distinct. The typed `ready` predicate attests only the retained reducer
+pair; it does not attest waitDone, AllDelivered, native check-in or retirement.
+Prepare's command projection attests recipe completion, never metadata readiness.
+Checked Search projections encode with the existing Registered result scanner
+and the stricter 1,644,800-byte Search ceiling, supporting all 200 admitted hits.
+The native wire encoder keeps its existing 128-element/256KiB envelope. Real-SQL
+controls cover 129 hits, 200 hits and fifty 8192-byte paths with four hits each;
+raw content remains charged until exact terminal/projection COMMIT and readback.
+
+Each cold invocation independently charges at most 26,316,800 hit-content bytes
+and 53,043,200 grouping-content bytes plus 8,388,608 active raw bytes: 87,748,608
+logical content bytes across sixteen sequential profiles. These are not global
+runtime, RSS or disk bounds; encoded values, VM nodes and transient concatenation
+have separate overhead. Counters retain no copies of prior hit/grouping objects.
+The existing permanent 4096-row/256MiB DAL reservations remain unreclaimed.
+
+This foundation has pure and real-SQL controls, not an assembled finite Service
+path. Later collected rows must join close_scope fence/drain/ScopeCloseProof,
+actual endpoint/service active-admission bounds, original Request/Authority/Admit
+and owner clearance, exact ProtocolReusable/waitDone consumption and managed
+drain. The real fixed metadata reader, semantic manager, owner/result DAL and
+full-host endpoint joins remain required. No ordinary native raw-output archive
+is created here.
