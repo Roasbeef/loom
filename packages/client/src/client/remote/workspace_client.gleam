@@ -12,6 +12,14 @@
 //// executor ACK without an owner receipt is an invariant failure, never replay.
 //// Final parent ToolOutcome custody still belongs to the existing custodian.
 ////
+//// `new_system` retains actual original registered authority and selected route.
+//// `system_read_plan` fixes a complete Read/Text intent before admission, and
+//// `invoke_system` alone joins actual Fresh admission to the first Submit.
+//// `verify_system_intent` compares that whole plan before `admit_system` calls
+//// the serialized writer through the pure `encode_system_read` encoder.
+//// `verify_registered_receipt` compares exact bytes and original association
+//// before ACK or Completed. Retained admission observes without re-execution.
+////
 //// One managed task bounds owner storage, codecs and all exchanges together.
 //// Exchanges also subtract elapsed monotonic time from the same finite budget.
 //// Polling uses weft; expiry grants no fresh effect identity. Assembly MUST cap
@@ -19,18 +27,24 @@
 //// per caller, not a global admission actor. Owner quotas bound durable retained
 //// bytes separately; these bounds do not claim a resident-memory ceiling.
 
+import client/daemon/deployment
 import client/remote/custodian
 import client/remote/workspace_binding as binding
+import core/generation
 import core/ids
+import core/msgpack as mp
 import core/remote_tool
 import core/workspace as scope
 import executor/remote/beam_endpoint as connection
+import executor/remote/distribution
 import executor/remote/identity
 import executor/remote/internal/beam_protocol as transport
 import executor/remote/workspace_journal as journal
+import gleam/bit_array
 import gleam/int
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import storage/owner_custody as custody
 import tools/workspace
 import tools/workspace_codec as codec
@@ -49,6 +63,83 @@ pub opaque type Config {
     /// Finite total reconciliation budget, in monotonic milliseconds.
     within_ms: Int,
   )
+}
+
+/// Original registered authority for closed workspace-administration reads.
+/// Construction proves immutable identity, not executor activation.
+@internal
+pub opaque type SystemConfig {
+  /// No caller can replace this original owner or selected endpoint.
+  SystemConfig(
+    /// Actual original pinned custodian; it cannot follow a reopened actor.
+    owner: custodian.Handle,
+    /// Full committed original association, never latest generation.
+    association: generation.GenerationAssociation,
+    /// Immutable administrative snapshot retained for fresh-send revalidation.
+    table: deployment.Table,
+    /// Original canonical enrollment checked against the selected route.
+    pin: deployment.PinnedEnrollment,
+    /// Concrete endpoint with exact scope and generation.
+    endpoint: connection.Config,
+    /// Existing assembly profile for pure encoding preflight only.
+    limits: custody.Limits,
+    /// Finite whole observation budget, within the fixed plan deadline.
+    within_ms: Int,
+  )
+}
+
+/// Complete fixed read selection retained before any child allocation.
+@internal
+pub opaque type SystemReadPlan {
+  /// A plan grants no live permission and cannot manufacture Fresh.
+  SystemReadPlan(
+    /// Full original scope and original owner-use identity.
+    association: generation.GenerationAssociation,
+    /// Already durable caller address, fixed before admission.
+    address: String,
+    /// Original operation belonging to this administration occurrence.
+    operation: ids.OpId,
+    /// Original closed phase belonging to this administration occurrence.
+    step: scope.Step,
+    /// Once-retained UUID, never minted during invocation or retry.
+    request_id: ids.EntryId,
+    /// Checked executor-relative path; never opened on the owner.
+    path: scope.RelativePath,
+    /// Original live-incarnation monotonic deadline, never renewed.
+    deadline_ms: Int,
+    /// Canonical complete bounded intent metadata, containing no source body.
+    bytes: BitArray,
+  )
+}
+
+/// System errors preserve the caller's original retained intent for observation.
+@internal
+pub type SystemError {
+  /// Fixed plan or retained intent disagrees before any admission or transport.
+  InvalidSystemPlan
+
+  /// Observation expired; an admission or receipt may already be durable.
+  SystemObservationExpired
+
+  /// The bounded observer died without reporting authoritative evidence.
+  SystemObservationLost
+
+  /// Original custody could not establish exact admission or readback.
+  SystemOwnerUnavailable(
+    /// Failure does not grant permission to submit or allocate a replacement.
+    reason: custody.Error,
+  )
+}
+
+// The ordinary consumer needs no association. Registered settlement retains only
+// the original receipt writer and expected complete association, not a callback.
+type ReceiptAuthority {
+  Ordinary
+  Registered(custodian.Handle, generation.GenerationAssociation)
+}
+
+type Consumer {
+  Consumer(endpoint: connection.Config, authority: ReceiptAuthority)
 }
 
 /// Construction fails before reservation or any network activity.
@@ -178,6 +269,7 @@ pub fn invoke(
   request: workspace.Request,
 ) -> Result(Outcome, Error) {
   use deadline <- bounded(config, child)
+  let consumer = Consumer(config.endpoint, Ordinary)
   use retained <- result.try(
     existing(config.binding, child) |> owner_error(child),
   )
@@ -187,13 +279,14 @@ pub fn invoke(
   )
   case retained {
     Some(#(_, Some(bytes))) ->
-      Ok(retained_receipt(config, reservation, bytes, deadline))
-    Some(#(_, None)) -> Ok(observe(config, child, reservation, deadline))
+      Ok(retained_receipt(consumer, reservation, bytes, deadline))
+    Some(#(_, None)) -> Ok(observe(consumer, child, reservation, deadline))
     None -> {
       // A concurrent reservation may have won after the read. Submit still uses
       // exactly its retained UUID; the executor journal grants only one claim.
-      let submitted = exchange(config, reservation, transport.Submit, deadline)
-      Ok(await_status(config, child, reservation, submitted, deadline))
+      let submitted =
+        exchange(consumer, reservation, transport.Submit, deadline)
+      Ok(await_status(consumer, child, reservation, submitted, deadline))
     }
   }
 }
@@ -208,14 +301,327 @@ pub fn recover(
   child: remote_tool.ChildOrigin,
 ) -> Result(Outcome, Error) {
   use deadline <- bounded(config, child)
+  let consumer = Consumer(config.endpoint, Ordinary)
   use retained <- result.try(
     binding.recover(config.binding, child) |> owner_error(child),
   )
   let #(reservation, receipt) = retained
   Ok(case receipt {
-    Some(bytes) -> retained_receipt(config, reservation, bytes, deadline)
-    None -> observe(config, child, reservation, deadline)
+    Some(bytes) -> retained_receipt(consumer, reservation, bytes, deadline)
+    None -> observe(consumer, child, reservation, deadline)
   })
+}
+
+/// Captures the actual original registered owner and immutable selected endpoint.
+/// The supplied Limits only preflight the pure encoder; the serialized owner
+/// independently enforces its own retained quota during admission.
+///
+/// ## Examples
+///
+/// `new_system(ready, table, endpoint, limits, 5000)` performs no exchange.
+@internal
+pub fn new_system(
+  owner: custodian.RegisteredOwner,
+  table: deployment.Table,
+  endpoint: connection.Config,
+  limits: custody.Limits,
+  within_ms: Int,
+) -> Result(SystemConfig, ConfigurationError) {
+  let #(original, stored, associated) = custodian.registered_fields(owner)
+  let #(_, bound, _, _, _) = custody.enrollment_fields(stored)
+  use selected <- result.try(
+    deployment.select(table, bound)
+    |> result.replace_error(InvalidConfiguration),
+  )
+  use pin <- result.try(
+    deployment.pinned(selected, stored)
+    |> result.replace_error(InvalidConfiguration),
+  )
+  let fields = identity.scope_fields(endpoint.scope)
+  use projected <- result.try(
+    scope.scope_from_fields(fields.0, fields.1, fields.2, fields.3, fields.4)
+    |> result.replace_error(InvalidConfiguration),
+  )
+  let #(bound_scope, descriptor, number) =
+    generation.key_fields(generation.association_key(associated))
+  let #(_, _, original_descriptor, digest, _) =
+    custody.enrollment_fields(stored)
+  use _ <- result.try(
+    connection.validate(endpoint) |> result.replace_error(InvalidConfiguration),
+  )
+
+  // Pinned enrollment verifies canonical content, scope, native digest and route.
+  // The association additionally fixes generation and original enrollment bytes.
+  case
+    projected == bound_scope
+    && descriptor == original_descriptor
+    && generation.association_fields(associated).1 == digest
+    && endpoint.generation == number
+    && endpoint.owner == deployment.owner(table)
+    && distribution.name(endpoint.peer)
+    == deployment.selected_fields(selected).1
+    && within_ms > 0
+    && within_ms <= 30_000
+    && endpoint.within_ms <= within_ms
+  {
+    True ->
+      Ok(SystemConfig(
+        original,
+        associated,
+        table,
+        pin,
+        endpoint,
+        limits,
+        within_ms,
+      ))
+    False -> Error(InvalidConfiguration)
+  }
+}
+
+/// Encodes complete fixed Read/Text metadata before the caller retains its intent.
+/// The monotonic deadline belongs to this original live incarnation; historical
+/// metadata never recreates send authority, even if another VM's clock is lower.
+///
+/// ## Examples
+///
+/// `system_read_plan(config, address, op, phase, id, path, deadline)` opens no file.
+@internal
+pub fn system_read_plan(
+  config: SystemConfig,
+  work_address: String,
+  operation: ids.OpId,
+  step: scope.Step,
+  request_id: ids.EntryId,
+  path: scope.RelativePath,
+  deadline_ms: Int,
+) -> Result(SystemReadPlan, custody.Error) {
+  use Nil <- result.try(
+    require_system(fn() {
+      string.byte_size(work_address) > 0
+      && string.byte_size(work_address) <= 1024
+      && !string.contains(work_address, "\u{0000}")
+      && string.byte_size(scope.step_string(step)) <= 128
+    }),
+  )
+  use bytes <- result.try(
+    mp.encode(
+      mp.ArrayValue([
+        mp.StringValue("registered-workspace-read-v1"),
+        generation.association_value(config.association),
+        mp.StringValue(work_address),
+        mp.StringValue("workspace-administration"),
+        mp.StringValue(ids.op_id_to_string(operation)),
+        mp.StringValue(scope.step_string(step)),
+        mp.StringValue(ids.entry_id_to_string(request_id)),
+        mp.StringValue(scope.path_string(path)),
+        mp.StringValue("text"),
+        mp.IntValue(deadline_ms),
+      ]),
+    )
+    |> result.replace_error(custody.Conflict),
+  )
+  use Nil <- result.try(
+    require_system(fn() { bit_array.byte_size(bytes) <= 8192 }),
+  )
+  Ok(SystemReadPlan(
+    config.association,
+    work_address,
+    operation,
+    step,
+    request_id,
+    path,
+    deadline_ms,
+    bytes,
+  ))
+}
+
+/// Projects only the complete metadata to retain through the original custodian.
+/// Source bytes belong to the later workspace receipt, never to this intent.
+///
+/// ## Examples
+///
+/// `system_read_content(plan)` is the exact payload for retain_system_intent.
+@internal
+pub fn system_read_content(plan: SystemReadPlan) -> BitArray {
+  plan.bytes
+}
+
+/// Owns serialized admission and the sole possible first Submit for a fixed read.
+/// Repeated admissions observe; failed replies cannot replay. Caller death ends
+/// observation while the original semantic service owns any admitted read.
+///
+/// ## Examples
+///
+/// `invoke_system(config, plan, intent)` never accepts a Fresh flag or origin.
+@internal
+pub fn invoke_system(
+  config: SystemConfig,
+  plan: SystemReadPlan,
+  intent: custody.IntentReadback,
+) -> Result(Outcome, SystemError) {
+  use Nil <- result.try(
+    verify_system_intent(config, plan, intent)
+    |> result.replace_error(InvalidSystemPlan),
+  )
+  let remaining =
+    int.min(config.within_ms, plan.deadline_ms - poll.monotonic().now())
+  use Nil <- result.try(case remaining > 0 {
+    True -> Ok(Nil)
+    False -> Error(SystemObservationExpired)
+  })
+  let deadline = int.min(plan.deadline_ms, poll.monotonic().now() + remaining)
+  let task = fn() { admit_system(config, plan, intent, deadline) }
+  case weft.new([task]) |> weft.deadline(remaining) |> weft.start {
+    [weft.Completed(_, outcome)] -> Ok(outcome)
+    [weft.Failed(_, reason)] -> Error(reason)
+    [weft.Abandoned(_)] | [weft.NeverStarted(_)] ->
+      Error(SystemObservationExpired)
+    _ -> Error(SystemObservationLost)
+  }
+}
+
+fn verify_system_intent(
+  config: SystemConfig,
+  plan: SystemReadPlan,
+  intent: custody.IntentReadback,
+) -> Result(Nil, custody.Error) {
+  let #(associated, address, service, operation, step, id, bytes) =
+    custody.system_intent_fields(intent)
+  require_system(fn() {
+    config.association == plan.association
+    && associated == plan.association
+    && address == plan.address
+    && service == custody.WorkspaceAdministration
+    && operation == plan.operation
+    && step == scope.step_string(plan.step)
+    && id == plan.request_id
+    && bytes == plan.bytes
+  })
+}
+
+fn admit_system(
+  config: SystemConfig,
+  plan: SystemReadPlan,
+  intent: custody.IntentReadback,
+  deadline: Int,
+) -> Result(Outcome, SystemError) {
+  // The encoder captures only immutable plan projections and the preflight
+  // profile. It executes inside the existing writer and performs no actor call.
+  let limits = config.limits
+  let scope = generation.key_scope(generation.association_key(plan.association))
+  let operation = plan.operation
+  let step = plan.step
+  let path = plan.path
+  let build = fn(origin, id) {
+    encode_system_read(limits, scope, operation, step, path, origin, id)
+  }
+  use admitted <- result.try(
+    custodian.admit_system_child(config.owner, intent, build)
+    |> result.map_error(SystemOwnerUnavailable),
+  )
+  let invocation =
+    workspace.invocation(
+      scope,
+      operation,
+      step,
+      workspace.System(workspace.WorkspaceAdministration),
+      admitted.request_id,
+      workspace.Read(path, workspace.Text),
+    )
+  use expected_payload <- result.try(
+    build(admitted.origin, admitted.request_id)
+    |> result.map_error(SystemOwnerUnavailable),
+  )
+  use Nil <- result.try(
+    require_system(fn() {
+      admitted.request_id == plan.request_id
+      && admitted.payload == expected_payload
+      && admitted.generation == generation.association_key(plan.association)
+    })
+    |> result.map_error(SystemOwnerUnavailable),
+  )
+  use reserved <- result.try(
+    binding.system_reservation(config.owner, admitted, invocation)
+    |> result.map_error(SystemOwnerUnavailable),
+  )
+  use actual <- result.try(
+    custodian.child_generation(config.owner, admitted.origin)
+    |> result.map_error(SystemOwnerUnavailable),
+  )
+  use Nil <- result.try(
+    require_system(fn() { actual == plan.association })
+    |> result.map_error(SystemOwnerUnavailable),
+  )
+  let consumer =
+    Consumer(config.endpoint, Registered(config.owner, plan.association))
+
+  // Only this invocation's actual Fresh admission can cross the first-send door.
+  // Retained history cannot revive a deadline from this or an earlier VM.
+  case admitted.admission {
+    custody.Retained -> {
+      use receipt <- result.try(
+        binding.retained_completion(reserved)
+        |> result.map_error(SystemOwnerUnavailable),
+      )
+      Ok(case receipt {
+        Some(bytes) -> retained_receipt(consumer, reserved, bytes, deadline)
+        None -> observe(consumer, admitted.origin, reserved, deadline)
+      })
+    }
+    custody.Fresh -> {
+      use Nil <- result.try(
+        deployment.revalidate(config.table, config.pin)
+        |> result.replace_error(SystemOwnerUnavailable(custody.Conflict)),
+      )
+      let submitted = exchange(consumer, reserved, transport.Submit, deadline)
+      Ok(await_status(consumer, admitted.origin, reserved, submitted, deadline))
+    }
+  }
+}
+
+fn encode_system_read(
+  limits: custody.Limits,
+  bound: scope.Scope,
+  operation: ids.OpId,
+  step: scope.Step,
+  path: scope.RelativePath,
+  origin: remote_tool.ChildOrigin,
+  id: ids.EntryId,
+) -> Result(custody.SystemReservationPayload, custody.Error) {
+  let #(session, _) = scope.scope_fields(bound)
+  use Nil <- result.try(
+    require_system(fn() {
+      case remote_tool.child_fields(origin) {
+        remote_tool.SystemFields(actual_session, "workspace-administration", _) ->
+          actual_session == session
+        remote_tool.SystemFields(_, _, _)
+        | remote_tool.ToolFields(_, _)
+        | remote_tool.WorkspaceCommandFields(_, _) -> False
+      }
+    }),
+  )
+  let invocation =
+    workspace.invocation(
+      bound,
+      operation,
+      step,
+      workspace.System(workspace.WorkspaceAdministration),
+      id,
+      workspace.Read(path, workspace.Text),
+    )
+  use bytes <- result.try(
+    codec.encode_invocation(invocation)
+    |> result.replace_error(custody.Conflict),
+  )
+  custody.workspace_request(limits, bytes)
+  |> result.map(custody.WorkspaceSystem)
+}
+
+fn require_system(condition: fn() -> Bool) -> Result(Nil, custody.Error) {
+  case condition() {
+    True -> Ok(Nil)
+    False -> Error(custody.Conflict)
+  }
 }
 
 // One managed task bounds storage, codecs and transport together. Killing the
@@ -246,7 +652,7 @@ fn existing(binding: binding.Binding, child: remote_tool.ChildOrigin) {
 }
 
 fn observe(
-  config: Config,
+  config: Consumer,
   child: remote_tool.ChildOrigin,
   reservation: binding.Reservation,
   deadline: Int,
@@ -295,23 +701,22 @@ fn await_status(config, child, reservation, submitted, deadline) {
 }
 
 fn reconcile_ack(
-  config: Config,
-  child: remote_tool.ChildOrigin,
+  config: Consumer,
+  _child: remote_tool.ChildOrigin,
   reservation: binding.Reservation,
   deadline: Int,
 ) {
   // Another caller can commit the exact receipt while this caller is querying.
   // The authoritative owner read precedes an invariant-failure classification.
-  case binding.recover(config.binding, child) {
-    Ok(#(_, Some(bytes))) ->
-      retained_receipt(config, reservation, bytes, deadline)
-    Ok(#(_, None)) -> InvariantFailure(reservation)
+  case binding.retained_completion(reservation) {
+    Ok(Some(bytes)) -> retained_receipt(config, reservation, bytes, deadline)
+    Ok(None) -> InvariantFailure(reservation)
     Error(_) -> Pending(reservation, ReceiptUncertain)
   }
 }
 
 fn settle(
-  config: Config,
+  config: Consumer,
   reservation: binding.Reservation,
   bytes: BitArray,
   deadline: Int,
@@ -324,11 +729,15 @@ fn settle(
     reservation,
   )
   use ack <- or_pending(binding.receive(reservation, bytes), reservation)
+  use Nil <- or_pending(
+    verify_registered_receipt(config, reservation, bytes),
+    reservation,
+  )
   acknowledge(config, reservation, completion, ack, deadline)
 }
 
 fn retained_receipt(
-  config: Config,
+  config: Consumer,
   reservation: binding.Reservation,
   bytes: BitArray,
   deadline: Int,
@@ -344,13 +753,46 @@ fn retained_receipt(
   // Recovery already read validated exact durable receipt bytes. A failed
   // idempotent write withholds ACK authority without discarding that completion.
   case binding.receive(reservation, bytes) {
-    Ok(ack) -> acknowledge(config, reservation, completion, ack, deadline)
-    Error(_) -> Completed(completion, Retained)
+    Ok(ack) -> {
+      use Nil <- or_pending(
+        verify_registered_receipt(config, reservation, bytes),
+        reservation,
+      )
+      acknowledge(config, reservation, completion, ack, deadline)
+    }
+    Error(_) ->
+      case config.authority {
+        Ordinary -> Completed(completion, Retained)
+        Registered(_, _) -> Pending(reservation, ReceiptUncertain)
+      }
+  }
+}
+
+// The original receipt transaction already validates request, UUID and its
+// own generation link. Registered consumers also compare that link against the
+// original assembly association before ACK or releasing usable source bytes.
+fn verify_registered_receipt(
+  config: Consumer,
+  reservation: binding.Reservation,
+  bytes: BitArray,
+) -> Result(Nil, custody.Error) {
+  case config.authority {
+    Ordinary -> Ok(Nil)
+    Registered(owner, expected) -> {
+      let #(_, _, _, _, id) =
+        workspace.invocation_identity(binding.invocation(reservation))
+
+      // The opaque reservation retains its original system origin; this
+      // continuation never asks a current generation to replace it.
+      use origin <- result.try(binding.system_origin(reservation))
+      use actual <- result.try(custodian.receipt_generation(owner, origin, id))
+      require_system(fn() { actual.0 == bytes && actual.1 == expected })
+    }
   }
 }
 
 fn acknowledge(
-  config: Config,
+  config: Consumer,
   reservation: binding.Reservation,
   completion: Result(local.Completed, workspace.ServiceError),
   ack: binding.Acknowledgement,
@@ -372,7 +814,7 @@ fn acknowledge(
 }
 
 fn exchange(
-  config: Config,
+  config: Consumer,
   reservation: binding.Reservation,
   command: transport.WorkspaceCommand,
   deadline: Int,
