@@ -32,6 +32,12 @@
 # killing the driver outright; the first failed write kills the
 # container, and the run ends having posted nothing, since nobody asked
 # to see a verdict any more and a red mark would be one nobody earned.
+#
+# LOOM_CPUS and LOOM_MEMORY are applied to two sibling cgroups, not one:
+# the container's, and the base the entrypoint creates for loom-exec under
+# --cgroupns=host, which sits beside the container's cgroup rather than
+# under it. Each gets the full value, so a run can use up to twice it.
+# Halve the value to bound a run at what you mean.
 set -euo pipefail
 trap '' PIPE
 if [ ! -d "$LOOM_DIR/.git" ]; then git clone --quiet "$LOOM_ORIGIN" "$LOOM_DIR"; fi
