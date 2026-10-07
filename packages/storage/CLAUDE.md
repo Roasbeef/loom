@@ -283,13 +283,35 @@ with these forks: they define the same modules.
 - `storage/internal/branch.Refine` — the shared incremental
   truncate/filter/cursor/limit pipeline, fed page by page by SQLite and
   whole by Memory.
+- `storage/exec_ledger` — the executor's execution ledger
+  (`docs/design-notes/distributed-runtime.md`, "The execution ledger";
+  `protocol-change/078`): one SQLite file per executor, rows keyed by
+  session, no process of its own (a later node-level actor owns the single
+  connection). Its DDL is `sql/exec_ledger.sql` (embedded as
+  `exec_ledger_schema`, `PRAGMA user_version` 1, its own `application_id`) and
+  its named queries are `src/storage/sql/exec_ledger.sql`, generated into
+  `sql.gleam` with the `Ledger*` names. Two tables: `scope(session, workspace,
+  incarnation, state open|closing|closed, close_outcome, attach_token)` and
+  `call(session, op, step, source_index, incarnation, tool, state
+  admitted|terminal|unknown, outcome, outcome_digest, outcome_bytes)`.
+  `Ledger` is opaque; `Key` is the planner's call identity;
+  `Limits(max_unclean_scopes, max_ledger_bytes)` is passed on every call;
+  `ScopeState` is `Open | Closing | Closed(AllRetired | UnknownCleanup(n))`;
+  `CallState` is `Admitted | Terminal(outcome) | Unknown`; `Lookup` is
+  `Missing | Found(CallState)`; `Admission` is `Fresh | Existing(CallState)`;
+  `Error` is one closed type (`StaleIncarnation`, `StaleToken`,
+  `ScopeNotOpen`, `ScopeClosing`, `UncleanClose`, `CapacityExhausted`,
+  `BudgetExhausted`, `DigestMismatch`, `MalformedRow`, ...). Operations:
+  `open`, `close`, `attach`, `admit`, `finish`, `mark_unknown`, `query`, `ack`,
+  `begin_close`, `finish_close`, `scope`.
 
 ## Relationships
 
 - **Depends on**: `core` (ids, entries, registers, tx, codecs,
   corruption), `sqlight` (the SQLite binding, ADR-002), `simplifile` (the
   rewrite's copy/rename/unlink), `gleam_erlang` + `gleam_otp` (both
-  backends are actors), `parrot` (typed catalogue queries, ADR-004).
+  backends are actors), `parrot` (typed catalogue queries, ADR-004),
+  `gleam_crypto` (the execution ledger's SHA-256 outcome digest).
 - **Depended on by**: `session` (wraps one open handle; owns the migration
   chain and drives the rewrite), `runtime` (the StorageWriter owns it),
   `events` (projections and the search service scan sessions through the
@@ -550,8 +572,47 @@ with these forks: they define the same modules.
   how an external index (WP-K search) learns its cursors are invalid;
   `generation` reads it without taking the lease, and never conjures a file
   that does not exist.
+- **The execution ledger decides in the transaction that writes.** Every
+  `exec_ledger` write runs in `BEGIN IMMEDIATE`, and `admit` compares the
+  request's incarnation and attach token **by value** against the stored scope
+  inside the transaction that inserts the call row. A stale runtime's `Run`
+  is therefore refused by content whatever order the network delivered it
+  in, and two connections racing one key produce exactly one `Fresh`. Remove
+  the token comparison and the stale-token test fails.
+- **An `ack` deletes; there is no acknowledged state.** It is safe because
+  the orchestrator queries only orphaned calls (an acked call's result is
+  already staged in its store) and sends each `Run` exactly once (after a
+  disconnect it queries and never resends). `ack` deletes only `terminal` and
+  `unknown` rows, so a misdirected ack cannot discard a live run's reservation.
+  An attach reply lists a session's unacknowledged `terminal` and `unknown`
+  keys so a lost ack cannot leak a row forever.
+- **`exec_ledger.open` is restart recovery, so one opener per VM.** It turns
+  every `admitted` row into `unknown` and nothing turns one back; a second
+  `open` while runs are in flight would mark them lost. The node-level actor is
+  the only opener. A call still `admitted` at close is the actor's to settle
+  (`finish` or `mark_unknown`); `finish_close` does not look for it.
+- **Scope rules.** A session has one scope (`attach` refuses a second
+  workspace, so a call key finds its scope without a workspace). Reopen needs
+  `Closed(AllRetired)` and exactly `incarnation + 1`; `UnknownCleanup` never
+  reopens. At most `max_unclean_scopes` (16) scopes may be anything but
+  `Closed(AllRetired)`, and a clean close frees its slot immediately.
+- **The ledger byte budget** is `sum(outcome_bytes)` over `admitted` (the
+  reservation) and `terminal` (the real size) rows plus the new reservation,
+  against `max_ledger_bytes`; `finish` shrinks the reservation, `ack` and
+  `mark_unknown` release it.
+- **Every decoded ledger row is total.** The state and close-outcome columns
+  decode together, a `terminal` row's outcome must match its SHA-256 digest
+  and recorded size (`DigestMismatch`), and a state that fits no variant is
+  `MalformedRow`. Nothing defaults.
+- **`exec_ledger_schema` is generated** from `sql/exec_ledger.sql` by
+  `make gen-sql`, and the ledger's `Ledger*` queries are in the generated
+  `sql.gleam`; `exec_ledger_test` checks the embedded schema against the file.
 
 ## Deep Docs
+
+- [docs/design-notes/distributed-runtime.md](../../docs/design-notes/distributed-runtime.md)
+  — "The execution ledger" and "Incarnations, close and reopen": the rulings
+  `storage/exec_ledger` implements.
 
 - [docs/architecture/durability.md](../../docs/architecture/durability.md) —
   the plane in full: the three stores, the segmented index, query plans as

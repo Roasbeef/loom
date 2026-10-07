@@ -29,6 +29,10 @@
 #                        catalogue_profiles_schema.gleam. Each catalogue version
 #                        after the first has its own migration schema;
 #                        runtime catalogue creation never embeds session tables.
+#                        sql/exec_ledger.sql is the executor ledger's own
+#                        database schema (protocol-change/078); its queries
+#                        share sql.gleam and it embeds as
+#                        exec_ledger_schema.gleam.
 #
 # Known parrot 2.3.0 constraints (discovered by the WP-K pilot; keep in
 # mind when editing the .sql files):
@@ -63,6 +67,7 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_recent_folders.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_profiles.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger.sql
   fi
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
 }
@@ -99,4 +104,7 @@ gleam format packages/storage/src/storage/catalogue_recent_folders_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_profiles.sql \
   packages/storage/src/storage/catalogue_profiles_schema.gleam
 gleam format packages/storage/src/storage/catalogue_profiles_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger.sql \
+  packages/storage/src/storage/exec_ledger_schema.gleam
+gleam format packages/storage/src/storage/exec_ledger_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"
