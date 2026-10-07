@@ -29,7 +29,9 @@
 //// `fresh` and `recover` enter `open`; `validate_path` refuses unsafe opens.
 //// `admit` checks exact originals and `check_lineage` before insertion; `original`
 //// projects only its original claim. `prepare_publication` and `published`
-//// serialize against `close_generation`. `observe` reads historical phase.
+//// serialize against `close_generation`. `validate_publication` checks original
+//// Store and intent; `validate_removal` checks exact committed endpoint evidence.
+//// `observe` reads historical phase.
 //// `retire_started` validates original joins before `retirement` reads committed
 //// evidence; `retirement_fields` projects it. `remove` retains Removed before
 //// slot reuse, and `attest_predecessor` validates original owner-close bytes.
@@ -550,6 +552,38 @@ pub fn prepare_publication(
   })
 }
 
+/// Checks the original configured writer and its committed publication intent.
+/// This local construction seam grants no permit or replacement startup claim.
+///
+/// ## Examples
+///
+/// `validate_publication(store, claim, endpoint)` refuses another Store actor.
+@internal
+pub fn validate_publication(
+  store: Store,
+  claim: StartupClaim,
+  endpoint: g.Digest,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(case store == claim.store {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  })
+  transaction(store, NilWork, fn(context, inventory) {
+    use row <- result.try(claim_row(context, claim, inventory))
+    use Nil <- result.try(case row.header.phase {
+      1 -> Ok(Nil)
+      _ -> Error(Fenced)
+    })
+    case
+      row.header.claim_incarnation == uuid(context.incarnation)
+      && row.header.endpoint_incarnation == g.digest_bytes(endpoint)
+    {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    }
+  })
+}
+
 /// Retains the original concrete registration acknowledgement after publication.
 /// The sole administrator supplied this acknowledgement from its original endpoint.
 ///
@@ -735,6 +769,49 @@ pub fn retirement_fields(
   value: RetirementRecord,
 ) -> #(g.GenerationKey, RetirementKind, BitArray, g.Digest) {
   #(value.key, value.kind, value.bytes, value.digest)
+}
+
+/// Checks exact committed published retirement against its original endpoint.
+/// Endpoint hot-row removal must additionally prove its own fence and drain.
+///
+/// ## Examples
+///
+/// `validate_removal(store, retired, endpoint)` refuses historical key equality.
+@internal
+pub fn validate_removal(
+  store: Store,
+  retired: RetirementRecord,
+  endpoint: g.Digest,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(case retired.kind {
+    StartedRetired(StartedEvidence(
+      endpoint: PublishedFencedDrained(original),
+      ..,
+    ))
+      if original == endpoint
+    -> Ok(Nil)
+    NeverStarted | StartedRetired(_) -> Error(Conflict)
+  })
+  use key <- result.try(key_bytes(retired.key))
+  transaction(store, NilWork, fn(context, inventory) {
+    use header <- result.try(required_header(inventory, key))
+    use row <- result.try(read_row(context, header))
+    use Nil <- result.try(case row.retired == Some(retired) {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    })
+    use Nil <- result.try(case header.phase {
+      4 | 5 -> Ok(Nil)
+      _ -> Error(Fenced)
+    })
+    case
+      header.claim_incarnation == uuid(context.incarnation)
+      && header.endpoint_incarnation == g.digest_bytes(endpoint)
+    {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    }
+  })
 }
 
 /// Records removal only after exact original endpoint ACK or never-published proof.

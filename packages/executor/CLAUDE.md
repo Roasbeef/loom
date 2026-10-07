@@ -44,9 +44,9 @@ Membership itself does not establish that sandbox assembly performed this step.
 `remote/beam_endpoint.Registration` binds that original owner Peer to concrete
 native, optional semantic-workspace and optional whole-Compile service handles,
 and their original local lifetime owner PID. The endpoint installs that owner's
-monitor before making the registration eligible. Only trusted local `register`
-adds a binding. One literal node-wide rendezvous
-owns at most sixteen lifetime registrations, sharing four data and two control
+monitor before making the registration eligible. Legacy bootstrap admits bindings through trusted local `register`. Its one
+literal node-wide rendezvous owns at most sixteen lifetime registrations,
+sharing four data and two control
 credits across all scopes. `remote/internal/beam_protocol` selects a closed
 native, workspace, Compile or original-command route with the unchanged full
 scope, generation and canonical payload. No peer supplies a closure or MFA.
@@ -58,7 +58,7 @@ an actual service answer and the transport's `weft.AllDelivered` witness both
 arrive. A lost service or run retires that credit; endpoint restart alone cannot
 reclaim native custody. The embedding subtree must be Temporary and separately
 prove native quiescence before replacing a generation against retained journals.
-There is no in-place generation update or registration removal.
+Legacy servers permit no in-place generation update or registration removal.
 
 `fence(server, exact_row)` permanently closes that original row to new exchanges.
 An observed lifetime-owner DOWN performs the same transition. The six canonical
@@ -87,6 +87,56 @@ An admitted executor is a fully trusted distributed runtime member. TLS and
 closed application messages do not contain a compromised member. Executor
 membership does not make it a Raft voter, and model-authored satellites must
 remain outside distribution.
+
+## Managed endpoint publication and removal
+
+Protocol [077](../../protocol-change/077-registered-generations.md) adds the closed
+`remote/beam_endpoint.EndpointLifetime.RetiredSlots16` bootstrap.
+`configure_managed_server(Store, within_ms, RetiredSlots16)` starts with no hot
+rows and retains that exact original registry writer. Legacy `register` refuses
+this mode. `publication_endpoint(server, row)` binds a fresh endpoint nonce,
+canonical full Binding, configured owner Peer, all concrete native/workspace/
+Compile/Launch service PIDs and original lifetime owner. PID spellings identify
+handles only within this original endpoint lifetime; no durable address resolves
+a replacement. The resulting SHA-256 digest is metadata.
+
+`prepare_publication(claim, endpoint)` must COMMIT Publishing before
+`register_generation(server, row, claim)`. The endpoint calls registry
+`validate_publication(Store, StartupClaim, Digest)` to check the actual original
+Store actor/incarnation, immutable association/doors, exact committed Publishing
+phase and endpoint digest. Full Scope and generation must match, and an attached
+Compile owner must have the exact canonical enrollment digest. The hot table
+also refuses a second live same-Scope row. Native-only checked registrations
+remain component controls; full-product scope administration still must assemble
+complete Compile, Launch and LSP services and enforce exact enrollment before
+publication. This component does not implement that assembly.
+
+`retire_registration(server, exact_row, RetirementRecord)` calls registry
+`validate_removal(Store, RetirementRecord, Digest)`. Only an exact committed
+StartedRetired PublishedFencedDrained record belonging to this original writer
+and endpoint is eligible. The actor rechecks the actual row's Fenced+Drained
+state, removes its concrete handles and lifetime monitor, and inserts its exact
+removal receipt in the same actor turn. Busy, unknown or assigned/unusable credit
+states remain unresolved. Removing a row never recreates any of the six credits
+or grants a new startup claim. The registry's original `remove` callback receives
+this acknowledgement before Removed COMMIT frees the live slot.
+
+Lost-acknowledgement retries require the same full retirement record and the same
+row-bound original endpoint digest. An absent row without its exact receipt
+refuses, as does a replacement endpoint. The receipt dictionary contains only
+one 32-byte retirement digest and one 32-byte endpoint digest per permanently
+charged ledger identity, capped at 4096 entries (262144 logical digest bytes,
+excluding map/VM overhead). It retains no physical handles or monitors. The
+permanent SQL ledger separately caps sixteen globally live/unretired claims,
+4096 identities and 256 MiB logical metadata; its smaller configured ceiling
+also bounds reachable receipt entries. Clean retirement permits more than
+sixteen sequential opens while finite history exhaustion still refuses.
+
+`managed_endpoint_test` uses actual pinned TLS endpoint actors and independent
+SQLite writers. Its explicitly named trusted component retirement verifier
+checks synthetic fixture witness metadata. Those controls establish publication,
+exact removal and credit policy, while native/resource/continuation/journal/host
+retirement witnesses remain separate obligations of future full-host assembly.
 
 ## Permanent generation custody
 
