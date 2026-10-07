@@ -96,3 +96,6 @@ client|client@assembly_heap_census_test|differences erlang:processes/0 and suspe
 broker|broker@integration_test|differences the node's helper ports from erlang:ports() and expects exactly one new loom-exec; a sibling spawning a helper adds another
 broker|broker@leak_census_test|differences erlang:system_info(process_count) across a hundred executions; the count is node-wide
 executor|remote_native_test|differences erlang:processes/0 after scoped native drain to reject surviving per-request output actors; concurrent sibling actors would change the census
+
+# --- deterministic Launch scope-adoption scheduling -----------------------
+executor|launch_channel_test|temporarily blocks multiple schedulers and raises its original actor priority to prove shutdown before scope adoption
