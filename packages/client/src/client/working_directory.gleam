@@ -4,6 +4,8 @@
 //// symlink replacement cannot redirect a remembered directory. The supplier
 //// owns only the restartable writer capability, and updates compare the cell
 //// sequence so a stale setter cannot overwrite a concurrent decision.
+//// Native callbacks project local workspace access before fetching the store;
+//// registered identity cannot use the owner's shell defaults or filesystem.
 
 import broker/policy
 import client/codemode
@@ -20,6 +22,7 @@ import simplifile
 import tools/codemode as code_tool
 import tools/directory_access
 import tools/fs
+import tools/tool
 import tools/working_directory as directory
 
 /// A restart-safe fact supplier assembled before the runtime starts.
@@ -44,7 +47,16 @@ type ProcessScope {
 pub fn door(facts: Facts) -> directory.Door {
   directory.Door(
     read: fn(ctx) {
-      use path <- result.try(read(facts, ctx.strand, ctx.workspace))
+      use local <- result.try(
+        tool.require_local_workspace(ctx)
+        |> result.replace_error("working directory requires a local workspace"),
+      )
+      use path <- result.try(read(
+        facts,
+        ctx.strand,
+        local.root,
+        local.filesystem,
+      ))
       use canonical <- result.try(directory.select(
         directory.workspace_only(),
         ctx,
@@ -58,7 +70,13 @@ pub fn door(facts: Facts) -> directory.Door {
           )
       }
     },
-    write: fn(ctx, path) { write(facts, ctx.strand, path) },
+    write: fn(ctx, path) {
+      use _local <- result.try(
+        tool.require_local_workspace(ctx)
+        |> result.replace_error("working directory requires a local workspace"),
+      )
+      write(facts, ctx.strand, path)
+    },
   )
 }
 
@@ -74,6 +92,7 @@ fn read(
   facts: Facts,
   strand: String,
   workspace: String,
+  filesystem: tool.FileSystem,
 ) -> Result(String, String) {
   use facts <- result.try(handle(facts))
   use cell <- result.try(
@@ -82,7 +101,7 @@ fn read(
   )
   case cell {
     None ->
-      fs.resolve_readable(fs.real_filesystem(), workspace, [], workspace)
+      fs.resolve_readable(filesystem, workspace, [], workspace)
       |> result.map_error(fn(_) { "workspace directory could not be resolved" })
     Some(api.FactCell(json.String(path), _seq)) ->
       case string.starts_with(path, "/") {
@@ -125,7 +144,8 @@ pub fn over_code_mode(
 ) -> codemode.Config {
   let wrap = config.wrap_router
   codemode.Config(..config, wrap_router: fn(request: code_tool.Request, router) {
-    let default = read(facts, request.strand, request.workspace)
+    let default =
+      read(facts, request.strand, request.workspace, fs.real_filesystem())
     let scope =
       ProcessScope(request.workspace, request.directory_access, request.grants)
     let inner = wrap(request, router)

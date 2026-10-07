@@ -6,6 +6,7 @@ import client/working_directory
 import core/clock
 import core/ids
 import core/json
+import core/workspace
 import gleam/option.{None, Some}
 import gleam/result
 import runtime/api
@@ -18,7 +19,7 @@ import tools/working_directory as directory
 
 fn ctx(workspace: String, strand: String) -> tool.Ctx {
   tool.Ctx(
-    workspace:,
+    workspace: tool.LocalWorkspace(workspace, fs.real_filesystem()),
     strand:,
     op_id: ids.mint_op(ids.generator(clock.fixed(1000), 638)).0,
     step_id: "directory-test",
@@ -29,12 +30,36 @@ fn ctx(workspace: String, strand: String) -> tool.Ctx {
     demand: exec.FullEnforcement,
     env: [#("TMPDIR", workspace <> "/.codemode/tmp")],
     clock: clock.fixed(1000),
-    filesystem: fs.real_filesystem(),
-    blob_root: workspace <> "/.blobs",
+    owner_blobs: tool.OwnerBlobs(workspace <> "/.blobs", fs.real_filesystem()),
     clear_call: fn(_, _) { Error(broker.BrokerUnavailable) },
     raise_refusal: tool.no_raise(),
     observe_output: tool.ignore_output(),
   )
+}
+
+pub fn registered_context_refuses_before_fetching_the_local_fact_store_test() {
+  let assert Ok(scope) =
+    workspace.scope_from_fields(
+      "00000000-0000-7000-8000-000000000001",
+      "workspace",
+      "executor",
+      1,
+      1,
+    )
+    as "fixture scope is valid"
+  let caller =
+    tool.Ctx(
+      ..ctx("/unused-owner-root", "main"),
+      workspace: tool.RegisteredWorkspace(scope),
+    )
+  let door =
+    working_directory.door(fn() {
+      panic as "registered directory fetched the local fact store"
+    })
+  assert door.read(caller)
+    == Error("working directory requires a local workspace")
+  assert door.write(caller, "/owner/blobs")
+    == Error("working directory requires a local workspace")
 }
 
 pub fn defaults_are_durable_and_strand_local_test() {
