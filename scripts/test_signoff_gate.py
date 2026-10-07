@@ -402,6 +402,14 @@ class RemoteGateModeTest(Fixture):
         self.assertEqual(result.returncode, 2)
         self.assertIsNone(self.recorded())
 
+    def test_a_gate_refuses_an_argument_it_cannot_honour(self):
+        for args in (["--dryrun"], ["--dry-run", "--commit", "abc"], ["--parallel", "4"]):
+            with self.subTest(args=args):
+                result = self.remote(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(args[0] if args[0] != "--dry-run" else args[1], result.stderr)
+                self.assertIsNone(self.recorded())
+
     def test_an_ungated_host_is_sent_the_driver(self):
         result = self.remote("--dry-run", LOOM_SIGNOFF_UNGATED="1")
         self.assertEqual(result.returncode, 0, result.stderr)

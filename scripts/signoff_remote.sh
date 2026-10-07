@@ -202,6 +202,12 @@ if [ -z "${LOOM_SIGNOFF_UNGATED:-}" ]; then
 		echo "signoff_remote: a gated host takes no --url" >&2
 		exit 2
 	fi
+	for arg in "${args[@]+"${args[@]}"}"; do
+		if [ "$arg" != --dry-run ]; then
+			echo "signoff_remote: a gated host takes only --dry-run, not '$arg'" >&2
+			exit 2
+		fi
+	done
 	request="signoff $sha"
 	if [ "$post" = no ]; then request="$request --dry-run"; fi
 	if [ -n "${SIGNOFF_PARALLEL:-}" ]; then request="$request --parallel $SIGNOFF_PARALLEL"; fi
