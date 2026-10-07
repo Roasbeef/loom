@@ -2048,8 +2048,7 @@ pub fn an_unknown_profile_is_refused_naming_the_known_ones_and_stores_nothing_te
         within_ms: 1000,
       )
     assert field(malformed, "event") == json.String("error")
-    assert field(field(malformed, "body"), "code")
-      != json.String("sessions.create")
+    assert field(field(malformed, "body"), "code") == json.String("bad_request")
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
