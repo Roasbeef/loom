@@ -173,11 +173,13 @@ import client/daemon/server
 import client/daemon/shareable
 import client/daemon/ui_http
 import client/daemon/ui_login
+import client/daemon/ui_peers
 import client/daemon/ui_project
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/gateway
+import client/peers
 import core/ids
 import core/json as wire
 import gleam/bit_array
@@ -216,6 +218,7 @@ import web_view/invites
 import web_view/names
 import web_view/operator_page
 import web_view/page
+import web_view/peer_links
 import web_view/remembered
 import web_view/renames
 import web_view/sessions
@@ -353,10 +356,11 @@ fn observer_path(path: String) -> Bool {
 /// their own; Lustre dispatches the event only to a handler the page drew at
 /// that path, and the daemon checks the session again before it mints a ticket
 /// (`ticket_for`). The two places it drops are `component.invite_path` and
-/// `component.rename_path` and anything beneath either, the invitation control
-/// and the rename control, which are an owner's and which this page does not
-/// draw (`owner_accepts`; the addendum on inviting from the session page, and
-/// protocol-change/067). A message in a batch that reaches one of them drops the
+/// `component.rename_path` and `component.peers_path` and anything beneath
+/// them, the invitation control, the rename control and the peer-link section,
+/// which are an owner's and which this page does not draw (`owner_accepts`; the
+/// addendum on inviting from the session page, and protocol-change/067 and
+/// 077). A message in a batch that reaches one of them drops the
 /// whole batch.
 ///
 /// ## Examples
@@ -388,7 +392,7 @@ type Reach {
   // At any path: an owner's page.
   Everywhere
 
-  // At any path but the two owner controls': a member operator's page.
+  // At any path but the owner controls': a member operator's page.
   ExceptOwner
 }
 
@@ -433,6 +437,7 @@ fn reaches(reach: Reach, path: String) -> Bool {
     ExceptOwner ->
       !beneath(path, component.invite_path)
       && !beneath(path, component.rename_path)
+      && !beneath(path, component.peers_path)
   }
 }
 
@@ -570,6 +575,17 @@ pub fn upgrade(
   // grant was revoked or whose UI session ended is refused at its next read.
   // It is made from the instance's own observation of its own workspace, and
   // nothing the page sends reaches it.
+  let peer_links =
+    peer_links_capability(role, fn(request, deliver) {
+      peer_links_task(
+        standing,
+        open,
+        attachment.peers,
+        attachment.session_id,
+        request,
+        deliver,
+      )
+    })
   let worktree =
     worktree_capability(role, fn(deliver) {
       worktree_task(
@@ -592,6 +608,7 @@ pub fn upgrade(
       rename,
       shareable,
       worktree,
+      peer_links,
       managing,
       seen,
       expected,
@@ -1414,6 +1431,9 @@ fn admit(
   rename: Option(fn(String, fn(renames.Answer) -> Nil) -> Nil),
   shareable: Option(fn(fn(grants.Answer) -> Nil) -> Nil),
   worktree: Option(fn(fn(worktrees.Read) -> Nil) -> Nil),
+  peer_links: Option(
+    fn(peer_links.Request, fn(peer_links.Answer) -> Nil) -> Nil,
+  ),
   managing: Option(fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil),
   seen: server.PageGrant,
   expected: snapshot.Expected,
@@ -1457,6 +1477,7 @@ fn admit(
       shareable:,
       worktree:,
       manage: managing,
+      peers: peer_links,
       logins: logins_capability(role, fn(logins, deliver) {
         read_task(deliver, fn() {
           ended_logins(
@@ -3403,6 +3424,111 @@ pub fn shareable_task(
   deliver: fn(grants.Answer) -> Nil,
 ) -> Nil {
   detached(fn() { shareable_for(attachment, origin, open) }, deliver)
+}
+
+/// The capability to read and change the peer links of the page's session that
+/// a page of `role` is handed: `ask` for an owner's page and none for any other,
+/// which is the whole of who may draw and use the peer-link section
+/// (protocol-change/077).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.peer_links_capability(ui_socket.Operating, ask) == None
+/// ```
+@internal
+pub fn peer_links_capability(
+  role: Role,
+  ask: fn(peer_links.Request, fn(peer_links.Answer) -> Nil) -> Nil,
+) -> Option(fn(peer_links.Request, fn(peer_links.Answer) -> Nil) -> Nil) {
+  case role {
+    Owning -> Some(ask)
+    Observing | Operating -> None
+  }
+}
+
+/// Reads or changes the peer links of the page's own session for the asking
+/// page's principal, or gives the reason it did not (protocol-change/077).
+///
+/// Every step is the daemon's and is made afresh, whatever the page showed when
+/// it asked, and nothing is taken from the page but the request's strands and
+/// the other session it names:
+///
+/// 0. The asking page must still be open (`open`). A page that ended but whose
+///    socket is still up changes nothing (`NotOwner`).
+/// 1. The page must have been minted to operate. An observer-ceiling page is
+///    refused, whatever its principal is.
+/// 2. The credential must still authenticate, and as the principal the page was
+///    admitted for, and that principal must be the daemon's owner. A member's
+///    credential is refused here even if a forged event reached this function.
+/// 3. `client/daemon/ui_peers.run` runs the request against `session_id`, which
+///    is the attachment's, with the same functions the control commands
+///    `peers.inspect`, `peers.link` and `peers.unlink` use. It judges the
+///    strands and the other session's identity again, resolves only running
+///    sessions, and maps a refusal to a fixed reason.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.peer_links_for(standing, open, directory, session_id, peer_links.Read("main"))
+/// ```
+@internal
+pub fn peer_links_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  directory: peers.Directory,
+  session_id: String,
+  request: peer_links.Request,
+) -> peer_links.Answer {
+  let owner = {
+    use _ <- result.try(open() |> result.replace_error(Nil))
+    use _ <- result.try(
+      operating_ceiling(standing.ceiling) |> result.replace_error(Nil),
+    )
+    use principal <- result.try(
+      manager.authenticate(standing.registry, standing.digest)
+      |> result.replace_error(Nil),
+    )
+    case principal.id == standing.principal, principal.kind {
+      True, access.OwnerPrincipal -> Ok(Nil)
+      True, access.MemberPrincipal | False, _ -> Error(Nil)
+    }
+  }
+  case owner {
+    Error(Nil) -> peer_links.Declined(peer_links.NotOwner)
+    Ok(Nil) -> ui_peers.run(directory, session_id, request)
+  }
+}
+
+/// Starts `peer_links_for` in a run of its own and returns at once, so the
+/// page's runtime is free while the sessions answer; `deliver` is called, from
+/// that run, with the answer, whatever it is. It is a weft run with one task,
+/// linked to the calling process as `rename_task`'s is, and every call inside
+/// `peer_links_for` is bounded by its own timeout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.peer_links_task(standing, open, directory, session_id, request, deliver)
+/// ```
+@internal
+pub fn peer_links_task(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  directory: peers.Directory,
+  session_id: String,
+  request: peer_links.Request,
+  deliver: fn(peer_links.Answer) -> Nil,
+) -> Nil {
+  let _ =
+    weft.new([
+      fn() {
+        deliver(peer_links_for(standing, open, directory, session_id, request))
+        Ok(Nil)
+      },
+    ])
+    |> weft.start_witnessed
+  Nil
 }
 
 /// The capability to rename the page's session that a page of `role` is

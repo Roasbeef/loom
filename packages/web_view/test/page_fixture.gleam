@@ -487,6 +487,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       home: None,
       rename: None,
       shareable: None,
+      peers: None,
       worktree: None,
       logins: None,
       manage: None,

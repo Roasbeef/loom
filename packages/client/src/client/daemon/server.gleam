@@ -309,6 +309,11 @@ pub type Attachment(instance) {
     /// read's deadline, so the page runs it from a task
     /// (`ui_socket.activity_task`).
     activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
+    /// The daemon's resident-only peer lookups, which an owner's page reads
+    /// and changes its session's peer links through (`client/daemon/ui_peers`,
+    /// protocol-change/077). They are the daemon's own and a page never
+    /// supplies one.
+    peers: peers.Directory,
   )
 }
 
@@ -1582,6 +1587,7 @@ fn resident_upgrade(
                 sessions_directory: state.sessions_directory,
                 registration:,
                 activity: home_activity(config, state.registry, digest),
+                peers: peer_directory(config, state.registry),
               ),
             )
           root.release(config.daemon, permit)

@@ -60,12 +60,14 @@ import web_view/completion
 import web_view/component
 import web_view/image
 import web_view/invites
+import web_view/peer_links
 import web_view/remembered
 import web_view/sessions
 import web_view/view/archiving
 import web_view/view/context_breakdown
 import web_view/view/controls
 import web_view/view/lane
+import web_view/view/peer_links as peer_links_view
 import web_view/view/remembered as remembered_view
 import web_view/view/resume
 import web_view/view/share
@@ -170,6 +172,18 @@ pub type Msg(socket) {
 
   /// The question's Keep: the page closes it and sends nothing.
   CancellingForget
+
+  /// A button of the owner's peer-link section (protocol-change/077). It
+  /// carries what the server drew on the button, and the component checks it
+  /// against its own board and sidebar list again before it acts. The section
+  /// is drawn only on an owner's page.
+  Peering(press: peer_links.Press)
+
+  /// The peer-link section's Link form was submitted with this text as the
+  /// strand in the other session. The text is the browser's and nothing else
+  /// is: the strand the link leaves, the session it goes to and what it allows
+  /// are the page's state, and the right to link is the daemon's.
+  Linking(strand: String)
 }
 
 /// The Lustre application for one session's operator page.
@@ -231,6 +245,8 @@ pub fn update(
     AskingForget(armed:) -> #(component.ask_forget(model, armed), effect.none())
     ConfirmingForget -> component.confirm_forget(model)
     CancellingForget -> #(component.cancel_forget(model), effect.none())
+    Peering(press:) -> component.peering(model, press)
+    Linking(strand:) -> component.linking(model, strand)
   }
 
   // The list of what the session remembers is this page's to read, and the
@@ -367,6 +383,13 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           )
         False -> element.none()
       },
+      component.peer_links_section(
+        model,
+        peer_links_view.Presses(
+          press: Peering,
+          submit: form_submit_text(Linking),
+        ),
+      ),
     ),
     component.needing(model),
     component.workspace_digest(model),
