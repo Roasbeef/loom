@@ -1,6 +1,6 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `f320f6c5b` on
+This edition records the registered-runtime integration through `77b3b217` on
 October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
 protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
 hosted PR/main state were checked for this edition. Runtime assembly and
@@ -11,8 +11,9 @@ combined executor/code-mode check pending. Both statements are obsolete: the
 branch is rebased, the combined pre-rebase gates passed, and the affected
 post-rebase checks below passed. A Launch readiness timeout during those checks
 remains unresolved despite a passing diagnostic retry. The managed endpoint is
-now implemented. The original owner custodian is wired through its generation DAL
-as well; these components do not by themselves enable ordinary registered sessions.
+now implemented. The original owner custodian is wired through its generation DAL,
+and the registry retains complete original generation plans atomically with first
+admission. These components do not by themselves enable ordinary registered sessions.
 
 ## Where the tree is
 
@@ -30,7 +31,7 @@ That status belongs to main, not this unpublished integration candidate.
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
 | Managed endpoint | `5733967e9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
 | Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
-| Generation history | `0e06673d6` and `cc668b1f2` retain bounded node claims, publication fences and retirement metadata. `cce28b4af` retains original owner generations and atomic child/system links. Actual physical join validation remains an assembly obligation. |
+| Generation history | `3ade15ea9` and `77b3b217` add complete original journal/enrollment provenance, permanent byte charges and format-two migration without backfill. Earlier node claims, publication fences, retirement metadata and owner child/system links remain. Actual physical join validation and history transport remain assembly obligations. |
 | LSP | `e6f30de42` and `bc0f9b25b` retain original custody and generated SQL. `c75dd49b9` and `7178cf937` add reviewed bounded parsing and consumed transport/state. Physical native and ordinary assembly joins remain pending. |
 | Deployment | `a58713277` and `45de677f` commit reviewed strict owner/executor loaders and their manifest. Shipped role bootstrap, admin transport, full host activation and ordinary daemon assembly remain unbuilt. |
 | Launch utilities | `ed4abd587` supplies named private role bundles, selected export, lifecycle commands and a setup guide. Current images deliberately lack runtime capability labels and cannot pass its startup gate. |
@@ -44,14 +45,29 @@ candidate.
 
 ## Verification and its limits
 
-The current endpoint integration passes all 429 executor tests, all ten focused
+The provenance integration passes all 445 executor tests in 165.46 seconds,
+including build time. Normal SQL regeneration, executor lint, documentation and
+prelude checks exit zero; all fourteen reviewed file hashes remain unchanged.
+Independent review found no actionable issue. Sixteen new real-SQLite controls
+cover atomic parent/plan admission, exact retained metadata, permanent quota
+charges, migration and corruption refusal. Four removed-check mutants fail their
+intended runtime assertions. Migration interruption after each DDL statement and
+power loss were not separately injected; rollback evidence there is the explicit
+transaction and error flow.
+
+The worker's full-suite log reported 445 passing tests but its original runner
+exit could not be recovered. That receipt remains uncertified. The separately
+executed integration gate above captured its own zero exit and complete gate
+footer; no product failure cause is inferred from the missing worker receipt.
+
+The endpoint milestone passed all 429 executor tests, all ten focused
 Launch controls and all 866 web-view tests. The subsequent owner-custodian
-integration passes all 3,147 client tests in 428.67 seconds including build time,
+integration passed all 3,147 client tests in 428.67 seconds including build time,
 with the same fifteen explicit optional exclusions described below. All nine new
 registered actor/SQLite controls ran. Independent owner-custodian review is clean. The full executor command exited zero
 in 171.75 seconds, including build time. Changed-source formatting, executor and
 client lint, documentation checking and the prelude gate pass. The latest
-documentation receipt has zero errors and 193 warnings. Independent endpoint
+documentation receipt has zero errors and 194 warnings. Independent endpoint
 review found no actionable issue; two removed-check mutants separately failed
 the intended original-writer and absent-row assertions before source restoration.
 
@@ -137,10 +153,12 @@ placements, container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Finish native LSP, durable generation provenance and managed journal recovery
+1. Finish native LSP and managed journal recovery
    for **#697**. These remain isolated implementation work. **Exit:** exact source
    passes meaningful failure controls, full affected package gates, independent
-   review and integrated verification. Preserve every existing test and ordinary
+   review and integrated verification. Durable generation provenance is integrated;
+   live startup still needs owned acquisition for the original journal handles,
+   including registry and LSP custody. Preserve every existing test and ordinary
    local behavior; earlier worker receipts do not certify later fixes.
 2. Build the approved ordinary registered path from protocols 076 and 077.
    Preserve one original owner Broker/custodian, exact-generation publication,
@@ -196,8 +214,9 @@ The approved [LSP contract](../protocol-change/076-registered-lsp.md) and
 [administration contract](../protocol-change/077-registered-generations.md) define
 required implementation work. Full activation, original physical retirement and
 normal daemon assembly are unbuilt, not accepted limitations of the final
-feature. The next assembly prerequisites are durable original journal/enrollment
-provenance and managed acquisition of recovered writers, followed by the sole
+feature. Durable original journal/enrollment provenance is integrated. The next
+assembly prerequisites are managed acquisition of original live and recovered
+writers, followed by the sole
 scope administrator and authenticated bounded history transport. C1-C3 and M1
 also remain required by **#697**.
 
