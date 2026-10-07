@@ -532,6 +532,13 @@ type Authority {
   HistoryOnly
 }
 
+// Placement consumes only an original live parent's existing offer CAS.
+type PlacementParent {
+  UnboundPlacement
+  LeasePlacement(LeaseStartupClaim)
+  FinitePlacement(FiniteClaim)
+}
+
 type Disposition {
   Legacy
   ParentOwned
@@ -1482,7 +1489,7 @@ pub fn retain_offer(
     history,
     offer,
     verify,
-    None,
+    UnboundPlacement,
   ))
   case placement {
     FreshPlacement(history) | RetainedPlacement(history) -> Ok(history)
@@ -1501,7 +1508,23 @@ pub fn retain_startup_offer(
   offer: BitArray,
   verify: fn(id.LspCommandRef, BitArray) -> Result(Nil, Error),
 ) -> Result(StartupPlacement, Error) {
-  retain_offer_mode(claim.store, history, offer, verify, Some(claim))
+  retain_offer_mode(claim.store, history, offer, verify, LeasePlacement(claim))
+}
+
+/// Wins finite pending placement only through the original command offer CAS.
+/// A copied claim or lost reply cannot create another original pending owner.
+/// The trusted plan verifier runs before SQL, then exact parent custody is rechecked.
+///
+/// ## Examples
+/// A second matching offer returns `RetainedPlacement` without startup authority.
+@internal
+pub fn retain_finite_offer(
+  claim: FiniteClaim,
+  history: CommandReadback,
+  offer: BitArray,
+  verify: fn(id.LspCommandRef, BitArray) -> Result(Nil, Error),
+) -> Result(StartupPlacement, Error) {
+  retain_offer_mode(claim.store, history, offer, verify, FinitePlacement(claim))
 }
 
 fn retain_offer_mode(
@@ -1509,7 +1532,7 @@ fn retain_offer_mode(
   history: CommandReadback,
   offer: BitArray,
   verify: fn(id.LspCommandRef, BitArray) -> Result(Nil, Error),
-  startup: Option(LeaseStartupClaim),
+  parent: PlacementParent,
 ) -> Result(StartupPlacement, Error) {
   use Nil <- result.try(canonical_record(offer, 131_072))
   use Nil <- result.try(verify(history.ref, offer))
@@ -1519,9 +1542,21 @@ fn retain_offer_mode(
       use row <- result.try(lookup(context, history.row.address))
       use Nil <- result.try(same_original(row, history.row))
       use Nil <- result.try(exact_binding(row, store.binding))
-      use Nil <- result.try(case startup {
-        None -> Ok(Nil)
-        Some(claim) -> {
+      use Nil <- result.try(case parent {
+        UnboundPlacement -> Ok(Nil)
+        FinitePlacement(claim) -> {
+          use Nil <- result.try(check(!is_server(history.ref), Invalid))
+          use Nil <- result.try(verify_finite_context(
+            context,
+            store,
+            store.binding,
+            claim,
+            clock.era,
+            claim.original.request,
+          ))
+          check_dispatch(context, history.ref, Some(claim), clock.now())
+        }
+        LeasePlacement(claim) -> {
           use Nil <- result.try(check(
             claim.store == store
               && id.lsp_startup_command(claim.original.key, id.ServerLease)
@@ -1662,6 +1697,160 @@ pub fn start_command(
     StartReply(admitted) -> Ok(admitted)
     _ -> Error(Corrupt)
   }
+}
+
+/// Projects original finite command association data without exporting its Store.
+/// These bytes are comparison evidence and cannot create a dispatch claim.
+///
+/// ## Examples
+/// Retained command history has no conversion to this original claim.
+@internal
+pub fn command_claim_fields(
+  claim: CommandClaim,
+) -> #(id.LspCommandRef, BitArray, BitArray) {
+  #(
+    claim.original.ref,
+    claim.original.row.native_identity,
+    claim.original.row.native_prepared,
+  )
+}
+
+/// Rechecks the original live Store, request, timing and era in its writer turn.
+/// Trusted assembly must supply the era from the same original native clock;
+/// equality with decoded strings is not clock provenance.
+///
+/// ## Examples
+/// Expired, cancelled and recovered history cannot authorize another effect.
+@internal
+pub fn verify_finite_claim(
+  store: Store,
+  binding: Binding,
+  claim: FiniteClaim,
+  era: id.ClockEra,
+  request: wire.Request,
+) -> Result(Nil, Error) {
+  use reply <- result.try(
+    exchange(store, fn(context) {
+      use Nil <- result.try(verify_finite_context(
+        context,
+        store,
+        binding,
+        claim,
+        era,
+        request,
+      ))
+      Ok(NilReply)
+    }),
+  )
+  as_nil(reply)
+}
+
+/// Rechecks one original Started finite command and its complete real parent.
+/// Exact readback validates scope, enrollment, selected root and canonical request
+/// before any caller can compare native identity or dispatch through its owner.
+///
+/// ## Examples
+/// A changed Prepared or a matching claim from another Store is refused.
+@internal
+pub fn verify_command_claim(
+  store: Store,
+  binding: Binding,
+  claim: CommandClaim,
+  finite: FiniteClaim,
+  era: id.ClockEra,
+  ref: id.LspCommandRef,
+  request: wire.Request,
+  selected: Option(id.SelectedProject),
+) -> Result(Nil, Error) {
+  use Nil <- result.try(check(
+    store == claim.store && ref == claim.original.ref,
+    Conflict,
+  ))
+  use reply <- result.try(
+    exchange(store, fn(context) {
+      use Nil <- result.try(verify_finite_context(
+        context,
+        store,
+        binding,
+        finite,
+        era,
+        request,
+      ))
+      use read <- result.try(read_command(
+        context,
+        binding,
+        ref,
+        request,
+        selected,
+      ))
+      use actual <- result.try(as_command(read))
+      use Nil <- result.try(same_original(actual.row, claim.original.row))
+      use Nil <- result.try(check(
+        !is_server(ref)
+          && actual.row.phase == 3
+          && actual.row.offer == claim.original.row.offer
+          && actual.row.native_identity == claim.original.row.native_identity
+          && actual.row.native_prepared == claim.original.row.native_prepared,
+        Fenced,
+      ))
+      use #(_, clock) <- result.try(live_authority(context))
+      use Nil <- result.try(check_dispatch(
+        context,
+        ref,
+        Some(finite),
+        clock.now(),
+      ))
+      Ok(NilReply)
+    }),
+  )
+  as_nil(reply)
+}
+
+// One original writer validates live authority before exposing any effect join.
+fn verify_finite_context(
+  context: Context,
+  store: Store,
+  binding: Binding,
+  claim: FiniteClaim,
+  era: id.ClockEra,
+  request: wire.Request,
+) -> Result(Nil, Error) {
+  use #(original, clock) <- result.try(live_authority(context))
+  use Nil <- result.try(check(
+    original == store
+      && claim.store == store
+      && store.binding == binding
+      && request == claim.original.request,
+    Conflict,
+  ))
+  use Nil <- result.try(admission_open(context))
+  use input <- result.try(wire.encode_request(request) |> invalid)
+  use row <- result.try(lookup(context, claim.original.row.address))
+  use Nil <- result.try(same_original(row, claim.original.row))
+  use Nil <- result.try(exact_binding(row, binding))
+  let #(original_era, e0, remaining, deadline, digest) =
+    id.control_fields(claim.control)
+  let now = clock.now()
+
+  // The original proposal, E0 and deadline survive every subsequent command;
+  // a repeated tick or a copied era string cannot renew the live writer.
+  check(
+    row.phase == 2
+      && row.input == input
+      && clock.era == era
+      && era == original_era
+      && row.clock_era == id.era_string(era)
+      && row.anchor_tick == e0
+      && row.remaining_ms == remaining
+      && row.deadline_tick == deadline
+      && row.timing_digest == g.digest_bytes(digest)
+      && row.timing_proposal == claim.original.row.timing_proposal
+      && deadline != 0
+      && signed_tick(now)
+      && now >= e0
+      && now < deadline,
+    Fenced,
+  )
 }
 
 /// Projects the exact ServerLease dispatch association for trusted native joins.
