@@ -2,18 +2,18 @@
 
 This file describes the current integration boundary, its evidence and the next
 required work. Rewrite it after each integration milestone. This edition is
-baselined against `a1ab45a02` on October 7, 2026, in the isolated
+baselined against `d84b60a91` on October 7, 2026, in the isolated
 `runtime/main-refresh` branch. Source joins, gate receipts and hosted state were
 checked for this edition; earlier component results are identified separately.
 
 The branch now includes main at `142eba4a3b0dca245993851b893e7479c70d50c7`.
-All 290 topic commits were rebased in their original order. The previous edition
-said that this main revision was not integrated and that catalogue/protocol
-collisions still needed resolution. Both statements are now false. Typed
-workspace creation composes with main's model profiles, the catalogue handles
-both historical version-nine layouts, and the registered proposals are numbered
-078 and 079. Ordinary registered assembly and separate-host acceptance remain
-unfinished.
+All 290 topic commits were rebased in their original order. Typed workspace
+creation composes with main's model profiles, the catalogue handles both
+historical version-nine layouts, and the registered proposals are numbered
+078 and 079. The previous edition left registered hook callers and the Compile
+model correction under development. Both are now reviewed, tested and committed.
+Actual hook source acquisition, ordinary registered assembly and separate-host
+acceptance remain unfinished.
 
 ## Where the tree is
 
@@ -23,12 +23,16 @@ that head. [Issue #697](https://github.com/Roasbeef/loom/issues/697) remains ope
 The integration work is local; publication and merge are not authorized.
 The integrated main revision has a
 [passing CI run](https://github.com/Roasbeef/loom/actions/runs/37606780540).
-That result belongs to main, not the unpublished integration candidate.
+The same revision has a
+[failing Nightly run](https://github.com/Roasbeef/loom/actions/runs/37634521560):
+the cold Linux gate exceeds the aggregate Python deadline, and simulation seed
+997 fails convergence. Neither workflow result certifies the unpublished
+integration candidate.
 
 | Boundary | Current integration state |
 | --- | --- |
 | Owner custody and semantic transport | `05a02a788` wires registered admission, historical reopen and receipt readback to the original actor/connection/path. Original inputs, results, finite TLS BEAM controls, native forwarding and semantic consumers are implemented. Default daemon construction remains pending. |
-| Native system and workspace identity | `bd2636b22` through `0ef51ba27` retain derived workspace commands, pending system ordinals and original live permission through the Broker. Real owner COMMIT/readback and composed ordinary receipt routing are integrated. Registered goal callers are integrated at `62c9b8ee7`; hook callers and full host wiring remain pending. |
+| Native system and workspace identity | `bd2636b22` through `0ef51ba27` retain derived workspace commands, pending system ordinals and original live permission through the Broker. Real owner COMMIT/readback and composed ordinary receipt routing are integrated. Registered goal callers are integrated at `62c9b8ee7`, and hook callers at `d84b60a91`. Actual source acquisition and full host wiring remain pending. |
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
 | Managed endpoint | `cfa36faa9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
 | Original startup and close witnesses | `ebc1a1417` validates the original live registry claim and exact Plan. `124bd33e2` retains native scope-close evidence before Service exit. FullHost still must bind the real pool and original joins; workspace, Compile and Launch witness work remains pending. |
@@ -59,16 +63,56 @@ sources are byte-identical to integrated main. A local prerequisite and a
 per-module twenty-second budget are proposed, not applied; every test and the
 existing gate remain intact.
 
-`make model-check` also exits two, after 568.01 seconds. Of 196 declared cases,
-`tcCompileReadySubmitUnassociated` reports failure; the other 195 report their
-expected outcome. A strict unchanged run passes all 1,000 schedules at seed 697,
-but seed 698 reproduces a null-target send at schedule 251. The directed scenario
-releases a deferred association before the actual callback has arrived. That is
-a model-driver defect; its correction and production correspondence remain under
-review. The first green retry does not close the original failure. The existing
-Lean gate passes its twelve admission theorems and all 684 comparisons with the
-production reducer on the same candidate. Strict model-local witness and mutation
-gates and the TLA+ ownership checks still need current receipts.
+The corrected model candidate `dedd107f6` passes `make model-check`: all 196
+cases report their expected outcome, with the command's own exit zero after
+572.17 seconds. The earlier full run failed `tcCompileReadySubmitUnassociated`;
+its original trace was overwritten by the generic runner, so that particular
+failure's cause cannot be established. A separately retained seed-698 trace
+proved a null-target send when the scenario released an association before its
+callback arrived. The correction waits for the existing held-callback event.
+It preserves all prior assertions and adds two premise checks. Independent
+review found no actionable issue; the integration's strict seed-698 control
+passes 1,000 normal schedules and the exact intended negative witness.
+
+The TLA+ gate also passes on `dedd107f6`: seven safety cases and forty intended
+invariant violations, with actual exit zero after 148.24 seconds. The existing
+Lean gate passed twelve admission theorems and all 684 production comparisons on
+`a1ab45a02`; those model and reducer sources are unchanged. The strict remote
+model gate subsequently passes on `d84b60a91`: all 146 safety/witness cases and
+68 compile-clean mutation controls, with actual exit zero after 2,085.02 seconds
+and no tracked file changes. The strict launch-channel gate still needs its
+current receipt. These are bounded model checks, not assembled-runtime acceptance.
+
+The hook integration at `d84b60a91` passes all 3,276 client tests, with actual exit
+zero after 403.62 seconds including build. Normal seed, formatting, client lint,
+documentation and prelude gates also pass; all seven reviewed source hashes
+remain unchanged. The fifteen explicit optional exclusions remain thirteen
+shipped-server controls, the Linux `/proc` witness and rust-analyzer.
+
+Sixteen new hook controls exercise actual conversation and owner SQLite, the
+original Broker, cancellation and late receipts. They cover indexed trusted
+sources, all five hook gates, immutable occurrences, lost COMMIT replies, full
+readback, deadline exhaustion, congestion and byte-exact stdin framing. Five
+compile-clean mutants fail their intended assertions. Independent review found
+one low wording error: the Dispatcher callback proves framing, not positive
+queue acceptance or physical stdin consumption. The assertion descriptions and
+package documentation now state that limit, and the reviewer closed the finding.
+Default registered source acquisition and shipped daemon selection remain open.
+
+`make replay-simulation SIM_SEED=997` fails on `d84b60a91` with actual exit two,
+reproducing the Nightly projection mismatch. Source analysis finds that the
+write's effect fault fires before its DuringCall steer trigger is registered;
+ReplayNever recovery does not replay that callback. The faulted conversation
+therefore lacks the scripted steer. The timing annotation checks claimed
+interventions only and incorrectly calls the empty set complete. This is a
+source-supported harness ordering defect, not proof that the runtime lost an
+admitted steer. A clean checkout of main `142eba4a3` reproduces the same four
+failures, with actual exit two after 40.71 seconds including cold compilation.
+Both checkouts retain unchanged tracked sources. The convergence assertion
+remains intact. Moving the blocking intervention before the fault is not a
+sufficient fix: Abort could kill that caller before it injects the fault. A
+test-only rendezvous interface correction is proposed and awaits approval;
+no simulation assertion or fault has been removed.
 
 The registered goal integration at `62c9b8ee7` passes all 3,260 client tests:
 381.46 seconds of tests, 402.66 seconds including build, with the command's own
@@ -159,13 +203,15 @@ container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Implement ordinary registered hooks for **#697** using original indexed
-   trusted sources and one immutable occurrence before execution. Goal callers
-   are integrated, including actual Checking persistence and UI publication.
-   **Exit:** all five existing hook gates retain original source/handler identity,
-   stdin and deadlines; cancellation and uncertain writes cannot create new
-   work; local behavior and all tests remain intact. Source acquisition and
-   normal daemon selection then compose through the actual registered host.
+1. Complete actual hook source acquisition and ordinary registered selection
+   for **#697**. First join original-custodian system workspace admission to its
+   first Submit, and bind registered Effects to the actual original writer
+   before drivers start. Goal and hook caller seams are already integrated.
+   **Exit:** the default daemon acquires the existing user/project/local source
+   set through original authority and trust checks, then selects registered
+   gates without owner workspace probes. Explicit plugin documents retain their
+   source kind; no automatic plugin inventory or new trust CLI is introduced.
+   Prepared hook counters require owned cleanup through the runtime drain.
 2. Complete original physical-close prerequisites. **Exit:** workspace aggregate,
    Compile preparation and Launch channel ownership supply their actual original
    close witnesses; finite LSP Service ownership retains failed-row charges,
@@ -226,8 +272,9 @@ system ordinal. Admitted capabilities retain their existing purpose pair.
 Standalone native system commands separately reserve original identity before
 Broker clearance and admit exact cleared bytes afterward. These identity and
 sequencing changes are integrated at the custodian and Broker boundary. Registered
-goal callers are integrated; hook callers and full host wiring remain
-unimplemented. Initialize does not imply an invented native setup command.
+goal and hook callers are integrated; actual source acquisition and full host
+wiring remain unimplemented. Initialize does not imply an invented native setup
+command.
 
 ## Deliberately open
 
@@ -240,14 +287,26 @@ recovery of native, workspace and resource writers are integrated. Original LSP
 live startup and restricted recovery are also integrated.
 Finite Service ownership, the sole scope administrator and authenticated bounded
 history transport remain assembly prerequisites. C1-C3 and M1 also remain
-required by **#697**.
+required by **#697**. Registered hook payloads also need an approved
+executor-visible transcript representation; an owner SQLite path cannot be
+presented as an executor path.
 
-Two concrete proposals await owner approval: a typed Detached selector in weft
-with the exact Loom dependency-pin update, and the executor's existing-host
+Two dependency/API proposals await owner approval: a typed Detached selector in
+weft with the exact Loom dependency-pin update, and the executor's existing-host
 metadata reader dependency. The selector supplies managed outcomes without
 losing the independent original scope monitor. The metadata reader supplies
 bounded actual Prepare readiness. Neither proposal is implemented or approved by
 elapsed time; independent implementation continues around these boundaries.
+
+Two further proposals remain pending. The full gate needs the local `flock`
+prerequisite and proposes twenty seconds per Python module instead of twenty
+seconds for the entire discovery run, preserving every test. C3 proposes a
+1 MiB complete envelope/receipt limit, 64 MiB charged outstanding custody with a
+64-row ceiling, a bounded exact-cell reader and explicit Confirmed retirement.
+Oversized legacy receipts would leave admission unverified and custody charged;
+retirement would not retain permanent sender-local history. These policy and
+API choices are not implemented. Current recipient receipt history remains
+unchanged.
 
 The owner accepted inherited workspace/cache filesystem policy without an
 aggregate disk quota. New LSP transport and retained-state inventories keep their
