@@ -2,7 +2,7 @@
 
 This file describes the current integration boundary, its evidence and the next
 required work. Rewrite it after each integration milestone. This edition is
-baselined against `d84b60a91` on October 7, 2026, in the isolated
+baselined against `ddec0465b` on October 7, 2026, in the isolated
 `runtime/main-refresh` branch. Source joins, gate receipts and hosted state were
 checked for this edition; earlier component results are identified separately.
 
@@ -10,10 +10,10 @@ The branch now includes main at `142eba4a3b0dca245993851b893e7479c70d50c7`.
 All 290 topic commits were rebased in their original order. Typed workspace
 creation composes with main's model profiles, the catalogue handles both
 historical version-nine layouts, and the registered proposals are numbered
-078 and 079. The previous edition left registered hook callers and the Compile
-model correction under development. Both are now reviewed, tested and committed.
-Actual hook source acquisition, ordinary registered assembly and separate-host
-acceptance remain unfinished.
+078 and 079. The previous edition left first-submit workspace reads and original-writer
+Effects construction pending. Those components are now reviewed, tested and
+committed, including prepared hook-counter cleanup. Actual source acquisition,
+ordinary registered assembly and separate-host acceptance remain unfinished.
 
 ## Where the tree is
 
@@ -32,6 +32,7 @@ integration candidate.
 | Boundary | Current integration state |
 | --- | --- |
 | Owner custody and semantic transport | `05a02a788` wires registered admission, historical reopen and receipt readback to the original actor/connection/path. Original inputs, results, finite TLS BEAM controls, native forwarding and semantic consumers are implemented. Default daemon construction remains pending. |
+| Registered assembly prerequisites | `8fcc52cc7` binds Effects to the original writer before startup. `d698b5aea` admits and settles fixed registered workspace reads without replay. `b2615b16c` prepares one hook counter with acknowledged cleanup. `ddec0465b` accepts indexed acquisition and the approved owner-source size policy; acquisition implementation is next. |
 | Native system and workspace identity | `bd2636b22` through `0ef51ba27` retain derived workspace commands, pending system ordinals and original live permission through the Broker. Real owner COMMIT/readback and composed ordinary receipt routing are integrated. Registered goal callers are integrated at `62c9b8ee7`, and hook callers at `d84b60a91`. Actual source acquisition and full host wiring remain pending. |
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
 | Managed endpoint | `cfa36faa9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
@@ -80,8 +81,31 @@ Lean gate passed twelve admission theorems and all 684 production comparisons on
 `a1ab45a02`; those model and reducer sources are unchanged. The strict remote
 model gate subsequently passes on `d84b60a91`: all 146 safety/witness cases and
 68 compile-clean mutation controls, with actual exit zero after 2,085.02 seconds
-and no tracked file changes. The strict launch-channel gate still needs its
-current receipt. These are bounded model checks, not assembled-runtime acceptance.
+and no tracked file changes. The strict launch-channel gate passes on `5d69aaefc`, with actual exit zero
+after 423.12 seconds: fifteen 1,000-schedule safety cases, fifteen exact negative
+witnesses, nine unmodified controls and thirteen compile-clean mutants. Source
+hashes remain unchanged. These are bounded model checks, not assembled-runtime acceptance.
+
+The latest assembly components pass independent root checks: all 193 runtime
+cases, fourteen registered workspace-read cases, eleven ordinary workspace
+cases, thirteen binding cases, six registered construction cases and fourteen
+legacy hook cases. Runtime/client lint report zero errors (65/570 warnings),
+documentation reports zero errors with 195 warnings, and prelude verification
+passes. Source hashes match the reviewed manifests. A sandboxed workspace run
+failed before the tests could start TLS distribution (`register/listen error:
+eperm`); a separately permissioned host run passes every case.
+
+The first assembled concurrency run exposed an invalid test assumption. A
+retained observer can query before the winning caller submits; the missing query
+has no status frame, so that observer may exhaust its five-second observation
+budget. The revised control accepts only this exact TransportUncertain outcome,
+then requires confirmed completion through the same plan before its unchanged
+absolute deadline. Both callers must produce the same canonical receipt and ACK,
+with one original UUID, child, ordinal and physical read. Independent review
+found no weakened invariant. The production transport was not changed.
+
+Full client and shipped-server validation of these latest components remain
+pending. The earlier full-client receipts below do not certify this new source.
 
 The hook integration at `d84b60a91` passes all 3,276 client tests, with actual exit
 zero after 403.62 seconds including build. Normal seed, formatting, client lint,
@@ -204,9 +228,9 @@ container execution and hosted CI have not passed on this candidate.
 ## What to do next
 
 1. Complete actual hook source acquisition and ordinary registered selection
-   for **#697**. First join original-custodian system workspace admission to its
-   first Submit, and bind registered Effects to the actual original writer
-   before drivers start. Goal and hook caller seams are already integrated.
+   for **#697**. First-submit workspace reads, original-writer Effects and
+   prepared hook cleanup are integrated. Implement the accepted indexed lookup
+   and fixed acquisition from protocol 079, then join ordinary startup.
    **Exit:** the default daemon acquires the existing user/project/local source
    set through original authority and trust checks, then selects registered
    gates without owner workspace probes. Explicit plugin documents retain their
@@ -275,6 +299,16 @@ sequencing changes are integrated at the custodian and Broker boundary. Register
 goal and hook callers are integrated; actual source acquisition and full host
 wiring remain unimplemented. Initialize does not imply an invented native setup
 command.
+
+**Hook acquisition keeps the original baseline and plan.** The final
+[protocol-079 addenda](../protocol-change/079-registered-generations.md#addendum-fixed-registered-hook-source-acquisition)
+retain a pure fixed candidate outside the observer. Lookup hits grant historical
+observation only; partial preparation cannot regain fresh authority. The owner
+approved an 8-MiB accepted-text limit for captured user settings on October 7.
+It is checked after reading and does not bound physical read allocation or time.
+The manifest and two source intents consume three existing charged reservations.
+Reopened custodian and whole-VM loader recovery remain outside this component;
+normal activation and physical close remain required milestone work.
 
 ## Deliberately open
 
