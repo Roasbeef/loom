@@ -56,7 +56,9 @@
 ////    block of lines, and `work_items` keys them.
 //// 4. `block_element` draws a block's rows; a reasoning row of any speaker
 ////    goes through `reasoning_row`, so every settled reasoning block closes
-////    to the same heading and preview.
+////    to the same heading and preview, and a message the shared projection
+////    shortened goes through `message_row`, which adds the control that opens
+////    it to the whole text.
 //// 5. `line_element` draws one transcript line inside its own memo, as
 ////    Markdown or as it is (`body_of`).
 
@@ -83,6 +85,7 @@ import session_view/turns
 import web_view/image
 import web_view/markdown_view
 import web_view/view/diff
+import web_view/view/expansion
 import web_view/view/fold_row
 import web_view/view/live
 import web_view/view/strip
@@ -134,7 +137,7 @@ import web_view/view/strip
 /// ## Examples
 ///
 /// ```gleam
-/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies, component.marks(model), lane.Folds(FoldToggled), component.session_id(model))
+/// // lane.view(component.pieces(model), component.live(model), component.top(model), OlderRequested, lane.NoReplies, component.marks(model), lane.Folds(FoldToggled, MessageToggled, []), component.session_id(model))
 /// ```
 pub fn view(
   pieces: List(turns.Piece),
@@ -216,7 +219,8 @@ pub type Replies(message) {
   )
 }
 
-/// Whether a settled turn's divider opens its work, and what pressing it sends.
+/// Whether a settled turn's divider opens its work, whether a shortened message
+/// opens to its text, and what pressing either sends.
 ///
 /// The work of a settled turn is not drawn until the reader opens it: the
 /// divider is a button whose press asks the page to draw the steps, and the
@@ -224,14 +228,27 @@ pub type Replies(message) {
 /// number (`turns.Work.id`) and nothing from the browser, so both pages draw
 /// the button and an observer's socket admits its click at one path
 /// (`component.fold_click`, protocol-change/070).
+///
+/// A long paste is drawn shortened, and a button after it opens the whole text
+/// the same way: the press names the message's block key, which the engine
+/// gave it, the page opens it from the entry the block was drawn from, and the
+/// text is drawn only while it is open (`component.message_click`). The key
+/// lists which messages are open, so the draw is a function of the page's
+/// state alone.
 pub type Folds(message) {
-  /// The dividers carry no handler: pressing one does nothing. A lane drawn
-  /// for a test that does not open folds has no message to send.
+  /// The dividers and shortened messages carry no handler: pressing one does
+  /// nothing. A lane drawn for a test that does not open folds has no message
+  /// to send.
   NoFolds
 
-  /// Each divider that names a fold sends this message, given the fold's
-  /// number.
-  Folds(toggle: fn(Int) -> message)
+  /// Each divider that names a fold sends `toggle`, given the fold's number,
+  /// and each shortened message sends `expand`, given its block's key.
+  /// `expanded` holds the keys of the messages the reader has open.
+  Folds(
+    toggle: fn(Int) -> message,
+    expand: fn(String) -> message,
+    expanded: List(String),
+  )
 }
 
 /// Another session a peer message's card may open: the words the button
@@ -571,7 +588,7 @@ fn piece_element(
 ) -> Element(message) {
   case piece {
     turns.Plain(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, session, newest)
+      block_element(block, thoughts, took, draw, folds, session, newest)
 
     // A person's message: who sent it on a line of its own, and the words in
     // a bubble beneath. The sender's name is session text, a text node. The
@@ -586,7 +603,7 @@ fn piece_element(
           html.span([attribute.class("who-name")], [html.text(name)]),
           html.text(" · operator"),
         ]),
-        block_element(block, dict.new(), None, draw, session, newest),
+        block_element(block, dict.new(), None, draw, folds, session, newest),
       ])
 
     // A settled turn's work is its divider, a button, and the steps only
@@ -853,7 +870,7 @@ fn divider(
 ) -> Element(message) {
   let words = html.text(turns.divider(worked))
   case id, folds {
-    Some(id), Folds(toggle:) ->
+    Some(id), Folds(toggle:, ..) ->
       html.button(
         [
           attribute.type_("button"),
@@ -864,7 +881,7 @@ fn divider(
         ],
         [words],
       )
-    Some(_), NoFolds | None, Folds(_) | None, NoFolds ->
+    Some(_), NoFolds | None, Folds(..) | None, NoFolds ->
       html.span([attribute.class("work-toggle")], [words])
   }
 }
@@ -920,13 +937,13 @@ fn item_element(
 ) -> Element(message) {
   case item {
     turns.Narrated(block:, thoughts:, took:) ->
-      block_element(block, thoughts, took, draw, session, newest)
+      block_element(block, thoughts, took, draw, NoFolds, session, newest)
     turns.Memory(lines:, full:, ..) ->
       fold_row.memory(
         step_words.memory(lines),
         list.map(full, fold_row.line_row(_, draw)),
       )
-    turns.Step(key:, standing:, words:, detail:, full:, images:) -> {
+    turns.Step(key:, standing:, words:, detail:, full:, images:, since:) -> {
       let rows = case full {
         [] -> detail
         [_, ..] -> full
@@ -934,6 +951,7 @@ fn item_element(
       fold_row.step(
         standing,
         words,
+        since,
         list.append(
           fold_row.step_body(standing, words, rows, draw),
           pictures(session, transcript_image.ref(key), images),
@@ -962,6 +980,7 @@ fn block_element(
   thoughts: Dict(String, List(Line)),
   took: Option(Int),
   draw: fn(Line) -> Element(message),
+  folds: Folds(message),
   session: String,
   newest: String,
 ) -> Element(message) {
@@ -1021,6 +1040,7 @@ fn block_element(
             heir,
             draw,
           )
+        transcript_line.User -> message_row(block, row, draw, folds)
         _ -> fold_row.line_row(row.1, draw)
       }
     })
@@ -1035,6 +1055,59 @@ fn block_element(
       ),
     ),
   )
+}
+
+// A person's message. One the shared projection shortened (a long paste, an
+// injected message) is drawn as that row with a button after it, and as the
+// whole text, cut as every expansion is (`expansion.capped`), while the reader
+// has it open. The text is read from the entry the block was drawn from
+// (`turns.abridged`), so nothing is fetched and a sealed turn opens as a live
+// one does, and it reaches the page as text nodes like every line. Both
+// states sit in one `div.message` whose children are the text and then the
+// button, so the button keeps its place when it opens and the observer's
+// socket can name its path (`component.message_click`). A message that was not
+// shortened, or a lane with no handler to send, is its row alone.
+fn message_row(
+  block: transcript_lines.Block,
+  row: #(String, Line),
+  draw: fn(Line) -> Element(message),
+  folds: Folds(message),
+) -> Element(message) {
+  case folds, turns.abridged(block) {
+    Folds(expand:, expanded:, ..), Some(#(key, whole)) if key == row.0 -> {
+      let shown = case list.contains(expanded, block.key) {
+        True -> Opened
+        False -> Closed
+      }
+      let lines = case shown {
+        Opened ->
+          expansion.capped([transcript_line.Line(transcript_line.User, whole)])
+        Closed -> [row.1]
+      }
+      html.div([attribute.class("message")], [
+        html.div(
+          [attribute.class("message-text")],
+          list.map(lines, fold_row.line_row(_, draw)),
+        ),
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("message-toggle"),
+            attribute.aria_expanded(shown == Opened),
+            attribute.data(fold_marker, "fold"),
+            event.on_click(expand(block.key)),
+          ],
+          [
+            html.text(case shown {
+              Opened -> "Show less"
+              Closed -> "Show all"
+            }),
+          ],
+        ),
+      ])
+    }
+    NoFolds, _ | Folds(..), _ -> fold_row.line_row(row.1, draw)
+  }
 }
 
 // Every settled reasoning block is drawn by this one function, whichever

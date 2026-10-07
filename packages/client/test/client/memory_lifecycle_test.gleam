@@ -440,6 +440,7 @@ fn settings(
     as "the fixture locates its protocol-speaking helper"
   serve.Settings(
     peer_directory: None,
+    peer_defaults: None,
     first_prompt: None,
     codemode_sockets: None,
     secrets: secret.env(),

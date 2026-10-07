@@ -6,6 +6,7 @@
 //// location, that the pill's class follows the connection's tone, and that
 //// the cost figure carries no `session` prefix.
 
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import lustre/element
@@ -17,11 +18,22 @@ fn drawn(
   tone: heading.Tone,
   cost: String,
 ) -> String {
+  modelled(name, workspace, None, tone, cost)
+}
+
+fn modelled(
+  name: option.Option(String),
+  workspace: option.Option(String),
+  model: option.Option(String),
+  tone: heading.Tone,
+  cost: String,
+) -> String {
   heading.view(
     session_id: "0192ab34cd",
     home: element.none(),
     name:,
     workspace:,
+    model:,
     status: "connected",
     tone:,
     context: "ctx ~2%",
@@ -127,6 +139,7 @@ pub fn a_figure_with_no_value_is_not_drawn_test() {
       home: element.none(),
       name: None,
       workspace: None,
+      model: None,
       status: "connected",
       tone: heading.Live,
       context: "",
@@ -154,4 +167,46 @@ pub fn the_bar_ends_with_an_empty_title_element_test() {
     bar,
     "&lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt;",
   )
+}
+
+// The main strand's model is drawn beside the name, in a wrapper that holds the
+// bar's fourth child, so the `h1` keeps only the name (`<loom-title>` reads the
+// tab's title from it) and every child after the wrapper keeps its place. The
+// name of the model is a text node, and the upstream identifier is not drawn.
+pub fn the_main_strands_model_sits_beside_the_name_test() {
+  let bar =
+    modelled(
+      Some("docs"),
+      None,
+      Some("baseten-glm-5-3"),
+      heading.Live,
+      "est $0.04",
+    )
+  assert string.contains(
+    bar,
+    "<span class=\"session-title\"><h1 title=\"0192ab34cd\">docs</h1>"
+      <> "<span class=\"session-model\" title=\"Model the main strand runs on\">"
+      <> "baseten-glm-5-3</span></span>",
+  )
+}
+
+// A model name is the owner's catalogue entry, but it is still drawn only as
+// text: markup in it is escaped.
+pub fn a_model_name_is_drawn_as_text_test() {
+  let bar = modelled(None, None, Some("<b>x</b>"), heading.Live, "est $0.04")
+  assert string.contains(bar, ">&lt;b&gt;x&lt;/b&gt;</span>")
+  assert !string.contains(bar, "<b>x")
+}
+
+// While the capture holds no model, or an empty name, the wrapper is still
+// drawn and holds the name alone, so no later child moves.
+pub fn an_unknown_model_draws_nothing_but_the_name_test() {
+  list.each([None, Some("")], fn(model) {
+    let bar = modelled(Some("docs"), None, model, heading.Live, "est $0.04")
+    assert !string.contains(bar, "session-model")
+    assert string.contains(
+      bar,
+      "<span class=\"session-title\"><h1 title=\"0192ab34cd\">docs</h1></span>",
+    )
+  })
 }

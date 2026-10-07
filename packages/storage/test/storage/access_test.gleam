@@ -496,6 +496,7 @@ pub fn generated_access_queries_match_sqlc_input_test() {
     sql.principal_active_credential("", None).0,
     sql.principal_open_claim("").0,
     sql.principal_memberships("", "").0,
+    sql.membered_sessions().0,
     sql.insert_access_login("", "", None, None).0,
     sql.insert_access_login_from("", "", None, None, None).0,
     sql.principal_logins("", None, "").0,

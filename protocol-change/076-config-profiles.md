@@ -299,3 +299,31 @@ refusal of a flag-shaped value, that a bare `--profile` is still unknown there, 
 that the job carries the profile; and, for the page, that the select exists only
 when profiles exist and only on a page that may create, that a name is a text node
 and never an attribute, and that the decoder admits only offered positions.
+
+## Addendum 2026-10-06: showing the model on the web page
+
+The profile of a session decides which model each role runs, and the web page
+drew none of it. A reader could not tell which model set a session was created
+under. The page now names the model, with no new wire field.
+
+Every strand's configuration in the capture already names the catalogue entry
+that chose its model (`ModelIdentity.provider`, which the daemon writes from the
+entry's name) beside the upstream identifier (`model_id`). A session created under
+a profile writes those entries, so the capture already says which model set is
+running. The page reads the entry's name with `agent_view.catalogue_name` and draws
+it as plain text:
+
+- Beside the session's name in the top bar, the main strand's entry.
+- On the card of any other strand whose entry differs from the main strand's: the
+  advisor, and a sub-agent whose role routes elsewhere. A strand on the main
+  strand's entry draws nothing, and so does a strand, or a main strand, whose
+  configuration the capture does not hold, since an unknown model is not evidence
+  of another one.
+
+The summarizer is a role and not a strand in the capture, so it has no card and
+the page does not draw its model. The strand's own view already lists the
+upstream identifier, shortened, and keeps doing so.
+
+The name is the owner's text from the configuration file and is drawn only as a
+text node. The terminal's identity line already shows the active strand's model,
+by the last segment of its upstream identifier, and is unchanged.

@@ -77,6 +77,12 @@ LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 WHERE m.principal_id = ? AND m.session_id > ?
 ORDER BY m.session_id LIMIT 101;
 
+-- Every session that has at least one member of either role
+-- (protocol-change/077). One scan answers for all sessions.
+
+-- name: MemberedSessions :many
+SELECT DISTINCT session_id FROM access_memberships ORDER BY session_id;
+
 -- Browser logins (protocol-change/065). A login's row is a credential of kind
 -- 'browser': these queries name the kind, so none of them can touch a bearer.
 

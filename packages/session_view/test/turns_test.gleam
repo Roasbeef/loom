@@ -1444,3 +1444,35 @@ pub fn an_aborted_response_marks_its_turn_interrupted_test() {
   let assert [_, turns.Work(worked:, ..), _] = finished
   assert worked.ending == turns.Finished
 }
+
+// A call with no result yet is still running, and carries the time of the
+// record that asked for it, which is all the records say about how long it has
+// run. Once its result arrives it is done and carries none.
+pub fn a_running_call_carries_the_time_of_its_record_test() {
+  let running =
+    laid_out(
+      [
+        #(10_100, said("run it", Some(message.Origin("p", "Alice")))),
+        #(14_000, assistant([read_call()])),
+      ],
+      turns.Skip,
+    )
+  let assert [_, turns.Work(items: [turns.Step(standing:, since:, ..)], ..)] =
+    running
+  assert standing == turns.Pending
+  assert since == Some(14_000)
+
+  let settled =
+    laid_out(
+      [
+        #(10_100, said("run it", Some(message.Origin("p", "Alice")))),
+        #(14_000, assistant([read_call()])),
+        #(15_000, result("c1", "fs_read", json.Object([]), 15_000)),
+      ],
+      turns.Skip,
+    )
+  let assert [_, turns.Work(items: [turns.Step(standing:, since:, ..)], ..)] =
+    settled
+  assert standing == turns.Done
+  assert since == None
+}

@@ -33,3 +33,17 @@ pub fn time_left_under_a_minute_is_seconds_test() {
   assert duration.remaining(0) == "0s"
   assert duration.remaining(-4) == "0s"
 }
+
+// A running call reads `Running · 1m 12s`: seventy-two seconds since the start
+// is the terminal's minutes-and-seconds form.
+pub fn a_running_call_reads_minutes_and_seconds_test() {
+  let offset = duration.since_offset(now: 1_000_072_000, since: 1_000_000_000)
+  assert duration.format(offset / 1000) == "1m 12s"
+}
+
+// A start the browser's clock has not reached yet is no time, never a
+// negative one.
+pub fn a_start_in_the_future_is_no_time_test() {
+  assert duration.since_offset(now: 100, since: 900) == 0
+  assert duration.since_offset(now: 900, since: 900) == 0
+}

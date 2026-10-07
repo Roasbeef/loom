@@ -107,6 +107,49 @@ pub fn unlink(
   }
 }
 
+/// Removes one exact directional link, by the recipient's identity, when the
+/// recipient may not be resident.
+///
+/// A resident recipient is revoked as `unlink` does. One that is not resident
+/// cannot be reached to revoke its grant, so only the outgoing link is removed
+/// and the answer says that no outgoing authority remains. The control
+/// command and the web page both remove links through this function, so they
+/// cannot disagree about a recipient that is saved.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peers.unlink_session(directory, source, "main", target_session, "reviewer")
+/// ```
+pub fn unlink_session(
+  directory: Directory,
+  source: peer_mail.Endpoint,
+  from: String,
+  target_session: String,
+  to: String,
+) -> Result(JsonValue, String) {
+  case directory.resolve(target_session) {
+    Ok(recipient) -> unlink(source, recipient, from, to)
+    Error(_) ->
+      source.call(peer_mail.Unlink(from, target_session, to))
+      |> result.replace(
+        json.Object([
+          #("outgoing_link_removed", json.Bool(True)),
+          #(
+            "recipient_grant",
+            json.String("unavailable; no outgoing authority remains"),
+          ),
+        ]),
+      )
+  }
+}
+
+/// The refusal for a recipient that is not resident. Sending never opens a
+/// session: that would let one model start another session's runtime,
+/// schedules and resumed operations, which is a larger grant than adding a
+/// prompt to a running one (protocol-change/077).
+pub const not_running = "that session is not running; the owner has to open it"
+
 /// Sends using a stable caller-chosen request identity. Reusing the identity
 /// for different content is refused by the recipient, even after a restart.
 ///
@@ -135,7 +178,9 @@ pub fn send(
       False -> Error("no operator-authorized outgoing link")
     },
   )
-  use destination <- result.try(resolve(wiring, session))
+  use destination <- result.try(
+    resolve(wiring, session) |> result.replace_error(not_running),
+  )
   use Nil <- result.try(case destination.session == session {
     True -> Ok(Nil)
     False -> Error("peer directory identity mismatch")
@@ -170,6 +215,7 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
         Ok(value) -> value
         Error(reason) -> json.Object([#("unavailable", json.String(reason))])
       }
+      let running = json.Bool(result.is_ok(resolve(wiring, session)))
       let strands = case resolve(wiring, session) {
         Error(_) -> json.Null
         Ok(endpoint) ->
@@ -183,6 +229,7 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
         json.Object([
           #("session", json.String(session)),
           #("target_strand", json.String(target)),
+          #("running", running),
           #("metadata", metadata),
           #("exported_strands", strands),
         ]),
@@ -235,15 +282,26 @@ pub fn inspect(
             Ok(_) -> json.Null
           }
       }
+
+      // A link the owner's `[peers]` default supplies is marked, so the
+      // owner can tell it from a grant (protocol-change/077). A recorded
+      // link carries no mark.
+      let basis = case field(link, "default") {
+        Ok(json.Bool(True)) -> [#("default", json.Bool(True))]
+        _ -> []
+      }
       Ok(InspectRow(
         inspect_key("o", session, target),
         OutgoingRow,
-        json.Object([
-          #("session", json.String(session)),
-          #("target_strand", json.String(target)),
-          #("wake", wake),
-          #("metadata", metadata),
-        ]),
+        json.Object(list.append(
+          [
+            #("session", json.String(session)),
+            #("target_strand", json.String(target)),
+            #("wake", wake),
+            #("metadata", metadata),
+          ],
+          basis,
+        )),
       ))
     }),
   )
@@ -436,7 +494,7 @@ pub fn tools(wiring: Wiring) -> List(tool.Tool) {
     ),
     tool.Tool(
       name: "peer_roster",
-      description: "List operator-linked sessions and exported strands, including saved-session lifecycle. Repository similarity does not grant access. Model self-description is not authority.",
+      description: "List linked sessions and exported strands, each marked running or not (only a running session can be sent to; you cannot open one). At most 64 links are listed; the rest are not addressable until the owner removes some. Repository similarity does not grant access. Model self-description is not authority.",
       prompt_snippet: None,
       schema: tool.object_schema([], []),
       replay: tool.Safe,

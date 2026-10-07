@@ -8,6 +8,7 @@
 //// in one place: a test that copied them would go on passing after the
 //// runtime changed its default and the table stopped matching it.
 
+import client/catalog
 import client/retryconf
 import gleam/string
 import machine/operation
@@ -102,4 +103,44 @@ pub fn a_document_that_is_not_toml_is_refused_test() {
   let assert Error(reason) = retryconf.parse_policy("[retry\n")
     as "an unclosed table header is not a policy"
   assert string.contains(reason, "TOML")
+}
+
+// `serve.load_config` runs `catalog.parse` over the whole file before it
+// hands the same text to `retryconf.parse_policy`, and the catalogue owns the
+// top-level table names. A `[retry]` table once decoded correctly behind a
+// boot that refused it, so this pins both halves on one document: the
+// catalogue admits the table, and the policy read from the same text is the
+// operator's.
+pub fn a_retry_table_survives_the_catalogue_and_reaches_the_policy_test() {
+  let text =
+    "[models.one]
+dialect = \"anthropic\"
+api_key_env = \"KEY\"
+model_id = \"m-1\"
+context_window = 1000
+max_output_tokens = 100
+
+[roles]
+main = [\"one\"]
+
+[retry]
+attempts = 3
+base_delay_ms = 10
+max_delay_ms = 40
+"
+  let assert Ok(_catalogue) = catalog.parse(text)
+    as "the top-level key check must admit [retry]"
+
+  assert retryconf.parse_policy(text)
+    == Ok(operation.NormalizedRetryPolicy(
+      attempts: operation.Bounded(max_attempts: 3),
+      base_delay_ms: 10,
+      max_delay_ms: 40,
+    ))
+
+  // A key inside the table is still judged by its own parser.
+  let bad = string.replace(text, "attempts = 3", "attemps = 3")
+  let assert Ok(_catalogue) = catalog.parse(bad)
+  let assert Error(reason) = retryconf.parse_policy(bad)
+  assert string.contains(reason, "unknown key `attemps`")
 }

@@ -87,7 +87,7 @@ a model's request, and carries a `lineage/` cell naming its parent.
 address another, and `strand.roster` lists strands from it.
 
 `ensure_strand` (`client/advisor.gleam:3548`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1514`) instead. That is the
+`create_idle_strand` (`runtime/api.gleam:1544`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
 
@@ -843,7 +843,7 @@ cases an operator could not otherwise tell apart. A catalogue with no
 catalogue that routes the role to a chain this host cannot serve would
 otherwise show only a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1831`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:1840`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is. An unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default

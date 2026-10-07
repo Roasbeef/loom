@@ -23,6 +23,7 @@ fn called(
     message.ToolCall("c1", name, json.Object(arguments), None, None),
     outcome,
     None,
+    None,
   )
 }
 

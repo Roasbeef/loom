@@ -294,6 +294,7 @@ fn chip(
     cache:,
     running_ms: running,
     model:,
+    own_model: option.None,
     recent:,
     answer: option.None,
   )

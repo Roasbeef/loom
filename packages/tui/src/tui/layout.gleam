@@ -790,10 +790,44 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   let news = case queue_focused {
     True -> []
     False ->
-      [model.view.cache_outlook, notice, reason]
+      list.flatten([
+        [model.view.cache_outlook],
+        wrapped_notice(notice, column_width(model) - notice_margin),
+        [reason],
+      ])
       |> list.filter(fn(piece) { piece != "" })
   }
   list.flatten([active, reviewers, goal, nudges, news, pending])
+}
+
+// The cells the band does not offer a notice: the frame's two border cells and
+// the one the band's rows start in from the side.
+const notice_margin = 3
+
+// The most rows a notice may take. A refusal can name a path and then the
+// remedy, and the remedy is the part the operator needs, so a notice wraps
+// instead of being cut at the edge; the cap keeps a pathological one from
+// taking the transcript's rows.
+const notice_rows = 3
+
+// A notice as the rows it wraps to within `width` cells, the last one ending in
+// an ellipsis when the cap cut the text short.
+fn wrapped_notice(notice: String, width: Int) -> List(String) {
+  let width = int.max(1, width)
+  let rows = hard_wrap_line(notice, width)
+
+  case list.length(rows) > notice_rows {
+    False -> rows
+    True ->
+      list.take(rows, notice_rows - 1)
+      |> list.append([
+        text.truncate(
+          list.drop(rows, notice_rows - 1) |> string.join(""),
+          width,
+          "…",
+        ),
+      ])
+  }
 }
 
 // An ordinary-height narrow terminal has no agent rail, so the composer owns

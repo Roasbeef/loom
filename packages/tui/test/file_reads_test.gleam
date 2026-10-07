@@ -35,6 +35,7 @@ import tui
 import tui/attachment
 import tui/bootstrap
 import tui/connection
+import tui/daemon
 import tui/daemon/protocol
 import tui/daemon/selection as daemon_selection
 import tui/effect
@@ -372,4 +373,63 @@ pub fn opening_an_existing_session_says_the_profile_is_kept_test() {
   let plain = picker(absent_config())
   assert session_control.note_kept_profile(plain).shared.transcript
     == plain.shared.transcript
+}
+
+@external(erlang, "effects_test_ffi", "control_on")
+fn control_on(owner: Subject(Dynamic)) -> daemon.Connection
+
+// What `tui.attach_daemon` leaves in the transcript for one launch, through the
+// credential read, the control adoption and the first request a local launch
+// makes.
+fn attached_transcript(
+  options: bootstrap.Options,
+  selected: String,
+) -> List(String) {
+  let token = "build/r8-attach-token"
+  write(token, <<"token":utf8>>)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(token, 0o600)
+  let owner: Subject(Dynamic) = process.new_subject()
+  let local =
+    tui_model.Model(
+      ..model(),
+      view: view_set.local_options(model().view, Some(options)),
+    )
+  let attached =
+    tui.attach_daemon(
+      local,
+      control_on(owner),
+      Ok("ws://127.0.0.1:1/v2/control"),
+      token,
+      selected,
+    )
+  let _ = simplifile.delete(token)
+
+  list.map(attached.shared.transcript, fn(line) {
+    let transcript_line.Line(_, text) = line
+    text
+  })
+}
+
+fn names_kept_profile(lines: List(String)) -> Bool {
+  list.any(lines, string.contains(_, "--model-profile beta applies to new"))
+}
+
+// The flag is silently ignored on resume unless the local launch says so:
+// `--session <id> --model-profile beta` opens a session and keeps its profile.
+pub fn a_local_launch_opening_a_session_says_the_profile_is_kept_test() {
+  let options = bootstrap.Options(..absent_config(), profile: "beta")
+
+  assert names_kept_profile(attached_transcript(options, "01a11401"))
+}
+
+// Nothing is opened when the launch lands on the picker, and a launch that
+// named no profile has nothing to say.
+pub fn a_local_launch_that_opens_nothing_or_names_no_profile_is_silent_test() {
+  let options = bootstrap.Options(..absent_config(), profile: "beta")
+
+  assert !names_kept_profile(attached_transcript(options, ""))
+  assert !list.any(
+    attached_transcript(absent_config(), "01a11401"),
+    string.contains(_, "--model-profile"),
+  )
 }

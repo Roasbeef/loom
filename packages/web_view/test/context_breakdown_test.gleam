@@ -237,6 +237,7 @@ fn bar(compact: option.Option(Nil)) -> Element(Nil) {
       home: element.none(),
       name: None,
       workspace: None,
+      model: Some("baseten-glm-5-3"),
       status: "connected",
       tone: heading.Live,
       context: "ctx ~55%",

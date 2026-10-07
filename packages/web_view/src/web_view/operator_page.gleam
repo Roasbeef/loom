@@ -35,6 +35,22 @@
 //// The composer is an uncontrolled form: the browser owns the text as the
 //// operator types, and one submit carries it to the server, where its
 //// fields are decoded totally and anything unexpected refuses the event.
+////
+//// ## Flow
+////
+//// `app` → `init` → `update` → `view` → `composer` → `composition`
+////
+//// 1. `app` and `init` start the application over the observer's
+////    `component.Model`.
+//// 2. `update` passes an observer message through, turns a draft, a decision
+////    or a control into one call on the shared step, and renews the notice
+////    that changed.
+//// 3. `view` lays the page out: the heading, the lane, the approval cards
+////    (`approvals`), the dock, and the panel whose controls (invitation,
+////    rename, remembered permissions, peer links) each have a fixed place.
+//// 4. `composer` draws the draft, with `busy_mark` and `hint` saying that a
+////    turn is running, and the buttons `actions` offers.
+//// 5. `composition` decodes the one submit a browser sends, totally.
 
 import core/json
 import core/origin
@@ -60,12 +76,14 @@ import web_view/completion
 import web_view/component
 import web_view/image
 import web_view/invites
+import web_view/peer_links
 import web_view/remembered
 import web_view/sessions
 import web_view/view/archiving
 import web_view/view/context_breakdown
 import web_view/view/controls
 import web_view/view/lane
+import web_view/view/peer_links as peer_links_view
 import web_view/view/remembered as remembered_view
 import web_view/view/resume
 import web_view/view/share
@@ -170,6 +188,18 @@ pub type Msg(socket) {
 
   /// The question's Keep: the page closes it and sends nothing.
   CancellingForget
+
+  /// A button of the owner's peer-link section (protocol-change/077). It
+  /// carries what the server drew on the button, and the component checks it
+  /// against its own board and sidebar list again before it acts. The section
+  /// is drawn only on an owner's page.
+  Peering(press: peer_links.Press)
+
+  /// The peer-link section's Link form was submitted with this text as the
+  /// strand in the other session. The text is the browser's and nothing else
+  /// is: the strand the link leaves, the session it goes to and what it allows
+  /// are the page's state, and the right to link is the daemon's.
+  Linking(strand: String)
 }
 
 /// The Lustre application for one session's operator page.
@@ -231,6 +261,8 @@ pub fn update(
     AskingForget(armed:) -> #(component.ask_forget(model, armed), effect.none())
     ConfirmingForget -> component.confirm_forget(model)
     CancellingForget -> #(component.cancel_forget(model), effect.none())
+    Peering(press:) -> component.peering(model, press)
+    Linking(strand:) -> component.linking(model, strand)
   }
 
   // The list of what the session remembers is this page's to read, and the
@@ -317,7 +349,11 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           openable(model, session)
         }),
         component.marks(model),
-        lane.Folds(fn(fold) { Observed(component.FoldToggled(fold)) }),
+        lane.Folds(
+          fn(fold) { Observed(component.FoldToggled(fold)) },
+          fn(key) { Observed(component.MessageToggled(key)) },
+          component.expanded(model),
+        ),
         component.session_id(model),
       ),
       html.footer([attribute.class("dock")], [
@@ -367,6 +403,13 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           )
         False -> element.none()
       },
+      component.peer_links_section(
+        model,
+        peer_links_view.Presses(
+          press: Peering,
+          submit: form_submit_text(Linking),
+        ),
+      ),
     ),
     component.needing(model),
     component.workspace_digest(model),
@@ -690,9 +733,12 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
         keyed.div([attribute.class("attach-slot")], [
           #("attach-" <> sent, attach()),
         ]),
-        html.span([attribute.class("hint")], [
-          html.text(hint(component.activity(model))),
-        ]),
+        html.span(
+          [attribute.class("hint")],
+          list.append(busy_mark(component.activity(model)), [
+            html.text(hint(component.activity(model))),
+          ]),
+        ),
         keyed.div([attribute.class("notice-slot")], [
           #(
             int.to_string(component.notice_serial(model)),
@@ -706,6 +752,22 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
       ]),
     ],
   )
+}
+
+// A pulsing dot before the hint while a turn runs, so a long turn between
+// tool calls, or one waiting on the model, never looks stuck. It says nothing
+// about which of the two it is, since the page does not know, and the hint's own
+// words are the plain word. The dot is decoration, hidden from assistive
+// technology, and the stylesheet stills it under reduced motion.
+fn busy_mark(activity: component.Activity) -> List(Element(Msg(socket))) {
+  case activity {
+    component.Idle -> []
+    component.Busy -> [
+      html.span([attribute.class("busy-dot"), attribute.aria_hidden(True)], [
+        html.text("●"),
+      ]),
+    ]
+  }
 }
 
 // The footer's hint: the key that sends, and that the turn is busy when it

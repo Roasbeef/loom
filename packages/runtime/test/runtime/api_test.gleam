@@ -12,7 +12,7 @@ import core/clock
 import core/ids
 import core/json
 import core/register
-import core/tx.{SetRegister, Tx}
+import core/tx.{DeleteRegister, SetRegister, Tx}
 import gleam/erlang/process
 import gleam/int
 import gleam/list
@@ -607,6 +607,42 @@ pub fn steer_marking_on_an_idle_strand_spends_no_claim_test() {
     as "an idle strand has nothing to steer"
   let assert Ok(None) = api.fact(rt, mark_key("r"))
     as "a refused admission must leave the claim unspent"
+  process.kill(rt.tree.supervisor)
+}
+
+// An admission reads the strand's current operation and then that
+// operation's definition and state, three reads, while the terminal
+// transaction clears the first and deletes the other two together. A run that
+// finishes between the reads leaves an identity with nothing under it. That
+// is a lost race, so the admission retries and then says `RaceLost`; it was
+// once `ReadFailed`, which reads as a corrupt store and made a message sent as
+// a run ended fail. The test leaves exactly that state, which the machine
+// never leaves for longer than a read, and shows both doors classify it as a
+// race and spend no claim.
+pub fn an_operation_that_finished_between_the_reads_is_a_lost_race_test() {
+  let rt = marking_runtime()
+  let assert Ok(op) = api.accept_quietly(rt, [fake.user("Hello")])
+    as "acceptance must succeed"
+  let key = ids.op_id_to_string(op)
+  let assert Ok(_) =
+    writer.commit(
+      rt.tree.writer,
+      Tx(
+        writes: [
+          DeleteRegister(ns: register.OpMeta, key:),
+          DeleteRegister(ns: register.OpState, key:),
+        ],
+        expected: [],
+      ),
+    )
+    as "the terminal cleanup's deletions must land"
+  let assert Error(api.RaceLost) = api.steer(rt, fake.user("late"))
+    as "a steer that meets the stale identity is a lost race"
+  let assert Error(api.RaceLost) =
+    api.steer_marking(rt, fake.user("late"), mark: claim("late"))
+    as "so is a marking steer"
+  let assert Ok(None) = api.fact(rt, mark_key("late"))
+    as "and it spends no claim"
   process.kill(rt.tree.supervisor)
 }
 

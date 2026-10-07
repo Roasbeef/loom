@@ -65,28 +65,46 @@ fn cell(
 // and its state, in the forms `machine/codec` writes. A capture that lists no
 // strand has no recipient, and the engine refuses a command to it.
 fn main_cells() -> List(json.JsonValue) {
+  configured("main", "test", 1)
+}
+
+/// The three cells that list `strand` as a strand configured on the catalogue
+/// entry `provider`: its configuration, its leaf and its state, at the
+/// sequences `seq`, `seq + 1` and `seq + 2`. Pass them as `transfer`'s
+/// `cells`; `main` is always listed, on the entry `test`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.configured("advisor", "baseten-glm-5-3", 4)
+/// ```
+pub fn configured(
+  strand: String,
+  provider: String,
+  seq: Int,
+) -> List(json.JsonValue) {
   [
     cell(
       register.StrandConfig,
-      "main",
-      1,
+      strand,
+      seq,
       json.Object([
         #(
           "model",
           json.Object([
-            #("provider", json.String("test")),
-            #("modelId", json.String("test")),
+            #("provider", json.String(provider)),
+            #("modelId", json.String("upstream/" <> provider)),
           ]),
         ),
         #("thinkingLevel", json.String("off")),
         #("activeToolNames", json.Array([])),
       ]),
     ),
-    cell(register.StrandLeaf, "main", 2, json.Null),
+    cell(register.StrandLeaf, strand, seq + 1, json.Null),
     cell(
       register.StrandState,
-      "main",
-      3,
+      strand,
+      seq + 2,
       json.Object([
         #("currentOperationId", json.Null),
         #("pendingNextRun", json.Array([])),
@@ -487,6 +505,7 @@ fn started(now: fn() -> Int) -> component.Start(Wire) {
       home: None,
       rename: None,
       shareable: None,
+      peers: None,
       worktree: None,
       logins: None,
       manage: None,

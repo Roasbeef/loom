@@ -334,7 +334,12 @@ for a host with no surfaces.
   text (nothing is copied). `of_entry`, `of_message`, `of_outcome` and
   `of_block` read a user message's `UserImage` blocks or a tool result's
   `ToolResultImage` blocks, and `ref(key)` names a row as one path segment (a
-  step key's `/` becomes `-`). `turns.Step` carries `images`, `turns.pictured`
+  step key's `/` becomes `-`). `turns.Step` carries `since`, the record time
+  of a call still running (from `tool_activity.Call.asked`), so a host can show
+  how long it has run, and `turns.abridged(block)` and `turns.abridges(pieces,
+  key)` find a user message whose row shows less than it said, with its whole
+  text read from the block's entry, so a host opens only a row the lane draws.
+  `turns.Step` carries `images`, `turns.pictured`
   lists the rows that carry any by name and `turns.picture(pieces, ref,
   position)` finds one, so a host that serves an image serves only one the lane
   draws. `pasted_image.media_type` (PNG, JPEG, GIF or WebP by magic number, the
@@ -350,6 +355,10 @@ for a host with no surfaces.
   among the live cards rather than settled; one that ran and is idle again
   has an operation and is settled. `describe` gives any row the same line
   whether or not a strip would list it; the terminal's workspace list uses it.
+  `agent_view.catalogue_name(view, strand)` is the catalogue entry a strand's
+  configuration names (`ModelIdentity.provider`), the owner's own name for the
+  model, where a row's `model` is the upstream identifier; the web header and
+  its cards word the model with it.
   Its internal `listed_count` uses the same membership predicate without
   constructing display lines, for hosts measuring geometry. The roster test
   compares that count with `lines` across every status and active-strand choice.

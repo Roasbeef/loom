@@ -121,3 +121,15 @@ pub fn the_jump_button_has_a_strip_no_row_reaches_test() {
   assert string.contains(css, ".jump-latest{")
   assert string.contains(css, "width:32px;height:32px;")
 }
+
+// A pulsing mark is a motion, so the stylesheet stops every animation under
+// reduced motion and leaves the marks and the ticking text standing: the
+// running call's dot and the composer's busy dot both stay, still.
+pub fn reduced_motion_stills_the_working_marks_test() {
+  let css = stylesheet()
+  assert string.contains(css, "@media (prefers-reduced-motion:reduce)")
+  assert string.contains(css, "animation:none!important")
+  assert string.contains(css, ".step.pending .glyph{")
+  assert string.contains(css, ".busy-dot{")
+  assert string.contains(css, ".running-time{")
+}

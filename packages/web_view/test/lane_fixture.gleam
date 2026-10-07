@@ -2545,3 +2545,23 @@ fn reasoned_turn(
     closing,
   ])
 }
+
+/// A capture of `main` holding one prompt of `text`, as the page's own person
+/// sent it, and an answer. A long `text` is drawn shortened.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.prompted(string.repeat("word ", 500))
+/// ```
+pub fn prompted(text: String) -> session_channel.Update {
+  capture_of(
+    [
+      item(1, 10_000, said(text, Some(message.Origin("alice", "Alice")))),
+      item(2, 10_001, assistant([message.AssistantText("done", None)])),
+    ],
+    None,
+    [],
+    [],
+  )
+}

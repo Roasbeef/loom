@@ -78,6 +78,7 @@ fn started() -> Page {
       home: None,
       rename: None,
       shareable: None,
+      peers: None,
       worktree: None,
       logins: None,
       manage: None,

@@ -107,6 +107,37 @@ pub type Row {
   )
 }
 
+/// The catalogue's name for the model a strand runs on, such as
+/// `baseten-glm-5-3`, or `None` when the capture holds no configuration for
+/// the strand.
+///
+/// A strand's configuration names its model by the catalogue entry that chose
+/// it (`provider`) and by the upstream identifier that entry maps to
+/// (`model_id`). The identifier is what a row's `model` carries, and it is the
+/// same for two entries that differ in endpoint or settings. The entry's name
+/// is the one the owner wrote in the configuration, so it is what tells two
+/// model sets apart. It is read from the same capture the roster's rows are,
+/// so the two never name different models for a strand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_view.catalogue_name(view, "main") == Some("baseten-glm-5-3")
+/// ```
+pub fn catalogue_name(
+  view: snapshot_view.View,
+  strand: String,
+) -> Option(String) {
+  case dict.get(view.configurations, strand) {
+    Ok(config) ->
+      case text_hygiene.single_line(config.configuration.model.provider) {
+        "" -> None
+        name -> Some(name)
+      }
+    Error(Nil) -> None
+  }
+}
+
 /// Builds truthful fallback rows for demos and older recordings.
 ///
 /// ## Examples

@@ -28,7 +28,7 @@ and the reason each was deferred.
 A model working in Loom cannot start something and come back to it. Every
 `bash` call is foreground: the tool's `run` blocks its effect process for
 the whole execution (`runtime/effects.gleam:252-253`), and past its budget
-the call returns the literal `[command timed out]` (`tools/bash.gleam:795`)
+the call returns the literal `[command timed out]` (`tools/bash.gleam:950`)
 with the process reaped. The motivating case is small and exact: start
 `tail -f build.log`, keep working, every so often ask "what has it printed
 since I last looked", and eventually stop it. Today the only way to watch
@@ -83,7 +83,7 @@ Each job has a `job/<id>` register in the session store. It is a key
 prefix inside the existing `fact.custom` namespace, so it costs no
 protocol change (`core/register.gleam:27-28` freezes the namespace set;
 prefixes are free). It becomes the tenth reserved corner: one line in
-`reserved_fact_key` (`runtime/api.gleam:2551`), one row in the table
+`reserved_fact_key` (`runtime/api.gleam:2578`), one row in the table
 at `api.gleam:1669-1682`, written only through
 `put_reserved_fact_expecting`. Creation uses the expect-absent CAS the
 schedule seam uses for a named create (`client/scheduleseam.gleam:390-401`),
@@ -118,7 +118,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:3911`), bound to a
+beside `extension_hosts` (`client/serve.gleam:3920`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule

@@ -35,6 +35,7 @@ fn chip(status: agent_view.Status, text: String) -> strip.Chip {
     cache: None,
     running_ms: None,
     model: "",
+    own_model: None,
     recent: [],
     answer: None,
   )

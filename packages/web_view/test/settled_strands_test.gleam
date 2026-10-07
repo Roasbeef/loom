@@ -80,6 +80,7 @@ fn chip(id: String, status: agent_view.Status) -> strip.Chip {
     cache: None,
     running_ms: None,
     model: "",
+    own_model: None,
     recent: [],
     answer: None,
   )

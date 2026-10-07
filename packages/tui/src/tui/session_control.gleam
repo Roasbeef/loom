@@ -225,6 +225,25 @@ pub fn begin_open(model: Model, session: String) -> Model {
   }
 }
 
+/// Opens a session the operator chose, by picker or by `--session` at launch,
+/// and says so when the launch named a model profile.
+///
+/// A profile applies only when a session is created, so a launch that names one
+/// and opens an existing session would otherwise ignore the flag without a word.
+/// The note is written before the attach starts, and only here: a reconnect
+/// reattaches through `begin_open` and must not repeat it, and creating a
+/// session uses the profile instead of keeping one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.open_chosen(model, "01a11401")
+/// ```
+@internal
+pub fn open_chosen(model: Model, session: String) -> Model {
+  note_kept_profile(model) |> begin_open(session)
+}
+
 /// Paging observes only authorized metadata in the requested revision.
 @internal
 pub fn load_catalogue(

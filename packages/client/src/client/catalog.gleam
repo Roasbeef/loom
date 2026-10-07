@@ -161,6 +161,7 @@
 import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
 import client/daemon/limits as daemon_limits
 import client/lsp/profile.{type LspServer}
+import client/peer_defaults
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
@@ -441,17 +442,20 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // dev server has to outlive the default hour. `secrets` is
   // `client/secrets`'s: how the daemon obtains a named credential from
   // the host at boot, for the names `api_key_env` and `[tools] env`
-  // already mention.
+  // already mention. `retry` is `client/retryconf`'s: the provider retry
+  // ladder's attempts and delays, which `serve.load_config` reads beside the
+  // other operator tables and which is refused here if this list omits it.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
-      "profiles",
+      "profiles", "peers", "retry",
     ],
     "the top level",
   ))
   use Nil <- result.try(validate_daemon(document))
+  use Nil <- result.try(validate_peers(document))
   use model_tables <- result.try(
     table_entries(document, "models")
     |> result.replace_error("the catalogue needs a [models.<name>] table"),
@@ -474,6 +478,13 @@ pub fn parse(text: String) -> Result(Catalog, String) {
 // startup owner consumes its limits; a session cannot reconfigure the daemon.
 fn validate_daemon(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
   daemon_limits.from_document(document) |> result.replace(Nil)
+}
+
+// `[peers]` is the daemon owner's policy for linking sessions without a
+// grant (protocol-change/077). Like `[daemon]` it is read once at startup and
+// validated wherever the file is read, so a typo is refused by every parser.
+fn validate_peers(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
+  peer_defaults.from_document(document) |> result.replace(Nil)
 }
 
 // tom renders a TOML parse failure as a structured value; the server

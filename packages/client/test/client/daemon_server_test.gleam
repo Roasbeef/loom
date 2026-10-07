@@ -11,6 +11,7 @@ import client/daemon/root
 import client/daemon/server
 import client/gateway_test
 import client/peer_mail
+import client/peers
 import core/clock
 import core/ids
 import core/json
@@ -1306,7 +1307,7 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     assert field(field(field(saved_target, "metadata"), "status"), "state")
       == json.String("saved")
     assert peer_cli.exchange(address, owner, ready.epoch, peer_send)
-      == Error("unavailable")
+      == Error(peers.not_running)
     assert result.is_error(manager.resolve(ready.registry, target_id))
     let assert Ok(unlink) =
       peer_cli.parse(["unlink", source_id, "main", target_id, "reviewer"])
