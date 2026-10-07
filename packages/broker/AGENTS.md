@@ -46,6 +46,22 @@ Sequence numbers, PIDs, tokens and connection generations cannot reconstruct
 it. Internal local step names remain unchanged; the remote boundary validates
 them with `core/workspace.step`. Protocol 067 records the interface additions.
 
+
+`clear_system_call_from` derives the origin from an opaque `SystemReservationRef`
+and threads that same value through internal `Dispatch.system_reservation`.
+Ordinary Dispatch construction supplies `None`; `CallSpec` stays unchanged.
+Only known outstanding-budget-cap refusals retry this system call, preserving
+its original deadline and exact reference. There is no new Broker instance.
+
+The ref contains the original typed owner subject, fresh BEAM reference, direct
+system origin and UUID. It has no durable codec. `ReserveSystem` carries the
+actual cleared command projection and full native envelope; `CancelSystem`
+closes that exact original ref. `SystemCommandDeclaration` captures the original
+owner, operation, step, ordered argv/env, cwd and absolute deadline. These
+messages use the existing bounded internal call primitive; they grant no
+history-derived execution permission.
+
+
 ## Remote native admission
 
 `executor.dispatcher_with_native_deadline` checks that the unchanged native

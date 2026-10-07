@@ -260,6 +260,7 @@ pub opaque type Broker {
 pub opaque type Msg {
   ClearCall(
     origin: Option(remote_tool.ChildOrigin),
+    system_reservation: Option(dispatch.SystemReservationRef),
     spec: CallSpec,
     events: Subject(CallEvent),
     /// The sweep count this caller last observed for the spec's own
@@ -498,7 +499,16 @@ pub fn clear_call(
   events events: Subject(CallEvent),
   waiting timeout: Int,
 ) -> Result(CallHandle, Refusal) {
-  clear_awaiting_helper(broker, None, spec, events, broker.clock, timeout, None)
+  clear_awaiting_helper(
+    broker,
+    None,
+    None,
+    spec,
+    events,
+    broker.clock,
+    timeout,
+    None,
+  )
 }
 
 /// Clears a call while preserving its durable recovery provenance.
@@ -522,6 +532,33 @@ pub fn clear_call_from(
   clear_awaiting_helper(
     broker,
     Some(origin),
+    None,
+    spec,
+    events,
+    broker.clock,
+    timeout,
+    None,
+  )
+}
+
+/// Clears native system work through the same original Broker and permission.
+/// The origin is taken from the reference rather than supplied independently.
+///
+/// ## Examples
+///
+/// `clear_system_call_from(broker, ref, spec, events: events, waiting: 5000)` preserves its deadline.
+pub fn clear_system_call_from(
+  broker: Broker,
+  ref: dispatch.SystemReservationRef,
+  spec: CallSpec,
+  events events: Subject(CallEvent),
+  waiting timeout: Int,
+) -> Result(CallHandle, Refusal) {
+  let #(_, _, origin, _) = dispatch.system_reservation_fields(ref)
+  clear_awaiting_helper(
+    broker,
+    Some(origin),
+    Some(ref),
     spec,
     events,
     broker.clock,
@@ -569,6 +606,7 @@ pub fn clear_call_from(
 fn clear_awaiting_helper(
   broker: Broker,
   origin: Option(remote_tool.ChildOrigin),
+  system_reservation: Option(dispatch.SystemReservationRef),
   spec: CallSpec,
   events: Subject(CallEvent),
   clock: Clock,
@@ -584,10 +622,20 @@ fn clear_awaiting_helper(
     call.try_call(
       broker.subject,
       waiting: int.max(1, remaining),
-      sending: fn(reply) { ClearCall(origin:, spec:, events:, since:, reply:) },
+      sending: fn(reply) {
+        ClearCall(origin:, system_reservation:, spec:, events:, since:, reply:)
+      },
     ),
   )
-  use <- bool.guard(when: !congested(outcome), return: outcome)
+  let retry = case system_reservation {
+    None -> congested(outcome)
+    Some(_) ->
+      case outcome {
+        Error(BudgetRefused(budget.OutstandingCapReached(_))) -> True
+        _ -> False
+      }
+  }
+  use <- bool.guard(when: !retry, return: outcome)
 
   // Charge the attempt itself, not only the nap. Under the congestion
   // this loop exists for, the broker is at its busiest and an exchange
@@ -606,6 +654,7 @@ fn clear_awaiting_helper(
   clear_awaiting_helper(
     broker,
     origin,
+    system_reservation,
     spec,
     events,
     clock,
@@ -903,7 +952,7 @@ fn sweeps_over(state: State, op_id: OpId, step_id: String) -> Int {
 
 fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
   case message {
-    ClearCall(origin:, spec:, events:, since:, reply:) -> {
+    ClearCall(origin:, system_reservation:, spec:, events:, since:, reply:) -> {
       let epoch = sweeps_over(state, spec.op_id, spec.step_id)
 
       // A clearance that began before a sweep of this operation — or of
@@ -919,7 +968,7 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       }
       let #(state, outcome) = case resumed_across_abort {
         True -> #(state, Error(OperationAborted))
-        False -> do_clear_call(state, origin, spec, events)
+        False -> do_clear_call(state, origin, system_reservation, spec, events)
       }
       process.send(reply, #(outcome, epoch))
       actor.continue(state)
@@ -1090,6 +1139,7 @@ fn call_of_guarantor(
 fn do_clear_call(
   state: State,
   origin: Option(remote_tool.ChildOrigin),
+  system_reservation: Option(dispatch.SystemReservationRef),
   spec: CallSpec,
   events: Subject(CallEvent),
 ) -> #(State, Result(CallHandle, Refusal)) {
@@ -1123,7 +1173,15 @@ fn do_clear_call(
     [], _ | [_, ..], ProceedNarrowed ->
       case policy.validate(final_policy) {
         Error(error) -> #(state, Error(InvalidPolicy(error:)))
-        Ok(Nil) -> authorize(state, origin, spec, final_policy, events)
+        Ok(Nil) ->
+          authorize(
+            state,
+            origin,
+            system_reservation,
+            spec,
+            final_policy,
+            events,
+          )
       }
   }
 }
@@ -1131,6 +1189,7 @@ fn do_clear_call(
 fn authorize(
   state: State,
   origin: Option(remote_tool.ChildOrigin),
+  system_reservation: Option(dispatch.SystemReservationRef),
   spec: CallSpec,
   final_policy: SandboxPolicy,
   events: Subject(CallEvent),
@@ -1142,7 +1201,15 @@ fn authorize(
   case reserve_budget(state, spec, now) {
     Error(refusal) -> #(state, Error(BudgetRefused(refusal:)))
     Ok(#(state, generation)) ->
-      mint_token(state, origin, spec, final_policy, events, generation)
+      mint_token(
+        state,
+        origin,
+        system_reservation,
+        spec,
+        final_policy,
+        events,
+        generation,
+      )
   }
 }
 
@@ -1150,6 +1217,7 @@ fn authorize(
 fn mint_token(
   state: State,
   origin: Option(remote_tool.ChildOrigin),
+  system_reservation: Option(dispatch.SystemReservationRef),
   spec: CallSpec,
   final_policy: SandboxPolicy,
   events: Subject(CallEvent),
@@ -1172,6 +1240,7 @@ fn mint_token(
       start_execution(
         State(..state, vault:),
         origin,
+        system_reservation,
         spec,
         final_policy,
         events,
@@ -1186,6 +1255,7 @@ fn mint_token(
 fn start_execution(
   state: State,
   origin: Option(remote_tool.ChildOrigin),
+  system_reservation: Option(dispatch.SystemReservationRef),
   spec: CallSpec,
   final_policy: SandboxPolicy,
   events: Subject(CallEvent),
@@ -1215,6 +1285,7 @@ fn start_execution(
         step: spec.step_id,
         origin:,
       ),
+      system_reservation:,
       request:,
       seq: call_id,
       deadline_ms: spec.budget.deadline_ms,

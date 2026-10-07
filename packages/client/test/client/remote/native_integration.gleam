@@ -548,6 +548,7 @@ fn physical_request(
   seq: Int,
 ) -> dispatch.Dispatch {
   dispatch.Dispatch(
+    None,
     dispatch.CallContext(operation(4), "physical:compile", Some(origin)),
     exec.ExecRequest(
       ["/bin/sh", "-c", shell],

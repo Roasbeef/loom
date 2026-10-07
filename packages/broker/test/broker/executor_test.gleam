@@ -76,6 +76,7 @@ fn hand_dispatch(
   settlements: process.Subject(dispatch.Terminal),
 ) -> dispatch.Dispatch {
   dispatch.Dispatch(
+    system_reservation: None,
     context: dispatch.CallContext(
       operation: planes.op(),
       step: "fixture",

@@ -268,6 +268,7 @@ fn begin_native(state: State) -> actor.Next(State, Message) {
   // relay may block there; native cancel is a separate local service ask.
   let request =
     dispatch.Dispatch(
+      system_reservation: None,
       context: dispatch.CallContext(
         config.operation,
         config.prepared.step,

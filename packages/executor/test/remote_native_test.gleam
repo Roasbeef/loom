@@ -509,6 +509,7 @@ pub fn real_tls_owner_dispatcher_reservation_receipt_and_immediate_stdin_test() 
     remote_tool.system_child(session, "component-test", 1)
   let request =
     dispatch.Dispatch(
+      None,
       dispatch.CallContext(operation, "exec", Some(origin_context)),
       prepared.request,
       1,
@@ -863,6 +864,7 @@ fn owner_request(
     ids.parse_session_id("00000000-0000-7000-8000-000000000001")
   let assert Ok(origin) = remote_tool.system_child(session, "review-test", 1)
   dispatch.Dispatch(
+    None,
     dispatch.CallContext(operation, "exec", Some(origin)),
     prepared.request,
     1,
