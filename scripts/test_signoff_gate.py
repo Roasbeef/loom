@@ -168,6 +168,50 @@ class GateTest(Fixture):
                 self.assertIn("usage:", result.stderr)
                 self.assertIsNone(self.recorded())
 
+    def logs_fixture(self):
+        run = self.state / "loom-signoff-container/logs" / self.pushed[:12]
+        (run / "lanes").mkdir(parents=True)
+        (run / "signoff.log").write_text("   FAIL client see /work/build/signoff/client.log\n")
+        (run / "lanes/client.log").write_text("one\ntwo\nthree\n")
+        (run / "lanes/stolen.log").symlink_to(self.state / "gh-token")
+        return run
+
+    def test_logs_prints_the_run_and_lists_its_lanes(self):
+        self.logs_fixture()
+        result = self.gate(f"logs {self.pushed}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("FAIL client", result.stdout)
+        self.assertIn("== lanes: client", result.stdout)
+        self.assertIsNone(self.recorded())
+
+    def test_logs_prints_a_lane_and_its_tail(self):
+        self.logs_fixture()
+        self.assertEqual(self.gate(f"logs {self.pushed} client").stdout, "one\ntwo\nthree\n")
+        self.assertEqual(self.gate(f"logs {self.pushed} client --tail 1").stdout, "three\n")
+
+    def test_logs_never_follow_a_link_out_of_the_run(self):
+        self.logs_fixture()
+        result = self.gate(f"logs {self.pushed} stolen")
+        self.assertEqual(result.returncode, 4)
+        self.assertNotIn("token-for-statuses", result.stdout + result.stderr)
+        for request in [f"logs {self.pushed} ../../gh-token", f"logs {self.pushed} client extra",
+                        f"logs {self.pushed} --tail 0", f"logs {self.pushed[:12]}"]:
+            with self.subTest(request=request):
+                result = self.gate(request)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn("token-for-statuses", result.stdout)
+
+    def test_logs_of_a_run_that_is_a_link_are_refused(self):
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "signoff.log").write_text("not this run's\n")
+        logs = self.state / "loom-signoff-container/logs"
+        logs.mkdir(parents=True)
+        (logs / self.pushed[:12]).symlink_to(elsewhere)
+        result = self.gate(f"logs {self.pushed}")
+        self.assertEqual(result.returncode, 4)
+        self.assertNotIn("not this run's", result.stdout)
+
     def test_no_checkout_is_refused_before_anything_runs(self):
         subprocess.run(["rm", "-rf", str(self.state / "loom-signoff")], check=True)
         result = self.gate(f"signoff {self.pushed}")
@@ -185,6 +229,13 @@ build)
 	done
 	;;
 run)
+	logs=$(printf '%s\n' "$@" | sed -n 's/:\/logs$//p')
+	if [ -n "${STUB_FAIL_LANE:-}" ]; then
+		mkdir -p "$logs/lanes"
+		printf 'lane start\nthe reason it failed\n' >"$logs/lanes/$STUB_FAIL_LANE.log"
+		echo "   FAIL $STUB_FAIL_LANE see /work/build/signoff/$STUB_FAIL_LANE.log"
+		exit 1
+	fi
 	sleep "$STUB_RUN_SECONDS" &
 	echo $! >"$STUB_DIR/run.pid"
 	wait
@@ -247,6 +298,19 @@ class DriverSessionTest(Fixture):
         self.assertIn("GREEN", result.stdout)
         self.assertNotIn("kill", self.log("docker"))
         self.assertEqual(self.log("gh").strip(), f"signoff --commit {self.pushed} linux")
+
+    def test_a_red_run_brings_back_why(self):
+        result = subprocess.run(
+            ["bash", str(DRIVER)],
+            env=dict(self.env, STUB_RUN_SECONDS="0", STUB_FAIL_LANE="client",
+                     LOOM_LOGS_HINT="read the logs with `logs SHA [lane]`"),
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("== the last 80 lines of the client lane\nlane start\nthe reason it failed", result.stdout)
+        self.assertIn("RED", result.stdout)
+        self.assertIn("signoff fail --commit", self.log("gh"))
+        self.assertIn("read the logs with `logs SHA [lane]`", self.log("gh"))
 
 
 class RemoteGateModeTest(Fixture):

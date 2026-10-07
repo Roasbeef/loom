@@ -434,7 +434,10 @@ nothing and is not in the docker group. Optional `LOOM_CPUS` and
 `LOOM_MEMORY` ceilings keep a gated run from crowding out whatever else
 the box does. A run belongs to the session that asked for it: a Ctrl-C
 on the client cancels the container within thirty seconds and posts
-nothing, gated or not. The gate's header has the installation, and what it does
+nothing, gated or not. A red run prints the end of each failing lane's
+log, and `ssh <host> logs <sha> [lane]` reads a gated run's logs later,
+since the key that asked for it cannot read the box's files. The gate's
+header has the installation, and what it does
 not bound: the commit under test still runs as root in a container that
 is not a sandbox, so the commit, not the key, is the trust boundary.
 
