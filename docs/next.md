@@ -2,7 +2,7 @@
 
 This file describes the current integration boundary, its evidence and the next
 required work. Rewrite it after each integration milestone. This edition is
-baselined against `f8eb3d5fc` on October 7, 2026, in the isolated
+baselined against `905be217d` on October 7, 2026, in the isolated
 `runtime/main-refresh` branch. Source joins, gate receipts and hosted state were
 checked for this edition; earlier component results are identified separately.
 
@@ -28,7 +28,7 @@ That result belongs to main, not the unpublished integration candidate.
 | Boundary | Current integration state |
 | --- | --- |
 | Owner custody and semantic transport | `05a02a788` wires registered admission, historical reopen and receipt readback to the original actor/connection/path. Original inputs, results, finite TLS BEAM controls, native forwarding and semantic consumers are implemented. Default daemon construction remains pending. |
-| Native system and workspace identity | `bd2636b22` through `0ef51ba27` retain derived workspace commands, pending system ordinals and original live permission through the Broker. Real owner COMMIT/readback and composed ordinary receipt routing are integrated. Ordinary goal/hook callers and full host wiring remain pending. |
+| Native system and workspace identity | `bd2636b22` through `0ef51ba27` retain derived workspace commands, pending system ordinals and original live permission through the Broker. Real owner COMMIT/readback and composed ordinary receipt routing are integrated. Registered goal callers are integrated at `62c9b8ee7`; hook callers and full host wiring remain pending. |
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
 | Managed endpoint | `cfa36faa9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
 | Original startup and close witnesses | `ebc1a1417` validates the original live registry claim and exact Plan. `124bd33e2` retains native scope-close evidence before Service exit. FullHost still must bind the real pool and original joins; workspace, Compile and Launch witness work remains pending. |
@@ -47,6 +47,24 @@ review records describe their stated source revisions, not the entire current
 candidate.
 
 ## Verification and its limits
+
+The registered goal integration at `62c9b8ee7` passes all 3,260 client tests:
+381.46 seconds of tests, 402.66 seconds including build, with the command's own
+exit zero. Normal seed, formatting, client lint, documentation and prelude gates
+pass; all seven imported file hashes remain unchanged. Client lint reports zero
+errors and 571 warnings. The fifteen explicit optional exclusions are thirteen
+shipped-server controls, the Linux `/proc` witness and rust-analyzer. They do not
+satisfy shipped registered-host acceptance. The worker separately passed all
+3,170 tests on its older component base.
+
+The twelve new controls use actual conversation SQLite, original owner custody,
+Broker admission and Dispatcher cancellation. They cover lost COMMIT replies,
+changed readbacks, replay, original deadlines, late receipts and current actor
+publication. Their held or NotStarted transport does not establish physical
+helper effects. Independent review found one missing GoalChanged publication;
+calling the existing publisher after successful retention fixes it. The actual
+bus assertion fails under an omitted-publication mutant, and the same reviewer
+closed the finding. The pre-fix 3,169-test receipt remains separate evidence.
 
 The rebased candidate passes the complete storage gate: 274 tests, with the
 command's own exit zero. Ninety-seven focused client controls pass across daemon
@@ -119,12 +137,13 @@ container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Integrate ordinary registered goal checks and hooks for **#697**. The goal
-   component is under review correction in its isolated worktree; it is not in
-   this baseline. **Exit:** one actual Checking CAS and original system intent
-   precede launch, the original deadline and cancellation authority survive
-   clearance, UI publication follows successful persistence, and exact-source
-   component and composed checks pass. Preserve local callers and all tests.
+1. Implement ordinary registered hooks for **#697** using original indexed
+   trusted sources and one immutable occurrence before execution. Goal callers
+   are integrated, including actual Checking persistence and UI publication.
+   **Exit:** all five existing hook gates retain original source/handler identity,
+   stdin and deadlines; cancellation and uncertain writes cannot create new
+   work; local behavior and all tests remain intact. Source acquisition and
+   normal daemon selection then compose through the actual registered host.
 2. Complete original physical-close prerequisites. **Exit:** workspace aggregate,
    Compile preparation and Launch channel ownership supply their actual original
    close witnesses; finite LSP Service ownership retains failed-row charges,
@@ -184,9 +203,9 @@ system semantic request. It preserves the original quota group and adds no
 system ordinal. Admitted capabilities retain their existing purpose pair.
 Standalone native system commands separately reserve original identity before
 Broker clearance and admit exact cleared bytes afterward. These identity and
-sequencing changes are integrated at the custodian and Broker boundary; ordinary
-goal/hook callers and full host wiring remain unimplemented. Initialize does not
-imply an invented native setup command.
+sequencing changes are integrated at the custodian and Broker boundary. Registered
+goal callers are integrated; hook callers and full host wiring remain
+unimplemented. Initialize does not imply an invented native setup command.
 
 ## Deliberately open
 
