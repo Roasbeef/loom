@@ -67,6 +67,10 @@
 //// `handle_open_exchange` applies ordinary work only after `validate_envelope`.
 //// `close_scope` retains one original native disposition even on durable failure;
 //// repeated close only retries the exact original durable confirmations.
+//// `shutdown_original` retains `scope_close_proof` before stopping;
+//// `validate_scope_close` checks original handles after that actor has exited.
+//// `scope_close_summary`, `scope_value`, `covered_value`, `lsp_close_value` and
+//// `sorted_inventory` encode only original checked observations.
 ////
 //// 1. `exchange` admits one bounded service ask outside the network writer.
 //// 2. `validate_envelope` fences peer, role, scope and generation before mutation.
@@ -84,6 +88,7 @@ import broker/internal/call
 import broker/policy
 import core/clock
 import core/command
+import core/generation
 import core/ids
 import core/lsp_command as lsp_id
 import core/msgpack as mp
@@ -112,6 +117,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/actor as otp_actor
 import gleam/otp/supervision
 import gleam/result
+import gleam/string
 import lsp/internal/consumed_channel as consumed
 import lsp/transport
 import weft
@@ -144,6 +150,35 @@ pub type Config {
 pub opaque type Service {
   /// The listener owns each asynchronous ask until its actual reply or death.
   Service(config: Config, subject: process.Subject(Message), pid: process.Pid)
+}
+
+/// Original native-scope close observations retained before the Service stops.
+/// This proof covers the shared close reducer and durable covered confirmations.
+/// Full assembly separately binds the real pool configuration and normal owner
+/// joins; neither these metadata bytes nor a recovered wire tag supply those facts.
+@internal
+pub opaque type ScopeCloseProof {
+  /// Only successful original close constructs this connection-bound value.
+  ScopeCloseProof(
+    /// Exact original Service address, not a replacement registry lookup.
+    subject: process.Subject(Message),
+    /// Original Service PID that produced this proof before stopping.
+    pid: process.Pid,
+    /// Actual configured native executor PID, whose normal join is separate.
+    native_pid: process.Pid,
+    /// Exact original journal handle used for every covered confirmation.
+    journal: journal.Journal,
+    /// Immutable configured owner label.
+    owner: String,
+    /// Immutable configured executor label.
+    executor: String,
+    /// Full original scope including both authority epochs.
+    scope: identity.Scope,
+    /// Original transport generation.
+    generation: Int,
+    /// Canonical domain-separated digest of the actual original observations.
+    digest: generation.Digest,
+  )
 }
 
 /// Fixed errors leave possibly committed original evidence retained.
@@ -521,6 +556,7 @@ type Message {
   )
   Quiesce(reply: process.Subject(Nil))
   Shutdown(reply: process.Subject(Result(Nil, Error)))
+  ShutdownOriginal(reply: process.Subject(Result(ScopeCloseProof, Error)))
   AdapterDown(process.Down)
   ControlDone(key: identity.RequestKey, digest: identity.Digest)
   OriginalNativeRetired(
@@ -674,6 +710,47 @@ pub fn quiesce(service: Service) -> Result(Nil, Error) {
 pub fn shutdown(service: Service) -> Result(Nil, Error) {
   call.try_call(service.subject, waiting: 30_000, sending: Shutdown)
   |> result.unwrap(Error(Uncertain))
+}
+
+/// Retains the actual original scope-close proof before this Service stops.
+/// It uses the same close reducer and unchanged bounded ask as legacy shutdown.
+/// A lost reply remains Uncertain even when the original cleanup completed.
+///
+/// ## Examples
+///
+/// `shutdown_original(service)` never reconstructs proof from actor death.
+@internal
+pub fn shutdown_original(service: Service) -> Result(ScopeCloseProof, Error) {
+  call.try_call(service.subject, waiting: 30_000, sending: ShutdownOriginal)
+  |> result.unwrap(Error(Uncertain))
+}
+
+/// Validates retained proof against the expected immutable original handles.
+/// This pure check works after the original actor exits. It compares no Config
+/// or Executor record containing functions and grants no replacement authority.
+///
+/// ## Examples
+///
+/// `validate_scope_close(original, proof)` refuses a different Service.
+@internal
+pub fn validate_scope_close(
+  service: Service,
+  proof: ScopeCloseProof,
+) -> Result(generation.Digest, Error) {
+  let config = service.config
+  case
+    service.subject == proof.subject
+    && service.pid == proof.pid
+    && local.pid(config.native) == proof.native_pid
+    && config.journal == proof.journal
+    && config.owner == proof.owner
+    && config.executor == proof.executor
+    && config.scope == proof.scope
+    && config.generation == proof.generation
+  {
+    True -> Ok(proof.digest)
+    False -> Error(Invalid)
+  }
 }
 
 fn builder(
@@ -1116,6 +1193,24 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       case outcome {
         Ok(_) -> {
           process.send(reply, Ok(Nil))
+          actor.stop()
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(next)
+        }
+      }
+    }
+    ShutdownOriginal(reply) -> {
+      let #(next, closed) = close_scope(state)
+      let outcome = {
+        use _ <- result.try(closed)
+        scope_close_proof(next)
+      }
+      case outcome {
+        Ok(proof) -> {
+          // The exact proof precedes exit; DOWN alone cannot reproduce it.
+          process.send(reply, Ok(proof))
           actor.stop()
         }
         Error(error) -> {
@@ -2281,6 +2376,132 @@ fn close_drained_scope(state: State) -> #(State, Result(wire.Body, Error)) {
     Ok(wire.ScopeRetirement)
   }
   #(state, outcome)
+}
+
+// This constructor is reachable only after the shared close reducer succeeds.
+// Its defensive disposition check prevents a future caller bypassing that gate.
+fn scope_close_proof(state: State) -> Result(ScopeCloseProof, Error) {
+  use Nil <- result.try(case state.native_close {
+    NativeRetired -> Ok(Nil)
+    NativeOpen | NativeUncertain -> Error(Uncertain)
+  })
+  use digest <- result.try(scope_close_summary(state))
+  let config = state.config
+  Ok(ScopeCloseProof(
+    state.subject,
+    process.self(),
+    local.pid(config.native),
+    config.journal,
+    config.owner,
+    config.executor,
+    config.scope,
+    config.generation,
+    digest,
+  ))
+}
+
+// The full covered inventory and retained begun-LSP inventory are sorted by
+// their canonical byte spelling. Pruned leases already proved Closed, positive
+// native retirement, managed drain and DAL Retired; their covered keys remain.
+// PID spellings name only this live proof, never durable reconstruction.
+fn scope_close_summary(state: State) -> Result(generation.Digest, Error) {
+  let config = state.config
+  let covered =
+    dict.to_list(state.covered)
+    |> list.map(fn(pair) { covered_value(pair.0, pair.1) })
+  use covered <- result.try(sorted_inventory(covered))
+  use lsp <- result.try(
+    list.try_map(dict.to_list(state.lsp_rows), fn(pair) {
+      lsp_close_value(pair.0, pair.1)
+    }),
+  )
+  use lsp <- result.try(
+    sorted_inventory(
+      list.filter_map(lsp, fn(value) { option.to_result(value, Nil) }),
+    ),
+  )
+  use bytes <- result.try(
+    mp.encode(
+      mp.ArrayValue([
+        mp.StringValue("loom.native.scope-close/1"),
+        mp.StringValue(config.owner),
+        mp.StringValue(config.executor),
+        scope_value(config.scope),
+        mp.IntValue(config.generation),
+        mp.StringValue(string.inspect(process.self())),
+        mp.StringValue(string.inspect(local.pid(config.native))),
+        mp.StringValue("original-native-retired"),
+        mp.ArrayValue(covered),
+        mp.ArrayValue(lsp),
+      ]),
+    )
+    |> result.replace_error(Uncertain),
+  )
+  crypto.hash(crypto.Sha256, bytes)
+  |> generation.digest
+  |> result.replace_error(Uncertain)
+}
+
+fn scope_value(scope: identity.Scope) -> mp.MsgPackValue {
+  let #(session, workspace, executor, session_epoch, workspace_epoch) =
+    identity.scope_fields(scope)
+  mp.ArrayValue([
+    mp.StringValue(session),
+    mp.StringValue(workspace),
+    mp.StringValue(executor),
+    mp.IntValue(session_epoch),
+    mp.IntValue(workspace_epoch),
+  ])
+}
+
+fn covered_value(
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> mp.MsgPackValue {
+  let #(operation, request) = identity.key_fields(key)
+  mp.ArrayValue([
+    scope_value(identity.key_scope(key)),
+    mp.StringValue(operation),
+    mp.StringValue(request),
+    mp.BinaryValue(identity.digest_bytes(digest)),
+  ])
+}
+
+fn lsp_close_value(
+  address: String,
+  row: LspRow,
+) -> Result(Option(mp.MsgPackValue), Error) {
+  case row.begun, row.native, row.retirement {
+    LspNotBegun, _, _ -> Ok(None)
+    LspBegun, Some(original), LspPositiveNative ->
+      Ok(
+        Some(
+          mp.ArrayValue([
+            mp.StringValue(address),
+            lsp_id.lease_value(row.lease),
+            covered_value(original.key, original.digest),
+            mp.StringValue("original-native-positive"),
+          ]),
+        ),
+      )
+    LspBegun, _, _ -> Error(Uncertain)
+  }
+}
+
+fn sorted_inventory(
+  values: List(mp.MsgPackValue),
+) -> Result(List(mp.MsgPackValue), Error) {
+  use encoded <- result.try(
+    list.try_map(values, fn(value) {
+      mp.encode(value)
+      |> result.map(fn(bytes) { #(bit_array.base16_encode(bytes), bytes) })
+      |> result.replace_error(Uncertain)
+    }),
+  )
+  encoded
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> list.map(fn(pair) { mp.BinaryValue(pair.1) })
+  |> Ok
 }
 
 fn phase_code(phase: admission.Phase) -> Int {
