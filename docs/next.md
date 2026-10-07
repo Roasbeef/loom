@@ -101,7 +101,10 @@ citations pass. Existing lint and documentation warnings remain visible.
 
 Run `make check` for the complete native gate. The earlier attempt passed through
 client and TUI before Hex rate limiting stopped conformance preparation; it is
-an incomplete run. A final retry is in progress. Run `scripts/signoff_remote.sh`
+an incomplete run. The full retry found a reused host-test path between VM
+starts. Adding the existing timestamp-plus-unique suffix convention isolates
+the fixture; two consecutive focused runs pass. A final full retry is in
+progress. Run `scripts/signoff_remote.sh`
 with the operator's Linux host for exact-head privileged signoff after pushing.
 Do not carry parent #901's green result onto this feature head.
 
