@@ -665,6 +665,7 @@
   @keyframes home-note-fade{0%,75%{opacity:1;}100%{opacity:0;}}
   .home-group-head > .notice-line,.home-group-head > .notice-refusal{flex:0 1 auto;margin:0;}
   .home-sessions > .notice-line,.home-sessions > .notice-refusal{margin:0 0 12px 0;}
+  .home-folders > .notice-line,.home-folders > .notice-refusal{margin:0 0 8px 0;}
   /* A row that was pressed and waits on the daemon (round 5, F113): dimmed, a
      spinner where the chevron was, and no second press. */
   li.home-row.opening .home-open,li.home-row.opening .home-item{opacity:.6;pointer-events:none;}

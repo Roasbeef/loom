@@ -222,8 +222,9 @@ page keys and nonces, and the relay into the session's gateway.
   one `shareable` and nothing else. `creations.typed_path`, `expanded` and `inside`
   are the pure half of the rule for a typed path; the daemon holds the filesystem
   half. A path is drawn only as a text node, never an attribute or a key, and a
-  refusal (`NotAFolder`, `OutsideHome`) is fixed words. A refusal's place is
-  `home_table.Elsewhere`, drawn in the section's head. The submit's event is
+  refusal is one fixed sentence per reason (`NotAFolder`, `OutsideHome`,
+  `HomeItself`, `HiddenFolder`, `StateFolder`). A refusal's place is
+  `home_table.Elsewhere`, drawn under the section's heading row. The submit's event is
   beneath `table_path`, a path the owner's socket admits and no other's.
   Every list that answers also starts `Start.activity(ids, deliver)` for the
   running sessions it lists (at most `home.activity_limit`, 24): it returns

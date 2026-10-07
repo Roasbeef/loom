@@ -1358,9 +1358,12 @@ pub fn every_creation_refusal_has_its_own_words_test() {
     creations.Unavailable,
     creations.NotAFolder,
     creations.OutsideHome,
+    creations.HomeItself,
+    creations.HiddenFolder,
+    creations.StateFolder,
   ]
   let words = list.map(reasons, creations.reason_words)
-  assert list.length(list.unique(words)) == 9
+  assert list.length(list.unique(words)) == 12
 }
 
 // A workspace, a name or a folder from the catalogue is a text node: it is
@@ -2242,7 +2245,7 @@ pub fn the_typed_folder_form_asks_once_test() {
   assert process.receive(asked, 0) == Error(Nil)
 }
 
-// A refusal is the reason's fixed words in the section's head, with the form
+// A refusal is the reason's fixed words under the section's heading, with the form
 // back for a correction, and nothing the owner typed is drawn again, in text or
 // in an attribute. A session that was made and did not open closes the form.
 pub fn a_refused_folder_says_why_and_never_the_path_test() {
@@ -2262,6 +2265,20 @@ pub fn a_refused_folder_says_why_and_never_the_path_test() {
 
   let missing = drawn(refuse(creations.NotAFolder))
   assert string.contains(missing, creations.reason_words(creations.NotAFolder))
+
+  // The refusal is drawn under the heading row, not inside it, where a long
+  // sentence squeezed the heading onto two lines.
+  let words = creations.reason_words(creations.NotAFolder)
+  let #(head, after) = case string.split_once(missing, words) {
+    Ok(split) -> split
+    Error(Nil) -> #("", "")
+  }
+  assert string.contains(head, "New session in another folder")
+  assert string.ends_with(
+    head,
+    "</div><p class=\"notice-refusal\" role=\"status\">",
+  )
+  assert after != ""
 
   let unopened = drawn(refuse(creations.NotOpened))
   assert string.contains(unopened, creations.reason_words(creations.NotOpened))
