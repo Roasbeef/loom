@@ -929,6 +929,12 @@ type View(socket) {
     /// push the page past its row limit (`fold_budget`). The steps of an
     /// open fold of a closed turn are in `steps` once they have been read.
     folds: List(Int),
+    /// The block keys of the shortened messages the reader has open, the most
+    /// recently opened first and at most `open_messages`. A message is open
+    /// only on this page, and the text is drawn only while it is: the lane
+    /// reads the whole text from the entry its block holds. A strand the
+    /// reader leaves forgets them.
+    said: List(String),
     /// The `paging` of each strand the reader left, keyed by strand name,
     /// for the life of the page. `focus` parks the departing strand's here
     /// and restores the arriving strand's, so a strand whose older rows the
@@ -1164,6 +1170,17 @@ pub type Msg(socket) {
   /// 071).
   FoldToggled(fold: Int)
 
+  /// The button after a shortened message was pressed: open the message to its
+  /// whole text if it is shortened, shorten it again if it is open. The
+  /// message is named by its block's key, which the engine gave it and the view
+  /// drew into the handler (`turns.Piece`'s block), never by anything the
+  /// browser sent. A key that names no shortened message the page holds
+  /// changes nothing. The text is read from the entry the block was drawn
+  /// from, so the press reads nothing and sends no command, and an observer's
+  /// page may carry it (`message_click`, protocol-change/070, the addendum on
+  /// messages).
+  MessageToggled(key: String)
+
   /// A chip of the agent strip was pressed: show this strand and address it.
   /// The strand is the name the strip was drawn with, never text the browser
   /// sent, because a handler's message is fixed when the tree is drawn and
@@ -1297,6 +1314,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       transport: start.transport,
       paging: Tail,
       folds: [],
+      said: [],
       parked_paging: dict.new(),
       strand_keys: dict.from_list([#(shared.active_strand, 1)]),
       earlier: Reached,
@@ -1527,6 +1545,8 @@ pub fn update(
     ContextRefreshRequested -> context_refresh_at(model, at)
 
     FoldToggled(fold:) -> folded_at(model, fold, at)
+
+    MessageToggled(key:) -> #(messaged(model, key), effect.none())
 
     FocusRequested(strand:) -> focus_at(model, strand, at) |> peers_due(at)
 
@@ -3580,6 +3600,7 @@ fn strip_of(shared: Session(socket)) -> strip.Strip {
       cache: outlook(shared, line.id),
       running_ms: running_ms(shared, line.id),
       model: option.map(row, fn(row) { row.model }) |> option.unwrap(""),
+      own_model: apart_from_main(shared, line.id),
       recent: option.map(row, fn(row) { row.recent }) |> option.unwrap([]),
       answer: row |> option.then(answer_line),
     )
@@ -3610,9 +3631,28 @@ fn settled_chip(
     cache: None,
     running_ms: None,
     model: "",
+    own_model: None,
     recent: [],
     answer: None,
   )
+}
+
+// The catalogue's name for a strand's model, read from the capture the page
+// draws (`agent_view.catalogue_name`), or nothing before the first capture.
+fn model_of(shared: Session(socket), strand: String) -> Option(String) {
+  option.then(shared.captured, fn(shown) {
+    agent_view.catalogue_name(shown.1, strand)
+  })
+}
+
+// The strand's model name when it is not the main strand's. A strand with no
+// configuration in the capture, or a capture with none for `main`, has no
+// difference to report, since an unknown model is not evidence of another one.
+fn apart_from_main(shared: Session(socket), strand: String) -> Option(String) {
+  case model_of(shared, agent_roster.primary), model_of(shared, strand) {
+    Some(main), Some(own) if own != main -> Some(own)
+    _, _ -> None
+  }
 }
 
 // The first line of a strand's latest answer, or nothing while it has given
@@ -5437,6 +5477,7 @@ fn focus_at(
             completion: Untried,
             floor: Unheld,
             folds: [],
+            said: [],
             parked_paging: dict.delete(remembered, strand),
             refusal: None,
             outcome: "",
@@ -5627,6 +5668,82 @@ fn folded_at(
     | Connecting, _, _
     | Ended(_), _, _
     -> #(model, effect.none())
+  }
+}
+
+/// How many shortened messages a page keeps open at once. Opening another
+/// closes the one opened longest ago, which bounds what the lane draws for
+/// messages as `fold_budget` bounds it for folds: each is cut to
+/// `expansion.max_characters`, so the page holds at most this many of those.
+pub const open_messages = 8
+
+// Opens a shortened message, or shortens an open one.
+//
+// The message is named by the block key the button's handler was drawn with. A
+// key that names no shortened message in the lane, because its turn left the
+// page or the message was never shortened, changes nothing, and neither does a
+// press on a page that is not following a session, as with a fold. The newest
+// message opened goes first, so the oldest is the one a ninth press closes.
+fn messaged(model: Model(socket), key: String) -> Model(socket) {
+  case model.view.status, turns.abridges(model.view.pieces, key) {
+    Connected, True -> {
+      let said = case list.contains(model.view.said, key) {
+        True -> list.filter(model.view.said, fn(open) { open != key })
+        False -> list.take([key, ..model.view.said], open_messages)
+      }
+      Model(..model, view: View(..model.view, said:))
+    }
+    Connected, False | Connecting, _ | Ended(_), _ -> model
+  }
+}
+
+/// The block keys of the messages the reader has open, which the lane draws
+/// whole (`lane.Folds`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // lane.Folds(FoldToggled, MessageToggled, component.expanded(model))
+/// ```
+pub fn expanded(model: Model(socket)) -> List(String) {
+  model.view.said
+}
+
+/// Whether a Lustre event path is the button after a shortened message. The
+/// lane's rows are keyed, so a path names the lane's list (the second child of
+/// `<loom-follow>`, which is the lane's second child of the centre column), the
+/// piece's key, which for a message is its block's key (`seq.index`, two whole
+/// numbers), the row's body (`tl-body`, its second child), and then the
+/// message's own element. A person's own message is the block, which is the
+/// body's first child, whose first child is the message (`div.message`), whose
+/// second child is the button after its text. A message from another operator
+/// is a `div.prompt` holding the sender's line and then the block, so the
+/// message is one level deeper. The page socket admits a `click` from an
+/// observer at either path and no other event there
+/// (`client/daemon/ui_socket.observer_accepts`, protocol-change/070, the
+/// addendum on messages). `page_events_test` fails if the view moves the
+/// button, so the two cannot drift apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert component.message_click("0\t2\t1\t1\t7.0\t1\t0\t0\t1")
+/// assert !component.message_click("0\t2\t1\t1\twork:7.0\t1\t0\t0\t1")
+/// ```
+pub fn message_click(path: String) -> Bool {
+  case string.split(path, "\t") {
+    ["0", "2", "1", "1", key, "1", "0", "0", "1"]
+    | ["0", "2", "1", "1", key, "1", "0", "1", "0", "1"] -> is_block_key(key)
+    _ -> False
+  }
+}
+
+// A message block's key, as `transcript_lines` builds it: a sequence and an
+// index with a dot between them, which is also the tail of a work's key.
+fn is_block_key(key: String) -> Bool {
+  case string.split(key, ".") {
+    [seq, index] -> is_counter(seq) && is_counter(index)
+    _ -> False
   }
 }
 
@@ -6366,7 +6483,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
         OlderRequested,
         lane.NoReplies,
         marks(model),
-        lane.Folds(FoldToggled),
+        lane.Folds(FoldToggled, MessageToggled, expanded(model)),
         session_id(model),
       ),
       plan(model),
@@ -6709,6 +6826,7 @@ pub fn heading(
     },
     name: option.map(model.view.label, fn(label) { label.name }),
     workspace: option.map(model.view.label, fn(label) { label.workspace }),
+    model: model_of(model.shared, agent_roster.primary),
     status: status_text(model.view.status),
     tone: status_tone(model.view.status),
     context: context_figure(model),

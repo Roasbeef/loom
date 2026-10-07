@@ -245,6 +245,8 @@
   .session-head{display:flex;flex-wrap:wrap;align-items:center;flex:1 1 auto;gap:4px 12px;box-sizing:border-box;min-height:44px;min-width:0;padding:6px 12px;}
   .session-head .brand{font:600 14px/1.4 var(--font-sans);letter-spacing:.02em;}
   .session-head h1{font:600 13px/1.4 var(--font-sans);margin:0;min-width:0;overflow-wrap:anywhere;}
+  .session-head .session-title{display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:0 8px;min-width:0;}
+  .session-head .session-model{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .session-head .status{margin:0;}
   .session-head .workspace{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow-wrap:anywhere;}
   .session-head .workspace::after{content:" /";content:" /" / "";}
@@ -384,6 +386,10 @@
   .chip-status{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   /* The state's glyph leads the status line: it pulses while the strand
      works, and the line's words carry the state without it. */
+  .message-toggle{display:inline-block;margin:2px 0 0 0;padding:0;border:0;background:transparent;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);cursor:pointer;text-decoration:underline;}
+  .message-toggle:hover{color:var(--color-fg);}
+  .message-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .chip-model{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .chip-status .st{display:inline-block;min-width:1em;margin-right:.35em;font-size:11px;text-align:center;}
   .chip-status.running .st{color:var(--color-current);animation:loom-pulse 1.4s ease-in-out infinite;}
   @keyframes loom-pulse{50%{opacity:.35;}}
@@ -1036,6 +1042,8 @@
   .step.done .glyph{color:var(--color-added-text);}
   .step.failed .glyph{color:var(--color-danger-text);}
   .step.pending .glyph{color:var(--color-current);animation:pulse 1.4s infinite;}
+  .row-head .running-time{flex:0 0 auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
+  .busy-dot{display:inline-block;margin-right:6px;color:var(--color-current);animation:pulse 1.4s infinite;}
   .row-head .verb{flex:0 0 auto;}
   .row-head .subject{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .row-head .mono{font:12px/1.5 var(--font-mono);}

@@ -309,6 +309,11 @@ type Phase {
 /// asks the page to draw or drop that turn's steps from records it already
 /// holds, so it reads nothing new and sends nothing (protocol-change/070). It
 /// is admitted at the divider's exact path and nowhere beneath or beside it.
+/// A fifth is the button after a shortened message (`component.message_click`),
+/// whose message names the message by the block key the server drew into the
+/// handler and asks the page to draw the whole text from the entry the block
+/// already holds, so it too reads nothing and sends nothing (the addendum to
+/// protocol-change/070 on messages), and is admitted at its two exact paths.
 /// Every other message is dropped here, a batch included, so
 /// it costs the component no render; the gateway refuses any mutation from an
 /// observer's binding on its own, whatever reaches it. A click beneath
@@ -335,17 +340,19 @@ fn observer_click() -> decode.Decoder(Bool) {
   decode.success(kind == 1 && name == "click" && observer_path(path))
 }
 
-// The five places an observer's click may fire: the older button, the Home
+// The six places an observer's click may fire: the older button, the Home
 // button, the context breakdown's Refresh button, a chip beneath the strip's
-// list, and the divider of a settled turn's
-// work. The list's own path is not a chip, so the prefix includes the
-// separator; a divider is admitted only at the exact path `fold_click` names.
+// list, the divider of a settled turn's work, and the button after a shortened
+// message. The list's own path is not a chip, so the prefix includes the
+// separator; a divider and a message's button are admitted only at the exact
+// paths `fold_click` and `message_click` name.
 fn observer_path(path: String) -> Bool {
   path == component.older_path
   || path == component.home_path
   || path == component.context_refresh_path
   || string.starts_with(path, component.strip_path <> "\t")
   || component.fold_click(path)
+  || component.message_click(path)
 }
 
 /// The browser messages a member operator's page takes: Lustre's `EventFired`

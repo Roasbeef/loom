@@ -171,7 +171,7 @@ heading.
 
 **Data.** The row comes from `Row` (`session_view/agent_view.gleam:79`),
 whose `Status` (`session_view/agent_view.gleam:52`) carries the glyph and
-`label` (`session_view/agent_view.gleam:516`) the word, and from `Line`
+`label` (`session_view/agent_view.gleam:554`) the word, and from `Line`
 (`session_view/agent_roster.gleam:84`), which adds elapsed time and context
 size; `lines` (`session_view/agent_roster.gleam:355`) is the order. The task,
 activity, latest update, pending input, recent tools and approvals are the
@@ -463,12 +463,12 @@ The way back is `Enter` on `main`, the first row, or `/strand main`.
 |---|---|---|---|
 | sub:tests focused, 120×40 | [standard-focus](C-fable-standard-focus-dark.png) | [light](C-fable-standard-focus-light.png) | [txt](C-fable-standard-focus.txt) |
 
-The gutter's hue comes from `hue` (`session_view/turns.gleam:288`), which
+The gutter's hue comes from `hue` (`session_view/turns.gleam:294`), which
 colours a strand by its position among the captured strands and never by its
 name, with `hues` (`session_view/turns.gleam:85`) sub-agent hues before they
 repeat. The terminal's row projection would carry a hue beside each row the
 way it carries anchors (`refresh_render_cache`, `tui/projection.gleam:79`),
-derived from `pieces` (`session_view/turns.gleam:336`), which already decides
+derived from `pieces` (`session_view/turns.gleam:342`), which already decides
 which strand a spawn, result, nudge or peer row belongs to. `tui/theme.gleam`
 needs five strand hue constants beside `advisor` (`tui/theme.gleam:17`),
 `signal` (`tui/theme.gleam:29`) and `current` (`tui/theme.gleam:32`), with
@@ -728,7 +728,7 @@ No single key sends a decision.
 | Region | Data | Exists | Where |
 |---|---|---|---|
 | Header | session title, workspace, model | yes | `render_header`, `tui/render.gleam:520` |
-| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:336`), `hue` (`session_view/turns.gleam:288`); new hue constants in `tui/theme.gleam` |
+| Timeline gutter | each row's strand and hue | derivable | `pieces` (`session_view/turns.gleam:342`), `hue` (`session_view/turns.gleam:294`); new hue constants in `tui/theme.gleam` |
 | Counted repeated rows | consecutive identical calls and errors | derivable | the grouping in `project` (`session_view/tool_activity.gleam:55`) gains a run-length fold; shared with the web view |
 | Harness notes | `[loom]`-prefixed inputs, hook and job notices | partly | `harness_message_lines` (`session_view/transcript_lines.gleam:2628`) recognises advisor frames; `memory_context_lines` (`session_view/composer.gleam:356`) the memory context; the `[loom]` job and hook notices need the same recogniser extended, no wire change |
 | Strands tab, strip, workspace list | one row per strand | yes | `lines` (`session_view/agent_roster.gleam:355`), `Line` (`session_view/agent_roster.gleam:84`), `status_line` (`session_view/strand_card.gleam:45`), `status_mark` (`tui/agents.gleam:1369`) |

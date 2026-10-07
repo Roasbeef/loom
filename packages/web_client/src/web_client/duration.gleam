@@ -46,3 +46,17 @@ pub fn remaining(seconds: Int) -> String {
     False -> int.to_string(int.max(0, seconds)) <> "s"
   }
 }
+
+/// How long ago, in milliseconds, something that started at `since` began, by
+/// a clock that reads `now`. A start after `now`, which a browser clock set
+/// behind the daemon's produces, is no time at all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert duration.since_offset(now: 72_500, since: 500) == 72_000
+/// assert duration.since_offset(now: 100, since: 900) == 0
+/// ```
+pub fn since_offset(now now: Int, since since: Int) -> Int {
+  int.max(0, now - since)
+}

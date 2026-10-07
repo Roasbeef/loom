@@ -23,6 +23,14 @@
 //// uses it for the fifteen minutes the page lives. Whichever attribute arrived
 //// last sets the direction.
 ////
+//// A third attribute, `since`, is the Unix time in milliseconds at which
+//// something started, for a thing whose start the records give and whose age
+//// the server has no clock to measure: a tool call still running. The element
+//// reads the browser's clock once, takes the difference as an elapsed reading
+//// (`duration.since_offset`) and counts on from it as `offset` does. This trusts the
+//// browser's clock to agree with the daemon's, so a browser whose clock is
+//// wrong shows a wrong age; it never shows a negative one.
+////
 //// The element renders only what its attributes say: a number the
 //// daemon wrote, never session text. It draws a text node in its own shadow
 //// root, handles no key and takes no focus.
@@ -79,6 +87,9 @@ pub type Msg {
   /// The server set `remaining` to this many milliseconds.
   RemainingChanged(remaining: Int)
 
+  /// The server set `since` to this Unix time in milliseconds.
+  SinceChanged(since: Int)
+
   /// The reading arrived, anchored to the browser's clock.
   Anchored(reading: Reading)
 
@@ -106,6 +117,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
   lustre.component(init, update, view, [
     component.on_attribute_change("offset", offset),
     component.on_attribute_change("remaining", remaining),
+    component.on_attribute_change("since", since),
     component.on_connect(Connected),
     component.on_disconnect(Disconnected),
   ])
@@ -129,6 +141,14 @@ fn remaining(value: String) -> Result(Msg, Nil) {
   |> result.map(RemainingChanged)
 }
 
+// A `since` that is not a whole number is ignored, as `offset` is.
+fn since(value: String) -> Result(Msg, Nil) {
+  value
+  |> string.trim
+  |> int.parse
+  |> result.map(SinceChanged)
+}
+
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(Model(reading: None, now: 0, timer: None), effect.none())
 }
@@ -147,6 +167,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // and the anchor doubles as the clock's latest reading.
     OffsetChanged(offset:) -> #(model, anchor(offset, Up))
     RemainingChanged(remaining:) -> #(model, anchor(remaining, Down))
+    SinceChanged(since:) -> #(model, anchor_since(since))
     Anchored(reading:) -> #(
       Model(..model, reading: Some(reading), now: reading.anchor),
       effect.none(),
@@ -164,6 +185,18 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 fn anchor(offset: Int, direction: Direction) -> Effect(Msg) {
   use dispatch <- effect.from
   dispatch(Anchored(Reading(offset:, anchor: ffi_dom.now(), direction:)))
+}
+
+fn anchor_since(since: Int) -> Effect(Msg) {
+  use dispatch <- effect.from
+  let now = ffi_dom.now()
+  dispatch(
+    Anchored(Reading(
+      offset: duration.since_offset(now:, since:),
+      anchor: now,
+      direction: Up,
+    )),
+  )
 }
 
 fn read_clock() -> Effect(Msg) {

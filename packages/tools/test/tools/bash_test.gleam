@@ -71,6 +71,19 @@ pub fn bash_success_test() {
   assert list.key_find(fields, "signal") == Ok(json.Int(0))
 }
 
+// The system prompt carries only the snippet, so the habit of setting a
+// directory once has to be stated there and not only in the description. A
+// double quote would be escaped in the request body the prompt index is
+// asserted against, so the snippet has none.
+pub fn the_snippet_points_at_working_directory_and_cwd_test() {
+  let assert Some(snippet) = bash.tool(job.unavailable()).prompt_snippet
+  assert string.contains(
+    snippet,
+    "Set a directory once with `working_directory`, or pass `cwd`, rather than repeating a `cd` or a variable prefix on every command.",
+  )
+  assert !string.contains(snippet, "\"")
+}
+
 pub fn bash_call_spec_shape_test() {
   let #(_outcome, recorded) =
     run_with_script(

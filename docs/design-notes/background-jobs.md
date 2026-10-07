@@ -28,7 +28,7 @@ and the reason each was deferred.
 A model working in Loom cannot start something and come back to it. Every
 `bash` call is foreground: the tool's `run` blocks its effect process for
 the whole execution (`runtime/effects.gleam:252-253`), and past its budget
-the call returns the literal `[command timed out]` (`tools/bash.gleam:795`)
+the call returns the literal `[command timed out]` (`tools/bash.gleam:950`)
 with the process reaped. The motivating case is small and exact: start
 `tail -f build.log`, keep working, every so often ask "what has it printed
 since I last looked", and eventually stop it. Today the only way to watch

@@ -40,6 +40,10 @@ pub type Call {
     outcome: Option(message.AgentMessage),
     /// Durable result identity joins expanded output to its compact call row.
     result_source: Option(ids.EntryId),
+    /// The record time of the response that asked for the call, in Unix
+    /// milliseconds, when the caller read it from that record. A host shows
+    /// how long a call that has no result yet has run from it.
+    asked: Option(Int),
   )
 }
 
@@ -75,7 +79,7 @@ pub fn calls(entries: List(entry.Entry)) -> List(Call) {
         list.fold(content, found, fn(found, block) {
           case block {
             message.AssistantToolCall(invocation) -> [
-              Call(value.id, invocation, None, None),
+              Call(value.id, invocation, None, None, Some(value.ts)),
               ..found
             ]
             message.AssistantText(..) | message.AssistantThinking(..) -> found
@@ -363,7 +367,7 @@ fn collect_assistant(
         [], [] -> boundary(items, group, value)
         _, _ ->
           list.fold(calls, #(items, group), fn(acc, call) {
-            collect_call(acc, value.id, call)
+            collect_call(acc, value.id, value.ts, call)
           })
       }
     }
@@ -376,14 +380,15 @@ fn collect_assistant(
 fn collect_call(
   acc: #(List(Item), Group),
   source: ids.EntryId,
+  asked: Int,
   invocation: message.ToolCall,
 ) {
   let #(items, group) = acc
   case dict.has_key(group.calls, invocation.id) {
-    False -> #(items, add_call(group, source, invocation))
+    False -> #(items, add_call(group, source, asked, invocation))
     True -> #(
       flush(items, group),
-      add_call(Group([], dict.new()), source, invocation),
+      add_call(Group([], dict.new()), source, asked, invocation),
     )
   }
 }
@@ -397,11 +402,20 @@ fn has_prose(block) {
   }
 }
 
-fn add_call(group: Group, source: ids.EntryId, invocation: message.ToolCall) {
+fn add_call(
+  group: Group,
+  source: ids.EntryId,
+  asked: Int,
+  invocation: message.ToolCall,
+) {
   let message.ToolCall(id:, ..) = invocation
   Group(
     order: [id, ..group.order],
-    calls: dict.insert(group.calls, id, Call(source, invocation, None, None)),
+    calls: dict.insert(
+      group.calls,
+      id,
+      Call(source, invocation, None, None, Some(asked)),
+    ),
   )
 }
 

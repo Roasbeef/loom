@@ -617,7 +617,20 @@ page keys and nonces, and the relay into the session's gateway.
   divider is a button (`lane.divider`) with the fixed `data-loom-fold` marker;
   both pages draw it with `lane.Folds`, and an observer's socket admits its click
   at `component.fold_click`'s exact path; the events admitted are the same as
-  under 070. `component.top(model)` is the `lane.Top` the lane draws above its
+  under 070. A message the shared projection shortened (a long paste, an
+  injected message) is drawn by `lane.message_row` as that row and a
+  `button.message-toggle` after it, in one `div.message`; `MessageToggled(key)`
+  (the block's key, drawn into the handler) opens or closes it (`messaged`),
+  acts only on a `Connected` page and only on a key `turns.abridges` finds in
+  the lane, and keeps at most `open_messages` open in `View.said`, newest first,
+  which a focus change clears. The whole text is read from the entry the block
+  holds (`turns.abridged`), so a sealed turn needs no read, is cut by
+  `expansion.capped` and is drawn only while open. Observer sockets admit the
+  button's click at `component.message_click`'s two exact paths (the protocol-change/070 addendum on messages).
+  A step still running draws `Running · ` and `<loom-elapsed since>` from
+  `turns.Step.since` (`fold_row.step`), and the composer's hint draws a pulsing
+  `span.busy-dot` while a turn runs (`operator_page.busy_mark`); the stylesheet's
+  reduced-motion rule stills both. `component.top(model)` is the `lane.Top` the lane draws above its
   oldest row (`Beginning`, `Earlier`, `Loading` while the page reads turns,
   `Full(rows)`); the strands a reader left park their closed turns with their
   paging (`View.parked_sealed`). The Changes and Trace boards and the newest tool
@@ -630,9 +643,13 @@ page keys and nonces, and the relay into the session's gateway.
   by `component.view` and `operator_page.view`. None of them imports
   `component`, which imports them, so each takes what it draws as its own
   types or plain values. `heading.view(session_id, home, name,
-  workspace, status, tone, context, breakdown, cost, notice)` draws the top bar (the brand,
+  workspace, model, status, tone, context, breakdown, cost, notice)` draws the top bar (the brand,
   `home`, the workspace's path with the home directory as `~` and then the name as two
-  spans, the status as a `.pill` whose class follows the `Tone`
+  spans, the name in a `span.session-title` that also holds the main strand's
+  model as quiet `span.session-model` text (`component.heading` reads it from
+  the capture: `agent_view.catalogue_name`, the catalogue entry named in the
+  strand's configuration; the `h1` keeps the name alone, which
+  `<loom-title>` reads, and the wrapper keeps the bar's child positions), the status as a `.pill` whose class follows the `Tone`
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
   `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
   were spent and none priced, each as a word and a `span.num`; a figure with no
@@ -990,7 +1007,9 @@ page keys and nonces, and the relay into the session's gateway.
 - `strip.Strip` and `strip.Chip`: the listed agents (`line`,
   positional `hue`, the `cache` outlook `cache_watch.shown` allows with its
   label, `running_ms`, how long its operation had run when the strip was
-  built, and the agent row's `model` and `recent` tools), the advisor's chip
+  built, the agent row's `model` and `recent` tools, and `own_model`, the
+  catalogue name of the strand's model when it is not `main`'s, which the card
+  draws as plain `span.chip-model` text under its status), the advisor's chip
   and the settled strands (`settled`, at most `strip.settled_limit`, in
   reverse row order, and `earlier`, the count of older ones). The component builds them and `strip.view` draws
   them. `strip.hue_class` and `strip.ring_class` map a hue and an outlook to

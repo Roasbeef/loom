@@ -38,16 +38,19 @@
 ////
 //// ## Flow
 ////
-//// `app` → `init` → `update` → `view` → `composition`
+//// `app` → `init` → `update` → `view` → `composer` → `composition`
 ////
-//// 1. `app` builds the Lustre application over the observer's `component.Model`.
-//// 2. `init` and `update` turn each `Msg` into one call on the component,
-////    which owns the state; `update` also renews the notice that changed.
-//// 3. `view` draws the frame: the heading, the lane, the dock, and the panel
-////    whose controls (invitation, rename, remembered permissions, peer links)
-////    each have a fixed place.
-//// 4. `composer` and `approvals` draw the dock's two inputs, and `composition`
-////    decodes the composer's submit totally.
+//// 1. `app` and `init` start the application over the observer's
+////    `component.Model`.
+//// 2. `update` passes an observer message through, turns a draft, a decision
+////    or a control into one call on the shared step, and renews the notice
+////    that changed.
+//// 3. `view` lays the page out: the heading, the lane, the approval cards
+////    (`approvals`), the dock, and the panel whose controls (invitation,
+////    rename, remembered permissions, peer links) each have a fixed place.
+//// 4. `composer` draws the draft, with `busy_mark` and `hint` saying that a
+////    turn is running, and the buttons `actions` offers.
+//// 5. `composition` decodes the one submit a browser sends, totally.
 
 import core/json
 import core/origin
@@ -346,7 +349,11 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           openable(model, session)
         }),
         component.marks(model),
-        lane.Folds(fn(fold) { Observed(component.FoldToggled(fold)) }),
+        lane.Folds(
+          fn(fold) { Observed(component.FoldToggled(fold)) },
+          fn(key) { Observed(component.MessageToggled(key)) },
+          component.expanded(model),
+        ),
         component.session_id(model),
       ),
       html.footer([attribute.class("dock")], [
@@ -726,9 +733,12 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
         keyed.div([attribute.class("attach-slot")], [
           #("attach-" <> sent, attach()),
         ]),
-        html.span([attribute.class("hint")], [
-          html.text(hint(component.activity(model))),
-        ]),
+        html.span(
+          [attribute.class("hint")],
+          list.append(busy_mark(component.activity(model)), [
+            html.text(hint(component.activity(model))),
+          ]),
+        ),
         keyed.div([attribute.class("notice-slot")], [
           #(
             int.to_string(component.notice_serial(model)),
@@ -742,6 +752,22 @@ fn composer(model: component.Model(socket)) -> Element(Msg(socket)) {
       ]),
     ],
   )
+}
+
+// A pulsing dot before the hint while a turn runs, so a long turn between
+// tool calls, or one waiting on the model, never looks stuck. It says nothing
+// about which of the two it is, since the page does not know, and the hint's own
+// words are the plain word. The dot is decoration, hidden from assistive
+// technology, and the stylesheet stills it under reduced motion.
+fn busy_mark(activity: component.Activity) -> List(Element(Msg(socket))) {
+  case activity {
+    component.Idle -> []
+    component.Busy -> [
+      html.span([attribute.class("busy-dot"), attribute.aria_hidden(True)], [
+        html.text("●"),
+      ]),
+    ]
+  }
 }
 
 // The footer's hint: the key that sends, and that the turn is busy when it

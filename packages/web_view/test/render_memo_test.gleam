@@ -110,6 +110,7 @@ fn chip() -> strip.Chip {
     cache: None,
     running_ms: None,
     model: "",
+    own_model: None,
     recent: [],
     answer: Some("**first** answer"),
   )
