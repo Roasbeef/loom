@@ -2,7 +2,7 @@
 
 This file describes the current integration boundary, its evidence and the next
 required work. Rewrite it after each integration milestone. This edition is
-baselined against `905be217d` on October 7, 2026, in the isolated
+baselined against `a1ab45a02` on October 7, 2026, in the isolated
 `runtime/main-refresh` branch. Source joins, gate receipts and hosted state were
 checked for this edition; earlier component results are identified separately.
 
@@ -47,6 +47,28 @@ review records describe their stated source revisions, not the entire current
 candidate.
 
 ## Verification and its limits
+
+The full repository gate is red at `a1ab45a02`. `make check` exits two after
+34.97 seconds, during its Python self-tests and before the package or release
+integration gates. The aggregate Python deadline is twenty seconds. Isolated
+host runs pass all eight installer tests and the six signoff-driver controls;
+restricted process inspection had prevented installer pruning. The driver also
+needs the installed GNU `realpath` on PATH. The remaining signoff gate cannot
+acquire its lock because this Mac has no `flock`. These installer and signoff
+sources are byte-identical to integrated main. A local prerequisite and a
+per-module twenty-second budget are proposed, not applied; every test and the
+existing gate remain intact.
+
+`make model-check` also exits two, after 568.01 seconds. Of 196 declared cases,
+`tcCompileReadySubmitUnassociated` reports failure; the other 195 report their
+expected outcome. A strict unchanged run passes all 1,000 schedules at seed 697,
+but seed 698 reproduces a null-target send at schedule 251. The directed scenario
+releases a deferred association before the actual callback has arrived. That is
+a model-driver defect; its correction and production correspondence remain under
+review. The first green retry does not close the original failure. The existing
+Lean gate passes its twelve admission theorems and all 684 comparisons with the
+production reducer on the same candidate. Strict model-local witness and mutation
+gates and the TLA+ ownership checks still need current receipts.
 
 The registered goal integration at `62c9b8ee7` passes all 3,260 client tests:
 381.46 seconds of tests, 402.66 seconds including build, with the command's own
