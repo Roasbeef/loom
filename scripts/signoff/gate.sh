@@ -49,6 +49,11 @@
 # neither can reach a real run, because sudo resets the environment and a
 # `restrict` key cannot set one.
 #
+# Two requirements of the host. The key's account needs a POSIX login
+# shell, because sshd runs a forced command through the account's shell and
+# a nologin shell never runs it. And `gh` must be on sudo's secure_path,
+# because sudo replaces PATH and the driver posts with `gh` as root.
+#
 # --- What the key still grants ---
 #
 # The driver builds scripts/signoff/Dockerfile and runs scripts/signoff.sh
@@ -65,6 +70,11 @@
 # detaching it at different commits would each build what the other
 # checked out, so a run waits on a lock for the one before it.
 set -euo pipefail
+
+# The request's patterns use bracket ranges, and a locale may collate those
+# in an order other than ASCII's, so the gate reads the request in the C
+# locale.
+export LC_ALL=C
 
 refuse() {
 	echo "loom-signoff-gate: $*" >&2
