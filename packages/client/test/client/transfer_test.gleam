@@ -348,6 +348,77 @@ pub fn a_lineage_transfer_that_found_nothing_ends_with_no_cursor_test() {
   assert field(body, "more_after") == json.Null
 }
 
+pub fn quoted_metadata_size_preserves_codepoint_budget_test() {
+  let controls =
+    list.map(numbers(0, 31), fn(code) {
+      let assert Ok(point) = string.utf_codepoint(code)
+        as "every C0 control is a Unicode codepoint"
+      string.from_utf_codepoints([point])
+    })
+  let texts =
+    list.append(
+      ["", "ordinary words", "\"", "\\", "é", "界", "🧶", "é"],
+      controls,
+    )
+
+  // Prefixes move every escape and UTF-8 sequence across each byte in a
+  // four-byte chunk. The codepoint oracle pins the old conservative budget,
+  // which deliberately exceeds the serializer's size for short C0 escapes.
+  list.each(numbers(0, 7), fn(prefix) {
+    list.each(texts, fn(text) {
+      let text = string.repeat("x", prefix) <> text <> "界🧶\"\\\n"
+      let expected = codepoint_quoted_size(text)
+      assert transfer.encoded_size(json.String(text), expected) == Ok(expected)
+      assert result.is_error(transfer.encoded_size(
+        json.String(text),
+        expected - 1,
+      ))
+
+      // Object keys have the same quoting boundary as values, while the
+      // wrapper and separator retain the transfer's existing overestimate.
+      let object_size = 4 + expected + expected
+      let object = json.Object([#(text, json.String(text))])
+      assert transfer.encoded_size(object, object_size) == Ok(object_size)
+      assert result.is_error(transfer.encoded_size(object, object_size - 1))
+      assert string.byte_size(json.to_string(object)) <= object_size
+    })
+  })
+}
+
+pub fn metadata_sizing_does_not_build_a_codepoint_list_test() {
+  let text = string.repeat("ordinary words 界🧶\"\\\n", 4096)
+  let metadata = json.Object([#("description", json.String(text))])
+  let expected =
+    4 + codepoint_quoted_size("description") + codepoint_quoted_size(text)
+  let #(sized, calls) =
+    utf_codepoint_calls(fn() {
+      transfer.encoded_size(metadata, transfer.metadata_encoded_limit)
+    })
+  assert sized == Ok(expected)
+  assert calls == 0
+}
+
+// Function-call counters are an OTP observation that Gleam cannot express.
+// The test-side adapter stops its private session on success or exception.
+@external(erlang, "client_test_ffi", "utf_codepoint_calls")
+fn utf_codepoint_calls(run: fn() -> a) -> #(a, Int)
+
+// This oracle counts Unicode codepoints independently of the byte scanner.
+fn codepoint_quoted_size(text: String) -> Int {
+  list.fold(string.to_utf_codepoints(text), 2, fn(size, point) {
+    let code = string.utf_codepoint_to_int(point)
+    let bytes = case code {
+      code if code < 32 -> 6
+      34 | 92 -> 2
+      code if code < 128 -> 1
+      code if code < 2048 -> 2
+      code if code < 65_536 -> 3
+      _ -> 4
+    }
+    size + bytes
+  })
+}
+
 // The integers from `first` to `last`, inclusive.
 fn numbers(first: Int, last: Int) -> List(Int) {
   list.repeat(0, last - first + 1)

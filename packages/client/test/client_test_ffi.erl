@@ -9,9 +9,28 @@
 -export([ws_roundtrip/4, which/1, run/3, gzip/1,
          origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1,
          owner_label_of/1, reductions_of/1, log_capture_start/0,
-         log_capture_stop/0, log/2]).
+         log_capture_stop/0, log/2, utf_codepoint_calls/1]).
 
 -include_lib("public_key/include/public_key.hrl").
+
+%% OTP's private trace session witnesses the removed Unicode list walk in
+%% this test process alone. No Gleam process primitive exposes function call
+%% counters; the session always retires, including when the callback raises.
+utf_codepoint_calls(Run) ->
+    {module, 'gleam@string'} = code:ensure_loaded('gleam@string'),
+    {ok, Session} = tprof:start(#{type => call_memory, session => transfer_cpu_test}),
+    try
+        1 = tprof:set_pattern(Session, 'gleam@string', to_utf_codepoints_loop, 2),
+        tprof:enable_trace(Session, self(), #{set_on_spawn => false}),
+        Value = Run(),
+        tprof:pause(Session),
+        {call_memory, Rows} = tprof:collect(Session),
+        Calls = lists:sum([Count || {_, _, _, PerPid} <- Rows,
+                                   {Pid, Count, _} <- PerPid, Pid =:= self()]),
+        {Value, Calls}
+    after
+        tprof:stop(Session)
+    end.
 
 %% Returns {ok, Payload} with the first text frame the server sends
 %% after our frame, or {error, Reason} naming the step that failed.

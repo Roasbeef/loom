@@ -1079,16 +1079,22 @@ fn reasoning_row(
 // does not change, so the memo's one dependency is the text and a lane render
 // that finds it unchanged does no Markdown work for it. Only the preview is
 // memoized: the body's own line memos are leaves, and a memo around them
-// would drop their cache entries when it hit (see `rows`).
+// would drop their cache entries when it hit (see `rows`). Blankness belongs
+// inside the memo too: trimming unchanged reasoning can scan and allocate
+// from its whole text even when the preview's Markdown is already cached.
 fn preview(text: String) -> List(Element(message)) {
-  case string.trim(text) {
-    "" -> []
-    _ -> [
-      element.memo([element.ref(text)], fn() {
-        fold_row.preview_span(markdown_view.line(text, step_words.result_limit))
-      }),
-    ]
-  }
+  [
+    element.memo([element.ref(text)], fn() {
+      case string.trim(text) {
+        "" -> element.none()
+        _ ->
+          fold_row.preview_span(markdown_view.line(
+            text,
+            step_words.result_limit,
+          ))
+      }
+    }),
+  ]
 }
 
 // A summarized block's row text is the terminal's header line and the summary
