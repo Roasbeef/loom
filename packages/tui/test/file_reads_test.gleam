@@ -127,7 +127,7 @@ pub fn an_oversized_image_reports_the_error_the_step_reported_before_test() {
 // Launch options whose `--config` names a file that does not exist, so
 // resolving them fails with the error the step used to report itself.
 fn absent_config() -> bootstrap.Options {
-  bootstrap.Options("/work", "", "", "build", "build/s6-absent/loom.toml")
+  bootstrap.Options("/work", "", "", "build", "build/s6-absent/loom.toml", "")
 }
 
 // A terminal at the session picker, with local launch options and a
@@ -233,6 +233,7 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
         "/work",
         "work",
         "/cfg/loom.toml",
+        "",
       ),
       90_000,
     )
@@ -312,3 +313,40 @@ fn tick_until_configured(
 
 @external(erlang, "effects_test_ffi", "host_on")
 fn host_on(owner: Subject(Dynamic)) -> daemon_selection.Host
+
+// The profile the launch asked for travels with the creation: the attachment job
+// that creates the session carries `--model-profile`'s name beside the resolved
+// configuration path (protocol-change/076).
+pub fn a_creation_carries_the_launch_profile_test() {
+  let options = bootstrap.Options(..absent_config(), profile: "deepseek")
+  let #(asked, _effects) = stepping.step(backend.KeyPress("n"), picker(options))
+  let assert Some(slot) = asked.view.configuring
+    as "the creation waits for its configuration job"
+  let resolved =
+    runtime.hold(
+      asked,
+      job.ConfigurationArrived(
+        job.key(slot),
+        weft.PulledOutcome(weft.Completed(0, "/cfg/loom.toml")),
+      ),
+    )
+  let #(created, effects) = stepping.step(backend.Tick, resolved)
+  let assert Some(creation_key) = created.view.creation_key
+    as "the creation retained its key once the configuration arrived"
+  let assert Some(host) = created.view.daemon_host
+    as "the stand-in host remains"
+  let assert [effect.StartJob(_, spec)] = list.filter(effects, is_job)
+    as "the tick starts exactly the attachment job"
+  assert spec
+    == job.Attach(
+      job.CreateSession(
+        host.control,
+        creation_key,
+        "/work",
+        "work",
+        "/cfg/loom.toml",
+        "deepseek",
+      ),
+      90_000,
+    )
+}

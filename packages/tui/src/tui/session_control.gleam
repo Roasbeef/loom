@@ -644,6 +644,16 @@ fn apply_configuration_reply(
   }
 }
 
+// The model profile the launch asked for, which only a local launch has:
+// `--model-profile` is one of its options, and a terminal attached to a remote
+// session has none. Empty means the configuration's default roles.
+fn chosen_profile(model: Model) -> String {
+  case model.view.local_options {
+    Some(options) -> options.profile
+    None -> ""
+  }
+}
+
 fn create_session_configured(model: Model, config: String) -> Model {
   let model =
     inbound.cancel_pending(model, "target change from " <> model.shared.session)
@@ -681,6 +691,7 @@ fn create_session_configured(model: Model, config: String) -> Model {
           model.view.workspace.path,
           workspace.session_name(model.view.workspace),
           config,
+          chosen_profile(model),
         )
       let #(model, job_key) =
         tui_model.start_job(model, job.Attach(route, attach_timeout_ms))

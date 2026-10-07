@@ -356,6 +356,7 @@ pub type AttachRoute {
     workspace: String,
     name: String,
     config: String,
+    profile: String,
   )
 }
 

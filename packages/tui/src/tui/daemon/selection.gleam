@@ -258,7 +258,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
 /// ## Examples
 ///
 /// ```gleam
-/// // selection.create_named(host, key, project.path, workspace.session_name(project), config)
+/// // selection.create_named(host, key, project.path, workspace.session_name(project), config, "")
 /// ```
 pub fn create_named(
   host: Host,
@@ -266,11 +266,12 @@ pub fn create_named(
   workspace: String,
   name: String,
   configuration: String,
+  profile: String,
 ) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
-      protocol.CreateSession(key, workspace, name, configuration),
+      protocol.CreateSession(key, workspace, name, configuration, profile),
       10_000,
     )
     |> result.map_error(failure),

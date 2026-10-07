@@ -209,6 +209,9 @@ pub type Command {
     name: String,
     /// Explicit operator configuration path.
     configuration: String,
+    /// The model profile to create the session under, or empty for the
+    /// configuration's default roles (protocol-change/076).
+    profile: String,
   )
 
   /// Explicitly starts the selected session in this connection's epoch.
@@ -770,7 +773,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       use other <- result.map(text_fields([#("workspace", workspace, 4096)]))
       list.append(fields, other)
     }
-    CreateSession(key, workspace, name, configuration) -> {
+    CreateSession(key, workspace, name, configuration, profile) -> {
       use fields <- result.try(
         text_fields([
           #("request_key", key, 256),
@@ -781,11 +784,21 @@ fn command_fields(command: Command, epoch: Epoch) {
 
       // Empty configuration preserves daemon defaults; other control text is
       // still nonempty. The same byte ceiling applies to an explicit path.
-      use configuration <- result.map(case configuration {
+      use configuration <- result.try(case configuration {
         "" -> Ok("")
         path -> bounded_text(json.String(path), 4096)
       })
-      [#("configuration", json.String(configuration)), ..fields]
+
+      // An empty profile is the default roles and is not sent, so a daemon
+      // that predates profiles receives exactly the request it always did.
+      use profile <- result.map(case profile {
+        "" -> Ok([])
+        name -> text_fields([#("profile", name, 64)])
+      })
+      [
+        #("configuration", json.String(configuration)),
+        ..list.append(fields, profile)
+      ]
     }
     OpenSession(id)
     | StopSession(id)

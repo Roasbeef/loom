@@ -1049,6 +1049,29 @@ pub fn launch_view(arguments: List(String)) -> Result(ViewRequest, String) {
   }
 }
 
+/// Classifies a terminal launch's words the way the launcher does, answering the
+/// local options it parsed (`--workspace`, `--server`, `--state-dir`, `--config`
+/// and `--model-profile`) or the refusal. It is the test seam for those flags.
+/// The launcher's own `--profile` (BEAM profiling) is a different flag, consumed
+/// before the application starts, so the model profile has its own spelling.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(options) = tui.launch_options(["--model-profile", "deepseek"])
+/// assert options.profile == "deepseek"
+/// ```
+@internal
+pub fn launch_options(
+  arguments: List(String),
+) -> Result(bootstrap.Options, String) {
+  case parse_launch(arguments) {
+    Local(options, _) -> Ok(options)
+    Invalid(reason) -> Error(reason)
+    _other -> Error("not a terminal launch")
+  }
+}
+
 /// Classifies the words after `loom sessions` the way the launcher does,
 /// answering the parsed command when they name one and the refusal
 /// otherwise. It is the test seam for `--all`, `--yes`, and the shared
@@ -1636,7 +1659,7 @@ fn asked(session_id: String) -> Result(Nil, String) {
 }
 
 fn default_bootstrap_options() -> bootstrap.Options {
-  bootstrap.Options("", "", "", "", "")
+  bootstrap.Options("", "", "", "", "", "")
 }
 
 fn parse_local_options(
@@ -1663,6 +1686,17 @@ fn parse_local_options(
           )
         "--config" ->
           parse_local_options(rest, bootstrap.Options(..options, config: value))
+        "--model-profile" ->
+          case string.starts_with(value, "-") {
+            // A value that looks like the next flag is a forgotten name, and
+            // taking it would swallow that flag.
+            True -> Error("--model-profile needs a profile name, got " <> value)
+            False ->
+              parse_local_options(
+                rest,
+                bootstrap.Options(..options, profile: value),
+              )
+          }
         _ -> Error("unknown local launch option " <> flag)
       }
   }
@@ -1721,7 +1755,8 @@ pub fn launch_token(arguments: List(String)) -> Result(String, String) {
 
 fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session <id>] "
-  <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>]\n"
+  <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>] "
+  <> "[--model-profile <name>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
   <> "  version            Print version, build commit and platform.\n"
@@ -1739,6 +1774,8 @@ fn launch_usage() -> String {
   <> "                      with --addr and --token-file.\n"
   <> "  ext <command>       Manage daemon extensions.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
+  <> "  --model-profile names a [profiles.<name>] table of that file whose\n"
+  <> "       roles a newly created session uses; a resumed session keeps its own\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]\n"
