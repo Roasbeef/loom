@@ -2828,21 +2828,7 @@ pub fn search_jailed(
     profile.LspServer(..search.server, project: profile.ProjectReadOnly)
   use built <- result.try(jail_for(jailed, server, search.root))
   let #(now, _clock) = clock.read(jailed.clock)
-  let argv =
-    list.flatten([
-      [
-        "rg",
-        "--json",
-        "--word-regexp",
-        "--fixed-strings",
-        "--max-count",
-        int.to_string(max_hits_per_file),
-      ],
-      list.flat_map(search.server.extensions, fn(extension) {
-        ["--glob", "*" <> extension]
-      }),
-      ["--", search.identifier, search.root],
-    ])
+  let argv = search_argv(search)
 
   // The lease's zeros would let a search run and print without bound; a
   // search is a command, so it gets a command's caps. Both are narrower
@@ -2880,6 +2866,29 @@ pub fn search_jailed(
     }),
   )
   search_result(collected)
+}
+
+/// Derives the existing fixed ripgrep recipe without starting or clearing it.
+/// Registered native plans use these same bytes and argument order.
+///
+/// ## Examples
+/// `search_argv(Search(server, "/work", "name"))` ends with `-- name /work`.
+@internal
+pub fn search_argv(search: Search) -> List(String) {
+  list.flatten([
+    [
+      "rg",
+      "--json",
+      "--word-regexp",
+      "--fixed-strings",
+      "--max-count",
+      int.to_string(max_hits_per_file),
+    ],
+    list.flat_map(search.server.extensions, fn(extension) {
+      ["--glob", "*" <> extension]
+    }),
+    ["--", search.identifier, search.root],
+  ])
 }
 
 // Why a bare name could not be searched for when ripgrep is missing, and

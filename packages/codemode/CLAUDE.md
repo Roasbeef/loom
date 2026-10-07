@@ -1182,3 +1182,11 @@ or widely nested values. An independent Erlang call trace confirms that a large
 terminal body does not reach the generic decoder before its owning preflight.
 See [the review](../../docs/review/distributed-terminal-preflight.md) for the
 executed evidence and its JavaScript limits.
+
+## Shared finite Search argv
+
+The additive internal `lsp_host/manager.search_argv(Search)` exposes the existing
+fixed rg argv expression, byte for byte and in the same order. `search_jailed`
+uses this same function. Registered finite plans reuse it and the unchanged
+`resolve.split_symbol` rather than duplicating recipe or identifier rules. This
+extraction adds no manager state, timing, native authority or parser behavior.
