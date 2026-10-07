@@ -1278,7 +1278,7 @@
      capped and they scroll on their own, so a long action preview or
      several pending cards cannot push the composer off the screen. */
   section.approvals{margin:0 0 6px 0;max-height:35vh;overflow-y:auto;overscroll-behavior:contain;}
-  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-danger);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
+  article.approval-card{background:var(--color-bg-raised);border:1px solid var(--color-signal);border-radius:10px;padding:10px 12px;margin:0 0 6px 0;}
   article.approval-card:last-child{margin-bottom:0;}
   .approval-head{margin:0 0 2px 0;color:var(--color-fg);font:14px/1.4 var(--font-sans);}
   .approval-strand{font-weight:600;}
