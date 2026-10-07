@@ -1,14 +1,20 @@
 //// Registered owner wiring exercises the actual serialized custodian and SQLite.
 //// No test hands the actor a token obtained from another custody connection.
 //// Private TLS membership exercises normal dispatch callbacks without an executor.
+//// Existing pure allocation fixtures use WorkspaceSystem; separate staged controls
+//// below use actual Broker clearance and retain original native envelopes.
 
+import broker/broker
+import broker/budget
 import broker/dispatch
 import broker/enrollment
 import broker/exec
 import broker/policy
 import client/remote/custodian
 import client/remote/dispatch_binding
+import client/remote/native_envelope
 import client/remote/tool_custody
+import client/remote/workspace_binding
 import core/clock
 import core/command
 import core/generation
@@ -27,8 +33,11 @@ import executor/remote/wire
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/erlang/reference
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import gleam/time/timestamp
 import host/bootstrap
@@ -38,6 +47,7 @@ import simplifile
 import sqlight
 import storage/owner_custody as custody
 import support/beam_owner_fixture
+import tools/workspace as semantic
 import weft/poll
 import weft/registry
 
@@ -194,6 +204,7 @@ pub fn registered_dispatch_captures_original_actor_and_receipt_before_ack_test()
   let prepared = prepared()
   let request =
     dispatch.Dispatch(
+      None,
       dispatch.CallContext(operation(), prepared.step, Some(origin)),
       prepared.request,
       11,
@@ -766,9 +777,9 @@ fn system_payload(
     bit_array.from_string(
       remote_tool.child_address(origin) <> ids.entry_id_to_string(request_id),
     )
-  let assert Ok(payload) = custody.payload(limits(), bytes)
+  let assert Ok(payload) = custody.workspace_request(limits(), bytes)
     as "Exact original system envelope fits."
-  Ok(custody.NativeSystem(payload))
+  Ok(custody.WorkspaceSystem(payload))
 }
 
 fn prepared() -> wire.Prepared {
@@ -832,4 +843,1095 @@ fn scalar(path: String, statement: String) -> Int {
     as "One bounded scalar."
   assert sqlight.close(db) == Ok(Nil)
   value
+}
+
+pub fn actual_broker_clearance_consumes_original_system_permission_once_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "actual_broker_clearance_consumes_original_system_permission_once_test",
+  )
+  let f = fixture("native-system-broker", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "The original SQLite actor supplies ready custody."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let events = process.new_subject()
+  let declared = native_declaration()
+  let intent =
+    retained_intent(owner, "synthetic retained check occurrence", id(90))
+  let assert Ok(custodian.SystemPermission(ref)) =
+    custodian.allocate_system_reservation(owner, intent, declared, events)
+    as "Only the actual Fresh allocation installs a live ref."
+  let config = system_configuration(ready, peer)
+  let calls = process.new_subject()
+  let assert Ok(broker) =
+    broker.start_dispatching(
+      entropy: fn(size) { bit_array.from_string(string.repeat("x", size)) },
+      clock: clock.fixed(1000),
+      dispatcher: dispatch.Dispatcher(fn(actual) {
+        let reserved = config.reserve(actual)
+        process.send(calls, #(actual, reserved))
+        Error(dispatch.NotStarted)
+      }),
+    )
+    as "The real Broker performs policy, budget and token clearance."
+  assert broker.clear_system_call_from(
+      broker,
+      ref,
+      native_spec(),
+      events: events,
+      waiting: 5000,
+    )
+    == Error(broker.BrokerUnavailable)
+  let assert Ok(#(actual, Ok(reserved))) = process.receive(calls, 5000)
+    as "The actual static binding commits the Broker-cleared envelope; this control deliberately submits no native effect."
+  assert actual.system_reservation == Some(ref)
+  let #(_, _, origin, uuid) = dispatch.system_reservation_fields(ref)
+  assert actual.context.origin == Some(origin)
+  assert actual.caller == Some(process.self())
+  assert actual.deadline_ms == declared.deadline_ms
+  assert reserved.prepared.request == actual.request
+  assert bit_array.byte_size(actual.request.token) == 32
+  assert config.reserve(actual) == Error(Nil)
+  assert custodian.allocate_system_reservation(owner, intent, declared, events)
+    == Ok(custodian.SystemObservation(origin, uuid, custody.NativeAdmitted))
+  let assert Ok(stored) = custodian.child(owner, origin)
+    as "Complete exact native bytes are readable as history."
+  let assert Ok(decoded) =
+    native_envelope.decode_cleared("owner", identity_scope(), stored.1)
+    as "Original absolute deadline is retained beside complete actual Prepared."
+  assert decoded
+    == #(actual.context.operation, reserved.prepared, declared.deadline_ms)
+  assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+  assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+  let assert Ok(digest) = wire.prepared_digest(reserved.prepared)
+    as "Native receipt matches the actual complete materialization."
+  assert config.receive(origin, reserved.key, digest, [<<"late output">>], <<
+      "late terminal",
+    >>)
+    == Ok(Nil)
+  assert custodian.receipt_generation(owner, origin, uuid) |> result.is_ok
+  broker.stop(broker)
+  stop(f)
+  assert scalar(f.path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+  assert scalar(
+      f.path,
+      "SELECT COUNT(*) FROM owner_custody_children WHERE state='cancelled'",
+    )
+    == 1
+}
+
+pub fn altered_actual_clearance_consumes_permission_even_on_refusal_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "altered_actual_clearance_consumes_permission_even_on_refusal_test",
+  )
+  let f = fixture("native-system-altered", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "Original ready owner."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let events = process.new_subject()
+  let intent =
+    retained_intent(owner, "synthetic altered declaration control", id(90))
+  let assert Ok(custodian.SystemPermission(ref)) =
+    custodian.allocate_system_reservation(
+      owner,
+      intent,
+      native_declaration(),
+      events,
+    )
+    as "Original Fresh allocation."
+  let #(_, _, origin, _) = dispatch.system_reservation_fields(ref)
+  let config = system_configuration(ready, peer)
+  let actual = system_dispatch(ref, origin)
+  assert config.reserve(dispatch.Dispatch(..actual, caller: Some(f.pid)))
+    == Error(Nil)
+  assert config.reserve(actual) == Error(Nil)
+  assert custodian.child(owner, origin) == Error(custody.Missing)
+  assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+  assert config.reserve(actual) == Error(Nil)
+  stop(f)
+  assert scalar(
+      f.path,
+      "SELECT COUNT(*) FROM owner_system_intent WHERE child_profile='native_cancelled'",
+    )
+    == 1
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert scalar(f.path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+}
+
+pub fn original_ref_cancel_and_owner_fence_never_recreate_permission_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "original_ref_cancel_and_owner_fence_never_recreate_permission_test",
+  )
+  let f = fixture("native-system-fence", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "Original ready owner."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let events = process.new_subject()
+  let intent =
+    retained_intent(owner, "synthetic cancelled declaration control", id(90))
+  let assert Ok(custodian.SystemPermission(ref)) =
+    custodian.allocate_system_reservation(
+      owner,
+      intent,
+      native_declaration(),
+      events,
+    )
+    as "Original Fresh allocation."
+  let #(subject, _, origin, uuid) = dispatch.system_reservation_fields(ref)
+  let forged =
+    dispatch.system_reservation_ref(subject, reference.new(), origin, uuid)
+  assert dispatch.cancel_system(forged, 5000) == Error(Nil)
+  assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+  let config = system_configuration(ready, peer)
+  assert config.reserve(system_dispatch(ref, origin)) == Error(Nil)
+  let later =
+    retained_intent(owner, "synthetic fenced declaration control", id(91))
+  let assert Ok(custodian.SystemPermission(later_ref)) =
+    custodian.allocate_system_reservation(
+      owner,
+      later,
+      native_declaration(),
+      events,
+    )
+    as "Another original retained occurrence has independent custody."
+  let #(_, _, later_origin, _) = dispatch.system_reservation_fields(later_ref)
+  assert custodian.fatal_fence(owner, invocation(0).key)
+    == Error(custody.Missing)
+  assert config.reserve(system_dispatch(later_ref, later_origin)) == Error(Nil)
+  assert dispatch.cancel_system(later_ref, 5000) == Ok(Nil)
+  stop(f)
+  let assert Ok(started) = custodian.start(f.owner, f.config)
+    as "Reboot opens history with an empty live permission inventory."
+  assert config.reserve(system_dispatch(later_ref, later_origin)) == Error(Nil)
+  assert dispatch.cancel_system(later_ref, 100) == Error(Nil)
+  stop(Fixture(..f, pid: started.pid))
+  assert scalar(f.path, "SELECT next_ordinal FROM owner_system_ordinal") == 2
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+}
+
+fn native_declaration() -> dispatch.SystemCommandDeclaration {
+  dispatch.SystemCommandDeclaration(
+    "owner",
+    operation(),
+    "startup",
+    ["/tools/git", "status", "--porcelain"],
+    [#("PATH", "/tools")],
+    "/work",
+    11_000,
+  )
+}
+
+fn native_spec() -> broker.CallSpec {
+  let assert Ok(enrolled) =
+    enrollment.decode(custody.enrollment_fields(pin()).4)
+    as "The immutable pin contains the real enrolled policy."
+  let native = enrollment.native_facts(enrolled)
+  let declared = native_declaration()
+  let requirements =
+    policy.SandboxPolicy(
+      ..native.ceiling,
+      limits: policy.Limits(..native.ceiling.limits, wall_s: 5),
+    )
+  broker.CallSpec(
+    declared.operation,
+    declared.step,
+    native.ceiling,
+    requirements,
+    [],
+    broker.RefuseNarrowed,
+    native.demand,
+    declared.argv,
+    declared.env,
+    declared.cwd,
+    budget.Budget(8, declared.deadline_ms),
+  )
+}
+
+fn system_prepared(actual: dispatch.Dispatch) -> wire.Prepared {
+  let assert Ok(enrolled) =
+    enrollment.decode(custody.enrollment_fields(pin()).4)
+    as "Original enrollment decodes."
+  let native = enrollment.native_facts(enrolled)
+  let assert Ok(registered) =
+    registration.new(
+      identity_scope(),
+      native.working_roots,
+      native.ceiling,
+      native.demand,
+      Ok,
+    )
+    as "Original exact registration materializes without a filesystem probe."
+  wire.Prepared(
+    actual.context.step,
+    registration.digest(registered),
+    wire.Finite(10_000),
+    actual.request,
+    wire.Logs,
+  )
+}
+
+fn system_configuration(
+  ready: custodian.RegisteredOwner,
+  peer: distribution.Peer,
+) -> dispatcher.Config {
+  let assert Ok(binding) =
+    dispatch_binding.new_registered(
+      ready,
+      connection.Config(peer, "owner", "exec-a", identity_scope(), 1, 1000),
+      fn(actual) { Ok(system_prepared(actual)) },
+      fn() { id(99) },
+      poll.monotonic().now,
+      21,
+      5000,
+      fn(_) { Nil },
+    )
+    as "Static binding uses the same original custodian and actual Dispatch."
+  dispatch_binding.configuration(binding)
+}
+
+fn system_dispatch(
+  ref: dispatch.SystemReservationRef,
+  origin: remote_tool.ChildOrigin,
+) -> dispatch.Dispatch {
+  let declared = native_declaration()
+  let spec = native_spec()
+  dispatch.Dispatch(
+    Some(ref),
+    dispatch.CallContext(declared.operation, declared.step, Some(origin)),
+    exec.ExecRequest(
+      declared.argv,
+      declared.env,
+      declared.cwd,
+      Some(spec.requirements),
+      <<9:size(256)>>,
+      spec.demand,
+    ),
+    1,
+    declared.deadline_ms,
+    clock.fixed(1000),
+    Some(process.self()),
+    fn(_) { Nil },
+    fn(_) { Nil },
+  )
+}
+
+pub fn actual_dispatcher_cancellation_uses_original_ref_after_admission_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "actual_dispatcher_cancellation_uses_original_ref_after_admission_test",
+  )
+  let f = fixture("system-actual-dispatcher", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "The original owner is active."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let events = process.new_subject()
+  let intent =
+    retained_intent(
+      owner,
+      "synthetic actual dispatcher cancellation occurrence",
+      id(90),
+    )
+  let assert Ok(custodian.SystemPermission(ref)) =
+    custodian.allocate_system_reservation(
+      owner,
+      intent,
+      native_declaration(),
+      events,
+    )
+    as "Original permission comes from Fresh SQLite allocation."
+  let original = system_configuration(ready, peer)
+  let calls = process.new_subject()
+  let cancelled = process.new_subject()
+  let actual_config =
+    dispatcher.Config(
+      ..original,
+      cancel_reserved: fn(actual) {
+        original.cancel_reserved(actual)
+        process.send(cancelled, Nil)
+      },
+      reserve: fn(actual) {
+        let outcome = original.reserve(actual)
+        let release = process.new_subject()
+        process.send(calls, #(actual, outcome, release, process.self()))
+
+        // Known COMMIT is held before remote work can finish. The actual
+        // Dispatcher remains free to cancel its reserved original identity.
+        let assert Ok(Nil) = process.receive(release, 5000)
+          as "Only the observed cancellation releases this controlled reserve worker."
+        outcome
+      },
+    )
+  let assert Ok(broker) =
+    broker.start_dispatching(
+      entropy: fn(size) { bit_array.from_string(string.repeat("x", size)) },
+      clock: clock.fixed(1000),
+      dispatcher: dispatcher.dispatcher(actual_config),
+    )
+    as "The actual remote Dispatcher runs beneath the actual Broker; this controlled peer has no executor or helper."
+  let assert Ok(handle) =
+    broker.clear_system_call_from(
+      broker,
+      ref,
+      native_spec(),
+      events: events,
+      waiting: 5000,
+    )
+    as "The actual guarantor accepts original clearance before its asynchronous reserve."
+  let assert Ok(#(actual, Ok(reserved), release, holder)) =
+    process.receive(calls, 5000)
+    as "The actual asynchronous dispatcher reserve commits exact native custody and supplies its worker-owned release Subject."
+  assert process.subject_owner(release) == Ok(holder)
+  assert holder != process.self()
+  broker.cancel(broker, handle)
+  let assert Ok(broker.CallSettled(broker.CallFailed(_))) =
+    process.receive(events, 5000)
+    as "Cancellation settles once through the actual Broker."
+  let assert Ok(Nil) = process.receive(cancelled, 5000)
+    as "The actual automatic callback has returned before its durable state is inspected."
+
+  // This first durable observation must be produced by the actual Dispatcher
+  // cancellation callback. The following direct calls only prove idempotence.
+  assert scalar(
+      f.path,
+      "SELECT COUNT(*) FROM owner_custody_children WHERE state='cancelled'",
+    )
+    == 1
+  process.send(release, Nil)
+  assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+  assert original.reserve(actual) == Error(Nil)
+  let #(_, _, origin, uuid) = dispatch.system_reservation_fields(ref)
+  assert reserved.key
+    == identity.request_key(identity_scope(), operation(), request_uuid(uuid))
+  assert custodian.child_generation(owner, origin) == Ok(association(1))
+  assert process.receive(events, 100) == Error(Nil)
+  broker.stop(broker)
+  stop(f)
+  assert scalar(
+      f.path,
+      "SELECT COUNT(*) FROM owner_custody_children WHERE state='cancelled'",
+    )
+    == 1
+  assert scalar(f.path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+}
+
+fn request_uuid(uuid: ids.EntryId) -> identity.RequestId {
+  let assert Ok(value) = identity.request_id(ids.entry_id_to_string(uuid))
+    as "Original UUID parses without replacement."
+  value
+}
+
+pub fn invalid_prepared_and_failed_sql_commit_never_rearm_system_permission_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "invalid_prepared_and_failed_sql_commit_never_rearm_system_permission_test",
+  )
+  let f = fixture("system-failed-commit", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "Original ready actor."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let events = process.new_subject()
+  let original = system_configuration(ready, peer)
+  let first =
+    retained_intent(owner, "synthetic invalid Prepared control", id(90))
+  let assert Ok(custodian.SystemPermission(ref)) =
+    custodian.allocate_system_reservation(
+      owner,
+      first,
+      native_declaration(),
+      events,
+    )
+    as "Original first allocation."
+  let #(_, _, origin, _) = dispatch.system_reservation_fields(ref)
+  let actual = system_dispatch(ref, origin)
+  let invalid =
+    dispatch.Dispatch(
+      ..actual,
+      request: exec.ExecRequest(..actual.request, argv: []),
+    )
+  assert original.reserve(invalid) == Error(Nil)
+  assert original.reserve(actual) == Error(Nil)
+  let second =
+    retained_intent(
+      owner,
+      "synthetic suppressed SQLite native link control",
+      id(91),
+    )
+  let assert Ok(custodian.SystemPermission(second_ref)) =
+    custodian.allocate_system_reservation(
+      owner,
+      second,
+      native_declaration(),
+      events,
+    )
+    as "Original second allocation."
+  let #(_, _, second_origin, _) = dispatch.system_reservation_fields(second_ref)
+  mutate(
+    f.path,
+    "CREATE TRIGGER suppress_native_link BEFORE INSERT ON owner_child_generation BEGIN SELECT RAISE(IGNORE); END",
+  )
+  let actual = system_dispatch(second_ref, second_origin)
+  assert original.reserve(actual) == Error(Nil)
+  mutate(f.path, "DROP TRIGGER suppress_native_link")
+  assert original.reserve(actual) == Error(Nil)
+  assert custodian.child(owner, second_origin) == Error(custody.Missing)
+  assert custodian.allocate_system_reservation(
+      owner,
+      second,
+      native_declaration(),
+      events,
+    )
+    == Ok(custodian.SystemObservation(
+      second_origin,
+      id(91),
+      custody.NativeCancelled,
+    ))
+  stop(f)
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+  assert scalar(f.path, "SELECT next_ordinal FROM owner_system_ordinal") == 2
+  assert scalar(
+      f.path,
+      "SELECT COUNT(*) FROM owner_system_intent WHERE child_profile='native_cancelled'",
+    )
+    == 2
+}
+
+pub fn original_retained_workspace_and_capability_pair_bind_actual_git_clearance_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "original_retained_workspace_and_capability_pair_bind_actual_git_clearance_test",
+  )
+  let f = fixture("workspace-derived-git", fn(_, _, _) { final() })
+  assert invoke(f, 0) == Ok(final())
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "The original actor retains real ordinary-tool custody."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let assert Ok(enrolled) =
+    enrollment.decode(custody.enrollment_fields(pin()).4)
+    as "Complete actual enrollment."
+  let #(index, hex) = remote_tool.provenance(invocation(0).key)
+  let assert Ok(digest) = bit_array.base16_decode(hex)
+    as "Full retained tool input digest."
+  let assert Ok(source) = semantic.tool_origin(index, digest)
+    as "Original tool provenance."
+  let assert Ok(step) = workspace.step("registered")
+    as "Original semantic step."
+  let assert Ok(capability) =
+    remote_tool.tool_child(
+      invocation(0).key,
+      remote_tool.AdmittedCapability(
+        "git-status",
+        0,
+        remote_tool.SemanticWorkspace,
+      ),
+    )
+    as "Existing capability semantic identity remains unchanged."
+  let parents = [child(0, remote_tool.Workspace(0)), capability]
+  list.each(
+    list.index_map(parents, fn(parent, index) { #(parent, index) }),
+    fn(pair) {
+      let #(parent, index) = pair
+      let semantic_binding =
+        workspace_binding.new(scope(), owner, fn() { id(90 + index) })
+      let binding =
+        dispatch_binding.new_registered(
+          ready,
+          connection.Config(peer, "owner", "exec-a", identity_scope(), 1, 1000),
+          fn(actual) { Ok(system_prepared(actual)) },
+          fn() { id(95 + index) },
+          poll.monotonic().now,
+          21,
+          5000,
+          fn(_) { Nil },
+        )
+      let assert Ok(binding) = binding as "Original static native binding."
+      let assert Ok(config) =
+        dispatch_binding.with_workspace_commands(
+          binding,
+          enrolled,
+          "/tools/git",
+        )
+        as "The trusted executor-resolved Git executable is pinned beneath enrolled toolchain roots."
+      let assert Ok(semantic_reserved) =
+        workspace_binding.reserve(
+          semantic_binding,
+          parent,
+          operation(),
+          step,
+          semantic.Tool(source),
+          semantic.Git(semantic.Status),
+        )
+        as "Complete canonical semantic invocation commits first."
+      let native_origin = case remote_tool.child_fields(parent) {
+        remote_tool.ToolFields(_, remote_tool.Workspace(_)) -> {
+          let assert Ok(origin) =
+            remote_tool.workspace_command_child(parent, remote_tool.GitStatus)
+            as "Direct workspace wrapper has its own canonical address."
+          origin
+        }
+        remote_tool.ToolFields(
+          key,
+          remote_tool.AdmittedCapability(
+            name,
+            ordinal,
+            remote_tool.SemanticWorkspace,
+          ),
+        ) -> {
+          let assert Ok(origin) =
+            remote_tool.tool_child(
+              key,
+              remote_tool.AdmittedCapability(
+                name,
+                ordinal,
+                remote_tool.NativeCommand,
+              ),
+            )
+            as "The existing capability/native pair shares its exact logical tuple."
+          origin
+        }
+        _ ->
+          panic as "This fixture enumerates only the two approved semantic families."
+      }
+      let calls = process.new_subject()
+      let assert Ok(broker) =
+        broker.start_dispatching(
+          entropy: fn(size) { bit_array.from_string(string.repeat("x", size)) },
+          clock: clock.fixed(1000),
+          dispatcher: dispatch.Dispatcher(fn(actual) {
+            let result = config.reserve(actual)
+            process.send(calls, #(actual, result))
+            Error(dispatch.NotStarted)
+          }),
+        )
+        as "Actual Broker clearance reaches the fixed Git recipe; this control submits no native effect."
+      let events = process.new_subject()
+      let spec =
+        broker.CallSpec(..native_spec(), step_id: "registered:git_status")
+      assert broker.clear_call_from(
+          broker,
+          native_origin,
+          spec,
+          events: events,
+          waiting: 5000,
+        )
+        == Error(broker.BrokerUnavailable)
+      let assert Ok(#(actual, Ok(reserved))) = process.receive(calls, 5000)
+        as "The fixed binding retains the actual cleared complete Prepared."
+      assert actual.system_reservation == None
+      assert reserved.prepared.request == actual.request
+      assert config.reserve(actual) == Error(Nil)
+      assert custodian.child(owner, parent)
+        == Ok(#(
+          semantic.invocation_identity(workspace_binding.invocation(
+            semantic_reserved,
+          )).4,
+          workspace_binding.content(semantic_reserved),
+          None,
+        ))
+      config.cancel_reserved(actual)
+      let assert Ok(digest) = wire.prepared_digest(reserved.prepared)
+        as "Exact retained native materialization."
+      assert config.receive(
+          native_origin,
+          reserved.key,
+          digest,
+          [<<"late Git output">>],
+          <<"late Git terminal">>,
+        )
+        == Ok(Nil)
+      assert custodian.receipt_generation(owner, native_origin, id(95 + index))
+        |> result.map(fn(value) { value.1 })
+        == Ok(association(1))
+      broker.stop(broker)
+    },
+  )
+  stop(f)
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 4
+  assert scalar(
+      f.path,
+      "SELECT COUNT(*) FROM owner_custody_children WHERE state='cancelled'",
+    )
+    == 2
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_child_generation") == 4
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_system_ordinal") == 0
+}
+
+pub fn changed_clearance_fields_close_only_original_ref_without_quota_release_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "changed_clearance_fields_close_only_original_ref_without_quota_release_test",
+  )
+  let f = fixture("system-projection-refusals", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "The original ready actor owns all occurrences."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let events = process.new_subject()
+  let config = system_configuration(ready, peer)
+  let changes = [
+    fn(actual: dispatch.Dispatch) {
+      dispatch.Dispatch(..actual, deadline_ms: 12_000)
+    },
+    fn(actual: dispatch.Dispatch) {
+      dispatch.Dispatch(
+        ..actual,
+        context: dispatch.CallContext(..actual.context, step: "other"),
+      )
+    },
+    fn(actual: dispatch.Dispatch) {
+      dispatch.Dispatch(
+        ..actual,
+        context: dispatch.CallContext(
+          ..actual.context,
+          operation: ids.mint_op(ids.generator(clock.fixed(1000), 78)).0,
+        ),
+      )
+    },
+    fn(actual: dispatch.Dispatch) {
+      dispatch.Dispatch(
+        ..actual,
+        request: exec.ExecRequest(..actual.request, argv: [
+          "/tools/git",
+          "reset",
+          "--hard",
+        ]),
+      )
+    },
+    fn(actual: dispatch.Dispatch) {
+      dispatch.Dispatch(
+        ..actual,
+        request: exec.ExecRequest(..actual.request, cwd: "/other"),
+      )
+    },
+    fn(actual: dispatch.Dispatch) {
+      dispatch.Dispatch(
+        ..actual,
+        request: exec.ExecRequest(..actual.request, env: [#("PATH", "/other")]),
+      )
+    },
+    fn(actual: dispatch.Dispatch) {
+      dispatch.Dispatch(
+        ..actual,
+        request: exec.ExecRequest(..actual.request, demand: exec.BestEffort),
+      )
+    },
+  ]
+  list.each(
+    list.index_map(changes, fn(change, index) { #(change, index) }),
+    fn(pair) {
+      let #(change, index) = pair
+      let intent =
+        retained_intent(
+          owner,
+          "synthetic closed declaration variant " <> int.to_string(index),
+          id(80 + index),
+        )
+      let assert Ok(custodian.SystemPermission(ref)) =
+        custodian.allocate_system_reservation(
+          owner,
+          intent,
+          native_declaration(),
+          events,
+        )
+        as "Each original occurrence allocates only once."
+      let #(_, _, origin, uuid) = dispatch.system_reservation_fields(ref)
+      let charge =
+        scalar(f.path, "SELECT SUM(reserved_bytes) FROM owner_system_intent")
+      let actual = system_dispatch(ref, origin)
+      assert config.reserve(change(actual)) == Error(Nil)
+      assert config.reserve(actual) == Error(Nil)
+      assert custodian.child(owner, origin) == Error(custody.Missing)
+      assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+      assert custodian.allocate_system_reservation(
+          owner,
+          intent,
+          native_declaration(),
+          events,
+        )
+        == Ok(custodian.SystemObservation(origin, uuid, custody.NativeCancelled))
+      assert scalar(
+          f.path,
+          "SELECT SUM(reserved_bytes) FROM owner_system_intent",
+        )
+        == charge
+    },
+  )
+  stop(f)
+  assert scalar(f.path, "SELECT next_ordinal FROM owner_system_ordinal") == 7
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+}
+
+pub fn unobserved_reserve_reply_and_discarded_allocation_never_rearm_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "unobserved_reserve_reply_and_discarded_allocation_never_rearm_test",
+  )
+  let f = fixture("system-reply-loss", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "Original ready actor."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let events = process.new_subject()
+  let first =
+    retained_intent(owner, "synthetic unobserved reserve reply", id(90))
+  let assert Ok(custodian.SystemPermission(ref)) =
+    custodian.allocate_system_reservation(
+      owner,
+      first,
+      native_declaration(),
+      events,
+    )
+    as "Original one-use permission."
+  let #(subject, _, origin, uuid) = dispatch.system_reservation_fields(ref)
+  let actual = system_dispatch(ref, origin)
+  let prepared = system_prepared(actual)
+  let assert Ok(envelope) =
+    native_envelope.encode_cleared(
+      "owner",
+      identity_scope(),
+      operation(),
+      prepared,
+      actual.deadline_ms,
+    )
+    as "Exact actual cleared envelope."
+  let reply = process.new_subject()
+  process.send(
+    subject,
+    dispatch.ReserveSystem(
+      ref,
+      dispatch.ClearedSystemCommand(
+        actual.request,
+        actual.context.operation,
+        actual.context.step,
+        actual.deadline_ms,
+        actual.caller,
+      ),
+      envelope,
+      reply,
+    ),
+  )
+
+  // The same sender's following ask observes COMMIT while its Reserve reply stays
+  // deliberately unobserved. This is an actual original mailbox exchange, not a
+  // synthetic retained state inserted by a second writer.
+  assert custodian.child(owner, origin) == Ok(#(uuid, envelope, None))
+  let config = system_configuration(ready, peer)
+  assert config.reserve(actual) == Error(Nil)
+  let second =
+    retained_intent(owner, "synthetic discarded allocation permission", id(91))
+  let _unobserved =
+    custodian.allocate_system_reservation(
+      owner,
+      second,
+      native_declaration(),
+      events,
+    )
+  assert custodian.cancel_system_intent(owner, second) == Ok(Nil)
+  assert custodian.cancel_system_intent(owner, second) == Ok(Nil)
+  let assert Ok(custodian.SystemObservation(
+    _,
+    observed,
+    custody.NativeCancelled,
+  )) =
+    custodian.allocate_system_reservation(
+      owner,
+      second,
+      native_declaration(),
+      events,
+    )
+    as "A caller without its allocation reply can close the original intent but never reconstruct permission."
+  assert observed == id(91)
+  assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+  stop(f)
+  assert scalar(f.path, "SELECT next_ordinal FROM owner_system_ordinal") == 2
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+}
+
+pub fn wrong_binding_cannot_cancel_another_original_system_permission_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "wrong_binding_cannot_cancel_another_original_system_permission_test",
+  )
+  let a = fixture("system-original-a", fn(_, _, _) { final() })
+  let b = fixture("system-original-b", fn(_, _, _) { final() })
+  let assert Ok(custodian.ReadyForActivation(ready_a)) =
+    custodian.registered(a.owner)
+    as "First actual pinned custodian."
+  let assert Ok(custodian.ReadyForActivation(ready_b)) =
+    custodian.registered(b.owner)
+    as "Second actual pinned custodian has a distinct original subject."
+  let #(owner_a, _, _) = custodian.registered_fields(ready_a)
+  let events = process.new_subject()
+  let intent =
+    retained_intent(owner_a, "synthetic two-original-owner control", id(90))
+  let assert Ok(custodian.SystemPermission(ref)) =
+    custodian.allocate_system_reservation(
+      owner_a,
+      intent,
+      native_declaration(),
+      events,
+    )
+    as "Only the first custodian allocated this exact permission."
+  let #(_, _, origin, uuid) = dispatch.system_reservation_fields(ref)
+  let actual = system_dispatch(ref, origin)
+  let foreign = system_configuration(ready_b, peer)
+  let original = system_configuration(ready_a, peer)
+
+  // Both actors have the same session and enrollment. The auxiliary subject,
+  // rather than those shared projections, identifies the original permission.
+  assert foreign.reserve(actual) == Error(Nil)
+  let assert Ok(custodian.SystemObservation(_, observed, custody.NativePending)) =
+    custodian.allocate_system_reservation(
+      owner_a,
+      intent,
+      native_declaration(),
+      events,
+    )
+    as "Foreign failure leaves the original pending permission live."
+  assert observed == uuid
+  let assert Ok(_) = original.reserve(actual)
+    as "Only the correct original binding can admit its permission."
+  assert foreign.reserve(actual) == Error(Nil)
+  assert original.reserve(actual) == Error(Nil)
+  assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+  assert dispatch.cancel_system(ref, 5000) == Ok(Nil)
+  stop(a)
+  stop(b)
+  assert scalar(a.path, "SELECT next_ordinal FROM owner_system_ordinal") == 1
+  assert scalar(a.path, "SELECT COUNT(*) FROM owner_custody_children") == 1
+  assert scalar(
+      a.path,
+      "SELECT COUNT(*) FROM owner_custody_children WHERE state='cancelled'",
+    )
+    == 1
+  assert scalar(b.path, "SELECT COUNT(*) FROM owner_system_ordinal") == 0
+  assert scalar(b.path, "SELECT COUNT(*) FROM owner_custody_children") == 0
+}
+
+pub fn composed_ordinary_proc_reservation_and_historical_receipt_keep_native_lane_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "composed_ordinary_proc_reservation_and_historical_receipt_keep_native_lane_test",
+  )
+  let f = fixture("composed-proc-native", fn(_, _, _) { final() })
+  assert invoke(f, 0) == Ok(final())
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "The original tool writer is active."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let config = composed_workspace_configuration(ready, peer, 95)
+  let native =
+    child(
+      0,
+      remote_tool.AdmittedCapability(
+        "ordinary-proc",
+        0,
+        remote_tool.NativeCommand,
+      ),
+    )
+  let semantic_parent =
+    child(
+      0,
+      remote_tool.AdmittedCapability(
+        "ordinary-proc",
+        0,
+        remote_tool.SemanticWorkspace,
+      ),
+    )
+  assert custodian.child(owner, semantic_parent) == Error(custody.Missing)
+  let calls = process.new_subject()
+  let assert Ok(broker) =
+    broker.start_dispatching(
+      entropy: fn(size) { bit_array.from_string(string.repeat("x", size)) },
+      clock: clock.fixed(1000),
+      dispatcher: dispatch.Dispatcher(fn(actual) {
+        let reserved = config.reserve(actual)
+        process.send(calls, #(actual, reserved))
+        Error(dispatch.NotStarted)
+      }),
+    )
+    as "Actual Broker clearance reaches the composed route; no native effect is submitted."
+  let events = process.new_subject()
+  let spec = broker.CallSpec(..native_spec(), argv: ["/tools/proc", "argument"])
+  assert broker.clear_call_from(
+      broker,
+      native,
+      spec,
+      events: events,
+      waiting: 5000,
+    )
+    == Error(broker.BrokerUnavailable)
+  let assert Ok(#(actual, Ok(reserved))) = process.receive(calls, 5000)
+    as "Ordinary proc.run has no retained semantic counterpart and must preserve native reservation."
+  let assert Ok(stored) = custodian.child(owner, native)
+    as "The original ordinary envelope is durable."
+  assert native_envelope.decode("owner", identity_scope(), stored.1)
+    == Ok(#(operation(), reserved.prepared))
+  config.cancel_reserved(actual)
+
+  // Later semantic cancellation must not reinterpret an already admitted
+  // ordinary native envelope when its exact historical receipt arrives.
+  assert custodian.cancel_child(owner, semantic_parent) == Ok(Nil)
+  assert custodian.child(owner, semantic_parent) == Error(custody.Frozen)
+  let assert Ok(digest) = wire.prepared_digest(reserved.prepared)
+    as "Original ordinary native digest."
+  assert config.receive(native, reserved.key, digest, [<<"late proc output">>], <<
+      "late proc terminal",
+    >>)
+    == Ok(Nil)
+  assert config.receive(native, reserved.key, digest, [<<"late proc output">>], <<
+      "late proc terminal",
+    >>)
+    == Ok(Nil)
+  let assert Ok(receipt) =
+    custodian.receipt([<<"late proc output">>], <<"late proc terminal">>)
+    as "Ordered original native receipt."
+  assert custodian.receipt_generation(owner, native, id(95))
+    == Ok(#(receipt, association(1)))
+  assert config.reserve(actual) == Error(Nil)
+  broker.stop(broker)
+  stop(f)
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 2
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_child_generation") == 1
+}
+
+pub fn composed_semantic_evidence_errors_never_fall_back_to_ordinary_native_test() {
+  use peer <- beam_owner_fixture.run(
+    "client@remote@registered_custodian_test",
+    "composed_semantic_evidence_errors_never_fall_back_to_ordinary_native_test",
+  )
+  let f = fixture("composed-semantic-refusal", fn(_, _, _) { final() })
+  assert invoke(f, 0) == Ok(final())
+  let assert Ok(custodian.ReadyForActivation(ready)) =
+    custodian.registered(f.owner)
+    as "The original tool writer retains semantic evidence."
+  let #(owner, _, _) = custodian.registered_fields(ready)
+  let config = composed_workspace_configuration(ready, peer, 95)
+  let malformed =
+    child(
+      0,
+      remote_tool.AdmittedCapability(
+        "malformed-semantic",
+        0,
+        remote_tool.SemanticWorkspace,
+      ),
+    )
+  let cancelled =
+    child(
+      0,
+      remote_tool.AdmittedCapability(
+        "cancelled-semantic",
+        0,
+        remote_tool.SemanticWorkspace,
+      ),
+    )
+  let conflicting =
+    child(
+      0,
+      remote_tool.AdmittedCapability(
+        "conflicting-semantic",
+        0,
+        remote_tool.SemanticWorkspace,
+      ),
+    )
+  assert custodian.reserve_workspace_child(owner, malformed, id(90), <<
+      "synthetic malformed semantic input",
+    >>)
+    == Ok(Nil)
+  assert custodian.cancel_child(owner, cancelled) == Ok(Nil)
+  let #(index, hex) = remote_tool.provenance(invocation(0).key)
+  let assert Ok(input_digest) = bit_array.base16_decode(hex)
+    as "Original full input digest."
+  let assert Ok(source) = semantic.tool_origin(index, input_digest)
+    as "Original tool provenance."
+  let assert Ok(step) = workspace.step("registered")
+    as "Original semantic step."
+  let semantic_binding = workspace_binding.new(scope(), owner, fn() { id(91) })
+  let assert Ok(_) =
+    workspace_binding.reserve(
+      semantic_binding,
+      conflicting,
+      operation(),
+      step,
+      semantic.Tool(source),
+      semantic.Git(semantic.Status),
+    )
+    as "A valid retained GitStatus parent conflicts with the ordinary proc argv and physical step."
+  let parents = [malformed, cancelled, conflicting]
+  list.each(parents, fn(parent) {
+    let assert remote_tool.ToolFields(
+      key,
+      remote_tool.AdmittedCapability(name, ordinal, _),
+    ) = remote_tool.child_fields(parent)
+      as "This control enumerates exact capability semantic parents."
+    let assert Ok(native) =
+      remote_tool.tool_child(
+        key,
+        remote_tool.AdmittedCapability(name, ordinal, remote_tool.NativeCommand),
+      )
+      as "The exact native counterpart has no prior payload."
+    let calls = process.new_subject()
+    let assert Ok(broker) =
+      broker.start_dispatching(
+        entropy: fn(size) { bit_array.from_string(string.repeat("x", size)) },
+        clock: clock.fixed(1000),
+        dispatcher: dispatch.Dispatcher(fn(actual) {
+          let reserved = config.reserve(actual)
+          process.send(calls, reserved)
+          Error(dispatch.NotStarted)
+        }),
+      )
+      as "Actual Broker clearance cannot turn semantic failure into ordinary admission."
+    let events = process.new_subject()
+    let spec =
+      broker.CallSpec(..native_spec(), argv: ["/tools/proc", "argument"])
+    assert broker.clear_call_from(
+        broker,
+        native,
+        spec,
+        events: events,
+        waiting: 5000,
+      )
+      == Error(broker.BrokerUnavailable)
+    assert process.receive(calls, 5000) == Ok(Error(Nil))
+    assert custodian.child(owner, native) == Error(custody.Missing)
+    broker.stop(broker)
+  })
+  stop(f)
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_custody_children") == 3
+  assert scalar(f.path, "SELECT COUNT(*) FROM owner_child_generation") == 2
+}
+
+fn composed_workspace_configuration(
+  ready: custodian.RegisteredOwner,
+  peer: distribution.Peer,
+  request_number: Int,
+) -> dispatcher.Config {
+  let assert Ok(enrolled) =
+    enrollment.decode(custody.enrollment_fields(pin()).4)
+    as "Exact immutable enrollment."
+  let assert Ok(binding) =
+    dispatch_binding.new_registered(
+      ready,
+      connection.Config(peer, "owner", "exec-a", identity_scope(), 1, 1000),
+      fn(actual) { Ok(system_prepared(actual)) },
+      fn() { id(request_number) },
+      poll.monotonic().now,
+      21,
+      5000,
+      fn(_) { Nil },
+    )
+    as "The composed dispatcher retains the original owner and native materializer."
+  let assert Ok(config) =
+    dispatch_binding.with_workspace_commands(binding, enrolled, "/tools/git")
+    as "The trusted resolved Git executable supplies no arbitrary recipe."
+  config
 }
