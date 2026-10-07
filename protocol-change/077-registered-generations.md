@@ -480,6 +480,35 @@ handles, but still advertises finite lifetime history capacity. It makes no unli
 disk/WAL/memory claim. Old tool/report evidence retains its existing independent quotas
 and files.
 
+The concrete durable provenance boundary is metadata-only
+`executor/generation_scope_plan.Plan`. It retains the complete original
+association/enrollment, configured owner Peer, actual native capacity,
+workspace/resource journal paths and selected existing Limits. LSP provenance is
+closed DisabledLsp for an accepted empty declaration table, or EnabledLsp with
+its original custody path, selected Limits, contract and complete ordered
+one-through-sixteen profile/root inventory. Disabled provenance supplies no LSP
+recovery inputs and does not fabricate an enabled profile.
+
+The original header and canonical enrollment are separately capped at 262144
+bytes and independently bounded/decoded. Their domain-separated digest binds
+both exact lengths and bodies. The permanent parent reservation includes both
+actual body lengths plus the 32-byte digest: at most 524320 added logical bytes
+per planned identity, excluding existing parent reservations and SQL/VM overhead.
+The same-database child table is `generation_scope_plan`;
+`generation_registry.admit_planned` inserts and reads back both parent and child
+in the first claim transaction. COMMIT precedes StartupClaim issuance. The narrow
+`scope_plan(Store, GenerationKey)` method observes metadata only. These local
+methods add no external wire or deployment configuration surface.
+
+The format-two additive upgrade checks the entire original format-one bounded
+scalar/body inventory before migration or uncertainty changes, within the same
+transaction. It adds no provenance to old identities, retains every original
+reservation, and creates no claim. Missing legacy provenance remains unavailable
+for full-product history. Legacy admission/native component APIs remain valid;
+full-product scope_admin later uses planned admission exclusively. No selected
+production quota defaults or managed DAL acquisition are established by this
+storage boundary.
+
 The managed endpoint APIs are:
 
 ```gleam
