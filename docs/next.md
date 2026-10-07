@@ -262,6 +262,16 @@ Original removal acknowledgement and durable Removed precede slot reuse.
 Uncertain custody stays charged. Successors retain immutable original owner
 and system-child links; history reads and receipts cannot repeat an effect.
 
+**Workspace native commands retain their semantic parent.** The approved
+[protocol-077 addendum](../protocol-change/077-registered-generations.md#addendum-native-identity-beneath-a-workspace-request)
+uses a distinct deterministic identity beneath the exact retained Workspace or
+system semantic request. It preserves the original quota group and adds no
+system ordinal. Admitted capabilities retain their existing purpose pair.
+Standalone native system commands separately reserve original identity before
+Broker clearance and admit exact cleared bytes afterward. These identity and
+sequencing changes are approved directions; their production wiring remains
+unimplemented. Initialize does not imply an invented native setup command.
+
 ## Deliberately open
 
 The approved [LSP contract](../protocol-change/076-registered-lsp.md) and
