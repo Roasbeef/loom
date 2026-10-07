@@ -1460,3 +1460,31 @@ This component supplies connection custody. Actual full-host plan and trusted
 clock assembly, authenticated original-owner history routing, the fixed global
 history lane, semantic LSP manager/timing, finite Search/Prepare collector B and
 endpoint/native/semantic joins before lease retirement remain required later.
+
+## Original startup and native scope witness projections
+
+`generation_registry.validate_startup` checks the actual original Store and
+StartupClaim in one serialized transaction, including its private/persisted
+incarnation, still-Claimed/live state, absent publication intent and exact retained
+`generation_scope_plan.Plan`. It changes no phase, allocates no resource and grants
+no new claim. Recovered same-incarnation SQL bytes cannot substitute another writer;
+a later Closing fence can still race already admitted original setup.
+
+`remote/service.ScopeCloseProof` is opaque original native-scope metadata retained
+by `shutdown_original` before actor exit. It shares the existing `close_scope`
+reducer, actual native-close disposition, every covered-key durable retirement
+confirmation and begun-LSP native-observer gate. `validate_scope_close` compares the
+original Service Subject/PID, native PID, exact Journal and immutable identity
+without comparing function-bearing Config/Executor records. Its domain-separated
+MessagePack digest includes the complete sorted covered inventory and the
+currently retained begun-LSP inventory. Pruned leases already proved Closed,
+positive native retirement, managed drain and independently observed DAL Retired;
+their native covered keys remain. PID spellings name only the original live proof.
+
+The unchanged legacy `shutdown` still returns Nil. A lost original proof reply
+stays Uncertain. This projection proves neither trusted pool configuration nor
+original Service/native normal joins, physical preparation cleanup, semantic LSP
+joins, endpoint drainage or journal release. FullHost must supply those separate
+original observations before constructing complete generation retirement evidence.
+Dedicated startup and native-scope proof controls use actual SQL/actors and real
+native pool retirement; protocol-peer LSP controls assert refused evidence only.
