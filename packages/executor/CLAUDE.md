@@ -1411,3 +1411,52 @@ managed wait with the original exit permit withheld rejects ACK-only release;
 a zero-time mailbox sample alone would leave a scheduling gap. This slice does
 not assemble the full host, prove power-loss durability or grant scope-wide
 cleanup from an actor exit.
+
+
+## Owned LSP journal acquisition and historical recovery
+
+`remote/lsp_journal.fresh_input` retains the original checked generation and
+semantic contract, immutable ceilings, actual trusted Clock and enrolled profiles
+without file access. The permanent full-host parent calls `park_fresh` itself,
+retains its resource-free ACK and original PID, then calls `initialise_fresh`.
+The same private linked, trapping writer acquires SQL inside its actor turn.
+Acquired retains the actual connection before `then_handle` runs shared setup in
+the following turn. A queued parent exit does not preempt already admitted
+bounded setup; Acquired still supplies cleanup. Only original setup COMMIT returns
+`LiveStore`, which projects the same original `Store` used by existing lease,
+first-placement and ServerLeaseClaim checks. Duplicate initialization and a lost
+ready reply cannot mint another live endpoint or recover a first-start claim.
+
+`recovery_input` contains no Clock or incarnation. `recover_owned` starts the same
+writer resource-free and unlinked, then self-adopts into the supplied original
+finite weft Ledger before ACK or SQL. Its opaque `OwnedRecovery` exposes only
+`inspect_lease_owned`, `inspect_finite_owned`, `inspect_command_owned`,
+`acknowledge_exact_owned` and `release_owned`. It has no Store projector or generic
+work, admission, capture, claim, cancel or retirement operation. The private
+Context authority is closed `OriginalLive(Store, Clock)` or `HistoryOnly`; every
+live clock-dependent operation refuses the latter. Shared existing profile,
+canonical full-parent checks, transaction reducers and recovery fences preserve
+original era, nonce, E0, timing proposal, deadline and permanent charges. Receipt
+acknowledgement retains capacity and supplies no native retirement proof.
+
+Both new owned paths retain the original subject and PID. Explicit release
+monitors before close and requires successful actual SQL-close ACK plus the same
+original Normal DOWN. Released is connection-free before ACK; FailedClose retains
+the actual connection and refuses work. Setup failure, poison and parent/system
+termination check actual close; a failed final close cannot publish normal exit.
+Legacy fresh/recover/release retain their existing construction and behavior.
+The finite history caller must separately retain the original managed Outcome,
+AllDelivered and original scope monitor before teardown. AllDelivered alone does
+not attest drain or make a history lane available.
+
+Closed finite test checkpoints expose only the exact original PID and one permit.
+Actual `ConnectionClosed` observations record sqlight outcomes. RefuseClose is a
+labelled one-shot synthetic control, not an assertion that SQLite contention
+causes close failure. Contention controls hold a real independent BEGIN through
+the unchanged SQLite busy timeout. No callback factory, test SQL backend,
+production FFI, dependency, schema or alternate business actor is introduced.
+
+This component supplies connection custody. Actual full-host plan and trusted
+clock assembly, authenticated original-owner history routing, the fixed global
+history lane, semantic LSP manager/timing, finite Search/Prepare collector B and
+endpoint/native/semantic joins before lease retirement remain required later.
