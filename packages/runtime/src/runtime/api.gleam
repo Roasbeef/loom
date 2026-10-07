@@ -1001,30 +1001,56 @@ fn child_owner_phase(
   case current {
     None -> Ok(#(None, []))
     Some(id) -> {
-      use #(seq, state) <- result.try(read_op_state(runtime, id))
-      let finishing = case state {
-        operation.RunState(
-          phase: operation.Checkpoint(operation.CheckpointPhase(
-            continuation: operation.MayFinish(..),
-            ..,
-          )),
-          ..,
-        ) -> True
-        _ -> False
+      use cell <- result.try(read_decoded(
+        runtime,
+        register.OpState,
+        ids.op_id_to_string(id),
+        codec.decode_state,
+      ))
+      case cell {
+        // The parent's run ended between the two reads: the terminal
+        // transaction cleared the strand's `current_operation` and deleted its
+        // state together. A sender that named this run has lost it, and one
+        // that did not is an operator with no owner to inherit. The strand
+        // read's own expectation names the seq it saw, so the commit refuses
+        // and the ladder reads again.
+        None ->
+          case continuation {
+            Some(_) -> Error(ReadFailed("the sending parent run has ended"))
+            None -> Ok(#(None, []))
+          }
+        Some(#(seq, state)) -> child_owner_of(id, seq, state, continuation)
       }
-      use owner <- result.try(case finishing, continuation {
-        True, Some(_) ->
-          Error(ReadFailed("the sending parent run is finishing"))
-        True, None -> Ok(None)
-        False, _ -> Ok(Some(child_run.ParentRun(id)))
-      })
-      Ok(
-        #(owner, [
-          tx.Expect(register.OpState, ids.op_id_to_string(id), Some(seq)),
-        ]),
-      )
     }
   }
+}
+
+fn child_owner_of(
+  id: OpId,
+  seq: Int,
+  state: OperationState,
+  continuation: Option(Continuation),
+) -> Result(#(Option(child_run.Owner), List(tx.SeqExpectation)), ApiError) {
+  let finishing = case state {
+    operation.RunState(
+      phase: operation.Checkpoint(operation.CheckpointPhase(
+        continuation: operation.MayFinish(..),
+        ..,
+      )),
+      ..,
+    ) -> True
+    _ -> False
+  }
+  use owner <- result.try(case finishing, continuation {
+    True, Some(_) -> Error(ReadFailed("the sending parent run is finishing"))
+    True, None -> Ok(None)
+    False, _ -> Ok(Some(child_run.ParentRun(id)))
+  })
+  Ok(
+    #(owner, [
+      tx.Expect(register.OpState, ids.op_id_to_string(id), Some(seq)),
+    ]),
+  )
 }
 
 // Whether a non-null navigation target exists in the tree. `None` (the
@@ -3734,10 +3760,17 @@ fn read_open_operation(
     ids.op_id_to_string(op_id),
     codec.decode_state,
   ))
-  Ok(case meta, state {
-    Some(#(_, op)), Some(#(seq, op_state)) -> Some(#(op, seq, op_state))
-    Some(_), None | None, Some(_) | None, None -> None
-  })
+  case meta, state {
+    Some(#(_, op)), Some(#(seq, op_state)) -> Ok(Some(#(op, seq, op_state)))
+
+    // The terminal transaction deletes both registers together and the
+    // definition is read first, so a run that ended between the reads is
+    // missing both or only the state. A state with no definition cannot come
+    // from that race: it is evidence about the store, and is reported as such.
+    None, Some(_) ->
+      Error(ReadFailed("op.meta is missing for the open operation"))
+    Some(_), None | None, None -> Ok(None)
+  }
 }
 
 // Binds the open operation an admission reads, or asks `retry_admission` for
@@ -3754,19 +3787,6 @@ fn or_finished(
     Ok(None) -> Ok(Retry)
     Error(error) -> Error(error)
   }
-}
-
-fn read_op_state(
-  runtime: Runtime,
-  op_id: OpId,
-) -> Result(#(Int, OperationState), ApiError) {
-  read_decoded(
-    runtime,
-    register.OpState,
-    ids.op_id_to_string(op_id),
-    codec.decode_state,
-  )
-  |> require("op.state is missing for the open operation")
 }
 
 fn require(

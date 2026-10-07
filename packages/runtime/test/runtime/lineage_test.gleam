@@ -12,6 +12,8 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import core/register
+import core/tx.{DeleteRegister, Tx}
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -22,6 +24,7 @@ import runtime/child_run
 import runtime/effects
 import runtime/lineage
 import runtime/supervisor
+import runtime/writer
 import session/session
 import support/fake
 import support/recorder
@@ -492,6 +495,51 @@ pub fn child_admission_cannot_acquire_a_parent_after_run_end_begins_test() {
   assert run.owner == None
   assert run.deadline != None
   process.send(release, Nil)
+  process.kill(runtime.tree.supervisor)
+}
+
+// The child door reads the parent's strand and then the parent's operation
+// state. A parent run that ends between the reads leaves a current operation
+// with no state under it. That is the sender having lost its run, answered as
+// the finished parent it is, and never as a missing register, which reads as a
+// corrupt store. The test leaves that state, which the machine holds only for
+// the length of a read, and admits through the child door.
+pub fn a_parent_that_ended_between_the_reads_is_a_finished_parent_test() {
+  let runtime = open_runtime(fn(_) { False })
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      runtime,
+      named: "sub:1",
+      configuration: configuration(),
+      at: None,
+    )
+    as "the child must be idle"
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      lineage.register_key("sub:1"),
+      lineage.encode(a_cell("sub:1", "main")),
+    )
+    as "the child lineage must be published"
+  let assert Ok(parent) = api.prompt(runtime, [fake.user("work")])
+    as "the parent must start and stay open"
+  let key = ids.op_id_to_string(parent)
+  let assert Ok(_) =
+    writer.commit(
+      runtime.tree.writer,
+      Tx(
+        writes: [
+          DeleteRegister(ns: register.OpMeta, key:),
+          DeleteRegister(ns: register.OpState, key:),
+        ],
+        expected: [],
+      ),
+    )
+    as "the terminal cleanup's deletions must land"
+  let assert Error(api.ReadFailed(reason: "the sending parent run has ended")) =
+    api.send_to_child(runtime, "sub:1", fake.user("late"), parent, None)
+    as "the sender's run is gone"
+  assert api.reserved_facts(runtime, child_run.key_prefix) == Ok([])
   process.kill(runtime.tree.supervisor)
 }
 
