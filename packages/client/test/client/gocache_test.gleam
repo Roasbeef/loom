@@ -124,17 +124,18 @@ pub fn a_mirror_must_exist_and_hold_a_download_directory_test() {
     )
 
   let assert Error(missing) =
-    gocache.fault(caches, "/work", [], tools_naming: [])
+    gocache.fault(caches, "/work", [], [], tools_naming: [])
   assert string.contains(missing, "[workspace] go_module_mirror")
   assert string.contains(missing, "does not exist")
 
   let assert Ok(Nil) = simplifile.create_directory_all(root <> "/mod")
-  let assert Error(bare) = gocache.fault(caches, "/work", [], tools_naming: [])
+  let assert Error(bare) =
+    gocache.fault(caches, "/work", [], [], tools_naming: [])
   assert string.contains(bare, "cache/download")
 
   let assert Ok(Nil) =
     simplifile.create_directory_all(root <> "/mod/cache/download")
-  assert gocache.fault(caches, "/work", [], tools_naming: []) == Ok(Nil)
+  assert gocache.fault(caches, "/work", [], [], tools_naming: []) == Ok(Nil)
   let _cleanup = simplifile.delete(root)
 }
 
@@ -152,29 +153,65 @@ pub fn a_mirror_may_not_overlap_the_workspace_or_a_masked_path_test() {
   // The workspace inside the mirror, and the mirror inside the workspace,
   // are both an overlap.
   let assert Error(inside) =
-    gocache.fault(caches, root <> "/mod/project", [], tools_naming: [])
+    gocache.fault(caches, root <> "/mod/project", [], [], tools_naming: [])
   assert string.contains(inside, "the workspace")
-  let assert Error(above) = gocache.fault(caches, root, [], tools_naming: [])
+  let assert Error(above) =
+    gocache.fault(caches, root, [], [], tools_naming: [])
   assert string.contains(above, "the workspace")
 
   let assert Error(masked) =
-    gocache.fault(caches, "/work", [root <> "/mod/cache"], tools_naming: [])
+    gocache.fault(caches, "/work", [root <> "/mod/cache"], [], tools_naming: [])
   assert string.contains(masked, "protected")
   let _cleanup = simplifile.delete(root)
+}
+
+pub fn a_writable_mount_over_the_trash_parent_is_refused_test() {
+  let caches =
+    gocache.GoCaches(
+      root: "/cache/loom/workspace/abc",
+      mirror: None,
+      limit_kib: 1,
+    )
+  let mount = fn(path, access) {
+    policy.Mount(path:, access:, requirement: policy.MountRequired)
+  }
+  let assert Error(refused) =
+    gocache.fault(
+      caches,
+      "/work",
+      [],
+      [mount("/cache", policy.MountReadWrite)],
+      tools_naming: [],
+    )
+  assert string.contains(refused, "[workspace] mounts")
+  assert string.contains(refused, "/cache/loom/workspace")
+
+  // A read-only mount, or a read-write one elsewhere, is harmless.
+  assert gocache.fault(
+      caches,
+      "/work",
+      [],
+      [
+        mount("/cache", policy.MountReadOnly),
+        mount("/cache/other", policy.MountReadWrite),
+      ],
+      tools_naming: [],
+    )
+    == Ok(Nil)
 }
 
 pub fn tools_may_not_set_names_the_server_owns_test() {
   let caches = gocache.GoCaches(root: "/c/r", mirror: None, limit_kib: 1)
   let assert Error(refused) =
-    gocache.fault(caches, "/work", [], tools_naming: ["GOCACHE"])
+    gocache.fault(caches, "/work", [], [], tools_naming: ["GOCACHE"])
   assert string.contains(refused, "[tools]")
 
   // GOPROXY is the operator's until a mirror takes it over.
-  assert gocache.fault(caches, "/work", [], tools_naming: ["GOPROXY"])
+  assert gocache.fault(caches, "/work", [], [], tools_naming: ["GOPROXY"])
     == Ok(Nil)
   let mirrored = gocache.GoCaches(..caches, mirror: Some("/nowhere"))
   let assert Error(_) =
-    gocache.fault(mirrored, "/work", [], tools_naming: ["GOPROXY"])
+    gocache.fault(mirrored, "/work", [], [], tools_naming: ["GOPROXY"])
 }
 
 // A root one level below a parent the test owns, like the real layout
@@ -201,12 +238,12 @@ pub fn a_cache_over_the_limit_is_renamed_out_of_the_root_and_replaced_test() {
   assert trash == root <> ".trash-t1"
   assert !string.starts_with(trash, root <> "/")
 
-  // The old tree moved whole, and the replacement is empty but has Go's
-  // fan-out directories so a build that already opened it can write.
+  // The old tree moved whole, and the replacement is a bare empty
+  // directory, since Go builds its own tree at the next open.
   assert simplifile.read(trash <> "/ab/entry") == Ok("object")
   assert simplifile.is_file(build <> "/ab/entry") == Ok(False)
-  assert simplifile.is_directory(build <> "/ab") == Ok(True)
-  assert simplifile.is_directory(build <> "/ff") == Ok(True)
+  assert simplifile.is_directory(build) == Ok(True)
+  assert simplifile.read_directory(build) == Ok([])
 
   // Deletion is the sweep's job, and it leaves the live cache alone.
   assert gocache.sweep(caches) == Ok(1)

@@ -56,13 +56,13 @@
 //// filesystem: a process that opens a path afterwards sees the empty
 //// replacement, and a process that already holds a file open keeps reading
 //// it, since the unlinked data lives until the last descriptor closes. The
-//// replacement is created with the 256 two-hex-digit subdirectories Go
-//// makes when it opens a cache, so a build that opened the cache before the
-//// rename can still write new entries into it. What remains is a build that
-//// wrote an entry before the rename and reads it back by path after it. That
-//// read finds nothing, and the build fails once with a missing-file error
-//// that a retry clears. The trim runs only when the cache is already over
-//// its limit at a session start, which keeps the case rare.
+//// replacement is a bare directory that Go fills in at its next open, made
+//// with a non-recursive `mkdir` so a link planted at that path is not
+//// followed. A build that held the old cache open, or that wrote an entry
+//// before the rename and reads it back by path after it, finds nothing
+//// there. It fails once with a missing-file error and a retry clears it.
+//// The trim runs only when the cache is already over its limit at a session
+//// start, which keeps the case rare.
 ////
 //// Deletion is the slow part (a large cache is hundreds of thousands of
 //// files), so it runs in a weft task off the session's critical path. It is
@@ -207,10 +207,6 @@ pub fn workspace_digest(workspace: String) -> String {
   |> bootstrap.sha256
   |> bit_array.base16_encode
   |> string.lowercase
-}
-
-fn hex_pair(byte: Int) -> String {
-  string.pad_start(string.lowercase(int.to_base16(byte)), to: 2, with: "0")
 }
 
 /// The Go build cache directory, `GOCACHE`.
@@ -394,12 +390,41 @@ pub fn fault(
   caches: GoCaches,
   workspace: String,
   protected: List(String),
+  mounts: List(policy.Mount),
   tools_naming names: List(String),
 ) -> Result(Nil, String) {
   use Nil <- result.try(owned_name_fault(caches, names))
+  use Nil <- result.try(writable_mount_fault(caches, mounts))
   case caches.mirror {
     None -> Ok(Nil)
     Some(mirror) -> mirror_fault(caches, mirror, workspace, protected)
+  }
+}
+
+// A read-write mount covering `<cache>/loom/workspace`, the parent of the
+// root, would make the directory holding the retired trees writable from
+// the jail again, which is what retiring them out of the root avoids.
+fn writable_mount_fault(
+  caches: GoCaches,
+  mounts: List(policy.Mount),
+) -> Result(Nil, String) {
+  let parent = parent_directory(caches.root)
+  let covering =
+    list.find(mounts, fn(mount) {
+      mount.access == policy.MountReadWrite
+      && policy.covers(root: mount.path, path: parent)
+    })
+  case covering {
+    Error(Nil) -> Ok(Nil)
+    Ok(mount) ->
+      Error(
+        "[workspace] mounts names the read-write mount "
+        <> mount.path
+        <> ", which covers "
+        <> parent
+        <> ", the directory the Go cache root and its retired trees live in."
+        <> " Mount a narrower directory or make it read-only",
+      )
   }
 }
 
@@ -523,23 +548,18 @@ fn retire(
   Ok(Retired(size_kib:, trash:))
 }
 
-// What `cmd/go/internal/cache.Open` does to a new cache: the directory and
-// its 256 fan-out subdirectories. A build that opened the old cache before
-// the rename keeps addressing `<build>/xx/...` by path, and these make
-// those writes land in the replacement.
+// The replacement is one plain, non-recursive `mkdir`. A recursive create
+// would follow a link the jail planted at the path between the rename and
+// this call and create directories through it. An existing entry, a planted
+// link included, is left alone, and Go creates its own tree at its next
+// open. A build that held the old cache open fails once and a retry clears
+// it.
 fn open_fresh(build: String) -> Result(Nil, String) {
-  use Nil <- result.try(create(build))
-  int.range(from: 0, to: 256, with: Ok(Nil), run: fn(done, index) {
-    use Nil <- result.try(done)
-    create(build <> "/" <> hex_pair(index))
-  })
-}
-
-fn create(directory: String) -> Result(Nil, String) {
-  simplifile.create_directory_all(directory)
-  |> result.map_error(fn(error) {
-    "could not create " <> directory <> ": " <> string.inspect(error)
-  })
+  case simplifile.create_directory(build) {
+    Ok(Nil) | Error(simplifile.Eexist) -> Ok(Nil)
+    Error(error) ->
+      Error("could not create " <> build <> ": " <> string.inspect(error))
+  }
 }
 
 /// Deletes every retired build cache of this workspace and returns how

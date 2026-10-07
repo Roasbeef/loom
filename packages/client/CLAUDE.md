@@ -3932,13 +3932,16 @@ these forks because they define the same modules.
   build cache: at session start a weft task measures it with `du -sk`,
   renames it out of the jail-writable root to the sibling
   `<root>.trash-<unique>` when over the limit, creates an empty
-  replacement with Go's 256 fan-out directories, and sweeps the parent's
+  bare replacement with a non-recursive `mkdir` (Go fills it in; a
+  recursive create would follow a planted link), and sweeps the parent's
   `<digest>.trash-*` entries (never reading inside the root, since
   `del_dir_r` is path based and the jail could swap a directory for a link
   mid-delete). `locate` returns `None` when the workspace covers the cache
-  place, so the root is never inside a jail-writable tree. A rename keeps a live session's open files and fresh opens
-  consistent; a build that wrote an entry before the rename and reads it
-  back after fails once and a retry clears it. The caches are absent, and
+  place, so the root is never inside a jail-writable tree, and
+  `gocache.fault` refuses a read-write `[workspace] mounts` entry covering
+  the root's parent, which would make the retired trees writable again. A
+  rename keeps a live session's open files and fresh opens consistent; a
+  build that held the old cache open fails once and a retry clears it. The caches are absent, and
   Go falls back to the tool `HOME`, when the daemon has no cache
   directory. Existing `.codemode/home/...` caches are not deleted.
 - **The `[tools]` table selects network and extra environment.**

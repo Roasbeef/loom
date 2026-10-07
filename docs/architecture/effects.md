@@ -376,11 +376,12 @@ limit, renames it to `<root>.trash-<unique>`, a sibling of the root in its non-w
 an empty replacement and deletes the renamed tree. The rename is atomic,
 so another live session in the workspace sees either the old cache or an
 empty one, never a half-deleted one: files it holds open stay readable and
-new opens find the replacement, which carries the 256 fan-out directories
-Go creates on open so in-flight writes land. The residual case is a build
-that wrote an entry just before the rename and reads it back by path just
-after; that build fails once with a missing-file error and a retry
-succeeds. The trim only runs when the cache is already over the limit at
+new opens find the replacement, a bare directory made with a
+non-recursive `mkdir` (a recursive one would follow a link the jail
+planted there) that Go fills in at its next open. The residual case is a
+build that held the old cache open, or wrote an entry just before the
+rename and reads it back by path just after; that build fails once with
+a missing-file error and a retry succeeds. The trim only runs when the cache is already over the limit at
 session start. The tree leaves the root before it is deleted, because
 the root is writable from the jail and `del_dir_r` is path based: a
 jailed process could swap a directory for a link mid-delete and the

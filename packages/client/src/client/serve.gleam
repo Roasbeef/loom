@@ -6103,6 +6103,7 @@ fn go_cache_fault(
         caches,
         settings.workspace,
         base.protected,
+        base.mounts,
         tools_naming: list.append(
           settings.tools.env,
           list.map(settings.tools.set, fn(pair) { pair.0 }),
