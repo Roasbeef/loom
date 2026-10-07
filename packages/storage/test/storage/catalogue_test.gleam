@@ -780,7 +780,6 @@ pub fn the_first_prompt_seeds_the_subtitle_once_test() {
   let expected =
     catalogue.Registration(
       ..record,
-      profile: option.None,
       subtitle: option.Some("Fix the flaky retry test"),
     )
   assert seeded == expected
@@ -1084,7 +1083,7 @@ pub fn version_seven_catalogue_retains_display_and_auth_when_binding_migrates_te
   // migrations must preserve those existing layers.
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_recent_folders; ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; PRAGMA user_version=7",
+      "ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; PRAGMA user_version=7",
       on: old,
     )
     == Ok(Nil)
@@ -1116,7 +1115,7 @@ pub fn main_version_eight_preserves_recent_folders_when_binding_migrates_test() 
   migrate_version_eight_fixture(
     fresh_path("main-eight"),
     registration(873),
-    "ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; PRAGMA user_version=8",
+    "ALTER TABLE catalogue_sessions DROP COLUMN profile; ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; PRAGMA user_version=8",
     ["/recent/folder"],
   )
 }
@@ -1132,7 +1131,7 @@ pub fn integration_version_eight_preserves_registered_authority_when_folders_mig
       ..registration(874),
       workspace: workspace.Registered(bound),
     ),
-    "DROP TABLE catalogue_recent_folders; PRAGMA user_version=8",
+    "ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; PRAGMA user_version=8",
     [],
   )
 }
@@ -1240,10 +1239,13 @@ fn migrate_version_eight_fixture(
 
 pub fn ambiguous_version_eight_is_refused_without_schema_changes_test() {
   let layouts = [
-    #("mixed", "PRAGMA user_version=8"),
+    #(
+      "mixed",
+      "ALTER TABLE catalogue_sessions DROP COLUMN profile; PRAGMA user_version=8",
+    ),
     #(
       "absent",
-      "DROP TABLE catalogue_recent_folders; ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; PRAGMA user_version=8",
+      "ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE catalogue_sessions DROP COLUMN workspace_binding; PRAGMA user_version=8",
     ),
   ]
   list.each(layouts, fn(layout) {
@@ -1459,6 +1461,7 @@ pub fn a_registration_keeps_its_profile_through_reads_and_a_restart_test() {
   assert catalogue.get(restored, profiled.id) == Ok(profiled)
   assert catalogue.get(restored, plain.id) == Ok(plain)
   let assert Ok(page) = catalogue.page(restored, after: "")
+    as "profiled page loads"
   assert list.contains(page.records, profiled)
   assert list.contains(page.records, plain)
   assert catalogue.close(restored) == Ok(Nil)
@@ -1489,6 +1492,7 @@ pub fn a_registration_with_a_malformed_profile_is_refused_test() {
       profile: option.Some("Not A Name"),
     )
   let assert Error(catalogue.Invalid(_)) = catalogue.reserve(store, record)
+    as "malformed input refuses"
   assert catalogue.close(store) == Ok(Nil)
 }
 
@@ -1510,5 +1514,6 @@ pub fn a_stored_profile_that_is_not_a_name_fails_the_read_test() {
   assert sqlight.close(db) == Ok(Nil)
   let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
   let assert Error(catalogue.Invalid(_)) = catalogue.get(reopened, record.id)
+    as "malformed stored profile refuses"
   assert catalogue.close(reopened) == Ok(Nil)
 }

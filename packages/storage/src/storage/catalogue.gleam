@@ -202,6 +202,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
       transaction(connection, fn() {
         use Nil <- result.try(case version {
           8 -> migrate_version_eight(connection)
+          9 -> migrate_version_nine(connection)
           _ -> migrations_after(connection, version)
         })
         execute(connection, user_version_pragma())
@@ -254,24 +255,50 @@ pub fn migrations() -> List(#(Int, String)) {
   ]
 }
 
-// Main and the pre-integration branch both used version eight for different
-// additions. Inspect their actual schema inside the migration transaction, so
-// neither layout can skip its missing addition or rerun an existing ALTER.
-// A mixed or absent layout is not one either branch wrote and is refused.
+// The two version-eight branches wrote different additions. The three named
+// schema facts distinguish those layouts before any DDL, under the same write
+// transaction that installs the missing additions and advances the version.
 fn migrate_version_eight(connection: sqlight.Connection) -> Result(Nil, Error) {
+  use #(folders, bindings, profiles) <- result.try(migration_shape(connection))
+  use Nil <- result.try(case folders, bindings, profiles {
+    1, 0, 0 -> execute(connection, catalogue_workspace_bindings_schema.schema)
+    0, 1, 0 -> execute(connection, catalogue_recent_folders_schema.schema)
+    _, _, _ -> Error(Unsupported)
+  })
+  execute(connection, catalogue_profiles_schema.schema)
+}
+
+// Main version nine added profiles; integration version nine added bindings.
+// Both already had recent folders. Exactly one missing column is installed,
+// preserving the other's original rows rather than guessing from the version.
+fn migrate_version_nine(connection: sqlight.Connection) -> Result(Nil, Error) {
+  use #(folders, bindings, profiles) <- result.try(migration_shape(connection))
+  case folders, bindings, profiles {
+    1, 0, 1 -> execute(connection, catalogue_workspace_bindings_schema.schema)
+    1, 1, 0 -> execute(connection, catalogue_profiles_schema.schema)
+    _, _, _ -> Error(Unsupported)
+  }
+}
+
+// This is a census of three branch additions, not a general schema validator.
+// A present column with another declared type, nullability or default is distinct
+// from absence, so it cannot select a migration that overwrites its meaning.
+fn migration_shape(
+  connection: sqlight.Connection,
+) -> Result(#(Int, Int, Int), Error) {
   use folders <- result.try(number(
     connection,
-    "SELECT COUNT(*) FROM sqlite_schema WHERE name='catalogue_recent_folders'",
+    "SELECT CASE WHEN COUNT(*)=0 THEN 0 WHEN COUNT(*)=1 AND MIN(type)='table' THEN 1 ELSE -1 END FROM sqlite_schema WHERE name='catalogue_recent_folders'",
   ))
   use bindings <- result.try(number(
     connection,
-    "SELECT COUNT(*) FROM pragma_table_info('catalogue_sessions') WHERE name='workspace_binding'",
+    "SELECT CASE WHEN COUNT(*)=0 THEN 0 WHEN COUNT(*)=1 AND MIN(type)='TEXT' AND MIN(\"notnull\")=0 AND MIN(dflt_value) IS NULL THEN 1 ELSE -1 END FROM pragma_table_info('catalogue_sessions') WHERE name='workspace_binding'",
   ))
-  case folders, bindings {
-    1, 0 -> execute(connection, catalogue_workspace_bindings_schema.schema)
-    0, 1 -> execute(connection, catalogue_recent_folders_schema.schema)
-    _, _ -> Error(Unsupported)
-  }
+  use profiles <- result.try(number(
+    connection,
+    "SELECT CASE WHEN COUNT(*)=0 THEN 0 WHEN COUNT(*)=1 AND MIN(type)='TEXT' AND MIN(\"notnull\")=1 AND MIN(dflt_value)=char(39)||char(39) THEN 1 ELSE -1 END FROM pragma_table_info('catalogue_sessions') WHERE name='profile'",
+  ))
+  Ok(#(folders, bindings, profiles))
 }
 
 fn user_version_pragma() -> String {

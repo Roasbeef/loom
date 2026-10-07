@@ -32,10 +32,10 @@ fn record(seed: Int, epoch: Int) -> catalogue.Registration {
     bound(epoch),
     "Session",
     "",
+    option.None,
     1,
     id,
     catalogue.Reserved,
-    option.None,
     option.None,
   )
 }
