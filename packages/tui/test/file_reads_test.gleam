@@ -346,6 +346,10 @@ pub fn a_second_creation_names_no_internal_key_test() {
   assert failures(after)
     == ["the previous session creation did not finish; reopen /sessions"]
   assert !string.contains(string.join(failures(after), "\n"), creation_key)
+
+  // The refusal is drawn over the transcript, so the picker that asked for it
+  // closes and a second press shows the reason again rather than nothing.
+  assert after.view.overlay == tui_model.NoOverlay
 }
 
 // Ticks through `tui.update` until the configuration slot is cleared, so a

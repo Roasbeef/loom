@@ -707,6 +707,16 @@ fn chosen_profile(model: Model) -> String {
   }
 }
 
+// A refused creation writes its reason to the transcript and closes the picker
+// that asked for it. The picker is drawn over the transcript, so a refusal
+// written under an open picker is invisible until the person dismisses it, and
+// a second `n` then looks like it did nothing. Closing it shows the reason on
+// every press, as the accepted path closes it to show the creation notice.
+fn refuse_creation(model: Model, reason: String) -> Model {
+  Model(..model, view: view_set.overlay(model.view, NoOverlay))
+  |> tui_model.append_error(reason)
+}
+
 fn create_session_configured(model: Model, config: String) -> Model {
   let model =
     inbound.cancel_pending(model, "target change from " <> model.shared.session)
@@ -719,14 +729,13 @@ fn create_session_configured(model: Model, config: String) -> Model {
     // the daemon's reconciliation and means nothing to a reader, so the
     // line says what to do and leaves the key out.
     Some(_), _, _ ->
-      tui_model.append_error(
+      refuse_creation(
         model,
         "the previous session creation did not finish; reopen /sessions",
       )
-    None, None, _ ->
-      tui_model.append_error(model, "daemon control is disconnected")
+    None, None, _ -> refuse_creation(model, "daemon control is disconnected")
     None, Some(_), True ->
-      tui_model.append_error(model, "a session switch is already in progress")
+      refuse_creation(model, "a session switch is already in progress")
     None, Some(host), False -> {
       // The terminal's identity and the wall-clock reading make the key
       // unique across terminals and restarts, and `next_id` across
