@@ -1,10 +1,11 @@
 # Current handoff
 
 This edition records the approved registered-service contracts and the main
-refresh through `1f8096b96` on October 6, 2026. The isolated `runtime/main-refresh`
+refresh through `de09f9dd6` on October 6, 2026. The isolated `runtime/main-refresh`
 branch replays all 231 integration commits on `origin/main` at `3644b0790`.
-Compatibility work and new candidate gates are in progress. Earlier component
-results below describe the pre-rebase source, not this refreshed candidate.
+The refreshed storage, tools and client package gates pass. Independent
+compatibility review and the registered-service assembly remain in progress.
+Earlier component results below describe their stated pre-rebase source.
 
 The previous edition still required approval for registered LSP and administration.
 The owner has now approved both contracts, including option B and exact-generation
@@ -60,12 +61,24 @@ runtime assertions. Source review and bounded correction reviews are complete.
 Earlier failed test runs remain recorded separately; focused passes and observed
 host load do not establish that every failure was a flake.
 
-On the refreshed source, SQL regeneration succeeds and produces no artifact drift.
+Immediately after the rebase, SQL regeneration succeeded with no artifact drift.
+Generation-registry schema work added afterward is still being integrated.
 `make check-storage` passes all 235 tests, including populated migrations from
 both historical catalogue version-eight layouts and refusal of mixed/absent
-layouts. The catalogue now stamps version nine. Main's moved LSP inference
-implementation and tests survived the rebase; their runtime gate is pending.
-Shell-directory compatibility and the combined client/tools gates are in progress.
+layouts. The catalogue now stamps version nine. `make check-tools` passes all
+752 tests, and the seeded `make check-client` passes all 3,130 tests, including
+main's moved LSP inference and the live shell-directory controls. The client
+run retains the same 15 documented optional skips. Commit `de09f9dd6` preserves
+typed workspace authority in the shell-directory callbacks and fixtures.
+Formatting, tools/storage lint, documentation and prelude checks pass with zero
+errors; the latest documentation check reports 192 warnings.
+
+The shared original-generation and system-child codecs are committed in
+`7c41fafef`. Their independent core gate passes 197 tests and JavaScript
+controls, with core lint and documentation checks passing. These pure codecs
+do not establish live registry, LSP or endpoint authorization. Three isolated
+foundation worktrees are implementing helper consumption credits, the bounded
+generation registry and the complete LSP command/result codecs.
 
 Full repository gates, ordinary registered tools, separate-host acceptance and
 hosted CI have not passed on this candidate. Component results do not establish
