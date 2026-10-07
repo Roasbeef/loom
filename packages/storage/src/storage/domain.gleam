@@ -344,7 +344,19 @@ fn matches(
 // canonical absolute destinations, three distinct files once the digest sidecar
 // is derived, and an identity that matches its own scope.
 fn validate(domain: Domain) -> Result(Nil, Error) {
-  use Nil <- result.try(absolute(domain.workspace))
+  use Nil <- result.try(case domain.scope {
+    WorkspacePrivate -> absolute(domain.workspace)
+
+    // A session registered on an executor names its workspace instead of
+    // giving a path, and only a session-only domain can hold that name:
+    // the workspace aggregate is keyed by the name alone, and two executors
+    // may register the same one (protocol-change/078).
+    SessionOnly ->
+      case catalogue.is_workspace_name(domain.workspace) {
+        True -> Ok(Nil)
+        False -> absolute(domain.workspace)
+      }
+  })
   use Nil <- result.try(absolute(domain.memory_path))
   use Nil <- result.try(absolute(domain.index_path))
   use Nil <- result.try(case domain.configuration {

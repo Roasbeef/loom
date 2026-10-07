@@ -19,11 +19,12 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 9. Each later version has its own embedded
+- The catalogue is at `user_version` 10. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
-  `catalogue_recent_folders_schema`, `catalogue_profiles_schema`), and
+  `catalogue_recent_folders_schema`, `catalogue_profiles_schema`,
+  `catalogue_executors_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -48,6 +49,19 @@ with these forks: they define the same modules.
   configuration file and the wire. A stored value that is not a name fails the
   read with `Invalid` and is never read as "no profile", because that would open
   a profiled session under the default roles.
+- `Registration.executor: String` names the `[executors.<name>]` a session's
+  workspace is registered on, empty for a local session (protocol-change/078).
+  Version 10 adds it as a `NOT NULL DEFAULT ''` column of `catalogue_sessions`,
+  so a v9 row reads back as local, and it is part of the creation request: a
+  retry that repeats the key with another executor is a `Conflict`. When it is
+  set, `workspace` holds the registered workspace name and never a path on this
+  host. `validate` enforces the split from the text alone: a local workspace
+  starts with `/`, a registered one satisfies `is_workspace_name` (one to 128
+  bytes, no `/`, no NUL), and the two cannot overlap. `is_executor_name` shares
+  the profile grammar. `set_workspace_default` refuses a registered session with
+  `Conflict`, because a default is keyed by the name alone and two executors may
+  register the same one. `storage/domain.validate` lets only a `SessionOnly`
+  domain carry a workspace name; the workspace aggregate stays path-keyed.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived

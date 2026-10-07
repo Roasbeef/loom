@@ -2920,6 +2920,7 @@ fn reserve_creation(
           request_key: request.request_key,
           state: catalogue.Reserved,
           profile: request.profile,
+          executor: "",
           subtitle: option.None,
         )
       use selected <- result.try(select_creation_domain(

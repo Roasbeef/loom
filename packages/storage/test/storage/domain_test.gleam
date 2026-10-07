@@ -57,6 +57,7 @@ fn registration(seed) {
     request_key: id,
     state: catalogue.Reserved,
     profile: option.None,
+    executor: "",
     subtitle: option.None,
   )
 }
@@ -195,5 +196,34 @@ pub fn domain_mapping_rejects_aliases_cross_scope_and_rolls_back_reservation_tes
     domain.reserve_session(store, second, other_scope)
     as "one session cannot enroll itself in another session-only domain"
   assert catalogue.get(store, second.id) == Error(catalogue.Missing)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_registered_session_holds_only_a_session_only_domain_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let record =
+    catalogue.Registration(
+      ..registration(6),
+      workspace: "loom-checkout",
+      executor: "build-box",
+    )
+
+  // The workspace aggregate is keyed by the workspace text alone, and two
+  // executors may register the same name, so a name cannot key one.
+  let aggregate_by_name =
+    domain.Domain(
+      ..aggregate(),
+      id: domain.key(domain.WorkspacePrivate, "loom-checkout", ""),
+      workspace: "loom-checkout",
+    )
+  let assert Error(catalogue.Invalid(_)) =
+    domain.reserve_session(store, record, aggregate_by_name)
+    as "a registered name is not a path"
+  assert catalogue.get(store, record.id) == Error(catalogue.Missing)
+
+  // A session-only domain keeps the name beside its own destinations.
+  let own = isolated(record)
+  assert domain.reserve_session(store, record, own) == Ok(record)
+  assert domain.for_session(store, record.id) == Ok(own)
   assert catalogue.close(store) == Ok(Nil)
 }

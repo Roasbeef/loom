@@ -41,6 +41,7 @@ import sqlight
 import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
+import storage/catalogue_executors_schema
 import storage/catalogue_logins_schema
 import storage/catalogue_names_schema
 import storage/catalogue_profiles_schema
@@ -75,7 +76,10 @@ pub type Registration {
     id: String,
     /// The host-validated canonical database path.
     path: String,
-    /// The host-validated canonical working directory.
+    /// The host-validated canonical working directory of a local session. For
+    /// a session whose `executor` is set it is instead the name of a workspace
+    /// registered on that executor, which is never a path on this host and is
+    /// never canonicalized, statted or created here (protocol-change/078).
     workspace: String,
     /// A display label, never a routing or authorization identity.
     name: String,
@@ -87,6 +91,11 @@ pub type Registration {
     /// the roles it resolved to: the daemon resolves it again each time the
     /// session opens (protocol-change/076).
     profile: Option(String),
+    /// The executor the session's workspace is registered on, by its
+    /// `[executors.<name>]` key, or the empty string for a session whose
+    /// workspace is a path on this host. It is part of the immutable creation
+    /// request, so a retry compares it (protocol-change/078).
+    executor: String,
     /// Creation time in Unix milliseconds.
     created_at: Int,
     /// The immutable creation request key.
@@ -228,7 +237,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 9
+pub const current_version = 10
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -243,6 +252,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(7, catalogue_logins_schema.schema),
     #(8, catalogue_recent_folders_schema.schema),
     #(9, catalogue_profiles_schema.schema),
+    #(10, catalogue_executors_schema.schema),
   ]
 }
 
@@ -342,6 +352,7 @@ fn insert(
       created_at: record.created_at,
       request_key: record.request_key,
       profile: option.unwrap(record.profile, ""),
+      executor: record.executor,
     ),
   ))
   use Nil <- result.try(statement(catalogue, sql.increment_catalogue_revision()))
@@ -735,6 +746,7 @@ pub fn workspace_default(
 /// The mapping and revision update commit together. Selecting the current
 /// identity writes nothing and leaves pagination revisions unchanged. Neither
 /// selection nor validation opens a conversation or changes runtime residency.
+/// A session registered on an executor is refused with `Conflict`.
 ///
 /// ## Examples
 ///
@@ -753,10 +765,15 @@ pub fn set_workspace_default(
       Active -> Ok(Nil)
       Archived -> Error(Conflict)
     })
-    use Nil <- result.try(case record.workspace == workspace {
-      True -> Ok(Nil)
-      False -> Error(Conflict)
-    })
+
+    // A registered workspace name is only unique within its executor, and a
+    // default is keyed by the name alone, so a registered session has none.
+    use Nil <- result.try(
+      case record.workspace == workspace && record.executor == "" {
+        True -> Ok(Nil)
+        False -> Error(Conflict)
+      },
+    )
     case default_identity(catalogue, workspace) {
       Ok(current) if current == id -> Ok(record)
       Ok(_) | Error(Missing) -> {
@@ -967,6 +984,7 @@ fn page_for(
             request_key: row.request_key,
             state: Reserved,
             profile: stored_profile(row.profile),
+            executor: row.executor,
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1022,6 +1040,7 @@ pub fn member_page(
             request_key: row.request_key,
             state: Reserved,
             profile: stored_profile(row.profile),
+            executor: row.executor,
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1136,6 +1155,7 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
         request_key: row.request_key,
         state: Reserved,
         profile: stored_profile(row.profile),
+        executor: row.executor,
         subtitle: None,
       ),
       row.state,
@@ -1216,9 +1236,18 @@ fn validate(record: Registration) -> Result(Nil, Error) {
     ids.parse_session_id(record.id)
     |> result.replace_error(Invalid("invalid canonical session ID")),
   )
+
+  // A local workspace is an absolute path and a registered one is a name, and
+  // the two grammars cannot overlap because a name has no `/`. That is what
+  // lets every later reader tell them apart from the text alone.
+  let placed = case record.executor {
+    "" -> string.starts_with(record.workspace, "/")
+    executor ->
+      is_executor_name(executor) && is_workspace_name(record.workspace)
+  }
   case
     string.starts_with(record.path, "/")
-    && string.starts_with(record.workspace, "/")
+    && placed
     && record.request_key != ""
     && record.created_at >= 0
   {
@@ -1234,7 +1263,7 @@ fn validate(record: Registration) -> Result(Nil, Error) {
       }
     False ->
       Error(Invalid(
-        "registration needs absolute paths, a request key and a nonnegative creation time",
+        "registration needs an absolute database path, a workspace path or an executor's workspace name, a request key and a nonnegative creation time",
       ))
   }
 }
@@ -1274,6 +1303,46 @@ pub fn is_profile_name(text: String) -> Bool {
 
 fn is_letter(grapheme: String) -> Bool {
   list.contains(string.to_graphemes("abcdefghijklmnopqrstuvwxyz"), grapheme)
+}
+
+/// Whether text is an executor name: the key of an `[executors.<name>]` table
+/// in the orchestrator's configuration. It has the grammar of a profile name,
+/// so a configuration key means the same thing on the wire and in a stored
+/// registration (protocol-change/078).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_executor_name("build-box")
+/// assert !catalogue.is_executor_name("Build Box")
+/// ```
+pub fn is_executor_name(text: String) -> Bool {
+  is_profile_name(text)
+}
+
+/// The longest registered workspace name, in bytes.
+pub const workspace_name_limit = 128
+
+/// Whether text is the name of a workspace registered on an executor: one to
+/// `workspace_name_limit` bytes with no `/` and no NUL. The executor validates
+/// the name against its own `[workspaces.<name>]` table when a scope attaches;
+/// the orchestrator only needs a string that cannot be mistaken for, or joined
+/// into, a path on its own disk. A name has no `/`, so it can never be an
+/// absolute path, which is how a stored workspace tells the two apart.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_workspace_name("loom")
+/// assert !catalogue.is_workspace_name("")
+/// assert !catalogue.is_workspace_name("/work/loom")
+/// assert !catalogue.is_workspace_name("a/b")
+/// ```
+pub fn is_workspace_name(text: String) -> Bool {
+  text != ""
+  && string.byte_size(text) <= workspace_name_limit
+  && !string.contains(text, "/")
+  && !string.contains(text, "\u{0}")
 }
 
 // The column's default, the empty string, means no profile. Any other text is

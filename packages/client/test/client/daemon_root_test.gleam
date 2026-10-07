@@ -90,6 +90,7 @@ fn saved(path: String) {
       request_key: "saved",
       state: catalogue.Reserved,
       profile: option.None,
+      executor: "",
       subtitle: option.None,
     )
   // Explicit opens require the same durable domain mapping as production

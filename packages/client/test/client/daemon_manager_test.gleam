@@ -40,6 +40,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
     profile: option.None,
+    executor: "",
     subtitle: option.None,
   )
 }

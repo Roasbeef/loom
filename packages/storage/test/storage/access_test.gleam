@@ -68,6 +68,7 @@ fn registration(seed: Int) {
     request_key: id,
     state: catalogue.Reserved,
     profile: option.None,
+    executor: "",
     subtitle: option.None,
   )
 }

@@ -525,6 +525,7 @@ fn view(status: manager.Status) -> manager.View {
       request_key: "request-key",
       state: catalogue.Saved,
       profile: option.None,
+      executor: "",
       subtitle: option.None,
     ),
     status:,
