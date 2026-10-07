@@ -151,6 +151,10 @@ pub type Creation {
     name: String,
     /// Validated configuration reference with no credential values.
     configuration: String,
+    /// The model profile the session is created under, or `None` for the
+    /// configuration's default roles. It is retained with the registration and
+    /// resolved again by every open (protocol-change/076).
+    profile: Option(String),
   )
 }
 
@@ -2807,6 +2811,7 @@ fn reserve_creation(
         record.workspace == request.workspace
         && record.name == request.name
         && record.configuration == request.configuration
+        && record.profile == request.profile
       {
         True -> {
           use selected <- result.try(domain.for_session(store, record.id))
@@ -2830,6 +2835,7 @@ fn reserve_creation(
           created_at: ids.session_id_timestamp_ms(id),
           request_key: request.request_key,
           state: catalogue.Reserved,
+          profile: request.profile,
           subtitle: option.None,
         )
       use selected <- result.try(select_creation_domain(

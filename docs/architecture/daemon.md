@@ -329,8 +329,9 @@ In more detail:
    domain's services, then runs the `build` callback that `main.prepare`
    supplied. That callback resolves settings with `serve.resolve_managed`,
    which reloads the registration's saved configuration and canonical
-   workspace (never the daemon's working directory) and adds the state-root
-   masks to the sandbox policy. It attaches a peer directory, then calls
+   workspace (never the daemon's working directory), applies the
+   registration's model profile to that configuration's roles, and adds the
+   state-root masks to the sandbox policy. It attaches a peer directory, then calls
    `serve.assemble_in_domain`, which builds the session's storage, broker,
    helper pool, services, gateway and runtime tree under the custody owner.
    The domain's first distillation pass starts in step 4 and harvests the

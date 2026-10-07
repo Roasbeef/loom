@@ -821,6 +821,29 @@ pub fn a_consumed_want_can_be_asked_again_test() {
   assert record.status == escalation.Consumed
 }
 
+// Allowing once is not a use of the ask budget. The cap of three questions
+// a want may put to a person counted every question, so the fourth identical
+// request after three allow-once answers came back as the sandbox's own
+// refusal with nobody asked, and the session listed nothing remembered to
+// explain it. A spent approval now ends its cycle and the count starts
+// again, so the want is asked as many times as the person keeps allowing it.
+pub fn a_want_allowed_once_is_asked_again_past_the_ask_cap_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
+  list.each(["call_1", "call_2", "call_3", "call_4", "call_5"], fn(call) {
+    approve_when_pending(
+      harness.runtime,
+      approve_with_the_wanted_diff(harness.runtime),
+    )
+    let text = result_text(wiring.run_tool(harness.config, bash_run(call)))
+    assert string.contains(text, "no sandbox helper")
+      as "every identical request is asked and runs under its own approval"
+  })
+  let assert Ok([record]) = api.escalations(harness.runtime)
+    as "still exactly one record"
+  assert record.status == escalation.Consumed
+  assert record.asked == 1
+}
+
 // #46(d): a denial is a decision about the call in hand, not a
 // session-lifetime verdict on the want. A later call re-opens the
 // question, so a human who said no can say yes without the session

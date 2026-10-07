@@ -109,6 +109,7 @@ fn attach_as(
         principal: access.Principal("alice", "Alice", access.MemberPrincipal),
         authority: access.Participant(role),
         digest:,
+        signin: None,
       ),
       fn() { process.call(script, waiting: 1000, sending: Ask) },
       fn(frame) { process.send(harness.inbox, frame) },

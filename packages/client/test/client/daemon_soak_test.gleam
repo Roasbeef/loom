@@ -238,7 +238,13 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
   let assert Ok(view) =
     manager.create(
       serving.ready.registry,
-      manager.Creation("soak-" <> int.to_string(seed), workspace, "Soak", ""),
+      manager.Creation(
+        "soak-" <> int.to_string(seed),
+        workspace,
+        "Soak",
+        "",
+        None,
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),
     )

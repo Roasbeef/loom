@@ -265,8 +265,12 @@ pub fn a_write_is_a_file_whose_lines_are_all_added_test() {
   assert file.path == "calc.py"
   assert file.origin == changes_view.Written
   assert #(file.added, file.removed) == #(2, 0)
-  assert list.map(file.rows, fn(row) { row.kind }) == [Added, Added]
-  assert list.map(file.rows, fn(row) { row.text }) == ["+a = 1", "+b = 2"]
+
+  // The write is one new-file hunk, so the drawer numbers its lines and tints
+  // them as it does an edit's.
+  assert list.map(file.rows, fn(row) { row.kind }) == [Hunk, Added, Added]
+  assert list.map(file.rows, fn(row) { row.text })
+    == ["@@ -0,0 +1,2 @@", "+a = 1", "+b = 2"]
   assert changes_view.counts_words(file) == "written · 2 lines"
   assert changes_view.totals(board) == "1 file · +2 -0"
 }
@@ -309,13 +313,15 @@ pub fn a_writes_markup_stays_text_and_its_rows_are_bounded_test() {
   let assert [file] =
     changes_view.fold(written("p.html", "<script>alert(1)</script>", False)).files
   assert list.map(file.rows, fn(row) { row.text })
-    == ["+<script>alert(1)</script>"]
+    == ["@@ -0,0 +1,1 @@", "+<script>alert(1)</script>"]
 
   let long =
     string.join(list.repeat("line", changes_view.max_file_rows + 5), "\n")
   let assert [big] = changes_view.fold(written("big.txt", long, False)).files
   assert list.length(big.rows) == changes_view.max_file_rows
-  assert big.cut == 5
+
+  // The hunk header is a row of its own, so six rows are left out.
+  assert big.cut == 6
   assert big.added == changes_view.max_file_rows + 5
 }
 

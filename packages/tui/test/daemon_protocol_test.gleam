@@ -120,7 +120,13 @@ pub fn request_scalar_limits_and_stale_operation_epoch_test() {
   let assert Error(_) =
     protocol.encode(
       1,
-      protocol.CreateSession("key", "/work", string.repeat("x", 257), "/config"),
+      protocol.CreateSession(
+        "key",
+        "/work",
+        string.repeat("x", 257),
+        "/config",
+        "",
+      ),
       epoch,
     )
     as "names are bounded before serialization"
@@ -281,7 +287,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
   let assert Ok(encoded) =
     protocol.encode(
       1,
-      protocol.CreateSession("key", "/work", "New session", ""),
+      protocol.CreateSession("key", "/work", "New session", "", ""),
       epoch,
     )
     as "omitted config can reach the daemon's inherited defaults"
@@ -294,6 +300,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
         "/work",
         "New session",
         string.repeat("x", 4097),
+        "",
       ),
       epoch,
     )

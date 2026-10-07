@@ -968,7 +968,13 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
   let assert Ok(created) =
     manager.create(
       serving.ready.registry,
-      manager.Creation("terminal-fixture", settings.workspace, "terminal", ""),
+      manager.Creation(
+        "terminal-fixture",
+        settings.workspace,
+        "terminal",
+        "",
+        None,
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(
         clock.from_function(ffi_os.system_time_ms),
@@ -1017,6 +1023,7 @@ fn scripted_catalog() -> catalog.Catalog {
       ),
     ],
     roles: [#(model.Main, ["acme"])],
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )
@@ -1088,6 +1095,7 @@ fn settings_at(test_root: String) -> serve.Settings {
     // `[tools]` table existed.
     tools: catalog.default_tools(),
     advisor: None,
+    go_caches: None,
   )
 }
 

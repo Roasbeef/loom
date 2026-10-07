@@ -239,6 +239,7 @@ import runtime/escalation as runtime_escalation
 import runtime/hooks
 import runtime/writer
 import session/session
+import session_view/protocol as session_wire
 import storage/access
 import storage/snapshot
 import storage/storage.{type EntryHead}
@@ -272,6 +273,13 @@ pub type Binding {
     authority: access.Authority,
     /// Credential digest, never plaintext bearer material.
     digest: access.Digest,
+    /// The fingerprint of the browser sign-in this connection belongs to, when
+    /// it is a web page that has one. A page opened by `loom ui` is admitted
+    /// under the terminal's bearer (`digest`) and carries the login its
+    /// exchange set beside it, so the digest alone would record every grant
+    /// the page makes as a terminal's. The daemon copies the fingerprint from
+    /// the page's own record and never from a frame, as it does `digest`.
+    signin: Option(String),
   )
 }
 
@@ -7049,7 +7057,7 @@ fn describe_reject(reason: acceptance.RejectReason) -> #(String, String) {
     acceptance.InvalidMessage(reason:) -> #(protocol.code_bad_request, reason)
     acceptance.NothingToCompact -> #(
       protocol.code_conflict,
-      "there is nothing to compact",
+      session_wire.nothing_to_compact_message,
     )
     acceptance.InvalidNavigation(reason:) -> #(
       protocol.code_bad_request,
@@ -7320,18 +7328,25 @@ fn approval_provenance(
       authentication: Authenticated(binding, ..),
       origin: Some(by),
       ..,
-    )) -> {
-      let fingerprint = access.fingerprint(binding.digest)
-      permissions.Approved(
-        by:,
-        via: case access.credential_kind(binding.digest) {
-          access.Browser -> permissions.Login(fingerprint:)
-          access.Bearer -> permissions.Device(fingerprint:)
-        },
-        at_ms: now,
-      )
-    }
+    )) -> permissions.Approved(by:, via: approval_via(binding), at_ms: now)
     Ok(_) | Error(Nil) -> permissions.Unknown
+  }
+}
+
+// Which credential an approval is recorded under. A page that belongs to a
+// browser sign-in records that sign-in, because it is the thing the owner can
+// revoke and the thing the list names. Anything else records the credential it
+// was admitted under, a login's digest as a login and a bearer's as a device.
+fn approval_via(binding: Binding) -> permissions.Via {
+  case binding.signin {
+    Some(fingerprint) -> permissions.Login(fingerprint:)
+    None -> {
+      let fingerprint = access.fingerprint(binding.digest)
+      case access.credential_kind(binding.digest) {
+        access.Browser -> permissions.Login(fingerprint:)
+        access.Bearer -> permissions.Device(fingerprint:)
+      }
+    }
   }
 }
 

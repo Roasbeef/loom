@@ -106,6 +106,7 @@ fn verify_helper(directory, workspace, configuration, id) {
       1,
       "release-probe-resolution",
       catalogue.Saved,
+      profile: option.None,
       subtitle: option.None,
     )
   let selected =

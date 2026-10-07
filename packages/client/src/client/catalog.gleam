@@ -17,7 +17,8 @@
 ////
 //// ## Flow
 ////
-//// `parse` → `parse_models` → `parse_roles` → `parse_mcp_servers` → `gateway`
+//// `parse` → `parse_models` → `parse_roles` → `parse_profiles` → `parse_mcp_servers`
+//// → `select_profile` → `gateway`
 ////
 //// 1. `parse` reads the TOML, checks the top-level keys with `known_keys` so a
 ////    typoed table is refused by exactly one parser, and requires `[models]`
@@ -26,12 +27,19 @@
 ////    `parse_model`, `parse_pricing` and `validate_auth`.
 //// 3. `parse_roles` resolves each role's chain of names against those models,
 ////    with `parse_chain` refusing a dangling name.
-//// 4. `parse_mcp_servers` reads the optional server tables, and
+//// 4. `parse_profiles` reads the optional `[profiles.<name>.roles]` tables. Each
+////    is checked with the same `parse_role_table` as `[roles]`, then laid over
+////    the default role set by `override_roles`, so a profile in the result is a
+////    complete role set.
+//// 5. `parse_mcp_servers` reads the optional server tables, and
 ////    `mcp_server_name` holds each key to the import grammar.
-//// 5. `parse_tools`, `parse_workspace` and `parse_advisor` read their own
+//// 6. `parse_tools`, `parse_workspace` and `parse_advisor` read their own
 ////    tables from the same text; the host calls them beside `parse`.
-//// 6. `find`, `main_model` and `routed_roles` answer lookups over the result.
-//// 7. `gateway` registers each entry as a provider through `provider_config`
+//// 7. `find`, `main_model`, `routed_roles`, `profile_names` and `select_profile`
+////    answer lookups over the result. `select_profile` is how a session takes
+////    a profile: it returns the catalogue with that profile's roles in place of
+////    the default ones.
+//// 8. `gateway` registers each entry as a provider through `provider_config`
 ////    and `priced`, then routes every role's chain with `resolved`.
 ////
 //// ## The file format
@@ -61,6 +69,10 @@
 //// [roles]
 //// main = ["<name>", "<fallback-name>", ...]
 //// # likewise: subagent, plan, summarize, vision, advisor
+////
+//// [profiles.<name>.roles]            # optional; one table per profile
+//// main = ["<name>"]                  # replaces the default `main` chain;
+////                                    #   roles it omits keep the default
 ////
 //// [mcp.<name>]                       # optional; one table per server
 //// command = ["server-binary", "arg"] # the stdio server's argv
@@ -100,6 +112,8 @@
 ////
 //// [workspace]                        # optional; see `parse_workspace`
 //// mounts = [{ path = "/srv/data", access = "ro" }]
+//// go_cache_limit_mib = 10240         # Go build cache size that triggers a retire
+//// go_module_mirror = "/home/me/go/pkg/mod"   # host module cache, read-only
 //// ```
 ////
 //// The `[[rule]]` tables are the triggered project rules and are parsed
@@ -162,6 +176,7 @@ import provider/image_budget
 import provider/model
 import provider/pricing
 import provider/secret.{type SecretStore}
+import storage/catalogue as stored_catalogue
 import tom
 
 /// Which wire adapter an entry speaks. Each variant mirrors one of the
@@ -306,6 +321,27 @@ pub type ToolsConfig {
   )
 }
 
+/// A named alternative to the default role table: the same `[roles]` with the
+/// roles a `[profiles.<name>.roles]` table names replaced, whole entry for whole
+/// entry. A profile in a parsed `Catalog` is already complete, so choosing one
+/// is a replacement of `Catalog.roles` and needs no merge at the point of use.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.Profile(name: "deepseek", roles: [#(model.Main, ["deepseek"]), ..])
+/// ```
+///
+pub type Profile {
+  Profile(
+    /// The table key, which satisfies `storage/catalogue.is_profile_name`.
+    name: String,
+    /// The complete role table this profile routes, in the same canonical
+    /// order and with the same invariants as `Catalog.roles`.
+    roles: List(#(model.Role, List(String))),
+  )
+}
+
 /// The parsed catalogue: entries plus the role → fallback-chain table,
 /// plus any configured MCP and language servers.
 ///
@@ -315,13 +351,19 @@ pub type ToolsConfig {
 /// `roles`, `mcp_servers` and `lsp_servers` are in the deterministic
 /// orders `parse` produces (entries and servers sorted by name, roles in
 /// the six-role canonical order); no file extension is claimed by two
-/// language servers.
+/// language servers; profiles are sorted by name, and each one's chains name
+/// only existing entries and route `main`.
 pub type Catalog {
   Catalog(
     /// The entries, sorted by name.
     models: List(CatalogModel),
-    /// Ordered fallback chains, best entry first, per routed role.
+    /// Ordered fallback chains, best entry first, per routed role. This is
+    /// the role set a session routes by: the default `[roles]` table until
+    /// `select_profile` replaces it with a profile's.
     roles: List(#(model.Role, List(String))),
+    /// The named alternatives to `roles`, sorted by name; `[]` when
+    /// `[profiles]` is absent.
+    profiles: List(Profile),
     /// The MCP servers, sorted by name; `[]` when `[mcp]` is absent.
     mcp_servers: List(McpServer),
     /// The language servers, sorted by name; `[]` when `[lsp]` is
@@ -405,6 +447,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
+      "profiles",
     ],
     "the top level",
   ))
@@ -421,9 +464,10 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   )
   use models <- result.try(parse_models(model_tables))
   use roles <- result.try(parse_roles(role_table, models))
+  use profiles <- result.try(parse_profiles(document, models, roles))
   use mcp_servers <- result.try(parse_mcp_servers(document))
   use lsp_servers <- result.try(parse_lsp_servers(document))
-  Ok(Catalog(models:, roles:, mcp_servers:, lsp_servers:))
+  Ok(Catalog(models:, roles:, profiles:, mcp_servers:, lsp_servers:))
 }
 
 // Startup and session loading validate the same daemon table. Only the
@@ -924,41 +968,135 @@ fn parse_roles(
   entries: List(#(String, tom.Toml)),
   models: List(CatalogModel),
 ) -> Result(List(#(model.Role, List(String))), String) {
-  use routed <- result.try(
-    list.try_map(entries, fn(entry) {
-      let #(role_name, value) = entry
-      use role <- result.try(parse_role(role_name))
-      use chain <- result.try(parse_chain(role_name, value, models))
-
-      // A vision chain is the operator's contract that every entry in
-      // it reads images; an entry declaring `vision = false` in that
-      // chain would let a retryable failure walk an image straight to a
-      // model that cannot read it, silently — the one outcome the
-      // `vision` key exists to make impossible. Refuse it at parse,
-      // role and entry named, the same strictness a typoed model name
-      // gets.
-      use Nil <- result.try(case role {
-        model.Vision -> vision_chain_all_read(chain, models)
-        _ -> Ok(Nil)
-      })
-      Ok(#(role, chain))
-    }),
-  )
-
-  // Canonical role order, independent of TOML dict order, so listings
-  // and snapshots are deterministic.
-  let roles =
-    list.filter_map(routable_roles, fn(role) {
-      list.key_find(routed, role)
-      |> result.map(fn(chain) { #(role, chain) })
-    })
+  use routed <- result.try(parse_role_table("roles", entries, models))
+  let roles = in_canonical_order(routed)
   case list.key_find(roles, model.Main) {
     Ok(_chain) -> Ok(roles)
     Error(Nil) -> Error("the [roles] table must route main")
   }
 }
 
-fn parse_role(name: String) -> Result(model.Role, String) {
+// Checks each row of a role table and resolves it against the defined
+// entries, without deciding which roles must be present: `[roles]` must route
+// main, while a profile's table names only the roles it replaces. `place` is
+// the table's path in the file, so a refusal names `profiles.fast.roles.main`
+// and not an ambiguous `roles.main`.
+fn parse_role_table(
+  place: String,
+  entries: List(#(String, tom.Toml)),
+  models: List(CatalogModel),
+) -> Result(List(#(model.Role, List(String))), String) {
+  list.try_map(entries, fn(entry) {
+    let #(role_name, value) = entry
+    use role <- result.try(parse_role(place, role_name))
+    use chain <- result.try(parse_chain(
+      place <> "." <> role_name,
+      value,
+      models,
+    ))
+
+    // A vision chain is the operator's contract that every entry in
+    // it reads images; an entry declaring `vision = false` in that
+    // chain would let a retryable failure walk an image straight to a
+    // model that cannot read it, silently — the one outcome the
+    // `vision` key exists to make impossible. Refuse it at parse,
+    // role and entry named, the same strictness a typoed model name
+    // gets.
+    use Nil <- result.try(case role {
+      model.Vision -> vision_chain_all_read(place, chain, models)
+      _ -> Ok(Nil)
+    })
+    Ok(#(role, chain))
+  })
+}
+
+// Canonical role order, independent of TOML dict order, so listings and
+// snapshots are deterministic.
+fn in_canonical_order(
+  routed: List(#(model.Role, List(String))),
+) -> List(#(model.Role, List(String))) {
+  list.filter_map(routable_roles, fn(role) {
+    list.key_find(routed, role)
+    |> result.map(fn(chain) { #(role, chain) })
+  })
+}
+
+// The `[profiles]` table: each key a profile name, each value a table whose
+// only key is `roles`. A profile is validated here, at load, against the same
+// entries as `[roles]`, so a typoed model or role name in a profile nobody has
+// selected yet still refuses the file instead of failing the first session
+// that picks it. Its roles are laid over `defaults` so the result is complete.
+fn parse_profiles(
+  document: Dict(String, tom.Toml),
+  models: List(CatalogModel),
+  defaults: List(#(model.Role, List(String))),
+) -> Result(List(Profile), String) {
+  use tables <- result.try(case dict.get(document, "profiles") {
+    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
+      Ok(dict.to_list(entries))
+    Ok(_other) ->
+      Error("profiles must be a table of [profiles.<name>.roles] entries")
+    Error(Nil) -> Ok([])
+  })
+  tables
+  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> list.try_map(fn(entry) {
+    parse_profile(entry.0, entry.1, models, defaults)
+  })
+}
+
+fn parse_profile(
+  name: String,
+  value: tom.Toml,
+  models: List(CatalogModel),
+  defaults: List(#(model.Role, List(String))),
+) -> Result(Profile, String) {
+  let place = "profiles." <> name
+  use Nil <- result.try(case stored_catalogue.is_profile_name(name) {
+    True -> Ok(Nil)
+    False ->
+      Error(
+        place
+        <> " is not a profile name (lowercase letters, numbers, `_` and `-`,"
+        <> " starting with a letter, at most "
+        <> int.to_string(stored_catalogue.profile_name_limit)
+        <> " characters)",
+      )
+  })
+  use fields <- result.try(case value {
+    tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
+    _ -> Error(place <> " must be a table")
+  })
+  use Nil <- result.try(known_keys(dict.keys(fields), ["roles"], place))
+  use entries <- result.try(case dict.get(fields, "roles") {
+    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
+      Ok(dict.to_list(entries))
+    _ -> Error(place <> " needs a [" <> place <> ".roles] table")
+  })
+  use Nil <- result.try(case entries {
+    [] -> Error(place <> ".roles must name at least one role")
+    _ -> Ok(Nil)
+  })
+  use replaced <- result.try(parse_role_table(
+    place <> ".roles",
+    entries,
+    models,
+  ))
+  Ok(Profile(name:, roles: override_roles(defaults, replaced)))
+}
+
+// The default role set with `replaced` laid over it: a role the profile names
+// takes the profile's whole chain, and a role it omits keeps the default's.
+// `key_find` takes the first match, so the replacements go first. The result
+// is in canonical order, so it compares and lists like `[roles]`.
+fn override_roles(
+  defaults: List(#(model.Role, List(String))),
+  replaced: List(#(model.Role, List(String))),
+) -> List(#(model.Role, List(String))) {
+  in_canonical_order(list.append(replaced, defaults))
+}
+
+fn parse_role(place: String, name: String) -> Result(model.Role, String) {
   case name {
     "main" -> Ok(model.Main)
     "subagent" -> Ok(model.Subagent)
@@ -968,7 +1106,8 @@ fn parse_role(name: String) -> Result(model.Role, String) {
     "advisor" -> Ok(advisor_role)
     other ->
       Error(
-        "roles."
+        place
+        <> "."
         <> other
         <> " is not a routable role (main, subagent, plan, summarize,"
         <> " vision, advisor)",
@@ -977,11 +1116,10 @@ fn parse_role(name: String) -> Result(model.Role, String) {
 }
 
 fn parse_chain(
-  role_name: String,
+  place: String,
   value: tom.Toml,
   models: List(CatalogModel),
 ) -> Result(List(String), String) {
-  let place = "roles." <> role_name
   use names <- result.try(case value {
     tom.Array(items) ->
       list.try_map(items, fn(item) {
@@ -1013,6 +1151,7 @@ fn parse_chain(
 // refuse. The entry exists by the time this runs; `parse_chain`
 // already rejected unknown names.
 fn vision_chain_all_read(
+  place: String,
   chain: List(String),
   models: List(CatalogModel),
 ) -> Result(Nil, String) {
@@ -1020,7 +1159,8 @@ fn vision_chain_all_read(
     case list.find(models, fn(entry) { entry.name == name }) {
       Ok(CatalogModel(vision: TextOnly, ..)) ->
         Error(
-          "roles.vision names \""
+          place
+          <> ".vision names \""
           <> name
           <> "\", which declares vision = false; a vision chain must list"
           <> " only entries that read images",
@@ -1134,15 +1274,30 @@ pub type ReadScope {
   WorkspaceReads
 }
 
-/// The `[workspace]` table selects read scope and explicit additional mounts.
+/// The `[workspace]` table selects read scope, explicit additional mounts,
+/// and how a workspace's private Go caches are bounded and seeded.
 pub type WorkspaceConfig {
   WorkspaceConfig(
     /// Host reads by default; workspace reads select a restricted view.
     read_scope: ReadScope,
     /// Additional operator-authorized read-only or writable regions.
     mounts: List(WorkspaceMount),
+    /// The size, in MiB, above which a starting session retires the
+    /// workspace's Go build cache (`client/gocache`).
+    /// `default_go_cache_limit_mib` when the key is omitted.
+    go_cache_limit_mib: Int,
+    /// The operator's own Go module cache, offered to the jail read-only as
+    /// a module proxy. `None` when the key is omitted, and every module is
+    /// then downloaded into the private cache.
+    go_module_mirror: Option(String),
   )
 }
+
+/// The Go build cache size, in MiB, above which a session start retires
+/// the cache: 10 GiB. One busy checkout measured twice that, and a cold
+/// rebuild of the same checkout takes minutes, so the default bounds the
+/// disk cost without making the common case slow.
+pub const default_go_cache_limit_mib = 10_240
 
 /// The `[workspace]` table a file that omits it means: no mounts beyond
 /// what the harness derives.
@@ -1154,7 +1309,12 @@ pub type WorkspaceConfig {
 /// ```
 ///
 pub fn default_workspace() -> WorkspaceConfig {
-  WorkspaceConfig(read_scope: HostReads, mounts: [])
+  WorkspaceConfig(
+    read_scope: HostReads,
+    mounts: [],
+    go_cache_limit_mib: default_go_cache_limit_mib,
+    go_module_mirror: None,
+  )
 }
 
 /// Parses the optional `[workspace]` table out of the same `loom.toml`
@@ -1166,7 +1326,16 @@ pub fn default_workspace() -> WorkspaceConfig {
 ///   { path = "/srv/datasets", access = "ro" },
 ///   { path = "/var/cache/shared", access = "rw" },
 /// ]
+/// go_cache_limit_mib = 10240
+/// go_module_mirror = "/home/me/go/pkg/mod"
 /// ```
+///
+/// `go_cache_limit_mib` and `go_module_mirror` belong to the private Go
+/// caches of `client/gocache`. The limit is a positive integer. The mirror
+/// is an absolute path made only of characters a `GOPROXY` URL list carries
+/// unescaped. Whether it exists, is a module cache, and stays clear of the
+/// workspace and every masked path is judged at session boot, where the
+/// composed policy is known.
 ///
 /// Strict for the reason `parse_tools` is: every line here widens what a
 /// jailed shell can reach, so a relative path, an unrecognised access
@@ -1201,9 +1370,22 @@ fn workspace_table(
 ) -> Result(WorkspaceConfig, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["read_scope", "mounts"],
+    ["read_scope", "mounts", "go_cache_limit_mib", "go_module_mirror"],
     "[workspace]",
   ))
+  use go_cache_limit_mib <- result.try(
+    case dict.has_key(fields, "go_cache_limit_mib") {
+      True -> positive_int(fields, "workspace", "go_cache_limit_mib")
+      False -> Ok(default_go_cache_limit_mib)
+    },
+  )
+  use go_module_mirror <- result.try(
+    case optional_string(fields, "workspace", "go_module_mirror") {
+      Ok(Ok(path)) -> mirror_path(path) |> result.map(Some)
+      Ok(Error(Nil)) -> Ok(None)
+      Error(reason) -> Error(reason)
+    },
+  )
   use read_scope <- result.try(
     case optional_string(fields, "workspace", "read_scope") {
       Ok(Ok(word)) -> parse_read_scope(word)
@@ -1237,8 +1419,69 @@ fn workspace_table(
     })
     |> result.replace(Nil),
   )
-  Ok(WorkspaceConfig(read_scope:, mounts:))
+  Ok(WorkspaceConfig(
+    read_scope:,
+    mounts:,
+    go_cache_limit_mib:,
+    go_module_mirror:,
+  ))
 }
+
+// The mirror path is spliced into a `GOPROXY` value, a comma and pipe
+// separated list of URLs, as `file://<path>/cache/download`. Go parses
+// that as a URL, so a path with a separator, a `%`, a `?`, a `#` or a
+// space would be read as something other than the directory the operator
+// named. Refusing those characters here costs an operator with an unusual
+// path a worded error, and avoids writing a URL escaper whose mistakes
+// would send Go to a different directory. A trailing slash is dropped so
+// the same directory has one spelling, and the root itself is refused: it
+// is never a module cache and would make the read-only mount cover the
+// whole host.
+fn mirror_path(path: String) -> Result(String, String) {
+  let place = "[workspace] go_module_mirror"
+  let trimmed = case string.ends_with(path, "/") {
+    True -> string.drop_end(path, 1)
+    False -> path
+  }
+  let dotted =
+    list.any(string.split(trimmed, "/"), fn(segment) {
+      segment == ".." || segment == "."
+    })
+  case
+    string.starts_with(trimmed, "/"),
+    trimmed,
+    dotted,
+    mirror_path_clean(trimmed)
+  {
+    False, _, _, _ ->
+      Error(place <> " = \"" <> path <> "\" must be an absolute path")
+    True, "", _, _ -> Error(place <> " may not be the root directory")
+    True, _, True, _ ->
+      Error(
+        place
+        <> " = \""
+        <> path
+        <> "\" has a . or .. segment; name the directory itself",
+      )
+    True, _, False, False ->
+      Error(
+        place
+        <> " = \""
+        <> path
+        <> "\" may use only letters, digits and the characters . _ - + @ ~ /"
+        <> " because it becomes part of the GOPROXY URL list",
+      )
+    True, _, False, True -> Ok(trimmed)
+  }
+}
+
+fn mirror_path_clean(path: String) -> Bool {
+  string.to_graphemes(path)
+  |> list.all(fn(grapheme) { string.contains(mirror_path_alphabet, grapheme) })
+}
+
+const mirror_path_alphabet =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-+@~/"
 
 /// Decodes the same filesystem scope in configuration and daemon flags.
 ///
@@ -1735,6 +1978,74 @@ pub fn active_roles(catalog: Catalog, name: String) -> List(String) {
   catalog.roles
   |> list.filter(fn(route) { list.first(route.1) == Ok(name) })
   |> list.map(fn(route) { role_key(route.0) })
+}
+
+/// The names of the configured profiles, sorted. Empty when the file defines
+/// none, which is the configuration every file written before profiles is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.profile_names(catalogue) -> ["deepseek", "gemini"]
+/// ```
+///
+pub fn profile_names(catalog: Catalog) -> List(String) {
+  list.map(catalog.profiles, fn(named) { named.name })
+}
+
+/// The catalogue a session using the named profile routes by: the same
+/// entries, servers and profiles, with `roles` replaced by the profile's
+/// complete role set. Every consumer of roles reads `Catalog.roles` (or the
+/// gateway `gateway` builds from it), so a catalogue returned here is all a
+/// session needs to be consistent: the gateway's chains, the `models` listing's
+/// role columns, the main model a new strand starts on and the vision
+/// admission all follow the profile and none reads the default table.
+///
+/// The refusal names the profiles that do exist, because it is what an
+/// operator who mistyped `--model-profile` reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.select_profile(catalogue, "deepseek")
+/// // -> Ok(catalog.Catalog(..catalogue, roles: [..]))
+/// ```
+///
+/// ```gleam
+/// // catalog.select_profile(catalogue, "nope")
+/// // -> Error("unknown profile \"nope\"; the configuration defines: a, b")
+/// ```
+///
+pub fn select_profile(
+  catalog: Catalog,
+  name: String,
+) -> Result(Catalog, String) {
+  case list.find(catalog.profiles, fn(named) { named.name == name }) {
+    Ok(Profile(roles:, ..)) -> Ok(Catalog(..catalog, roles:))
+    Error(Nil) -> Error(unknown_profile(profile_names(catalog), name))
+  }
+}
+
+/// The refusal for a profile name the configuration does not define, naming
+/// the ones it does. `select_profile`, the daemon's check at session creation
+/// and the web form's refusal all word it here, so the same mistake reads the
+/// same everywhere.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.unknown_profile([], "x")
+///   == "unknown profile \"x\"; the configuration defines no profiles"
+/// assert catalog.unknown_profile(["a", "b"], "x")
+///   == "unknown profile \"x\"; the configuration defines: a, b"
+/// ```
+///
+pub fn unknown_profile(known: List(String), name: String) -> String {
+  let prefix = "unknown profile \"" <> name <> "\"; the configuration defines"
+  case known {
+    [] -> prefix <> " no profiles"
+    known -> prefix <> ": " <> string.join(known, ", ")
+  }
 }
 
 // A role as the `[roles]` table keys it, which is what these two

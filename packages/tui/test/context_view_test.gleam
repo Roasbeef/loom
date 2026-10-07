@@ -19,6 +19,7 @@ import machine/strand
 import session_view/cache_watch
 import session_view/command
 import session_view/context_view as context
+import session_view/model as session_model
 import session_view/msg
 import session_view/protocol
 import session_view/session_channel
@@ -529,6 +530,50 @@ pub fn a_long_live_turn_refreshes_once_per_interval_test() {
   // The settling edge still reads inside the interval.
   let settled = observing(entry_leaf(3), "first", None)
   assert surfaces.context_refresh_due(second.shared, settled.shared)
+}
+
+pub fn a_row_inside_the_interval_is_read_when_the_interval_ends_test() {
+  let observed = observing(entry_leaf(1), "first", Some("running tools"))
+  let running =
+    tui_model.Model(
+      ..observed,
+      shared: shared_set.peer(observed.shared, session_model.Attached),
+    )
+  let start = 100_000
+  let interval = surfaces.usage_refresh_interval_ms
+
+  // The first row of the turn reads at once and stamps the selection.
+  let first = with_usage_row(running, 1, start)
+  let read = surfaces.sync_context(running.shared, first.shared)
+  assert read.context.marked_ms == Some(start)
+  assert surfaces.context_deferred_until(read) == None
+
+  // A row inside the interval starts no read, but the selection remembers
+  // when the interval ends, so the row is not lost.
+  let second =
+    with_usage_row(tui_model.Model(..first, shared: read), 2, start + 10_000)
+  let held = surfaces.sync_context(read, second.shared)
+  assert held.context.marked_ms == Some(start)
+  assert surfaces.context_deferred_until(held) == Some(start + interval)
+
+  // A tick before the end of the interval changes nothing.
+  let early = shared_set.stamp(held, msg.Stamp(start + interval - 1, 0))
+  let still = surfaces.sync_context(held, early)
+  assert surfaces.context_deferred_until(still) == Some(start + interval)
+  assert still.context.marked_ms == Some(start)
+
+  // A tick at the end reads with no further row, and the deferral is spent.
+  let due = shared_set.stamp(held, msg.Stamp(start + interval, 0))
+  let caught_up = surfaces.sync_context(held, due)
+  assert caught_up.context.marked_ms == Some(start + interval)
+  assert surfaces.context_deferred_until(caught_up) == None
+  assert caught_up.context.request == context.Requested
+
+  // A strand that stopped running has nothing left to catch up: the
+  // settling edge reads its final figure.
+  let settled = observing(entry_leaf(1), "first", None)
+  let ended = surfaces.sync_context(held, settled.shared)
+  assert surfaces.context_deferred_until(ended) == None
 }
 
 pub fn an_outstanding_context_read_holds_the_shared_observation_slot_test() {

@@ -75,6 +75,7 @@ fn start_page(
         principal: alice(),
         authority: access.Owner,
         digest:,
+        signin: None,
       ),
       check: fn() { Ok(#(alice(), access.Owner)) },
       ceiling: access.Operator,

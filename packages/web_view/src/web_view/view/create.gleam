@@ -19,6 +19,14 @@
 //// text the catalogue wrote, carried by the message the server drew into the
 //// tree, so the browser's event names only the path it fired at.
 ////
+//// When the daemon's configuration defines model profiles (protocol-change/076),
+//// each form also carries a select of them, with the default roles first. The
+//// profile names are the daemon's text and are never an attribute: an option's
+//// `value` is its position in the list the page was given, and its label is the
+//// name as a text node. The decoder turns the submitted position back into the
+//// name from that same list (`fields_with_profile`), so the browser can choose
+//// among the names the page drew and name nothing else.
+////
 //// The form for another folder is the one place a workspace is a field. It adds
 //// a path to the same name and box, and its decoder (`typed_fields`) is as
 //// strict: exactly one `path`, one `name`, at most one `shareable`, and nothing
@@ -39,8 +47,10 @@
 //// the catalogue.
 
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -75,17 +85,21 @@ pub type Create(message) {
 
   /// The page may ask the daemon to create a session. `choose` is the message a
   /// workspace's button sends, given the workspace the group was drawn for;
-  /// `submit` is what the form sends, given that workspace, the typed name and
-  /// the sharing; `cancel` closes the form; `elsewhere` opens the form for a
-  /// typed folder and `submit_elsewhere` is what it sends, given the typed path,
-  /// the typed name and the sharing; `state` is where the person is.
+  /// `submit` is what the form sends, given that workspace, the typed name, the
+  /// sharing and the chosen profile; `cancel` closes the
+  /// form; `elsewhere` opens the form for a typed folder and `submit_elsewhere`
+  /// is what it sends, given the typed path, the typed name, the sharing and the
+  /// chosen profile; `state` is where the person is; `profiles` is the profile
+  /// names the forms offer beside the default roles, which may be none, and a
+  /// profile a submit carries is always one of them.
   Offered(
     choose: fn(String) -> message,
-    submit: fn(String, String, Sharing) -> message,
+    submit: fn(String, String, Sharing, Option(String)) -> message,
     cancel: message,
     elsewhere: message,
-    submit_elsewhere: fn(String, String, Sharing) -> message,
+    submit_elsewhere: fn(String, String, Sharing, Option(String)) -> message,
     state: State,
+    profiles: List(String),
   )
 }
 
@@ -167,12 +181,12 @@ fn opener(
 pub fn form(create: Create(message), workspace: String) -> Element(message) {
   case create {
     Never -> element.none()
-    Offered(submit:, cancel:, state:, ..) ->
+    Offered(submit:, cancel:, state:, profiles:, ..) ->
       case state {
         Composing(open) if open == workspace ->
-          drawn(workspace, submit, cancel, Editable)
+          drawn(workspace, submit, cancel, Editable, profiles)
         Waiting(open) if open == workspace ->
-          drawn(workspace, submit, cancel, Locked)
+          drawn(workspace, submit, cancel, Locked, profiles)
         Idle | Composing(_) | Waiting(_) | Elsewhere | Sending -> element.none()
       }
   }
@@ -189,10 +203,10 @@ pub fn form(create: Create(message), workspace: String) -> Element(message) {
 pub fn elsewhere_form(create: Create(message)) -> Element(message) {
   case create {
     Never -> element.none()
-    Offered(submit_elsewhere:, cancel:, state:, ..) ->
+    Offered(submit_elsewhere:, cancel:, state:, profiles:, ..) ->
       case state {
-        Elsewhere -> typed(submit_elsewhere, cancel, Editable)
-        Sending -> typed(submit_elsewhere, cancel, Locked)
+        Elsewhere -> typed(submit_elsewhere, cancel, Editable, profiles)
+        Sending -> typed(submit_elsewhere, cancel, Locked, profiles)
         Idle | Composing(_) | Waiting(_) -> element.none()
       }
   }
@@ -213,19 +227,22 @@ fn locks(fields: Fields) -> List(attribute.Attribute(message)) {
 
 fn drawn(
   workspace: String,
-  submit: fn(String, String, Sharing) -> message,
+  submit: fn(String, String, Sharing, Option(String)) -> message,
   cancel: message,
   fields: Fields,
+  profiles: List(String),
 ) -> Element(message) {
   html.form(
     [
       attribute.class("home-create"),
       attribute.aria_label("New session"),
-      event.on("submit", submitted(workspace, submit)) |> event.prevent_default,
+      event.on("submit", submitted(workspace, submit, profiles))
+        |> event.prevent_default,
     ],
     [
       name_field(fields),
       share_field(fields),
+      profile_field(fields, profiles),
 
       // The hint names what a blank field gets, so the stylesheet hides it once
       // the field holds a name (`:placeholder-shown`): the field is uncontrolled,
@@ -243,15 +260,17 @@ fn drawn(
 // The form for a typed folder: the path first, then the same name and box. The
 // name's hint follows the name input, as the stylesheet's sibling rule needs.
 fn typed(
-  submit: fn(String, String, Sharing) -> message,
+  submit: fn(String, String, Sharing, Option(String)) -> message,
   cancel: message,
   fields: Fields,
+  profiles: List(String),
 ) -> Element(message) {
   html.form(
     [
       attribute.class("home-create"),
       attribute.aria_label("New session in another folder"),
-      event.on("submit", typed_submitted(submit)) |> event.prevent_default,
+      event.on("submit", typed_submitted(submit, profiles))
+        |> event.prevent_default,
     ],
     [
       html.input([
@@ -272,6 +291,7 @@ fn typed(
       ]),
       name_field(fields),
       share_field(fields),
+      profile_field(fields, profiles),
       html.p([attribute.class("home-create-hint")], [
         html.text("Left blank, the session is named for the folder."),
       ]),
@@ -313,6 +333,36 @@ fn share_field(fields: Fields) -> Element(message) {
   ])
 }
 
+// The select of model profiles, or nothing when the configuration defines none.
+// The first option is the default roles and has the empty value. Each other
+// option's value is its position in `profiles`, and its label is the name as a
+// text node, so no profile name is ever an attribute.
+fn profile_field(fields: Fields, profiles: List(String)) -> Element(message) {
+  case profiles {
+    [] -> element.none()
+    _ ->
+      html.label([attribute.class("home-create-profile")], [
+        html.span([attribute.class("home-create-profile-name")], [
+          html.text("Model profile"),
+        ]),
+        html.select(
+          [
+            attribute.name("profile"),
+            attribute.class("home-create-profile-select"),
+            attribute.aria_label("Model profile"),
+            ..locks(fields)
+          ],
+          [
+            html.option([attribute.value("")], "Default"),
+            ..list.index_map(profiles, fn(name, position) {
+              html.option([attribute.value(int.to_string(position))], name)
+            })
+          ],
+        ),
+      ])
+  }
+}
+
 fn actions(fields: Fields, cancel: message) -> Element(message) {
   html.div([attribute.class("home-create-actions")], [
     html.button(
@@ -345,24 +395,29 @@ fn actions(fields: Fields, cancel: message) -> Element(message) {
 // message.
 fn submitted(
   workspace: String,
-  submit: fn(String, String, Sharing) -> message,
+  submit: fn(String, String, Sharing, Option(String)) -> message,
+  profiles: List(String),
 ) -> decode.Decoder(message) {
   use listed <- decode.subfield(["detail", "formData"], decode.list(field()))
-  case fields(listed) {
-    Ok(#(name, sharing)) -> decode.success(submit(workspace, name, sharing))
+  case fields_with_profile(listed, profiles) {
+    Ok(#(name, sharing, profile)) ->
+      decode.success(submit(workspace, name, sharing, profile))
     Error(Nil) ->
-      decode.failure(submit(workspace, "", Private), "creation form")
+      decode.failure(submit(workspace, "", Private, None), "creation form")
   }
 }
 
-// The typed form's decoder, refused unless `typed_fields` accepts the list.
+// The typed form's decoder, refused unless `typed_fields_with_profile` accepts
+// the list.
 fn typed_submitted(
-  submit: fn(String, String, Sharing) -> message,
+  submit: fn(String, String, Sharing, Option(String)) -> message,
+  profiles: List(String),
 ) -> decode.Decoder(message) {
   use listed <- decode.subfield(["detail", "formData"], decode.list(field()))
-  case typed_fields(listed) {
-    Ok(#(path, name, sharing)) -> decode.success(submit(path, name, sharing))
-    Error(Nil) -> decode.failure(submit("", "", Private), "folder form")
+  case typed_fields_with_profile(listed, profiles) {
+    Ok(#(path, name, sharing, profile)) ->
+      decode.success(submit(path, name, sharing, profile))
+    Error(Nil) -> decode.failure(submit("", "", Private, None), "folder form")
   }
 }
 
@@ -418,6 +473,83 @@ pub fn typed_fields(
   case paths, fields(rest) {
     [#(_, path)], Ok(#(name, sharing)) -> Ok(#(path, name, sharing))
     _, _ -> Error(Nil)
+  }
+}
+
+/// The name, sharing and profile a submitted form's fields stand for, given the
+/// profile names the form offered: `fields`, plus at most one `profile` whose
+/// value is the empty string (the default roles) or the position of one of
+/// `profiles`, which is turned back into the name here. A `profile` field when
+/// none were offered, a position outside the list and any other text refuse the
+/// event, so the browser can pick among the names the page drew and name no other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert create.fields_with_profile(
+///     [#("name", "x"), #("profile", "1")],
+///     ["a", "b"],
+///   )
+///   == Ok(#("x", creations.Private, Some("b")))
+/// assert create.fields_with_profile([#("name", "x"), #("profile", "")], ["a"])
+///   == Ok(#("x", creations.Private, None))
+/// assert create.fields_with_profile([#("name", "x"), #("profile", "2")], ["a"])
+///   == Error(Nil)
+/// ```
+pub fn fields_with_profile(
+  listed: List(#(String, String)),
+  profiles: List(String),
+) -> Result(#(String, Sharing, Option(String)), Nil) {
+  let chosen = list.filter(listed, fn(field) { field.0 == "profile" })
+  let rest = list.filter(listed, fn(field) { field.0 != "profile" })
+  use profile <- result.try(chosen_profile(chosen, profiles))
+  use #(name, sharing) <- result.map(fields(rest))
+  #(name, sharing, profile)
+}
+
+/// The path, name, sharing and profile a submitted folder form's fields stand
+/// for: `typed_fields` with the profile `fields_with_profile` reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert create.typed_fields_with_profile(
+///     [#("path", "~/app"), #("name", ""), #("profile", "0")],
+///     ["a"],
+///   )
+///   == Ok(#("~/app", "", creations.Private, Some("a")))
+/// ```
+pub fn typed_fields_with_profile(
+  listed: List(#(String, String)),
+  profiles: List(String),
+) -> Result(#(String, String, Sharing, Option(String)), Nil) {
+  let chosen = list.filter(listed, fn(field) { field.0 == "profile" })
+  let rest = list.filter(listed, fn(field) { field.0 != "profile" })
+  use profile <- result.try(chosen_profile(chosen, profiles))
+  use #(path, name, sharing) <- result.map(typed_fields(rest))
+  #(path, name, sharing, profile)
+}
+
+// The profile a form's `profile` entries choose: none sent is the default, one
+// with an empty value is the default, and one whose value is the position of an
+// offered name is that name. Two entries, or any other value, is a refusal, and
+// so is any `profile` entry at all when no profiles were offered.
+fn chosen_profile(
+  chosen: List(#(String, String)),
+  profiles: List(String),
+) -> Result(Option(String), Nil) {
+  case chosen {
+    [] -> Ok(None)
+    [#(_, "")] if profiles != [] -> Ok(None)
+    [#(_, position)] ->
+      case int.parse(position) {
+        Ok(index) if index >= 0 ->
+          list.drop(profiles, index)
+          |> list.first
+          |> result.map(Some)
+        Ok(_) | Error(Nil) -> Error(Nil)
+      }
+    [_, _, ..] -> Error(Nil)
   }
 }
 

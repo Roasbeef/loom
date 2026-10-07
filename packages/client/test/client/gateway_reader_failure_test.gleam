@@ -86,7 +86,7 @@ fn resident(epoch: String) -> Resident {
   let assert Ok(view) =
     manager.create(
       registry,
-      manager.Creation(epoch, settings.workspace, "reader", ""),
+      manager.Creation(epoch, settings.workspace, "reader", "", None),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), 414),
     )
@@ -140,6 +140,7 @@ fn attach(resident: Resident, name: String, epoch: String) -> Attachment {
         principal,
         access.Owner,
         digest,
+        None,
       ),
       fn() { Ok(#(principal, access.Owner)) },
       fn(_) { Nil },

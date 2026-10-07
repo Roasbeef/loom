@@ -100,6 +100,15 @@ pub fn the_figures_emphasise_the_number_test() {
   )
 }
 
+// The context disclosure carries the fixed mark `<loom-dismiss>` reads, and the
+// element follows it as a sibling, so the panel's buttons keep their tree paths
+// (`component.context_refresh_path`).
+pub fn the_context_disclosure_can_be_dismissed_test() {
+  let bar = drawn(None, None, heading.Live, "est $0.04")
+  assert string.contains(bar, "data-dismiss=\"keep\"")
+  assert string.contains(bar, "</details><loom-dismiss></loom-dismiss>")
+}
+
 // A model with no price has no estimate, and the bar does not draw a dash
 // for it; the context figure is still drawn beside where it would have been.
 pub fn an_unpriced_session_draws_no_estimate_test() {

@@ -70,7 +70,13 @@ pub fn daemon_start_diagnostic_classifies_missing_helper_without_raw_error_test(
   let created =
     manager.create_scoped(
       ready.registry,
-      manager.Creation("missing-helper", workspace, "Fixture", configuration),
+      manager.Creation(
+        "missing-helper",
+        workspace,
+        "Fixture",
+        configuration,
+        option.None,
+      ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), 992),
       scope: domain.WorkspacePrivate,
@@ -205,6 +211,7 @@ fn rejected_configuration(defect: ConfigDefect) {
         workspace,
         "Fixture",
         configuration,
+        option.None,
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), 993),

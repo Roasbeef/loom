@@ -109,13 +109,32 @@ pub type Reason {
   NotAFolder
 
   /// The folder exists and is usable, and is not inside the owner's home
-  /// directory, or is the home directory itself, or is or lies in a hidden
-  /// folder (one whose name begins with a dot).
+  /// directory.
   OutsideHome
+
+  /// The folder is the owner's home directory itself, which holds every
+  /// dotfile and credential the owner keeps.
+  HomeItself
+
+  /// The folder is or lies in a hidden folder (one whose name begins with a
+  /// dot) or in the first folder below home named `Library`, which holds the
+  /// owner's keychains and browser profiles on macOS.
+  HiddenFolder
+
+  /// The folder is the daemon's own state folder, lies in it or contains it.
+  /// A session that could write there could read every session's database and
+  /// the credentials.
+  StateFolder
 
   /// The name is empty after trimming, longer than `name_limit` bytes, or
   /// holds a control, zero-width or direction-changing character.
   InvalidName
+
+  /// The profile the form chose is not one the daemon's configuration defines
+  /// now. The page offers only profiles it read when it opened, so this is a
+  /// configuration that changed under the person or a frame the page did not
+  /// draw (protocol-change/076).
+  UnknownProfile
 
   /// This credential has created as many sessions as it may recently. The
   /// count is the daemon's and is kept for the credential and not for the page,
@@ -148,11 +167,19 @@ pub fn reason_words(reason: Reason) -> String {
     NotOwner -> "Only the owner can create a session."
     NotKnown -> "That workspace is not in your list. Reload the page."
     NotAFolder ->
-      "That folder does not exist or cannot be used. Give the path of a folder you own."
+      "That is not a folder you can use. Give the path of an existing folder you own."
     OutsideHome ->
-      "Choose a folder inside your home directory. The home directory itself and hidden folders are not allowed."
+      "That folder is outside your home directory. Choose one inside it."
+    HomeItself ->
+      "That is your home directory itself. Choose a folder inside it."
+    HiddenFolder ->
+      "That is a hidden or system folder, such as one whose name starts with a dot, or Library. Choose another."
+    StateFolder ->
+      "That is the daemon's own state folder, which a session may not use. Choose another."
     InvalidName ->
       "Use a name of up to 256 bytes with no control or invisible characters."
+    UnknownProfile ->
+      "That model profile is not in the configuration now. Reload the page."
     TooMany -> "You have created many sessions this hour. Try again later."
     Full -> "The daemon has no room for another session. Stop one first."
     NotOpened ->
@@ -287,15 +314,16 @@ fn first_is_library(segments: List(String)) -> Bool {
 ///
 /// ```gleam
 /// assert creations.inside("/home/o", "/home/o/code/app") == Ok(Nil)
-/// assert creations.inside("/home/o", "/home/o") == Error(creations.OutsideHome)
+/// assert creations.inside("/home/o", "/home/o") == Error(creations.HomeItself)
 /// assert creations.inside("/home/o", "/home/other") == Error(creations.OutsideHome)
-/// assert creations.inside("/home/o", "/home/o/.ssh") == Error(creations.OutsideHome)
-/// assert creations.inside("/home/o", "/home/o/Library/Keychains") == Error(creations.OutsideHome)
+/// assert creations.inside("/home/o", "/home/o/.ssh") == Error(creations.HiddenFolder)
+/// assert creations.inside("/home/o", "/home/o/Library/Keychains") == Error(creations.HiddenFolder)
 /// ```
 pub fn inside(home: String, folder: String) -> Result(Nil, Reason) {
-  case string.starts_with(folder, home <> "/") {
-    False -> Error(OutsideHome)
-    True -> {
+  case folder == home, string.starts_with(folder, home <> "/") {
+    True, _ -> Error(HomeItself)
+    False, False -> Error(OutsideHome)
+    False, True -> {
       let below = string.drop_start(folder, string.length(home) + 1)
       let segments = string.split(below, "/")
       let hidden =
@@ -303,7 +331,7 @@ pub fn inside(home: String, folder: String) -> Result(Nil, Reason) {
         || first_is_library(segments)
       case below != "" && !hidden {
         True -> Ok(Nil)
-        False -> Error(OutsideHome)
+        False -> Error(HiddenFolder)
       }
     }
   }

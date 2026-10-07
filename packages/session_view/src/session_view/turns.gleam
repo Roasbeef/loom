@@ -1241,6 +1241,70 @@ fn thought(
   }
 }
 
+/// How many lines each reasoning row of a block stands for, by the row's key,
+/// read from the response the block was drawn from.
+///
+/// A settled turn is sealed without the full text of its reasoning (`Skip`), so
+/// the row beside its answer has no body to count. The block still names the
+/// response it came from, which holds the text, so a host that wants the same
+/// "N lines" a step in a fold shows reads it here. A redacted block has no text
+/// and no entry, and a block not drawn from a response has none.
+///
+/// The rows and the response's reasoning blocks are walked together, in order,
+/// as `turn_labels` lines labels up with them: each reasoning row (a digest, a
+/// summarized one or the whole text) is the next reasoning block's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.reasoning_lines(block) == dict.from_list([#("7.0:0", 31)])
+/// ```
+pub fn reasoning_lines(block: Block) -> Dict(String, Int) {
+  case block.source {
+    transcript_lines.FromEntry(entry.MessageEntry(
+      message: message.AssistantMessage(content:, ..),
+      ..,
+    )) -> {
+      let thoughts =
+        list.filter_map(content, fn(part) {
+          case part {
+            message.AssistantThinking(thinking:, redacted: False, ..) ->
+              Ok(Some(list.length(string.split(thinking, "\n"))))
+            message.AssistantThinking(redacted: True, ..) -> Ok(None)
+            message.AssistantText(..) | message.AssistantToolCall(..) ->
+              Error(Nil)
+          }
+        })
+      block.rows
+      |> list.filter(fn(row) { reasoning_row(row.1.speaker) })
+      |> list.zip(thoughts)
+      |> list.filter_map(fn(pair) {
+        case pair.1 {
+          Some(count) -> Ok(#(pair.0.0, count))
+          None -> Error(Nil)
+        }
+      })
+      |> dict.from_list
+    }
+    transcript_lines.FromEntry(..)
+    | transcript_lines.FromTools(..)
+    | transcript_lines.FromNotice
+    | transcript_lines.FromAdvisor
+    | transcript_lines.FromSpacer -> dict.new()
+  }
+}
+
+fn reasoning_row(speaker: transcript_line.Speaker) -> Bool {
+  list.contains(
+    [
+      transcript_line.ReasoningDigest,
+      transcript_line.SummarizedReasoning,
+      transcript_line.Reasoning,
+    ],
+    speaker,
+  )
+}
+
 // The expansion, or nothing when it says what the rows already say.
 fn differing(full: List(Line), shown: List(Line)) -> List(Line) {
   case full == shown {

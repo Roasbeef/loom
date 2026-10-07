@@ -14,6 +14,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import storage/access
+import storage/catalogue
 import storage/domain
 
 /// The only control envelope version accepted by this module.
@@ -205,6 +206,9 @@ pub type Command {
     workspace: String,
     name: String,
     configuration: String,
+    /// The model profile to create the session under, or `None` for the
+    /// configuration's default roles (protocol-change/076).
+    profile: Option(String),
     domain_scope: domain.Scope,
   )
 
@@ -536,8 +540,9 @@ fn decode_fields(
       use workspace <- result.try(text_field(fields, "workspace", 4096))
       use name <- result.try(text_field(fields, "name", 256))
       use configuration <- result.try(configuration_field(fields))
+      use profile <- result.try(profile_field(fields))
       use scope <- result.map(domain_scope(fields))
-      CreateSession(key, workspace, name, configuration, scope)
+      CreateSession(key, workspace, name, configuration, profile, scope)
     }
     "sessions.open" -> {
       use id <- result.try(session_id(fields))
@@ -758,6 +763,26 @@ fn configuration_field(
   case list.key_find(fields, "configuration") {
     Ok(json.String("")) -> Ok("")
     Ok(_) | Error(Nil) -> text_field(fields, "configuration", 4096)
+  }
+}
+
+const profile_words =
+  "profile must be a name of lowercase letters, numbers, _ and -, starting with a letter"
+
+// The optional model profile of a creation. An absent field is the default
+// roles; a field that is present must be a profile name, so a malformed one is
+// refused as a bad request and never read as the default.
+fn profile_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(String), String) {
+  case list.key_find(fields, "profile") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(name)) ->
+      case catalogue.is_profile_name(name) {
+        True -> Ok(Some(name))
+        False -> Error(profile_words)
+      }
+    Ok(_other) -> Error(profile_words)
   }
 }
 

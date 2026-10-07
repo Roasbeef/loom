@@ -98,6 +98,16 @@ pub type Event {
   Failed(id: Int, reason: String)
 }
 
+/// What the last Compact now press found, kept until the next press so the
+/// answer outlasts the footer's notice, which fades in seconds.
+pub type Compaction {
+  /// Nothing has been refused since the selection began or the last press.
+  Unrefused
+
+  /// The daemon said the strand has nothing to compact yet.
+  NothingToCompact
+}
+
 /// One attachment and strand's observation, independent of the composer.
 pub type State {
   State(
@@ -120,6 +130,14 @@ pub type State {
     /// for while a turn runs, so a long turn costs the server one read per
     /// interval and not one per generation.
     marked_ms: Option(Int),
+    /// The host-clock reading at which a usage row held back by that pacing
+    /// is read after all. A row that lands inside the interval sets it to
+    /// the end of the interval, and the read that follows clears it, so the
+    /// header never waits for a second row to learn about the first.
+    deferred_until_ms: Option(Int),
+    /// What the last Compact now press found. The page draws it beside the
+    /// button, and the next press clears it.
+    compaction: Compaction,
   )
 }
 
@@ -140,6 +158,8 @@ pub fn new() -> State {
     "Context has not been observed",
     0,
     None,
+    None,
+    Unrefused,
   )
 }
 
@@ -163,6 +183,30 @@ pub fn select(state: State, owner: String, strand: String) -> State {
       State(..new(), owner:, strand:, surface: state.surface, request:)
     }
   }
+}
+
+/// Records that the daemon refused `compact` because there was nothing to cut.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert context_view.nothing_to_compact(context_view.new()).compaction
+///   == context_view.NothingToCompact
+/// ```
+pub fn nothing_to_compact(state: State) -> State {
+  State(..state, compaction: NothingToCompact)
+}
+
+/// Forgets an earlier refusal, as a new press of Compact now does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert context_view.compact_asked(context_view.new()).compaction
+///   == context_view.Unrefused
+/// ```
+pub fn compact_asked(state: State) -> State {
+  State(..state, compaction: Unrefused)
 }
 
 /// Coalesces a newer durable context behind the read already in flight.

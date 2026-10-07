@@ -267,6 +267,7 @@ fn settings(
     // `[tools]` table existed.
     tools: catalog.default_tools(),
     advisor: None,
+    go_caches: None,
   )
 }
 
@@ -288,6 +289,7 @@ fn scripted_catalog() -> catalog.Catalog {
       ),
     ],
     roles: [#(model.Main, ["acme"])],
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )

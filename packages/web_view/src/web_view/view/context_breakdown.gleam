@@ -108,6 +108,7 @@ pub fn panel(
     [attribute.class("ctx-panel"), attribute.aria_label("Context window")],
     [
       actions_row(actions),
+      compaction_note(state.compaction),
       case state.board {
         None ->
           html.p([attribute.class("ctx-note")], [
@@ -117,6 +118,24 @@ pub fn panel(
       },
     ],
   )
+}
+
+// What the last Compact now press found, in a sentence under the buttons. It
+// stays until the next press, which clears it, so a refusal is not a notice
+// that fades before it can be read.
+fn compaction_note(compaction: context_view.Compaction) -> Element(message) {
+  case compaction {
+    context_view.Unrefused -> element.none()
+    context_view.NothingToCompact ->
+      html.p(
+        [
+          attribute.class("ctx-note"),
+          attribute.class("ctx-compaction"),
+          attribute.role("status"),
+        ],
+        [html.text("Nothing to compact yet.")],
+      )
+  }
 }
 
 // The Refresh button and, on a page that may compact, the Compact now button.

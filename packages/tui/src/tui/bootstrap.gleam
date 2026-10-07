@@ -214,6 +214,13 @@ pub type Options {
     /// and each newly created session. Reusing the daemon or opening an
     /// existing registration does not replace that registration's catalogue.
     config: String,
+    /// The model profile a newly created session uses, or empty for the
+    /// configuration's default roles (protocol-change/076). It names a
+    /// `[profiles.<name>]` table of the catalogue the daemon loads. It affects
+    /// creation only: an existing registration keeps the profile it was
+    /// created with, and the daemon refuses a name its configuration does not
+    /// define.
+    profile: String,
   )
 }
 
@@ -281,7 +288,7 @@ type ProcessMatch {
 /// ## Examples
 ///
 /// ```gleam
-/// bootstrap.resolve(bootstrap.Options("", "", "", "", ""))
+/// bootstrap.resolve(bootstrap.Options("", "", "", "", "", ""))
 /// // -> Ok(bootstrap.Target(..))
 /// ```
 pub fn resolve(options: Options) -> Result(Target, String) {

@@ -62,6 +62,7 @@ pub fn settings() -> serve.Settings {
         ),
       ],
       roles: [#(model.Main, ["test"])],
+      profiles: [],
       mcp_servers: [],
       lsp_servers: [],
     )
@@ -111,6 +112,7 @@ pub fn settings() -> serve.Settings {
     memory: distillpass.no_pass(),
     tools: catalog.default_tools(),
     advisor: None,
+    go_caches: None,
   )
 }
 

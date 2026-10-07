@@ -197,6 +197,21 @@ pub fn compact_now_is_drawn_only_where_the_page_offers_it_test() {
 }
 
 // Before a board arrives the panel says so in words and still offers Refresh.
+// A refused compaction leaves its sentence under the buttons until the next
+// press clears it, and a panel that was never refused draws no such line.
+pub fn a_compaction_with_nothing_to_cut_is_said_under_the_buttons_test() {
+  let state = observed(board([]))
+  assert !string.contains(drawn(state, Some(Nil)), "Nothing to compact yet.")
+
+  let refused = context_view.nothing_to_compact(state)
+  let panel = drawn(refused, Some(Nil))
+  assert string.contains(panel, "Nothing to compact yet.")
+  assert string.contains(panel, "role=\"status\"")
+
+  let asked = context_view.compact_asked(refused)
+  assert !string.contains(drawn(asked, Some(Nil)), "Nothing to compact yet.")
+}
+
 pub fn no_board_says_so_and_offers_refresh_test() {
   let html = drawn(context_view.new(), None)
   assert string.contains(html, "Reading the context.")

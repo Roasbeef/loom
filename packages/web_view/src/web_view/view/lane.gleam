@@ -965,12 +965,14 @@ fn block_element(
   session: String,
   newest: String,
 ) -> Element(message) {
+  let counted = turns.reasoning_lines(block)
   let rows =
     list.map(block.rows, fn(row) {
       let heir = case row.0 == newest {
         True -> fold_row.Takes
         False -> fold_row.Declines
       }
+      let known = option.from_result(dict.get(counted, row.0))
       case row.1.speaker {
         transcript_line.ReasoningDigest -> {
           let held = result.unwrap(dict.get(thoughts, row.0), [])
@@ -981,6 +983,7 @@ fn block_element(
                 first.text,
                 first.text,
                 held,
+                known,
                 took,
                 heir,
                 draw,
@@ -991,6 +994,7 @@ fn block_element(
                 row.1.text,
                 row.1.text,
                 [],
+                known,
                 took,
                 heir,
                 draw,
@@ -1003,6 +1007,7 @@ fn block_element(
             row.1.text,
             row.1.text,
             more_of(row.1.text),
+            known,
             took,
             heir,
             draw,
@@ -1011,6 +1016,7 @@ fn block_element(
           summary_row(
             row.1.text,
             result.unwrap(dict.get(thoughts, row.0), []),
+            known,
             took,
             heir,
             draw,
@@ -1040,20 +1046,26 @@ fn block_element(
 // is the block's own text, which the line count is read from, and `shown` is
 // what the preview is a line of: the same text for a raw block, the summary
 // for a summarized one. `body` is what opens: empty when the preview already
-// says everything, in which case the row has no chevron and no count. The text
+// says everything, in which case the row has no chevron and no count of its own.
+// A sealed turn keeps no full text, so its rows have an empty body however long
+// the block was; `known` is the block's line count read from the response it was
+// drawn from (`turns.reasoning_lines`), and a block of more than one line says
+// it, so a row beside an answer counts as a step in a fold does. The text
 // is the model's or the provider's and is drawn only as text nodes.
 fn reasoning_row(
   provenance: step_words.Provenance,
   text: String,
   shown: String,
   body: List(Line),
+  known: Option(Int),
   took: Option(Int),
   heir: fold_row.Handoff,
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
-  let count = case body {
-    [] -> None
-    [_, ..] -> Some(list.length(string.split(text, "\n")))
+  let count = case body, known {
+    [_, ..], _ -> Some(list.length(string.split(text, "\n")))
+    [], Some(lines) if lines > 1 -> Some(lines)
+    [], Some(_) | [], None -> None
   }
   fold_row.reasoning(
     step_words.reasoning_of(provenance, count, took),
@@ -1095,6 +1107,7 @@ fn preview(text: String) -> List(Element(message)) {
 fn summary_row(
   text: String,
   held: List(Line),
+  known: Option(Int),
   took: Option(Int),
   heir: fold_row.Handoff,
   draw: fn(Line) -> Element(message),
@@ -1110,6 +1123,7 @@ fn summary_row(
         first.text,
         summary,
         held,
+        known,
         took,
         heir,
         draw,
@@ -1120,6 +1134,7 @@ fn summary_row(
         summary,
         summary,
         more_of(summary),
+        known,
         took,
         heir,
         draw,

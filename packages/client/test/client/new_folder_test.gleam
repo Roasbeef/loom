@@ -49,9 +49,9 @@ pub fn the_home_directory_itself_and_what_is_outside_it_are_refused_test() {
   let assert Ok(sibling) =
     bootstrap.canonical_directory(extensions.scratch("folder-outside-sibling"))
     as "a folder beside home"
-  assert new_folder.check_in("~", home, state) == Error(creations.OutsideHome)
-  assert new_folder.check_in("~/", home, state) == Error(creations.OutsideHome)
-  assert new_folder.check_in(home, home, state) == Error(creations.OutsideHome)
+  assert new_folder.check_in("~", home, state) == Error(creations.HomeItself)
+  assert new_folder.check_in("~/", home, state) == Error(creations.HomeItself)
+  assert new_folder.check_in(home, home, state) == Error(creations.HomeItself)
   assert new_folder.check_in(sibling, home, state)
     == Error(creations.OutsideHome)
   assert new_folder.check_in("/", home, state) == Error(creations.OutsideHome)
@@ -92,7 +92,7 @@ pub fn a_link_or_a_dot_dot_cannot_leave_home_test() {
     simplifile.create_symlink(home <> "/.secrets", home <> "/innocent")
     as "a link to it"
   assert new_folder.check_in("~/innocent", home, state)
-    == Error(creations.OutsideHome)
+    == Error(creations.HiddenFolder)
 }
 
 pub fn hidden_folders_are_refused_wherever_they_are_test() {
@@ -103,20 +103,20 @@ pub fn hidden_folders_are_refused_wherever_they_are_test() {
     simplifile.create_directory_all(home <> "/code/.git/hooks")
     as "a hidden folder below a project"
   assert new_folder.check_in("~/.ssh", home, state)
-    == Error(creations.OutsideHome)
+    == Error(creations.HiddenFolder)
   assert new_folder.check_in("~/code/.git", home, state)
-    == Error(creations.OutsideHome)
+    == Error(creations.HiddenFolder)
   assert new_folder.check_in("~/code/.git/hooks", home, state)
-    == Error(creations.OutsideHome)
+    == Error(creations.HiddenFolder)
 
   // `~/Library` is hidden on macOS without a dot, in any case.
   let assert Ok(Nil) =
     simplifile.create_directory_all(home <> "/Library/Keychains")
     as "macOS's hidden library"
   assert new_folder.check_in("~/Library", home, state)
-    == Error(creations.OutsideHome)
+    == Error(creations.HiddenFolder)
   assert new_folder.check_in("~/Library/Keychains", home, state)
-    == Error(creations.OutsideHome)
+    == Error(creations.HiddenFolder)
 
   // On a case-sensitive filesystem `~/library` is a different folder, and an
   // absent one is refused as not a folder before its name is read. Creating it
@@ -124,7 +124,7 @@ pub fn hidden_folders_are_refused_wherever_they_are_test() {
   let assert Ok(Nil) = simplifile.create_directory_all(home <> "/library")
     as "a lower-case library"
   assert new_folder.check_in("~/library", home, state)
-    == Error(creations.OutsideHome)
+    == Error(creations.HiddenFolder)
 
   // A dot inside a name does not make a folder hidden; only a name that begins
   // with one does.
@@ -208,9 +208,9 @@ pub fn the_daemons_state_directory_is_refused_test() {
     as "a state directory"
   let root = home <> "/loomstate"
   assert new_folder.check_in("~/loomstate", home, root)
-    == Error(creations.OutsideHome)
+    == Error(creations.StateFolder)
   assert new_folder.check_in("~/loomstate/sessions", home, root)
-    == Error(creations.OutsideHome)
+    == Error(creations.StateFolder)
   assert new_folder.check_in("~/code", home, root) == Ok(home <> "/code")
 
   // A folder that contains the state directory exposes it too.
@@ -218,15 +218,15 @@ pub fn the_daemons_state_directory_is_refused_test() {
     simplifile.create_directory_all(home <> "/code/app/state")
     as "a state directory inside a project"
   assert new_folder.check_in("~/code", home, home <> "/code/app/state")
-    == Error(creations.OutsideHome)
+    == Error(creations.StateFolder)
   assert new_folder.check_in("~/code/app", home, home <> "/code/app/state")
-    == Error(creations.OutsideHome)
+    == Error(creations.StateFolder)
 
   // A link to the state directory is judged by where it ends.
   let assert Ok(Nil) = simplifile.create_symlink(root, home <> "/alias")
     as "a link to the state directory"
   assert new_folder.check_in("~/alias", home, root)
-    == Error(creations.OutsideHome)
+    == Error(creations.StateFolder)
 
   // A state directory that cannot be resolved refuses every folder.
   assert new_folder.check_in("~/code", home, home <> "/missing")

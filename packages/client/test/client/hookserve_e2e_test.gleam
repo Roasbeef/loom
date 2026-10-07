@@ -600,6 +600,7 @@ fn settings(rig: Rig, script: Subject(ScriptMessage)) -> serve.Settings {
     memory: distillpass.no_pass(),
     tools: catalog.default_tools(),
     advisor: None,
+    go_caches: None,
   )
 }
 
@@ -630,6 +631,7 @@ fn scripted_catalog() -> catalog.Catalog {
       ),
     ],
     roles: [#(model.Main, ["acme"])],
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )

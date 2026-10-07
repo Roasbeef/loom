@@ -18,6 +18,7 @@ import gleam/erlang/process
 import gleam/http/response
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/string
 import host/bootstrap
 import mist
@@ -113,7 +114,7 @@ fn created(serving: entrypoint.Serving(String), key: String, seed: Int) {
   let assert Ok(view) =
     manager.create(
       serving.ready.registry,
-      manager.Creation(key, serving.ready.state_root, key, ""),
+      manager.Creation(key, serving.ready.state_root, key, "", option.None),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),
     )
@@ -385,7 +386,7 @@ pub fn daemon_listener_production_opens_two_owned_sessions_test() {
       let assert Ok(view) =
         manager.create(
           serving.ready.registry,
-          manager.Creation(pair.0, workspace, pair.0, file),
+          manager.Creation(pair.0, workspace, pair.0, file, option.None),
           directory: serving.ready.sessions_directory,
           generator: ids.generator(clock.fixed(1000), pair.1),
         )

@@ -1056,6 +1056,7 @@ fn scripted_catalog() -> catalog.Catalog {
       entry("sage", "https://" <> advisor_host, advisor_model, "SAGE_KEY"),
     ],
     roles: [#(model.Main, ["acme"]), #(catalog.advisor_role, ["sage"])],
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )
@@ -1173,6 +1174,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
       feed_every_steps: 0,
       block_cooldown_reviews: 2,
     )),
+    go_caches: None,
   )
 }
 
@@ -1361,6 +1363,7 @@ fn authenticated_as(
         principal,
         role,
         digest,
+        None,
       ),
       fn() { Ok(#(principal, role)) },
       fn(frame) { process.send(inbox, frame) },

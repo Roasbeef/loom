@@ -145,6 +145,7 @@ fn test_catalog() -> catalog.Catalog {
       ),
     ],
     roles: [#(model.Main, ["acme", "fallback"])],
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )
@@ -586,6 +587,21 @@ fn attach_socket(
   role: access.Authority,
   socket: process.Pid,
 ) {
+  attach_socket_from(hub, runtime, inbox, principal, role, socket, None)
+}
+
+// The same attachment for a web page that belongs to a browser sign-in. The
+// page is admitted under the digest below and carries the sign-in's own
+// fingerprint beside it, which is what the daemon does for a `loom ui` page.
+fn attach_socket_from(
+  hub: gateway.Gateway,
+  runtime: api.Runtime,
+  inbox: Subject(String),
+  principal: access.Principal,
+  role: access.Authority,
+  socket: process.Pid,
+  signin: Option(String),
+) {
   let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
     as "the fixture digest is valid"
   let closed = process.new_subject()
@@ -617,6 +633,7 @@ fn attach_socket(
         principal,
         role,
         digest,
+        signin,
       ),
       fn() {
         call.try_call(auth.data, waiting: 1000, sending: ReadAuth)
@@ -4240,6 +4257,7 @@ pub fn a_join_is_not_pushed_to_a_peer_of_another_session_test() {
         mallory,
         access.Participant(access.Operator),
         digest,
+        None,
       ),
       fn() { Ok(#(mallory, access.Participant(access.Operator))) },
       fn(frame) { process.send(watcher, frame) },
@@ -5691,6 +5709,7 @@ pub fn draining_waits_for_transport_flush_outside_the_gateway_test() {
         principal,
         access.Owner,
         digest,
+        None,
       ),
       fn() { Ok(#(principal, access.Owner)) },
       fn(_) { Nil },
@@ -6114,6 +6133,40 @@ pub fn session_approval_records_the_principal_the_credential_and_the_time_test()
   let assert session_remembered.Approved(principal:, name:, ..) = row.provenance
   assert principal == Some("alice")
   assert name == Some("Alice")
+}
+
+// A page opened by `loom ui` is admitted under the terminal's bearer and holds
+// a browser sign-in of its own. A grant it makes is the sign-in's, not the
+// terminal's: before the binding carried the sign-in, the list read "from a
+// terminal" for every grant made in a browser, and the revoked-sign-in note,
+// which only a login's fingerprint can raise, could never fire for one.
+pub fn a_web_page_grant_records_its_browser_signin_test() {
+  let harness = start_harness()
+  let signin = string.repeat("b", 16)
+  let #(handle, _, _) =
+    attach_socket_from(
+      harness.hub,
+      harness.runtime,
+      harness.inbox,
+      access.Principal("alice", "Alice", access.OwnerPrincipal),
+      access.Participant(access.Operator),
+      process.self(),
+      Some(signin),
+    )
+  gateway.connection_text(handle, subscribe_frame(harness.runtime, 700))
+  let _snapshot = next_reply(harness, 700, 8)
+  remember_network_as(harness, handle, "page-grant", 606, 940)
+  let assert Ok(permissions.Listing(grants: [remembered], ..)) =
+    permissions.listing(harness.runtime)
+    as "one permission is remembered"
+  let assert permissions.Approved(via:, ..) = remembered.provenance
+    as "the approval is attributed"
+  assert via == permissions.Login(signin)
+  let board = read_board(harness, handle, 941)
+  let assert [row] = board.grants
+  let assert session_remembered.Approved(via:, ..) = row.provenance
+  assert via == session_remembered.Login(signin)
+  assert session_remembered.login(row.provenance) == Some(#("alice", signin))
 }
 
 pub fn a_fact_written_before_provenance_reads_as_unknown_test() {

@@ -83,6 +83,7 @@ fn attach_checked(
         principal,
         authority,
         digest,
+        None,
       ),
       check,
       fn(frame) { process.send(inbox, frame) },

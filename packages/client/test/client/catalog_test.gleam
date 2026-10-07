@@ -50,6 +50,18 @@ pub fn example_parses_sorted_and_routed_test() {
     ]
 }
 
+pub fn example_profile_overrides_main_and_keeps_subagent_test() {
+  let parsed = example()
+  assert catalog.profile_names(parsed) == ["gemini"]
+  let assert Ok(gemini) = catalog.select_profile(parsed, "gemini")
+  assert gemini.roles
+    == [
+      #(model.Main, ["gemini-flash"]),
+      #(model.Subagent, ["baseten-oss", "gemini-flash"]),
+      #(model.Summarize, ["gemini-flash"]),
+    ]
+}
+
 pub fn example_gemini_entry_takes_the_dialect_default_url_test() {
   let assert Ok(entry) = catalog.find(example(), "gemini-flash")
   assert entry.dialect == catalog.Gemini
@@ -1281,4 +1293,189 @@ pub fn configured_image_limit_reaches_gateway_before_secret_lookup_test() {
     stream.underlying_error(error)
     as "this must be an image-budget error, not a missing-key error"
   assert string.contains(message, "at most 1")
+}
+
+// --- profiles ----------------------------------------------------------------
+
+// Three models and a default role set, with one profile that replaces `main`
+// and `summarize` and leaves `plan` and `vision` alone.
+const with_profiles =
+  "
+[models.slow]
+dialect = \"anthropic\"
+api_key_env = \"KEY\"
+model_id = \"m-slow\"
+context_window = 1000
+max_output_tokens = 100
+
+[models.fast]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-fast\"
+context_window = 2000
+max_output_tokens = 200
+
+[models.eyes]
+dialect = \"gemini\"
+api_key_env = \"KEY\"
+model_id = \"m-eyes\"
+context_window = 3000
+max_output_tokens = 300
+vision = true
+
+[roles]
+main = [\"slow\", \"fast\"]
+plan = [\"slow\"]
+summarize = [\"slow\"]
+vision = [\"eyes\"]
+
+[profiles.quick.roles]
+main = [\"fast\"]
+summarize = [\"fast\", \"slow\"]
+"
+
+pub fn profiles_default_to_none_test() {
+  let assert Ok(parsed) = catalog.parse(minimal)
+  assert parsed.profiles == []
+  assert catalog.profile_names(parsed) == []
+}
+
+pub fn a_profile_replaces_whole_roles_and_keeps_the_rest_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  assert catalog.profile_names(parsed) == ["quick"]
+
+  // The default table is untouched by the profile's existence.
+  assert parsed.roles
+    == [
+      #(model.Main, ["slow", "fast"]),
+      #(model.Plan, ["slow"]),
+      #(model.Summarize, ["slow"]),
+      #(model.Vision, ["eyes"]),
+    ]
+
+  // `main` and `summarize` are replaced as whole chains, not merged into the
+  // default ones, `plan` and `vision` are inherited, and the order is the
+  // canonical one.
+  let assert Ok(quick) = catalog.select_profile(parsed, "quick")
+  assert quick.roles
+    == [
+      #(model.Main, ["fast"]),
+      #(model.Plan, ["slow"]),
+      #(model.Summarize, ["fast", "slow"]),
+      #(model.Vision, ["eyes"]),
+    ]
+  assert quick.models == parsed.models
+}
+
+pub fn selecting_a_profile_changes_the_main_model_and_the_gateway_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(quick) = catalog.select_profile(parsed, "quick")
+  let assert Ok(default_main) = catalog.main_model(parsed)
+  let assert Ok(quick_main) = catalog.main_model(quick)
+  assert default_main.name == "slow"
+  assert quick_main.name == "fast"
+
+  // Two gateways built from one parsed file route independently, so two
+  // sessions on different profiles do not see each other's roles.
+  let build = fn(catalogue) {
+    catalog.gateway(
+      catalogue,
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(at: 0),
+    )
+  }
+  let assert Ok(default_route) =
+    provider_gateway.resolve(build(parsed), model.Main)
+  let assert Ok(quick_route) =
+    provider_gateway.resolve(build(quick), model.Main)
+  assert default_route.provider == "slow"
+  assert quick_route.provider == "fast"
+  let assert Ok(quick_summary) =
+    provider_gateway.resolve(build(quick), model.Summarize)
+  assert quick_summary.provider == "fast"
+  let assert Ok(inherited) =
+    provider_gateway.resolve(build(quick), model.Vision)
+  assert inherited.provider == "eyes"
+}
+
+pub fn the_models_listing_roles_follow_the_profile_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(quick) = catalog.select_profile(parsed, "quick")
+  assert catalog.routed_roles(parsed, "fast") == ["main"]
+  assert catalog.routed_roles(quick, "fast") == ["main", "summarize"]
+  assert catalog.active_roles(quick, "fast") == ["main", "summarize"]
+  assert catalog.active_roles(quick, "slow") == ["plan"]
+}
+
+pub fn an_unknown_profile_names_the_known_ones_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  assert catalog.select_profile(parsed, "quik")
+    == Error("unknown profile \"quik\"; the configuration defines: quick")
+  let assert Ok(plain) = catalog.parse(minimal)
+  assert catalog.select_profile(plain, "quick")
+    == Error("unknown profile \"quick\"; the configuration defines no profiles")
+}
+
+pub fn a_profile_naming_an_undefined_model_refuses_the_file_test() {
+  let text = with_profiles <> "\n[profiles.broken.roles]\nmain = [\"ghost\"]\n"
+  let assert Error("profiles.broken.roles.main names \"ghost\"" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn a_profile_naming_an_unknown_role_refuses_the_file_test() {
+  let text = with_profiles <> "\n[profiles.broken.roles]\ncritic = [\"fast\"]\n"
+  let assert Error(
+    "profiles.broken.roles.critic is not a routable role" <> _rest,
+  ) = catalog.parse(text)
+}
+
+pub fn an_unknown_key_in_a_profile_table_is_refused_test() {
+  let text = with_profiles <> "\n[profiles.broken]\nmodels = [\"fast\"]\n"
+  let assert Error("unknown key `models` in profiles.broken" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn a_profile_needs_a_roles_table_with_a_role_in_it_test() {
+  let bare = with_profiles <> "\n[profiles.bare]\n"
+  let assert Error("profiles.bare needs a [profiles.bare.roles] table") =
+    catalog.parse(bare)
+  let empty = with_profiles <> "\n[profiles.empty.roles]\n"
+  assert catalog.parse(empty)
+    == Error("profiles.empty.roles must name at least one role")
+}
+
+pub fn profile_names_follow_the_identifier_grammar_test() {
+  let named = fn(name) {
+    with_profiles <> "\n[profiles." <> name <> ".roles]\nmain = [\"fast\"]\n"
+  }
+  let assert Error("profiles.Quick is not a profile name" <> _rest) =
+    catalog.parse(named("\"Quick\""))
+  let assert Error("profiles.a b is not a profile name" <> _rest) =
+    catalog.parse(named("\"a b\""))
+  let assert Ok(parsed) = catalog.parse(named("glm-5_3"))
+  assert catalog.profile_names(parsed) == ["glm-5_3", "quick"]
+}
+
+pub fn a_profile_vision_chain_must_still_read_images_test() {
+  let blind =
+    "
+[models.blind]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-blind\"
+context_window = 1000
+max_output_tokens = 100
+vision = false
+"
+  let text =
+    with_profiles <> blind <> "\n[profiles.blind.roles]\nvision = [\"blind\"]\n"
+  let assert Error("profiles.blind.roles.vision names \"blind\"" <> _rest) =
+    catalog.parse(text)
+}
+
+pub fn a_non_table_profiles_entry_is_refused_test() {
+  let text = "profiles = \"quick\"\n" <> minimal
+  assert catalog.parse(text)
+    == Error("profiles must be a table of [profiles.<name>.roles] entries")
 }

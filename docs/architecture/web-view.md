@@ -240,12 +240,12 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:353`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:360`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4304`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4337`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1021,6 +1021,20 @@ fields are decoded totally (`view/create.fields`: one `name`, at most one
 `shareable` that reads `on`, nothing else). A tick of Shareable creates the
 session `session_only`, the scope an invitation needs (`NotIsolated` otherwise),
 so the invite control is not a dead end afterwards.
+
+When the daemon's configuration defines model profiles
+([protocol-change/076](../../protocol-change/076-config-profiles.md)), both
+forms also draw a select of them after the Shareable box, with the default roles
+first, so the owner chooses the model set a session uses. The page is told the
+names once, when it opens (`Start.profiles`, read by `upgrade_home` from
+`server.HomeAttachment.profiles`), and only a page that holds `Start.create`
+is told. A profile name is the daemon's text, so it is an `<option>`'s label and
+never an attribute; an option's value is its position in that list, and
+`create.fields_with_profile` turns the submitted position back into a name from
+the same list, so the browser can choose among the names the page drew and name no
+other. `create_for` passes the choice to `server.create_session`, which checks it
+against the configuration again, and a profile the configuration no longer
+defines is declined as `creations.UnknownProfile` in fixed words.
 
 `ui_socket.create_task` runs `create_for` in a weft run of its own (one task, no
 deadline, linked to the runtime) and returns at once; the answer arrives as

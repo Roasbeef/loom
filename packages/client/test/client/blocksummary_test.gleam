@@ -908,6 +908,7 @@ fn a_catalogue(roles: List(#(model.Role, List(String)))) -> catalog.Catalog {
   catalog.Catalog(
     models: list.map(["acme", "acme-flash", "other"], an_entry_named),
     roles:,
+    profiles: [],
     mcp_servers: [],
     lsp_servers: [],
   )

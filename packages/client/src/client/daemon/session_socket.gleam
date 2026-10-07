@@ -56,7 +56,7 @@ import client/gateway
 import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import mist
 import storage/access
@@ -138,6 +138,7 @@ pub fn upgrade(
         principal: attachment.principal,
         authority: attachment.authority,
         digest: attachment.digest,
+        signin: None,
       ),
       permit: attachment.permit,
       registry: attachment.registry,
