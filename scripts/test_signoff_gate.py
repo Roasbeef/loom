@@ -150,6 +150,34 @@ class GateTest(Fixture):
         self.assertIn("none of origin's branches", result.stderr)
         self.assertIsNone(self.recorded())
 
+    def test_a_commit_from_a_deleted_branch_is_refused(self):
+        # The checkout holds the commit, as it does after an earlier run,
+        # so only the branch check can refuse it once the branch is gone.
+        subprocess.run(["git", "-C", str(self.work), "checkout", "-q", "-b", "temp", self.pushed],
+                       check=True, env=self.env, capture_output=True)
+        subprocess.run(["git", "-C", str(self.work), "commit", "-q", "--allow-empty", "-m", "temporary"],
+                       check=True, env=self.env)
+        temporary = git(self.work, "rev-parse", "HEAD")
+        git(self.work, "push", "-q", "origin", "temp")
+        checkout = self.state / "loom-signoff"
+        git(checkout, "fetch", "-q", "origin")
+        self.assertEqual(git(checkout, "cat-file", "-t", temporary), "commit")
+        self.assertEqual(self.gate(f"signoff {temporary} --dry-run").returncode, 0)
+
+        git(self.work, "push", "-q", "origin", ":temp")
+        self.record.unlink()
+        result = self.gate(f"signoff {temporary} --dry-run")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("none of origin's branches", result.stderr)
+        self.assertIsNone(self.recorded())
+
+    def test_only_branches_are_fetched_whatever_the_config_says(self):
+        git(self.state / "loom-signoff", "config", "--add", "remote.origin.fetch",
+            "+refs/pull/*:refs/remotes/origin/pull/*")
+        result = self.gate(f"signoff {self.unbranched}")
+        self.assertEqual(result.returncode, 2)
+        self.assertIsNone(self.recorded())
+
     def test_requests_outside_the_grammar_never_reach_the_driver(self):
         sha = self.pushed
         for request in [

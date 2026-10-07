@@ -132,9 +132,13 @@ fi
 # be root's for this fetch and the state directory's for the driver's.
 export HOME="$state"
 cd "$checkout"
-git fetch --quiet --prune origin
-if ! git cat-file -e "$sha^{commit}" 2>/dev/null ||
-	[ -z "$(git branch -r --contains "$sha" 2>/dev/null)" ]; then
+
+# Only branches are fetched, whatever refspecs the checkout's config holds,
+# and --prune drops the tracking ref of a branch deleted at origin, so a
+# commit passes only while a branch there still holds it. A SHA the
+# checkout does not have is on no branch either, so one test covers both.
+git fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*'
+if [ -z "$(git branch -r --contains "$sha" 2>/dev/null)" ]; then
 	echo "loom-signoff-gate: $sha is on none of origin's branches; push it first" >&2
 	exit 2
 fi
