@@ -651,7 +651,22 @@ pub fn a_project_with_only_saved_sessions_is_behind_the_toggle_test() {
     string.split_once(sidebar, "class=\"saved-region\"")
   assert !string.contains(running, "weft")
   assert string.contains(saved, "weft")
-  assert string.contains(saved, ">1 saved<")
+  assert string.contains(saved, ">1 needs attention<")
+  assert !string.contains(saved, ">1 saved<")
+}
+
+// A group with both kinds says both counts, so the blocked row is never called
+// saved.
+pub fn the_toggle_counts_saved_and_blocked_rows_apart_test() {
+  let rows = [
+    entry("A", "web ui", "/src/loom", 100, Live),
+    entry("Y", "older", "/src/weft", 60, Saved),
+    entry("Z", "stuck", "/src/weft", 50, sessions.Blocked),
+  ]
+  let drawn = operator_html(listed_page(rows))
+  let assert Ok(sidebar) = sidebar_of(drawn)
+
+  assert string.contains(sidebar, ">1 saved · 1 needs attention<")
 }
 
 // A worktree row that also has a subtitle leads the quiet line with the

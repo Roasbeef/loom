@@ -78,7 +78,14 @@ pub fn view(
             html.text("Peer links"),
           ]),
           listing(board, step, presses),
-          controls(strand, sessions, step, asking, presses),
+          controls(
+            strand,
+            sessions,
+            linkable(board, sessions),
+            step,
+            asking,
+            presses,
+          ),
           status(note),
         ],
       )
@@ -270,10 +277,29 @@ fn question(
   ])
 }
 
+// The sessions the form offers: the running ones the focused strand does not
+// already send into on the strand the form targets by default. Offering a
+// linked session would only be refused as a duplicate or, for a default link,
+// would create a grant beside one that already admits the same mail. A page
+// that has not read its board offers them all.
+fn linkable(
+  board: option.Option(peer_links.Board),
+  sessions: List(#(String, String)),
+) -> List(#(String, String)) {
+  case board {
+    None -> sessions
+    Some(board) ->
+      list.filter(sessions, fn(entry) {
+        !peer_links.sends_into(board, entry.0, peer_links.default_target)
+      })
+  }
+}
+
 // The Link control under the list: a button, the session picker, or the form.
 fn controls(
   strand: String,
   sessions: List(#(String, String)),
+  linkable: List(#(String, String)),
   step: peer_links.Step,
   asking: peer_links.Asking,
   presses: Presses(message),
@@ -290,7 +316,7 @@ fn controls(
           [html.text("Link a session")],
         ),
       ])
-    Choosing -> picker(sessions, presses)
+    Choosing -> picker(sessions, linkable, presses)
     Configuring(name:, wake:, reverse:, ..) ->
       html.div([attribute.class("share-ask")], [
         html.p([attribute.class("share-lead")], [
@@ -320,7 +346,7 @@ fn controls(
           html.input([
             attribute.type_("text"),
             attribute.name("text"),
-            attribute.value("main"),
+            attribute.value(peer_links.default_target),
             attribute.aria_label("Strand in the other session"),
             attribute.attribute("maxlength", "128"),
             attribute.attribute("autocomplete", "off"),
@@ -352,14 +378,16 @@ fn controls(
 }
 
 fn picker(
+  running: List(#(String, String)),
   sessions: List(#(String, String)),
   presses: Presses(message),
 ) -> Element(message) {
   html.div([attribute.class("share-ask")], [
     html.p([attribute.class("share-lead")], [
-      case sessions {
-        [] -> html.text("No other session is running.")
-        _ -> html.text("Link to which session?")
+      case running, sessions {
+        [], _ -> html.text("No other session is running.")
+        _, [] -> html.text("Every other running session is already linked.")
+        _, _ -> html.text("Link to which session?")
       },
     ]),
     html.ul(

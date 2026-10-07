@@ -542,8 +542,8 @@
   .home-group + .home-group{margin-top:24px;}
   .home-workspace{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 6px 0;font:500 13px/1.4 var(--font-sans);color:var(--color-fg-quiet);overflow-wrap:anywhere;}
   .home-count{flex:0 0 auto;font-weight:400;font-variant-numeric:tabular-nums;}
-  .home-group-head{display:flex;align-items:center;gap:12px;margin:0 0 6px 0;}
-  .home-group-head .home-workspace{flex:1 1 auto;min-width:0;margin:0;}
+  .home-group-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 0 6px 0;}
+  .home-group-head .home-workspace{flex:1 1 8ch;min-width:0;margin:0;}
   button.home-new{flex:0 0 auto;margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
   button.home-new:hover:not(:disabled){background:var(--color-bg-raised);}
   button.home-new:disabled{opacity:.5;cursor:default;}
@@ -675,7 +675,7 @@
   .home-note{color:var(--color-fg);animation:home-note-fade 4s forwards;}
   .home-note.refused{color:var(--color-danger-text);animation:none;}
   @keyframes home-note-fade{0%,75%{opacity:1;}100%{opacity:0;}}
-  .home-group-head > .notice-line,.home-group-head > .notice-refusal{flex:0 1 auto;margin:0;}
+  .home-group-head > .notice-line,.home-group-head > .notice-refusal{order:1;flex:1 1 100%;min-width:0;margin:0;}
   .home-sessions > .notice-line,.home-sessions > .notice-refusal{margin:0 0 12px 0;}
   .home-folders > .notice-line,.home-folders > .notice-refusal{margin:0 0 8px 0;}
   /* A row that was pressed and waits on the daemon (round 5, F113): dimmed, a

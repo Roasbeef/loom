@@ -107,6 +107,26 @@ pub type Omitted {
 /// frame, and a strand with more links than this still lists the first.
 pub const row_limit = 40
 
+/// The strand a link form targets unless the owner types another, and the one
+/// a session's default link joins.
+pub const default_target = "main"
+
+/// Whether the focused strand already sends into `target` of `session`, by a
+/// grant or by the daemon's default link. The board's rows come from the same
+/// listing the daemon delivers by, so a default link is in them exactly when
+/// delivery admits it, and the page decides nothing of its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !peer_links.sends_into(Board("main", [], AllShown), "s", "main")
+/// ```
+pub fn sends_into(board: Board, session: String, target: String) -> Bool {
+  list.any(board.rows, fn(row) {
+    row.direction == Outgoing && row.session == session && row.strand == target
+  })
+}
+
 /// One link to remove, named from the focused strand's side.
 pub type Edge {
   Edge(

@@ -643,7 +643,7 @@ login add these cases.
 daemon's host, canonicalizes or inherits a configuration path, and runs
 `create_scoped` (`client/daemon/manager.gleam:1477`) under an idempotency key.
 The terminal builds that key from its own identity, the wall clock and a
-counter (`CreateSession` (`tui/session_control.gleam:741`)), names the session
+counter (`CreateSession` (`tui/session_control.gleam:753`)), names the session
 from the workspace, and then opens and attaches. A page has no path to any
 of this: the ruling of 2026-09-27 says daemon control stays in the terminal.
 

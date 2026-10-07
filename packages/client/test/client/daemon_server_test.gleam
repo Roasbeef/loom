@@ -2055,6 +2055,35 @@ pub fn an_unknown_profile_is_refused_naming_the_known_ones_and_stores_nothing_te
   })
 }
 
+pub fn a_profile_against_a_config_that_does_not_parse_names_the_key_test() {
+  fixture(fn(_, ready, port, credential) {
+    assert simplifile.write(
+        ready.state_root <> "/profiled.toml",
+        "[retry2]\nbogus = 1\n",
+      )
+      == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+    let refused =
+      send(
+        socket,
+        1,
+        "sessions.create",
+        profiled_creation(ready, "bogus", [#("profile", json.String("alt"))]),
+        within_ms: 1000,
+      )
+    let body = field(refused, "body")
+
+    // The file is at fault and not the profile name, so the code says so and
+    // the message names the unknown key.
+    assert field(body, "code") == json.String("unusable_configuration")
+    let assert json.String(message) = field(body, "message")
+    assert string.contains(message, "unknown key `retry2` in the top level")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
 pub fn a_profile_with_no_config_file_names_the_missing_file_test() {
   fixture(fn(_, ready, port, credential) {
     let #(socket, _) = connect(port, credential, "/v2/control")

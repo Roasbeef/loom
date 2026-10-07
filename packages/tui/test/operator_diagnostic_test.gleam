@@ -23,6 +23,16 @@ pub fn startup_control_refusal_accepts_the_exact_byte_bound_test() {
     as "the peer cannot exceed the 2048-byte diagnostic bound"
 }
 
+// A creation refused for an unusable configuration and a session that failed
+// to start for the same cause read alike, instead of the first reading as an
+// unknown profile.
+pub fn an_unusable_configuration_reads_as_a_startup_failure_test() {
+  let reason = "loom.toml: unknown key `retry2` in the top level"
+
+  assert selection.failure(daemon.Refused("unusable_configuration", reason))
+    == selection.failure(daemon.Refused("start_failed", reason))
+}
+
 pub fn extension_refusal_metadata_is_optional_but_totally_bounded_test() {
   let assert Ok(old) = snapshot_view.decode(captured(None))
     as "old daemons remain readable"

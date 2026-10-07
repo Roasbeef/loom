@@ -82,20 +82,53 @@ pub fn names(configuration: String) -> Result(List(String), String) {
   }
 }
 
-/// Whether the configuration defines the named profile. The refusal is the
-/// sentence a person reads: it names the profile asked for and the ones that
-/// exist, or says there are none.
+/// Why a profile cannot be chosen. The two causes need different words and
+/// different codes: a name the file does not define is the person's mistake in
+/// the form, and a file the daemon cannot load is the configuration's, whatever
+/// profile was asked for.
+pub type Refusal {
+  /// The configuration loads and does not define the name. The message names
+  /// the profiles that exist.
+  UnknownProfile(message: String)
+
+  /// The configuration cannot be read or does not parse, so no profile can be
+  /// looked up in it. The message is the daemon's own startup wording, and
+  /// names the offending key when that is the cause.
+  UnusableConfiguration(message: String)
+}
+
+/// The sentence a person reads for a refusal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert profiles.refusal_message(profiles.UnknownProfile("no such")) == "no such"
+/// ```
+pub fn refusal_message(refusal: Refusal) -> String {
+  case refusal {
+    UnknownProfile(message:) | UnusableConfiguration(message:) -> message
+  }
+}
+
+/// Whether the configuration defines the named profile. The refusal says which
+/// cause it was, and its message is the sentence a person reads: it names the
+/// profile asked for and the ones that exist, or says there are none, or gives
+/// the configuration error.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert profiles.check("", "deepseek")
-///   == Error("unknown profile \"deepseek\"; the configuration defines no profiles")
+///   == Error(profiles.UnknownProfile(
+///     "unknown profile \"deepseek\"; the configuration defines no profiles",
+///   ))
 /// ```
-pub fn check(configuration: String, name: String) -> Result(Nil, String) {
-  use known <- result.try(names(configuration))
+pub fn check(configuration: String, name: String) -> Result(Nil, Refusal) {
+  use known <- result.try(
+    names(configuration) |> result.map_error(UnusableConfiguration),
+  )
   case list.contains(known, name) {
     True -> Ok(Nil)
-    False -> Error(catalog.unknown_profile(known, name))
+    False -> Error(UnknownProfile(catalog.unknown_profile(known, name)))
   }
 }

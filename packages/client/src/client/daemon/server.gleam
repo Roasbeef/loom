@@ -2270,10 +2270,16 @@ fn control_refusal(code: String) -> #(String, String) {
 /// one its configuration defines.
 pub const unknown_profile_code = "unknown_profile"
 
-// A refused creation's code and message. An unknown profile is the one refusal
-// that says more than "request refused": the owner who mistyped it needs the
-// names that exist, and the caller is the owner because `create_session`
-// checks that first. The message is worded again here, from the same check,
+/// The code `create_session` answers when a creation names a profile and the
+/// configuration it would load cannot be read or parsed. The profile was never
+/// looked up, so `unknown_profile` would blame the name for the file.
+pub const unusable_configuration_code = "unusable_configuration"
+
+// A refused creation's code and message. An unknown profile and an unusable
+// configuration are the refusals that say more than "request refused": the
+// owner who mistyped a name needs the names that exist, and the owner whose
+// file does not parse needs the key it names. The caller is the owner because
+// `create_session` checks that first. The message is worded again here, from the same check,
 // rather than carried out of `create_session`, so that function's error stays
 // the single code the home page's creation shares.
 fn profile_refusal(
@@ -2283,7 +2289,7 @@ fn profile_refusal(
   code: String,
 ) -> #(String, String) {
   case code, profile {
-    "unknown_profile", Some(name) -> {
+    "unknown_profile", Some(name) | "unusable_configuration", Some(name) -> {
       let canonical = case configuration {
         "" -> ""
         path -> bootstrap.canonical_path(path) |> result.unwrap(path)
@@ -2294,7 +2300,7 @@ fn profile_refusal(
           name,
         )
       {
-        Error(message) -> message
+        Error(refusal) -> profiles.refusal_message(refusal)
         Ok(Nil) -> "request refused"
       }
       #(code, words)
@@ -2855,7 +2861,12 @@ pub fn create_session(
         profiles.effective(configuration, config.domain_configuration),
         name,
       )
-      |> result.replace_error(unknown_profile_code)
+      |> result.map_error(fn(refusal) {
+        case refusal {
+          profiles.UnknownProfile(_) -> unknown_profile_code
+          profiles.UnusableConfiguration(_) -> unusable_configuration_code
+        }
+      })
   })
   use created <- result.map(
     manager.create_scoped(
