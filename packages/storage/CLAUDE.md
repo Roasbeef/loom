@@ -607,8 +607,11 @@ its opaque `CommittedResult` authorizes `collect`, which freezes immutable
 identity and UUID fences permanently. Broker release grants no collection
 authority. Frozen rows continue to consume bounded capacity.
 
-The owner journal is format version 5. Previous unshipped formats are refused:
-they lack a run discharge proof and cannot safely be migrated to `Released`.
+The owner journal is format version 6. Format 5 receives only the transactional
+additive registered-metadata migration; session/limit mismatch, malformed retained
+headers and unavailable report hashing refuse inside that transaction, preserving
+the old version and rows. Earlier unshipped formats are refused: they lack a run
+discharge proof and cannot safely be migrated to `Released`.
 `admit_fresh` atomically returns `Fresh` with `run_custody = 'unreleased'`
 only when the reservation was inserted; `Retained` is never dispatch permission.
 `RunCustody` separates `Unreleased` and `Released` from retained/frozen recovery
@@ -703,3 +706,67 @@ cannot certify vetted source, Ready resources or native authority. Exact histori
 identity lookup remains `service_child`; changed full keys continue to conflict.
 See [remote custody](../../docs/architecture/remote-custody.md) for the separation
 between storage bytes, command admission and physical service completion.
+
+
+## Immutable registered generation custody (protocol 077)
+
+`owner_custody.EnrollmentPin` retains the original session, canonical registered
+Binding, descriptor digest, enrollment digest and complete bounded enrollment
+bytes. Generation is absent from this singleton. `pin_enrollment` COMMITs and
+reads back the exact pin; `read_enrollment` checks scalar lengths/schema and the
+existing injected host SHA-256 before returning it. The client must additionally
+decode the enrollment and verify Selected/Describe scope, registration and
+contract equality. Storage imports only the shared core identity codecs.
+
+`retain_generation` stores the full canonical `core/generation.GenerationAssociation`
+and its digest. Exactly its original successful transaction returns
+`FreshGeneration(LiveGeneration)` bound to that connection; exact retries and
+`read_generation` return historical association data. Registered tool, child,
+service, offer and command admission APIs retain their complete original
+ToolKey/ChildOrigin generation links atomically with the existing reservation.
+Each first admission rechecks the live connection and committed close fence;
+retained retries compare original metadata and never return Fresh. Tool children
+also compare their complete parent link. Unpinned local APIs keep their existing
+behavior; a pinned companion requires the explicitly registered admission APIs.
+
+`OwnerCloseRecord` carries the full association, original node-retirement bytes
+and digest, plus three fixed owner witness digests: runtime/effect joins, original
+Broker join, and original custodian/task joins. `retain_generation_close` hashes
+both canonical close content and node bytes, then requires the trusted assembly's
+live witness validator before its first insertion. Exact close retries read the
+original record without invoking a replacement witness validator. Historical
+readback proves retained bytes, not actual live joins. Immediate successors use
+`generation.checked_successor` against the retained original close and node
+record digests, preserve the pin, and allocate a distinct owner-use UUID. Owner-use
+UUIDs are lifetime unique. Associations are capped at 4096; all metadata consumes
+the existing companion byte quota. Node record content is bounded by the existing
+128-KiB binary scanner profile; the complete owner-close frame remains below
+256 KiB.
+
+`SystemService` has exactly the existing six trusted workspace families:
+command-preparation, compiler, satellite-launch, lsp, worktree-observation and
+workspace-administration. `SystemIntent` adds the already durable caller work
+address, original operation/phase, once-retained UUID, full intent bytes and exact
+generation. Providers supply none of these identities. `retain_system_intent`
+reserves its eventual child count and 2048 bytes for the eventual child link plus
+intent-child association, including counter metadata. `admit_system_child` uses
+one serialized transaction to build the native/workspace payload through a pure
+trusted encoder, transfer the pending slot and metadata allowance, retain child
+and generation link, associate the intent, and advance its fixed service counter.
+The actual child-address/origin/profile bytes remain charged in the intent after
+transfer. Exact repeated calls compare every field and return Retained with the
+original UUID and ordinal. Historical intent construction withholds live custody,
+so an unallocated historical intent can never allocate a child. The service
+counter survives successors, permits ordinals 0..4095 and refuses at 4096; the
+existing 64 children per parent and companion count/byte/result bounds still hold.
+There is no reset, eviction or replacement UUID on an unknown COMMIT outcome.
+
+Startup runs a scalar-only type/size/reservation census over all added tables
+before reading their BLOB inventory. It then walks indexed keys one at a time,
+checking canonical pin, association/close, tool/child link and system-intent
+metadata through bounded total decoders. Named SQL remains generated by Parrot.
+The serialized Store creates no actor, process, connection custodian or network.
+Receipt callers retain the existing terminal COMMIT/readback, then compare the
+original generation link before ACK. Full default daemon assembly, activation,
+history transport, physical retirement witness construction and the separate
+protocol-076 LSP owner database remain integration obligations.
