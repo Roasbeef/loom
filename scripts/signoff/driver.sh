@@ -32,6 +32,12 @@
 # killing the driver outright; the first failed write kills the
 # container, and the run ends having posted nothing, since nobody asked
 # to see a verdict any more and a red mark would be one nobody earned.
+#
+# LOOM_CPUS and LOOM_MEMORY are applied to two sibling cgroups, not one:
+# the container's, and the base the entrypoint creates for loom-exec under
+# --cgroupns=host, which sits beside the container's cgroup rather than
+# under it. Each gets the full value, so a run can use up to twice it.
+# Halve the value to bound a run at what you mean.
 set -euo pipefail
 trap '' PIPE
 if [ ! -d "$LOOM_DIR/.git" ]; then git clone --quiet "$LOOM_ORIGIN" "$LOOM_DIR"; fi
@@ -41,11 +47,27 @@ git checkout --quiet --detach "$LOOM_SHA"
 
 short=$(git rev-parse --short=12 "$LOOM_SHA")
 logs="$HOME/loom-signoff-container/logs/$short"
-mkdir -p "$logs"
+container="$logs/container"
+mkdir -p "$container"
 
-# The container-side entrypoint, written into this commit's logs directory
-# so it reaches the container on the /logs mount rather than through a
-# second layer of quoting in `docker run ... bash -c "..."`. In order, it:
+# Pruning below keeps the fifty most recently modified directories. A rerun
+# of a commit reuses its directory, whose mtime is from the earlier run, so
+# without this touch the current run's own logs could be among the ones
+# pruned.
+touch "$logs"
+
+# Only $container is mounted into the run, at /logs, and it is the only
+# part of $logs the container, which runs as root and executes the commit
+# under test's code, can write. Everything this script reads back
+# (signoff.log, image-id, image-build.log) stays beside it, outside the
+# mount. A file read from inside the mount could be a symlink the
+# container planted, and `cat` of it would print any file on the host that
+# the driver can read, such as the gated host's GitHub token, to whoever
+# asked for the run.
+#
+# The container-side entrypoint is written into $container so it reaches
+# the container on that mount rather than through a second layer of
+# quoting in `docker run ... bash -c "..."`. In order, it:
 #
 #   1. clones the read-only checkout at /src into /work, on the
 #      container's own filesystem, so `--rm` removes the whole tree;
@@ -58,7 +80,8 @@ mkdir -p "$logs"
 #      cgroup rather than under it and would otherwise escape that ceiling;
 #   3. runs signoff.sh with --dry-run, because posting happens after the
 #      container exits (see this script's header comment for why);
-#   4. copies the lanes' logs to /logs and gives them to the login account.
+#   4. copies the lanes' logs to /logs/lanes (so $logs/container/lanes on
+#      the host) and gives them to the login account.
 #
 # git's dubious-ownership guard refuses a repository owned by another user,
 # and /src belongs to the login account while the container is root. The
@@ -67,7 +90,7 @@ mkdir -p "$logs"
 # so it is trusted, and /work is root's own clone. A clone from a work
 # tree reads its `.git` directory, which the guard checks as a path of its
 # own, so both are named.
-cat >"$logs/entrypoint.sh" <<'ENTRYPOINT'
+cat >"$container/entrypoint.sh" <<'ENTRYPOINT'
 #!/usr/bin/env bash
 set -euo pipefail
 short=$1 sha=$2 owner=$3 memory=${4:-} cpu_quota=${5:-}
@@ -140,7 +163,7 @@ docker run --rm --name "$name" \
 	--security-opt apparmor=unconfined \
 	--security-opt systempaths=unconfined \
 	-v "$PWD:/src:ro" \
-	-v "$logs:/logs" \
+	-v "$container:/logs" \
 	-v loom-signoff-hex-cache:/root/.cache/gleam \
 	-v loom-signoff-go-mod-cache:/var/cache/loom-signoff/go/pkg/mod \
 	${LOOM_PARALLEL:+-e "SIGNOFF_PARALLEL=$LOOM_PARALLEL"} \

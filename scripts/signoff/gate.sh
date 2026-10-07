@@ -38,6 +38,9 @@
 #   config          optional, sourced: LOOM_CPUS and LOOM_MEMORY ceilings
 #   .gitconfig      user.name, which gh-signoff requires to post
 #   .local/share/gh the gh-signoff extension
+#   .ssh            the key and known_hosts for an ssh origin, read by
+#                   both the gate's fetch and the driver's; with an https
+#                   origin there is nothing to put here
 #
 # and the driver it runs is an installed copy of scripts/signoff/driver.sh
 # at /usr/local/libexec/loom-signoff/driver.sh, so the code that decides
@@ -45,6 +48,11 @@
 # LOOM_SIGNOFF_STATE and LOOM_SIGNOFF_DRIVER move both for the tests;
 # neither can reach a real run, because sudo resets the environment and a
 # `restrict` key cannot set one.
+#
+# Two requirements of the host. The key's account needs a POSIX login
+# shell, because sshd runs a forced command through the account's shell and
+# a nologin shell never runs it. And `gh` must be on sudo's secure_path,
+# because sudo replaces PATH and the driver posts with `gh` as root.
 #
 # --- What the key still grants ---
 #
@@ -62,6 +70,11 @@
 # detaching it at different commits would each build what the other
 # checked out, so a run waits on a lock for the one before it.
 set -euo pipefail
+
+# The request's patterns use bracket ranges, and a locale may collate those
+# in an order other than ASCII's, so the gate reads the request in the C
+# locale.
+export LC_ALL=C
 
 refuse() {
 	echo "loom-signoff-gate: $*" >&2
@@ -122,10 +135,20 @@ if ! flock -n 9; then
 	done
 fi
 
+
+# HOME is the state directory for every git command from here on, the
+# fetch below included, so an ssh origin's keys and known_hosts and the
+# .gitconfig are read from one place. Left to sudo's env_reset, HOME would
+# be root's for this fetch and the state directory's for the driver's.
+export HOME="$state"
 cd "$checkout"
-git fetch --quiet --prune origin
-if ! git cat-file -e "$sha^{commit}" 2>/dev/null ||
-	[ -z "$(git branch -r --contains "$sha" 2>/dev/null)" ]; then
+
+# Only branches are fetched, whatever refspecs the checkout's config holds,
+# and --prune drops the tracking ref of a branch deleted at origin, so a
+# commit passes only while a branch there still holds it. A SHA the
+# checkout does not have is on no branch either, so one test covers both.
+git fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*'
+if [ -z "$(git branch -r --contains "$sha" 2>/dev/null)" ]; then
 	echo "loom-signoff-gate: $sha is on none of origin's branches; push it first" >&2
 	exit 2
 fi
@@ -142,7 +165,6 @@ if [ "$post" = yes ]; then
 	export GH_TOKEN
 fi
 
-export HOME="$state"
 export LOOM_DIR="$checkout"
 export LOOM_ORIGIN
 LOOM_ORIGIN=$(git remote get-url origin)

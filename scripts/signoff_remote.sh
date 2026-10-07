@@ -69,6 +69,9 @@
 # logs/<sha>, mounted at /logs. It holds the image build log, the signoff
 # log, and a copy of the lanes' own logs, which the container hands back to
 # the login account before it exits so the host can always delete them.
+# Only the container/ subdirectory, holding the entrypoint and that copy of
+# the lanes' logs, is mounted; the driver reads its own files from outside
+# it, since the container runs the commit under test's code as root.
 #
 # The image (scripts/signoff/Dockerfile) is built from this checkout's
 # own copy of that file at the commit under test, so a Dockerfile change
@@ -199,6 +202,12 @@ if [ -z "${LOOM_SIGNOFF_UNGATED:-}" ]; then
 		echo "signoff_remote: a gated host takes no --url" >&2
 		exit 2
 	fi
+	for arg in "${args[@]+"${args[@]}"}"; do
+		if [ "$arg" != --dry-run ]; then
+			echo "signoff_remote: a gated host takes only --dry-run, not '$arg'" >&2
+			exit 2
+		fi
+	done
 	request="signoff $sha"
 	if [ "$post" = no ]; then request="$request --dry-run"; fi
 	if [ -n "${SIGNOFF_PARALLEL:-}" ]; then request="$request --parallel $SIGNOFF_PARALLEL"; fi
