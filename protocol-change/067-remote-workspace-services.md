@@ -1229,3 +1229,17 @@ before issuing another journal write. Unknown or late COMMIT remains uncertain.
 Scoped ConfirmRetirement retains the existing whole-scope proof only. It MUST NOT
 invoke a separate per-Launch callback. Original pool callbacks queued during
 close enter the same Row confirmation path with its unchanged bound and drain.
+
+
+## Addendum: original system reservation in Dispatch
+
+The October 7, 2026 approved protocol-077
+[standalone system reservation](077-registered-generations.md#addendum-standalone-native-system-reservation)
+extends this internal handoff with an optional closed SystemReservationRef. The
+new clear_system_call_from entry retains that original local permission through
+the existing Broker and dispatcher; ordinary calls carry no reference. CallSpec,
+the helper wire, and frozen Part-1 interfaces are unchanged. The reference has no
+wire or durable codec and cannot be reconstructed from historical identity bytes.
+Protocol 077 defines its original custodian, consumption, cancellation and quota
+invariants. This is an explicit internal contract amendment, not an additional
+Broker or a peer-supplied executable callback.

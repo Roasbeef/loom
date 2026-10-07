@@ -1,14 +1,14 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `e336f4a19` on
+This edition records the registered-runtime integration through `55bc1f61` on
 October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
 protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
 hosted PR/main state were checked for this edition. Runtime assembly and
 separate-host acceptance remain in progress.
 
 The previous edition left native LSP transport and registry startup custody
-unimplemented. Both components are now integrated and verified below. Owned live
-service-journal startup, LSP recovery and ordinary registered assembly remain open. A Launch readiness timeout during those checks
+unimplemented. Both components are now integrated and verified below. Native/workspace/resource live journal startup is also integrated. Owned LSP
+startup/recovery and ordinary registered assembly remain open. A Launch readiness timeout during those checks
 remains unresolved despite a passing diagnostic retry. The managed endpoint is
 now implemented. The original owner custodian is wired through its generation DAL,
 and the registry retains complete original generation plans atomically with first
@@ -46,6 +46,19 @@ review records describe their stated source revisions, not the entire current
 candidate.
 
 ## Verification and its limits
+
+The corrected live-journal integration at `55bc1f61` passes all 501 executor
+tests in 202.25 seconds, 220.15 seconds including build, with the command's own
+exit zero. Formatting, executor lint, documentation and prelude checks pass;
+all six imported hashes remain unchanged. Independent review found one low
+compatibility issue: legacy native poison replies moved before rollback/close.
+The fix restores that ordering only for legacy custody and preserves the owned
+close-observation sequence. Both focused suites then pass: 17 native journal
+and 13 owned-live controls. The earlier worker full gate passed 473 tests before
+this small fix; the integrated gate is the full corrected-candidate receipt.
+Twelve compiled runtime mutants fail original link, checked close, Normal-DOWN
+or resource-binding assertions. Actual parent death still provides best-effort
+cleanup, not ordered physical retirement.
 
 The native LSP integration at `e336f4a19` passes all 488 executor tests and 461
 broker tests, plus the helper gate. Each command's own exit is zero; executor
@@ -207,12 +220,12 @@ placements, container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Finish live service-journal acquisition and owned LSP startup/recovery for
-   **#697**. Native LSP transport and parent-owned registry startup are integrated. **Exit:** exact source passes meaningful failure
+1. Finish owned LSP startup/recovery for **#697**. Native LSP transport,
+   parent-owned registry startup and all three live service journals are integrated. **Exit:** exact source passes meaningful failure
    controls, full affected package gates, independent review and integrated
    verification. Durable generation provenance and restricted managed recovery
-   are integrated. Live startup still needs original parent-owned Fresh handles,
-   including LSP custody; registry startup already has that construction. Preserve every existing test and ordinary
+   are integrated. LSP startup still needs its original parent-owned Fresh handle and restricted
+   recovery; the other three service journals and registry have that construction. Preserve every existing test and ordinary
    local behavior; earlier worker receipts do not certify later fixes.
 2. Build the approved ordinary registered path from protocols 076 and 077.
    Preserve one original owner Broker/custodian, exact-generation publication,
@@ -280,7 +293,7 @@ required implementation work. Full activation, original physical retirement and
 normal daemon assembly are unbuilt, not accepted limitations of the final
 feature. Durable original journal/enrollment provenance and restricted managed
 recovery of native, workspace and resource writers are integrated. The next
-assembly prerequisites are acquisition of original live writers and LSP recovery,
+assembly prerequisite is original LSP live startup and restricted recovery,
 followed by the sole scope administrator and authenticated bounded history
 transport. C1-C3 and M1 also remain required by **#697**.
 
