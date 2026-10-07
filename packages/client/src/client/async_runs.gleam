@@ -1080,7 +1080,7 @@ fn heartbeat(state: State, now: Int) -> State {
       let idle = notice.retain(state.idle, dict.keys(owners))
       let idle =
         dict.fold(owners, idle, fn(idle, owner, records) {
-          notice.sample(
+          notice.sample_runtime(
             state.wiring.runtime,
             idle,
             owner,

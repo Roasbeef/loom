@@ -2,6 +2,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import client/gateway_test
+import client/owner_services
 import client/working_directory
 import core/clock
 import core/ids
@@ -15,6 +16,22 @@ import tools/directory_access
 import tools/fs
 import tools/tool
 import tools/working_directory as directory
+
+// The local fact access over one projected handle, as a session that holds
+// only its writer capability sees it. The runtime supplier is empty because
+// the working directory reads and compare-and-sets and does nothing else.
+fn over(facts: api.FactHandle) -> owner_services.FactAccess {
+  owner_services.local_facts(handle: fn() { Ok(facts) }, runtime: fn() {
+    Error(Nil)
+  })
+}
+
+// A session with no writer bound yet.
+fn over_nothing() -> owner_services.FactAccess {
+  owner_services.local_facts(handle: fn() { Error(Nil) }, runtime: fn() {
+    Error(Nil)
+  })
+}
 
 fn ctx(workspace: String, strand: String) -> tool.Ctx {
   tool.Ctx(
@@ -46,7 +63,7 @@ pub fn defaults_are_durable_and_strand_local_test() {
   let id = ids.mint_session(ids.generator(clock.fixed(1000), 638)).0
   let harness = gateway_test.reserved_fixture(id)
   let facts = api.fact_handle(harness.runtime)
-  let door = working_directory.door(fn() { Ok(facts) })
+  let door = working_directory.door(over(facts))
   let main = ctx(root, "main")
   let child = ctx(root, "child")
   assert door.read(main) == Ok(root)
@@ -56,8 +73,7 @@ pub fn defaults_are_durable_and_strand_local_test() {
       json.Object([#("path", json.String("review"))]),
     )
   assert !outcome.is_error
-  assert working_directory.door(fn() { Ok(facts) }).read(main)
-    == Ok(root <> "/review")
+  assert working_directory.door(over(facts)).read(main) == Ok(root <> "/review")
   assert door.read(child) == Ok(root)
   assert directory.select(door, main, Some("..")) == Ok(root)
   assert door.read(main) == Ok(root <> "/review")
@@ -80,7 +96,7 @@ pub fn defaults_are_durable_and_strand_local_test() {
 }
 
 pub fn unavailable_directory_state_is_an_error_test() {
-  let door = working_directory.door(fn() { Error(Nil) })
+  let door = working_directory.door(over_nothing())
   assert door.read(ctx("/work", "main"))
     == Error("working directory store is unavailable")
   assert directory.select(door, ctx("/work", "main"), None)
@@ -97,7 +113,7 @@ pub fn shell_default_survives_sqlite_reopen_and_deleted_target_test() {
   let path = root <> "/session.db"
   let opened = notes_session.open(path, clock.fixed(1000))
   let facts = api.fact_handle(opened.runtime)
-  let door = working_directory.door(fn() { Ok(facts) })
+  let door = working_directory.door(over(facts))
   let caller = ctx(root, "main")
   let saved =
     directory.tool(door).run(
@@ -108,7 +124,7 @@ pub fn shell_default_survives_sqlite_reopen_and_deleted_target_test() {
   assert api.close(opened.runtime) == Ok(Nil)
   let reopened = notes_session.open(path, clock.fixed(1000))
   let facts = api.fact_handle(reopened.runtime)
-  let restored = working_directory.door(fn() { Ok(facts) })
+  let restored = working_directory.door(over(facts))
   assert restored.read(caller) == Ok(review)
   let assert Ok(Nil) = simplifile.delete_all([review])
     as "remove previous directory"
@@ -138,7 +154,7 @@ pub fn remembered_directory_cannot_follow_a_replacement_symlink_test() {
   let id = ids.mint_session(ids.generator(clock.fixed(1000), 639)).0
   let harness = gateway_test.reserved_fixture(id)
   let facts = api.fact_handle(harness.runtime)
-  let door = working_directory.door(fn() { Ok(facts) })
+  let door = working_directory.door(over(facts))
   let caller = ctx(root, "main")
   let saved =
     directory.tool(door).run(

@@ -128,11 +128,12 @@ orchestrator:
 2. **Owner facts.** The per-strand working directory and `job/<id>` records
    are reserved facts read and written through the existing `FactHandle`
    shape: get, compare-and-set, and a prefix listing the jobs actor uses at
-   boot (`client/jobs.gleam:2781`). Only those reserved prefixes are served.
-3. **Notices.** A finished background job tells its strand through
-   `notice.deliver` (`client/jobs.gleam:2936`, `client/notice.gleam:162-174`),
-   which writes to the conversation; the executor sends the notice text and
-   the orchestrator delivers it.
+   boot (`client/jobs.gleam:2772`). Only those reserved prefixes are served.
+3. **Notices.** A finished background job tells its strand through the
+   owner's `notify` function (`client/jobs.gleam:2921`), which locally is
+   `notice.deliver` (`client/notice.gleam:162-174`) and writes to the
+   conversation; the executor sends the notice text and the orchestrator
+   delivers it.
 4. **Output tails.** Live output hints are casts to the session's event bus.
    Losing one is legal; they never carried a guarantee.
 5. **Owner-bound code-mode capabilities.** A satellite's `strand.*`, `notes.*`,
@@ -189,7 +190,7 @@ PR #819's parallel reimplementation lost.
 When a workspace host starts it returns what the orchestrator needs to build
 the prompt and the tool table: platform and enforcement level, the toolchain
 probe, available language servers, helper degradation, the shell, the Git
-program (`host_git.program`, `serve.gleam:4090`, probes the host it runs on),
+program (`host_git.program`, `serve.gleam:4101`, probes the host it runs on),
 the workspace root as an opaque string, the guidance files' text, the project
 hook files' bytes and the base policy summary. The orchestrator renders and
 pins the prompt from it, exactly as it pins guidance today, and checks the

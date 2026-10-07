@@ -556,6 +556,23 @@ pub fn fact_supplier(config: Config) -> fn() -> Result(api.FactHandle, Nil) {
   }
 }
 
+/// Projects `borrow_runtime` without retaining the rest of the Agency.
+///
+/// The returned supplier closes over the holder's address and timeout and
+/// nothing else, for the reason `fact_supplier` does: a service which keeps
+/// the whole `Config` for the life of the session keeps its closures too.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.runtime_supplier(config)()
+/// ```
+pub fn runtime_supplier(config: Config) -> fn() -> Result(api.Runtime, Nil) {
+  let name = config.name
+  let timeout = config.holder_timeout_ms
+  fn() { borrow_named(name, timeout) }
+}
+
 fn borrow_named(
   name: address.Address(Message),
   timeout: Int,

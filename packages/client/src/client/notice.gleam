@@ -283,14 +283,57 @@ pub fn may_wake(strand: String) -> Bool {
 /// An unreadable strand is left out of the sample and keeps whatever
 /// stretch it had, so one bad read neither fires a beat nor resets one.
 ///
+/// The two things a sample needs from the strand's owner are passed as
+/// functions, so a service whose strand lives on another node samples it
+/// through messages: `strand_activity` is the read of whether the strand
+/// has an open run, `wake` is the call which starts one with the text.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // let idle = notice.sample(runtime, idle, "main", now:,
-/// //   interval_ms: 600_000, lines: fn() { ["job 01: make"] })
+/// // let idle = notice.sample(owner.strand_activity, owner.wake, idle,
+/// //   "main", now:, interval_ms: 600_000, lines: fn() { ["job 01: make"] })
 /// ```
 ///
 pub fn sample(
+  strand_activity: fn(String) -> Result(Activity, String),
+  wake: fn(String, String) -> Result(Nil, String),
+  idle: IdleClock,
+  owner: String,
+  now now: Int,
+  interval_ms interval_ms: Int,
+  lines lines: fn() -> List(String),
+) -> IdleClock {
+  case strand_activity(owner) {
+    Error(_unreadable) -> idle
+
+    Ok(activity) -> {
+      let #(idle, due) = observe(idle, owner, activity, now:, interval_ms:)
+      case due {
+        Due -> {
+          let _woken = wake(owner, heartbeat_text(interval_ms, lines()))
+          idle
+        }
+        NotDue -> idle
+      }
+    }
+  }
+}
+
+/// `sample` over a runtime held in this VM.
+///
+/// Kept for the services which still hold a runtime, which is the async
+/// execution service today. It is `sample` with `activity` and `beat`
+/// closed over the runtime, and nothing more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let idle = notice.sample_runtime(runtime, idle, "main", now:,
+/// //   interval_ms: 600_000, lines: fn() { ["job 01: make"] })
+/// ```
+///
+pub fn sample_runtime(
   runtime: Runtime,
   idle: IdleClock,
   owner: String,
@@ -298,21 +341,15 @@ pub fn sample(
   interval_ms interval_ms: Int,
   lines lines: fn() -> List(String),
 ) -> IdleClock {
-  case activity(runtime, owner) {
-    Error(_unreadable) -> idle
-
-    Ok(activity) -> {
-      let #(idle, due) = observe(idle, owner, activity, now:, interval_ms:)
-      case due {
-        Due -> {
-          let _woken =
-            beat(runtime, owner, heartbeat_text(interval_ms, lines()))
-          idle
-        }
-        NotDue -> idle
-      }
-    }
-  }
+  sample(
+    activity(runtime, _),
+    fn(strand, text) { beat(runtime, strand, text) },
+    idle,
+    owner,
+    now:,
+    interval_ms:,
+    lines:,
+  )
 }
 
 // A user-role entry because that is the only shape a provider has for

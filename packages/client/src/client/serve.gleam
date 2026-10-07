@@ -93,6 +93,7 @@ import client/host_git
 import client/install
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
+import client/internal/session_owner
 import client/jobs
 import client/jobseam
 import client/jobtools
@@ -104,6 +105,7 @@ import client/lsp/profiles as lsp_profiles
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
+import client/owner_services
 import client/peer_mail
 import client/peers
 import client/retryconf
@@ -3814,7 +3816,16 @@ fn assemble_in(
       _,
       observation_door,
     ))
-  let directory_facts = agency.fact_supplier(agency_config)
+
+  // The working directory reaches the session's store through the owner's
+  // fact access, which serves its own prefix and no other. The handle
+  // supplier projects only the writer capability, so this retains neither
+  // the Agency nor the runtime.
+  let directory_facts =
+    owner_services.local_facts(
+      handle: agency.fact_supplier(agency_config),
+      runtime: agency.runtime_supplier(agency_config),
+    )
   let shell_directory = working_directory.door(directory_facts)
   let code_mode_host =
     option.map(code_mode_host, working_directory.over_code_mode(
@@ -4172,9 +4183,28 @@ fn assemble_in(
   // published by the observer below and relayed by the hub as pushed
   // `tool_output` frames (`protocol-change/031`).
   let event_bus = bus.start()
+
+  // Everything the workspace half reaches back to the session for, as one
+  // record of plain functions. Locally each is the call it replaced: the
+  // escalation seam, the bus observer, the Agency's holder and its tool-list
+  // check, and the code-mode owner arms. The tool configuration below takes
+  // its escalation and output functions from this record, so the workspace
+  // half and a future remote one are driven through the same value.
+  let owner_api =
+    owner_services.local(
+      handle: agency.fact_supplier(agency_config),
+      runtime: agency.runtime_supplier(agency_config),
+      escalate: escalate.seam(escalate_config).refused,
+      output: hub.tool_output_observer(event_bus, opened),
+      capability: case code_mode_host {
+        Some(host) -> codemode_wiring.owner_capability(host)
+        None -> owner_services.no_capability
+      },
+      holds: agency_seam.holds,
+    )
   let wiring_config =
     wiring.Config(
-      observe_output: hub.tool_output_observer(event_bus, opened),
+      observe_output: owner_api.output,
       gateway: settings.gateway,
       role: model.Main,
       facts: catalogue_facts(settings.catalog),
@@ -4191,7 +4221,7 @@ fn assemble_in(
       workspace: settings.workspace,
       blob_root:,
       base_policy:,
-      escalations: escalate.seam(escalate_config),
+      escalations: escalate.Escalations(refused: owner_api.escalate),
       demand: settings.demand,
       env: environment,
       clock:,
@@ -4517,7 +4547,8 @@ fn assemble_in(
       jobs_name,
       jobs_wiring(
         settings,
-        agency_config,
+        owner_services.jobs_owner(owner_api),
+        agency.runtime_supplier(agency_config),
         broker_actor,
         base_policy,
         blob_root,
@@ -7112,7 +7143,8 @@ fn policy_fault_text(error: policy.PolicyError) -> String {
 // foreground call would have.
 fn jobs_wiring(
   settings: Settings,
-  agency_config: agency.Config,
+  owner: owner_services.JobsOwner,
+  borrow_runtime: fn() -> Result(api.Runtime, Nil),
   broker_actor: Broker,
   base_policy: policy.SandboxPolicy,
   blob_root: String,
@@ -7120,8 +7152,14 @@ fn jobs_wiring(
   clock: Clock,
   entropy: fn() -> Int,
 ) -> jobs.Wiring {
+  // The actor reaches the owner only through `owner`, so the same actor runs
+  // beside a session or away from it. The runtime is borrowed for one thing
+  // only, the session id its process label is filed under, and the borrow
+  // is per call for the reason `schedule_wiring` borrows: this wiring is
+  // built before `api.open` returns a runtime.
   jobs.Wiring(
-    runtime: fn() { agency.borrow_runtime(agency_config) },
+    owner:,
+    session_path: fn() { borrow_runtime() |> result.map(session_owner.path) },
     policy: settings.jobs_policy,
     clock:,
     seed: entropy(),

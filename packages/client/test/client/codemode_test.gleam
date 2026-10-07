@@ -28,6 +28,7 @@ import client/agency
 import client/async_codemode
 import client/async_runs
 import client/codemode
+import client/owner_services
 import client/peer_mail
 import client/peers
 import client/serve
@@ -2733,4 +2734,158 @@ pub fn async_worker_does_not_duplicate_unrelated_configuration_test() {
   process.unlink(service.pid)
   process.kill(service.pid)
   let _ = broker.stop(broker_actor)
+}
+
+// --- the owner's capability arms -------------------------------------------
+
+// The same call as `routed_call` makes, handed to the owner as plain data
+// the way an executor on another node would send it. A routing denial is
+// folded into the in-band error it travels as, so the two paths compare.
+fn owned_call(
+  config: codemode.Config,
+  seam: codemode_tool.Seam,
+  cap: String,
+  args: msgpack.MsgPackValue,
+) -> Result(framing.CapOutcome, satellite.CapDenial) {
+  let request =
+    codemode_tool.Request(..request_on(seam, "cap-route-test"), strand: "main")
+  codemode.owner_capability(config)(owner_services.OwnerCapCall(
+    strand: request.strand,
+    op_id: request.op_id,
+    step_id: request.step_id,
+    source_index: request.source_index,
+    seam: codemode.vetting_seam(seam),
+    cap:,
+    args:,
+    ordinal: 0,
+  ))
+}
+
+fn in_band(
+  answer: Result(framing.CapOutcome, satellite.CapDenial),
+) -> framing.CapOutcome {
+  case answer {
+    Ok(outcome) -> outcome
+    Error(denial) -> framing.CapErr(code: denial.code, message: denial.message)
+  }
+}
+
+pub fn the_owner_answers_what_the_local_router_answers_test() {
+  // One definition of the owner's arms, composed two ways: into the
+  // execution's router, and behind `owner_capability`. They must agree for
+  // every owner-bound name, so a workspace elsewhere gets the answer a local
+  // one would have.
+  let broker_actor = idle_broker()
+  let config =
+    codemode.serving(
+      config_for(broker_actor),
+      codemode.BothSeams,
+      over: none_agency(),
+    )
+  list.each(
+    [
+      #("strand.roster", msgpack.MapValue([])),
+      #(
+        "strand.note",
+        msgpack.MapValue([pair("key", msgpack.StringValue("k"))]),
+      ),
+      #(
+        "notes.list",
+        msgpack.MapValue([pair("prefix", msgpack.StringValue(""))]),
+      ),
+      #("notes.put", msgpack.MapValue([])),
+      #("schedule.list", msgpack.MapValue([])),
+    ],
+    fn(call) {
+      let #(cap, args) = call
+      list.each(
+        [codemode_tool.WorkspaceSeam, codemode_tool.OrchestrationSeam],
+        fn(seam) {
+          assert in_band(owned_call(config, seam, cap, args))
+            == routed_call(config, seam, cap, args)
+        },
+      )
+    },
+  )
+  broker.stop(broker_actor)
+}
+
+pub fn the_owner_serves_the_agency_through_the_same_arm_test() {
+  // Beyond agreeing on a refusal: the Agency's own answer reaches the
+  // outcome, so the arm is really the Agency's and not a stub of the same
+  // shape.
+  let broker_actor = idle_broker()
+  let config =
+    codemode.serving(
+      config_for(broker_actor),
+      codemode.BothSeams,
+      over: none_agency(),
+    )
+  let assert Ok(framing.CapErr(code: "strands_unavailable", ..)) =
+    owned_call(
+      config,
+      codemode_tool.WorkspaceSeam,
+      "strand.roster",
+      msgpack.MapValue([]),
+    )
+    as "the Agency's unavailability must be the owner's answer"
+  broker.stop(broker_actor)
+}
+
+pub fn the_owner_refuses_workspace_names_and_never_plans_a_process_test() {
+  // The owner has no checkout and no helper. A workspace name must be
+  // denied rather than answered, and `proc.run`, which the default router
+  // would plan as a jailed process, must not reach it at all.
+  let broker_actor = idle_broker()
+  let config =
+    codemode.serving(
+      config_for(broker_actor),
+      codemode.BothSeams,
+      over: none_agency(),
+    )
+  list.each(
+    [
+      "fs.read",
+      "fs.write",
+      "kv.get",
+      "job.start",
+      "proc.run",
+      "report.emit",
+      "mcp.github",
+      "lsp.definition",
+    ],
+    fn(cap) {
+      let assert Error(satellite.CapDenial(code: "unsupported_cap", ..)) =
+        owned_call(
+          config,
+          codemode_tool.OrchestrationSeam,
+          cap,
+          msgpack.MapValue([]),
+        )
+        as "a name the owner does not answer is denied"
+      Nil
+    },
+  )
+  broker.stop(broker_actor)
+}
+
+pub fn the_arms_are_the_configurations_owner_doors_test() {
+  // `owner_arms` is a reading of the configuration, and each field follows
+  // the door it came from, including the seam gating the notes door.
+  let broker_actor = idle_broker()
+  let bare = config_for(broker_actor)
+  let arms = codemode.owner_arms(bare, vet_policy.WorkspaceSeam)
+  assert option.is_none(arms.agency)
+  assert option.is_none(arms.notes)
+  assert option.is_none(arms.schedules)
+
+  let served = codemode.serving(bare, codemode.BothSeams, over: none_agency())
+  let arms = codemode.owner_arms(served, vet_policy.OrchestrationSeam)
+  assert option.is_some(arms.agency)
+  assert option.is_some(arms.notes)
+
+  // Installed extensions and resident hooks never inherit the blackboard.
+  let arms = codemode.owner_arms(served, vet_policy.ExtensionSeam)
+  assert option.is_none(arms.notes)
+  broker.stop(broker_actor)
 }

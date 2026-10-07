@@ -3,8 +3,9 @@
 ## Per-strand shell directories
 
 `client/working_directory` stores canonical shell defaults under reserved
-`client/working_directory/<strand>` facts, using the projected fact supplier
-from `agency.fact_supplier`. Missing state means workspace; corruption,
+`client/working_directory/<strand>` facts, through `owner_services.FactAccess`
+(whose `cell` and `put` use the projected fact supplier from
+`agency.fact_supplier`). Missing state means workspace; corruption,
 unavailable storage, a deleted directory or a redirected canonical target is
 an explicit error. An absolute setter path allows recovery. Writes compare the
 previous sequence. `serve` installs the native tool and wraps the existing
@@ -2487,6 +2488,36 @@ catalogue without opening runtimes. Explicit admission invokes
   a due beat restarts its stretch. Both owning services sample every
   `heartbeat_tick_ms` (a minute, slower than the hibernation interval).
   `docs/design-notes/async-completion-wake.md` has the design.
+- `client/owner_services.{OwnerServices, JobsOwner, FactAccess, FactFault,
+  OwnerCapCall, working_directory_prefix, served_prefixes, jobs_owner,
+  local_facts, local_jobs_owner, local, no_capability, unavailable}` — the
+  one record of plain functions a session's workspace half calls back into
+  the owner through: `escalate` (a policy refusal's decision), `facts`,
+  `output` (the rolling output tail), `capability` (an owner-bound
+  code-mode call), `holds` (a strand's tool list), and `notify`,
+  `strand_activity` and `wake` (the jobs actor's completion notice, activity
+  read and idle heartbeat). Locally every function is the call it replaced;
+  a workspace on another node is given the same record backed by messages.
+  `FactAccess` is fenced to `client/working_directory/` and `job/` (a key
+  elsewhere is `NotServed` before any store is consulted) and keeps
+  `FactFault` distinct: `StoreAbsent`, `Conflict`, `LeaseStolen(held_by)`,
+  `Failed(detail)`. `jobs.Wiring` takes a `JobsOwner` plus a `session_path`
+  label supplier instead of a borrowed runtime. `notice.deliver` is the local
+  `notify`; `notice.sample` takes the activity and wake functions, with
+  `sample_runtime` as the shim `async_runs` keeps. `serve` builds the local
+  record (`owner_services.local`) and derives `wiring.Config.escalations` and
+  `observe_output` from it. Background code mode (`async_runs`,
+  `async_codemode`) is not ported and keeps its `Runtime`.
+- `client/cap_placement.{Placement, owner_caps, executor_caps, placement}` —
+  where each code-mode capability name is answered when the workspace is not
+  in the owner's VM, built from the routers' `serviced_caps` constants.
+  `cap_placement_test` fails on a name in neither group or in both.
+  `codemode.owner_arms` reads the owner-bound doors (Agency, notes,
+  schedules, MCP) off a `Config` once, `owner_calls` composes `strand.*` and
+  `notes.*` from them for the local router, and `codemode.owner_capability`
+  composes the same arms to answer an `OwnerCapCall` from plain data.
+  `peer.*` is still composed by `serve.with_code_mode_peers` and is not yet
+  part of `owner_capability`.
 - `client/jobs.{JobsPolicy, Request, Audience, Released, Started, Cursors,
   Polled, Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
   max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,

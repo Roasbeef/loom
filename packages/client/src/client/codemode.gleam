@@ -207,6 +207,8 @@
 import broker/broker.{type Broker}
 import broker/budget.{type Budget}
 import broker/escalation
+import broker/exec
+import broker/framing.{type CapOutcome}
 import broker/policy.{type Grant, type SandboxPolicy}
 import broker/token
 import client/install
@@ -215,6 +217,7 @@ import client/jobseam
 import client/jobtools
 import client/lsp/codemode_rename
 import client/mcp as mcp_wiring
+import client/owner_services
 import client/scheduleseam
 import client/scratch
 import codemode/artifact
@@ -2527,15 +2530,81 @@ fn surface_router(
   config: Config,
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
-  let effect_router = workspace_router(config, request)
-  let router = case config.surface {
-    Workspace -> effect_router
-    Orchestration(agency:, ..) | Both(agency:, ..) -> {
+  owner_calls(
+    config,
+    owner_arms(config, vetting_seam(request.seam)),
+    strand: request.strand,
+    source_index: request.source_index,
+    over: workspace_router(config, request),
+  )
+}
+
+/// The capability arms whose state lives with the session's owner rather
+/// than beside the checkout: the Agency behind `strand.*`, the blackboard
+/// behind `notes.*`, the scheduling door behind `schedule.*` and the MCP
+/// layer behind `mcp.*`.
+///
+/// They are read off the `Config` once, by `owner_arms`, and every router
+/// below is built from this value rather than from the fields it came from.
+/// That is what lets the same arms be composed in two places. A workspace on
+/// the owner's machine composes them into the execution's own router. A
+/// workspace elsewhere has the owner compose them to answer
+/// `owner_capability`, and its executor routes the names in `owner_caps`
+/// there instead.
+pub type OwnerArms {
+  OwnerArms(
+    /// The Agency `strand.*` answers over, or `None` on a host with no
+    /// messaging plane.
+    agency: Option(Agency),
+    /// The blackboard `notes.*` answers over, when the seam admits it.
+    notes: Option(notes.Door),
+    /// The scheduling door `schedule.*` answers over, or `None` when the
+    /// operator shut it.
+    schedules: Option(scheduleseam.Door),
+    /// The MCP servers `mcp.<server>` answers over.
+    mcp: McpLayer,
+  )
+}
+
+/// Reads the owner-bound arms off the configuration for one seam.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.owner_arms(config, vet_policy.WorkspaceSeam).schedules
+/// ```
+///
+pub fn owner_arms(config: Config, seam: vet_policy.Seam) -> OwnerArms {
+  OwnerArms(
+    agency: case config.surface {
+      Workspace -> None
+      Orchestration(agency:, ..) | Both(agency:, ..) -> Some(agency)
+    },
+    notes: notes_on(config, seam),
+    schedules: config.schedules,
+    mcp: seam_mcp(config, seam),
+  )
+}
+
+// `strand.*` and `notes.*` composed over `inner`, for one caller. The strand
+// arm answers the Agency's names except the artifact emitter, which is a
+// workspace write and falls through; the notes arm wraps whatever is
+// beneath, so a blackboard call never reaches the strand arm.
+fn owner_calls(
+  config: Config,
+  arms: OwnerArms,
+  strand strand: String,
+  source_index source_index: Int,
+  over inner: satellite.CapRouter,
+) -> satellite.CapRouter {
+  let router = case arms.agency {
+    None -> inner
+    Some(agency) -> {
       let strand_router =
         orchestration.router(orchestration.Orchestration(
           agency:,
-          strand: request.strand,
-          source_index: request.source_index,
+          strand:,
+          source_index:,
           emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
           emit_ceiling: artifact.default_emit_ceiling,
         ))
@@ -2545,16 +2614,136 @@ fn surface_router(
           && call.cap != artifact.emit_cap
         {
           True -> strand_router(call)
-          False -> effect_router(call)
+          False -> inner(call)
         }
       }
     }
   }
-  case notes_on(config, vetting_seam(request.seam)) {
+  case arms.notes {
     None -> router
-    Some(door) ->
-      notes.routing(door, request.strand, request.source_index, over: router)
+    Some(door) -> notes.routing(door, strand, source_index, over: router)
   }
+}
+
+/// Answers one owner-bound capability call from plain data, composing the
+/// owner's arms for it and running the plan they return.
+///
+/// This is the function behind `OwnerServices.capability`. A workspace that
+/// is not in this VM cannot hold the Agency, the blackboard door, the
+/// scheduling door or the MCP clients, so its executor sends the call here
+/// and gets the outcome back. The routers are the ones an execution composes
+/// locally (`owner_calls`, the workspace seam's `schedule.*` arm and
+/// `mcp_wiring.routing`), so the two paths answer from one definition.
+///
+/// A router for a name this side does not own would be wrong to answer, so
+/// the chain ends in a denial rather than in the default router, and a plan
+/// which asks for a jailed process is refused: the owner has no helper to
+/// clear one into.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.owner_capability(config)(owner_services.OwnerCapCall(
+/// //   strand: "main", op_id:, step_id: "turn-1:tools", source_index: 0,
+/// //   seam: vet_policy.OrchestrationSeam, cap: "strand.roster",
+/// //   args: msgpack.MapValue([]), ordinal: 0))
+/// ```
+///
+pub fn owner_capability(
+  config: Config,
+) -> fn(owner_services.OwnerCapCall) -> Result(CapOutcome, satellite.CapDenial) {
+  fn(call: owner_services.OwnerCapCall) {
+    let arms = owner_arms(config, call.seam)
+    let router =
+      owner_calls(
+        config,
+        arms,
+        strand: call.strand,
+        source_index: call.source_index,
+        over: scheduling(config, call, over: owner_mcp(arms)),
+      )
+    case router(owner_request(call)) {
+      Ok(satellite.ServedHere(serve)) | Ok(satellite.ScopedService(serve)) ->
+        Ok(serve())
+      Ok(satellite.ClearedCall(..)) ->
+        Error(satellite.CapDenial(
+          code: workspace.unsupported_cap_code,
+          message: "the session owner has no helper to clear `"
+            <> call.cap
+            <> "` into",
+        ))
+      Error(denial) -> Error(denial)
+    }
+  }
+}
+
+// The MCP arm over a base which answers nothing: a name no owner arm claims
+// is denied instead of being handed to the default router, which would plan
+// a jailed process.
+fn owner_mcp(arms: OwnerArms) -> satellite.CapRouter {
+  mcp_wiring.routing(arms.mcp, over: fn(request: satellite.CapRequest) {
+    Error(satellite.CapDenial(
+      code: workspace.unsupported_cap_code,
+      message: "`" <> request.cap <> "` is not answered by the session owner",
+    ))
+  })
+}
+
+// `schedule.*` over `inner`, and only those three names. The workspace
+// seam's router answers every harness-side capability, so it is fenced by
+// name here: the owner serves the scheduling arm of it and none of the
+// filesystem, scratch, job or emit arms beside it.
+fn scheduling(
+  config: Config,
+  call: owner_services.OwnerCapCall,
+  over inner: satellite.CapRouter,
+) -> satellite.CapRouter {
+  let routed =
+    workspace.routing(
+      workspace_seam_for(
+        config,
+        workspace: "/",
+        strand: call.strand,
+        operation: call.op_id,
+        protected: [],
+      ),
+      over: inner,
+    )
+  fn(request: satellite.CapRequest) {
+    case
+      list.contains(
+        [
+          workspace.schedule_create_cap,
+          workspace.schedule_list_cap,
+          workspace.schedule_cancel_cap,
+        ],
+        request.cap,
+      )
+    {
+      True -> routed(request)
+      False -> inner(request)
+    }
+  }
+}
+
+// The request an owner arm is given. The arms read the capability, its
+// arguments and its ordinal; the fields that describe a jailed process are
+// inert here, because nothing on this side clears one.
+fn owner_request(call: owner_services.OwnerCapCall) -> satellite.CapRequest {
+  satellite.CapRequest(
+    cap: call.cap,
+    args: call.args,
+    identity: identity.run_phase(identity.for_execution(
+      op_id: call.op_id,
+      step_id: call.step_id,
+      budget: budget.Budget(max_outstanding: 1, deadline_ms: 0),
+    )),
+    base_policy: policy.workspace_default("/"),
+    demand: exec.BestEffort,
+    env: [],
+    cwd: "/",
+    ordinal: call.ordinal,
+  )
 }
 
 // The effect router: arms over the shipped table.
@@ -2582,8 +2771,8 @@ fn workspace_router(
 ) -> satellite.CapRouter {
   let access =
     directory_access.approved(request.directory_access, request.grants)
-  let mcp_router =
-    mcp_wiring.routing(config.mcp, over: satellite.default_router)
+  let arms = owner_arms(config, vetting_seam(request.seam))
+  let mcp_router = mcp_wiring.routing(arms.mcp, over: satellite.default_router)
 
   // Without a door `lsp.*` falls through to the default table, which
   // refuses it as unknown; the seam's allowlist has already refused the
@@ -2729,6 +2918,12 @@ pub fn workspace_seam_with_access(
   let filesystem = fs.real_filesystem()
   let root = workspace_root
   let request_strand = strand
+
+  // The schedule closures are the owner's. Taking them from the arms keeps
+  // one reading of where `schedule.*` is answered, whichever way it is
+  // reached: the extension bridge has no seam of its own and asks for the
+  // workspace seam's.
+  let arms = owner_arms(config, vet_policy.WorkspaceSeam)
   workspace.Workspace(
     fs_read: fn(path) { read_in(filesystem, root, access.readable, path) },
     fs_list: fn(path) { list_in(filesystem, root, access.readable, path) },
@@ -2748,11 +2943,11 @@ pub fn workspace_seam_with_access(
     // program reaches its own strand and strands it spawned, and
     // nothing else.
     schedule_create: fn(request) {
-      schedule_create_in(config.schedules, request, on: request_strand)
+      schedule_create_in(arms.schedules, request, on: request_strand)
     },
-    schedule_list: fn() { schedule_list_in(config.schedules, request_strand) },
+    schedule_list: fn() { schedule_list_in(arms.schedules, request_strand) },
     schedule_cancel: fn(name, target) {
-      schedule_cancel_in(config.schedules, name, target, on: request_strand)
+      schedule_cancel_in(arms.schedules, name, target, on: request_strand)
     },
     // Bound to the same strand and to the caller's real operation, and
     // to nothing a program can write: ownership of a job is the strand,

@@ -32,6 +32,7 @@ import client/gateway_test
 import client/install
 import client/internal/ffi_os
 import client/mcp as mcp_wiring
+import client/owner_services
 import client/peer_mail
 import client/peers
 import client/schedule
@@ -3539,7 +3540,10 @@ fn directory_case(rig: Rig) -> Nil {
   let id = ids.mint_session(ids.generator(clock.fixed(1000), 641)).0
   let harness = gateway_test.reserved_fixture(id)
   let facts = api.fact_handle(harness.runtime)
-  let supplier = fn() { Ok(facts) }
+  let supplier =
+    owner_services.local_facts(handle: fn() { Ok(facts) }, runtime: fn() {
+      Error(Nil)
+    })
   let ctx =
     tool.Ctx(
       ..live_ctx(rig.workspace, rig.base_policy, wall_clock()),
