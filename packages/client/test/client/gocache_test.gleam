@@ -16,6 +16,12 @@ fn caches_at(root: String, limit_mib: Int) -> gocache.GoCaches {
   gocache.GoCaches(root:, mirror: None, limit_kib: limit_mib * 1024)
 }
 
+// A workspace that no scratch directory can lie inside. The scratch root is
+// under the package's working directory, and a signoff container checks the
+// repository out at `/work`, so `/work` itself would overlap every mirror a
+// test builds there and make the overlap check fire for the wrong reason.
+const apart_workspace = "/loom-test-workspace"
+
 fn scratch(name: String) -> String {
   let assert Ok(cwd) = simplifile.current_directory()
   let path =
@@ -124,18 +130,19 @@ pub fn a_mirror_must_exist_and_hold_a_download_directory_test() {
     )
 
   let assert Error(missing) =
-    gocache.fault(caches, "/work", [], [], tools_naming: [])
+    gocache.fault(caches, apart_workspace, [], [], tools_naming: [])
   assert string.contains(missing, "[workspace] go_module_mirror")
   assert string.contains(missing, "does not exist")
 
   let assert Ok(Nil) = simplifile.create_directory_all(root <> "/mod")
   let assert Error(bare) =
-    gocache.fault(caches, "/work", [], [], tools_naming: [])
+    gocache.fault(caches, apart_workspace, [], [], tools_naming: [])
   assert string.contains(bare, "cache/download")
 
   let assert Ok(Nil) =
     simplifile.create_directory_all(root <> "/mod/cache/download")
-  assert gocache.fault(caches, "/work", [], [], tools_naming: []) == Ok(Nil)
+  assert gocache.fault(caches, apart_workspace, [], [], tools_naming: [])
+    == Ok(Nil)
   let _cleanup = simplifile.delete(root)
 }
 
@@ -160,7 +167,13 @@ pub fn a_mirror_may_not_overlap_the_workspace_or_a_masked_path_test() {
   assert string.contains(above, "the workspace")
 
   let assert Error(masked) =
-    gocache.fault(caches, "/work", [root <> "/mod/cache"], [], tools_naming: [])
+    gocache.fault(
+      caches,
+      apart_workspace,
+      [root <> "/mod/cache"],
+      [],
+      tools_naming: [],
+    )
   assert string.contains(masked, "protected")
   let _cleanup = simplifile.delete(root)
 }
