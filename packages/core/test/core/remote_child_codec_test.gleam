@@ -147,3 +147,98 @@ pub fn full_tool_parent_digest_and_result_id_remain_conflict_evidence_test() {
     as "The changed identity encodes."
   assert r.decode_child(encoded) == Ok(second)
 }
+
+pub fn workspace_command_keeps_complete_parent_and_original_quota_group_test() {
+  let parent = key()
+  let assert Ok(semantic) = r.tool_child(parent, r.Workspace(7))
+    as "The direct semantic workspace child validates."
+  let assert Ok(system) =
+    r.system_child(r.session(parent), "worktree-observation", 2)
+    as "System identity data validates without allocation authority."
+  list.each([semantic, system], fn(original) {
+    list.each(
+      [
+        r.GitBranch,
+        r.GitRepositoryProbe,
+        r.GitRevision,
+        r.GitStatus,
+        r.GitWorkingTreeDiff,
+        r.GitStagedDiff,
+        r.GitSinceRevisionDiff,
+        r.GitLog,
+        r.WorkspaceInitialize,
+      ],
+      fn(phase) {
+        let assert Ok(native) = r.workspace_command_child(original, phase)
+          as "A declared direct parent can derive identity data."
+        let assert Ok(bytes) = r.encode_child(native)
+          as "The whole derived identity fits the existing bound."
+        assert r.decode_child(bytes) == Ok(native)
+        assert r.child_fields(native)
+          == r.WorkspaceCommandFields(original, phase)
+        assert r.child_parent(native) == r.child_parent(original)
+        assert r.child_session(native) == r.child_session(original)
+        assert r.child_address(native) != r.child_address(original)
+        assert r.child_tool(native) == Error(Nil)
+        assert r.child_role(native) == Error(Nil)
+        assert r.workspace_command_child(native, phase) |> result.is_error
+        assert r.decode_child_value(
+            m.ArrayValue([
+              m.IntValue(1),
+              m.IntValue(2),
+              r.child_value(native),
+              m.StringValue(r.workspace_command_phase_name(phase)),
+            ]),
+          )
+          |> result.is_error
+      },
+    )
+  })
+  list.each(
+    [
+      r.Compile,
+      r.Launch,
+      r.Capability(7),
+      r.AdmittedCapability("git.status", 7, r.SemanticWorkspace),
+    ],
+    fn(role) {
+      let assert Ok(unrelated) = r.tool_child(parent, role)
+        as "Existing unrelated identity remains valid."
+      assert r.workspace_command_child(unrelated, r.GitStatus)
+        |> result.is_error
+    },
+  )
+}
+
+pub fn workspace_command_changed_parent_bytes_share_the_original_fence_test() {
+  let parent = key()
+  let assert Ok(changed) =
+    r.key(
+      r.session(parent),
+      r.operation(parent),
+      r.step(parent),
+      r.source_index(parent),
+      string.repeat("b", 64),
+      r.result_entry(parent),
+    )
+    as "The changed complete parent validates syntactically."
+  let assert Ok(first) = r.tool_child(parent, r.Workspace(0))
+    as "The original parent validates."
+  let assert Ok(second) = r.tool_child(changed, r.Workspace(0))
+    as "The changed parent reaches the same address."
+  let assert Ok(first) = r.workspace_command_child(first, r.GitStatus)
+    as "The original derivation validates."
+  let assert Ok(second) = r.workspace_command_child(second, r.GitStatus)
+    as "The changed derivation validates."
+  assert r.child_address(first) == r.child_address(second)
+  assert r.child_value(first) != r.child_value(second)
+  assert r.decode_child_value(
+      m.ArrayValue([
+        m.IntValue(1),
+        m.IntValue(2),
+        r.child_value(first),
+        m.StringValue("unknown"),
+      ]),
+    )
+    |> result.is_error
+}
