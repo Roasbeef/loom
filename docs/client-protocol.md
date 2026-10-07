@@ -618,8 +618,12 @@ Source: (`client/daemon/server.gleam:654-674`).
 Errors: `forbidden`; `invalid_workspace` and `invalid_configuration`
 when a path cannot be canonicalized; `unknown_profile` when the
 configuration the session will load does not define `profile`, which is
-the one refusal whose `message` names the profiles that do exist
-(`unknown profile "x"; the configuration defines: a, b`); `conflict` when
+a refusal whose `message` names the profiles that do exist
+(`unknown profile "x"; the configuration defines: a, b`);
+`unusable_configuration` when a profile is named and that configuration
+cannot be read or parsed, whose `message` is the daemon's startup wording
+(for an unknown top-level key, ``unknown key `x` in the top level (allowed: ...)``);
+`conflict` when
 the key was reused with different metadata, a different `profile`
 included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).

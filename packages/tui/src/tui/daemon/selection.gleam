@@ -661,8 +661,11 @@ pub fn failure(reason: daemon.Failure) -> String {
     daemon.Disconnected -> "daemon control disconnected; reconnect explicitly"
 
     // The existing error envelope carries the authorized operation's bounded
-    // startup reason after its owner has retired.
-    daemon.Refused("start_failed", message) ->
+    // startup reason after its owner has retired. A creation refused because
+    // its configuration cannot load is the same cause one step earlier, before
+    // any session was reserved, so it is worded the same way.
+    daemon.Refused("start_failed", message)
+    | daemon.Refused("unusable_configuration", message) ->
       "session startup failed: " <> message
 
     daemon.Refused(code, message) -> code <> ": " <> message
