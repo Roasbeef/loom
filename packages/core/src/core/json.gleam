@@ -7,6 +7,11 @@
 //// not a single well-formed JSON document yields `Error(CorruptionReport)`,
 //// never a crash.
 ////
+//// `parse` retains the ordinary profile. `parse_profile(RegisteredLspJson)` also
+//// charges every value and object key against one 200000-node budget before
+//// constructing it. Its transport caller owns the framed byte ceiling. Both
+//// profiles use the same grammar, errors, numbers, strings and nesting bound.
+////
 //// Notes on fidelity:
 ////
 //// - Numbers without a fraction or exponent parse as `Int` (arbitrary
@@ -45,6 +50,15 @@ import gleam/string_tree.{type StringTree}
 /// bound exists so hostile input is refused in-band instead of driving
 /// the parser into unbounded recursion.
 pub const max_depth = 256
+
+/// Closed parser profiles preserve ordinary JSON while bounding Registered LSP.
+pub type ParseProfile {
+  /// Existing parsing semantics, with the existing maximum nesting depth.
+  StandardJson
+
+  /// Registered protocol input permits at most 200000 keys and values combined.
+  RegisteredLspJson
+}
 
 /// A JSON document as plain data. Constructors carry no invariants beyond
 /// their types except:
@@ -99,8 +113,29 @@ pub type JsonValue {
 /// ```
 ///
 pub fn parse(text: String) -> Result(JsonValue, CorruptionReport) {
+  parse_profile(text, StandardJson)
+}
+
+/// Parses using the selected closed allocation profile, with identical syntax.
+/// Registered LSP charges each value and object key before constructing it. Its
+/// caller still owns the 16 MiB framed body bound; all profiles preserve depth 256.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert json.parse_profile("[1,true]", json.RegisteredLspJson)
+///   == Ok(json.Array([json.Int(1), json.Bool(True)]))
+/// ```
+pub fn parse_profile(
+  text: String,
+  profile: ParseProfile,
+) -> Result(JsonValue, CorruptionReport) {
   let bytes = <<text:utf8>>
-  let cursor = Cursor(rest: bytes, source: bytes, consumed: 0)
+  let budget = case profile {
+    StandardJson -> UnrestrictedNodes
+    RegisteredLspJson -> RemainingNodes(200_000)
+  }
+  let cursor = Cursor(rest: bytes, source: bytes, consumed: 0, budget:)
   use #(value, cursor) <- result.try(parse_value(skip_whitespace(cursor), 0))
   let cursor = skip_whitespace(cursor)
   case bit_array.byte_size(cursor.rest) {
@@ -326,8 +361,13 @@ pub fn build_string_by_codepoint(text: String) -> StringTree {
 // document as a list of codepoint integers and rebuild every string one
 // codepoint at a time; on a 5 MB branch that was tens of millions of heap
 // words per projection and most of the server's per-step CPU (issue #359).
+type NodeBudget {
+  UnrestrictedNodes
+  RemainingNodes(Int)
+}
+
 type Cursor {
-  Cursor(rest: BitArray, source: BitArray, consumed: Int)
+  Cursor(rest: BitArray, source: BitArray, consumed: Int, budget: NodeBudget)
 }
 
 fn fail(cursor: Cursor, expected: String) -> CorruptionReport {
@@ -396,6 +436,7 @@ fn parse_value(
   cursor: Cursor,
   depth: Int,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
+  use cursor <- result.try(reserve_node(cursor))
   case cursor.rest {
     <<0x7B, rest:bits>> -> {
       use Nil <- result.try(check_depth(cursor, depth))
@@ -430,6 +471,18 @@ fn parse_value(
     <<byte, _:bits>> if byte == 0x2D || { byte >= 0x30 && byte <= 0x39 } ->
       parse_number(cursor)
     _ -> Error(fail(cursor, "a json value"))
+  }
+}
+
+// The original parser constructs each node only after its selected budget owns
+// that allocation. Standard syntax/error reporting does not spend a node budget.
+fn reserve_node(cursor: Cursor) -> Result(Cursor, CorruptionReport) {
+  case cursor.budget {
+    UnrestrictedNodes -> Ok(cursor)
+    RemainingNodes(left) if left > 0 ->
+      Ok(Cursor(..cursor, budget: RemainingNodes(left - 1)))
+    RemainingNodes(_) ->
+      Error(fail(cursor, "at most 200000 aggregate JSON keys and values"))
   }
 }
 
@@ -487,6 +540,7 @@ fn parse_member(
   cursor: Cursor,
   depth: Int,
 ) -> Result(#(#(String, JsonValue), Cursor), CorruptionReport) {
+  use cursor <- result.try(reserve_node(cursor))
   case cursor.rest {
     <<0x22, rest:bits>> -> {
       use #(name, cursor) <- result.try(

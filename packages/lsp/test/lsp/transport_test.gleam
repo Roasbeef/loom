@@ -20,6 +20,7 @@ pub fn a_channel_peer_receives_the_subject_and_delivers_events_test() {
         close: fn() { Nil },
       )
     })
+
   let connection = connect(inbound)
 
   assert process.receive(inbound, 100) == Ok(TransportData(<<"hi":utf8>>))
