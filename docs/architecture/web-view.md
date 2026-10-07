@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4471`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4557`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1049,7 +1049,7 @@ creation left (`ui_sessions.reserve_creation`, ten an hour, counted apart from
 invitations). Then `create` makes the session under a key drawn for the call,
 `daemon.session_created` is logged with the principal and the session, and the
 session is opened and ticketed as a resume's is (`opened_ticket`). A session made
-and not opened is `NotOpened`, in words that say it exists. The socket takes the
+and not started is `Unstarted`: it carries the owner's startup reason (protocol-change/055) and whether the never-initialized reservation was released (protocol-change/074, addendum F195). The socket takes the
 form's `submit` beneath `home.table_path` for that page only. That admission is
 the one rename already has (`home_owner_accepts`, protocol-change/067): the owner's
 socket admits a submit beneath the table when its home holds either the rename or

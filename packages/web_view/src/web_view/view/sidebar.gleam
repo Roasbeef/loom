@@ -382,7 +382,11 @@ fn entry(
   let residency = case entry.residency, kind {
     Live, _ -> running(entry, suffix)
     Saved, resume.Opening -> #(["opening"], "…", "opening")
-    Saved, _ | Blocked, _ -> #(["saved"], "○", "saved")
+    Saved, _ -> #(["saved"], "○", "saved")
+
+    // A row nothing runs and a page cannot open says so, in the words the home
+    // table uses for it, rather than passing for a saved session that resumes.
+    Blocked, _ -> #(["saved"], "○", "needs attention")
   }
   let name =
     html.span([attribute.class("session-name")], [

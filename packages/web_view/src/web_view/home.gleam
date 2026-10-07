@@ -1076,8 +1076,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     // A ticket departs for the new session. A refusal says why in the daemon's
-    // fixed words and puts the form back, except for a session that was created
-    // and did not open, which exists and shows in the list at the next read.
+    // fixed words and puts the form back. A creation that was accepted and did
+    // not start says why in the owner's own startup reason, which only an
+    // owner's page can hold, and either puts the form back for a retry when the
+    // daemon released the reservation or closes it when the session was kept.
     Created(answer:) ->
       case answer {
         creations.Ticketed(path:) -> #(
@@ -1091,7 +1093,21 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               refused_at(model),
               creations.reason_words(reason),
             )),
-            creating: reopened(model.creating, reason),
+            creating: reopened(model.creating, Correctable),
+          ),
+          effect.none(),
+        )
+        creations.Unstarted(why:, remains:) -> #(
+          Model(
+            ..model,
+            note: Some(refusal(
+              refused_at(model),
+              creations.unstarted_words(why, remains),
+            )),
+            creating: reopened(model.creating, case remains {
+              creations.Dropped -> Correctable
+              creations.InList -> Kept
+            }),
           ),
           effect.none(),
         )
@@ -1723,15 +1739,23 @@ fn refused_at(model: Model) -> home_table.Place {
   }
 }
 
+// What an answer leaves the person to do with the form.
+type Outcome {
+  // Nothing exists, so the form comes back for a correction.
+  Correctable
+
+  // The session exists in the list, so there is nothing to correct.
+  Kept
+}
+
 // Where the form stands after a refusal: open again under the workspace it was
-// for, so the person can correct it, unless the session was made and did not
-// open, which leaves nothing to correct.
-fn reopened(state: create.State, reason: creations.Reason) -> create.State {
-  case state, reason {
-    create.Waiting(_), creations.NotOpened -> create.Idle
-    create.Waiting(workspace), _ -> create.Composing(workspace)
-    create.Sending, creations.NotOpened -> create.Idle
-    create.Sending, _ -> create.Elsewhere
+// for, so the person can correct it, unless the session was made and kept,
+// which leaves nothing to correct.
+fn reopened(state: create.State, outcome: Outcome) -> create.State {
+  case state, outcome {
+    create.Waiting(_), Kept | create.Sending, Kept -> create.Idle
+    create.Waiting(workspace), Correctable -> create.Composing(workspace)
+    create.Sending, Correctable -> create.Elsewhere
     create.Idle, _ | create.Composing(_), _ | create.Elsewhere, _ -> state
   }
 }
