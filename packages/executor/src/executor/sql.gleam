@@ -183,7 +183,7 @@ pub fn initialize_generations(
   byte_limit byte_limit: Int,
 ) {
   let sql =
-    "INSERT INTO generation_meta(id,format,live_limit,row_limit,byte_limit) VALUES(1,1,?,?,?)"
+    "INSERT INTO generation_meta(id,format,live_limit,row_limit,byte_limit) VALUES(1,2,?,?,?)"
   #(sql, [
     dev.ParamInt(live_limit),
     dev.ParamInt(row_limit),
@@ -197,7 +197,7 @@ pub type GenerationFormat {
 
 pub fn generation_format() {
   let sql =
-    "SELECT CAST(CASE WHEN typeof(format)='integer' AND format=1 THEN format ELSE NULL END AS INTEGER) AS format FROM generation_meta LIMIT 2"
+    "SELECT CAST(CASE WHEN typeof(format)='integer' AND format IN (1,2) THEN format ELSE NULL END AS INTEGER) AS format FROM generation_meta LIMIT 2"
   #(sql, [], generation_format_decoder())
 }
 
@@ -571,6 +571,106 @@ pub fn recover_generation_uncertainty(
   let sql =
     "UPDATE generation_record SET phase=6 WHERE claimed=1 AND phase IN (0,1,2,3) AND claim_incarnation<>?"
   #(sql, [dev.ParamBitArray(claim_incarnation)])
+}
+
+pub type GenerationPlanInventory {
+  GenerationPlanInventory(rows: Int, invalid: Option(decode.Dynamic))
+}
+
+pub fn generation_plan_inventory() {
+  let sql =
+    "SELECT COUNT(*) AS \"rows\",
+ COALESCE(SUM(CASE WHEN typeof(p.key)='blob' AND length(p.key) BETWEEN 1 AND 1024
+ AND typeof(p.header)='blob' AND length(p.header) BETWEEN 1 AND 262144
+ AND typeof(p.enrollment)='blob' AND length(p.enrollment) BETWEEN 1 AND 262144
+ AND typeof(p.digest)='blob' AND length(p.digest)=32
+ AND r.claimed=1 THEN 0 ELSE 1 END),0) AS invalid
+FROM generation_scope_plan p LEFT JOIN generation_record r ON r.key=p.key"
+  #(sql, [], generation_plan_inventory_decoder())
+}
+
+pub fn generation_plan_inventory_decoder() -> decode.Decoder(
+  GenerationPlanInventory,
+) {
+  use rows <- decode.field(0, decode.int)
+  use invalid <- decode.field(1, decode.optional(decode.dynamic))
+  decode.success(GenerationPlanInventory(rows:, invalid:))
+}
+
+pub type GenerationPlanCharges {
+  GenerationPlanCharges(invalid: Option(decode.Dynamic))
+}
+
+pub fn generation_plan_charges() {
+  let sql =
+    "SELECT COALESCE(SUM(CASE WHEN r.reservation=length(r.key)*2+1024+4096+36*2+32*4+8192*2
+ +COALESCE(length(p.header)+length(p.enrollment)+32,0) THEN 0 ELSE 1 END),0) AS invalid
+FROM generation_record r LEFT JOIN generation_scope_plan p ON r.key=p.key"
+  #(sql, [], generation_plan_charges_decoder())
+}
+
+pub fn generation_plan_charges_decoder() -> decode.Decoder(
+  GenerationPlanCharges,
+) {
+  use invalid <- decode.field(0, decode.optional(decode.dynamic))
+  decode.success(GenerationPlanCharges(invalid:))
+}
+
+pub type GenerationPlanHeader {
+  GenerationPlanHeader(
+    header_size: Option(Int),
+    enrollment_size: Option(Int),
+    digest: BitArray,
+  )
+}
+
+pub fn generation_plan_header(key key: BitArray) {
+  let sql =
+    "SELECT length(header) AS header_size,length(enrollment) AS enrollment_size,digest
+FROM generation_scope_plan WHERE key=? LIMIT 2"
+  #(sql, [dev.ParamBitArray(key)], generation_plan_header_decoder())
+}
+
+pub fn generation_plan_header_decoder() -> decode.Decoder(GenerationPlanHeader) {
+  use header_size <- decode.field(0, decode.optional(decode.int))
+  use enrollment_size <- decode.field(1, decode.optional(decode.int))
+  use digest <- decode.field(2, decode.bit_array)
+  decode.success(GenerationPlanHeader(header_size:, enrollment_size:, digest:))
+}
+
+pub type GenerationPlanBody {
+  GenerationPlanBody(header: BitArray, enrollment: BitArray)
+}
+
+pub fn generation_plan_body(key key: BitArray) {
+  let sql =
+    "SELECT header,enrollment FROM generation_scope_plan
+WHERE key=? AND typeof(header)='blob' AND length(header) BETWEEN 1 AND 262144
+ AND typeof(enrollment)='blob' AND length(enrollment) BETWEEN 1 AND 262144
+ AND typeof(digest)='blob' AND length(digest)=32 LIMIT 2"
+  #(sql, [dev.ParamBitArray(key)], generation_plan_body_decoder())
+}
+
+pub fn generation_plan_body_decoder() -> decode.Decoder(GenerationPlanBody) {
+  use header <- decode.field(0, decode.bit_array)
+  use enrollment <- decode.field(1, decode.bit_array)
+  decode.success(GenerationPlanBody(header:, enrollment:))
+}
+
+pub fn insert_generation_scope_plan(
+  key key: BitArray,
+  header header: BitArray,
+  enrollment enrollment: BitArray,
+  digest digest: BitArray,
+) {
+  let sql =
+    "INSERT INTO generation_scope_plan(key,header,enrollment,digest) VALUES(?,?,?,?)"
+  #(sql, [
+    dev.ParamBitArray(key),
+    dev.ParamBitArray(header),
+    dev.ParamBitArray(enrollment),
+    dev.ParamBitArray(digest),
+  ])
 }
 
 pub fn initialize_lsp(
