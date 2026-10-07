@@ -1,5 +1,10 @@
 # Current handoff
 
+Implementation is paused at the owner's request. The new
+[detailed October 7 handoff](distributed-runtime-handoff-2026-10-07.md) records
+the retrospective, all preserved branches, exact WIP defects, pending decisions
+and ordered restart plan. Read it before resuming.
+
 This file describes the current integration boundary, its evidence and the next
 required work. Rewrite it after each integration milestone. This edition is
 baselined against `551dc3fc7` on October 7, 2026, in the isolated
@@ -17,10 +22,16 @@ ordinary registered assembly and separate-host acceptance remain unfinished.
 
 ## Where the tree is
 
-[PR #819](https://github.com/Roasbeef/loom/pull/819) was last verified open and
-draft at `b3bc47efdb2be7df421287aa437debdd034af9e5`, with no hosted checks on
-that head. [Issue #697](https://github.com/Roasbeef/loom/issues/697) remains open.
-The integration work is local; publication and merge are not authorized.
+[PR #819](https://github.com/Roasbeef/loom/pull/819) was verified open and draft before the
+checkpoint push. Its old head was `b3bc47efdb2be7df421287aa437debdd034af9e5`,
+with no hosted checks; that historical result does not describe the pushed head. [Issue #697](https://github.com/Roasbeef/loom/issues/697) remains open.
+The owner authorized the checkpoint push on October 7. The refreshed integration
+and 39 separate archival draft branches are published; merge remains unauthorized.
+The PR is updated to the refreshed integration, with its old head preserved on
+`runtime/pre-refresh-oct7`. Current hosted checks must be read against its new head.
+The initial pushed checkpoint `1c50b074f` has two stock-compiler release failures:
+`executor_distribution_fixture_ffi` is duplicated between executor and client.
+The detailed handoff links the actual CI run; other jobs were still running.
 The integrated main revision has a
 [passing CI run](https://github.com/Roasbeef/loom/actions/runs/37606780540).
 The same revision has a
@@ -342,7 +353,8 @@ weft with the exact Loom dependency-pin update, and the executor's existing-host
 metadata reader dependency. The selector supplies managed outcomes without
 losing the independent original scope monitor. The metadata reader supplies
 bounded actual Prepare readiness. Neither proposal is implemented or approved by
-elapsed time; independent implementation continues around these boundaries.
+elapsed time. Implementation is paused; the detailed handoff identifies the
+independent work that can resume after the pause.
 
 Two further proposals remain pending. The full gate needs the local `flock`
 prerequisite and proposes twenty seconds per Python module instead of twenty
