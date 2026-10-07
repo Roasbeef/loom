@@ -49,6 +49,13 @@
 //// shared SQL recovery. `release_owned` observes successful explicit close and
 //// the original DOWN; `shutdown_owned` cannot turn failed close into normal proof.
 ////
+//// `park_fresh` links a resource-free original to its permanent starter.
+//// `initialise_fresh` installs acquired SQL before shared setup; `release_fresh`
+//// requires checked close ACK and original normal DOWN. `handle` preserves that
+//// custody through all live operations and failed setup cleanup.
+//// `shutdown_live_connection` prevents failed SQL close from yielding normal exit.
+//// Parent-death cleanup is best effort, never complete physical retirement proof.
+////
 //// ## Flow
 ////
 //// `fresh` and `recover` enter `start` and `initialise`. `reserve`, `inspect`
@@ -455,9 +462,72 @@ type Config {
   )
 }
 
+/// Checked immutable live creation inputs, without an open connection.
+@internal
+pub opaque type FreshInput {
+  /// The exact configuration retained before the original actor starts.
+  FreshInput(
+    /// Absolute original path, full enrollment and checked lifetime ceilings.
+    config: Config,
+    /// The exact successfully initialized original native child.
+    native: native_journal.LiveFresh,
+  )
+}
+
+/// The original linked, resource-free child recorded by its permanent parent.
+@internal
+pub opaque type ParkedFresh {
+  /// This exact original endpoint, PID, parent and input cannot be replaced.
+  ParkedFresh(
+    /// The same original serialized business endpoint.
+    subject: process.Subject(Message),
+    /// The original connection-owning child, never a replacement lookup.
+    pid: process.Pid,
+    /// The actual process that called linked construction.
+    parent: process.Pid,
+    /// The immutable inputs retained before startup.
+    input: FreshInput,
+  )
+}
+
+/// Successful initialization of that same original child, with live operations.
+@internal
+pub opaque type LiveFresh {
+  /// Readiness binds the original parked handle to its one business endpoint.
+  LiveFresh(
+    /// The same recorded original child and immutable parent binding.
+    original: ParkedFresh,
+    /// Its live business endpoint after successful metadata COMMIT.
+    journal: Journal,
+  )
+}
+
+type LiveCustody {
+  LegacyCustody
+  ParentCustody(
+    parent: process.Pid,
+    probe: native_journal.FreshProbe,
+    native: native_journal.LiveFresh,
+  )
+}
+
 type State {
-  Waiting(config: Config)
-  Ready(config: Config, connection: sqlight.Connection)
+  Waiting(config: Config, custody: LiveCustody)
+  Ready(config: Config, connection: sqlight.Connection, custody: LiveCustody)
+
+  // This state owns the connection before setup can fail or commit.
+  AcquiredFresh(
+    config: Config,
+    connection: sqlight.Connection,
+    custody: LiveCustody,
+    reply: process.Subject(Result(Nil, Error)),
+  )
+
+  // Normal final exit can only follow successful explicit SQL close.
+  ReleasedFresh(probe: native_journal.FreshProbe)
+
+  // Failed close preserves the real connection for abnormal shutdown cleanup.
+  FailedCloseFresh(connection: sqlight.Connection)
 }
 
 type Command {
@@ -480,6 +550,9 @@ type Answer {
 }
 
 type Message {
+  InitialiseFresh(process.Subject(Result(Nil, Error)))
+  FinishFresh
+  StopFresh
   Initialise(Mode, process.Subject(Result(Nil, Error)))
   Run(Command, process.Subject(Result(Answer, Error)))
   FencePreparation(Validated, process.Subject(Result(PreparationFence, Error)))
@@ -828,6 +901,144 @@ pub fn release_endpoint(journal: Journal) -> Result(Nil, Error) {
     Error(Closed) -> Ok(Nil)
     outcome -> outcome
   }
+}
+
+/// Checks exact live creation inputs without opening SQLite.
+///
+/// ## Examples
+/// `fresh_input` alone grants no live Journal or execution claim.
+@internal
+pub fn fresh_input(
+  path: String,
+  enrolled: enrollment.SessionEnrollment,
+  limits: Limits,
+  native: native_journal.LiveFresh,
+) -> Result(FreshInput, Error) {
+  use Nil <- result.try(valid_recovery_path(path))
+  use expected <- result.try(native_scope(enrolled))
+  use Nil <- result.try(
+    case
+      native_journal.scope(native_journal.fresh_journal(native)) == expected
+    {
+      True -> Ok(Nil)
+      False -> Error(BindingMismatch)
+    },
+  )
+  Ok(FreshInput(
+    Config(
+      path,
+      enrolled,
+      limits,
+      LiveNative(native_journal.fresh_journal(native)),
+    ),
+    native,
+  ))
+}
+
+/// Starts a linked resource-free child from the actual permanent parent.
+///
+/// ## Examples
+/// The host records `park_fresh(input)` before asking it to initialize.
+@internal
+pub fn park_fresh(input: FreshInput) -> Result(ParkedFresh, Error) {
+  park_fresh_observed(input, native_journal.FreshUnobserved)
+}
+
+/// Adds closed original checkpoints for real SQLite lifecycle controls.
+///
+/// ## Examples
+/// Production uses `park_fresh` without a test probe.
+@internal
+pub fn park_fresh_observed(
+  input: FreshInput,
+  probe: native_journal.FreshProbe,
+) -> Result(ParkedFresh, Error) {
+  let parent = process.self()
+  use expected <- result.try(native_scope(input.config.enrolled))
+  use _ <- result.try(
+    native_journal.validate_fresh_dependency(input.native, expected, parent)
+    |> result.replace_error(BindingMismatch),
+  )
+  use started <- result.try(
+    actor.new_with_initialiser(1000, fn(subject) {
+      let _ =
+        native_journal.fresh_checkpoint(
+          probe,
+          native_journal.BeforeFreshStartAck,
+        )
+      Ok(
+        actor.initialised(Waiting(
+          input.config,
+          ParentCustody(parent, probe, input.native),
+        ))
+        |> actor.returning(subject),
+      )
+    })
+    |> actor.trapping_exits(True)
+    |> actor.on_message(handle)
+    |> actor.on_shutdown(shutdown)
+    |> actor.start
+    |> result.replace_error(StartFailed),
+  )
+  Ok(ParkedFresh(started.data, started.pid, parent, input))
+}
+
+/// Names this exact original child for the host's bounded staged ownership.
+///
+/// ## Examples
+/// `fresh_owner(parked)` never performs a registry or replacement lookup.
+@internal
+pub fn fresh_owner(original: ParkedFresh) -> process.Pid {
+  original.pid
+}
+
+/// Initializes only the original recorded child and exposes one live endpoint.
+///
+/// ## Examples
+/// Duplicate initialization cannot mint another `LiveFresh`.
+@internal
+pub fn initialise_fresh(original: ParkedFresh) -> Result(LiveFresh, Error) {
+  let book =
+    Journal(
+      original.subject,
+      original.input.config.enrolled,
+      native_journal.fresh_journal(original.input.native),
+      original.pid,
+    )
+  use Nil <- result.try(exchange(book, InitialiseFresh))
+  Ok(LiveFresh(original, book))
+}
+
+/// Projects the original business Journal only from successful live readiness.
+///
+/// ## Examples
+/// Services use `fresh_journal(ready)` with their existing execution methods.
+@internal
+pub fn fresh_journal(ready: LiveFresh) -> Journal {
+  ready.journal
+}
+
+/// Requires explicit close acknowledgement and the original normal DOWN.
+///
+/// ## Examples
+/// Lost reply, late monitoring and abnormal close remain Uncertain.
+@internal
+pub fn release_fresh(original: ParkedFresh) -> Result(Nil, Error) {
+  let watch = process.monitor(original.pid)
+  let outcome = {
+    use Nil <- result.try(exchange(
+      Journal(
+        original.subject,
+        original.input.config.enrolled,
+        native_journal.fresh_journal(original.input.native),
+        original.pid,
+      ),
+      CloseEndpoint,
+    ))
+    normal_owned_down(watch)
+  }
+  process.demonitor_process(watch)
+  outcome |> result.replace_error(Uncertain)
 }
 
 /// Reads historical native association without consulting the native endpoint.
@@ -1868,7 +2079,7 @@ fn start(
     False -> Error(BindingMismatch)
   })
   use started <- result.try(
-    actor.new(Waiting(config))
+    actor.new(Waiting(config, LegacyCustody))
     |> actor.on_message(handle)
     |> actor.on_shutdown(shutdown)
     |> actor.unlinked
@@ -1911,13 +2122,223 @@ fn exchange(
   result.unwrap(answer, Error(Uncertain))
 }
 
+fn valid_recovery_path(path: String) -> Result(Nil, Error) {
+  case
+    string.starts_with(path, "/")
+    && string.byte_size(path) <= 4096
+    && !string.contains(path, "\u{0}")
+  {
+    True -> Ok(Nil)
+    False -> Error(InvalidPath)
+  }
+}
+
+fn normal_owned_down(watch: process.Monitor) -> Result(Nil, Error) {
+  process.new_selector()
+  |> process.select_specific_monitor(watch, fn(down) {
+    case down {
+      process.ProcessDown(reason: process.Normal, ..) -> Ok(Nil)
+      process.ProcessDown(..) | process.PortDown(..) -> Error(Uncertain)
+    }
+  })
+  |> process.selector_receive(30_000)
+  |> result.unwrap(Error(Uncertain))
+}
+
+// Acquired state is installed before an injected setup turn. The admitted setup
+// may finish or COMMIT before a queued parent exit; this is not preemption.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case state, message {
-    Waiting(config), Initialise(mode, reply) -> {
+    Waiting(config, custody), InitialiseFresh(reply) -> {
+      case custody {
+        LegacyCustody -> reject_live_message(state, message)
+        ParentCustody(..) -> {
+          let _ =
+            native_journal.fresh_checkpoint(
+              live_probe(custody),
+              native_journal.BeforeFreshSqlOpen,
+            )
+          case open_fresh(config, custody) {
+            Ok(connection) ->
+              actor.continue(AcquiredFresh(config, connection, custody, reply))
+              |> actor.then_handle(FinishFresh)
+            Error(error) -> {
+              process.send(reply, Error(error))
+              actor.continue(ReleasedFresh(live_probe(custody)))
+              |> actor.then_handle(StopFresh)
+            }
+          }
+        }
+      }
+    }
+    AcquiredFresh(config, connection, custody, reply), FinishFresh -> {
+      let _ =
+        native_journal.fresh_checkpoint(
+          live_probe(custody),
+          native_journal.AfterFreshOpen,
+        )
+      case setup(connection, config, Fresh) {
+        Ok(Nil) -> {
+          let permit =
+            native_journal.fresh_checkpoint(
+              live_probe(custody),
+              native_journal.BeforeFreshReadyReply,
+            )
+          native_journal.recovery_reply(permit, reply, Ok(Nil))
+          actor.continue(Ready(config, connection, custody))
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          stop_live_connection(connection, custody)
+        }
+      }
+    }
+    ReleasedFresh(probe), StopFresh -> {
+      let _ =
+        native_journal.fresh_checkpoint(
+          probe,
+          native_journal.AfterFreshCloseBeforeExit,
+        )
+      actor.stop()
+    }
+    FailedCloseFresh(_), StopFresh ->
+      actor.stop_abnormal("live Fresh SQL close failed")
+    Waiting(..), FinishFresh
+    | Ready(..), FinishFresh
+    | ReleasedFresh(_), FinishFresh
+    | FailedCloseFresh(_), FinishFresh
+    | Waiting(..), StopFresh
+    | Ready(..), StopFresh
+    | AcquiredFresh(..), StopFresh
+    -> actor.stop_abnormal("live Fresh invalid lifecycle turn")
+    _, _ -> handle_business(state, message)
+  }
+}
+
+fn live_probe(custody: LiveCustody) -> native_journal.FreshProbe {
+  case custody {
+    LegacyCustody -> native_journal.FreshUnobserved
+    ParentCustody(_, probe, _) -> probe
+  }
+}
+
+fn open_fresh(
+  config: Config,
+  custody: LiveCustody,
+) -> Result(sqlight.Connection, Error) {
+  use scope <- result.try(native_scope(config.enrolled))
+  use _ <- result.try(case custody {
+    ParentCustody(parent, _, native) ->
+      native_journal.validate_fresh_dependency(native, scope, parent)
+      |> result.replace_error(BindingMismatch)
+    LegacyCustody -> Error(BindingMismatch)
+  })
+  use exists <- result.try(
+    simplifile.exists(config.path, False) |> result.replace_error(Uncertain),
+  )
+  use Nil <- result.try(case exists {
+    True -> Error(AlreadyExists)
+    False -> Ok(Nil)
+  })
+  sqlight.open(config.path) |> sql_error
+}
+
+fn release_live_connection(
+  connection: sqlight.Connection,
+  custody: LiveCustody,
+  reply: process.Subject(Result(Nil, Error)),
+) -> actor.Next(State, Message) {
+  case custody {
+    LegacyCustody -> {
+      process.send(reply, sqlight.close(connection) |> sql_error)
+      actor.stop()
+    }
+    ParentCustody(..) -> {
+      let probe = live_probe(custody)
+      let permit =
+        native_journal.fresh_checkpoint(
+          probe,
+          native_journal.BeforeFreshCloseReply,
+        )
+      let closed = close_owned_connection(connection, permit)
+      native_journal.recovery_reply(permit, reply, closed)
+      finish_live_close(connection, probe, closed)
+    }
+  }
+}
+
+fn stop_live_connection(
+  connection: sqlight.Connection,
+  custody: LiveCustody,
+) -> actor.Next(State, Message) {
+  case custody {
+    LegacyCustody -> {
+      actor.stop()
+    }
+    ParentCustody(..) -> {
+      let probe = live_probe(custody)
+      let permit =
+        native_journal.fresh_checkpoint(
+          probe,
+          native_journal.BeforeFreshCloseReply,
+        )
+      finish_live_close(
+        connection,
+        probe,
+        close_owned_connection(connection, permit),
+      )
+    }
+  }
+}
+
+fn finish_live_close(
+  connection: sqlight.Connection,
+  probe: native_journal.FreshProbe,
+  closed: Result(Nil, Error),
+) -> actor.Next(State, Message) {
+  case closed {
+    Ok(Nil) ->
+      actor.continue(ReleasedFresh(probe)) |> actor.then_handle(StopFresh)
+    Error(_) ->
+      actor.continue(FailedCloseFresh(connection))
+      |> actor.then_handle(StopFresh)
+  }
+}
+
+fn shutdown_live_connection(connection: sqlight.Connection) -> Nil {
+  case sqlight.close(connection) {
+    Ok(Nil) -> Nil
+    Error(_) -> process.kill(process.self())
+  }
+}
+
+fn reject_live_message(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
+  case message {
+    Initialise(_, reply) | InitialiseFresh(reply) | CloseEndpoint(reply) ->
+      process.send(reply, Error(Closed))
+    Run(_, reply) -> process.send(reply, Error(Closed))
+    Metadata(_, reply) -> process.send(reply, Error(Closed))
+    FencePreparation(_, reply) -> process.send(reply, Error(Closed))
+    ReadInput(_, reply) -> process.send(reply, Error(Closed))
+    Custody(_, reply) -> process.send(reply, Error(Closed))
+    FinishFresh | StopFresh -> Nil
+  }
+  actor.continue(state)
+}
+
+fn handle_business(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
+  case state, message {
+    Waiting(config, LegacyCustody), Initialise(mode, reply) -> {
       case initialise(config, mode) {
         Ok(connection) -> {
           process.send(reply, Ok(Nil))
-          actor.continue(Ready(config, connection))
+          actor.continue(Ready(config, connection, LegacyCustody))
         }
         Error(error) -> {
           process.send(reply, Error(error))
@@ -1925,83 +2346,92 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         }
       }
     }
-    Ready(config, connection), Run(command, reply) -> {
+    Ready(config, connection, custody), Run(command, reply) -> {
       let outcome = transact(connection, config, command)
       process.send(reply, outcome)
       case outcome {
         Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
-          actor.stop()
+          stop_live_connection(connection, custody)
         Ok(_) | Error(_) -> actor.continue(state)
       }
     }
-    Ready(config, connection), FencePreparation(original, reply) -> {
+    Ready(config, connection, custody), FencePreparation(original, reply) -> {
       let outcome = fence_transaction(connection, config, original)
       process.send(reply, outcome)
       case outcome {
         Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
-          actor.stop()
+          stop_live_connection(connection, custody)
         Ok(_) | Error(_) -> actor.continue(state)
       }
     }
-    Waiting(_), FencePreparation(_, reply) -> {
+    Waiting(_, _), FencePreparation(_, reply) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    Ready(config, connection), ReadInput(key, reply) -> {
+    Ready(config, connection, custody), ReadInput(key, reply) -> {
       let outcome = input_transaction(connection, config, key)
       process.send(reply, outcome)
       case outcome {
         Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
-          actor.stop()
+          stop_live_connection(connection, custody)
         Ok(_) | Error(_) -> actor.continue(state)
       }
     }
-    Waiting(_), ReadInput(_, reply) -> {
+    Waiting(_, _), ReadInput(_, reply) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    Ready(config, connection), Custody(command, reply) -> {
+    Ready(config, connection, custody), Custody(command, reply) -> {
       let outcome = custody_request(connection, config, command)
       process.send(reply, outcome)
       case outcome {
         Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
-          actor.stop()
+          stop_live_connection(connection, custody)
         Ok(_) | Error(_) -> actor.continue(state)
       }
     }
-    Waiting(_), Custody(_, reply) -> {
+    Waiting(_, _), Custody(_, reply) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    Ready(config, connection), Metadata(command, reply) -> {
+    Ready(config, connection, custody), Metadata(command, reply) -> {
       let outcome = metadata_transaction(connection, config, command)
       process.send(reply, outcome)
       case outcome {
         Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
-          actor.stop()
+          stop_live_connection(connection, custody)
         Ok(_) | Error(_) -> actor.continue(state)
       }
     }
-    Waiting(_), Metadata(_, reply) -> {
+    Waiting(_, _), Metadata(_, reply) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    Ready(_, connection), CloseEndpoint(reply) -> {
-      process.send(reply, sqlight.close(connection) |> sql_error)
-      actor.stop()
+    Ready(_, connection, custody), CloseEndpoint(reply) -> {
+      release_live_connection(connection, custody, reply)
     }
-    Waiting(_), CloseEndpoint(reply) -> {
+    Waiting(_, custody), CloseEndpoint(reply) -> {
       process.send(reply, Ok(Nil))
-      actor.stop()
+      case custody {
+        LegacyCustody -> actor.stop()
+        ParentCustody(_, probe, _) ->
+          actor.continue(ReleasedFresh(probe)) |> actor.then_handle(StopFresh)
+      }
     }
-    Waiting(_), Run(_, reply) -> {
+    Waiting(_, _), Run(_, reply) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
-    Ready(_, _), Initialise(_, reply) -> {
+    Ready(_, _, _), Initialise(_, reply) -> {
       process.send(reply, Error(Closed))
       actor.continue(state)
     }
+    Waiting(_, ParentCustody(..)), Initialise(_, _) ->
+      reject_live_message(state, message)
+    AcquiredFresh(..), _ | ReleasedFresh(_), _ | FailedCloseFresh(_), _ ->
+      reject_live_message(state, message)
+    _, InitialiseFresh(_) | _, FinishFresh | _, StopFresh ->
+      reject_live_message(state, message)
   }
 }
 
@@ -3833,11 +4263,18 @@ fn sql_error(value: Result(a, sqlight.Error)) -> Result(a, Error) {
 
 fn shutdown(state: State, _reason: process.ExitReason) -> Nil {
   case state {
-    Ready(_, connection) -> {
-      let _ = sqlight.close(connection)
-      Nil
+    Ready(_, connection, custody) -> {
+      case custody {
+        LegacyCustody -> {
+          let _ = sqlight.close(connection)
+          Nil
+        }
+        ParentCustody(..) -> shutdown_live_connection(connection)
+      }
     }
-    Waiting(_) -> Nil
+    AcquiredFresh(_, connection, _, _) | FailedCloseFresh(connection) ->
+      shutdown_live_connection(connection)
+    Waiting(_, _) | ReleasedFresh(_) -> Nil
   }
 }
 

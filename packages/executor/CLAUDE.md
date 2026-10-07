@@ -1276,3 +1276,50 @@ blocked native/workspace/resource writer locks, partial acquisition failure, exa
 retained results and receipts, lost replies, delayed DOWN, abnormal close failure
 and resource-before-native cancellation. This component does not assemble the
 registered history lane or prove complete generation/physical retirement.
+
+
+## Original permanent-parent live journal custody (protocol 077)
+
+`remote/journal`, `workspace_journal` and `resource_journal` now separate
+`FreshInput`, `ParkedFresh` and `LiveFresh`. Input checking opens nothing.
+The permanent host actor itself calls `park_fresh`, starting a linked trapping
+resource-free original and retaining its actual starter identity. The host must
+record that original handle/PID before `initialise_fresh`; finite initialization
+and close observers never become its parent. `fresh_journal` projects only the
+same successfully initialized business endpoint. Legacy fresh/recover/release
+behavior and the separate history-only `OwnedRecovery` boundary remain unchanged.
+
+The live actor installs its actual SQLite connection in `AcquiredFresh` before
+an injected `FinishFresh` calls existing shared SQL setup. The admitted setup may
+finish or COMMIT before a queued parent exit is processed; this mechanism does
+not preempt SQLite. Readiness follows immutable metadata COMMIT. A missing reply
+retains the same parked original, cannot recreate readiness, and never permits
+another Fresh over its existing file. Resource captures its exact opaque native
+readiness once, checks the full enrollment-derived scope, and validates the actual
+permanent parent before park and again before resource SQL opens. The later full
+host Plan owns the initial selection between two otherwise valid same-parent,
+same-scope native writers; this DAL adds no descriptor selection policy.
+
+Every parent-owned live poison/setup/release path explicitly checks close.
+`ReleasedFresh` removes the connection before normal exit; `FailedCloseFresh`
+retains it for abnormal shutdown cleanup. A failed shutdown close prevents a
+normal DOWN. `release_fresh` requires the actual successful close ACK and original
+normal DOWN, including when only the parked handle survives initialization loss.
+Late monitoring, Closed, lost ACK, abnormal exit and timeout stay Uncertain.
+Parent-death links provide best-effort SQL cleanup and death notification, not
+resource-before-native ordering or helper/physical retirement proof. Explicit
+full-host close must drain consumers and join resource before native, retaining
+those separate original physical witnesses.
+
+`owned_live_journal_test` uses actual permanent parent actors, finite managed
+observers, exact original checkpoints and real SQLite. Controls cover parent
+loss before startup ACK and before/after initialization, acquired-state real
+busy failures while an independent lock remains held, COMMIT with lost Ready,
+first-only native/workspace/resource claims and historical retries, exact native
+dependency refusal, business-query poison, lost close observers, delayed DOWN,
+lost ACK and failed close. Closed `FreshProbe` checkpoints are absent in production;
+`RefuseClose` is explicitly synthetic refusal over real SQL custody. The bounded
+managed wait with the original exit permit withheld rejects ACK-only release;
+a zero-time mailbox sample alone would leave a scheduling gap. This slice does
+not assemble the full host, prove power-loss durability or grant scope-wide
+cleanup from an actor exit.
