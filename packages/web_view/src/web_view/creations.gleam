@@ -229,7 +229,7 @@ pub fn unstarted_words(why: Option(String), remains: Remains) -> String {
       "The session was created but did not open. It is in the list: resume it there once the cause is corrected, or delete it. The daemon said: "
       <> reason
     InList, None ->
-      "The session was created but did not open. It is in the list: resume it there once the cause is corrected, or delete it."
+      "The session was created but did not open in time. It is in the list: resume or delete it there."
   }
 }
 
