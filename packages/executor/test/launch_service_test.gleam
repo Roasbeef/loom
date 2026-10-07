@@ -208,12 +208,14 @@ fn toolchain_root(directory: String) -> String {
   }
 }
 
+// OTP 29 on Linux allocates a 64 MiB JIT memfd before compiling source.
+// RLIMIT_FSIZE covers that memory-backed file as well as disk output.
 fn base(path: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(
     ..executor.base_policy(path),
     writable_roots: [path <> "/work", path <> "/build", channel(path)],
     protected: [],
-    limits: policy.Limits(30, 30, 536_870_912, 64, 16_777_216, 262_144),
+    limits: policy.Limits(30, 30, 536_870_912, 64, 67_108_864, 262_144),
     env_allow: ["PATH", "TMPDIR", "LOOM_CAP_SOCK", "LOOM_CAP_TOKEN_FILE"],
   )
 }

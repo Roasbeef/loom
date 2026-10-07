@@ -4,7 +4,12 @@
 -export([probe/0, independent/3]).
 
 probe() ->
-    Directory = unicode:characters_to_binary(filename:join("/private/tmp",
+    %% macOS resolves /tmp through /private; Linux has no /private directory.
+    Tmp = case filelib:is_dir("/private/tmp") of
+        true -> "/private/tmp";
+        false -> "/tmp"
+    end,
+    Directory = unicode:characters_to_binary(filename:join(Tmp,
         "loom-beam-bootstrap-" ++ integer_to_list(erlang:system_time(nanosecond)))),
     ok = file:make_dir(Directory), ok = file:change_mode(Directory, 8#700),
     try controls(Directory), {ok, nil}
