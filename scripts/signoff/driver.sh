@@ -21,6 +21,7 @@
 #   LOOM_CPUS     optional; a docker --cpus ceiling for the run
 #   LOOM_MEMORY   optional; a docker --memory ceiling, e.g. 16g
 #   LOOM_HEARTBEAT optional; seconds between progress lines (default 30)
+#   LOOM_LOGS_HINT optional; how a red status says to find the logs
 #
 # A run belongs to the session that asked for it. ssh gives the remote
 # side no signal when the client goes away without a terminal, which is
@@ -205,6 +206,27 @@ ls -1t "$HOME/loom-signoff-container/logs" | tail -n +51 | while read -r old; do
 	rm -rf "$HOME/loom-signoff-container/logs/$old"
 done
 cat "$logs/signoff.log"
+
+# signoff.sh names the lanes that failed and points at logs inside the
+# container, which the asker may have no way to read on this host, so a
+# red run brings the end of each failing lane's log back with its
+# verdict. The lane logs are in $container, which the commit under test
+# could write as root, and the lane names come from its output; a lane log
+# is read only when it is a regular file, not a link, whose real path is
+# inside $container, for the reason that directory's comment gives.
+if [ "$verdict" -ne 0 ]; then
+	failed=$(sed -nE 's/^ +FAIL +([a-z0-9_-]+) .*/\1/p' "$logs/signoff.log")
+	if grep -q '^prep failed' "$logs/signoff.log"; then failed="prep $failed"; fi
+	inside=$(realpath -- "$container")
+	for lane in $failed; do
+		lane_log="$container/lanes/$lane.log"
+		real=$(realpath -e -- "$lane_log" 2>/dev/null) || continue
+		if [ -f "$real" ] && [ ! -L "$lane_log" ] && [[ $real == "$inside"/* ]]; then
+			echo "== the last 80 lines of the $lane lane"
+			tail -n 80 -- "$real"
+		fi
+	done
+fi
 echo "== containerised signoff/linux: $([ "$verdict" -eq 0 ] && echo GREEN || echo RED) in ${elapsed}s"
 echo "== logs: $logs on $(hostname)"
 
@@ -213,7 +235,7 @@ if [ "$LOOM_POST" = yes ]; then
 		gh signoff --commit "$LOOM_SHA" ${LOOM_URL:+--url "$LOOM_URL"} linux
 	else
 		gh signoff fail --commit "$LOOM_SHA" ${LOOM_URL:+--url "$LOOM_URL"} \
-			--description "$(git config user.name): signoff/linux red, ${elapsed}s (container), see $logs on the runner" linux
+			--description "$(git config user.name): signoff/linux red, ${elapsed}s (container), ${LOOM_LOGS_HINT:-see $logs on the runner}" linux
 	fi
 fi
 exit "$verdict"
