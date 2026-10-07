@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:331-187`).
+Source: `handle` (`client/daemon/server.gleam:341-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -512,11 +512,12 @@ Each session record:
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `session_id` | string | required | Canonical session identity. |
-| `workspace` | string | required | Server-canonicalized workspace directory. |
+| `workspace` | string | required | Server-canonicalized workspace directory, or, when `executor` is present, the name of a workspace registered on that executor. |
 | `name` | string | required | Display name chosen at creation. |
 | `created_at` | integer | required | Creation time in milliseconds. |
 | `status` | object | required | Lifecycle status, described below. |
 | `subtitle` | string | optional | The first line of the first prompt a person sent the session, at most 60 characters, derived once by the daemon and never changed ([protocol-change/067](../protocol-change/067-session-subtitle.md)). Omitted when the session has none. A client that does not know the member ignores it; a client that does treats a value that is not a nonblank string of at most 60 characters as absent. |
+| `executor` | string | optional | The executor the session's `workspace` is registered on ([protocol-change/078](../protocol-change/078-distributed-runtime.md)). Present only for a session created with an `executor`, so the record of a local session is unchanged. When it is present `workspace` is a name and not a path on the daemon's host. A client that does not know the member ignores it. |
 
 Source: (`client/daemon/server.gleam:829-837`).
 
@@ -536,7 +537,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:2714`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:2733`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -599,10 +600,11 @@ Owner-only. Reserves a durable identity and initializes the session.
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `request_key` | string | required | Idempotency key, at most 256 bytes. Retrying with the same key recovers the original identity. |
-| `workspace` | string | required | Workspace directory, at most 4096 bytes. Canonicalized by the server. |
+| `workspace` | string | required | Workspace directory, at most 4096 bytes. Canonicalized by the server. With an `executor` it is instead the name of a workspace registered on that executor: one to 128 bytes with no `/` and no NUL, kept exactly as sent and never canonicalized, statted or created on the daemon's host. |
 | `name` | string | required | Display name, at most 256 bytes. Never becomes a filename. |
 | `configuration` | string | required | Configuration file path, at most 4096 bytes. Canonicalized by the server. |
-| `domain_scope` | string | optional | `workspace_private` (the default) or `session_only`. |
+| `domain_scope` | string | optional | `workspace_private` (the default) or `session_only`. With an `executor` the default is `session_only` and `workspace_private` is refused as malformed, because the workspace aggregate is keyed by a path on the daemon's host. |
+| `executor` | string | optional | The executor the workspace is registered on: an `[executors.<name>]` key of the daemon's configuration, in the grammar of a profile name. Absent means `workspace` is a path on the daemon's host and the command is exactly what it was. A present value that is not an executor name, including the empty string, is refused as malformed. The daemon stores the name with the session. See [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
@@ -623,9 +625,10 @@ a refusal whose `message` names the profiles that do exist
 `unusable_configuration` when a profile is named and that configuration
 cannot be read or parsed, whose `message` is the daemon's startup wording
 (for an unknown top-level key, ``unknown key `x` in the top level (allowed: ...)``);
-`conflict` when
-the key was reused with different metadata, a different `profile`
-included; `unavailable`.
+`executor_unknown` when `executor` names no `[executors.<name>]` of the
+daemon's configuration, before anything is reserved; `conflict` when
+the key was reused with different metadata, a different `profile` or
+`executor` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 The server assigns the database path beneath its own private session
@@ -1086,7 +1089,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:850`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:933`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -3310,6 +3313,8 @@ Sources: (`client/protocol.gleam:512-540`),
 | `unavailable` | The daemon is draining, or a durable read failed. | Retry later. |
 | `invalid_workspace` | `sessions.create` could not canonicalize the workspace path. | Fix the path. |
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |
+| `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
+| `executor_unavailable` | Not a code of its own yet: the leading word of the `message` of a `start_failed` for a session registered on an executor. The daemon has no remote workspace assembly yet, so creating or retrying such a session starts an opening whose operation fails with `executor_unavailable: remote workspace assembly is not available yet`. Nothing is created on the daemon's host for the workspace name. | Treat the session as not openable for now. A later release attaches the registered workspace through the same operation. |
 
 Sources: (`client/daemon/protocol.gleam:124-160`),
 (`client/daemon/server.gleam:749-757`),
@@ -3613,7 +3618,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:437`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:461`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

@@ -80,6 +80,7 @@ packages/client/src/client/lsp/profile.gleam|table_keys|const|[lsp.<name>]|
 ?packages/client/src/client/peer_defaults.gleam|from_fields|arms|[peers]|peers
 packages/client/src/client/distribution.gleam|table|call|[distribution]|
 packages/client/src/client/distribution.gleam|peer_row|call|[[distribution.peers]]|
+packages/client/src/client/executors.gleam|row|call|[executors.<name>]|
 SPEC
 }
 

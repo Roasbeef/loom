@@ -5972,3 +5972,39 @@ CA, and a cookie mismatch are each refused; a send to an unconnected peer does
 not connect; and the boot and credential refusals leave the VM non-distributed.
 Removing the pin comparison, the name comparison, the PKIX failure or
 `dist_auto_connect = never` from the callback fails exactly its own scenario.
+
+## Naming a registered workspace (protocol 078)
+
+`sessions.create` takes an optional `executor`. `client/executors` decodes the
+`[executors.<name>]` tables (`node` only, which must be one of the
+`[[distribution.peers]]` nodes, so a document with executors and no
+`[distribution]` is refused); `catalog.parse` validates it with every other table
+and `daemon/main.prepare_startup` captures the list once in `Config.executors`,
+which `listen_serving` copies into `server.Config.executors`. It is never reread.
+A new `[executors.<name>]` key means `executors.row`, `scripts/config_keys.sh`
+and `docs/configuration.md`.
+
+With an `executor` the workspace is a registered name. `protocol` decodes it
+under `catalogue.is_workspace_name` (no `/`, no NUL, at most 128 bytes), takes the
+executor under `is_executor_name`, defaults the domain scope to `session_only` and
+refuses `workspace_private` as malformed. `server.create_session` then skips
+`bootstrap.canonical_directory` for it, answers `executor_unknown` when
+`executors.find` misses, does not call `manager.remember_folder`, and passes the
+name through `manager.Creation.executor`, which `reserve_creation` compares on a
+retry. `view_json` and the owner `sessions.get` add an `executor` member only
+when it is non-empty, so a local record is byte-identical.
+
+Every use of `Registration.workspace` that a registered session reaches is
+guarded by the shape of the text (a name never starts with `/`) or by the
+executor itself: `serve.resolve_managed` refuses first with
+`executors.unavailable_reason` and so `resolve` never canonicalizes the name;
+`ui_project.locate` returns `None` for a workspace that is not an absolute path;
+`ui_socket.known_workspace` only matches local sessions, so a home page can never
+re-create into a name; `catalogue.set_workspace_default` refuses a registered
+session; the domain record holds the name under a session-only domain, which
+`storage/domain.validate` alone allows. Creating such a session still starts its
+opening (create initializes), the build fails at `resolve_managed`, and
+`operations.get` reports `start_failed` with the `executor_unavailable: ...`
+reason; the registration stays `reserved`, so `sessions.open` answers
+`not_initialized`. `test/client/daemon_registered_test.gleam` covers the wire,
+and `executors_test` the table.

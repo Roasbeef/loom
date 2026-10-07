@@ -54,10 +54,11 @@ error instead of a setting that silently does nothing.
 **There is no live reload.** A session reads the file when it is built: when it
 is created, opened, or resumed. It keeps what it read for as long as it runs, so
 an edit reaches a running session only after that session is stopped and opened
-again. Two tables are read once, when the daemon starts, and need a daemon
-restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077)
-and [`[distribution]`](#distribution) (from protocol-change 078), which the
-daemon also needs its VM booted for. The MCP, language-server, rule and schedule tables are trust decisions and
+again. Four tables are read once, when the daemon starts, and need a daemon
+restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077),
+[`[distribution]`](#distribution) and [`[executors.<name>]`](#executorsname)
+(from protocol-change 078). `[distribution]` also needs the VM booted for it.
+The MCP, language-server, rule and schedule tables are trust decisions and
 have no flag, no discovery and no reload path; editing the file and reopening the
 session is the decision.
 
@@ -97,6 +98,7 @@ is not in this list is refused.
 | `retry` | table | Provider retry ladder. | [`[retry]`](#retry) |
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
 | `distribution` | table and array of `[[distribution.peers]]` | Trusted TLS Erlang distribution (from protocol-change 078). | [`[distribution]`](#distribution) |
+| `executors` | table of `[executors.<name>]` | Machines a session's workspace may be registered on (from protocol-change 078). | [`[executors.<name>]`](#executorsname) |
 
 ## `[models.<name>]`
 
@@ -500,6 +502,22 @@ has the table but was started without the variable exits at startup, names this
 step, and opens no catalogue. `ERL_FLAGS` must not also set `-name`, `-sname`,
 `-setcookie` or `-ssl_dist_opt`. Code-mode satellites and other child VMs never
 inherit these flags or the credential files.
+
+## `[executors.<name>]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[distribution]`. Each table names a machine whose registered workspaces a session
+can use instead of a directory on this host: `sessions.create` accepts an
+`executor` that is one of these names, and its `workspace` is then the name of a
+workspace registered on that machine. `<name>` is a lowercase letter, then
+lowercase letters, digits, `_` or `-`, at most 32 characters. The tables require a
+`[distribution]` table, because an executor is a pinned peer, and a daemon
+without `[executors]` refuses every creation that names an executor. This release
+only records the choice: a session registered on an executor does not open yet.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that serves this executor's workspaces. |
 
 ## What this file does not configure
 
