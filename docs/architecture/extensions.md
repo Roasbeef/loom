@@ -873,7 +873,7 @@ deadline. `HookResult` (`broker/framing.gleam:393`) carries the
 `CapOutcome` that answers it, correlated by the same frame id. Spec
 §1.4's frozen `kinds` list gained both names. They cross the *capability*
 socket and nothing else. A helper on the exec channel that sends one is
-marked dead as a protocol violation (`framing.HookCall` at `broker/exec.gleam:2506`), because the two channels are two protocols,
+marked dead as a protocol violation (`framing.HookCall` at `broker/exec.gleam:2521`), because the two channels are two protocols,
 and a peer that confuses them is a peer whose next frame cannot be
 trusted either.
 
