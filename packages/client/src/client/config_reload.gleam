@@ -20,6 +20,7 @@ import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import host/bootstrap
 import simplifile
 import telemetry/field
@@ -67,6 +68,9 @@ pub opaque type Message(config) {
   Current(reply: Subject(config))
   Capture(operation: OpId, reply: Subject(config))
   Poll
+
+  /// Publishes one approved save without changing active operation pins.
+  Refresh(reply: Subject(Result(List(String), String)))
   Stop
 }
 
@@ -151,6 +155,31 @@ pub fn capture_at(
   use requests <- result.try(address.lookup(name))
   call.try_call(requests, waiting: 3000, sending: Capture(operation, _))
   |> result.replace_error(Nil)
+}
+
+/// Confirms an approved save without waiting for editor-save coalescing.
+///
+/// Existing operation pins are retained. A failed observation or validation
+/// keeps the last publication and reports that reload could not be confirmed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // config_reload.refresh_at(name)
+/// ```
+@internal
+pub fn refresh_at(
+  name: address.Address(Message(config)),
+) -> Result(List(String), String) {
+  use requests <- result.try(
+    address.lookup(name)
+    |> result.replace_error("configuration holder unavailable"),
+  )
+  use reply <- result.try(
+    call.try_call(requests, waiting: 5000, sending: Refresh)
+    |> result.replace_error("configuration reload confirmation timed out"),
+  )
+  reply
 }
 
 /// Captures once per operation, shared by all its hooks and provider attempts.
@@ -269,8 +298,46 @@ fn handle(
       actor.continue(State(..state, pinned: pinned.0))
     }
     Poll -> actor.continue(poll(state))
+    Refresh(reply) -> {
+      let refreshed = refresh(state)
+      case refreshed {
+        Ok(#(next, restart)) -> {
+          process.send(reply, Ok(restart))
+          actor.continue(next)
+        }
+        Error(reason) -> {
+          process.send(reply, Error(reason))
+          actor.continue(state)
+        }
+      }
+    }
     Stop -> actor.stop()
   }
+}
+
+// Explicit consent has already reviewed the complete save, so this path
+// validates one observation immediately while preserving every existing pin.
+fn refresh(
+  state: State(config),
+) -> Result(#(State(config), List(String)), String) {
+  use source <- result.try(option.to_result(
+    state.source,
+    "no explicit configuration source",
+  ))
+  use text <- result.try(
+    read(source.path) |> result.replace_error("configuration unreadable"),
+  )
+  let load = source.load
+  let current = state.current
+  use loaded <- result.try(
+    bounded(fn() { load(text, current) })
+    |> result.replace_error("configuration invalid or validation timed out"),
+  )
+  let #(current, restart) = loaded
+  log.info(state.logger, "config.reloaded", [
+    field.text("restart_required", string.join(restart, ",")),
+  ])
+  Ok(#(State(..state, current:, seen: Some(text), pending: None), restart))
 }
 
 fn poll(state: State(config)) -> State(config) {

@@ -80,12 +80,22 @@ fn start_page(
       ceiling: access.Operator,
       failed_reader: fn() { Nil },
     )
+  start_attached(attach, snapshot.Expected(session, "epoch", "incarnation"))
+}
+
+/// Starts the shipped operator component over an authenticated real relay.
+///
+/// ## Examples
+///
+/// `start_attached(attach, expected)` returns the component and browser patch inbox.
+pub fn start_attached(attach: ui_relay.Attach, expected: snapshot.Expected) {
+  let session = expected.session
   let start =
     component.Start(
       session_id: session,
       label: None,
       workspace_digest: "",
-      expected: snapshot.Expected(session, "epoch", "incarnation"),
+      expected:,
       standing: component.unplaced,
       transport: component.Transport(
         connect: fn(inbox, opened) {
@@ -187,4 +197,29 @@ pub fn an_operators_page_prompts_and_denies_through_the_gateway_test() {
     })
     as "the page's denial settles the escalation"
   lustre.send(runtime, lustre.shutdown())
+}
+
+/// Waits for an actual browser patch carrying the requested rendered text.
+///
+/// ## Examples
+///
+/// `await_text(client, "Approve edit")` waits for the button to be painted.
+pub fn await_text(client, text: String) {
+  let assert poll.Answered(Nil) =
+    poll.until(within: patience_ms, every: 10, attempt: fn() {
+      case process.receive(client, 0) {
+        Ok(message) -> {
+          let rendered =
+            gleam_json.to_string(server_component.client_message_to_json(
+              message,
+            ))
+          case string.contains(rendered, text) {
+            True -> poll.Done(Nil)
+            False -> poll.Retry
+          }
+        }
+        Error(Nil) -> poll.Retry
+      }
+    })
+    as "the real component paints the requested control within its deadline"
 }

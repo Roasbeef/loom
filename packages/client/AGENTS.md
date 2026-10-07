@@ -1,5 +1,25 @@
 # client
 
+## Approved configuration edits
+
+`config_edit.door` binds `tools/configuration.Door` to the explicit real path
+in `serve.Settings.configuration_source`. It refuses other paths, stale base
+digests, ambiguous anchors and invalid complete documents before asking and
+again before saving. Validation runs through a bounded weft task without
+resolving secrets. Approved writes reuse the crash-released kernel launch lock
+at `<config>.loom-edit.lock` and `host/bootstrap.atomic_write_private`. Both
+paths remain sandbox-protected. Assembly prepares the stable lock before
+publishing policy; if preparation fails, reads and ordinary tools still work,
+while configuration edits remain disabled until a fresh assembly.
+The lock coordinates Loom writers; external
+editors use optimistic base checks rather than participating in that lock.
+
+`config_reload.Refresh` publishes the valid observation immediately after an
+approved save and returns the restart-required sections. Existing operation
+pins remain unchanged. A save that cannot confirm refresh reports the saved
+file honestly; the periodic watcher remains responsible for observation.
+
+
 ## Per-strand shell directories
 
 `client/working_directory` stores canonical shell defaults under reserved

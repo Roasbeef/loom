@@ -1,5 +1,18 @@
 # tools
 
+## Exact configuration consent
+
+`configuration.tool` exposes `loom_config` through a host-owned
+`configuration.Door`. Read returns the selected document and its path/digest.
+Edit accepts exactly `action`, `path`, `digest`, `old` and `new`; its canonical
+arguments must fit the existing 2048-byte action preview. Validation precedes
+`Ctx.raise_refusal`; only `Resume([])` reaches the host writer. No sandbox grant
+is requested or retained, and the tool has `Never` replay. The durable
+escalation's original action digest and call scope bind the displayed edit.
+`client/escalate` keys config questions by validated base revision: retries of
+one revision share the ask budget, and later approved revisions remain editable.
+
+
 ## Shell directory selection
 
 `working_directory.Door` reads and writes the authenticated caller's shell

@@ -515,7 +515,10 @@ fn card(
   let deny =
     button(
       "approval-deny",
-      "Deny " <> tool,
+      case record.tool {
+        "loom_config" -> "Deny edit"
+        _ -> "Deny " <> tool
+      },
       Decided(record.id, record.seq, component.Deny),
     )
   let head =
@@ -536,7 +539,10 @@ fn card(
         html.p([attribute.class("approval-question")], [
           html.text(shown.question),
         ]),
-        html.pre([attribute.class("approval-action")], [html.text(shown.action)]),
+        html.pre(
+          [attribute.class("approval-action")],
+          action_rows(record.tool, shown.action),
+        ),
         html.ul(
           [attribute.class("approval-authority")],
           list.map(shown.authority, fn(line) {
@@ -551,7 +557,10 @@ fn card(
             deny,
             button(
               "approval-allow",
-              "Allow " <> tool <> " once",
+              case record.tool {
+                "loom_config" -> "Approve edit"
+                _ -> "Allow " <> tool <> " once"
+              },
               Decided(record.id, record.seq, component.AllowOnce),
             ),
             arming,
@@ -569,6 +578,27 @@ fn card(
           [deny, arming],
         ),
       ])
+  }
+}
+
+// The shared projection escapes document content; HTML text never becomes markup.
+fn action_rows(tool: String, text: String) -> List(Element(Msg(socket))) {
+  case tool {
+    "loom_config" ->
+      text
+      |> string.split("\n")
+      |> list.map(fn(row) {
+        let class = case
+          string.starts_with(row, "- "),
+          string.starts_with(row, "+ ")
+        {
+          True, _ -> "config-removed"
+          _, True -> "config-added"
+          _, _ -> "config-context"
+        }
+        html.span([attribute.class(class)], [html.text(row <> "\n")])
+      })
+    _ -> [html.text(text)]
   }
 }
 

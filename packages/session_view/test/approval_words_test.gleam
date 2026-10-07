@@ -41,3 +41,50 @@ pub fn a_bash_request_is_the_command_and_its_grants_are_authority_lines_test() {
   assert !string.contains(shown.action, "permissions")
   assert shown.authority == ["- Write files under: \"/w\""]
 }
+
+fn config_record(preview: String) -> approval.Review {
+  approval.Review(
+    "config",
+    9,
+    approval.Pending,
+    "loom_config",
+    preview,
+    None,
+    approval.Exact("exact-action", []),
+    strand: None,
+  )
+}
+
+pub fn configuration_diff_is_literal_and_once_only_test() {
+  let preview =
+    json.to_string(
+      json.Object([
+        #("action", json.String("edit")),
+        #("path", json.String("/home/loom.toml")),
+        #("digest", json.String("sha256:base")),
+        #("old", json.String("model = \"old\"\n")),
+        #("new", json.String("model = \"new\"\n# <script>\u{001b}")),
+      ]),
+    )
+  let record = config_record(preview)
+  let assert Ok(shown) = approval.presentation(record)
+    as "the complete edit is presentable"
+  assert shown.question == "Apply this configuration edit?"
+    as "the question names the mutation"
+  assert string.contains(shown.action, "- model = \\\"old\\\"")
+    as "the removed text is escaped literally"
+  assert string.contains(shown.action, "+ # <script>\\u001b")
+    as "terminal controls remain visible text"
+  let assert Error(_) = approval.rememberable(record)
+    as "config consent cannot be retained"
+  let assert Ok(encoded) = approval.approve(1, record)
+    as "one exact decision is encodable"
+  assert string.contains(encoded, "exact-action")
+    as "the decision echoes captured identity"
+}
+
+pub fn truncated_configuration_preview_disables_approval_test() {
+  assert approval.presentation(config_record("{\"action\":\"edit\""))
+    == Error("incomplete configuration edit")
+    as "a partial edit cannot produce an approvable presentation"
+}
