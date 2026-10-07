@@ -449,7 +449,7 @@ demonitoring the execution's guarantor, which also flushes any `DOWN` already
 queued, then calling `release`, then reclaiming the slot and token
 (`broker/broker.gleam:987`). A guarantor `DOWN` that reaches the broker with
 the monitor still in place calls `abandon` instead, through
-`handle_guarantor_down` (`broker/broker.gleam:1013`). Because the demonitor is
+`handle_guarantor_down` (`broker/broker.gleam:1062`). Because the demonitor is
 the step that separates the two paths, the broker calls exactly one of them for
 any execution, never both and never `abandon` after a settlement. An earlier
 draft returned the helper from inside the relay, ahead of `settle`, and that
@@ -1003,7 +1003,7 @@ pool size, which is clamped to sixteen (`max_pool_size`,
 | Diagnostic ring | the last 64 settled executions per service, and the last 64 samples of each latency series | `ring_size`, `broker/executor_view.gleam:50`: trimmed on every push. `the_recent_ring_holds_sixty_four_test`. |
 | Relay progress reports | one per mode or cancel change, then at most one chunk-driven report (first chunk, every 16th) per 250 ms | `progress_chunks`, `broker/relay.gleam:260`, and `progress_interval_ms`, `broker/relay.gleam:266`. Never per chunk. |
 | Registry size | at most the pool size (4 to 16) | By construction: a row exists only while the service holds a helper for it. |
-| Relay grace after a cancel | 5000 ms | `relay_grace_ms`, `broker/dispatch.gleam:67` |
+| Relay grace after a cancel | 5000 ms | `relay_grace_ms`, `broker/dispatch.gleam:74` |
 | Checkout wait | 15 000 ms | `exec.checkout(pool, waiting: 15_000)`, `client/serve.gleam:709` and `client/serve.gleam:757` |
 | Run call | 5000 ms | `run_wait_ms`, `broker/executor.gleam:486` (the direct dispatcher had its own copy) |
 | Service `start` call | 22 000 ms | `start_budget_ms`, `broker/executor.gleam:495`: the checkout wait, the relay's init wait, the run call and a second of slack |
