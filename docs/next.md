@@ -1,7 +1,7 @@
 # Current handoff
 
-This edition records the registered-runtime integration through `f055709f0` on
-October 6, 2026. The isolated `runtime/main-refresh` branch includes approved
+This edition records the registered-runtime integration through `f320f6c5b` on
+October 7, 2026. The isolated `runtime/main-refresh` branch includes approved
 protocols 076 and 077 and main at `3ffb0bf52`. Source, local gate receipts and
 hosted PR/main state were checked for this edition. Runtime assembly and
 separate-host acceptance remain in progress.
@@ -11,7 +11,8 @@ combined executor/code-mode check pending. Both statements are obsolete: the
 branch is rebased, the combined pre-rebase gates passed, and the affected
 post-rebase checks below passed. A Launch readiness timeout during those checks
 remains unresolved despite a passing diagnostic retry. The managed endpoint is
-now implemented; it does not by itself enable ordinary registered sessions.
+now implemented. The original owner custodian is wired through its generation DAL
+as well; these components do not by themselves enable ordinary registered sessions.
 
 ## Where the tree is
 
@@ -25,7 +26,7 @@ That status belongs to main, not this unpublished integration candidate.
 
 | Boundary | Current integration state |
 | --- | --- |
-| Owner custody and semantic transport | Original inputs, results, finite TLS BEAM controls, native forwarding and semantic workspace consumers are implemented. |
+| Owner custody and semantic transport | `f320f6c5b` wires registered admission, historical reopen and receipt readback to the original actor/connection/path. Original inputs, results, finite TLS BEAM controls, native forwarding and semantic consumers are implemented. Default daemon construction remains pending. |
 | Compile and Launch | Immutable Original/UnusedImportRewrite attempts, consumed streams and exact-helper retirement compose in component controls. Default registered assembly remains pending. |
 | Managed endpoint | `5733967e9` binds publication and removal to the original registry writer, concrete services and endpoint lifetime. It retains bounded digest receipts without restoring lost credits. Actual physical retirement and full scope administration remain pending. |
 | Helper consumption | `87fc9c35d` adds bounded input/output consumption credits and current-version wire decoding. |
@@ -44,7 +45,10 @@ candidate.
 ## Verification and its limits
 
 The current endpoint integration passes all 429 executor tests, all ten focused
-Launch controls and all 866 web-view tests. The full executor command exited zero
+Launch controls and all 866 web-view tests. The subsequent owner-custodian
+integration passes all 3,147 client tests in 428.67 seconds including build time,
+with the same fifteen explicit optional exclusions described below. All nine new
+registered actor/SQLite controls ran. Independent owner-custodian review is clean. The full executor command exited zero
 in 171.75 seconds, including build time. Changed-source formatting, executor and
 client lint, documentation checking and the prelude gate pass. The latest
 documentation receipt has zero errors and 193 warnings. Independent endpoint
@@ -58,6 +62,12 @@ report. `f055709f0` persists returned role results without changing their Result
 deadlines, assertions or lifecycle. The single diagnostic retry and subsequent
 full Launch module pass. The original cause remains unknown; those passing runs
 are not a startup fix. The original failed artifacts are retained.
+
+The owner worker's first full gate after its path-binding fix timed out in an
+existing code-mode build control. The unchanged control passed alone, the
+unchanged candidate then passed its full worker gate, and the integrated gate
+passed above. The timeout cause remains unproved; no deadline or exclusion was
+changed to obtain these results.
 
 The remaining receipts in this section predate the latest main rebase. They
 establish component coverage at their stated source revisions, not a full gate
@@ -127,8 +137,8 @@ placements, container execution and hosted CI have not passed on this candidate.
 
 ## What to do next
 
-1. Finish the native LSP and registered owner-custodian slices for **#697**.
-   Both remain isolated, uncommitted implementation work. **Exit:** exact source
+1. Finish native LSP, durable generation provenance and managed journal recovery
+   for **#697**. These remain isolated implementation work. **Exit:** exact source
    passes meaningful failure controls, full affected package gates, independent
    review and integrated verification. Preserve every existing test and ordinary
    local behavior; earlier worker receipts do not certify later fixes.
