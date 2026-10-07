@@ -88,7 +88,11 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   prose says the same thing.
 - `core/json.JsonValue` — a pattern-matchable JSON ADT with a total parser,
   defined here rather than borrowed so pure code can inspect the `Json`
-  named in the frozen contracts.
+  named in the frozen contracts. `ParseProfile(StandardJson | RegisteredLspJson)`
+  and additive `parse_profile` share the same grammar. Ordinary `parse` retains
+  Standard behavior; Registered input charges keys and values before allocation
+  against a single 200,000-node ceiling, preserving depth 256. The transport
+  caller supplies its byte ceiling (protocol 076).
 - `core/msgpack.MsgPackValue` — the canonical msgpack subset the
   effect-plane framing protocol uses (ADR-003).
 - `core/bounded_msgpack.decode` applies the fixed remote wire profile before
@@ -349,3 +353,14 @@ does not certify body UTF-8, duplicate keys or terminal semantics.
 The scanner's sibling loop uses direct tail recursion on JavaScript. This does
 not repair the separate generic MessagePack decoder's large-sibling stack limit
 on that target, nor does it establish exact JavaScript u64 representation.
+
+## Registered JSON target boundary
+
+The Registered LSP profile is consumed by the BEAM-only LSP actor. Erlang tests
+admit exactly 200,000 aggregate keys/values and refuse the next node. JavaScript
+compilation and existing finite-report/command controls pass. An additional
+199,999-null array probe raised `RangeError: Maximum call stack size exceeded`
+with both Standard and Registered profiles: the pre-existing generic JSON sibling
+parser recurses under result callbacks. This additive profile does not restructure
+that parser, and these gates do not establish exact-limit JSON runtime success on
+JavaScript. Ordinary syntax/number/string/error semantics remain shared.
