@@ -146,7 +146,7 @@ pub fn reviewer_rows_remain_visible_above_the_composer_test() {
   let painted = tui.update(backend.Resize(160, 35), initial)
   let #(buffer, _) = render.view(painted, geometry.rect_new(0, 0, 160, 35))
   let text = frame.buffer_to_text(buffer)
-  assert string.contains(text, "Reviewer sub:queue")
+  assert string.contains(text, "Sub-agent queue")
   assert string.contains(text, "Task: Review queue delivery")
   assert string.contains(text, "1 received, awaiting delivery")
   assert painted.view.diff_view == tui_model.DiffHidden
@@ -176,7 +176,7 @@ pub fn the_agent_strip_supersedes_the_reviewer_band_test() {
   let painted = tui.update(backend.Resize(160, 35), initial)
   let #(buffer, _) = render.view(painted, geometry.rect_new(0, 0, 160, 35))
   let text = frame.buffer_to_text(buffer)
-  assert !string.contains(text, "Reviewer sub:queue")
+  assert !string.contains(text, "Sub-agent queue")
   assert string.contains(text, "sub:queue")
   assert painted.view.diff_view == tui_model.DiffHidden
   assert string.contains(text, "follow-up draft")

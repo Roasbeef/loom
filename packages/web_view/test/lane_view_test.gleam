@@ -388,7 +388,7 @@ pub fn a_peer_message_is_stored_never_read_and_an_observer_cannot_reply_test() {
   let drawn = html(settled())
   assert in_order(drawn, [
     "class=\"peer-card\">",
-    "peer · lint-census · main",
+    "peer · lint-cen · main",
     "<span class=\"receipt\">stored</span>",
     "R8 census is &lt;14&gt; &amp; rising",
   ])

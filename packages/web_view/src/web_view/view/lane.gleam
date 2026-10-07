@@ -213,9 +213,14 @@ pub type Replies(message) {
   /// (`component.openable`), so a peer that names a session the principal
   /// does not hold, or one that is saved, has no button, and the button's
   /// label and message come from the catalogue and not from the peer.
+  ///
+  /// `name` is the catalogue's name for a session, given the identity the
+  /// peer's message names, and answers for any listed session, running or
+  /// saved. The card's head says that name in place of the raw identity.
   Replies(
     reply: fn(String) -> message,
     open: fn(String) -> Option(Destination(message)),
+    name: fn(String) -> Option(String),
   )
 }
 
@@ -722,7 +727,7 @@ fn piece_element(
       html.article([attribute.class("peer-card")], [
         html.p([attribute.class("card-head")], [
           html.span([attribute.class("peer-from")], [
-            html.text("peer · " <> session <> " · " <> strand),
+            html.text("peer · " <> sender(replies, session) <> " · " <> strand),
           ]),
           html.span([attribute.class("receipt")], [html.text("stored")]),
         ]),
@@ -784,6 +789,19 @@ fn piece_element(
   }
 }
 
+// What a peer card's head calls the session that wrote to this one: the
+// catalogue's name when the page holds one, and otherwise the first eight
+// characters of its identity, as the sidebar abbreviates an unnamed session.
+// An observer's lane holds no catalogue, so it always abbreviates. Both are
+// drawn as text nodes.
+fn sender(replies: Replies(message), session: String) -> String {
+  let abbreviated = string.slice(session, 0, 8)
+  case replies {
+    NoReplies -> abbreviated
+    Replies(name:, ..) -> option.unwrap(name(session), abbreviated)
+  }
+}
+
 // The buttons of a peer card, or nothing on a lane that offers none. Reply is
 // a real button, labelled for what it does, and puts a draft in the composer
 // rather than sending anything: the operator reads it and sends it. Open is
@@ -798,7 +816,7 @@ fn peer_actions(
 ) -> List(Element(message)) {
   case replies {
     NoReplies -> []
-    Replies(reply:, open:) -> [
+    Replies(reply:, open:, ..) -> [
       html.p([attribute.class("card-actions")], [
         html.button(
           [

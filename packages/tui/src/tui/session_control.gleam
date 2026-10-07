@@ -715,10 +715,13 @@ fn create_session_configured(model: Model, config: String) -> Model {
     model.view.daemon_host,
     attachment.busy(model.view.candidate)
   {
-    Some(key), _, _ ->
+    // An earlier creation never reported its outcome. The key names it for
+    // the daemon's reconciliation and means nothing to a reader, so the
+    // line says what to do and leaves the key out.
+    Some(_), _, _ ->
       tui_model.append_error(
         model,
-        "reconcile prior creation key before creating again: " <> key,
+        "the previous session creation did not finish; reopen /sessions",
       )
     None, None, _ ->
       tui_model.append_error(model, "daemon control is disconnected")

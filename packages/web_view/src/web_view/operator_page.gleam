@@ -345,9 +345,11 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
         component.live(model),
         component.top(model),
         Observed(component.OlderRequested),
-        lane.Replies(reply: Replying, open: fn(session) {
-          openable(model, session)
-        }),
+        lane.Replies(
+          reply: Replying,
+          open: fn(session) { openable(model, session) },
+          name: fn(session) { component.session_name(model, session) },
+        ),
         component.marks(model),
         lane.Folds(
           fn(fold) { Observed(component.FoldToggled(fold)) },

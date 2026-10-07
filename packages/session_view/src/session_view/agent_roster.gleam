@@ -37,6 +37,7 @@ import gleam/string
 import machine/codec
 import session_view/agent_view
 import session_view/snapshot_view
+import session_view/strand_name
 import session_view/text_hygiene
 
 /// The advisor's strand identity. A strip draws it in a band of its own,
@@ -524,23 +525,7 @@ pub fn running_ms(roster: Roster, row: agent_view.Row) -> Option(Int) {
 /// assert agent_roster.short_name("main") == "main"
 /// ```
 pub fn short_name(name: String) -> String {
-  case string.starts_with(name, "sub:") {
-    False -> name
-    True -> {
-      let leaf =
-        string.split(name, "/")
-        |> list.last
-        |> result.unwrap(name)
-      case string.split(leaf, "-") |> list.reverse {
-        [digest, first, ..rest] ->
-          case is_digest(digest) {
-            True -> [first, ..rest] |> list.reverse |> string.join("-")
-            False -> leaf
-          }
-        [_] | [] -> leaf
-      }
-    }
-  }
+  strand_name.short(name)
 }
 
 // The deterministic activity names other strands by their minted IDs, as
@@ -558,12 +543,6 @@ fn shorten_names(text: String) -> String {
     }
   })
   |> string.join(" ")
-}
-
-fn is_digest(value: String) -> Bool {
-  string.drop_start(value, 3) != ""
-  && string.to_graphemes(value)
-  |> list.all(fn(char) { string.contains("0123456789abcdef", char) })
 }
 
 /// Whether a strip is drawn: only when there is a second agent to watch.

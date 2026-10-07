@@ -37,11 +37,39 @@ fn model_with(notice: String, width: Int) -> tui_model.Model {
 
 pub fn a_long_refusal_wraps_and_keeps_the_defined_profiles_test() {
   let rows = layout.composer_status_lines(model_with(refusal, 100))
-  let joined = string.join(rows, "")
+  let joined = string.join(rows, " ")
 
   assert list.length(rows) >= 2
   assert string.contains(joined, "the configuration defines: beta, gamma")
   assert !string.contains(joined, "…")
+}
+
+// The band used to cut each row at the width, so `attempts` could be left as
+// `att` at the end of one row and `empts` at the start of the next. A row
+// now ends at a word boundary: every word on every row is a whole word of the
+// notice, at each width that could put a cut inside one.
+pub fn a_wrapped_notice_never_splits_a_word_test() {
+  let words = string.split(refusal, " ")
+  list.each([70, 73, 77, 81, 86, 90, 95, 99, 104, 111, 120], fn(width) {
+    let others = layout.composer_status_lines(model_with("", width))
+    let rows = layout.composer_status_lines(model_with(refusal, width))
+    let mine = list.filter(rows, fn(row) { !list.contains(others, row) })
+    assert list.length(mine) >= 2
+    list.each(mine, fn(row) {
+      list.each(string.split(row, " "), fn(word) {
+        assert list.contains(words, word) as { "split word " <> word }
+      })
+    })
+  })
+}
+
+// A word longer than a whole row cannot stay whole, and is the one case that
+// breaks inside a word.
+pub fn a_word_longer_than_the_row_is_broken_only_then_test() {
+  let rows =
+    layout.composer_status_lines(model_with(string.repeat("x", 120), 60))
+  let mine = list.filter(rows, string.contains(_, "x"))
+  assert list.length(mine) >= 2
 }
 
 pub fn a_notice_that_fits_stays_one_row_test() {
