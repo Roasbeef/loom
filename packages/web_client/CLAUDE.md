@@ -215,7 +215,9 @@ renders again just for it:
   `data-dismiss="keep"` mark on the disclosure (`dismiss_rule.after_click`): a
   press through it keeps it, any other press and Escape remove its `open`
   attribute. No state, no attribute read, no server message, no socket admission.
-  Escape is not consumed, so the shell's own Escape still runs.
+  Escape is heard in the capture phase and, only when it closes an open panel,
+  stopped and cancelled (`dismiss_rule.on_key`), so the shell's Escape does not
+  also run; with the panel shut it is untouched.
 - `<loom-copy subject="command|token|link|device|claim-address|bookmark" text="...">`
   (`bookmark` is a remembered login's home address, `http://`, a loopback host,
   `/ui/l/`, 32 lowercase hex digits and `/home`, and nothing else) (`device` is the

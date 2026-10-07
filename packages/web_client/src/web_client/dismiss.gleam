@@ -15,11 +15,16 @@
 ////
 //// A click on the document is read only by the `data-dismiss` marks of the nodes
 //// it passed through (`dismiss_rule.after_click`), which is how a press on the
-//// panel's own buttons is told from one elsewhere. Escape is read by its key
-//// name and is not consumed, because nothing else on the page takes that key
-//// outside the composer. Both listeners are on the document, one pair per
-//// connection, and are removed when the element leaves the page. The element
-//// sends the server nothing and reads no attribute from it.
+//// panel's own buttons is told from one elsewhere.
+////
+//// Escape is heard in the capture phase, before the shell's own Escape (back
+//// to `main`) on the document's bubbling phase, and decided on the spot, since
+//// stopping an event cannot wait for a message. With the panel open, the key
+//// closes it and is stopped and cancelled (`dismiss_rule.on_key`), so the shell
+//// never sees it. With the panel shut it is not touched at all. Both listeners
+//// are on the document, one pair per connection, and are removed when the
+//// element leaves the page. The element sends the server nothing and reads no
+//// attribute from it.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -52,9 +57,6 @@ pub type Msg {
   /// A click reached the document, having passed through nodes with these
   /// marks.
   Clicked(marks: List(dismiss_rule.Mark))
-
-  /// A key was pressed.
-  Keyed(key: String)
 
   /// The element joined the page.
   Connected
@@ -104,13 +106,12 @@ pub fn init_model() -> Model {
 /// ## Examples
 ///
 /// ```gleam
-/// assert dismiss.update(dismiss.init_model(), dismiss.Keyed("a")).1
-///   == effect.none()
+/// assert dismiss.update(dismiss.init_model(), dismiss.Disconnected).0
+///   == dismiss.init_model()
 /// ```
 pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     Clicked(marks:) -> #(model, apply(dismiss_rule.after_click(marks)))
-    Keyed(key:) -> #(model, apply(dismiss_rule.after_key(key)))
 
     // One listener pair per connection: moving the element stops the old pair
     // before it starts another.
@@ -135,12 +136,7 @@ fn apply(verdict: Verdict) -> Effect(Msg) {
     dismiss_rule.Keep -> effect.none()
     dismiss_rule.Close -> {
       use _, root <- effect.after_paint
-      let host = ffi_dom.host(ffi_dom.as_element(root))
-      let found = {
-        use figures <- result.try(ffi_dom.closest(host, ".figures"))
-        ffi_dom.query_selector(figures, "details[data-dismiss]")
-      }
-      case found {
+      case disclosure_of(ffi_dom.host(ffi_dom.as_element(root))) {
         Ok(disclosure) -> ffi_dom.remove_attribute(disclosure, "open")
         Error(Nil) -> Nil
       }
@@ -148,23 +144,54 @@ fn apply(verdict: Verdict) -> Effect(Msg) {
   }
 }
 
-// Listens for `click` and `keydown` on the document, which hears a press
-// wherever it lands. The click is reduced to the marks of the nodes it passed
-// through before it is dispatched, and a key to its name.
+// The disclosure this element belongs to: the marked `<details>` in the same
+// `figures` span as the element.
+fn disclosure_of(host: ffi_dom.Element) -> Result(ffi_dom.Element, Nil) {
+  use figures <- result.try(ffi_dom.closest(host, ".figures"))
+  ffi_dom.query_selector(figures, "details[data-dismiss]")
+}
+
+// Listens for `click` on the document, which hears a press wherever it lands,
+// reduced to the marks of the nodes it passed through before it is dispatched,
+// and for `keydown` in the capture phase, which is decided where it is heard.
 fn listen() -> Effect(Msg) {
-  use dispatch, _ <- effect.after_paint
+  use dispatch, root <- effect.after_paint
+  let host = ffi_dom.host(ffi_dom.as_element(root))
   let click =
     ffi_dom.add_listener(ffi_dom.get_document(), "click", fn(event) {
       dispatch(Clicked(marks_of(event)))
     })
   let key =
-    ffi_dom.add_listener(ffi_dom.get_document(), "keydown", fn(event) {
-      case decode.run(event, decode.at(["key"], decode.string)) {
-        Ok(key) -> dispatch(Keyed(key))
-        Error(_) -> Nil
-      }
+    ffi_dom.add_capture_listener(ffi_dom.get_document(), "keydown", fn(event) {
+      escaped(host, event)
     })
   dispatch(Listening(Listeners(click:, key:)))
+}
+
+// One keydown, in the capture phase. Only an Escape that finds the panel open
+// is touched: it closes the panel and is stopped and cancelled, so the shell's
+// Escape never runs for it.
+fn escaped(host: ffi_dom.Element, event: Dynamic) -> Nil {
+  let key = decode.run(event, decode.at(["key"], decode.string))
+  case key, disclosure_of(host) {
+    Ok(key), Ok(disclosure) ->
+      case dismiss_rule.on_key(key, showing(disclosure)) {
+        dismiss_rule.Consume -> {
+          ffi_dom.remove_attribute(disclosure, "open")
+          ffi_dom.stop_propagation(event)
+          ffi_dom.prevent_default(event)
+        }
+        dismiss_rule.PassOn -> Nil
+      }
+    Ok(_), Error(Nil) | Error(_), _ -> Nil
+  }
+}
+
+fn showing(disclosure: ffi_dom.Element) -> dismiss_rule.Disclosure {
+  case ffi_dom.attribute(disclosure, "open") {
+    Ok(_) -> dismiss_rule.Showing
+    Error(Nil) -> dismiss_rule.Shut
+  }
 }
 
 fn marks_of(event: Dynamic) -> List(dismiss_rule.Mark) {
@@ -182,7 +209,7 @@ fn stop(listeners: Option(Listeners)) -> Effect(Msg) {
     Some(Listeners(click:, key:)) -> {
       use _ <- effect.from
       ffi_dom.remove_listener(ffi_dom.get_document(), "click", click)
-      ffi_dom.remove_listener(ffi_dom.get_document(), "keydown", key)
+      ffi_dom.remove_capture_listener(ffi_dom.get_document(), "keydown", key)
     }
   }
 }
