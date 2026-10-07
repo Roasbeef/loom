@@ -573,6 +573,597 @@ pub fn recover_generation_uncertainty(
   #(sql, [dev.ParamBitArray(claim_incarnation)])
 }
 
+pub fn initialize_lsp(
+  scope scope: BitArray,
+  contract contract: BitArray,
+  row_limit row_limit: Int,
+  byte_limit byte_limit: Int,
+) {
+  let sql =
+    "
+INSERT INTO lsp_meta(id,format,scope,contract,row_limit,byte_limit,sealed) VALUES(1,1,?,?,?,?,0)"
+  #(sql, [
+    dev.ParamBitArray(scope),
+    dev.ParamBitArray(contract),
+    dev.ParamInt(row_limit),
+    dev.ParamInt(byte_limit),
+  ])
+}
+
+pub type LspMetadata {
+  LspMetadata(
+    format: Int,
+    scope: BitArray,
+    contract: BitArray,
+    row_limit: Int,
+    byte_limit: Int,
+    sealed: Int,
+  )
+}
+
+pub fn lsp_metadata() {
+  let sql =
+    "SELECT format,scope,contract,row_limit,byte_limit,sealed FROM lsp_meta WHERE id=1 AND typeof(format)='integer' AND format=1 AND typeof(scope)='blob' AND length(scope) BETWEEN 1 AND 1024 AND typeof(contract)='blob' AND length(contract)=32 AND typeof(row_limit)='integer' AND row_limit BETWEEN 1 AND 4096 AND typeof(byte_limit)='integer' AND byte_limit BETWEEN 1 AND 268435456 AND typeof(sealed)='integer' AND sealed IN (0,1) LIMIT 2"
+  #(sql, [], lsp_metadata_decoder())
+}
+
+pub fn lsp_metadata_decoder() -> decode.Decoder(LspMetadata) {
+  use format <- decode.field(0, decode.int)
+  use scope <- decode.field(1, decode.bit_array)
+  use contract <- decode.field(2, decode.bit_array)
+  use row_limit <- decode.field(3, decode.int)
+  use byte_limit <- decode.field(4, decode.int)
+  use sealed <- decode.field(5, decode.int)
+  decode.success(LspMetadata(
+    format:,
+    scope:,
+    contract:,
+    row_limit:,
+    byte_limit:,
+    sealed:,
+  ))
+}
+
+pub type LspLedger {
+  LspLedger(
+    count: Int,
+    bytes: Option(decode.Dynamic),
+    invalid: Option(decode.Dynamic),
+  )
+}
+
+pub fn lsp_ledger() {
+  let sql =
+    "SELECT COUNT(*) AS count,COALESCE(SUM(reserved_bytes),0) AS bytes,COALESCE(SUM(CASE WHEN typeof(address)='text' AND length(CAST(address AS BLOB)) BETWEEN 1 AND 32768 AND typeof(kind)='integer' AND kind BETWEEN 0 AND 2 AND typeof(reserved_bytes)='integer' AND reserved_bytes BETWEEN 1 AND 268435456 THEN 0 ELSE 1 END),0) AS invalid FROM lsp_identity"
+  #(sql, [], lsp_ledger_decoder())
+}
+
+pub fn lsp_ledger_decoder() -> decode.Decoder(LspLedger) {
+  use count <- decode.field(0, decode.int)
+  use bytes <- decode.field(1, decode.optional(decode.dynamic))
+  use invalid <- decode.field(2, decode.optional(decode.dynamic))
+  decode.success(LspLedger(count:, bytes:, invalid:))
+}
+
+pub fn lsp_insert_identity(
+  address address: String,
+  kind kind: Int,
+  reserved_bytes reserved_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO lsp_identity(address,kind,reserved_bytes) VALUES(?,?,?)"
+  #(sql, [
+    dev.ParamString(address),
+    dev.ParamInt(kind),
+    dev.ParamInt(reserved_bytes),
+  ])
+}
+
+pub fn lsp_seal() {
+  let sql = "UPDATE lsp_meta SET sealed=1 WHERE id=1"
+  #(sql, [])
+}
+
+pub type LspSlots {
+  LspSlots(slot: String, address: String, invalid: Int)
+}
+
+pub fn lsp_slots() {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(slot)='text' AND length(CAST(slot AS BLOB)) BETWEEN 1 AND 32768 THEN slot ELSE '' END AS TEXT) AS slot,CAST(CASE WHEN typeof(address)='text' AND length(CAST(address AS BLOB)) BETWEEN 1 AND 32768 THEN address ELSE '' END AS TEXT) AS address,CASE WHEN (typeof(slot)='text' AND length(CAST(slot AS BLOB)) BETWEEN 1 AND 32768) AND (typeof(address)='text' AND length(CAST(address AS BLOB)) BETWEEN 1 AND 32768) THEN 0 ELSE 1 END AS invalid FROM lsp_current_slot LIMIT 4097"
+  #(sql, [], lsp_slots_decoder())
+}
+
+pub fn lsp_slots_decoder() -> decode.Decoder(LspSlots) {
+  use slot <- decode.field(0, decode.string)
+  use address <- decode.field(1, decode.string)
+  use invalid <- decode.field(2, decode.int)
+  decode.success(LspSlots(slot:, address:, invalid:))
+}
+
+pub fn lsp_insert_slot(slot slot: String, address address: String) {
+  let sql = "INSERT INTO lsp_current_slot(slot,address) VALUES(?,?)"
+  #(sql, [dev.ParamString(slot), dev.ParamString(address)])
+}
+
+pub type LspRemoveSlot {
+  LspRemoveSlot(address: String)
+}
+
+pub fn lsp_remove_slot(slot slot: String, address address: String) {
+  let sql =
+    "DELETE FROM lsp_current_slot WHERE slot=? AND address=? RETURNING address"
+  #(
+    sql,
+    [dev.ParamString(slot), dev.ParamString(address)],
+    lsp_remove_slot_decoder(),
+  )
+}
+
+pub fn lsp_remove_slot_decoder() -> decode.Decoder(LspRemoveSlot) {
+  use address <- decode.field(0, decode.string)
+  decode.success(LspRemoveSlot(address:))
+}
+
+pub type LspHeaders {
+  LspHeaders(
+    address: String,
+    kind: Int,
+    phase: Int,
+    reserved_bytes: Int,
+    identity_size: Option(Int),
+    input_size: Option(Int),
+    generation_key_size: Option(Int),
+    enrollment_digest_size: Option(Int),
+    parent_size: Option(Int),
+    anchor_size: Option(Int),
+    timing_proposal_size: Option(Int),
+    timing_digest_size: Option(Int),
+    offer_size: Option(Int),
+    native_identity_size: Option(Int),
+    native_prepared_size: Option(Int),
+    terminal_size: Option(Int),
+    reusable_witness_size: Option(Int),
+    projected_result_size: Option(Int),
+    receipt_size: Option(Int),
+    retirement_size: Option(Int),
+    invalid: Int,
+  )
+}
+
+pub fn lsp_headers() {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(address)='text' AND length(CAST(address AS BLOB)) BETWEEN 1 AND 32768 THEN address ELSE '' END AS TEXT) AS address,kind,CAST(CASE WHEN typeof(phase)='integer' AND phase BETWEEN 0 AND 8 THEN phase ELSE -1 END AS INTEGER) AS phase,CAST(CASE WHEN typeof(reserved_bytes)='integer' AND reserved_bytes BETWEEN 1 AND 268435456 THEN reserved_bytes ELSE 0 END AS INTEGER) AS reserved_bytes,length(identity) AS identity_size,length(input) AS input_size,length(generation_key) AS generation_key_size,length(enrollment_digest) AS enrollment_digest_size,length(parent) AS parent_size,length(anchor) AS anchor_size,length(timing_proposal) AS timing_proposal_size,length(timing_digest) AS timing_digest_size,length(offer) AS offer_size,length(native_identity) AS native_identity_size,length(native_prepared) AS native_prepared_size,length(terminal) AS terminal_size,length(reusable_witness) AS reusable_witness_size,length(projected_result) AS projected_result_size,length(receipt) AS receipt_size,length(retirement) AS retirement_size,CASE WHEN (typeof(identity)='blob' AND length(identity)<= 8192) AND (typeof(input)='blob' AND length(input)<= 131072) AND (typeof(generation_key)='blob' AND length(generation_key)<= 1024) AND (typeof(enrollment_digest)='blob' AND length(enrollment_digest)<= 32) AND (typeof(parent)='blob' AND length(parent)<= 8192) AND (typeof(anchor)='blob' AND length(anchor)<= 8192) AND (typeof(timing_proposal)='blob' AND length(timing_proposal)<= 8192) AND (typeof(timing_digest)='blob' AND length(timing_digest)<= 32) AND (typeof(offer)='blob' AND length(offer)<= 131072) AND (typeof(native_identity)='blob' AND length(native_identity)<= 8192) AND (typeof(native_prepared)='blob' AND length(native_prepared)<= 131072) AND (typeof(terminal)='blob' AND length(terminal)<= 32768) AND (typeof(reusable_witness)='blob' AND length(reusable_witness)<= 8192) AND (typeof(projected_result)='blob' AND length(projected_result)<= 4464896) AND (typeof(receipt)='blob' AND length(receipt)<= 32) AND (typeof(retirement)='blob' AND length(retirement)<= 8192) AND (typeof(phase)='integer' AND phase BETWEEN 0 AND 8) AND (typeof(reserved_bytes)='integer' AND reserved_bytes BETWEEN 1 AND 268435456) AND (typeof(address)='text' AND length(CAST(address AS BLOB)) BETWEEN 1 AND 32768) AND (typeof(slot)='text' AND length(CAST(slot AS BLOB))<=32768) AND (typeof(parent_address)='text' AND length(CAST(parent_address AS BLOB))<=32768) AND (typeof(search_root)='text' AND length(CAST(search_root AS BLOB))<=8192) AND (typeof(clock_era)='text' AND length(clock_era) IN (0,36)) AND (typeof(parent_kind)='integer' AND parent_kind BETWEEN -1 AND 1) AND (typeof(startup_role)='integer' AND startup_role BETWEEN -1 AND 2) AND (typeof(search_profile_ordinal)='integer' AND search_profile_ordinal BETWEEN -1 AND 15) AND (typeof(anchor_tick)='integer') AND (typeof(remaining_ms)='integer' AND remaining_ms BETWEEN 0 AND 86400000) AND (typeof(deadline_tick)='integer') THEN 0 ELSE 1 END AS invalid FROM lsp_rows LIMIT 4097"
+  #(sql, [], lsp_headers_decoder())
+}
+
+pub fn lsp_headers_decoder() -> decode.Decoder(LspHeaders) {
+  use address <- decode.field(0, decode.string)
+  use kind <- decode.field(1, decode.int)
+  use phase <- decode.field(2, decode.int)
+  use reserved_bytes <- decode.field(3, decode.int)
+  use identity_size <- decode.field(4, decode.optional(decode.int))
+  use input_size <- decode.field(5, decode.optional(decode.int))
+  use generation_key_size <- decode.field(6, decode.optional(decode.int))
+  use enrollment_digest_size <- decode.field(7, decode.optional(decode.int))
+  use parent_size <- decode.field(8, decode.optional(decode.int))
+  use anchor_size <- decode.field(9, decode.optional(decode.int))
+  use timing_proposal_size <- decode.field(10, decode.optional(decode.int))
+  use timing_digest_size <- decode.field(11, decode.optional(decode.int))
+  use offer_size <- decode.field(12, decode.optional(decode.int))
+  use native_identity_size <- decode.field(13, decode.optional(decode.int))
+  use native_prepared_size <- decode.field(14, decode.optional(decode.int))
+  use terminal_size <- decode.field(15, decode.optional(decode.int))
+  use reusable_witness_size <- decode.field(16, decode.optional(decode.int))
+  use projected_result_size <- decode.field(17, decode.optional(decode.int))
+  use receipt_size <- decode.field(18, decode.optional(decode.int))
+  use retirement_size <- decode.field(19, decode.optional(decode.int))
+  use invalid <- decode.field(20, decode.int)
+  decode.success(LspHeaders(
+    address:,
+    kind:,
+    phase:,
+    reserved_bytes:,
+    identity_size:,
+    input_size:,
+    generation_key_size:,
+    enrollment_digest_size:,
+    parent_size:,
+    anchor_size:,
+    timing_proposal_size:,
+    timing_digest_size:,
+    offer_size:,
+    native_identity_size:,
+    native_prepared_size:,
+    terminal_size:,
+    reusable_witness_size:,
+    projected_result_size:,
+    receipt_size:,
+    retirement_size:,
+    invalid:,
+  ))
+}
+
+pub type LspRead {
+  LspRead(
+    address: String,
+    kind: Int,
+    slot: String,
+    parent_kind: Int,
+    parent_address: String,
+    parent: BitArray,
+    startup_role: Int,
+    search_profile_ordinal: Int,
+    search_root: String,
+    anchor: BitArray,
+    anchor_tick: Int,
+    clock_era: String,
+    timing_proposal: BitArray,
+    timing_digest: BitArray,
+    remaining_ms: Int,
+    deadline_tick: Int,
+    identity: BitArray,
+    input: BitArray,
+    generation_key: BitArray,
+    enrollment_digest: BitArray,
+    reserved_bytes: Int,
+    phase: Int,
+    offer: BitArray,
+    native_identity: BitArray,
+    native_prepared: BitArray,
+    terminal: BitArray,
+    reusable_witness: BitArray,
+    projected_result: BitArray,
+    receipt: BitArray,
+    retirement: BitArray,
+  )
+}
+
+pub fn lsp_read(address address: String) {
+  let sql =
+    "SELECT address,kind,slot,parent_kind,parent_address,CAST(parent AS BLOB) AS parent,startup_role,search_profile_ordinal,search_root,CAST(anchor AS BLOB) AS anchor,anchor_tick,clock_era,CAST(timing_proposal AS BLOB) AS timing_proposal,CAST(timing_digest AS BLOB) AS timing_digest,remaining_ms,deadline_tick,identity,input,generation_key,enrollment_digest,reserved_bytes,phase,offer,native_identity,native_prepared,terminal,reusable_witness,projected_result,receipt,retirement FROM lsp_rows WHERE address=? AND (typeof(identity)='blob' AND length(identity)<= 8192) AND (typeof(input)='blob' AND length(input)<= 131072) AND (typeof(generation_key)='blob' AND length(generation_key)<= 1024) AND (typeof(enrollment_digest)='blob' AND length(enrollment_digest)<= 32) AND (typeof(parent)='blob' AND length(parent)<= 8192) AND (typeof(anchor)='blob' AND length(anchor)<= 8192) AND (typeof(timing_proposal)='blob' AND length(timing_proposal)<= 8192) AND (typeof(timing_digest)='blob' AND length(timing_digest)<= 32) AND (typeof(offer)='blob' AND length(offer)<= 131072) AND (typeof(native_identity)='blob' AND length(native_identity)<= 8192) AND (typeof(native_prepared)='blob' AND length(native_prepared)<= 131072) AND (typeof(terminal)='blob' AND length(terminal)<= 32768) AND (typeof(reusable_witness)='blob' AND length(reusable_witness)<= 8192) AND (typeof(projected_result)='blob' AND length(projected_result)<= 4464896) AND (typeof(receipt)='blob' AND length(receipt)<= 32) AND (typeof(retirement)='blob' AND length(retirement)<= 8192) AND (typeof(phase)='integer' AND phase BETWEEN 0 AND 8) AND (typeof(reserved_bytes)='integer' AND reserved_bytes BETWEEN 1 AND 268435456) AND (typeof(address)='text' AND length(CAST(address AS BLOB)) BETWEEN 1 AND 32768) AND (typeof(slot)='text' AND length(CAST(slot AS BLOB))<=32768) AND (typeof(parent_address)='text' AND length(CAST(parent_address AS BLOB))<=32768) AND (typeof(search_root)='text' AND length(CAST(search_root AS BLOB))<=8192) AND (typeof(clock_era)='text' AND length(clock_era) IN (0,36)) AND (typeof(parent_kind)='integer' AND parent_kind BETWEEN -1 AND 1) AND (typeof(startup_role)='integer' AND startup_role BETWEEN -1 AND 2) AND (typeof(search_profile_ordinal)='integer' AND search_profile_ordinal BETWEEN -1 AND 15) AND (typeof(anchor_tick)='integer') AND (typeof(remaining_ms)='integer' AND remaining_ms BETWEEN 0 AND 86400000) AND (typeof(deadline_tick)='integer') LIMIT 2"
+  #(sql, [dev.ParamString(address)], lsp_read_decoder())
+}
+
+pub fn lsp_read_decoder() -> decode.Decoder(LspRead) {
+  use address <- decode.field(0, decode.string)
+  use kind <- decode.field(1, decode.int)
+  use slot <- decode.field(2, decode.string)
+  use parent_kind <- decode.field(3, decode.int)
+  use parent_address <- decode.field(4, decode.string)
+  use parent <- decode.field(5, decode.bit_array)
+  use startup_role <- decode.field(6, decode.int)
+  use search_profile_ordinal <- decode.field(7, decode.int)
+  use search_root <- decode.field(8, decode.string)
+  use anchor <- decode.field(9, decode.bit_array)
+  use anchor_tick <- decode.field(10, decode.int)
+  use clock_era <- decode.field(11, decode.string)
+  use timing_proposal <- decode.field(12, decode.bit_array)
+  use timing_digest <- decode.field(13, decode.bit_array)
+  use remaining_ms <- decode.field(14, decode.int)
+  use deadline_tick <- decode.field(15, decode.int)
+  use identity <- decode.field(16, decode.bit_array)
+  use input <- decode.field(17, decode.bit_array)
+  use generation_key <- decode.field(18, decode.bit_array)
+  use enrollment_digest <- decode.field(19, decode.bit_array)
+  use reserved_bytes <- decode.field(20, decode.int)
+  use phase <- decode.field(21, decode.int)
+  use offer <- decode.field(22, decode.bit_array)
+  use native_identity <- decode.field(23, decode.bit_array)
+  use native_prepared <- decode.field(24, decode.bit_array)
+  use terminal <- decode.field(25, decode.bit_array)
+  use reusable_witness <- decode.field(26, decode.bit_array)
+  use projected_result <- decode.field(27, decode.bit_array)
+  use receipt <- decode.field(28, decode.bit_array)
+  use retirement <- decode.field(29, decode.bit_array)
+  decode.success(LspRead(
+    address:,
+    kind:,
+    slot:,
+    parent_kind:,
+    parent_address:,
+    parent:,
+    startup_role:,
+    search_profile_ordinal:,
+    search_root:,
+    anchor:,
+    anchor_tick:,
+    clock_era:,
+    timing_proposal:,
+    timing_digest:,
+    remaining_ms:,
+    deadline_tick:,
+    identity:,
+    input:,
+    generation_key:,
+    enrollment_digest:,
+    reserved_bytes:,
+    phase:,
+    offer:,
+    native_identity:,
+    native_prepared:,
+    terminal:,
+    reusable_witness:,
+    projected_result:,
+    receipt:,
+    retirement:,
+  ))
+}
+
+pub fn lsp_insert_lease(
+  address address: String,
+  slot slot: String,
+  deadline_tick deadline_tick: Int,
+  clock_era clock_era: String,
+  identity identity: BitArray,
+  input input: BitArray,
+  generation_key generation_key: BitArray,
+  enrollment_digest enrollment_digest: BitArray,
+  reserved_bytes reserved_bytes: Int,
+  phase phase: Int,
+) {
+  let sql =
+    "INSERT INTO lsp_lease(address,slot,deadline_tick,clock_era,identity,input,generation_key,enrollment_digest,reserved_bytes,phase) VALUES(?,?,?,?,?,?,?,?,?,?)"
+  #(sql, [
+    dev.ParamString(address),
+    dev.ParamString(slot),
+    dev.ParamInt(deadline_tick),
+    dev.ParamString(clock_era),
+    dev.ParamBitArray(identity),
+    dev.ParamBitArray(input),
+    dev.ParamBitArray(generation_key),
+    dev.ParamBitArray(enrollment_digest),
+    dev.ParamInt(reserved_bytes),
+    dev.ParamInt(phase),
+  ])
+}
+
+pub type LspUpdateLease {
+  LspUpdateLease(phase: Int)
+}
+
+pub fn lsp_update_lease(
+  new_phase new_phase: Int,
+  offer offer: BitArray,
+  native_identity native_identity: BitArray,
+  native_prepared native_prepared: BitArray,
+  terminal terminal: BitArray,
+  reusable_witness reusable_witness: BitArray,
+  projected_result projected_result: BitArray,
+  receipt receipt: BitArray,
+  retirement retirement: BitArray,
+  address address: String,
+  old_phase old_phase: Int,
+) {
+  let sql =
+    "UPDATE lsp_lease SET phase=?,offer=?,native_identity=?,native_prepared=?,terminal=?,reusable_witness=?,projected_result=?,receipt=?,retirement=? WHERE address=? AND phase=? RETURNING phase"
+  #(
+    sql,
+    [
+      dev.ParamInt(new_phase),
+      dev.ParamBitArray(offer),
+      dev.ParamBitArray(native_identity),
+      dev.ParamBitArray(native_prepared),
+      dev.ParamBitArray(terminal),
+      dev.ParamBitArray(reusable_witness),
+      dev.ParamBitArray(projected_result),
+      dev.ParamBitArray(receipt),
+      dev.ParamBitArray(retirement),
+      dev.ParamString(address),
+      dev.ParamInt(old_phase),
+    ],
+    lsp_update_lease_decoder(),
+  )
+}
+
+pub fn lsp_update_lease_decoder() -> decode.Decoder(LspUpdateLease) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(LspUpdateLease(phase:))
+}
+
+pub fn lsp_recover_lease() {
+  let sql = "UPDATE lsp_lease SET phase=8 WHERE phase NOT IN (6,7,8)"
+  #(sql, [])
+}
+
+pub fn lsp_insert_finite(
+  address address: String,
+  anchor anchor: BitArray,
+  anchor_tick anchor_tick: Int,
+  clock_era clock_era: String,
+  identity identity: BitArray,
+  input input: BitArray,
+  generation_key generation_key: BitArray,
+  enrollment_digest enrollment_digest: BitArray,
+  reserved_bytes reserved_bytes: Int,
+  phase phase: Int,
+) {
+  let sql =
+    "INSERT INTO lsp_finite(address,anchor,anchor_tick,clock_era,identity,input,generation_key,enrollment_digest,reserved_bytes,phase) VALUES(?,?,?,?,?,?,?,?,?,?)"
+  #(sql, [
+    dev.ParamString(address),
+    dev.ParamBitArray(anchor),
+    dev.ParamInt(anchor_tick),
+    dev.ParamString(clock_era),
+    dev.ParamBitArray(identity),
+    dev.ParamBitArray(input),
+    dev.ParamBitArray(generation_key),
+    dev.ParamBitArray(enrollment_digest),
+    dev.ParamInt(reserved_bytes),
+    dev.ParamInt(phase),
+  ])
+}
+
+pub type LspUpdateFinite {
+  LspUpdateFinite(phase: Int)
+}
+
+pub fn lsp_update_finite(
+  new_phase new_phase: Int,
+  offer offer: BitArray,
+  native_identity native_identity: BitArray,
+  native_prepared native_prepared: BitArray,
+  terminal terminal: BitArray,
+  reusable_witness reusable_witness: BitArray,
+  projected_result projected_result: BitArray,
+  receipt receipt: BitArray,
+  retirement retirement: BitArray,
+  timing_proposal timing_proposal: BitArray,
+  timing_digest timing_digest: BitArray,
+  remaining_ms remaining_ms: Int,
+  deadline_tick deadline_tick: Int,
+  address address: String,
+  old_phase old_phase: Int,
+) {
+  let sql =
+    "UPDATE lsp_finite SET phase=?,offer=?,native_identity=?,native_prepared=?,terminal=?,reusable_witness=?,projected_result=?,receipt=?,retirement=?,timing_proposal=?,timing_digest=?,remaining_ms=?,deadline_tick=? WHERE address=? AND phase=? RETURNING phase"
+  #(
+    sql,
+    [
+      dev.ParamInt(new_phase),
+      dev.ParamBitArray(offer),
+      dev.ParamBitArray(native_identity),
+      dev.ParamBitArray(native_prepared),
+      dev.ParamBitArray(terminal),
+      dev.ParamBitArray(reusable_witness),
+      dev.ParamBitArray(projected_result),
+      dev.ParamBitArray(receipt),
+      dev.ParamBitArray(retirement),
+      dev.ParamBitArray(timing_proposal),
+      dev.ParamBitArray(timing_digest),
+      dev.ParamInt(remaining_ms),
+      dev.ParamInt(deadline_tick),
+      dev.ParamString(address),
+      dev.ParamInt(old_phase),
+    ],
+    lsp_update_finite_decoder(),
+  )
+}
+
+pub fn lsp_update_finite_decoder() -> decode.Decoder(LspUpdateFinite) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(LspUpdateFinite(phase:))
+}
+
+pub fn lsp_recover_finite() {
+  let sql = "UPDATE lsp_finite SET phase=8 WHERE phase NOT IN (6,7,8)"
+  #(sql, [])
+}
+
+pub fn lsp_insert_command(
+  address address: String,
+  parent_kind parent_kind: Int,
+  parent_address parent_address: String,
+  parent parent: BitArray,
+  startup_role startup_role: Int,
+  search_profile_ordinal search_profile_ordinal: Int,
+  search_root search_root: String,
+  identity identity: BitArray,
+  input input: BitArray,
+  generation_key generation_key: BitArray,
+  enrollment_digest enrollment_digest: BitArray,
+  reserved_bytes reserved_bytes: Int,
+  phase phase: Int,
+) {
+  let sql =
+    "INSERT INTO lsp_command(address,parent_kind,parent_address,parent,startup_role,search_profile_ordinal,search_root,identity,input,generation_key,enrollment_digest,reserved_bytes,phase) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  #(sql, [
+    dev.ParamString(address),
+    dev.ParamInt(parent_kind),
+    dev.ParamString(parent_address),
+    dev.ParamBitArray(parent),
+    dev.ParamInt(startup_role),
+    dev.ParamInt(search_profile_ordinal),
+    dev.ParamString(search_root),
+    dev.ParamBitArray(identity),
+    dev.ParamBitArray(input),
+    dev.ParamBitArray(generation_key),
+    dev.ParamBitArray(enrollment_digest),
+    dev.ParamInt(reserved_bytes),
+    dev.ParamInt(phase),
+  ])
+}
+
+pub type LspUpdateCommand {
+  LspUpdateCommand(phase: Int)
+}
+
+pub fn lsp_update_command(
+  new_phase new_phase: Int,
+  offer offer: BitArray,
+  native_identity native_identity: BitArray,
+  native_prepared native_prepared: BitArray,
+  terminal terminal: BitArray,
+  reusable_witness reusable_witness: BitArray,
+  projected_result projected_result: BitArray,
+  receipt receipt: BitArray,
+  retirement retirement: BitArray,
+  address address: String,
+  old_phase old_phase: Int,
+) {
+  let sql =
+    "UPDATE lsp_command SET phase=?,offer=?,native_identity=?,native_prepared=?,terminal=?,reusable_witness=?,projected_result=?,receipt=?,retirement=? WHERE address=? AND phase=? RETURNING phase"
+  #(
+    sql,
+    [
+      dev.ParamInt(new_phase),
+      dev.ParamBitArray(offer),
+      dev.ParamBitArray(native_identity),
+      dev.ParamBitArray(native_prepared),
+      dev.ParamBitArray(terminal),
+      dev.ParamBitArray(reusable_witness),
+      dev.ParamBitArray(projected_result),
+      dev.ParamBitArray(receipt),
+      dev.ParamBitArray(retirement),
+      dev.ParamString(address),
+      dev.ParamInt(old_phase),
+    ],
+    lsp_update_command_decoder(),
+  )
+}
+
+pub fn lsp_update_command_decoder() -> decode.Decoder(LspUpdateCommand) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(LspUpdateCommand(phase:))
+}
+
+pub fn lsp_recover_command() {
+  let sql = "UPDATE lsp_command SET phase=8 WHERE phase NOT IN (6,7,8)"
+  #(sql, [])
+}
+
+pub type LspInventoryIntegrity {
+  LspInventoryIntegrity(invalid: Int)
+}
+
+pub fn lsp_inventory_integrity() {
+  let sql =
+    "SELECT COUNT(*) AS invalid FROM lsp_identity AS i WHERE NOT EXISTS(SELECT 1 FROM lsp_rows AS r WHERE r.address=i.address AND r.kind=i.kind AND r.reserved_bytes=i.reserved_bytes)"
+  #(sql, [], lsp_inventory_integrity_decoder())
+}
+
+pub fn lsp_inventory_integrity_decoder() -> decode.Decoder(
+  LspInventoryIntegrity,
+) {
+  use invalid <- decode.field(0, decode.int)
+  decode.success(LspInventoryIntegrity(invalid:))
+}
+
+pub type LspLinkedSqlite {
+  LspLinkedSqlite(version: String, source: String)
+}
+
+pub fn lsp_linked_sqlite() {
+  let sql = "SELECT sqlite_version() AS version,sqlite_source_id() AS source"
+  #(sql, [], lsp_linked_sqlite_decoder())
+}
+
+pub fn lsp_linked_sqlite_decoder() -> decode.Decoder(LspLinkedSqlite) {
+  use version <- decode.field(0, decode.string)
+  use source <- decode.field(1, decode.string)
+  decode.success(LspLinkedSqlite(version:, source:))
+}
+
 pub fn initialize_resources(
   enrollment enrollment: BitArray,
   row_limit row_limit: Int,
