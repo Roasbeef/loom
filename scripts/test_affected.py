@@ -1,5 +1,6 @@
 """Check the affected-gate selector against the real tree and a scratch repository."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 import tempfile
@@ -185,6 +186,52 @@ class ChangedPathsTest(unittest.TestCase):
             (repo / "new.txt").write_text("new\n")
             self.assertEqual(affected.changed_paths(repo, "main"),
                              ["base.txt", "moved.txt", "new.txt", "renamed.txt"])
+
+
+class RunnerSkipTest(unittest.TestCase):
+    """The real runner must preserve declarations without hiding new skips."""
+
+    def run_fixture(self, undeclared=False):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "scripts").mkdir()
+            (root / ".github/scripts").mkdir(parents=True)
+            for name in ("scripts/check_affected.sh", ".github/scripts/skip_census.sh"):
+                (root / name).write_bytes((affected.ROOT / name).read_bytes())
+            census = root / ".github/scripts/skip_census.sh"
+            census.chmod(0o755)
+            retry = root / ".github/scripts/hex_retry.sh"
+            retry.write_text('#!/usr/bin/env bash\nexec "$@"\n')
+            retry.chmod(0o755)
+            (root / "scripts/affected.py").write_text(
+                'print("static python3 scripts/emit.py")\n')
+            (root / ".github/declared-skips").write_text(
+                "declared|any|permitted fixture|The fixture owns this skip.\n"
+                "declared|any|another lane|This lane was not selected.\n")
+
+            # A matching line near the start must not close the pipe while
+            # its producer still has more than a pipe buffer left to write.
+            log = "SKIP fixture: permitted fixture\n" * 50_000
+            if undeclared:
+                log += "SKIP fixture: unlisted fixture\n"
+            (root / "scripts/emit.py").write_text(
+                "import sys\nsys.stdout.write(" + repr(log) + ")\n")
+            environment = dict(os.environ)
+            environment.pop("GITHUB_STEP_SUMMARY", None)
+            return subprocess.run(
+                ["bash", "scripts/check_affected.sh", "main"], cwd=root,
+                env=environment, capture_output=True, text=True, timeout=30)
+
+    def test_long_logs_keep_the_existing_declared_skip(self):
+        result = self.run_fixture()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no undeclared skip", result.stdout)
+
+    def test_an_undeclared_skip_still_fails_the_runner(self):
+        result = self.run_fixture(undeclared=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("1 undeclared skip(s)", result.stdout)
+        self.assertIn("SKIP fixture: unlisted fixture", result.stdout)
 
 
 if __name__ == "__main__":

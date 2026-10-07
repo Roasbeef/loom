@@ -1,111 +1,162 @@
 # Current handoff
 
-This edition covers the shell-directory and code-mode work on
-`codex/working-directory-code-mode`, rebased onto `cc9ec305d`, on 2026-10-06.
-The original checkout was left alone. The work lives in
-`.worktrees/working-directory-code-mode`; it has not been installed into the
-running daemon or merged. PR #889 is open; its rebased head is being validated.
+This edition covers the CPU optimization in [PR #903](https://github.com/Roasbeef/loom/pull/903),
+rebased onto `3644b079059570cf7cc3c7fe98add693bb6adbcc` on October 6, 2026
+(America/Los_Angeles). The render implementation is `cc1f2e3ee`, its rebuilt
+stylesheet is `1f2fbaaca`, the separately approved CI repair is `32fe4abbd`,
+and the snapshot implementation is `f87ad3333`. Work remains isolated on
+`codex/perf-live-render-20261006`, under `.worktrees/perf-live-render-20261006`.
+The original checkout and its unrelated files remain untouched.
 
-The previous main edition documented the optimization integration based on
-`32846807b` and `34c0db0f` on 2026-10-05. Its hosted
-PR status and release claims were not refreshed in this work. Read the relevant
-issue or branch before continuing those lanes; do not treat the old snapshot
-as current status. Their design rulings remain in the architecture documents,
-protocol changes, and design notes named below.
+Every result below is tied to the revision or publication snapshot that was
+checked. Read [the snapshot CPU report](review/beam-transfer-cpu-2026-10-06.md)
+and [the render report](review/beam-render-2026-10-06.md) for the new-main
+controls, earlier live attribution and historical gate failures. Rewrite this
+handoff after the next body of work; GitHub carries the final PR verdict.
 
-## Where this work stands
+## Where the tree is
 
-The owner requested both per-call and persistent shell directories, then
-supplied a live session showing repeated code-mode LSP failures. The session
-passed `gopls` as its server assertion, although `go` was the configured key.
-It then guessed roots and API argument shapes. A later temporary-file write
-guessed `/Users/roasbeef/.codemode/tmp`, outside the actual workspace.
+| Body of work | Verified state |
+| --- | --- |
+| Render implementation | Done/Pending avoid unused refusal text. Settled preview blankness uses the existing text-keyed leaf memo. All 866 current web-view tests pass. |
+| Snapshot implementation | Direct UTF-8 byte sizing preserves conservative JSON admission. All 16 transfer tests pass, including the three lineage tests introduced upstream. |
+| Remeasurement | A newly compiled control at `3644b0790` alternates twice with the rebased candidate in fresh OTP 29 VMs. Full-start reductions fall 71.36% for small strings, 90.63% ASCII, 78.27% Unicode and 7.99% to 8.19% C0 controls. Every transfer fingerprint matches. |
+| Render work | Done/Pending reductions fall about 99.97%, settled reasoning 99.75% and blank reasoning 98.08%. The counts repeat exactly; nonblank output fingerprints match. Blank output retains its invisible 20-byte memo placeholder. |
+| Regression controls | Current-main modules fail each of the three render work tests and the snapshot work test. Main makes 81,931 Unicode decoder calls; the candidate makes zero. The independent boundary oracle passes both implementations. |
+| Trace ownership | Forty concurrent CPU regression runs and exception cleanup leave the trace-session inventory unchanged. The fresh independent review also ran thirty render and twenty transfer regressions concurrently. |
+| CI prerequisite | The consuming grep repair preserves successful existing declarations under pipefail. All eighteen selector/runner tests pass. No test, assertion, deadline or skip declaration has changed. |
+| Fresh independent review | One report-only pass over `3644b079..3a08106fc` found no actionable invariant, simplification or nearby variant issue. It checked the rebase integrations and stylesheet digests. |
+| Current local full gate | The full affected command returns its own make status 2 (underlying 124) in 112 seconds: static and server preparation pass, then the unchanged 20-second Python-suite deadline expires in upstream signoff fixtures because this Mac lacks `flock`. Its census saw no package SKIP marker and does not certify the package tests. |
+| Static checks | The rebased source passes formatting, generated assets, prelude, lint and doc graph: zero lint errors with 2,195 warnings; zero doc-check errors with 194 warnings before this rewrite. The final prose is checked separately before publication. |
+| Previous published head | `cc52ef8826641184b8b8e168d6650c823f191fcb` passed exact-head Linux signoff and every hosted test job in [run 37552798786](https://github.com/Roasbeef/loom/actions/runs/37552798786). Its macOS fan-in failed solely on two existing undeclared procfs fixture omissions. |
+| Rebased publication | PR #903 is out of draft at the owner's direction. The rebased head's hosted checks and restricted Linux signoff are pending at this publication snapshot. The old head's success cannot certify the new one. |
+| Platform omissions | The owner has been asked to approve the two Darwin-only procfs declarations. They do not alter either test or the required Linux execution. No approval has arrived at this snapshot. |
+| Installation | No candidate shipment, live restart or installed comparison was performed by this work. Installed CPU and resident-memory savings remain unmeasured. |
 
-`bash.cwd` now selects one call's directory. `working_directory` reads or sets
-a reserved, durable default for the authenticated calling strand. Foreground,
-background and auto jobs capture it before launch. The production host gives
-`cap/proc` the same default; `proc.in_dir` overrides one process. Native file,
-search and LSP paths continue to resolve against the session workspace.
+The previous edition's claims that no PR, hosted checks or Linux signoff had
+run are now false. They described an earlier local stage. Its 811 web-view
+tests and 13 transfer tests also predate the upstream reasoning and lineage
+changes; the fresh results above replace them. The three upstream lineage
+tests were retained during rebase, as was main's reasoning-row implementation.
+The stylesheet was regenerated rather than taking an old asset over new sources.
 
-`working_directory` also reports the actual invocation `TMPDIR`. Loom's
-cross-call temporary directory is `<workspace>/.codemode/tmp`. The execution's
-private `/tmp` is not the place for files another invocation must reopen.
-Guessing a path under the user's home does not grant access to it.
+The original live probes observed daemon PID 53549 and terminal PID 67235 on
+installed revision `11454cba77ca96acc6b3be85f1da72ba469dd976`, predating the
+previous merged [PR #873](https://github.com/Roasbeef/loom/pull/873). Those are
+measurement-time identities, not a claim that a later user-initiated restart
+could not have occurred. Pickglass attributed the reachable quoting caller;
+its later quiet stack cut observed only 15 running samples out of 8,000.
+The native helper sample mostly waited. Neither quiet cut justified a broad
+CPU hotspot or busy-loop claim.
 
-`lsp_sql.plan(outlines, targets)` infers the configured server and project root
-from explicit files. All sources must share that owner before a server is
-acquired. Explicit `Plan` assertions still receive exact checks. Errors name
-the offending file, its actual owner and the requested pair. The SQL docs name
-`path` columns and the quoted `"references"` table. The on-demand `cap://`
-function surface retains its examples; the cached type surface does not.
+Two earlier full client runs failed an unchanged gateway lifecycle regression;
+later full runs and the previous exact-head Linux signoff passed. The cause
+remains unresolved. No assertion or timeout was weakened. Historical package
+passes, local wrapper failures, hosted tests and Linux signoff remain separate
+pieces of evidence in the two reports.
 
-The full gate also exposed a warm-server restart caused by generated inventory
-key order. Gleam rewrote `packages.toml` with the same installed versions in a
-different order. `lsp/dependency_state` now hashes parsed inventory contents
-with recursively sorted table keys. Main already carries that fix and its
-regressions; this rebase preserves its bounded table/string vocabulary.
-Manifest and project configuration hashes remain byte-based. The deterministic
-inventory regression and the real preparation fixture pass.
+Main's previous handoff covered working-directory and LSP work in #889. Its
+current source and design contract are preserved by this rebase. Historical
+claims about that PR and other lanes were outside this performance pass;
+refresh their own issue and branch before continuing them. The directory and
+LSP ruling lives in [protocol-change/068](../protocol-change/068-working-directories-and-lsp-scope.md),
+not in a status snapshot.
 
-The contract and alternatives are in
-[protocol-change/068](../protocol-change/068-working-directories-and-lsp-scope.md).
-The production seams are `client/serve`, `client/working_directory`,
-`tools/working_directory`, `tools/bash`, and `client/lsp/manager`.
+## What to do next
 
-## Rulings for the next reader
+1. Complete PR #903's exact-head verification and merge under the owner's
+   authorization. Exit: resolve the full local gate and platform census,
+   obtain the rebased head's Linux signoff through the restricted endpoint,
+   and verify current checks before merging. The separate consuming-grep
+   approval does not authorize a new platform declaration.
+2. Follow [updating](updating.md) for a separately authorized installation.
+   Exit: verify installed revisions and compare the same active, idle and
+   released workload before and after. Source fixture gains do not close
+   installed memory measurement [#454](https://github.com/Roasbeef/loom/issues/454).
+3. Obtain a named profiling client and a matched active workload for the next
+   CPU pass. Exit: bounded caller evidence identifies reachable work. SQLite
+   bursts and control-heavy serialization remain outside this private size walk.
 
-A directory selection grants no filesystem authority. Keep the workspace and
-policy roots immutable; do not call a VM-wide `chdir`. Relative shell paths
-resolve against the strand default, while native paths remain workspace-relative.
-Fresh strands begin in the workspace rather than inheriting another strand's
-shell state. Updates compare the reserved fact's sequence. A storage failure,
-corrupt fact, missing target or redirected saved target is a refusal.
+## Rulings already made
 
-Validate a remembered directory before appending a relative process override.
-The independent review found that validating only omitted cwd let
-`proc.in_dir(".")` follow a replacement symlink. Omitted and relative cwd now
-share that check. Absolute overrides bypass a broken saved default so callers
-can recover. The live jailed test covers the redirected relative override.
+Each of these is settled. Re-open one only with new evidence, and record the
+reopening where the ruling lives.
 
-The setter uses `Never` replay: replaying a relative selection after its first
-commit could select a different directory. Running jobs retain their admitted
-cwd even if the strand's default later changes.
+**Snapshot admission.** Count UTF-8 bytes without Unicode lists, but retain
+the conservative budget. Every C0 byte costs six even when JSON uses a short
+escape. The serializer and complete-string traversal remain unchanged. The
+boundary oracle and work counter in `transfer_test` enforce both properties;
+[the snapshot report](review/beam-transfer-cpu-2026-10-06.md) records controls.
 
-## Verification and next actions
+**Render ownership.** Leaf memos own their dependencies. Every captured input
+participates in its references, and unchanged text performs no preview trim or
+Markdown parse. Lustre 5.7.1 drops nested entries when an outer memo hits;
+[the render report](review/beam-render-2026-10-06.md) records why the memo
+remains at the leaf and how blank/text transitions are verified.
 
-Before rebase, the complete client gate passed 2,878 tests using a freshly rebuilt
-server and the repository's fixture environment. Tools and cap passed 636 and
-175 tests; the generator suite passed six. The broader run and remaining
-package runs covered the other suites. Formatting, lint, doc-check, prelude
-freshness and client assets passed separately. Four defect mutations each
-failed their intended regression, then passed after restoration. The required
-independent review and bounded fix rechecks were complete on that prior head.
-A fresh Astra adversarial review and new-head validation are in progress.
+**Dispatch before preparation.** Done/Pending have no refusal sentence to
+display. Dispatch first. Failed retains whitespace, escaping, row order and
+fallbacks. `render_work_test` measures the removed work boundary without elapsed
+time assertions.
 
-The first broad run was red for shifted citations, the inventory-order defect,
-and two undeclared macOS `/proc` skips. The citations and defect were fixed;
-the final client and static gates passed. A manual client run also supplied
-the wrong provider fixture key. That setup failure was corrected, the shipped
-fixtures passed, and the complete client gate was run again to exit zero.
-The correct key is `loom-provider-fixture-key`, as supplied by
-`scripts/check_affected.sh`. No tests or skip waivers were removed.
+**Signoff ownership.** [Execution](execution.md) owns the gate. The restricted
+SSH request is data, not an uploaded remote shell. The installed driver alone
+posts a verdict after testing the exact published commit. Never hand-post a
+status or bypass the gate to turn an earlier result into new-head signoff.
 
-Linux enforcement and `signoff/linux` have not been run. macOS live code-mode
-runs report the existing address-space, process-limit and process-lifecycle
-limitations. The `/proc` helper-kill checks and rust-analyzer fixture remain unverified on
-this host; no new skip waiver was added. Local test success is not Linux signoff. The owner must authorize
-installation or merge separately. Rebase publication is authorized.
+**Measurement boundaries.** Flat size, process capacity, allocation, RSS and
+physical footprint are distinct. Different activity on one old build proves
+neither leaks nor savings. Follow [daemon memory evidence](design-notes/daemon-memory.md)
+and [BEAM memory review](../skills/beam-memory-review/SKILL.md).
 
-Other work should begin by inspecting its current issue and branch. The prior
-handoff named terminal drives and follow-ups (#656, #763–#766), web workspace
-mode (`design-notes/web-workspace-mode.md` and protocol-change/065), remote
-access (#654 and protocol-change/052), executor follow-ups (#703 and #283),
-and matched installed memory measurements (#454). Their current status was
-outside this work. Terminal decisions live in `design-notes/terminal-design.md`;
-workspace mode decisions live in its design note and protocol change, rather
-than in this status snapshot.
+## Deliberately open
 
-Use the pinned Gleam 1.19.0 toolchain. Build code-mode seeds after capability
-changes. Keep verification worktrees outside `/tmp`, where the jail replaces
-the socket directory. `docs/execution.md` describes gate selection, required
-prerequisites and the skip census; `docs/updating.md` describes installation.
+- Installed CPU, RSS and retained ownership in #454 remain unmeasured.
+- SQLite bursts, control-heavy serialization and direct client attribution
+  need named, matched workloads.
+- The intermittent gateway-test cause remains unresolved.
+- Rebased exact-head publication checks, platform policy approval and merge
+  remain pending at this publication snapshot; read PR #903 for later results.
+
+None of these is unfinished work somebody forgot. Evidence gaps need matched
+workloads; fixture reductions do not supply installed measurements.
+
+## How to verify
+
+Use a non-login shell with
+`PATH=/Users/roasbeef/.local/lib/loom/server/bin:/opt/homebrew/bin:$PATH`.
+Verify Gleam 1.19.0, OTP 29.0.5 and Homebrew `rg`. The entire branch selects the
+full gate with `make check-affected BASE=3644b0790` because it includes CI
+machinery. Each gate must be judged by its own exit code.
+
+After publishing HEAD, run:
+
+```sh
+LOOM_SIGNOFF_HOST=gilgamesh-signoff SIGNOFF_PARALLEL=8 make signoff-remote
+```
+
+The restricted endpoint accepts only the validated signoff request. Optional
+`SIGNOFF_ARGS=--dry-run` tests without posting. Do not use the ungated remote
+mode or issue arbitrary shell requests to this endpoint.
+
+Private new-main controls, four alternating runs, exact result fingerprints,
+negative controls and trace-cleanup logs live under
+`/private/tmp/loom-live-20261006/` with `rebase-` or `-rebase-` in their names.
+The fresh full affected log is `/private/tmp/loom-live-20261006-rebase-affected.log`.
+Original controls and live attribution remain in the reports' earlier records.
+
+**Application-private tools can fall outside fixture grants.** Homebrew `rg`
+is the supported path for the intentional Seatbelt test. Select the pinned
+compiler rather than repairing files for an older formatter.
+
+**Samples are not elapsed CPU shares.** Pickglass samples at reduction safe
+points; selected process/module allocation is not whole-application CPU.
+
+**Linux gate fixtures need Linux locking.** The new `test_signoff_gate` fixtures
+reach the gate lock on this Mac without `flock`; its lock-wait loop then runs
+until the test deadline. The named reproduction and bounded stack dump are
+preserved. A separate 120-second diagnostic was stopped with status 143 after
+per-test lock timeouts; it was not a passing gate. The previous integrated
+head also hit the unchanged aggregate deadline; its nine deadline-wrapper tests
+passed in isolation. These are distinct failures. Keep complete evidence and
+run the current gate on Linux. Read [execution](execution.md) for the rest.
