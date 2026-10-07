@@ -26,7 +26,7 @@
 
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import lustre/attribute
@@ -57,17 +57,23 @@ pub fn line_row(
 /// One tool call as a row: its state, its words, and its detail behind them.
 ///
 /// The state is a glyph in a colour, and the word for it stays in the row for
-/// assistive technology. `body` is what the reader opens; with none, the row
-/// is its line alone.
+/// assistive technology. A call that is still running has a pulsing glyph and,
+/// when its record gave a time (`since`, Unix milliseconds), `Running · 1m 12s`
+/// after its words, whose seconds the browser counts (`<loom-elapsed since>`),
+/// so a long command never looks stuck and the server sends nothing per second.
+/// The element holds the number the daemon wrote and no session text; it goes
+/// when the call settles, since a settled call has no `since`. `body` is what
+/// the reader opens; with none, the row is its line alone.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // fold_row.step(turns.Done, step_words.of_call(call), [program_rows])
+/// // fold_row.step(turns.Done, step_words.of_call(call), None, [program_rows])
 /// ```
 pub fn step(
   standing: turns.Standing,
   words: Words,
+  since: Option(Int),
   body: List(Element(message)),
 ) -> Element(message) {
   let head = [
@@ -80,9 +86,31 @@ pub fn step(
     html.span([attribute.class("sr-only")], [html.text(state(standing))])
   openable(
     [attribute.class("step"), standing_class(standing)],
-    list.append(head, [state]),
+    list.flatten([head, running_time(standing, since), [state]]),
     body,
   )
+}
+
+// `Running · 1m 12s` for a call still running that has a start time, and
+// nothing for any other. The words are fixed, and the element's only input is
+// the start time, a number.
+fn running_time(
+  standing: turns.Standing,
+  since: Option(Int),
+) -> List(Element(message)) {
+  case standing, since {
+    turns.Pending, Some(start) -> [
+      html.span([attribute.class("running-time")], [
+        html.text("Running · "),
+        element.element(
+          "loom-elapsed",
+          [attribute.attribute("since", int.to_string(start))],
+          [],
+        ),
+      ]),
+    ]
+    turns.Pending, None | turns.Done, _ | turns.Failed, _ -> []
+  }
 }
 
 /// The memory context as a row: `Memory · 4 lines`, with the message behind it.

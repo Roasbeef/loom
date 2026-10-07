@@ -103,3 +103,47 @@ are not in the page, so a browser's find-in-page does not see them. A fold the
 reader opened is closed by the page when a later fold needs the room. A page
 that had been left reading a turn of 2,000 steps shows its newest steps that fit
 and says how many it left out; the terminal shows all of them.
+
+## Addendum 2026-10-06: a shortened message opens in place
+
+A long paste is drawn as its opening and a token estimate (`[~419 tokens]`), and
+the page had no way to read the rest. The terminal has one: `Ctrl+G` draws every
+collapsed row whole. The page now opens one message at a time, in the way a fold
+opens.
+
+*Where the text is.* The block a message was drawn from holds the entry it came
+from, in a closed turn as in the running one, so the whole text is already on the
+server. Nothing is fetched, and no new read is added. It is not in the browser's
+document: it is drawn only while the reader has the message open, so a page of
+long prompts does not ship them all (`expansion.capped` cuts what is drawn to
+the limit every expansion has, and says so).
+
+*The event.* A shortened message has a `Show all` button after its text. Its
+handler's message carries the block's key, which the engine gave the block and
+the view drew into the handler, so the browser names nothing. The page acts only
+on a `Connected` page and only on a key of a message the lane holds and shortened,
+and keeps at most eight open, the oldest closing first. The observer's socket
+admits a `click` at the button's two exact paths (`component.message_click`, a
+person's own message and another operator's), and nothing beneath or beside
+them. `page_events_test` and `ui_socket_test` fail if the view moves the button.
+
+*Security rules held.* The text is drawn only as text nodes. The button's
+attributes are fixed words, the open state and the fold marker `<loom-follow>`
+reads. A message from another session (`Peer`) or strand (`Sibling`) is not
+opened by this; it is drawn shortened as before.
+
+*The terminal.* Unchanged: `Ctrl+G` opens every collapsed row at once, which is
+the same act for the whole transcript.
+
+## Addendum 2026-10-06: a running call shows how long it has run
+
+A tool call still running draws `Running · 1m 12s` after its words, with the
+pulsing glyph it already had. The seconds are counted by `<loom-elapsed since>`
+in the browser from the Unix time of the record that asked for the call
+(`turns.Step.since`), so the server sends nothing per second. The record's time
+is the daemon's clock and the count uses the browser's, so a browser whose clock
+is wrong shows a wrong age, never a negative one. A settled call has no `since`
+and no indicator. While a turn runs, the composer's hint gains a pulsing dot
+before `Turn is busy`; the page does not know whether the strand is thinking or
+waiting on the model, so it says neither. The stylesheet's reduced-motion rule
+stills both dots, and the ticking text stays.

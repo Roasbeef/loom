@@ -29,7 +29,7 @@ fn drawn(pieces: List(turns.Piece)) -> String {
     Nil,
     lane.NoReplies,
     lane.no_marks(),
-    lane.Folds(fn(_) { Nil }),
+    lane.Folds(fn(_) { Nil }, fn(_) { Nil }, []),
     "",
   )
   |> element.to_string
@@ -50,7 +50,7 @@ fn step(
   standing: turns.Standing,
   detail: List(transcript_line.Line),
 ) -> turns.Item {
-  turns.Step("2.0/0", standing, words, detail, [], [])
+  turns.Step("2.0/0", standing, words, detail, [], [], None)
 }
 
 fn count(haystack: String, needle: String) -> Int {
@@ -197,6 +197,7 @@ pub fn a_step_says_how_it_stands_in_a_glyph_and_for_assistive_technology_test() 
           [],
           [],
           [],
+          None,
         ),
       ]),
     ])
@@ -218,6 +219,7 @@ pub fn a_subject_is_drawn_in_its_kinds_face_and_only_as_text_test() {
           [],
           [],
           [],
+          None,
         ),
       ]),
     ])
@@ -579,6 +581,7 @@ pub fn a_figure_and_an_unnamed_subject_draw_no_subject_span_test() {
           [],
           [],
           [],
+          None,
         ),
       ]),
     ])
@@ -699,4 +702,64 @@ pub fn an_interrupted_turn_says_so_on_its_divider_test() {
       ),
     ])
   assert string.contains(html, "Worked 12s · interrupted")
+}
+
+// A call still running draws `Running · ` and a `<loom-elapsed since>` the
+// browser counts, given the record's time as a number. A settled call has none,
+// and so does a running call whose record carried no time.
+pub fn a_running_call_carries_its_start_time_for_the_browser_test() {
+  let html =
+    drawn([
+      work([
+        turns.Step(
+          "2.0/0",
+          turns.Pending,
+          Words("Ran", Mono("sleep 600"), None),
+          [],
+          [],
+          [],
+          Some(1_700_000_072_000),
+        ),
+      ]),
+    ])
+  assert string.contains(
+    html,
+    "<span class=\"running-time\">Running · <loom-elapsed since=\"1700000072000\"></loom-elapsed></span>",
+  )
+  assert string.contains(html, "class=\"glyph\">●</span>")
+}
+
+pub fn a_settled_call_draws_no_running_time_test() {
+  let html =
+    drawn([
+      work([
+        step(Words("Ran", Mono("make"), None), turns.Done, []),
+        step(Words("Ran", Mono("make"), None), turns.Failed, []),
+        step(Words("Ran", Mono("make"), None), turns.Pending, []),
+      ]),
+    ])
+  assert !string.contains(html, "running-time")
+  assert !string.contains(html, "loom-elapsed")
+}
+
+// The command a running call names is the model's text and reaches the row only
+// as a text node: the start time is the one attribute, a number.
+pub fn a_running_row_puts_no_model_text_in_an_attribute_test() {
+  let html =
+    drawn([
+      work([
+        turns.Step(
+          "2.0/0",
+          turns.Pending,
+          Words("Ran", Mono("\" onmouseover=\"x"), None),
+          [],
+          [],
+          [],
+          Some(5),
+        ),
+      ]),
+    ])
+  assert string.contains(html, "<loom-elapsed since=\"5\"></loom-elapsed>")
+  assert string.contains(html, "&quot; onmouseover=&quot;x")
+  assert !string.contains(html, "\" onmouseover=\"")
 }

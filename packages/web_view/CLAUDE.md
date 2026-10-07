@@ -600,7 +600,20 @@ page keys and nonces, and the relay into the session's gateway.
   divider is a button (`lane.divider`) with the fixed `data-loom-fold` marker;
   both pages draw it with `lane.Folds`, and an observer's socket admits its click
   at `component.fold_click`'s exact path; the events admitted are the same as
-  under 070. `component.top(model)` is the `lane.Top` the lane draws above its
+  under 070. A message the shared projection shortened (a long paste, an
+  injected message) is drawn by `lane.message_row` as that row and a
+  `button.message-toggle` after it, in one `div.message`; `MessageToggled(key)`
+  (the block's key, drawn into the handler) opens or closes it (`messaged`),
+  acts only on a `Connected` page and only on a key `turns.abridges` finds in
+  the lane, and keeps at most `open_messages` open in `View.said`, newest first,
+  which a focus change clears. The whole text is read from the entry the block
+  holds (`turns.abridged`), so a sealed turn needs no read, is cut by
+  `expansion.capped` and is drawn only while open. Observer sockets admit the
+  button's click at `component.message_click`'s two exact paths (the protocol-change/070 addendum on messages).
+  A step still running draws `Running · ` and `<loom-elapsed since>` from
+  `turns.Step.since` (`fold_row.step`), and the composer's hint draws a pulsing
+  `span.busy-dot` while a turn runs (`operator_page.busy_mark`); the stylesheet's
+  reduced-motion rule stills both. `component.top(model)` is the `lane.Top` the lane draws above its
   oldest row (`Beginning`, `Earlier`, `Loading` while the page reads turns,
   `Full(rows)`); the strands a reader left park their closed turns with their
   paging (`View.parked_sealed`). The Changes and Trace boards and the newest tool
