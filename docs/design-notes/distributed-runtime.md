@@ -266,7 +266,7 @@ every scope on the machine:
 ```text
 scope(session, workspace, incarnation, state, close_outcome, attach_token)
 call(session, op, step, source_index, incarnation, tool, state, outcome, ...)
-  state: admitted | terminal | unknown | acked
+  state: admitted | terminal | unknown
 ```
 
 A call row is keyed by `(session, op, step, source_index)`, the identity the
@@ -275,11 +275,11 @@ tool starts and `terminal` with the encoded `ToolOutcome` before replying.
 A second request with the same key never starts a second run: it waits on the
 live run or returns the stored outcome. When the executor VM restarts, every
 `admitted` row becomes `unknown`; nothing is relaunched. After the orchestrator
-durably stages a result it sends `ack`, and acked rows are collected by a byte
-budget. A lost `ack` would otherwise leak a row forever (the call is no longer
-orphaned, so nobody queries it), so every `Attach` reply lists the scope's
-unacked terminal keys and the orchestrator acks the ones its store already
-holds.
+durably stages a result it sends `ack`, which deletes the row (an `unknown`
+row too, so executor restarts do not leak them). A lost `ack` would otherwise
+leak a row forever (the call is no longer orphaned, so nobody queries it), so
+every `Attach` reply lists the scope's unacked terminal and unknown keys and
+the orchestrator acks the ones its store already holds.
 
 System work (hooks, goal checks, Git observation, LSP observations) keeps
 main's semantics: it is not durable and never replayed, and the next event

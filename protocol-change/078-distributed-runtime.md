@@ -180,7 +180,7 @@ CREATE TABLE call (
   source_index INTEGER NOT NULL,
   incarnation INTEGER NOT NULL,
   tool TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('admitted', 'terminal', 'unknown', 'acked')),
+  state TEXT NOT NULL CHECK (state IN ('admitted', 'terminal', 'unknown')),
   outcome BLOB,
   outcome_digest BLOB,
   outcome_bytes INTEGER NOT NULL DEFAULT 0,
