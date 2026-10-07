@@ -43,25 +43,29 @@ fn long(word: String) -> String {
 // (long reasoning) and 4 (short reasoning), which draws one row for each block
 // that is not a call.
 fn response() -> entry.Entry {
+  response_of([
+    message.AssistantThinking(long("first"), None, False),
+    message.AssistantText("In between.", None),
+    message.AssistantToolCall(message.ToolCall(
+      "c1",
+      "fs_read",
+      json.Object([]),
+      None,
+      None,
+    )),
+    message.AssistantThinking(long("second"), None, False),
+    message.AssistantThinking("short", None, False),
+  ])
+}
+
+fn response_of(content: List(message.AssistantBlock)) -> entry.Entry {
   entry.MessageEntry(
     id(7),
     None,
     7,
     10_000,
     message.AssistantMessage(
-      [
-        message.AssistantThinking(long("first"), None, False),
-        message.AssistantText("In between.", None),
-        message.AssistantToolCall(message.ToolCall(
-          "c1",
-          "fs_read",
-          json.Object([]),
-          None,
-          None,
-        )),
-        message.AssistantThinking(long("second"), None, False),
-        message.AssistantThinking("short", None, False),
-      ],
+      content,
       "test",
       "test",
       "test",
@@ -209,4 +213,30 @@ pub fn the_keys_are_the_long_reasoning_blocks_of_the_responses_drawn_test() {
       ),
     ])
     == []
+}
+
+// A sealed turn holds no full reasoning text, but the response it was drawn
+// from does, so each reasoning row's line count is read from there: by the
+// row's key, for the blocks that have text, walking the rows and the blocks
+// together. A redacted block has no text and so no count, and a response that
+// is not an entry has none.
+pub fn the_lines_of_each_reasoning_row_are_read_from_its_response_test() {
+  let content = [
+    message.AssistantThinking("one\ntwo\nthree", None, False),
+    message.AssistantText("In between.", None),
+    message.AssistantThinking("hidden", Some("sig"), True),
+    message.AssistantThinking("a\nb", None, False),
+  ]
+  let block =
+    Block("7.0", FromEntry(response_of(content)), [
+      #("7.0:0", Line(transcript_line.ReasoningDigest, "one")),
+      #("7.0:1", Line(transcript_line.Assistant, "In between.")),
+      #("7.0:2", Line(transcript_line.ReasoningDigest, "redacted")),
+      #("7.0:3", Line(transcript_line.SummarizedReasoning, "x\nlabel")),
+    ])
+  assert turns.reasoning_lines(block)
+    == dict.from_list([#("7.0:0", 3), #("7.0:3", 2)])
+
+  let notice = Block("7.1", transcript_lines.FromNotice, block.rows)
+  assert turns.reasoning_lines(notice) == dict.new()
 }

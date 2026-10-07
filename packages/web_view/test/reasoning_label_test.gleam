@@ -191,6 +191,24 @@ pub fn a_label_that_arrives_after_the_turn_was_sealed_shows_test() {
   })
 }
 
+// A reasoning block beside a turn's answer is counted as the blocks in the
+// fold's steps are, whether it is the newest turn's or an older, sealed one's,
+// and whether or not it has a summary.
+pub fn a_reasoning_block_beside_an_answer_has_its_line_count_test() {
+  let model = page([lane_fixture.reasoned_answers(2, None)])
+  list.each(drawn(model), fn(html) {
+    assert count(html, raw) == 2
+    assert count(html, "· 2 lines") == 2
+  })
+
+  let labelled =
+    component.apply(model, [stored(2, "First one"), stored(4, "Second one")])
+  list.each(drawn(labelled), fn(html) {
+    assert count(html, summarized) == 2
+    assert count(html, "· 2 lines") == 2
+  })
+}
+
 pub fn a_label_is_only_ever_drawn_as_text_test() {
   let model =
     page([

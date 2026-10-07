@@ -2468,6 +2468,40 @@ pub fn reasoned(
   capture_of(list.append(done, live), running, [], [])
 }
 
+/// A capture of `main` whose complete turns each end in a response that thinks
+/// before it answers: a question (`question t`), then one response whose first
+/// content block is a long reasoning block (`thought`, of the response's
+/// sequence) and whose second is the answer (`answer t`). A turn is two records,
+/// so the response of turn `t` is sequence `2t`. With `running` given, a last
+/// turn (`question running`) follows and `main` runs under that operation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.reasoned_answers(2, None)
+/// ```
+pub fn reasoned_answers(
+  complete: Int,
+  running: Option(String),
+) -> session_channel.Update {
+  let done =
+    list.flat_map(counted(complete), fn(turn) {
+      let label = int.to_string(turn)
+      let first = { turn - 1 } * 2 + 1
+      reasoned_turn(label, first, 0, [
+        assistant([
+          message.AssistantThinking(thought(first + 1), None, False),
+          message.AssistantText("answer " <> label, None),
+        ]),
+      ])
+    })
+  let live = case running {
+    Some(_) -> reasoned_turn("running", complete * 2 + 1, 0, [])
+    None -> []
+  }
+  capture_of(list.append(done, live), running, [], [])
+}
+
 // One turn: its question, its thinking steps and then `ending`, which is the
 // answer for a complete turn and nothing for the turn still running.
 fn reasoned_turn(
