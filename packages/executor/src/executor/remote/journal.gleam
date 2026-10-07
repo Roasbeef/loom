@@ -21,6 +21,13 @@
 //// Named queries and their row decoders come from Parrot/sqlc. The SQL source
 //// owns storage shape; this module owns transactions and admission ordering.
 ////
+//// Owned recovery self-adopts while resource-free. Its narrow history actor
+//// closes explicitly before normal exit; the original managed run joins it.
+////
+//// `recover_owned` enters resource-free adoption before `handle_owned` activates
+//// shared SQL recovery. `release_owned` observes successful explicit close and
+//// the original DOWN; `shutdown_owned` cannot turn failed close into normal proof.
+////
 //// ## Flow
 ////
 //// `fresh` and `recover` enter `setup` then `load`. Calls enter `exchange` and
@@ -45,6 +52,7 @@ import gleam/string
 import parrot/dev
 import simplifile
 import sqlight
+import weft
 import weft/actor
 
 /// A serialized custody endpoint; the database connection never leaves its actor.
@@ -143,6 +151,130 @@ type Message {
     reply: process.Subject(Result(List(payload.Item), Error)),
   )
   Release(reply: process.Subject(Result(Nil, Error)))
+}
+
+/// Exact immutable metadata for temporary native recovery, without a live claim.
+@internal
+pub opaque type RecoveryInput {
+  /// Checked original path, full scope and capacity, with no connection.
+  RecoveryInput(
+    /// The checked path, full immutable scope and lifetime capacity.
+    config: Config,
+  )
+}
+
+/// The original adopted native writer, restricted to history and exact receipt.
+@internal
+pub opaque type OwnedRecovery {
+  /// The original adopted history door, bound once while resource-free.
+  OwnedRecovery(
+    /// The private message endpoint.
+    subject: process.Subject(OwnedMessage),
+    /// The exact original monitored writer.
+    pid: process.Pid,
+    /// Its complete immutable checked scope.
+    scope: identity.Scope,
+  )
+}
+
+/// Closed deterministic observation points for owned recovery controls.
+@internal
+pub type RecoveryCheckpoint {
+  /// The actor is resource-free and has not asked for custody.
+  BeforeAdopt
+
+  /// Custody exists, but the actor has not acknowledged startup.
+  BeforeStartAck
+
+  /// The adopted actor is about to open the original database.
+  BeforeSqlOpen
+
+  /// Validated recovery precedes the initialization reply.
+  BeforeInitialiseReply
+
+  /// Explicit close precedes its reply and final exit.
+  BeforeCloseReply
+
+  /// Successful explicit close precedes the original DOWN.
+  AfterCloseBeforeExit
+}
+
+/// A closed permit changes only a deterministic test observation.
+@internal
+pub type RecoveryPermit {
+  /// Continue the original operation.
+  Proceed
+
+  /// Omit the original reply without changing custody or the operation.
+  SuppressReply
+
+  /// Synthetic close refusal over a real SQLite owner, never production I/O evidence.
+  RefuseClose
+}
+
+/// Production does not observe or block at test checkpoints.
+@internal
+pub type RecoveryProbe {
+  /// No observation or injected failure exists in production.
+  Unobserved
+
+  /// A test owns each bounded original checkpoint and its explicit permit.
+  Observed(
+    /// The test-owned mailbox receiving only closed original checkpoints.
+    subject: process.Subject(RecoveryObservation),
+  )
+}
+
+/// The exact original actor reports before waiting for the test's permit.
+@internal
+pub type RecoveryObservation {
+  /// One original actor waits on a permit owned by that same actor.
+  RecoveryObservation(
+    /// The closed boundary reached by this original actor.
+    checkpoint: RecoveryCheckpoint,
+    /// This actual actor, never a registry lookup or replacement.
+    owner: process.Pid,
+    /// A fresh one-boundary permit subject.
+    permit: process.Subject(RecoveryPermit),
+  )
+}
+
+type OwnedState {
+  OwnedWaiting(config: Config, probe: RecoveryProbe)
+  OwnedReady(
+    config: Config,
+    connection: sqlight.Connection,
+    snapshot: Snapshot,
+    probe: RecoveryProbe,
+  )
+
+  // Failed setup keeps its actual connection for abnormal shutdown cleanup.
+  FailedCloseOwned(connection: sqlight.Connection)
+
+  // Successful explicit close removes the connection before the exit turn.
+  ReleasedOwned(probe: RecoveryProbe)
+}
+
+type OwnedMessage {
+  InitialiseOwned(process.Subject(Result(Nil, Error)))
+  InspectOwned(
+    identity.RequestKey,
+    identity.Digest,
+    process.Subject(Result(admission.Evidence, Error)),
+  )
+  PayloadsOwned(
+    identity.RequestKey,
+    identity.Digest,
+    process.Subject(Result(List(payload.Item), Error)),
+  )
+  ReceiptOwned(
+    identity.RequestKey,
+    identity.Digest,
+    identity.Digest,
+    process.Subject(Result(Decision, Error)),
+  )
+  ReleaseOwned(process.Subject(Result(Nil, Error)))
+  StopOwned
 }
 
 const timeout_ms = 30_000
@@ -299,6 +431,473 @@ pub fn release(journal: Journal) -> Result(Nil, Error) {
   case exchange(journal, Release) {
     Error(Closed) -> Ok(Nil)
     outcome -> outcome
+  }
+}
+
+/// Checks original native recovery metadata without opening or granting authority.
+///
+/// ## Examples
+/// `recovery_input(path, scope, capacity)` retains those exact recovery inputs.
+@internal
+pub fn recovery_input(
+  path: String,
+  scope: identity.Scope,
+  capacity: admission.Capacity,
+) -> Result(RecoveryInput, Error) {
+  use Nil <- result.try(valid_owned_path(path))
+  Ok(RecoveryInput(Config(path, scope, capacity)))
+}
+
+/// Reads the complete original scope from metadata, without acquiring custody.
+///
+/// ## Examples
+/// Resource recovery compares this value with its enrollment-derived full scope.
+@internal
+pub fn recovery_scope(input: RecoveryInput) -> identity.Scope {
+  input.config.scope
+}
+
+/// Recovers only historical native evidence under the original managed task.
+///
+/// ## Examples
+/// `recover_owned(input, ledger)` adopts before opening the original SQLite file.
+@internal
+pub fn recover_owned(
+  input: RecoveryInput,
+  ledger: weft.Ledger,
+) -> Result(OwnedRecovery, Error) {
+  start_owned(input, ledger, None, Unobserved)
+}
+
+/// Stages this exact temporary native writer beneath its original resource owner.
+///
+/// ## Examples
+/// The parent must already be an unresolved owner of this same ledger task.
+@internal
+pub fn recover_owned_under(
+  input: RecoveryInput,
+  ledger: weft.Ledger,
+  parent: process.Pid,
+) -> Result(OwnedRecovery, Error) {
+  start_owned(input, ledger, Some(parent), Unobserved)
+}
+
+/// Adds closed deterministic checkpoints to a real owned recovery control.
+///
+/// ## Examples
+/// Production callers use `recover_owned` without any probe.
+@internal
+pub fn recover_owned_observed(
+  input: RecoveryInput,
+  ledger: weft.Ledger,
+  parent: Option(process.Pid),
+  probe: RecoveryProbe,
+) -> Result(OwnedRecovery, Error) {
+  start_owned(input, ledger, parent, probe)
+}
+
+/// Reads the complete immutable scope of this original adopted writer.
+///
+/// ## Examples
+/// Resource installation compares this value before opening its own SQL file.
+@internal
+pub fn scope_owned(original: OwnedRecovery) -> identity.Scope {
+  original.scope
+}
+
+/// Inspects exact original evidence without admitting a native execution.
+///
+/// ## Examples
+/// `inspect_owned(original, key, digest)` cannot construct a Launch effect.
+@internal
+pub fn inspect_owned(
+  original: OwnedRecovery,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(admission.Evidence, Error) {
+  exchange_owned(original, InspectOwned(key, digest, _))
+}
+
+/// Reads the bounded retained payloads from this original adopted writer.
+///
+/// ## Examples
+/// Original request, output and terminal evidence remain separately typed items.
+@internal
+pub fn payloads_owned(
+  original: OwnedRecovery,
+  key: identity.RequestKey,
+  digest: identity.Digest,
+) -> Result(List(payload.Item), Error) {
+  exchange_owned(original, PayloadsOwned(key, digest, _))
+}
+
+/// Applies only the existing exact owner-receipt event, never a launch event.
+///
+/// ## Examples
+/// The history caller validates complete receipt content before this operation.
+@internal
+pub fn confirm_owner_receipt_owned(
+  original: OwnedRecovery,
+  key: identity.RequestKey,
+  prepared: identity.Digest,
+  terminal: identity.Digest,
+) -> Result(Decision, Error) {
+  exchange_owned(original, ReceiptOwned(key, prepared, terminal, _))
+}
+
+/// Requires the explicit close reply and the normal original actor DOWN.
+///
+/// ## Examples
+/// Missing reply, Closed, abnormal exit and late monitoring stay Uncertain.
+@internal
+pub fn release_owned(original: OwnedRecovery) -> Result(Nil, Error) {
+  let watch = process.monitor(original.pid)
+  let outcome = {
+    use Nil <- result.try(exchange_owned(original, ReleaseOwned))
+    owned_down(watch)
+  }
+  process.demonitor_process(watch)
+  outcome
+}
+
+fn start_owned(
+  input: RecoveryInput,
+  ledger: weft.Ledger,
+  parent: Option(process.Pid),
+  probe: RecoveryProbe,
+) -> Result(OwnedRecovery, Error) {
+  // Startup acknowledges only custody; the initializer never owns SQLite.
+  use started <- result.try(
+    actor.new_with_initialiser(1000, fn(subject) {
+      let _ = recovery_checkpoint(probe, BeforeAdopt)
+
+      // A queued close survives requester death and precedes any later activation.
+      let cancel = fn() {
+        process.send(subject, ReleaseOwned(process.new_subject()))
+      }
+      let adopted = case parent {
+        None -> weft.adopt(ledger, owner: process.self(), cancel:)
+        Some(parent) ->
+          weft.adopt_under(ledger, parent:, owner: process.self(), cancel:)
+      }
+      case adopted {
+        weft.Refused -> Error("owned recovery adoption refused")
+        weft.Adopted -> {
+          let _ = recovery_checkpoint(probe, BeforeStartAck)
+          Ok(
+            actor.initialised(OwnedWaiting(input.config, probe))
+            |> actor.returning(subject),
+          )
+        }
+      }
+    })
+    |> actor.on_message(handle_owned)
+    |> actor.on_shutdown(shutdown_owned)
+    |> actor.unlinked
+    |> actor.start
+    |> result.replace_error(StartFailed),
+  )
+
+  // This immutable handle names the actor that acquired the ledger custody.
+  let original = OwnedRecovery(started.data, started.pid, input.config.scope)
+  case exchange_owned(original, InitialiseOwned) {
+    Ok(Nil) -> Ok(original)
+    Error(error) -> {
+      process.send(original.subject, ReleaseOwned(process.new_subject()))
+      Error(error)
+    }
+  }
+}
+
+fn exchange_owned(
+  original: OwnedRecovery,
+  make: fn(process.Subject(Result(a, Error))) -> OwnedMessage,
+) -> Result(a, Error) {
+  let reply = process.new_subject()
+  let watch = process.monitor(original.pid)
+  process.send(original.subject, make(reply))
+  let answer =
+    process.new_selector()
+    |> process.select(reply)
+    |> process.select_specific_monitor(watch, fn(_) { Error(Uncertain) })
+    |> process.selector_receive(timeout_ms)
+  process.demonitor_process(watch)
+  result.unwrap(answer, Error(Uncertain))
+}
+
+fn owned_down(watch: process.Monitor) -> Result(Nil, Error) {
+  process.new_selector()
+  |> process.select_specific_monitor(watch, fn(down) {
+    case down {
+      process.ProcessDown(reason: process.Normal, ..) -> Ok(Nil)
+      process.ProcessDown(..) | process.PortDown(..) -> Error(Uncertain)
+    }
+  })
+  |> process.selector_receive(timeout_ms)
+  |> result.unwrap(Error(Uncertain))
+}
+
+fn handle_owned(
+  state: OwnedState,
+  message: OwnedMessage,
+) -> actor.Next(OwnedState, OwnedMessage) {
+  case state, message {
+    OwnedWaiting(config, probe), InitialiseOwned(reply) ->
+      initialise_owned(config, probe, reply)
+    OwnedReady(config, connection, snapshot, probe),
+      InspectOwned(key, digest, reply)
+    -> {
+      let outcome = {
+        use current <- result.try(read_current(connection, config, snapshot))
+        admission.inspect(current.book, key, digest)
+        |> result.map_error(Rejected)
+      }
+      process.send(reply, outcome)
+      case outcome {
+        Ok(_) | Error(Rejected(_)) -> actor.continue(state)
+        Error(_) -> stop_owned_connection(connection, probe)
+      }
+    }
+    OwnedReady(config, connection, _, probe), PayloadsOwned(key, digest, reply)
+    -> {
+      let outcome = read_payload(connection, config, key, digest)
+      process.send(reply, outcome)
+      case outcome {
+        Ok(_) | Error(Rejected(_)) -> actor.continue(state)
+        Error(_) -> stop_owned_connection(connection, probe)
+      }
+    }
+    OwnedReady(config, connection, snapshot, probe),
+      ReceiptOwned(key, digest, terminal, reply)
+    -> {
+      let outcome =
+        transact(
+          connection,
+          config,
+          snapshot,
+          codec.Apply(key, digest, admission.ConfirmOwnerReceipt(terminal)),
+        )
+      case outcome {
+        Ok(#(next, decision)) -> {
+          process.send(reply, require_decision(Ok(decision)))
+          actor.continue(OwnedReady(config, connection, next, probe))
+        }
+        Error(Rejected(reason)) -> {
+          process.send(reply, Error(Rejected(reason)))
+          actor.continue(state)
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          stop_owned_connection(connection, probe)
+        }
+      }
+    }
+    OwnedReady(_, connection, _, probe), ReleaseOwned(reply) -> {
+      let decision = recovery_checkpoint(probe, BeforeCloseReply)
+      case close_owned_connection(connection, decision) {
+        Ok(Nil) -> {
+          recovery_reply(decision, reply, Ok(Nil))
+          actor.continue(ReleasedOwned(probe)) |> actor.then_handle(StopOwned)
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.stop_abnormal("owned native SQL close failed")
+        }
+      }
+    }
+    OwnedWaiting(_, probe), ReleaseOwned(reply) -> {
+      process.send(reply, Ok(Nil))
+      actor.continue(ReleasedOwned(probe)) |> actor.then_handle(StopOwned)
+    }
+    FailedCloseOwned(_), StopOwned ->
+      actor.stop_abnormal("owned SQL cleanup failed")
+
+    // Only this connection-free state may produce a normal exit witness.
+    ReleasedOwned(probe), StopOwned -> {
+      let _ = recovery_checkpoint(probe, AfterCloseBeforeExit)
+      actor.stop()
+    }
+    OwnedWaiting(_, _), InspectOwned(_, _, reply)
+    | ReleasedOwned(_), InspectOwned(_, _, reply)
+    | FailedCloseOwned(_), InspectOwned(_, _, reply)
+    -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    OwnedWaiting(_, _), PayloadsOwned(_, _, reply)
+    | ReleasedOwned(_), PayloadsOwned(_, _, reply)
+    | FailedCloseOwned(_), PayloadsOwned(_, _, reply)
+    -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    OwnedWaiting(_, _), ReceiptOwned(_, _, _, reply)
+    | ReleasedOwned(_), ReceiptOwned(_, _, _, reply)
+    | FailedCloseOwned(_), ReceiptOwned(_, _, _, reply)
+    -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    OwnedReady(_, _, _, _), InitialiseOwned(reply)
+    | ReleasedOwned(_), InitialiseOwned(reply)
+    | FailedCloseOwned(_), InitialiseOwned(reply)
+    -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    ReleasedOwned(_), ReleaseOwned(reply)
+    | FailedCloseOwned(_), ReleaseOwned(reply)
+    -> {
+      process.send(reply, Error(Uncertain))
+      actor.continue(state)
+    }
+    OwnedWaiting(_, _), StopOwned | OwnedReady(_, _, _, _), StopOwned ->
+      actor.stop_abnormal("owned native premature stop")
+  }
+}
+
+fn initialise_owned(
+  config: Config,
+  probe: RecoveryProbe,
+  reply: process.Subject(Result(Nil, Error)),
+) -> actor.Next(OwnedState, OwnedMessage) {
+  let _ = recovery_checkpoint(probe, BeforeSqlOpen)
+  case open_owned(config) {
+    Error(error) -> {
+      process.send(reply, Error(error))
+      actor.continue(ReleasedOwned(probe)) |> actor.then_handle(StopOwned)
+    }
+    Ok(connection) ->
+      settle_owned_setup(
+        config,
+        connection,
+        probe,
+        reply,
+        setup(connection, config, Recover),
+      )
+  }
+}
+
+fn settle_owned_setup(
+  config: Config,
+  connection: sqlight.Connection,
+  probe: RecoveryProbe,
+  reply: process.Subject(Result(Nil, Error)),
+  outcome: Result(Snapshot, Error),
+) -> actor.Next(OwnedState, OwnedMessage) {
+  case outcome {
+    Ok(snapshot) -> {
+      let decision = recovery_checkpoint(probe, BeforeInitialiseReply)
+      recovery_reply(decision, reply, Ok(Nil))
+      actor.continue(OwnedReady(config, connection, snapshot, probe))
+    }
+    Error(error) -> {
+      process.send(reply, Error(error))
+
+      // Setup has opened SQL, so failure must retain or explicitly close it.
+      stop_owned_connection(connection, probe)
+    }
+  }
+}
+
+fn valid_owned_path(path: String) -> Result(Nil, Error) {
+  case
+    string.starts_with(path, "/")
+    && string.byte_size(path) <= 4096
+    && !string.contains(path, "\u{0}")
+  {
+    True -> Ok(Nil)
+    False -> Error(InvalidPath)
+  }
+}
+
+fn open_owned(config: Config) -> Result(sqlight.Connection, Error) {
+  use exists <- result.try(
+    simplifile.exists(config.path, False) |> result.replace_error(Uncertain),
+  )
+  use Nil <- result.try(case exists {
+    True -> Ok(Nil)
+    False -> Error(Missing)
+  })
+  sqlight.open(config.path) |> sql_error
+}
+
+fn stop_owned_connection(
+  connection: sqlight.Connection,
+  probe: RecoveryProbe,
+) -> actor.Next(OwnedState, OwnedMessage) {
+  let decision = recovery_checkpoint(probe, BeforeCloseReply)
+  case close_owned_connection(connection, decision) {
+    Ok(Nil) ->
+      actor.continue(ReleasedOwned(probe)) |> actor.then_handle(StopOwned)
+    Error(_) ->
+      // The next abnormal turn carries the actual connection into shutdown.
+      actor.continue(FailedCloseOwned(connection))
+      |> actor.then_handle(StopOwned)
+  }
+}
+
+fn close_owned_connection(
+  connection: sqlight.Connection,
+  decision: RecoveryPermit,
+) -> Result(Nil, Error) {
+  case decision {
+    RefuseClose -> Error(Uncertain)
+    Proceed | SuppressReply -> sqlight.close(connection) |> sql_error
+  }
+}
+
+// Abnormal failure remains lost proof even if this final cleanup succeeds.
+// A close failure on system termination must never leave a normal DOWN.
+fn shutdown_owned(state: OwnedState, _reason: process.ExitReason) -> Nil {
+  case state {
+    OwnedWaiting(_, _) | ReleasedOwned(_) -> Nil
+    OwnedReady(_, connection, _, _) | FailedCloseOwned(connection) -> {
+      case sqlight.close(connection) {
+        Ok(Nil) -> Nil
+        Error(_) -> process.kill(process.self())
+      }
+    }
+  }
+}
+
+/// Reports one closed test checkpoint; production immediately continues.
+///
+/// ## Examples
+/// A test releases the exact actor through the reported one-boundary permit.
+@internal
+pub fn recovery_checkpoint(
+  probe: RecoveryProbe,
+  checkpoint: RecoveryCheckpoint,
+) -> RecoveryPermit {
+  case probe {
+    Unobserved -> Proceed
+    Observed(subject) -> {
+      let permit = process.new_subject()
+      process.send(
+        subject,
+        RecoveryObservation(checkpoint, process.self(), permit),
+      )
+      process.new_selector()
+      |> process.select(permit)
+      |> process.selector_receive_forever()
+    }
+  }
+}
+
+/// Preserves reply-loss controls without changing the actual operation.
+///
+/// ## Examples
+/// Suppressing a reply does not cancel the admitted original writer.
+@internal
+pub fn recovery_reply(
+  decision: RecoveryPermit,
+  reply: process.Subject(a),
+  value: a,
+) -> Nil {
+  case decision {
+    Proceed | RefuseClose -> process.send(reply, value)
+    SuppressReply -> Nil
   }
 }
 
