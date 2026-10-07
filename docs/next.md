@@ -2,7 +2,7 @@
 
 This file describes the current integration boundary, its evidence and the next
 required work. Rewrite it after each integration milestone. This edition is
-baselined against `ddec0465b` on October 7, 2026, in the isolated
+baselined against `551dc3fc7` on October 7, 2026, in the isolated
 `runtime/main-refresh` branch. Source joins, gate receipts and hosted state were
 checked for this edition; earlier component results are identified separately.
 
@@ -104,8 +104,20 @@ absolute deadline. Both callers must produce the same canonical receipt and ACK,
 with one original UUID, child, ordinal and physical read. Independent review
 found no weakened invariant. The production transport was not changed.
 
-Full client and shipped-server validation of these latest components remain
-pending. The earlier full-client receipts below do not certify this new source.
+A fresh server shipment passes on `6ab920d96` in 44.55 seconds. Its full client
+run enables the shipped-server fixtures and finishes with 3,295 passes and one
+failure (`make check-client` exit two, 568.64 seconds). The only explicit
+exclusions are Linux `/proc` and rust-analyzer; EUnit itself reports zero skips.
+The failing shipped-job fixture cancelled `tail` after 83 ms, before any output,
+and expected cursor `20:0`. Its PID marker preceded exec and proved no read.
+
+`551dc3fc7` fixes that test ordering by waiting for the exact original job's
+staging file, then requiring a live public poll with the complete cursor before
+kill. The eight exchanges, original 120-second deadline and terminal output,
+cancellation and lifetime assertions remain intact. Independent review found no
+weakened check. The focused real shipped test passes in 2.89 seconds and client
+lint passes. A complete full-client rerun after this test-only correction remains
+pending; the preceding red run is preserved rather than relabeled green.
 
 The hook integration at `d84b60a91` passes all 3,276 client tests, with actual exit
 zero after 403.62 seconds including build. Normal seed, formatting, client lint,
