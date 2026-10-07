@@ -2,7 +2,8 @@
 
 This edition is baselined on source
 `cc9ec305da544c45609c959ed933d797930cac16` and the render implementation
-`669a8274e`, followed by generated digests at `b6f0a54e`, measured on
+`669a8274e`, generated digests at `b6f0a54e`, and the separately approved CI
+repair `1f0c7c6e5`, measured on
 October 6, 2026 (America/Los_Angeles). Work is isolated on
 `codex/perf-live-render-20261006`. The source, installed identities, local
 validation and GitHub state below were checked during this pass.
@@ -21,10 +22,11 @@ handoff after the next body of work.
 | Installed applications | Daemon PID 53549 and active terminal PID 67235 embed `11454cba77ca96acc6b3be85f1da72ba469dd976`, before #873. Repeated completion-table work is consistent with that older build; it does not disprove the merged memo. |
 | New render fix | Done/Pending step bodies avoid unused refusal preprocessing. Reasoning preview blankness checking now runs inside its existing text-keyed leaf memo. Failed-step rendering retains its work and behavior. |
 | Measurement | A bounded Pickglass allocation probe attributes 56.5% of matched cumulative words to step bodies and previews. Large-text unchanged-render fixtures remove about 99.97% and 99.75% of reductions respectively. These are fixture results, not installed CPU or RSS savings. |
-| Regression coverage | All 811 web-view tests pass sequentially and at parallelism eight. Other runners report 265 web-client, 47 focused UI-socket, 2,945 full client and 97 conformance passes. The three new regressions fail against the original modules and pass against the candidate. Existing shipped-server and seeded LSP skips remain; see the investigation. |
-| Static validation | Lint returned zero errors and 2,175 warnings; final doc-check returned zero errors and 196 warnings. Generated-client and prelude checks pass. Changed Gleam files pass formatting. |
-| Remaining gate | `make check-web_view` fails on nine unchanged formatter files. A whole-tree census finds 119 unchanged files. A private formatter-only patch is prepared; the owner has been asked whether to include the separate scope. The complete affected gate is not green. |
-| Independent review | One fresh report-only review found no actionable issue, passed 70 concurrent regression executions, and verified profiler cleanup on callback failure. |
+| Regression coverage | All 811 web-view tests pass sequentially and at parallelism eight. The three new regressions fail against the original modules. Earlier direct client and conformance runs passed with fixture skips; two prepared client runs instead report 2,944 passes and one gateway lifecycle failure. The full repository run passes all 2,945; both regressions also pass alone. The intermittent cause remains unresolved. |
+| Static validation | Lint returned zero errors and 2,175 warnings; doc-check returned zero errors and 196 warnings. Generated-client and prelude checks pass. Whole-tree formatting passes with CI-pinned Gleam 1.19.0. |
+| CI repair | Quiet grep closed a successful skip-match pipe early; `pipefail` converted the producer's SIGPIPE into a failed match. Commit `1f0c7c6e5` consumes the stream and preserves the existing declarations. Both new regressions fail against the original runner; all 18 selector/runner tests pass with the fix. |
+| Remaining gate | The CI repair selects every package through the full local affected check and requires Linux signoff. Every package has a passing local result, including the sandbox rerun with Homebrew tools first. The affected wrapper remains red on two undeclared Linux `/proc` fixture skips on Darwin. No candidate Linux signoff has run. |
+| Independent review | One fresh report-only review found no actionable issue, passed 70 concurrent regression executions, and verified profiler cleanup on callback failure. A separate review found no actionable issue in the CI repair. |
 | Hosted validation | No candidate branch has been pushed and no candidate CI has run. The baseline CI run [37538889208](https://github.com/Roasbeef/loom/actions/runs/37538889208) failed in the macOS gate's Skip census step; this is not a candidate result. |
 | Publication and installation | The candidate is committed locally. It has not been pushed, opened as a PR, installed, or measured in the running applications. |
 
@@ -34,14 +36,21 @@ application was restarted, hotpatched or forced through collection. The
 client node is unnamed; native sampling supplies partial client evidence,
 but distributed Pickglass attachment requires a profiled client launch.
 
+The previous edition's formatter blocker was a validation-shell mistake:
+its login shell selected Gleam 1.18.1 rather than CI's 1.19.0. The reported
+nine-file package and 119-file whole-tree failures are obsolete under the
+pinned compiler; no formatter patch was applied. Its signoff-not-required
+claim described the render-only scope and became obsolete when the owner
+approved the separate CI repair.
+
 ## What to do next
 
-1. Resolve the formatter scope and run the complete affected gates against
-   this pinned source. The prepared patch is
-   `/private/tmp/loom-live-20261006/formatter-only.patch`. Exit: each required
-   command returns its own zero status, or its unresolved failure is recorded
-   without calling the branch ready. Keep formatter repair in a separate
-   prerequisite commit if the owner chooses it.
+1. Obtain the required Linux signoff and resolve the full-scope Darwin skip
+   census before claiming readiness. The approved CI repair does not add
+   declarations for the two Linux `/proc` broker fixtures. Exit: required
+   gates return their own zero status, with any platform omissions explicitly
+   approved and documented. Preserve the intermittent gateway-test evidence;
+   its passing full run does not establish the earlier failures' cause.
 2. Publish only when directed, with the investigation's fixture limits and
    inherited gate failures in the description. Exit: exact-head hosted checks
    and the affected selector's review/signoff requirements are satisfied.
@@ -93,24 +102,35 @@ is not evidence that the preceding gate passed.
   issue was checked open during this pass.
 - SQLite bursts remain workload-dependent and outside the two render changes.
 - Full client attribution needs a named profiling node and a matched workload.
-- Formatter scope, full affected validation, publication and installation
-  remain pending.
+- The intermittent gateway-test cause, full-scope Darwin census, Linux
+  signoff, publication and installation remain pending.
 
 None of these is unfinished work somebody forgot. The measurement gaps need
 matched installed workloads; source allocation reductions do not close them.
 
 ## How to verify
 
-Run `make affected BASE=cc9ec305d` to reproduce the selector. It requires fmt,
-lint, doc-check, prelude-check, client-check, and the web-view, web-client,
-client and conformance package gates; it reports signoff not required for
-this change. `make check` remains the full local gate.
+Use a non-login shell with
+`PATH=/Users/roasbeef/.local/lib/loom/server/bin:/opt/homebrew/bin:$PATH` for local checks; verify
+`gleam --version` reports 1.19.0 and `command -v rg` resolves Homebrew. Run `make affected BASE=cc9ec305d` to reproduce
+the selector: fmt, lint, doc-check, prelude-check and client-check run first,
+then the full repository check. It reports Linux signoff required. Run
+`make check-affected BASE=cc9ec305d` for the prepared local gate. The remote
+signoff needs a published exact head and an explicitly selected
+`LOOM_SIGNOFF_HOST`; neither candidate publication nor remote signoff has
+been performed.
 
 The private fixture runner and alternating control/candidate logs live under
 `/private/tmp/loom-live-20261006/`. Reuse the same toolchain and compiled
 dependencies, keep timing untraced, and compare complete rendered output.
 Blank previews differ by an empty 20-byte memo placeholder; they display no
 content or handler, and transitions through the real patch cache are tested.
+
+**Application-private tools are not Homebrew tools.** The inherited Codex path
+selected an `rg` which the intentional Seatbelt grants cannot read. The
+sandbox package gate passes with Homebrew ahead of that path; no grant was
+widened. The full wrapper's census still refuses two undeclared Linux-only
+broker fixtures on Darwin.
 
 **Samples are not elapsed CPU shares.** Pickglass stack sampling is biased
 toward reduction safe points; the allocation window covers selected processes
