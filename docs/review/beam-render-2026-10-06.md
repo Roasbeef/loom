@@ -148,9 +148,9 @@ gate and prelude-check passed. House lint returned zero errors and 2,175
 warnings; the final doc-check returned zero errors and 196 warnings. Changed
 Gleam files pass formatting. Each command's own exit status was captured.
 
-The existing client runner skipped shipped-server fixtures because
-`LOOM_BOOTSTRAP_E2E_SERVER` is unset. Conformance's existing LSP end-to-end
-fixtures skipped because this worktree has no code-mode seed. No test,
+Those earlier direct client runs skipped shipped-server fixtures because
+`LOOM_BOOTSTRAP_E2E_SERVER` was unset. The earlier conformance run skipped LSP
+end-to-end fixtures because the worktree then had no code-mode seed. No test,
 assertion, fixture requirement, or skip condition was changed. These runs
 do not establish shipped-release or seeded code-mode validation.
 
@@ -161,14 +161,108 @@ unchanged. The nearby eager trim in `more_of` was dismissed for this production
 path: `turns.prose` changes assistant thinking to ReasoningDigest, bypassing
 the raw-reasoning arms that call it. No speculative variant patch was added.
 
-The full `make check-web_view` remains blocked: its formatter rejects nine
-unchanged baseline files under the installed Gleam 1.19.0. The whole-tree
-formatter census reports 119 unchanged files. A formatter-only patch was
-prepared privately, and the owner was asked whether to include that separate
-scope. It has not been applied. The affected selector requires fmt, lint,
-doc-check, prelude-check, client-check and the web-view, web-client, client,
-and conformance package gates. It reports signoff not required. Passing
-focused suites is not a green affected gate or merge readiness.
+The earlier formatter diagnosis was wrong. A login shell resolves
+`/opt/homebrew/bin/gleam`, version 1.18.1, while the inherited non-login path
+resolves the installed Loom bundle's compiler, version 1.19.0. CI pins 1.19.0.
+The nine-file package failure and 119-file census came from the older
+formatter; they do not establish drift under the repository's pinned compiler.
+An explicit 1.19.0 whole-tree format check returns zero without source edits.
+The private formatter-only patch has not been applied and is unnecessary.
+
+The first complete affected run used the pinned compiler, a real server
+shipment and code-mode seed. Static checks, the fast package lane and
+conformance passed. Client reported 2,944 passes and one failure in
+`sqlite_read_timeout_poison_stops_original_incarnation_without_self_wait_test`.
+The skip census also failed despite two matching declarations already being
+present. The wrapper returned a nonzero status after 606 seconds.
+
+The census failure was a pipe ordering defect. Under `pipefail`, the quiet
+matching grep closed its input early and the producing grep exited on SIGPIPE
+with status 141. Consuming the matching stream instead preserves the existing
+declarations. The owner approved this separate CI repair, committed at
+`1f0c7c6e5`; no declaration changed. Its permitted-long-log and
+undeclared-skip regressions both fail against the original runner. All 18
+selector/runner tests pass with the fix, as does shell syntax checking. A
+separate report-only review found no actionable issue.
+
+The prepared full client rerun again reports 2,944 passes and the same
+failure. The gateway, manager and regression are unchanged against the pinned
+baseline. The assertion receives `Error(Nil)` while waiting for the callback's
+admission report; it does not observe the expected `Stopping` status. Both
+gateway regressions pass in a focused run with the same fixture environment.
+A bounded trace in a disposable focused-test VM observes the five-second
+reader timeout, then `Stopping`, then gateway shutdown. That passing trace
+does not establish why the full-suite run fails. Running the immediate
+predecessor module before the regression also passes, so that two-module
+sequence is insufficient to reproduce it. No assertion, timeout or
+test requirement has been weakened.
+
+The same regression passes in the full repository run after the CI repair.
+The observed full runs therefore establish intermittent behavior, while its
+cause remains unresolved. The passing run does not erase the two earlier
+failures or establish that the CI pipe repair changed gateway behavior.
+
+The added CI scope selects every package through the full repository check
+and requires Linux signoff. The complete local affected wrapper returned
+nonzero after 1,029 seconds. All Gleam and JavaScript suites passed, including
+2,945 client tests, 1,241 TUI tests and 97 seeded conformance tests. The Go
+sandbox gate failed because the inherited path selected Codex's app-private
+`rg`; its Seatbelt fixture deliberately grants Homebrew's location. A package
+gate rerun with Homebrew first returned zero without changing source.
+
+The skip census now correctly preserves both existing Darwin declarations.
+It still refuses two additional markers from the newly selected broker suite:
+`real_helper_kill_ordering` and `real_helper_witnessed_kill`, whose evidence
+reader requires Linux `/proc`. These tests and the declaration file are
+unchanged against the pinned baseline. All package gates therefore have a
+passing local result, but the complete affected wrapper remains red. No skip
+declaration was added to make that result green. Candidate hosted checks and
+Linux signoff remain unperformed.
+
+Use a non-login shell with
+`PATH=/Users/roasbeef/.local/lib/loom/server/bin:/opt/homebrew/bin:$PATH`:
+this selects both CI-pinned Gleam 1.19.0 and the sandbox fixture's Homebrew
+tools. The wrapper log is
+`/private/tmp/loom-live-20261006-affected-full.log`; its package and census
+logs are in this worktree's `build/affected/`. The successful sandbox rerun is
+`/private/tmp/loom-live-20261006-sandbox-path-rerun.log`.
+
+## Continued memory observation
+
+A new unforced Pickglass census on the same daemon records 264,257,263 bytes
+of VM allocation, including 180,860,344 process bytes and 37,334,896 binary
+bytes, across 395 processes. A nearby OS sample reports 326,944 KiB RSS.
+Daemon and active-client CPU were about 0.3% and 0.1% in that sample. This is
+a quieter workload, not a before/after candidate comparison.
+
+The final CLI capture records 264,516,815 total bytes, 184,369,744 process
+bytes and 34,047,928 binary bytes, again across 395 processes. It observes the
+same installed revision and does not measure candidate savings.
+
+Pickglass's live Memory page adds allocator evidence absent from the one-shot
+capture. At one displayed cut, heap carriers hold 212 MiB of capacity with
+178 MiB used and 33.8 MiB unused. Binary carriers hold 53.5 MiB with 27.3 MiB
+used and 26.2 MiB unused; their pool holds another 19.7 MiB with 4.89 MiB used
+and 14.8 MiB unused. The Overview shows 337 MiB of carrier capacity against
+255 MiB of VM allocation and 309 MiB RSS. These are rounded observations at
+different instants: reserved carrier capacity can exceed resident pages.
+Neither the unused capacity nor the derived gaps establish a leak or promise
+an equal RSS reduction. ETS metadata covers all 55 tables and about 1.50 MiB
+of table storage; no table contents were read.
+
+The largest listed page socket has about 13.9 MiB of allocated process
+capacity. Another page socket's unlabelled child varies from about 7.28 MiB
+to 3.94 MiB without forced collection. Bounded metadata identifies that parent
+edge and shows its old heap becoming empty in a later cut. This supports
+ordinary allocation and collection churn; it does not measure every retained
+root or establish a socket's exclusively reachable size.
+
+A ten-second, 100 Hz profile of that child completed with 1,000 samples,
+only six running/runnable and 994 waiting. Its observed leaf frames include
+string trimming, Unicode grapheme scanning, keyed-child extraction and JSON
+parsing. Six samples are insufficient evidence for a new optimization. The
+profile was exported, and the viewer was detached: its agent modules, pins
+and probes were removed from the target. Remaining probes use the CLI.
 
 ## Evidence and next experiment
 
@@ -179,7 +273,9 @@ and the focused/full/parallel test and lint logs sharing that prefix.
 `/private/tmp/loom-live-20261006/` contains the synthetic runner,
 original-module control, alternating performance logs and formatter-only patch.
 
-Resolve the formatter scope before claiming the full gate. Shipment of the
+Obtain required Linux signoff and resolve the Darwin full-scope skip census
+before claiming readiness. Preserve the intermittent gateway-test evidence
+as an unresolved validation limit. Shipment of the
 merged previous fixes and this candidate is a separate operational transition.
 Reopen a terminal with profiling enabled for direct client attribution, and
 compare the same active, idle and released workload before and after installation.
