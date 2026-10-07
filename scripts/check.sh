@@ -104,4 +104,12 @@ if [ $# -eq 0 ]; then
   scripts/lint.sh --quiet
 fi
 
+# The configuration-reference gate's own fixtures. The gate itself runs under
+# `make doc-check`; this proves its extraction still catches each way a key can
+# go missing, which a passing doc-check on its own would not.
+if [ $# -eq 0 ]; then
+  echo "==> configuration-key gate self-test"
+  scripts/config_keys.sh --self-test
+fi
+
 echo "all checks passed"

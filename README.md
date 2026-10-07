@@ -71,7 +71,8 @@ the resulting client and server don't need a separate Erlang installation.
 Choose a model by copying the [catalogue example](docs/examples/loom.toml) to
 `~/.loom/loom.toml` and editing its model entries and role routes. API keys stay
 in environment variables named by the catalogue, not in the file. Set those
-variables before starting the daemon.
+variables before starting the daemon. The [configuration reference](docs/configuration.md)
+lists every key the file accepts.
 
 ```sh
 # Open the terminal without a provider or server.
@@ -395,7 +396,8 @@ pricing belong to each model entry. Usage is recorded durably; configured
 prices make the terminal's cost display meaningful across models. Credentials
 are read from the named environment variables at dispatch time.
 
-See the [model guide](docs/architecture/models.md) and
+See the [model guide](docs/architecture/models.md), the
+[configuration reference](docs/configuration.md) and the
 [catalogue example](docs/examples/loom.toml).
 
 ## Advisor mode
