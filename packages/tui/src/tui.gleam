@@ -2090,9 +2090,7 @@ pub fn connect_remote(
       // catalogue load queued rather than leaving it for the first event.
       case session {
         "" -> session_control.load_catalogue(model, "", None)
-        id ->
-          session_control.note_kept_profile(model)
-          |> session_control.begin_open(id)
+        id -> session_control.begin_open(model, id)
       }
       |> runtime.flush
     }
@@ -2122,7 +2120,21 @@ fn live_base(base: Model) -> Model {
   )
 }
 
-fn attach_daemon(
+/// Attaches a local launch to the daemon it resolved, opening `selected` when
+/// one was named and the picker otherwise.
+///
+/// This is the path `loom` and `loom --session <id>` take. It reads the owner
+/// credential, adopts the control connection, and opens the chosen session
+/// through `session_control.open_chosen`, which says when `--model-profile`
+/// was ignored because the session already existed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let attached = tui.attach_daemon(model, control, Ok(address), token_path, "")
+/// ```
+@internal
+pub fn attach_daemon(
   base: Model,
   control: daemon.Connection,
   address: Result(String, String),
@@ -2156,7 +2168,7 @@ fn attach_daemon(
       // starts at launch rather than at the loop's first event.
       case selected {
         "" -> session_control.load_catalogue(model, "", None)
-        id -> session_control.begin_open(model, id)
+        id -> session_control.open_chosen(model, id)
       }
       |> runtime.flush
     }

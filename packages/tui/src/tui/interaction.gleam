@@ -606,7 +606,7 @@ fn update_daemon_selector(
         view: view_set.overlay(model.view, NoOverlay),
       )
     session_selector.Choose(row) ->
-      session_control.begin_open(model, row.session_id)
+      session_control.open_chosen(model, row.session_id)
     session_selector.Link(row) ->
       case row.status {
         control_protocol.Resident(_) ->
