@@ -89,7 +89,7 @@ the page's cookie, key and nonce in one actor. A ticket for it is minted
 only by `UiLink` (`client/daemon/server.gleam:2103`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:1465`)). The
+switching to another session (`ticket_for` (`ui_socket.gleam:1472`)). The
 exchange redeems it once (`redeem` (`ui_sessions.gleam:737`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
