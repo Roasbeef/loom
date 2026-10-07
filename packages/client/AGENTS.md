@@ -6365,3 +6365,44 @@ including lost replies, cancellation, late exact receipts and history refusal.
 Their deliberately held or NotStarted transport does not claim physical helper
 execution or shipped full-host assembly. Default serve selection remains an
 assembly obligation.
+
+## Original registered imported hooks
+
+`hookserve.load_registered` receives explicitly acquired documents and preserves
+original source positions through absence, parse refusal and the existing trust
+checks. It reads trust records in the configured owner trust directory; it never
+reads the supplied executor workspace source path. `hookwire.matching_indexed`
+retains original parsed event, matcher-group and handler positions before
+filtering. `registered_serving` and `wire_registered` are internal assembly doors
+behind the unchanged public Serving, Wiring and Context constructors. Both modes
+share the five ordinary gate decisions and their harness-priority exclusions.
+
+At an actual gate invocation, `run_occurrence` captures the original caller, one
+UUID, complete source inventory, full stdin and every selected handler's complete
+CallSpec and deadline. Its managed task retains one write-once ordinary fact under
+`session/hook-occurrence/<UUID>`. `registered_system_work.retain_hook_occurrence`
+checks the actual session identity and performs the sole CAS and exact successful
+sequence/value readback. Only that transition constructs opaque HookOccurrence
+and HookWork. Duplicate history, failed writes and unknown COMMIT observations
+cannot reconstruct fresh work. The session prefix keeps complete accepted stdin
+outside the gateway's bounded capture of all client facts.
+
+Each actual worker creates its own native event Subject, retains the exact
+SystemIntent address plus canonical record digest/size, and allocates the original
+custodian's one-use SystemPermission. `hookrunner.run_registered` rechecks the
+captured generation, owner and complete declaration before Broker clearance.
+Only nondispatched OutstandingCapReached retries the same reference, CallSpec and
+original deadline within the existing slot allowance. Sequential handlers receive
+no new deadline. Caller death cancels the original managed worker, and admitted
+worker death follows the real Dispatcher's original cancellation path.
+
+Complete stdin uses the existing 8192-byte frame, 128-frame and 1MiB lifetime
+limits, with one EOF on the final data frame. Existing declaration and custodian
+bounds remain enforced; SystemIntent stores bounded metadata pointing to complete
+ordinary occurrence bytes. The controls use actual conversation and owner SQLite,
+Broker, Dispatcher and network snapshot capture. Held transport and synthetic
+uncertain terminals prove admission, cancellation and stdin framing at the
+Dispatcher callback boundary. They do not prove queue acceptance, physical helper
+stdin consumption or shipped registered assembly.
+Default source acquisition and serve selection remain ordinary assembly work
+under protocol-change/079, originally approved as 077.

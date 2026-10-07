@@ -48,14 +48,24 @@
 //// and a timed-out `Outcome` carries no stdout or stderr for the
 //// caller to read a decision out of. What the caller does with a
 //// cancellation is the event mapping's business, not the runner's.
+//// Registered assembly selects `registered_context` and `prepare_registered`
+//// before the gate worker retains its full occurrence. `run_registered` uses
+//// that exact work and original custodian to allocate the worker-owned system
+//// permission. `admitted_registered` spends only the original congestion room
+//// and deadline; `send_input` preserves byte chunks with one final EOF.
 
 import broker/broker
 import broker/budget
+import broker/dispatch
 import broker/exec.{type EnforcementDemand}
 import broker/policy
+import client/registered_system_work as work
+import client/remote/custodian
 import core/clock.{type Clock}
+import core/generation
 import core/glance
 import core/ids.{type OpId}
+import core/workspace
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
@@ -63,7 +73,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import storage/owner_custody as custody
 import tools/tool
+import weft/poll
 
 /// One command handler the runner can execute, already stripped of the
 /// fields that do not reach the process. The loader (`client/hookcompat`)
@@ -133,6 +145,18 @@ pub type Context {
     /// The parity matrix records the difference rather than inventing
     /// a transcript the harness does not keep.
     transcript_path: String,
+  )
+}
+
+/// Original ready custody captured once by registered assembly.
+@internal
+pub opaque type RegisteredContext {
+  RegisteredContext(
+    context: Context,
+    owner: custodian.Handle,
+    owner_name: String,
+    association: generation.GenerationAssociation,
+    clearance_ms: Int,
   )
 }
 
@@ -428,6 +452,250 @@ fn result_try(
   case step {
     Ok(value) -> next(value)
     Error(refusal) -> Error(Refused(refusal))
+  }
+}
+
+/// Captures actual original ready custody and immutable execution coordinates.
+/// No historical owner projection can be used as the first argument.
+///
+/// ## Examples
+///
+/// `registered_context(ready, context, "owner", 1000)` selects no local fallback.
+@internal
+pub fn registered_context(
+  ready: custodian.RegisteredOwner,
+  context: Context,
+  owner_name: String,
+  clearance_ms: Int,
+) -> Result(RegisteredContext, work.Error) {
+  let #(owner, _, association) = custodian.registered_fields(ready)
+  let scope = generation.key_scope(generation.association_key(association))
+  case
+    context.session_id
+    == ids.session_id_to_string(workspace.scope_fields(scope).0)
+    && owner_name != ""
+    && clearance_ms > 0
+    && context.workspace != ""
+  {
+    True ->
+      Ok(RegisteredContext(
+        context,
+        owner,
+        owner_name,
+        association,
+        clearance_ms,
+      ))
+    False -> Error(work.Refused)
+  }
+}
+
+/// Projects original ordinary identity and fixed clearance/settlement room.
+///
+/// ## Examples
+///
+/// `registered_identity(context)` does not acquire another owner connection.
+@internal
+pub fn registered_identity(
+  context: RegisteredContext,
+) -> #(String, generation.GenerationAssociation, Context, Int) {
+  #(
+    context.owner_name,
+    context.association,
+    context.context,
+    context.clearance_ms + 3000 + settle_grace_ms,
+  )
+}
+
+/// Fixes one handler's entire CallSpec at the actual gate acceptance time.
+///
+/// ## Examples
+///
+/// `prepare_registered(context, command, 600, now, position, id, definition)` never consults a latest config.
+@internal
+pub fn prepare_registered(
+  context: RegisteredContext,
+  command: Command,
+  default_timeout_s: Int,
+  accepted_ms: Int,
+  position: work.HookPosition,
+  request_id: ids.EntryId,
+  definition: String,
+) -> work.HookPlan {
+  let timeout =
+    option.unwrap(command.timeout_s, default_timeout_s)
+    |> int.clamp(1, max_timeout_s)
+  work.HookPlan(
+    position,
+    definition,
+    request_id,
+    call_spec(context.context, command, accepted_ms, timeout),
+  )
+}
+
+/// Allocates one actual worker-owned permission from its exact retained intent.
+/// Input and outcomes stay on that worker until its original managed run ends.
+///
+/// ## Examples
+///
+/// `run_registered(context, work)` cannot obtain permission by reading history.
+@internal
+pub fn run_registered(
+  context: RegisteredContext,
+  retained: work.HookWork,
+) -> Result(Outcome, RunError) {
+  let #(plan, input, owner, association, _) = work.hook_fields(retained)
+  let spec = plan.spec
+  let original = context.context
+  let wall = spec.requirements.limits.wall_s
+  let expected =
+    call_spec(
+      original,
+      Command("", Some([]), Some(wall)),
+      spec.budget.deadline_ms - wall * 1000,
+      wall,
+    )
+  use Nil <- result.try(
+    case
+      owner == context.owner_name
+      && association == context.association
+      && spec == broker.CallSpec(..expected, argv: spec.argv)
+      && spec.argv != []
+    {
+      True -> Ok(Nil)
+      False -> Error(NeverSettled)
+    },
+  )
+  let #(now, _) = clock.read(original.clock)
+  use Nil <- result.try(case now < spec.budget.deadline_ms {
+    True -> Ok(Nil)
+    False -> Error(NeverSettled)
+  })
+  let #(address, bytes) = work.hook_manifest(retained)
+  use intent <- result.try(
+    custodian.retain_system_intent(
+      context.owner,
+      address,
+      custody.CommandPreparation,
+      spec.op_id,
+      spec.step_id,
+      plan.request_id,
+      bytes,
+    )
+    |> result.replace_error(NeverSettled),
+  )
+
+  // Allocation records this actual worker, which also owns the native events.
+  // A lost reply never reconstructs its local reference from durable intent.
+  let events = process.new_subject()
+  let outcome = {
+    use allocation <- result.try(
+      custodian.allocate_system_reservation(
+        context.owner,
+        intent,
+        dispatch.SystemCommandDeclaration(
+          owner,
+          spec.op_id,
+          spec.step_id,
+          spec.argv,
+          spec.env,
+          spec.cwd,
+          spec.budget.deadline_ms,
+        ),
+        events,
+      )
+      |> result.replace_error(NeverSettled),
+    )
+    use ref <- result.try(case allocation {
+      custodian.SystemPermission(ref) -> Ok(ref)
+      custodian.SystemObservation(..) -> Error(NeverSettled)
+    })
+    use call <- result.try(admitted_registered(context, ref, spec, events))
+    send_input(original.broker, call, bit_array.from_string(input))
+    let #(current, _) = clock.read(original.clock)
+    case
+      tool.collect_events(
+        events,
+        waiting: int.max(spec.budget.deadline_ms - current, 0) + settle_grace_ms,
+      )
+    {
+      Ok(collected) -> Ok(settled(collected))
+      Error(Nil) -> {
+        broker.cancel(original.broker, call)
+        Error(NeverSettled)
+      }
+    }
+  }
+  case outcome {
+    Ok(_) -> Nil
+    Error(_) -> {
+      let _ = custodian.cancel_system_intent(context.owner, intent)
+      Nil
+    }
+  }
+  outcome
+}
+
+fn admitted_registered(
+  context: RegisteredContext,
+  ref: dispatch.SystemReservationRef,
+  spec: broker.CallSpec,
+  events: process.Subject(broker.CallEvent),
+) -> Result(broker.CallHandle, RunError) {
+  let clock = context.context.clock
+  let b = context.context.broker
+  let clearance = context.clearance_ms
+  let #(now, _) = clock.read(clock)
+  let attempt = fn() {
+    let #(current, _) = clock.read(clock)
+    case current >= spec.budget.deadline_ms {
+      True -> poll.Fail(NeverSettled)
+      False ->
+        case
+          broker.clear_system_call_from(
+            b,
+            ref,
+            spec,
+            events,
+            waiting: int.min(clearance, spec.budget.deadline_ms - current),
+          )
+        {
+          Ok(call) -> poll.Done(call)
+          Error(broker.BudgetRefused(budget.OutstandingCapReached(..))) ->
+            poll.Retry
+          Error(refusal) -> poll.Fail(Refused(refusal))
+        }
+    }
+  }
+  case
+    poll.until(
+      within: int.min(3000, int.max(spec.budget.deadline_ms - now, 0)),
+      every: 25,
+      attempt:,
+    )
+  {
+    poll.Answered(call) -> Ok(call)
+    poll.Failed(error) -> Error(error)
+    poll.Expired -> Error(NeverSettled)
+  }
+}
+
+// The admitted protocol already bounds chunks and lifetime bytes. Exactly one
+// EOF rides the final data chunk, including the empty-input special case.
+fn send_input(
+  b: broker.Broker,
+  call: broker.CallHandle,
+  bytes: BitArray,
+) -> Nil {
+  case bytes {
+    <<chunk:bytes-size(8192), rest:bytes>> ->
+      case rest {
+        <<>> -> broker.stdin(b, call, chunk, True)
+        remaining -> {
+          broker.stdin(b, call, chunk, False)
+          send_input(b, call, remaining)
+        }
+      }
+    final -> broker.stdin(b, call, final, True)
   }
 }
 
