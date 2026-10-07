@@ -309,8 +309,7 @@ fn saved_region(
   case groups {
     [] -> []
     [_, ..] -> {
-      let total =
-        list.fold(groups, 0, fn(sum, group) { sum + list.length(group.entries) })
+      let entries = list.flat_map(groups, fn(group) { group.entries })
       [
         html.div([attribute.class("saved-region")], [
           element.element("loom-saved", [], [
@@ -322,13 +321,37 @@ fn saved_region(
                 attribute.attribute("aria-expanded", "false"),
                 attribute.title("Show or hide the saved sessions"),
               ],
-              [html.text(int.to_string(total) <> " saved")],
+              [html.text(toggle_words(entries))],
             ),
           ]),
           html.div([attribute.class("saved-panel")], sections),
         ]),
       ]
     }
+  }
+}
+
+// The words on the toggle. A blocked row is one nothing runs and a page cannot
+// open, and its own row says "needs attention", so the count names it that way
+// and "saved" counts only the sessions that can be resumed.
+fn toggle_words(entries: List(Entry)) -> String {
+  let blocked =
+    list.count(entries, fn(entry) {
+      case entry.residency {
+        Blocked -> True
+        Live | Saved -> False
+      }
+    })
+  let saved = list.length(entries) - blocked
+
+  case saved, blocked {
+    _, 0 -> int.to_string(saved) <> " saved"
+    0, _ -> int.to_string(blocked) <> " needs attention"
+    _, _ ->
+      int.to_string(saved)
+      <> " saved · "
+      <> int.to_string(blocked)
+      <> " needs attention"
   }
 }
 
