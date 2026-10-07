@@ -181,3 +181,33 @@ remembered grant: dispatch snapshots the fact once, and running executions keep
 their own authority. And an exact-action consent made before provenance was
 recorded lists with no tool, strand or command text, because it did not store
 any; it can be forgotten by its identity and nothing else.
+
+## Addendum (2026-10-06): the page's own sign-in is the recorded credential
+
+The provenance paragraph said the kind of a grant's `via` comes from the
+credential digest the connection was admitted under. That is wrong for the page
+that matters most. A `loom ui` page is minted by the terminal's bearer, so its
+UI session is admitted under the bearer's digest (`ui_sessions.Grant.credential`)
+and the browser login the exchange sets travels beside it
+(`server.PageGrant.login`). Only a page resumed from a bookmark, or opened by a
+claim, is admitted under the login's own digest. Every grant made from a `loom
+ui` page was therefore recorded as `device`, the list said "from a terminal", and
+the revoked-sign-in note, which acts on `login` rows only, could not fire for it.
+The live critique that found this is F176.
+
+`gateway.Binding` gains `signin`, the fingerprint of the browser sign-in the
+connection's page belongs to. `ui_socket` fills it from the page's own record
+(`PageGrant.login`) and the terminal's socket leaves it empty, so a client still
+cannot supply it. `gateway.approval_via` records `login` with that fingerprint
+when it is present and otherwise the kind of the digest as before. A page opened
+with `loom ui --no-remember` has no sign-in and still records `device`: the
+credential it holds is the terminal's, and no browser login exists to name or to
+revoke. The wire format and the fact are unchanged.
+
+A second finding of the same critique (F177) is outside this proposal's
+mechanism but touches what the page lets a person remember. The escalation
+record counted every question a want had put to a person against `max_asks`, so
+the fourth identical request after three allow-once answers settled in band
+with nobody asked, and the Session pane had nothing to show for it. A spent
+approval now ends its cycle and the count restarts at one (`escalation.claimed`);
+denials and unspent approvals still count. This is in `docs/architecture/approvals.md`.

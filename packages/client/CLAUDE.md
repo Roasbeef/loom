@@ -5661,8 +5661,12 @@ thing dispatch reads, and adds `version: 2` and a `remembered` array of
 `{grant, provenance}` rows. A `Provenance` is `Approved(by, via, at_ms)` or
 `Unknown`: `by` is the principal of the approving connection's binding, `via`
 is `Login`, `Device` or `Uncredentialed` with the credential digest's
-fingerprint (the kind comes from `access.credential_kind`), and `at_ms` is the
-gateway clock at commit (`gateway.approval_provenance`). The decoder is total
+fingerprint, and `at_ms` is the gateway clock at commit
+(`gateway.approval_provenance`). A web page's connection carries the fingerprint
+of its browser sign-in in `Binding.signin`, copied from the page's own record,
+and that is recorded as `Login`; any other connection records the kind of its
+credential digest (`access.credential_kind`). A `loom ui` page is admitted under
+the terminal's bearer, so the digest alone would label its grants `Device`. The decoder is total
 and advisory: a missing or damaged row reads as `Unknown` and never changes what
 is permitted, and a fact with no `version` reads with every grant `Unknown`.
 Exact-action consent cells gain `tool`, `strand`, a preview of at most 200

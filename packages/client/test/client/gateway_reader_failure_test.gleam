@@ -140,6 +140,7 @@ fn attach(resident: Resident, name: String, epoch: String) -> Attachment {
         principal,
         access.Owner,
         digest,
+        None,
       ),
       fn() { Ok(#(principal, access.Owner)) },
       fn(_) { Nil },

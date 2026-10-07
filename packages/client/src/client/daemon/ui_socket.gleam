@@ -476,6 +476,7 @@ pub fn upgrade(
         principal: attachment.principal,
         authority: attachment.authority,
         digest: attachment.digest,
+        signin: option.map(seen.login, fn(issuer) { issuer.fingerprint }),
       ),
       check: ui_relay.while_open(fn() { authorize(attachment) }, fn() {
         result.replace(open(), Nil)
