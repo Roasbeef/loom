@@ -14,7 +14,7 @@
 //// `diff` of the change as headerless unified hunks. A successful `fs_write`
 //// replaces a whole file and reports no diff, but its call's `content`
 //// argument is the file's new text and its result names the `path`, so the
-//// fold reads that as one hunk in which every line is added. `fold` reads
+//// fold reads that as one new-file hunk in which every line is added. `fold` reads
 //// those and nothing else. The board is therefore what the agent wrote, not what is in
 //// the tree: it omits a change made outside the session (a shell command, an
 //// editor) and keeps an edit the tree has since reverted. A host that shows
@@ -342,17 +342,27 @@ fn written_text(arguments: json.JsonValue) -> Result(String, Nil) {
   }
 }
 
-// A whole file's text as one hunk's lines, each added. A final newline ends
-// the last line and does not begin another, so it adds no empty row.
+// A whole file's text as one hunk, each line added, under the header a unified
+// diff writes for a new file (`@@ -0,0 +1,N @@`). The header is what gives the
+// diff drawer its line numbers: a line before any hunk is read as plain context
+// with no number, so a bare run of `+` lines drew without the gutter or the
+// green an edit's hunk has. A final newline ends the last line and does not
+// begin another, so it adds no empty row, and a file with no line adds no hunk.
 fn all_added(content: String) -> String {
   let lines = case list.reverse(string.split(content, "\n")) {
     ["", ..rest] -> list.reverse(rest)
     all -> list.reverse(all)
   }
 
-  lines
-  |> list.map(fn(line) { "+" <> line })
-  |> string.join("\n")
+  case lines {
+    [] -> ""
+    [_, ..] ->
+      [
+        "@@ -0,0 +1," <> int.to_string(list.length(lines)) <> " @@",
+        ..list.map(lines, fn(line) { "+" <> line })
+      ]
+      |> string.join("\n")
+  }
 }
 
 fn text(
