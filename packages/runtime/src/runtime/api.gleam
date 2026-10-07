@@ -1194,8 +1194,7 @@ fn enqueue_guarded(
     case strand_state.current_operation {
       None -> Ok(Done(Error(QueueRejected(reason: queue.NoActiveRun))))
       Some(op_id) -> {
-        use op <- result.try(read_op_meta(runtime, op_id))
-        use #(op_state_seq, op_state) <- result.try(read_op_state(
+        use #(op, op_state_seq, op_state) <- or_finished(read_open_operation(
           runtime,
           op_id,
         ))
@@ -3713,15 +3712,48 @@ fn read_strand_state(
   |> require("strand.state is missing for strand " <> runtime.strand)
 }
 
-fn read_op_meta(runtime: Runtime, op_id: OpId) -> Result(Operation, ApiError) {
-  read_decoded(
+// An operation's definition and state, or `None` when either is gone. The
+// strand's `current_operation` and these registers are three separate reads,
+// and the terminal transaction clears the first and deletes the other two
+// together, so a run that finishes between the reads leaves a stale operation
+// identity and nothing to read under it. That is a lost race and not a
+// corrupt store, which is why a missing register is `None` here.
+fn read_open_operation(
+  runtime: Runtime,
+  op_id: OpId,
+) -> Result(Option(#(Operation, Int, OperationState)), ApiError) {
+  use meta <- result.try(read_decoded(
     runtime,
     register.OpMeta,
     ids.op_id_to_string(op_id),
     codec.decode_operation,
-  )
-  |> require("op.meta is missing for the open operation")
-  |> result.map(fn(cell) { cell.1 })
+  ))
+  use state <- result.try(read_decoded(
+    runtime,
+    register.OpState,
+    ids.op_id_to_string(op_id),
+    codec.decode_state,
+  ))
+  Ok(case meta, state {
+    Some(#(_, op)), Some(#(seq, op_state)) -> Some(#(op, seq, op_state))
+    Some(_), None | None, Some(_) | None, None -> None
+  })
+}
+
+// Binds the open operation an admission reads, or asks `retry_admission` for
+// another attempt when the run finished between the reads. The next attempt
+// reads the strand again and finds a newer operation or none, which the
+// caller answers as it always has.
+fn or_finished(
+  read: Result(Option(#(Operation, Int, OperationState)), ApiError),
+  then: fn(#(Operation, Int, OperationState)) ->
+    Result(Attempt(value), ApiError),
+) -> Result(Attempt(value), ApiError) {
+  case read {
+    Ok(Some(open)) -> then(open)
+    Ok(None) -> Ok(Retry)
+    Error(error) -> Error(error)
+  }
 }
 
 fn read_op_state(
