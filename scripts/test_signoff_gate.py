@@ -175,7 +175,7 @@ class GateTest(Fixture):
         self.assertIsNone(self.recorded())
 
 
-STUB_DOCKER = """#!/usr/bin/env bash
+STUB_DOCKER_SESSION = """#!/usr/bin/env bash
 echo "$*" >>"$STUB_DIR/docker.log"
 case $1 in
 build)
@@ -205,7 +205,7 @@ class DriverSessionTest(Fixture):
         super().setUp()
         self.stubs = self.root / "stubs"
         self.stubs.mkdir()
-        for name, text in (("docker", STUB_DOCKER), ("gh", STUB_GH)):
+        for name, text in (("docker", STUB_DOCKER_SESSION), ("gh", STUB_GH)):
             stub = self.stubs / name
             stub.write_text(text)
             stub.chmod(0o755)
@@ -247,6 +247,67 @@ class DriverSessionTest(Fixture):
         self.assertIn("GREEN", result.stdout)
         self.assertNotIn("kill", self.log("docker"))
         self.assertEqual(self.log("gh").strip(), f"signoff --commit {self.pushed} linux")
+
+
+STUB_DOCKER_HOSTILE = """#!/usr/bin/env bash
+# `build` writes the image ID file the driver asks for. `run` behaves as a
+# hostile container: it replaces every file it can reach under the /logs
+# mount with a symlink to the secret, including the names the driver reads.
+case $1 in
+build)
+	while [ $# -gt 0 ]; do
+		if [ "$1" = --iidfile ]; then echo sha256:stub >"$2"; fi
+		shift
+	done
+	;;
+run)
+	while [ $# -gt 0 ]; do
+		if [ "$1" = -v ]; then
+			case $2 in
+			*:/logs)
+				dir=${2%:/logs}
+				for name in signoff.log image-id image-build.log entrypoint.sh; do
+					ln -sf "$STUB_SECRET" "$dir/$name"
+				done
+				;;
+			esac
+		fi
+		shift
+	done
+	;;
+esac
+"""
+
+
+class DriverTest(Fixture):
+    """The driver, with docker replaced by a stub that attacks the mount."""
+
+    def setUp(self):
+        super().setUp()
+        self.secret = self.root / "secret"
+        self.secret.write_text("the-gh-token")
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        docker = bin_dir / "docker"
+        docker.write_text(STUB_DOCKER_HOSTILE)
+        docker.chmod(0o755)
+        self.home = self.root / "state"
+        self.home.mkdir()
+        self.env.update(
+            PATH=f"{bin_dir}:{self.env['PATH']}", HOME=str(self.home),
+            STUB_SECRET=str(self.secret), LOOM_DIR=str(self.home / "loom-signoff"),
+            LOOM_ORIGIN=str(self.origin), LOOM_SHA=self.pushed, LOOM_POST="no",
+        )
+
+    def test_a_planted_symlink_in_the_mount_is_not_printed(self):
+        result = subprocess.run(["bash", str(DRIVER)], env=self.env, capture_output=True,
+                                text=True, timeout=30, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("the-gh-token", result.stdout + result.stderr)
+        logs = self.home / "loom-signoff-container/logs" / self.pushed[:12]
+        self.assertTrue((logs / "container/entrypoint.sh").is_symlink())
+        self.assertFalse((logs / "signoff.log").is_symlink())
+        self.assertFalse((logs / "image-id").is_symlink())
 
 
 class RemoteGateModeTest(Fixture):

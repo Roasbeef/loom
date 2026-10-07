@@ -69,6 +69,9 @@
 # logs/<sha>, mounted at /logs. It holds the image build log, the signoff
 # log, and a copy of the lanes' own logs, which the container hands back to
 # the login account before it exits so the host can always delete them.
+# Only the container/ subdirectory, holding the entrypoint and that copy of
+# the lanes' logs, is mounted; the driver reads its own files from outside
+# it, since the container runs the commit under test's code as root.
 #
 # The image (scripts/signoff/Dockerfile) is built from this checkout's
 # own copy of that file at the commit under test, so a Dockerfile change
