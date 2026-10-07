@@ -12,6 +12,8 @@ import etui/backend
 import etui/widgets/textarea
 import gleam/bit_array
 import gleam/dict
+import gleam/dynamic.{type Dynamic}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -35,13 +37,17 @@ import session_view/surfaces
 import session_view/transcript_line
 import tui
 import tui/attachment
+import tui/bootstrap
 import tui/buffered
 import tui/connection
+import tui/daemon/selection as daemon_selection
 import tui/frame
 import tui/inbound
 import tui/interaction
 import tui/model as tui_model
 import tui/recording
+import tui/runtime
+import tui/session_control
 import tui/view_set
 import tui/virtual_backend
 import tui/workspace
@@ -1809,4 +1815,94 @@ fn receive_session(model, session) {
       None,
     )),
   )
+}
+
+@external(erlang, "effects_test_ffi", "host_on")
+fn host_on(owner: Subject(Dynamic)) -> daemon_selection.Host
+
+// A local launch that named `--model-profile beta` and has just asked to open
+// session B, with the attach started and not yet adopted.
+fn opening_b_under_a_profile() -> tui_model.Model {
+  let owner: Subject(Dynamic) = process.new_subject()
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("test", None))
+  let options =
+    bootstrap.Options(
+      "/work",
+      "",
+      "",
+      "build",
+      "build/absent/loom.toml",
+      "beta",
+    )
+  tui_model.Model(
+    ..base,
+    view: view_set.local_options(base.view, Some(options)),
+  )
+  |> runtime.adopt_control(host_on(owner))
+  |> session_control.open_chosen("B")
+}
+
+// The adoption of session B's first validated cut, as the attach job delivers
+// it, applied by the same function the terminal's tick applies it with.
+fn adopting_b(model: tui_model.Model) -> tui_model.Model {
+  let #(replacement, updates) =
+    read_channel(
+      session_channel.replay(snapshot.Expected("B", "epoch", "incarnation")),
+      events(2, "B"),
+    )
+  let assert [session_channel.Captured(cut, view, _)] = updates
+    as "the replacement's first cut was fully validated"
+  interaction.candidate_outcome(
+    model,
+    attachment.idle(),
+    Some(attachment.Adopted(
+      replacement,
+      cut,
+      view,
+      buffered.new(connection.new_inbox()),
+      workspace.Context("B", None),
+      "Session B",
+      None,
+    )),
+  )
+}
+
+fn kept_profile_lines(model: tui_model.Model) -> Int {
+  list.count(model.shared.transcript, fn(line) {
+    let transcript_line.Line(_, text) = line
+    string.contains(text, "--model-profile beta applies to new sessions")
+  })
+}
+
+// The adoption replaces the whole transcript with the opened session's, so a
+// line written when the open began is gone by the time the session shows. The
+// line has to survive the attach, appear once, and not come back when the
+// terminal reattaches the same session after a lost connection.
+pub fn the_kept_profile_line_survives_the_attach_that_opens_the_session_test() {
+  let opening = opening_b_under_a_profile()
+  assert kept_profile_lines(opening) == 0
+    as "nothing is written before the cut it would be erased by"
+
+  let adopted = adopting_b(opening)
+  assert adopted.shared.session == "B"
+  assert kept_profile_lines(adopted) == 1
+  assert adopted.view.launch_note == None as "the adoption spends the line"
+
+  let reattached = adopting_b(session_control.begin_open(adopted, "B"))
+  assert kept_profile_lines(reattached) == 0
+    as "a reconnect does not say it again"
+}
+
+// An open that fails owes nothing, so the line cannot turn up on a later
+// adoption of a different session.
+pub fn a_failed_open_does_not_leave_the_kept_profile_line_owed_test() {
+  let failed =
+    interaction.candidate_outcome(
+      opening_b_under_a_profile(),
+      attachment.idle(),
+      Some(attachment.Failed("refused")),
+    )
+  assert failed.view.launch_note == None
+  assert kept_profile_lines(adopting_b(failed)) == 0
 }

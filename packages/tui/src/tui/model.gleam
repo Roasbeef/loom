@@ -514,6 +514,13 @@ pub type View {
     /// The local launch's options, which session creation and the
     /// reconnect reuse; `None` for a remote attachment.
     local_options: Option(bootstrap.Options),
+    /// A line the operator is owed once the session they chose has loaded, as
+    /// when `--model-profile` is ignored because the session already existed.
+    /// An adoption replaces the transcript wholesale, so a line appended
+    /// before the attach lands is thrown away with the rest of it; the
+    /// adoption writes this one after the cut and clears it, and a failed
+    /// attach clears it unwritten.
+    launch_note: Option(String),
     /// The repository path and branch the terminal attached from, which the
     /// footer, the session picker's ordering and a new session's name read.
     /// It is the terminal's reading of its own directory, so it stays here
