@@ -23,6 +23,13 @@
 //// bytes bound admitted semantic content, not physical database/WAL growth or
 //// a proof of power-loss behavior on an arbitrary filesystem.
 ////
+//// Owned recovery self-adopts before SQL opens and exposes only inspection and
+//// exact receipt. Successful explicit close precedes every normal owned exit.
+////
+//// `recover_owned` enters resource-free adoption before `handle_owned` activates
+//// shared SQL recovery. `release_owned` observes successful explicit close and
+//// the original DOWN; `shutdown_owned` cannot turn failed close into normal proof.
+////
 //// ## Flow
 ////
 //// `fresh` and `recover` enter `start` and `initialise`. `admit`, `inspect`,
@@ -34,6 +41,7 @@
 
 import core/ids
 import core/workspace as cw
+import executor/remote/journal as native_journal
 import executor/sql
 import executor/workspace_schema
 import gleam/bit_array
@@ -48,6 +56,7 @@ import simplifile
 import sqlight
 import tools/workspace
 import tools/workspace_codec as codec
+import weft
 import weft/actor
 
 /// Explicit finite ceilings, bound immutably to the database metadata.
@@ -231,6 +240,43 @@ type Message {
   Run(Command, process.Subject(Result(Answer, Error)))
   Metadata(MetadataCommand, process.Subject(Result(ScopeMode, Error)))
   Release(process.Subject(Result(Nil, Error)))
+}
+
+/// An original adopted workspace writer restricted to history and exact receipt.
+@internal
+pub opaque type OwnedRecovery {
+  /// The original history door, bound once during resource-free construction.
+  OwnedRecovery(
+    /// The private history-only actor endpoint.
+    subject: process.Subject(OwnedMessage),
+    /// The exact original actor whose normal exit supplies close proof.
+    pid: process.Pid,
+    /// The complete immutable original scope.
+    scope: cw.Scope,
+  )
+}
+
+type OwnedState {
+  OwnedWaiting(config: Config, probe: native_journal.RecoveryProbe)
+  OwnedReady(
+    config: Config,
+    connection: sqlight.Connection,
+    probe: native_journal.RecoveryProbe,
+  )
+
+  // Failed setup keeps its actual connection for abnormal shutdown cleanup.
+  FailedCloseOwned(connection: sqlight.Connection)
+
+  // Successful explicit close removes the connection before the exit turn.
+  ReleasedOwned(probe: native_journal.RecoveryProbe)
+}
+
+type OwnedMessage {
+  InitialiseOwned(process.Subject(Result(Nil, Error)))
+  InspectOwned(Validated, process.Subject(Result(Status, Error)))
+  AcknowledgeOwned(Validated, BitArray, process.Subject(Result(Status, Error)))
+  ReleaseOwned(process.Subject(Result(Nil, Error)))
+  StopOwned
 }
 
 /// Validates lifetime ceilings; acknowledgement frees bytes but never row slots.
@@ -434,6 +480,355 @@ fn validate(scope: cw.Scope, bytes: BitArray) -> Result(Validated, Error) {
 
 fn run(journal: Journal, command: Command) -> Result(Status, Error) {
   exchange(journal, Run(command, _)) |> result.map(fn(answer) { answer.status })
+}
+
+/// Recovers only original workspace history under the actual managed task.
+///
+/// ## Examples
+/// SQL opens only after this actor has self-adopted and acknowledged startup.
+@internal
+pub fn recover_owned(
+  path: String,
+  scope: cw.Scope,
+  limits: Limits,
+  ledger: weft.Ledger,
+) -> Result(OwnedRecovery, Error) {
+  recover_owned_observed(path, scope, limits, ledger, native_journal.Unobserved)
+}
+
+/// Observes closed deterministic checkpoints over a real original SQLite writer.
+///
+/// ## Examples
+/// Production uses `recover_owned` without a probe.
+@internal
+pub fn recover_owned_observed(
+  path: String,
+  scope: cw.Scope,
+  limits: Limits,
+  ledger: weft.Ledger,
+  probe: native_journal.RecoveryProbe,
+) -> Result(OwnedRecovery, Error) {
+  use Nil <- result.try(
+    case
+      string.starts_with(path, "/")
+      && string.byte_size(path) <= 4096
+      && !string.contains(path, "\u{0}")
+    {
+      True -> Ok(Nil)
+      False -> Error(InvalidPath)
+    },
+  )
+  let config = Config(path, scope, limits)
+
+  // Startup acknowledges only custody; the initializer never owns SQLite.
+  use started <- result.try(
+    actor.new_with_initialiser(1000, fn(subject) {
+      let _ =
+        native_journal.recovery_checkpoint(probe, native_journal.BeforeAdopt)
+
+      // A queued close survives requester death and precedes any later activation.
+      let cancel = fn() {
+        process.send(subject, ReleaseOwned(process.new_subject()))
+      }
+      case weft.adopt(ledger, owner: process.self(), cancel:) {
+        weft.Refused -> Error("owned workspace adoption refused")
+        weft.Adopted -> {
+          let _ =
+            native_journal.recovery_checkpoint(
+              probe,
+              native_journal.BeforeStartAck,
+            )
+          Ok(
+            actor.initialised(OwnedWaiting(config, probe))
+            |> actor.returning(subject),
+          )
+        }
+      }
+    })
+    |> actor.on_message(handle_owned)
+    |> actor.on_shutdown(shutdown_owned)
+    |> actor.unlinked
+    |> actor.start
+    |> result.replace_error(StartFailed),
+  )
+
+  // This immutable handle names the actor that acquired the ledger custody.
+  let original = OwnedRecovery(started.data, started.pid, scope)
+  case exchange_owned(original, InitialiseOwned) {
+    Ok(Nil) -> Ok(original)
+    Error(error) -> {
+      process.send(original.subject, ReleaseOwned(process.new_subject()))
+      Error(error)
+    }
+  }
+}
+
+/// Inspects canonical original content without admitting or claiming work.
+///
+/// ## Examples
+/// The full immutable workspace scope must match this original writer.
+@internal
+pub fn inspect_owned(
+  original: OwnedRecovery,
+  bytes: BitArray,
+) -> Result(Status, Error) {
+  use input <- result.try(validate(original.scope, bytes))
+  exchange_owned(original, InspectOwned(input, _))
+}
+
+/// Applies only the existing exact result receipt to the original workspace row.
+///
+/// ## Examples
+/// A different completion digest refuses before the original transaction.
+@internal
+pub fn acknowledge_owned(
+  original: OwnedRecovery,
+  bytes: BitArray,
+  digest: BitArray,
+) -> Result(Status, Error) {
+  use Nil <- result.try(case bit_array.bit_size(digest) == 256 {
+    True -> Ok(Nil)
+    False -> Error(InvalidInput)
+  })
+  use input <- result.try(validate(original.scope, bytes))
+  exchange_owned(original, AcknowledgeOwned(input, digest, _))
+}
+
+/// Joins only the original writer after its successful explicit SQL close reply.
+///
+/// ## Examples
+/// Dead endpoint, lost reply and abnormal original DOWN remain Uncertain.
+@internal
+pub fn release_owned(original: OwnedRecovery) -> Result(Nil, Error) {
+  let watch = process.monitor(original.pid)
+  let outcome = {
+    use Nil <- result.try(exchange_owned(original, ReleaseOwned))
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) {
+      case down {
+        process.ProcessDown(reason: process.Normal, ..) -> Ok(Nil)
+        process.ProcessDown(..) | process.PortDown(..) -> Error(Uncertain)
+      }
+    })
+    |> process.selector_receive(30_000)
+    |> result.unwrap(Error(Uncertain))
+  }
+  process.demonitor_process(watch)
+  outcome
+}
+
+fn exchange_owned(
+  original: OwnedRecovery,
+  make: fn(process.Subject(Result(a, Error))) -> OwnedMessage,
+) -> Result(a, Error) {
+  let reply = process.new_subject()
+  let watch = process.monitor(original.pid)
+  process.send(original.subject, make(reply))
+  let answer =
+    process.new_selector()
+    |> process.select(reply)
+    |> process.select_specific_monitor(watch, fn(_) { Error(Uncertain) })
+    |> process.selector_receive(30_000)
+  process.demonitor_process(watch)
+  result.unwrap(answer, Error(Uncertain))
+}
+
+fn handle_owned(
+  state: OwnedState,
+  message: OwnedMessage,
+) -> actor.Next(OwnedState, OwnedMessage) {
+  case state, message {
+    OwnedWaiting(config, probe), InitialiseOwned(reply) ->
+      initialise_owned(config, probe, reply)
+    OwnedReady(config, connection, probe), InspectOwned(input, reply) -> {
+      let outcome =
+        transact(connection, config, Inspect(input))
+        |> result.map(fn(answer) { answer.status })
+      process.send(reply, outcome)
+      owned_after_query(state, connection, probe, outcome)
+    }
+    OwnedReady(config, connection, probe),
+      AcknowledgeOwned(input, digest, reply)
+    -> {
+      let outcome =
+        transact(connection, config, Acknowledge(input, digest))
+        |> result.map(fn(answer) { answer.status })
+      process.send(reply, outcome)
+      owned_after_query(state, connection, probe, outcome)
+    }
+    OwnedReady(_, connection, probe), ReleaseOwned(reply) -> {
+      let decision =
+        native_journal.recovery_checkpoint(
+          probe,
+          native_journal.BeforeCloseReply,
+        )
+      case close_owned_connection(connection, decision) {
+        Ok(Nil) -> {
+          native_journal.recovery_reply(decision, reply, Ok(Nil))
+          actor.continue(ReleasedOwned(probe)) |> actor.then_handle(StopOwned)
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.stop_abnormal("owned workspace SQL close failed")
+        }
+      }
+    }
+    OwnedWaiting(_, probe), ReleaseOwned(reply) -> {
+      process.send(reply, Ok(Nil))
+      actor.continue(ReleasedOwned(probe)) |> actor.then_handle(StopOwned)
+    }
+    FailedCloseOwned(_), StopOwned ->
+      actor.stop_abnormal("owned SQL cleanup failed")
+
+    // Only this connection-free state may produce a normal exit witness.
+    ReleasedOwned(probe), StopOwned -> {
+      let _ =
+        native_journal.recovery_checkpoint(
+          probe,
+          native_journal.AfterCloseBeforeExit,
+        )
+      actor.stop()
+    }
+    OwnedWaiting(_, _), InspectOwned(_, reply)
+    | ReleasedOwned(_), InspectOwned(_, reply)
+    | FailedCloseOwned(_), InspectOwned(_, reply)
+    | OwnedWaiting(_, _), AcknowledgeOwned(_, _, reply)
+    | ReleasedOwned(_), AcknowledgeOwned(_, _, reply)
+    | FailedCloseOwned(_), AcknowledgeOwned(_, _, reply)
+    -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    OwnedReady(_, _, _), InitialiseOwned(reply)
+    | ReleasedOwned(_), InitialiseOwned(reply)
+    | FailedCloseOwned(_), InitialiseOwned(reply)
+    -> {
+      process.send(reply, Error(Closed))
+      actor.continue(state)
+    }
+    ReleasedOwned(_), ReleaseOwned(reply)
+    | FailedCloseOwned(_), ReleaseOwned(reply)
+    -> {
+      process.send(reply, Error(Uncertain))
+      actor.continue(state)
+    }
+    OwnedWaiting(_, _), StopOwned | OwnedReady(_, _, _), StopOwned ->
+      actor.stop_abnormal("owned workspace premature stop")
+  }
+}
+
+fn initialise_owned(
+  config: Config,
+  probe: native_journal.RecoveryProbe,
+  reply: process.Subject(Result(Nil, Error)),
+) -> actor.Next(OwnedState, OwnedMessage) {
+  let _ =
+    native_journal.recovery_checkpoint(probe, native_journal.BeforeSqlOpen)
+  case open_owned(config) {
+    Error(error) -> {
+      process.send(reply, Error(error))
+      actor.continue(ReleasedOwned(probe)) |> actor.then_handle(StopOwned)
+    }
+    Ok(connection) ->
+      settle_owned_setup(
+        config,
+        connection,
+        probe,
+        reply,
+        setup(connection, config, Recover),
+      )
+  }
+}
+
+fn open_owned(config: Config) -> Result(sqlight.Connection, Error) {
+  use exists <- result.try(
+    simplifile.exists(config.path, False) |> result.replace_error(Uncertain),
+  )
+  use Nil <- result.try(case exists {
+    True -> Ok(Nil)
+    False -> Error(Missing)
+  })
+  sqlight.open(config.path) |> sql_error
+}
+
+fn settle_owned_setup(
+  config: Config,
+  connection: sqlight.Connection,
+  probe: native_journal.RecoveryProbe,
+  reply: process.Subject(Result(Nil, Error)),
+  outcome: Result(Nil, Error),
+) -> actor.Next(OwnedState, OwnedMessage) {
+  case outcome {
+    Ok(Nil) -> {
+      let decision =
+        native_journal.recovery_checkpoint(
+          probe,
+          native_journal.BeforeInitialiseReply,
+        )
+      native_journal.recovery_reply(decision, reply, Ok(Nil))
+      actor.continue(OwnedReady(config, connection, probe))
+    }
+    Error(error) -> {
+      process.send(reply, Error(error))
+
+      // Setup has opened SQL, so failure must retain or explicitly close it.
+      stop_owned_connection(connection, probe)
+    }
+  }
+}
+
+fn owned_after_query(
+  state: OwnedState,
+  connection: sqlight.Connection,
+  probe: native_journal.RecoveryProbe,
+  outcome: Result(a, Error),
+) -> actor.Next(OwnedState, OwnedMessage) {
+  case outcome {
+    Error(Uncertain) | Error(Corrupt) | Error(BindingMismatch) ->
+      stop_owned_connection(connection, probe)
+    Ok(_) | Error(_) -> actor.continue(state)
+  }
+}
+
+fn stop_owned_connection(
+  connection: sqlight.Connection,
+  probe: native_journal.RecoveryProbe,
+) -> actor.Next(OwnedState, OwnedMessage) {
+  let decision =
+    native_journal.recovery_checkpoint(probe, native_journal.BeforeCloseReply)
+  case close_owned_connection(connection, decision) {
+    Ok(Nil) ->
+      actor.continue(ReleasedOwned(probe)) |> actor.then_handle(StopOwned)
+    Error(_) ->
+      // The next abnormal turn carries the actual connection into shutdown.
+      actor.continue(FailedCloseOwned(connection))
+      |> actor.then_handle(StopOwned)
+  }
+}
+
+fn close_owned_connection(
+  connection: sqlight.Connection,
+  decision: native_journal.RecoveryPermit,
+) -> Result(Nil, Error) {
+  case decision {
+    native_journal.RefuseClose -> Error(Uncertain)
+    native_journal.Proceed | native_journal.SuppressReply ->
+      sqlight.close(connection) |> sql_error
+  }
+}
+
+// Abnormal failure remains lost proof even if this final cleanup succeeds.
+// A close failure on system termination must never leave a normal DOWN.
+fn shutdown_owned(state: OwnedState, _reason: process.ExitReason) -> Nil {
+  case state {
+    OwnedWaiting(_, _) | ReleasedOwned(_) -> Nil
+    OwnedReady(_, connection, _) | FailedCloseOwned(connection) -> {
+      case sqlight.close(connection) {
+        Ok(Nil) -> Nil
+        Error(_) -> process.kill(process.self())
+      }
+    }
+  }
 }
 
 fn start(config: Config, mode: Mode) -> Result(Journal, Error) {
