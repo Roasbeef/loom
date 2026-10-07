@@ -571,14 +571,6 @@ network = "full"
 # [secrets]
 # GH_TOKEN = { command = ["gh", "auth", "token"] }
 
-# Connection limits belong to the daemon started with this file, not a session.
-# Apply changes by restarting the daemon. These reserve potential payload
-# capacity; they do not allocate this memory in advance or bound total RSS.
-[daemon]
-# ui = true # Enable browser access when ordinary loom starts the daemon.
-max_connections = 64
-max_reserved_message_bytes = 536870912 # 512 MiB; twelve normal terminal pairs.
-
 # Peer links let one session's model put text into another session's prompt.
 # They are granted pair by pair (`/peers`, `loomd peer link`, or the Peer links
 # section of an owner's web page). `same_owner` links `main` to `main`, in both
@@ -590,3 +582,11 @@ max_reserved_message_bytes = 536870912 # 512 MiB; twelve normal terminal pairs.
 [peers]
 default_links = "off" # "off" | "same_owner"
 default_wake = "busy_only" # "busy_only" | "may_wake"; may_wake can start an idle main.
+
+# Connection limits belong to the daemon started with this file, not a session.
+# Apply changes by restarting the daemon. These reserve potential payload
+# capacity; they do not allocate this memory in advance or bound total RSS.
+[daemon]
+# ui = true # Enable browser access when ordinary loom starts the daemon.
+max_connections = 64
+max_reserved_message_bytes = 536870912 # 512 MiB; twelve normal terminal pairs.

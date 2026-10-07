@@ -4,6 +4,7 @@ import client/catalog
 import client/peer_defaults
 import client/peer_mail.{BusyOnly, MayWake, NoDefaultLinks, Policy, SameOwner}
 import gleam/list
+import simplifile
 
 pub fn an_absent_table_links_nothing_and_never_wakes_test() {
   assert peer_defaults.parse("") == Ok(Policy(NoDefaultLinks, BusyOnly))
@@ -58,4 +59,10 @@ pub fn the_catalogue_parser_refuses_what_the_policy_parser_refuses_test() {
   let text = "[peers]\ndefault_wake = \"always\"\n"
   assert catalog.parse(text)
     == Error("peers.default_wake must be \"busy_only\" or \"may_wake\"")
+}
+
+pub fn the_shipped_example_keeps_default_links_off_test() {
+  let assert Ok(example) = simplifile.read("../../docs/examples/loom.toml")
+    as "the shipped example is readable"
+  assert peer_defaults.parse(example) == Ok(Policy(NoDefaultLinks, BusyOnly))
 }
