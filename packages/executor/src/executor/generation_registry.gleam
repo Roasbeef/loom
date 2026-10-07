@@ -50,7 +50,8 @@
 //// | `Closed` | refused | refused | refused | uncertainty, stop | stop, no connection |
 //// `admit` and `admit_planned` enter `admit_original`; `scope_plan` observes
 //// immutable charged provenance. Admission checks exact originals and `check_lineage` before insertion; `original`
-//// projects only its original claim. `prepare_publication` and `published`
+//// projects only its original claim. `validate_startup` checks the same original
+//// writer and complete Plan before physical staging. `prepare_publication` and `published`
 //// serialize against `close_generation`. `validate_publication` checks original
 //// Store and intent; `validate_removal` checks exact committed endpoint evidence.
 //// `observe` reads historical phase.
@@ -850,6 +851,52 @@ fn admit_original(
 /// `original(claim)` never resolves a latest generation or replacement door.
 pub fn original(claim: StartupClaim) -> g.GenerationAssociation {
   claim.association
+}
+
+/// Checks the sole original claim and complete retained Plan before physical startup.
+/// This observation changes no phase and grants no replacement authority. A later
+/// close may fence already admitted setup, whose original host still owns rollback.
+///
+/// ## Examples
+///
+/// `validate_startup(original_store, claim, plan)` refuses recovered writers.
+@internal
+pub fn validate_startup(
+  store: Store,
+  claim: StartupClaim,
+  plan: scope_plan.Plan,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(case store == claim.store {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  })
+  use Nil <- result.try(case scope_plan.original(plan) == claim.association {
+    True -> Ok(Nil)
+    False -> Error(Conflict)
+  })
+  transaction(store, NilWork, fn(context, inventory) {
+    use row <- result.try(claim_row(context, claim, inventory))
+    use Nil <- result.try(case context.incarnation == claim.store.incarnation {
+      True -> Ok(Nil)
+      False -> Error(Conflict)
+    })
+    use Nil <- result.try(case row.header.phase {
+      0 -> Ok(Nil)
+      _ -> Error(Fenced)
+    })
+    use Nil <- result.try(
+      case
+        row.header.claimed == 1
+        && row.header.live == 1
+        && row.header.ever_published == 0
+        && row.header.endpoint_incarnation == <<>>
+      {
+        True -> Ok(Nil)
+        False -> Error(Fenced)
+      },
+    )
+    exact_plan(row.plan, Some(plan))
+  })
 }
 
 /// COMMITs Publishing before the sole administrator can forward register.
