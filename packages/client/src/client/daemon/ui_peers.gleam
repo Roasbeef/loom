@@ -25,7 +25,6 @@ import client/peer_mail
 import client/peers
 import core/ids
 import core/json.{type JsonValue}
-import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -210,7 +209,9 @@ fn unlink_edge(
   }
 }
 
-// A strand a request may name: one to 128 bytes without a control character.
+// A strand a request or a listed row may name: one to 128 bytes without a
+// control character. A slash is allowed, because a child strand's name has one
+// (`sub:main/reviewer`) and a link may name it.
 fn strand_ok(strand: String) -> Result(Nil, Nil) {
   let controlled =
     string.to_utf_codepoints(strand)
@@ -268,15 +269,13 @@ pub fn board_of(strand: String, inspected: JsonValue) -> Result(Board, String) {
     }),
   )
   let rows = list.append(outgoing, incoming)
-  let more = case field(inspected, "next") {
-    Ok(json.String(_)) -> 1
-    _ -> 0
+  let omitted = case field(inspected, "next"), list.length(rows) {
+    Ok(json.String(_)), _ -> peer_links.Unread
+    _, held if held > peer_links.row_limit ->
+      peer_links.Cut(held - peer_links.row_limit)
+    _, _ -> peer_links.AllShown
   }
-  Ok(Board(
-    strand:,
-    rows: list.take(rows, peer_links.row_limit),
-    omitted: int.max(list.length(rows) - peer_links.row_limit, 0) + more,
-  ))
+  Ok(Board(strand:, rows: list.take(rows, peer_links.row_limit), omitted:))
 }
 
 fn row_of(
@@ -287,6 +286,9 @@ fn row_of(
 ) -> Result(Row, String) {
   use session <- result.try(text(row, session_key))
   use strand <- result.try(text(row, strand_key))
+  use Nil <- result.try(
+    strand_ok(strand) |> result.replace_error("invalid strand"),
+  )
   let wake = case field(row, "wake") {
     Ok(json.String("busy_only")) -> Some(peer_links.BusyOnly)
     Ok(json.String("may_wake")) -> Some(peer_links.MayWake)

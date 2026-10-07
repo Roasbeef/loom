@@ -5290,7 +5290,7 @@ daemon hands each session `peer_mail.Defaults(policy, eligible)` through
 `serve.Settings.peer_defaults` and `agency.Config.peer_defaults`; `Agency`
 calls `peer_mail.handle_with`, and `handle` is the same with `no_defaults`.
 `eligible` is `manager.unshared_sessions`, a registry read of the active
-sessions with no membership row (resident or not, at most 256), evaluated at
+sessions with no membership row (resident or not, at most 256, from one `access.membered_sessions` query and the catalogue pages), evaluated at
 each admission and listing. `peer_mail.implicit_wake` is the only place a
 default link is decided (same_owner, both strands `main`, different sessions, no
 denial, both sessions eligible), and delivery, `Roster`, `Links` and `Grants` all

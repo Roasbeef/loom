@@ -41,7 +41,7 @@ fn page(
           process.send(asked, request)
           case request {
             peer_links.Read(strand) ->
-              deliver(peer_links.Listed(Board(strand, [], 0)))
+              deliver(peer_links.Listed(Board(strand, [], peer_links.AllShown)))
             peer_links.Link(..) | peer_links.Unlink(..) ->
               deliver(peer_links.Changed(peer_links.Complete))
           }
@@ -123,7 +123,9 @@ fn listed(
   deliver(
     model,
     operator_page.Observed(
-      component.PeersAnswered(peer_links.Listed(Board("main", rows, 0))),
+      component.PeersAnswered(
+        peer_links.Listed(Board("main", rows, peer_links.AllShown)),
+      ),
     ),
   )
 }
@@ -377,7 +379,10 @@ pub fn stale_boards_are_read_again_only_when_idle_test() {
   assert peer_links.stale(control, "main")
   assert !peer_links.stale(peer_links.waiting(control), "main")
   let read =
-    peer_links.answered(control, peer_links.Listed(Board("main", [], 0)))
+    peer_links.answered(
+      control,
+      peer_links.Listed(Board("main", [], peer_links.AllShown)),
+    )
   assert !peer_links.stale(read, "main")
   assert peer_links.stale(read, "reviewer")
   assert !peer_links.stale(peer_links.start(capable: False), "main")

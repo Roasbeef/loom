@@ -167,7 +167,8 @@ pub fn the_default_wake_permission_applies_to_the_default_link_test() {
 
   // The recipient's main strand is idle, so a busy-only link cannot deliver.
   let busy = same_owner(BusyOnly, [name(mine), name(other)])
-  let assert Error(_) = send(runtime, busy, name(other), "main", "m1")
+  let assert Error("QueueRejected(NoActiveRun)") =
+    send(runtime, busy, name(other), "main", "m1")
     as "busy_only refuses an idle recipient"
   let waking = same_owner(MayWake, [name(mine), name(other)])
   let assert Ok(_) = send(runtime, waking, name(other), "main", "m2")
@@ -185,7 +186,8 @@ pub fn an_explicit_grant_overrides_the_default_wake_test() {
       defaults,
       peer_mail.Allow(peer_mail.Grant(name(other), "main", "main", BusyOnly)),
     )
-  let assert Error(_) = send(runtime, defaults, name(other), "main", "m1")
+  let assert Error("QueueRejected(NoActiveRun)") =
+    send(runtime, defaults, name(other), "main", "m1")
     as "the explicit busy-only grant refuses an idle recipient"
 }
 

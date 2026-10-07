@@ -85,9 +85,22 @@ pub type Board {
     strand: String,
     /// Outgoing rows then incoming rows, at most `row_limit`.
     rows: List(Row),
-    /// How many rows the daemon had beyond those it sent.
-    omitted: Int,
+    /// Whether the daemon had rows beyond those it sent.
+    omitted: Omitted,
   )
+}
+
+/// What a board leaves out.
+pub type Omitted {
+  /// Every link the daemon read is in the board.
+  AllShown
+
+  /// The daemon sent more rows than the board holds, and this many were cut.
+  Cut(count: Int)
+
+  /// The daemon said more pages exist and the board did not read them, so no
+  /// count is known.
+  Unread
 }
 
 /// The most rows a board holds. The daemon's reply is bounded by the control

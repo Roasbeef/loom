@@ -268,5 +268,40 @@ pub fn a_bounded_board_counts_the_rows_it_left_out_test() {
     ])
   let assert Ok(board) = ui_peers.board_of("main", inspected)
   assert list.length(board.rows) == peer_links.row_limit
-  assert board.omitted == 5
+  assert board.omitted == peer_links.Cut(5)
+}
+
+pub fn a_next_cursor_says_more_without_a_count_test() {
+  let row =
+    json.Object([
+      #("session", json.String("s")),
+      #("target_strand", json.String("sub:main/reviewer")),
+      #("wake", json.Null),
+    ])
+  let inspected =
+    json.Object([
+      #("outgoing", json.Array([row])),
+      #("incoming", json.Array([])),
+      #("next", json.String("cursor")),
+    ])
+  let assert Ok(board) = ui_peers.board_of("main", inspected)
+  assert board.omitted == peer_links.Unread
+  assert list.length(board.rows) == 1
+
+  // A listed strand with a control character refuses the whole read.
+  let bad =
+    json.Object([
+      #(
+        "outgoing",
+        json.Array([
+          json.Object([
+            #("session", json.String("s")),
+            #("target_strand", json.String("a\u{0}b")),
+          ]),
+        ]),
+      ),
+      #("incoming", json.Array([])),
+      #("next", json.Null),
+    ])
+  let assert Error(_) = ui_peers.board_of("main", bad)
 }

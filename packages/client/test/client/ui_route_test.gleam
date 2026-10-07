@@ -8384,3 +8384,19 @@ pub fn the_peer_request_runs_in_a_task_and_delivers_its_answer_test() {
     assert answer == peer_links.Declined(peer_links.Unavailable)
   })
 }
+
+// --- default peer links' eligibility (protocol-change/077) -------------------
+
+// A session with a member is not one the owner holds alone, and one with none is. The registry answers from one query of
+// the membership table, in session-ID order.
+pub fn a_session_with_a_member_is_not_unshared_test() {
+  fixture(fn(ready, _, _) {
+    let alone = create_session(ready, "peers-alone", 1131)
+    let shared = create_session(ready, "peers-shared", 1132)
+    let _ = member(ready, "ui-peer-operator", shared, access.Operator)
+    let listed = manager.unshared_sessions(ready.registry)
+    assert list.contains(listed, alone)
+    assert !list.contains(listed, shared)
+    assert list.sort(listed, string.compare) == listed
+  })
+}

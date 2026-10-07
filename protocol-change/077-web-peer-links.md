@@ -122,7 +122,10 @@ grant or link, so granting a pair again lifts the denial. Unlinking a pair that
 exists only as a default records the denial and nothing else to remove. Only a
 `main` to `main` pair records one, since no other pair can be a default, so the
 fact does not grow with unrelated links. Turning the setting off hides defaults
-and leaves denials in place, which is the safe order if it is turned on again.
+and leaves denials in place, which is the safe order if it is turned on again. The recipient's incoming list can show a default
+row that the sender has denied while the recipient was not running, because the
+denial is recorded only in sessions that are resident; delivery still refuses
+it, since the sender's roster no longer lists the pair.
 
 ### Trust boundary
 
@@ -133,12 +136,14 @@ is therefore limited to what the owner can already reach from both sides.
 *Eligible sessions* are the sessions the daemon's owner holds alone: active
 (not archived) sessions in the catalogue that have no membership row of either
 role. The registry answers this on each call (`manager.unshared_sessions`), one
-catalogue page and one membership page per session, bounded at 256 sessions, and
+query of the membership table and the catalogue pages, bounded at 256 sessions, and
 nothing is remembered. A session that has an invited member, an observer or any
 other principal is not eligible, as sender or as recipient. Inviting a person
 into a session therefore ends its default links at once, because the next
 admission or listing asks again. A catalogue that cannot answer lists nothing,
-which refuses the default and never widens it.
+which refuses the default and never widens it. An admission that has already read eligibility still commits, so inviting
+someone ends default links from the next admission and not from one already
+in flight.
 
 The argument that this is safe is that a default link adds no reader and no
 writer to either session. Both sessions are ones only the owner can open, the

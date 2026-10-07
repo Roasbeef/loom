@@ -32,6 +32,7 @@ import gleam/string
 import lustre/attribute.{type Attribute}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import web_view/peer_links.{
   type Control, type Press, type Row, BothWays, BusyOnly, Choosing, Configuring,
@@ -100,22 +101,40 @@ fn listing(
           ])
         rows ->
           html.div([], [
-            html.ul(
+            keyed.ul(
               [attribute.class("peer-link-list")],
-              list.map(rows, fn(row) { item(board, row, step, presses) }),
+              list.map(rows, fn(row) {
+                #(row_key(row), item(board, row, step, presses))
+              }),
             ),
             case board.omitted {
-              0 -> element.none()
-              left ->
+              peer_links.AllShown -> element.none()
+              peer_links.Cut(count:) ->
                 html.p([attribute.class("session-quiet")], [
                   html.text(
-                    "+" <> int.to_string(left) <> " more links not shown",
+                    "+" <> int.to_string(count) <> " more links not shown",
                   ),
+                ])
+              peer_links.Unread ->
+                html.p([attribute.class("session-quiet")], [
+                  html.text("More links not shown"),
                 ])
             },
           ])
       }
   }
+}
+
+// A row's key is its direction, session and strand, which name one link, and
+// never its position, so a button pressed while the list changes reaches the
+// same link or none. The session and strand are text from other sessions, and a
+// key is not an attribute.
+fn row_key(row: Row) -> String {
+  let direction = case row.direction {
+    Outgoing -> "out"
+    Incoming -> "in"
+  }
+  direction <> "\t" <> row.session <> "\t" <> row.strand
 }
 
 // One row: the sentence with its marks, and its Unlink button or its question.

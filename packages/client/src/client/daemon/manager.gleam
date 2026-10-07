@@ -68,6 +68,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
+import gleam/set
 import gleam/string
 import host/bootstrap
 import simplifile
@@ -1701,7 +1702,7 @@ pub fn get(manager: Manager(instance), id: String) -> Result(View, Error) {
 /// person can read is never linked to the owner's others by default. A session
 /// whose membership the catalogue cannot read is left out as well, and so is
 /// every session when the registry does not answer in five seconds, which
-/// refuses the default rather than widening it. The walk stops at
+/// refuses the default rather than widening it. The answer holds at most
 /// `unshared_limit` sessions.
 ///
 /// ## Examples
@@ -1718,21 +1719,35 @@ pub fn unshared_sessions(manager: Manager(instance)) -> List(String) {
 /// The most sessions `unshared_sessions` considers.
 pub const unshared_limit = 256
 
-// The registry's own turn of `unshared_sessions`. It reads one catalogue page
-// at a time and one membership page per session, so its cost is bounded by
-// `unshared_limit`.
+// The registry's own turn of `unshared_sessions`. One query names every
+// session that has a member, and the catalogue is read a page at a time and
+// filtered against that set, so the cost is one scan and the pages. The bound
+// is applied to the sorted answer, so no more than `unshared_limit` sessions
+// are ever returned.
 fn unshared(book: Book(instance)) -> List(String) {
-  unshared_from(book, "", [], 0)
-  |> list.sort(string.compare)
+  case access.membered_sessions(book.catalogue) {
+    Error(_) -> []
+    Ok(membered) -> {
+      let excluded = set.from_list(membered)
+      unshared_from(book, "", excluded, [])
+      |> list.sort(string.compare)
+      |> list.take(unshared_limit)
+    }
+  }
 }
 
+// The catalogue's pages are in session-ID order and each is bounded, so the
+// walk ends at the last page or once it has found more than the limit.
 fn unshared_from(
   book: Book(instance),
   after: String,
+  excluded: set.Set(String),
   found: List(String),
-  seen: Int,
 ) -> List(String) {
-  case seen >= unshared_limit, catalogue.page(book.catalogue, after:) {
+  case
+    list.length(found) >= unshared_limit,
+    catalogue.page(book.catalogue, after:)
+  {
     True, _ | False, Error(_) -> found
     False, Ok(page) ->
       case list.last(page.records) {
@@ -1741,18 +1756,13 @@ fn unshared_from(
           let held =
             list.filter(page.records, fn(record) {
               record.state == catalogue.Saved
-              && case
-                access.session_members_page(book.catalogue, record.id, "")
-              {
-                Ok(members) -> members.entries == []
-                Error(_) -> False
-              }
+              && !set.contains(excluded, record.id)
             })
           unshared_from(
             book,
             last.id,
+            excluded,
             list.append(list.map(held, fn(record) { record.id }), found),
-            seen + list.length(page.records),
           )
         }
       }
