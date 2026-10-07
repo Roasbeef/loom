@@ -58,6 +58,8 @@
 ////    `attributed` sets each sender's role, from `authors`, on their messages.
 //// 9. `pictured` and `picture` are the separate readers over the finished pieces
 ////    that find a row's images by name, so a host serves only an image the lane draws.
+////    `abridged` and `abridges` are the same kind of reader for a message whose
+////    row shows less than it said, so a host opens only a row the lane draws.
 
 import core/entry
 import core/json
@@ -234,6 +236,10 @@ pub type Item {
     /// The result's rows say `[image image/png]` for each; a host that can
     /// draw a picture draws these beneath the call (`transcript_image`).
     images: List(Image),
+    /// When a call that is still running was recorded, in Unix milliseconds,
+    /// so a host can show how long it has run. `None` once it has settled and
+    /// for a call whose record carries no time.
+    since: Option(Int),
   )
 }
 
@@ -660,6 +666,82 @@ pub fn picture(
   }
 }
 
+/// The row of a message block that shows less than the message said, with the
+/// whole of what it said.
+///
+/// A long paste is drawn as its opening and a token estimate, and an injected
+/// message as its attribution line (`composer.transcript_text`). The terminal
+/// opens either with `Ctrl+G`, which draws every collapsed row whole. The
+/// block still holds the entry it was drawn from, sealed turns included, so
+/// the whole text is read from there and nothing is fetched. A block is
+/// abridged only when its first `User` row ends with exactly the collapsed
+/// form of the message's text, which keeps this to rows the shared projection
+/// collapsed and leaves out any other row a user message may draw (a queued
+/// input, an advisor payload) whatever its length.
+///
+/// The first element is the row's key and the second is the message's text,
+/// without the sender's name line, which a host draws as a line of its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert turns.abridged(block) == Some(#("7.0:0", whole_text))
+/// ```
+pub fn abridged(block: Block) -> Option(#(String, String)) {
+  case block.source {
+    transcript_lines.FromEntry(entry.MessageEntry(
+      message: message.UserMessage(content:, ..),
+      ..,
+    )) -> {
+      let whole = transcript_lines.user_body(content)
+      let shown =
+        composer.without_expand_hint(composer.transcript_text(whole, False))
+      list.find(block.rows, fn(row) { row.1.speaker == transcript_line.User })
+      |> result.try(fn(row) {
+        case
+          shown != whole
+          && string.ends_with(composer.without_expand_hint(row.1.text), shown)
+        {
+          True -> Ok(#(row.0, whole))
+          False -> Error(Nil)
+        }
+      })
+      |> option.from_result
+    }
+    transcript_lines.FromEntry(..)
+    | transcript_lines.FromTools(..)
+    | transcript_lines.FromNotice
+    | transcript_lines.FromAdvisor
+    | transcript_lines.FromSpacer -> None
+  }
+}
+
+/// Whether a lane holds an abridged message block with this key, so a host
+/// that is asked to open one opens only a message the lane draws.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !turns.abridges([], "7.0")
+/// ```
+pub fn abridges(pieces: List(Piece), key: String) -> Bool {
+  list.any(pieces, fn(piece) {
+    case piece {
+      Plain(block:, ..) | Prompt(block:, ..) ->
+        block.key == key && option.is_some(abridged(block))
+      Work(..)
+      | Spawned(..)
+      | Returned(..)
+      | Nudged(..)
+      | Commentary(..)
+      | Peer(..)
+      | Sibling(..)
+      | Missed(..)
+      | Decided(..) -> False
+    }
+  })
+}
+
 /// The blocks of a lane split at its inputs, as `pieces` splits it into
 /// turns: first the blocks before the first input, which belong to a turn
 /// the window opens inside and may be empty, then each turn that opens at
@@ -1051,7 +1133,7 @@ fn entry_kind(
           let outcome = dict.get(joined.results, call.id) |> option.from_result
           called(
             key,
-            tool_activity.Call(source, call, outcome, None),
+            tool_activity.Call(source, call, outcome, None, Some(value.ts)),
             strands,
             expansion,
           )
@@ -1357,7 +1439,9 @@ fn spawned(
 // One call, of a compact tool group or of a narrative response, with its
 // result when the window holds one. A spawn leaves the fold as a spawn row;
 // a wait stays a step, and each ready result it returned leaves as a result
-// card.
+// card. A call still running keeps the time of the record that asked for it
+// (`tool_activity.Call.asked`) as its step's `since`, the one fact the records
+// give about how long it has run.
 fn called(
   key: String,
   call: tool_activity.Call,
@@ -1427,6 +1511,10 @@ fn step(
     detail:,
     full:,
     images: transcript_image.of_outcome(call.outcome),
+    since: case standing {
+      Pending -> call.asked
+      Done | Failed -> None
+    },
   )
 }
 

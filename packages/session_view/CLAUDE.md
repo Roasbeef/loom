@@ -334,7 +334,12 @@ for a host with no surfaces.
   text (nothing is copied). `of_entry`, `of_message`, `of_outcome` and
   `of_block` read a user message's `UserImage` blocks or a tool result's
   `ToolResultImage` blocks, and `ref(key)` names a row as one path segment (a
-  step key's `/` becomes `-`). `turns.Step` carries `images`, `turns.pictured`
+  step key's `/` becomes `-`). `turns.Step` carries `since`, the record time
+  of a call still running (from `tool_activity.Call.asked`), so a host can show
+  how long it has run, and `turns.abridged(block)` and `turns.abridges(pieces,
+  key)` find a user message whose row shows less than it said, with its whole
+  text read from the block's entry, so a host opens only a row the lane draws.
+  `turns.Step` carries `images`, `turns.pictured`
   lists the rows that carry any by name and `turns.picture(pieces, ref,
   position)` finds one, so a host that serves an image serves only one the lane
   draws. `pasted_image.media_type` (PNG, JPEG, GIF or WebP by magic number, the
