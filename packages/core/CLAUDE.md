@@ -267,6 +267,23 @@ alias another role. This adds no dynamic admission authority and leaves the
 original 64-row ceiling unchanged.
 
 
+## Registered LSP identity (protocol 076)
+
+`lsp_command` retains complete original child and parent-control references.
+`LspServiceKey` owns the separate startup lease family; `FiniteCapture` keeps
+the original semantic input, enrollment and parent before timing exists.
+`verify_parent_control` compares the actual complete parent before a
+`FiniteTimingProposal` can join that capture. Ordinary finite captures require
+ToolOrigin; the system LSP origin is restricted to AfterWrite with its complete
+PostWriteControl. Startup and Search commands cannot exchange parent families.
+
+The private scanner has separate fixed LSP header, request and result profiles.
+Value decoders recover bounded immutable data, never a live claim, consumed
+nonce or physical authority. The executor adapter owns canonical hashing;
+the future custody writer must authenticate the original parent, clock era,
+nonce and enrollment before admitting an effect. Core remains free of I/O and
+FFI, including for these timing values.
+
 ## Physical service and command identity (protocols 067 and 071)
 
 `core/command.ServiceKey` retains the original managed ToolKey, closed
