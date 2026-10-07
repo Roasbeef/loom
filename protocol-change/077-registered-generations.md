@@ -921,3 +921,117 @@ identity must be reserved before Broker clearance, with exact post-clearance
 payload admission afterward; that approved sequencing change is recorded
 separately and must preserve lifetime counters, reserved capacity and original
 COMMIT/readback semantics.
+
+
+## Addendum: standalone native system reservation
+
+Approved October 7, 2026. This amendment supersedes the single-transaction
+origin/payload allocation order above for fresh NativeSystem work. WorkspaceSystem
+keeps its existing pure family builder. The native path needs a real origin before
+Broker clearance, while its actual Prepared bytes exist only after clearance.
+
+For a standalone NativeSystem, the owner MUST retain its ordinary work intent
+and exact original SystemIntent before clearance. It MUST then allocate the
+original direct SystemChild in one serialized transaction, attaching its exact
+canonical identity to that intent and advancing the lifetime service counter
+once. COMMIT and exact readback MUST precede Broker clearance. This pending stage
+MUST preserve the original UUID, operation, step, generation/enrollment association,
+reserved child slot and bounded metadata; it grants no Submit authority and has
+no invented native payload or generation link.
+
+Only the original live FreshPending flow MAY clear through the original Broker
+with this identity. It MUST use one retained command declaration and deadline.
+After clearance, a specialized transaction MUST compare that pending identity and
+intent, reject cancelled/historical work, retain the whole actual native envelope
+and original child-generation link, and transfer existing reservations without
+allocating another ordinal. Only its successful original live Fresh COMMIT and
+full readback MAY produce sendable native reservation authority. Exact retries
+and recovery MUST return observation, never Fresh or renewed clearance.
+
+Unallocated intents reserve future ordinal capacity. All intents without an
+admitted child, including allocated/cancelled pending intents, MUST continue to
+reserve original per-parent and companion child capacity. Allocated origins MUST
+NOT be counted twice against the ordinal bound. Cancellation, unknown COMMIT,
+reply loss and recovery MUST NOT reclaim the original ordinal, discard its
+charge, substitute another UUID, refresh a deadline or authorize replay. Format
+validation MUST distinguish these states from admitted native/workspace rows,
+and existing historical links MUST NOT be fabricated during migration.
+
+
+### Original live permission through the Broker
+
+A closed local `broker/dispatch.SystemReservationRef` retains the original direct
+SystemChild and UUID, a fresh nonserializable BEAM Reference, and a typed subject
+owned by the original pinned custodian. It has no codec or durable representation.
+A closed reserve/cancel protocol carries bounded native envelope bytes and the
+actual cleared request, operation, step, deadline and caller. It carries no
+arbitrary callback or executable peer value.
+
+The existing custodian creates one auxiliary typed subject selected into its
+existing actor. Only an original Fresh allocation installs an opaque pending
+value in its bounded live permission inventory and returns its reference. That
+inventory MUST fit the already reserved companion child capacity and bounded
+command declaration profile. History, duplicate allocation, reconnect and reboot
+MUST NOT populate it. Original owner fencing and shutdown invalidate all entries;
+they do not erase pending durable charges or prove physical closure.
+
+The internal Dispatch handoff gains the explicit optional reference. A named
+`clear_system_call_from` derives the origin from it and preserves both through
+normal clearance in the same original Broker. Existing ordinary entrypoints carry
+no reference; CallSpec remains unchanged. The static binding prepares the actual
+Dispatch, checks exact Prepared/request/step equality, and invokes the original
+reference's closed reservation method. It MUST verify the exact original subject,
+not just its owner PID, and MUST NOT recover permission from an origin lookup.
+
+The serialized custodian requires its original live admission, reference, caller,
+complete declaration and generation. It consumes the actual retained pending
+value before attempting native admission and publishes that consumed state on
+every success or failure arm. Only the first actual Fresh admission can return
+sendable reservation. A retained row, unknown COMMIT or lost reply cannot rearm
+the permission. The original managed run and dispatcher retain caller lifetime;
+this introduces no second actor, Broker, monitored-PID ledger or callback registry.
+
+Cancellation retains this reference through pre-reservation cancel and abandon.
+It serializes with admission on the original writer, cancelling the pending intent
+or the admitted child as appropriate. Exact duplicate cancellation remains sticky.
+Unallocated cancellation allocates and cancels the originally reserved ordinal in
+one transaction; it does not add a reusable unallocated-cancelled state. A late
+Dispatch either loses to the fence or remains the same already admitted original.
+No late answer authorizes replacement clearance.
+
+### Format seven and retained capacity
+
+Reuse the existing nullable intent origin/address/profile columns with a closed
+state decoder: unallocated, native_pending, native_cancelled, admitted native, or
+admitted workspace. Pending states retain the full existing 2048-byte future
+origin/link allowance until final admission. They hold no invented child row or
+child-generation link. Final payload admission transfers the existing allowance
+and child slot in the same transaction as the actual request and generation link.
+
+This changes companion semantics from format six to seven even though no new
+column is required. Migration MUST first validate the complete old format under
+its old invariants, including refusal of new derived-child tags or pending states
+in a format-six database. Then it transactionally advances the format without
+backfilling missing historical links or creating live permission. Preserve the
+existing validated format-five migration before this step. Unknown or corrupt
+formats refuse unchanged.
+
+Maintain distinct bounded inventories. Future ordinal capacity is the lifetime
+counter plus unallocated intents only. Child capacity is actual children plus ALL
+intents lacking an admitted child, including allocated or cancelled pending ones.
+Derived workspace commands share that same original parent group. Allocation
+neither counts an ordinal twice nor removes a pending child slot. Cancellation
+and recovery never reset counters or reclaim these permanent charges.
+
+### Ordinary callers
+
+A goal check MUST retain and read back its actual Checking transition before
+native admission; its register sequence can identify that original occurrence.
+A failed write cannot launch a registered check. Imported hooks MUST retain their
+actual event occurrence and trusted handler position, complete original stdin
+and original deadline before constructing SystemIntent. Identical consecutive
+hooks remain distinct events. A content hash, attribution operation or freshly
+computed timeout cannot replace that durable work address. SystemIntent's
+8192-byte metadata bound does not permit truncating the ordinary input or moving
+unbounded content into control metadata. Local behavior remains unchanged where
+this registered admission path is not selected.
