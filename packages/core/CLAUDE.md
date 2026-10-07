@@ -231,6 +231,22 @@ bounded before construction. `ChildOrigin` distinguishes Original Compile, rewri
 capability ordinal and explicit system service origins; connection generation
 is absent from both tool and child identity.
 
+`child_fields` projects complete checked Tool or System coordinates without
+parsing a logical address. `encode_child` and `decode_child` carry every original
+parent field and closed role in a versioned, canonical MessagePack value, bounded
+to 8192 bytes and scanned before term allocation. The nested value codec serves
+LSP headers and generation links. These codecs leave existing addresses unchanged
+and grant no live admission authority.
+
+`core/generation` defines the shared immutable GenerationKey and association for
+protocol 077. A key includes the full workspace Scope, descriptor digest and
+positive signed-32-bit generation. Its association retains the enrollment digest,
+original owner-use UUID and closed FirstGeneration or predecessor-digest pair.
+Canonical frames are bounded to 1024 bytes. `checked_successor` requires g+1,
+unchanged scope/descriptor/enrollment, a distinct owner-use UUID and both exact
+predecessor digests. These are pure identity checks; the executor registry and
+owner companion still own durable evidence, authentication and live claims.
+
 Parent tool steps validate with `core/workspace.step` and its 1024-byte UTF-8
 bound; explicit system service names retain their independent 128-byte bound.
 `remote_tool.operation` and `remote_tool.step` expose original parent coordinates
