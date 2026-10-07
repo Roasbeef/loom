@@ -177,6 +177,402 @@ pub fn insert_custody_payload(
   ])
 }
 
+pub fn initialize_generations(
+  live_limit live_limit: Int,
+  row_limit row_limit: Int,
+  byte_limit byte_limit: Int,
+) {
+  let sql =
+    "INSERT INTO generation_meta(id,format,live_limit,row_limit,byte_limit) VALUES(1,1,?,?,?)"
+  #(sql, [
+    dev.ParamInt(live_limit),
+    dev.ParamInt(row_limit),
+    dev.ParamInt(byte_limit),
+  ])
+}
+
+pub type GenerationFormat {
+  GenerationFormat(format: Int)
+}
+
+pub fn generation_format() {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(format)='integer' AND format=1 THEN format ELSE NULL END AS INTEGER) AS format FROM generation_meta LIMIT 2"
+  #(sql, [], generation_format_decoder())
+}
+
+pub fn generation_format_decoder() -> decode.Decoder(GenerationFormat) {
+  use format <- decode.field(0, decode.int)
+  decode.success(GenerationFormat(format:))
+}
+
+pub type GenerationMetadata {
+  GenerationMetadata(live_limit: Int, row_limit: Int, byte_limit: Int)
+}
+
+pub fn generation_metadata() {
+  let sql =
+    "SELECT CAST(CASE WHEN typeof(live_limit)='integer' AND live_limit BETWEEN 1 AND 16 THEN live_limit ELSE NULL END AS INTEGER) AS live_limit,
+ CAST(CASE WHEN typeof(row_limit)='integer' AND row_limit BETWEEN 1 AND 4096 THEN row_limit ELSE NULL END AS INTEGER) AS row_limit,
+ CAST(CASE WHEN typeof(byte_limit)='integer' AND byte_limit BETWEEN 1 AND 268435456 THEN byte_limit ELSE NULL END AS INTEGER) AS byte_limit
+FROM generation_meta WHERE id=1 LIMIT 2"
+  #(sql, [], generation_metadata_decoder())
+}
+
+pub fn generation_metadata_decoder() -> decode.Decoder(GenerationMetadata) {
+  use live_limit <- decode.field(0, decode.int)
+  use row_limit <- decode.field(1, decode.int)
+  use byte_limit <- decode.field(2, decode.int)
+  decode.success(GenerationMetadata(live_limit:, row_limit:, byte_limit:))
+}
+
+pub type GenerationInventory {
+  GenerationInventory(
+    rows: Int,
+    live: Option(decode.Dynamic),
+    bytes: Option(decode.Dynamic),
+    invalid: Option(decode.Dynamic),
+  )
+}
+
+pub fn generation_inventory() {
+  let sql =
+    "SELECT COUNT(*) AS \"rows\", COALESCE(SUM(live),0) AS live, COALESCE(SUM(reservation),0) AS bytes,
+ COALESCE(SUM(CASE WHEN (typeof(key)='blob' AND length(key) BETWEEN 1 AND 1024)
+ AND (typeof(scope)='blob' AND length(scope) BETWEEN 1 AND 1024)
+ AND (typeof(association)='blob' AND length(association) BETWEEN 0 AND 1024)
+ AND (typeof(doors)='blob' AND length(doors) BETWEEN 0 AND 4096)
+ AND (typeof(retirement)='blob' AND length(retirement) BETWEEN 0 AND 8192)
+ AND (typeof(owner_close)='blob' AND length(owner_close) BETWEEN 0 AND 8192)
+ AND (typeof(reservation)='integer' AND reservation BETWEEN 1 AND 268435456)
+ AND (typeof(live)='integer' AND live IN (0,1))
+ AND (typeof(generation)='integer' AND generation BETWEEN 1 AND 2147483647)
+ AND (typeof(phase)='integer' AND phase BETWEEN 0 AND 6)
+ AND (typeof(claimed)='integer' AND claimed IN (0,1))
+ AND (typeof(endpoint_incarnation)='blob' AND length(endpoint_incarnation) IN (0,32))
+ AND (typeof(ever_published)='integer' AND ever_published IN (0,1))
+ AND (typeof(association_digest)='blob' AND length(association_digest) IN (0,32))
+ AND (typeof(owner_use)='blob' AND length(owner_use) IN (0,36))
+ AND (typeof(claim_incarnation)='blob' AND length(claim_incarnation) IN (0,36))
+ AND (typeof(retirement_digest)='blob' AND length(retirement_digest) IN (0,32))
+ AND (typeof(owner_close_digest)='blob' AND length(owner_close_digest) IN (0,32))
+ THEN 0 ELSE 1 END),0) AS invalid
+FROM generation_record"
+  #(sql, [], generation_inventory_decoder())
+}
+
+pub fn generation_inventory_decoder() -> decode.Decoder(GenerationInventory) {
+  use rows <- decode.field(0, decode.int)
+  use live <- decode.field(1, decode.optional(decode.dynamic))
+  use bytes <- decode.field(2, decode.optional(decode.dynamic))
+  use invalid <- decode.field(3, decode.optional(decode.dynamic))
+  decode.success(GenerationInventory(rows:, live:, bytes:, invalid:))
+}
+
+pub type GenerationHeaders {
+  GenerationHeaders(
+    key: BitArray,
+    scope: BitArray,
+    generation: Int,
+    claimed: Int,
+    ever_published: Int,
+    live: Int,
+    phase: Int,
+    reservation: Int,
+    association_size: Option(Int),
+    doors_size: Option(Int),
+    retirement_size: Option(Int),
+    owner_close_size: Option(Int),
+    association_digest: BitArray,
+    owner_use: BitArray,
+    claim_incarnation: BitArray,
+    endpoint_incarnation: BitArray,
+    retirement_digest: BitArray,
+    owner_close_digest: BitArray,
+  )
+}
+
+pub fn generation_headers(limit limit: Int) {
+  let sql =
+    "SELECT key, scope, generation, claimed, ever_published, live, phase, reservation,
+ length(association) AS association_size,length(doors) AS doors_size,
+ length(retirement) AS retirement_size,length(owner_close) AS owner_close_size,
+ association_digest,owner_use,claim_incarnation,endpoint_incarnation,retirement_digest,owner_close_digest
+FROM generation_record ORDER BY key LIMIT ?"
+  #(sql, [dev.ParamInt(limit)], generation_headers_decoder())
+}
+
+pub fn generation_headers_decoder() -> decode.Decoder(GenerationHeaders) {
+  use key <- decode.field(0, decode.bit_array)
+  use scope <- decode.field(1, decode.bit_array)
+  use generation <- decode.field(2, decode.int)
+  use claimed <- decode.field(3, decode.int)
+  use ever_published <- decode.field(4, decode.int)
+  use live <- decode.field(5, decode.int)
+  use phase <- decode.field(6, decode.int)
+  use reservation <- decode.field(7, decode.int)
+  use association_size <- decode.field(8, decode.optional(decode.int))
+  use doors_size <- decode.field(9, decode.optional(decode.int))
+  use retirement_size <- decode.field(10, decode.optional(decode.int))
+  use owner_close_size <- decode.field(11, decode.optional(decode.int))
+  use association_digest <- decode.field(12, decode.bit_array)
+  use owner_use <- decode.field(13, decode.bit_array)
+  use claim_incarnation <- decode.field(14, decode.bit_array)
+  use endpoint_incarnation <- decode.field(15, decode.bit_array)
+  use retirement_digest <- decode.field(16, decode.bit_array)
+  use owner_close_digest <- decode.field(17, decode.bit_array)
+  decode.success(GenerationHeaders(
+    key:,
+    scope:,
+    generation:,
+    claimed:,
+    ever_published:,
+    live:,
+    phase:,
+    reservation:,
+    association_size:,
+    doors_size:,
+    retirement_size:,
+    owner_close_size:,
+    association_digest:,
+    owner_use:,
+    claim_incarnation:,
+    endpoint_incarnation:,
+    retirement_digest:,
+    owner_close_digest:,
+  ))
+}
+
+pub type GenerationBody {
+  GenerationBody(
+    association: BitArray,
+    doors: BitArray,
+    retirement: BitArray,
+    owner_close: BitArray,
+  )
+}
+
+pub fn generation_body(key key: BitArray) {
+  let sql =
+    "SELECT association,doors,retirement,owner_close FROM generation_record
+WHERE key=? AND length(association)<=1024 AND length(doors)<=4096 AND length(retirement)<=8192 AND length(owner_close)<=8192 LIMIT 2"
+  #(sql, [dev.ParamBitArray(key)], generation_body_decoder())
+}
+
+pub fn generation_body_decoder() -> decode.Decoder(GenerationBody) {
+  use association <- decode.field(0, decode.bit_array)
+  use doors <- decode.field(1, decode.bit_array)
+  use retirement <- decode.field(2, decode.bit_array)
+  use owner_close <- decode.field(3, decode.bit_array)
+  decode.success(GenerationBody(association:, doors:, retirement:, owner_close:))
+}
+
+pub fn insert_generation_claim(
+  key key: BitArray,
+  scope scope: BitArray,
+  generation generation: Int,
+  association association: BitArray,
+  association_digest association_digest: BitArray,
+  owner_use owner_use: BitArray,
+  doors doors: BitArray,
+  claim_incarnation claim_incarnation: BitArray,
+  reservation reservation: Int,
+) {
+  let sql =
+    "INSERT INTO generation_record(key,scope,generation,association,association_digest,owner_use,doors,claim_incarnation,claimed,endpoint_incarnation,ever_published,live,phase,reservation,retirement,retirement_digest,owner_close,owner_close_digest)
+VALUES(?,?,?,?,?,?,?,?,1,X'',0,1,0,?,X'',X'',X'',X'')"
+  #(sql, [
+    dev.ParamBitArray(key),
+    dev.ParamBitArray(scope),
+    dev.ParamInt(generation),
+    dev.ParamBitArray(association),
+    dev.ParamBitArray(association_digest),
+    dev.ParamBitArray(owner_use),
+    dev.ParamBitArray(doors),
+    dev.ParamBitArray(claim_incarnation),
+    dev.ParamInt(reservation),
+  ])
+}
+
+pub fn insert_generation_never_started(
+  key key: BitArray,
+  scope scope: BitArray,
+  generation generation: Int,
+  reservation reservation: Int,
+  retirement retirement: BitArray,
+  retirement_digest retirement_digest: BitArray,
+) {
+  let sql =
+    "INSERT INTO generation_record(key,scope,generation,association,association_digest,owner_use,doors,claim_incarnation,claimed,endpoint_incarnation,ever_published,live,phase,reservation,retirement,retirement_digest,owner_close,owner_close_digest)
+VALUES(?,?,?,X'',X'',X'',X'',X'',0,X'',0,0,4,?,?,?,X'',X'')"
+  #(sql, [
+    dev.ParamBitArray(key),
+    dev.ParamBitArray(scope),
+    dev.ParamInt(generation),
+    dev.ParamInt(reservation),
+    dev.ParamBitArray(retirement),
+    dev.ParamBitArray(retirement_digest),
+  ])
+}
+
+pub type PublishGenerationIntent {
+  PublishGenerationIntent(phase: Int)
+}
+
+pub fn publish_generation_intent(
+  endpoint_incarnation endpoint_incarnation: BitArray,
+  key key: BitArray,
+  claim_incarnation claim_incarnation: BitArray,
+) {
+  let sql =
+    "UPDATE generation_record SET phase=1,ever_published=1,endpoint_incarnation=? WHERE key=? AND phase=0 AND claim_incarnation=? RETURNING phase"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(endpoint_incarnation),
+      dev.ParamBitArray(key),
+      dev.ParamBitArray(claim_incarnation),
+    ],
+    publish_generation_intent_decoder(),
+  )
+}
+
+pub fn publish_generation_intent_decoder() -> decode.Decoder(
+  PublishGenerationIntent,
+) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(PublishGenerationIntent(phase:))
+}
+
+pub type CompleteGenerationPublication {
+  CompleteGenerationPublication(phase: Int)
+}
+
+pub fn complete_generation_publication(
+  key key: BitArray,
+  claim_incarnation claim_incarnation: BitArray,
+) {
+  let sql =
+    "UPDATE generation_record SET phase=2 WHERE key=? AND phase=1 AND claim_incarnation=? RETURNING phase"
+  #(
+    sql,
+    [dev.ParamBitArray(key), dev.ParamBitArray(claim_incarnation)],
+    complete_generation_publication_decoder(),
+  )
+}
+
+pub fn complete_generation_publication_decoder() -> decode.Decoder(
+  CompleteGenerationPublication,
+) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(CompleteGenerationPublication(phase:))
+}
+
+pub type CloseGenerationFence {
+  CloseGenerationFence(phase: Int)
+}
+
+pub fn close_generation_fence(key key: BitArray) {
+  let sql =
+    "UPDATE generation_record SET phase=3 WHERE key=? AND phase IN (0,1,2) RETURNING phase"
+  #(sql, [dev.ParamBitArray(key)], close_generation_fence_decoder())
+}
+
+pub fn close_generation_fence_decoder() -> decode.Decoder(CloseGenerationFence) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(CloseGenerationFence(phase:))
+}
+
+pub type RetireGeneration {
+  RetireGeneration(phase: Int)
+}
+
+pub fn retire_generation(
+  retirement retirement: BitArray,
+  retirement_digest retirement_digest: BitArray,
+  key key: BitArray,
+  claim_incarnation claim_incarnation: BitArray,
+) {
+  let sql =
+    "UPDATE generation_record SET phase=4,retirement=?,retirement_digest=? WHERE key=? AND phase=3 AND claim_incarnation=? RETURNING phase"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(retirement),
+      dev.ParamBitArray(retirement_digest),
+      dev.ParamBitArray(key),
+      dev.ParamBitArray(claim_incarnation),
+    ],
+    retire_generation_decoder(),
+  )
+}
+
+pub fn retire_generation_decoder() -> decode.Decoder(RetireGeneration) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(RetireGeneration(phase:))
+}
+
+pub type RemoveGeneration {
+  RemoveGeneration(phase: Int)
+}
+
+pub fn remove_generation(
+  key key: BitArray,
+  retirement_digest retirement_digest: BitArray,
+) {
+  let sql =
+    "UPDATE generation_record SET phase=5,live=0 WHERE key=? AND phase=4 AND retirement_digest=? RETURNING phase"
+  #(
+    sql,
+    [dev.ParamBitArray(key), dev.ParamBitArray(retirement_digest)],
+    remove_generation_decoder(),
+  )
+}
+
+pub fn remove_generation_decoder() -> decode.Decoder(RemoveGeneration) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(RemoveGeneration(phase:))
+}
+
+pub type RetainGenerationOwnerClose {
+  RetainGenerationOwnerClose(phase: Int)
+}
+
+pub fn retain_generation_owner_close(
+  owner_close owner_close: BitArray,
+  owner_close_digest owner_close_digest: BitArray,
+  key key: BitArray,
+  retirement_digest retirement_digest: BitArray,
+) {
+  let sql =
+    "UPDATE generation_record SET owner_close=?,owner_close_digest=? WHERE key=? AND phase IN (4,5) AND length(owner_close)=0 AND retirement_digest=? RETURNING phase"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(owner_close),
+      dev.ParamBitArray(owner_close_digest),
+      dev.ParamBitArray(key),
+      dev.ParamBitArray(retirement_digest),
+    ],
+    retain_generation_owner_close_decoder(),
+  )
+}
+
+pub fn retain_generation_owner_close_decoder() -> decode.Decoder(
+  RetainGenerationOwnerClose,
+) {
+  use phase <- decode.field(0, decode.int)
+  decode.success(RetainGenerationOwnerClose(phase:))
+}
+
+pub fn recover_generation_uncertainty(
+  claim_incarnation claim_incarnation: BitArray,
+) {
+  let sql =
+    "UPDATE generation_record SET phase=6 WHERE claimed=1 AND phase IN (0,1,2,3) AND claim_incarnation<>?"
+  #(sql, [dev.ParamBitArray(claim_incarnation)])
+}
+
 pub fn initialize_resources(
   enrollment enrollment: BitArray,
   row_limit row_limit: Int,
