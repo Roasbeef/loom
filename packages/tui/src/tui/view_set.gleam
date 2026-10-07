@@ -308,6 +308,18 @@ pub fn local_options(view: View, local_options) -> View {
   View(..view, local_options:)
 }
 
+/// Replaces `View.launch_note`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// view_set.launch_note(model.view, Some("a line"))
+/// ```
+@internal
+pub fn launch_note(view: View, launch_note) -> View {
+  View(..view, launch_note:)
+}
+
 /// Replaces `View.selection`; the record documents the field.
 ///
 /// ## Examples

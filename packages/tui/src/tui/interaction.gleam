@@ -287,14 +287,20 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
   let model = Model(..model, view: view_set.candidate(model.view, candidate))
   case outcome {
     None -> model
-    Some(attachment.Failed(reason)) ->
-      tui_model.append_error(
-        inbound.cancel_pending(
-          model,
-          "target change from " <> model.shared.session,
-        ),
-        "open session: " <> reason,
-      )
+    Some(attachment.Failed(reason)) -> {
+      let failed =
+        tui_model.append_error(
+          inbound.cancel_pending(
+            model,
+            "target change from " <> model.shared.session,
+          ),
+          "open session: " <> reason,
+        )
+
+      // A failed open owes nothing: the line would otherwise surface on the
+      // next adoption, which may be a different session's.
+      Model(..failed, view: view_set.launch_note(failed.view, None))
+    }
     Some(attachment.Adopted(
       channel,
       cut,
@@ -471,8 +477,19 @@ pub fn candidate_outcome(model: Model, candidate, outcome) -> Model {
       }
       let adopted =
         Model(..adopted, view: view_set.reconnect(adopted.view, ReconnectIdle))
-      case cancelled {
+      let adopted = case cancelled {
         Some(notice) -> tui_model.append_system(adopted, notice)
+        None -> adopted
+      }
+
+      // The launch's own line is written after the cut for the reason the
+      // cancelled draft's is: the cut replaced the transcript, so anything
+      // written before it is gone. It is spent by this adoption, which keeps
+      // a later reconnect from saying it again.
+      case adopted.view.launch_note {
+        Some(line) ->
+          Model(..adopted, view: view_set.launch_note(adopted.view, None))
+          |> tui_model.append_notice(line)
         None -> adopted
       }
     }

@@ -3147,8 +3147,10 @@ grants. The panel does not broaden a request or parse shell commands.
 terminal creates a session (`session_control.create_session_configured`, through
 `job.CreateSession` and `selection.create_named`). An empty profile is not sent.
 It affects creation only; an existing registration keeps its own profile. A launch that opens an existing session
-instead says so in one transcript line (`session_control.note_kept_profile`). The
-daemon's refusal arrives as `unknown_profile: <message>` naming the profiles its
+instead says so in one transcript line. `session_control.open_chosen` parks the
+line in `View.launch_note` and `interaction.candidate_outcome` writes it after
+the adoption's cut, because the cut replaces the whole transcript and a line
+written when the open began would be erased with it. The daemon's refusal arrives as `unknown_profile: <message>` naming the profiles its
 configuration defines. The flag is not `--profile`: the native launcher consumes
 that valueless flag for BEAM profiling before the application starts, so a bare
 `--profile` is still an unknown local option here (`tui.launch_options` is the
