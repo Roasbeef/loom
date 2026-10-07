@@ -400,3 +400,44 @@ pub fn canonical_sorts_keys_at_every_depth_and_keeps_arrays_test() {
   assert json.to_string(json.canonical(streamed))
     == "{\"action\":{\"a\":1,\"z\":null},\"limit\":15,\"order\":[2,1],\"scope\":\"repository\"}"
 }
+
+pub fn registered_profile_counts_entire_tree_before_node_construction_test() {
+  let exact = "[" <> string.repeat("null,", 199_998) <> "null]"
+  let assert Ok(json.Array(values)) =
+    json.parse_profile(exact, json.RegisteredLspJson)
+    as "The root array and its values consume exactly 200000 nodes."
+  assert list.length(values) == 199_999
+  let over = "[" <> string.repeat("null,", 199_999) <> "null]"
+  let assert Error(_) = json.parse_profile(over, json.RegisteredLspJson)
+    as "One more value is refused before its node is constructed."
+  assert json.parse_profile(over, json.StandardJson) == json.parse(over)
+
+  // Object keys and values spend the same budget, across nested containers.
+  let nested = "[" <> string.repeat("null,", 199_996) <> "{\"key\":null}]"
+  let assert Ok(_) = json.parse_profile(nested, json.RegisteredLspJson)
+    as "Nested object container, key and value complete the exact budget."
+  let extra_key = "[" <> string.repeat("null,", 199_997) <> "{\"key\":null}]"
+  let assert Error(_) = json.parse_profile(extra_key, json.RegisteredLspJson)
+    as "Keys cannot escape aggregate node accounting."
+}
+
+pub fn registered_profile_preserves_standard_syntax_depth_and_errors_test() {
+  list.each(
+    [
+      "123456789012345678901234567890",
+      "[1.5,-0.25,1e3,true,null,\"\\uD83D\\uDE00\"]",
+      "{\"k\":1,\"k\":2}",
+      "[1,]",
+      "\"\\uD800\"",
+      "1e99999",
+      string.repeat("[", json.max_depth) <> string.repeat("]", json.max_depth),
+      string.repeat("[", json.max_depth + 1)
+        <> string.repeat("]", json.max_depth + 1),
+    ],
+    fn(text) {
+      assert json.parse_profile(text, json.RegisteredLspJson)
+        == json.parse(text)
+      assert json.parse_profile(text, json.StandardJson) == json.parse(text)
+    },
+  )
+}
