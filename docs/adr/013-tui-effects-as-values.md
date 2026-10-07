@@ -377,7 +377,7 @@ The survey of mailbox reads, at the commit this slice started from:
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:143` (`drain_reconnect`)), the control reply
   (`tui/tick.gleam:142` (`drain_control`)), the picker's activity reply
-  (`tui/session_control.gleam:1421` (`drain_activity`)), and the session
+  (`tui/session_control.gleam:1433` (`drain_activity`)), and the session
   switch, which read through `sessions.receive` and `weft.pull` in
   `tui/sessions`, a module S5 deleted with the unreachable local switch.
   Each answers a job the step started, and they move when job starts
