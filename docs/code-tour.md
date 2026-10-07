@@ -749,7 +749,7 @@ failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
 discipline.
 
-For `bash`, `call_spec` (`tools/bash.gleam:766`) builds a `CallSpec` naming the
+For `bash`, `call_spec` (`tools/bash.gleam:806`) builds a `CallSpec` naming the
 op and step ids, the session base policy, the tool's own
 policy-shaped requirements, the consumed grants, `RefuseNarrowed`, the
 argv, the constructed environment, and a pooled budget
@@ -1173,7 +1173,7 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:610`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:634`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:520`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and

@@ -58,11 +58,11 @@ fn drain(asked: Subject(Asked)) -> List(Asked) {
 // test proving the clamp does not have to write 30_001 to see it move.
 fn answering(asked: Subject(Asked), state: job.JobState) -> job.Jobs {
   job.Jobs(
-    start: fn(_ctx, command, wall_ms, wake) {
+    start: fn(_ctx, _cwd, command, wall_ms, wake) {
       process.send(asked, StartAsked(command, wall_ms, wake))
       Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
     },
-    attend: fn(_ctx, command, wake) {
+    attend: fn(_ctx, _cwd, command, wake) {
       process.send(asked, AttendAsked(command, wake))
       Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
     },
@@ -112,8 +112,8 @@ fn polled(state: job.JobState) -> job.Polled {
 // A door whose every operation refuses, for the in-band-refusal tests.
 fn refusing(refusal: job.Refusal) -> job.Jobs {
   job.Jobs(
-    start: fn(_ctx, _command, _wall, _wake) { Error(refusal) },
-    attend: fn(_ctx, _command, _wake) { Error(refusal) },
+    start: fn(_ctx, _cwd, _command, _wall, _wake) { Error(refusal) },
+    attend: fn(_ctx, _cwd, _command, _wake) { Error(refusal) },
     release: fn(_ctx, _id) { Error(refusal) },
     poll: fn(_ctx, _id, _wait, _cursors) { Error(refusal) },
     list: fn(_ctx) { Error(refusal) },
@@ -644,7 +644,7 @@ pub fn an_auto_call_that_loses_the_release_race_renders_the_end_test() {
   let jobs =
     job.Jobs(
       ..job.unavailable(),
-      attend: fn(_ctx, _command, _wake) {
+      attend: fn(_ctx, _cwd, _command, _wake) {
         Ok(job.Started(id: job_id, deadline_ms: 1_000_000, wall_ms: 600_000))
       },
       release: fn(_ctx, _id) {

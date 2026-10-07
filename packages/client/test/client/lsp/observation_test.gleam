@@ -656,3 +656,38 @@ pub fn previously_open_documents_are_readmitted_before_the_observation_pull_test
   })
   finish(manager, root)
 }
+
+pub fn inferred_scope_selects_nested_worktree_owner_test() {
+  let root = scratch()
+  let nested = root <> "/.worktrees/review"
+  let assert Ok(Nil) = simplifile.create_directory_all(nested)
+    as "create worktree"
+  let assert Ok(Nil) =
+    simplifile.write(nested <> "/gleam.toml", "name = 'review'\n")
+    as "write nested marker"
+  let assert Ok(Nil) =
+    simplifile.write(nested <> "/a.gleam", "pub fn greet() { 1 }\n")
+    as "write reviewed revision"
+  let #(manager, _fake) =
+    rig(root, fn(method, _params) {
+      case method {
+        "textDocument/documentSymbol" -> fake_lsp.Answer(outline())
+        _ -> fake_lsp.Answer(json.Null)
+      }
+    })
+  let scope = observation.Request("", "", [".worktrees/review/a.gleam"], [])
+  let assert Ok(batch) =
+    manager.observation_door(manager).collect(scope, control(5000))
+    as "infer actual worktree ownership"
+  assert batch.root == nested
+  assert batch.requested.server == "fake"
+  assert batch.requested.root == nested
+  assert batch.outlined == [nested <> "/a.gleam"]
+  let mismatch =
+    observation.Request("gopls", ".", [".worktrees/review/a.gleam"], [])
+  let assert Error(observation.InvalidScope(reason)) =
+    manager.observation_door(manager).collect(mismatch, control(5000))
+    as "retain explicit assertions"
+  assert string.contains(reason, "configured server fake at " <> nested)
+  finish(manager, root)
+}

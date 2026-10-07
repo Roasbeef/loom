@@ -9,12 +9,15 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
+import simplifile
 import support/fake_broker
 import support/memory_fs
 import tools/bash
 import tools/blob
+import tools/fs
 import tools/job
 import tools/tool
+import tools/working_directory
 
 const workspace = "/work"
 
@@ -733,14 +736,20 @@ pub fn session_lifetime_is_authorized_before_the_job_starts_test() {
       tool.Resume(request.denial.wanted)
     })
   let plane =
-    job.Jobs(..job.unavailable(), start: fn(ctx: tool.Ctx, command, wall, wake) {
-      assert command == "substrate watch"
-      assert wall == Some(0)
-      assert wake == job.QuietUntilDone
-      assert list.contains(ctx.grants, policy.GrantLimit(policy.WallSeconds, 0))
-      process.send(launched, Nil)
-      Ok(job.Started(id: "session-watch", deadline_ms: 0, wall_ms: 0))
-    })
+    job.Jobs(
+      ..job.unavailable(),
+      start: fn(ctx: tool.Ctx, _cwd, command, wall, wake) {
+        assert command == "substrate watch"
+        assert wall == Some(0)
+        assert wake == job.QuietUntilDone
+        assert list.contains(
+          ctx.grants,
+          policy.GrantLimit(policy.WallSeconds, 0),
+        )
+        process.send(launched, Nil)
+        Ok(job.Started(id: "session-watch", deadline_ms: 0, wall_ms: 0))
+      },
+    )
   let outcome = bash.tool(plane).run(ctx, session_watch_args())
   assert !outcome.is_error
   assert string.contains(first_text(outcome), "until the session closes")
@@ -760,7 +769,7 @@ pub fn session_lifetime_cannot_disguise_a_finite_or_foreground_timeout_test() {
   let ctx =
     fake_broker.ctx(workspace:, filesystem:, now:, script: [], recorded:)
   let plane =
-    job.Jobs(..job.unavailable(), start: fn(_ctx, _command, _wall, _wake) {
+    job.Jobs(..job.unavailable(), start: fn(_ctx, _cwd, _command, _wall, _wake) {
       panic as "invalid arguments must never launch a job"
     })
   let assert json.Object(fields) = session_watch_args()
@@ -798,7 +807,7 @@ pub fn session_lifetime_is_refused_to_a_subagent_before_any_approval_test() {
       raise_refusal: fn(_request) { panic as "a subagent must not prompt" },
     )
   let plane =
-    job.Jobs(..job.unavailable(), start: fn(_ctx, _command, _wall, _wake) {
+    job.Jobs(..job.unavailable(), start: fn(_ctx, _cwd, _command, _wall, _wake) {
       panic as "a refused lifetime must never launch a job"
     })
   let outcome = bash.tool(plane).run(ctx, session_watch_args())
@@ -817,7 +826,7 @@ pub fn finite_lifetime_is_unaffected_for_a_subagent_test() {
     fake_broker.ctx(workspace:, filesystem:, now:, script: [], recorded:)
   let ctx = tool.Ctx(..original, strand: "sub:main/run-tests-1a2b3c4d5e6f7a8b")
   let plane =
-    job.Jobs(..job.unavailable(), start: fn(_ctx, command, wall, _wake) {
+    job.Jobs(..job.unavailable(), start: fn(_ctx, _cwd, command, wall, _wake) {
       assert command == "go test ./..."
       assert wall == option.None
       Ok(job.Started(id: "finite", deadline_ms: 600_000, wall_ms: 600_000))
@@ -841,4 +850,112 @@ pub fn lifetime_description_steers_finishing_work_to_the_default_test() {
     "Test runs, builds, and anything expected to finish use the default",
   )
   assert string.contains(schema, "always asks the operator for approval")
+}
+
+pub fn cwd_reaches_foreground_and_auto_without_changing_workspace_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "locate test workspace"
+  let root = here <> "/build/bash-cwd-test"
+  let selected = root <> "/review"
+  let assert Ok(Nil) = simplifile.create_directory_all(selected)
+    as "create selected directory"
+  let recorded = process.new_subject()
+  let ctx =
+    fake_broker.ctx(
+      workspace: root,
+      filesystem: fs.real_filesystem(),
+      now:,
+      script: [fake_broker.exited(code: 0, stdout_bytes: 0)],
+      recorded:,
+    )
+  let directory =
+    working_directory.Door(read: fn(_) { Ok(selected) }, write: fn(_, _) {
+      Ok(Nil)
+    })
+  let offered = bash.tool_with_directory(job.unavailable(), directory)
+  let foreground =
+    offered.run(
+      ctx,
+      json.Object([
+        #("command", json.String("pwd")),
+        #("mode", json.String("foreground")),
+      ]),
+    )
+  assert !foreground.is_error
+  let spec = recorded_spec(recorded)
+  assert spec.cwd == selected
+  assert spec.base_policy == ctx.base_policy
+  let _stdin = process.receive(recorded, 100)
+  let attended = process.new_subject()
+  let jobs =
+    job.Jobs(
+      ..job.unavailable(),
+      attend: fn(at: tool.Ctx, cwd, _command, _wake) {
+        process.send(attended, #(at.workspace, cwd))
+        Error(job.NoJobsPlane)
+      },
+    )
+  let automatic =
+    bash.tool_with_directory(jobs, directory).run(
+      ctx,
+      json.Object([
+        #("command", json.String("pwd")),
+        #("cwd", json.String("..")),
+      ]),
+    )
+  assert !automatic.is_error
+  assert process.receive(attended, 100) == Ok(#(root, root))
+  assert recorded_spec(recorded).cwd == root
+  let assert Ok(Nil) = simplifile.delete_all([root]) as "remove fixture"
+}
+
+pub fn background_captures_cwd_before_start_test() {
+  let assert Ok(here) = simplifile.current_directory()
+    as "locate test workspace"
+  let root = here <> "/build/bash-background-cwd-test"
+  let selected = root <> "/review"
+  let assert Ok(Nil) = simplifile.create_directory_all(selected)
+    as "create selected directory"
+  let recorded = process.new_subject()
+  let ctx =
+    fake_broker.ctx(
+      workspace: root,
+      filesystem: fs.real_filesystem(),
+      now:,
+      script: [],
+      recorded:,
+    )
+  let directory =
+    working_directory.Door(read: fn(_) { Ok(root) }, write: fn(_, _) { Ok(Nil) })
+  let started = process.new_subject()
+  let jobs =
+    job.Jobs(
+      ..job.unavailable(),
+      start: fn(at: tool.Ctx, cwd, _command, _wall, _wake) {
+        process.send(started, #(at.workspace, cwd))
+        Ok(job.Started("fixture", 0, 0))
+      },
+    )
+  let outcome =
+    bash.tool_with_directory(jobs, directory).run(
+      ctx,
+      json.Object([
+        #("command", json.String("pwd")),
+        #("mode", json.String("background")),
+        #("cwd", json.String("review")),
+      ]),
+    )
+  assert !outcome.is_error
+  assert process.receive(started, 100) == Ok(#(root, selected))
+  let missing =
+    bash.tool_with_directory(jobs, directory).run(
+      ctx,
+      json.Object([
+        #("command", json.String("pwd")),
+        #("cwd", json.String("missing")),
+      ]),
+    )
+  assert missing.is_error
+  assert process.receive(started, 0) == Error(Nil)
+  let assert Ok(Nil) = simplifile.delete_all([root]) as "remove fixture"
 }

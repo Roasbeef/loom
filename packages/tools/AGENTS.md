@@ -1,5 +1,19 @@
 # tools
 
+## Shell directory selection
+
+`working_directory.Door` reads and writes the authenticated caller's shell
+default. `bash.tool_with_directory` accepts `cwd` and captures one canonical
+directory after invocation permissions, passing it separately to foreground
+`CallSpec` and to both `Jobs.start` and `Jobs.attend`. The workspace remains the
+native file/LSP base and policy authority. `working_directory` reports cwd,
+workspace and the actual `TMPDIR`; its setter has `Never` replay because a
+relative selection cannot safely be repeated after a committed update.
+
+On-demand `cap://` function surfaces retain runnable examples and indentation;
+the cached type-only surface excludes them. Finite LSP plans can infer their
+owner from explicit sources and advertise the actual SQL column names.
+
 ## LSP observer callback ownership
 
 The retired top-level LSP constructors are removed. `lsp.diagnostics_observer`

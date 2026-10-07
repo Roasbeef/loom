@@ -1116,6 +1116,12 @@ server. Only setup's finite policy permits networking.
 and failure rendering. It never runs a shell or adds a general session grant.
 `client/lsp/dependency_state` fingerprints workspace-local dependency
 configurations and the selected package's manifest and installation inventory.
+The inventory stamp sorts parsed TOML table keys recursively, retaining supported
+string values. Unsupported values and excessive nesting refuse reuse.
+Gleam can rewrite `packages.toml` in a different
+key order between initialization and the next query; that serializer order
+does not represent changed dependencies. Version and Git commit changes still
+invalidate reuse. Configurations and manifests remain byte-hashed.
 Query callers perform these bounded reads before acquisition. The manager holds
 only the digest and compares it when reusing a server. A mismatch follows the
 existing eviction and keeper ordering, so preparation cannot begin while the

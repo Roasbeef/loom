@@ -505,3 +505,12 @@ See [protocol 063](../../protocol-change/063-saved-code-mode-programs.md).
 Each path is relative to its package's source root: `tools/tool.gleam`
 is `packages/tools/src/tools/tool.gleam`. `packages/tools/CLAUDE.md` is
 the denser per-type reference for the `tools` package.
+
+## Shell directory ownership
+
+`working_directory` reads or sets the calling strand's durable shell default.
+`bash.cwd` overrides one invocation, and all shell modes capture that directory
+before starting. Native file, search and LSP paths retain the workspace base.
+The tool reports the actual invocation `TMPDIR` so agents can create temporary
+files across calls without guessing a path under the owner's home. Directory
+selection does not widen authority. Protocol-change/068 records the contract.

@@ -762,6 +762,7 @@ fn started_or_refused(
     strand:,
     operation: harness.operation,
     request: jobs.Request(
+      cwd: None,
       command:,
       wall_ms:,
       captured_policy: None,
@@ -789,6 +790,7 @@ fn start_job_under(
       strand:,
       operation:,
       request: jobs.Request(
+        cwd: None,
         command:,
         wall_ms: None,
         captured_policy: None,
@@ -1139,6 +1141,7 @@ fn start_over(
     strand: "main",
     operation: an_op(),
     request: jobs.Request(
+      cwd: None,
       command: "tail -f build.log",
       wall_ms:,
       captured_policy: None,
@@ -1246,6 +1249,7 @@ pub fn a_starter_whose_runner_died_first_is_answered_test() {
       strand: "main",
       operation: an_op(),
       request: jobs.Request(
+        cwd: None,
         command: "sleep 999",
         wall_ms: None,
         captured_policy: None,
@@ -1443,6 +1447,7 @@ pub fn aborting_the_originating_turn_preserves_a_session_job_test() {
       strand: "main",
       operation:,
       request: jobs.Request(
+        cwd: None,
         command: "watch mail",
         wall_ms: Some(0),
         captured_policy: None,
@@ -1912,6 +1917,7 @@ pub fn invocation_policy_reaches_background_job_without_changing_later_jobs_test
       strand: "main",
       operation: harness.operation,
       request: jobs.Request(
+        cwd: None,
         command: "write /shared/result",
         wall_ms: None,
         captured_policy: Some(captured),
@@ -1971,6 +1977,7 @@ fn start_waking(
       strand:,
       operation: harness.operation,
       request: jobs.Request(
+        cwd: None,
         command:,
         wall_ms: None,
         captured_policy: None,
@@ -2566,6 +2573,7 @@ pub fn a_default_wall_honours_the_captured_grant_test() {
       strand: "main",
       operation: harness.operation,
       request: jobs.Request(
+        cwd: None,
         command: "make",
         wall_ms: None,
         captured_policy: Some(granted),
@@ -2651,6 +2659,7 @@ pub fn a_quiet_job_receives_fresh_settlement_grace_test() {
       strand: "main",
       operation: harness.operation,
       request: jobs.Request(
+        cwd: None,
         command: "quiet watcher",
         wall_ms: Some(60),
         captured_policy: None,
@@ -2684,6 +2693,7 @@ pub fn a_session_lifetime_job_stays_quiet_and_stops_with_its_session_test() {
       strand: "main",
       operation: harness.operation,
       request: jobs.Request(
+        cwd: None,
         command: "watch mail",
         wall_ms: Some(0),
         captured_policy: None,
@@ -2717,4 +2727,29 @@ pub fn a_session_lifetime_job_stays_quiet_and_stops_with_its_session_test() {
     )
     as "session close joins the job"
   assert !notified(harness, started)
+}
+
+pub fn admitted_directory_survives_job_record_and_clearance_test() {
+  let harness = start_harness()
+  let assert Ok(started) =
+    jobs.start_job(
+      harness.name,
+      strand: "main",
+      operation: harness.operation,
+      request: jobs.Request(
+        command: "pwd",
+        cwd: Some("/workspace/review"),
+        wall_ms: None,
+        captured_policy: None,
+        audience: jobs.ProgramWatches,
+        stdin: jobs.CloseStdin,
+        idle_wake: job.QuietUntilDone,
+      ),
+      waiting: 10_000,
+    )
+    as "admit a captured directory"
+  assert record_in_store(harness, started.id).spec.cwd == "/workspace/review"
+  let assert [spec] = specs(harness) as "one launch clearance"
+  assert spec.cwd == "/workspace/review"
+  assert spec.base_policy.writable_roots == ["/workspace"]
 }

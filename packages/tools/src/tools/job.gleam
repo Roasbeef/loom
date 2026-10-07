@@ -344,14 +344,15 @@ pub type Jobs {
     /// policy refusal reaches the caller rather than the next poll. The
     /// owner is sent a completion notice when the job ends, and is woken
     /// while idle only if the `IdleWake` asks for it.
-    start: fn(Ctx, String, Option(Int), IdleWake) -> Result(Started, Refusal),
+    start: fn(Ctx, String, String, Option(Int), IdleWake) ->
+      Result(Started, Refusal),
     /// The command, started for a caller that will wait on it: the job
     /// gets the host's default wall met with the session policy, its
     /// stdin is closed as a foreground call's is, and nobody is notified
     /// of its end until the caller `release`s it. This is what an
     /// auto-mode `bash` call runs through. The `IdleWake` applies once the
     /// caller releases it.
-    attend: fn(Ctx, String, IdleWake) -> Result(Started, Refusal),
+    attend: fn(Ctx, String, String, IdleWake) -> Result(Started, Refusal),
     /// Gives up waiting on a job `attend` started. `Released` means the
     /// owner will be told when it ends; `AlreadyEnded` means it ended
     /// first and the caller renders it. Never both, never neither.
@@ -392,8 +393,8 @@ pub type Jobs {
 pub fn unavailable() -> Jobs {
   let absent = Unavailable(reason: "this session runs no background jobs")
   Jobs(
-    start: fn(_ctx, _command, _wall, _wake) { Error(absent) },
-    attend: fn(_ctx, _command, _wake) { Error(NoJobsPlane) },
+    start: fn(_ctx, _cwd, _command, _wall, _wake) { Error(absent) },
+    attend: fn(_ctx, _cwd, _command, _wake) { Error(NoJobsPlane) },
     release: fn(_ctx, _id) { Error(absent) },
     poll: fn(_ctx, _id, _wait, _cursors) { Error(absent) },
     list: fn(_ctx) { Error(absent) },

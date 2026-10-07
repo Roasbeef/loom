@@ -48,5 +48,26 @@ class AliasRenderingTest(unittest.TestCase):
         )
 
 
+class ExampleRenderingTest(unittest.TestCase):
+    def test_runnable_example_keeps_indentation(self):
+        docs = "Contract.\n\n## Examples\n\n```gleam\ncase value {\n  Ok(x) -> x\n}\n```"
+        rendered = "\n".join(renderer.example_block(docs, ""))
+        self.assertIn("///   Ok(x) -> x", rendered)
+        self.assertNotIn("Contract.", rendered)
+
+    def test_examples_extend_only_the_on_demand_surface(self):
+        body = {"documentation": "A probe.", "functions": {"probe": {
+            "documentation": "Contract.\n\n## Examples\n\n```gleam\nprobe.probe()\n```",
+            "parameters": [], "return": {"kind": "named", "module": "gleam", "name": "Nil", "parameters": []},
+        }}}
+        full, typed = renderer.render_module("cap/probe", body, {}, {"cap/probe": body})
+        self.assertIn("/// probe.probe()", full)
+        self.assertNotIn("probe.probe()", typed)
+        self.assertTrue(full.startswith(typed))
+
+    def test_missing_example_adds_nothing(self):
+        self.assertEqual(renderer.example_block("Contract.", ""), [])
+
+
 if __name__ == "__main__":
     unittest.main()

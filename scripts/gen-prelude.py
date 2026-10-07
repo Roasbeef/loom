@@ -53,13 +53,9 @@ Three deliberate omissions keep the rendered blocks focused on callable APIs:
     bare type. Inventing names for the unlabelled ones would read as
     labels and teach a call the compiler rejects, which is the one
     failure this rendering exists to prevent.
-  * **`## Examples` sections**. These are the
-    prelude's doctests. They are assertions about return values that the
-    signature above them already states, they exist to be run rather than
-    read, and they are the one part of a doc comment written for a
-    maintainer instead of a caller. Everything before the first `#`
-    heading is kept in full — including the `Capability: \\`fs.read\\`.`
-    line, which names the exact capability a refusal will cite.
+  * **Headings in type documentation**. Function examples remain verbatim
+    in the on-demand surface, where callers need runnable syntax. They never
+    enter the shorter cached type surface.
   * **All but the first sentence of a module's own doc**. A module doc runs to the design rationale — Rule
     Zero, the two-channel doctrine, what a satellite's death means — which
     is written for someone changing the prelude, not for someone calling
@@ -183,6 +179,18 @@ def prose(doc):
     return out
 
 
+def example_block(doc, indent):
+    """Keep runnable examples verbatim, including code indentation."""
+    lines = doc if isinstance(doc, list) else (doc or "").split("\n")
+    for index, line in enumerate(lines):
+        if line.strip() == "## Examples":
+            return [indent + "///"] + [
+                indent + "///" + (" " + item if item else "")
+                for item in lines[index:]
+            ]
+    return []
+
+
 def doc_block(doc, indent):
     lines = []
     for index, paragraph in enumerate(prose(doc)):
@@ -293,6 +301,7 @@ def render_module(module, body, aliases, all_modules):
     for name in sorted(body.get("functions", {})):
         function = body["functions"][name]
         lines.extend(doc_block(function.get("documentation"), ""))
+        lines.extend(example_block(function.get("documentation"), ""))
         arguments = parameter_list(function.get("parameters") or [], module, aliases)
         lines.append(
             "pub fn "

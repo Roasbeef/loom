@@ -2,7 +2,7 @@
 //// executor.
 ////
 //// Each call builds a `CallSpec` — `bash -o pipefail -c` in the
-//// workspace, the caller's allowlist-constructed environment, and
+//// selected directory, the caller's allowlist-constructed environment, and
 //// policy-shaped requirements of workspace write, system paths
 //// readable, and whatever network the session base allows — and clears it
 //// through the broker seam
@@ -18,6 +18,14 @@
 //// a crash mid-execution must yield a synthetic interrupted result
 //// (the pi §0.5 scenario), never a re-execution. `execution_mode` is
 //// `Exclusive`: the command may mutate the workspace.
+////
+//// ## Flow
+////
+//// `tool_with_directory` binds the host's strand store. `run` captures cwd
+//// before dispatching to `attended`, `background`, or `foreground`.
+//// `call_spec` carries that directory through broker clearance, and `settle`
+//// renders foreground results. Attended jobs use `look` and `show` to retain
+//// broker custody until completion or `handed_off` returns the durable job.
 ////
 //// ## The three modes
 ////
@@ -99,6 +107,7 @@ import tools/job.{type Jobs}
 import tools/permissions
 import tools/tail
 import tools/tool.{type Ctx, type ToolOutcome}
+import tools/working_directory
 
 /// Wall-clock timeout applied when the arguments give none.
 pub const default_timeout_ms = 120_000
@@ -157,11 +166,25 @@ pub type Mode {
 /// ```
 ///
 pub fn tool(jobs: Jobs) -> tool.Tool {
+  tool_with_directory(jobs, working_directory.workspace_only())
+}
+
+/// Runs commands using the host's per-strand directory store.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // bash.tool_with_directory(jobs, directory)
+/// ```
+pub fn tool_with_directory(
+  jobs: Jobs,
+  directory: working_directory.Door,
+) -> tool.Tool {
   tool.Tool(
     name: "bash",
     description: "Run a shell command in the sandboxed workspace. The "
       <> "command runs as `bash -o pipefail -c` in the workspace using "
-      <> "the session's PATH and network policy. Declare extra paths or full "
+      <> "the session's PATH and network policy. Optional cwd overrides one call; otherwise working_directory supplies your strand's persistent default. A shell cd affects only that command. Use $TMPDIR for cross-call temporary files; its actual path is reported by working_directory. Declare extra paths or full "
       <> "network access in permissions to request approval before execution. "
       <> "For a Git worktree outside the workspace, request writable_roots "
       <> "for the repository's .git directory and an existing destination "
@@ -208,6 +231,12 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
       [
         #("permissions", permissions.schema()),
         #("command", tool.string_property("the shell command to run")),
+        #(
+          "cwd",
+          tool.string_property(
+            "directory for this call, relative to your strand's shell directory or absolute; does not change the default",
+          ),
+        ),
         #(
           "timeout_ms",
           tool.integer_property(
@@ -263,7 +292,7 @@ pub fn tool(jobs: Jobs) -> tool.Tool {
     replay: tool.Never,
     execution_mode: tool.Exclusive,
     requirements:,
-    run: fn(ctx, args) { run(jobs, ctx, args) },
+    run: fn(ctx, args) { run(jobs, directory, ctx, args) },
   )
 }
 
@@ -285,7 +314,12 @@ pub fn requirements(workspace: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(..base, readable_roots: [], env_allow: [])
 }
 
-fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
+fn run(
+  jobs: Jobs,
+  directory: working_directory.Door,
+  ctx: Ctx,
+  args: JsonValue,
+) -> ToolOutcome {
   use command <- tool.with_arg(tool.required_string(args, "command"))
   use requested <- tool.with_arg(tool.optional_int(args, "timeout_ms"))
   use mode <- tool.with_arg(requested_mode(args))
@@ -307,10 +341,12 @@ fn run(jobs: Jobs, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use ctx <- tool.or_outcome(authorize_wall(ctx, mode, requested), fn(outcome) {
     outcome
   })
+  use selected <- tool.with_arg(tool.optional_string(args, "cwd"))
+  use cwd <- tool.with_arg(working_directory.select(directory, ctx, selected))
   case mode {
-    Auto -> attended(jobs, ctx, command, requested, wake)
-    Background -> background(jobs, ctx, command, requested, wake)
-    Foreground -> foreground(ctx, command, requested)
+    Auto -> attended(jobs, ctx, cwd, command, requested, wake)
+    Background -> background(jobs, ctx, cwd, command, requested, wake)
+    Foreground -> foreground(ctx, cwd, command, requested)
   }
 }
 
@@ -426,6 +462,7 @@ fn requested_wake(args: JsonValue) -> Result(job.IdleWake, String) {
 fn attended(
   jobs: Jobs,
   ctx: Ctx,
+  cwd: String,
   command: String,
   requested: Option(Int),
   wake: job.IdleWake,
@@ -433,9 +470,9 @@ fn attended(
   let window =
     int.min(option.unwrap(requested, default_timeout_ms), max_timeout_ms)
   use <- bool.lazy_guard(when: outgrows_the_wall(ctx, window), return: fn() {
-    foreground(ctx, command, requested)
+    foreground(ctx, cwd, command, requested)
   })
-  case jobs.attend(ctx, command, wake) {
+  case jobs.attend(ctx, cwd, command, wake) {
     Ok(started) -> {
       let #(now, _clock) = clock.read(ctx.clock)
       look(jobs, ctx, started, fresh_watch(until: now + window))
@@ -443,7 +480,8 @@ fn attended(
 
     Error(job.CeilingReached(..))
     | Error(job.NoJobsPlane)
-    | Error(job.ClearanceRefused(..)) -> foreground(ctx, command, requested)
+    | Error(job.ClearanceRefused(..)) ->
+      foreground(ctx, cwd, command, requested)
 
     Error(job.Unavailable(..) as refusal)
     | Error(job.NotFound(..) as refusal)
@@ -723,12 +761,13 @@ fn whole(
 fn background(
   jobs: Jobs,
   ctx: Ctx,
+  cwd: String,
   command: String,
   requested: Option(Int),
   wake: job.IdleWake,
 ) -> ToolOutcome {
   use started <- tool.or_outcome(
-    jobs.start(ctx, command, requested, wake),
+    jobs.start(ctx, cwd, command, requested, wake),
     job.refusal_outcome,
   )
   tool.success(
@@ -757,13 +796,14 @@ fn background(
 
 fn foreground(
   ctx: Ctx,
+  cwd: String,
   command: String,
   requested: Option(Int),
 ) -> ToolOutcome {
   let timeout = option.unwrap(requested, default_timeout_ms)
   let timeout = int.min(timeout, max_timeout_ms)
   let #(now, _clock) = clock.read(ctx.clock)
-  let spec = call_spec(ctx, command, now, timeout)
+  let spec = call_spec(ctx, cwd, command, now, timeout)
   let events = process.new_subject()
   use call <- tool.or_outcome(
     ctx.clear_call(spec, events),
@@ -792,6 +832,7 @@ fn foreground(
 // allowlist; the wall limit mirrors the timeout.
 fn call_spec(
   ctx: Ctx,
+  cwd: String,
   command: String,
   now: Int,
   timeout: Int,
@@ -849,7 +890,7 @@ fn call_spec(
     // `go test | tail` from reporting the successful tail as a passing test.
     argv: ["bash", "-o", "pipefail", "-c", command],
     env: ctx.env,
-    cwd: ctx.workspace,
+    cwd:,
     budget: budget.Budget(max_outstanding: 1, deadline_ms: now + timeout),
   )
 }

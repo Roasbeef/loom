@@ -132,6 +132,7 @@
 //// that finishes in between is still woken; the window is small and named
 //// rather than claimed shut.
 
+import broker/internal/call
 import client/internal/session_owner
 import client/internal/timebase
 import client/peer_mail
@@ -521,10 +522,35 @@ fn borrow(config: Config) -> Result(api.Runtime, Refusal) {
 /// ```
 ///
 pub fn borrow_runtime(config: Config) -> Result(api.Runtime, Nil) {
-  use subject <- result.try(address.lookup(config.name))
+  borrow_named(config.name, config.holder_timeout_ms)
+}
+
+/// Projects a fact-only supplier without retaining the rest of the Agency.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.fact_supplier(config)()
+/// ```
+pub fn fact_supplier(config: Config) -> fn() -> Result(api.FactHandle, Nil) {
+  let name = config.name
+  let timeout = config.holder_timeout_ms
+  fn() {
+    use subject <- result.try(address.lookup(name))
+    call.try_call(subject, waiting: timeout, sending: Borrow)
+    |> result.replace_error(Nil)
+    |> result.map(api.fact_handle)
+  }
+}
+
+fn borrow_named(
+  name: address.Address(Message),
+  timeout: Int,
+) -> Result(api.Runtime, Nil) {
+  use subject <- result.try(address.lookup(name))
   use pid <- result.try(process.subject_owner(subject))
   use <- bool.guard(when: !process.is_alive(pid), return: Error(Nil))
-  Ok(process.call(subject, config.holder_timeout_ms, Borrow))
+  Ok(process.call(subject, timeout, Borrow))
 }
 
 // The whole ledger, once per Agency call. It is bounded by the session's
