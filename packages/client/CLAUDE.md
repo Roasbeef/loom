@@ -6406,3 +6406,29 @@ Dispatcher callback boundary. They do not prove queue acceptance, physical helpe
 stdin consumption or shipped registered assembly.
 Default source acquisition and serve selection remain ordinary assembly work
 under protocol-change/079, originally approved as 077.
+
+
+## Prepared registered hook gate (protocol 079)
+
+`hookserve.prepare_registered_gate` acquires one opaque PreparedRegisteredGate
+over the actual counter PID/Subject. `registered_serving` constructs its original
+writer-bound declaration; `wire_registered_prepared` then builds the five shared
+gate wrappers purely. Legacy wire/wire_registered still start and compose using
+the same counter reducer and wrappers. Strands and writer/factory restarts retain
+the original counter instead of reconstructing SessionStart or Stop state.
+
+`registered_gate_owner` projects the actual PID and proves no custody. The trusted
+assembly helper may unlink it only after acknowledged publication of its release
+in the original combined instance_owner.Services cleanup. It must preserve the
+other Services releases. Refused publication/opening explicitly releases the
+acquired counter even while its assembly owner remains alive. Successful opening
+retains it through Runtime drainage, then Services retires it.
+
+`release_registered_gate` uses one monotonic budget for original stop ACK and
+original Normal DOWN. Timeout, abnormal loss or missing ACK refuses confirmation;
+a later Normal or an already-dead actor cannot reconstruct the lost proof.
+Component tests use real conversation/owner SQLite, registered custodian and
+Broker. Controlled NotStarted dispatch proves no helper execution. Actual
+instance_owner cleanup covers the lost final opening reply and Runtime-before-
+Services ordering. This preparation seam does not activate registered operation
+in the shipped daemon or supply the executor FullHost.

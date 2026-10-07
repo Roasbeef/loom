@@ -991,3 +991,29 @@ dependency. Production constructor wiring, hashing, owner service supervision,
 transport reconciliation and collection after verified session readback belong
 to the client assembly. Runtime tests exercise actual session and custody SQLite
 across callback loss, strand restart, child-only unknown and pending completion.
+
+
+## Original-writer Effects construction (protocol 079)
+
+`api.open_fact_effects_published` receives the original base Effects and one pure
+binder. Session identity uses the base clock/entropy; the finished Effects pin
+those same capabilities. `supervisor.start_effects_published` allocates the actual
+writer Address and calls the builder once before root startup. API privately
+constructs its FactHandle from that address. The first root child publishes the
+exact Runtime/direct drain before registry, writer, factories or recovery begin.
+The writer has no recipient yet, so binding and publication cannot read facts.
+
+Both opening paths share the original child specifications, failure disposal and
+unlink handoff. Driver restart closures retain finished Effects, never the
+builder/binder. Refused binding stops the original namespace; refused publication
+uses the existing failed-root cleanup. Writer/factory replacement keeps the same
+writer slot, while root retirement ends its namespace. A new root cannot accept
+the old FactHandle. Existing Config, Options, Runtime and Effects fields and
+legacy opening signatures remain unchanged.
+
+The exit-trapping original assembly owner must retain supporting resources before
+binding and the actual runtime cleanup before recovery. Runtime cleanup projects
+the SessionTree. A lost final opening reply leaves those original capabilities
+responsible for drainage; it cannot justify another opener. These internal
+construction seams are prerequisites for registered assembly, not shipped
+default-host selection or FullHost implementation.

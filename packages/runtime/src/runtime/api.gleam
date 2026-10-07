@@ -46,6 +46,8 @@
 ////
 //// 1. `open` (or `open_published`) boots the tree and returns a `Runtime`
 ////    addressing one strand; `on_strand` rebinds it to a sibling.
+////    `open_fact_effects_published` binds the actual allocated writer once;
+////    `opening_config` captures only the finished Effects before drivers start.
 //// 2. `prompt` is `accept_quietly` plus a doorbell; `accept_quietly`,
 ////    `compact` and `navigate` hand `accept_request` their own request.
 //// 3. `accept_request` reads the serialization line, builds the plan
@@ -393,6 +395,36 @@ pub fn open_published(
   options: Options,
   publish: fn(Runtime) -> Result(Nil, String),
 ) -> Result(Runtime, String) {
+  open_fact_effects_published(
+    session,
+    effects,
+    options,
+    fn(_facts) { Ok(effects) },
+    publish,
+  )
+}
+
+/// Binds Effects to the original writer slot before any recovered work starts.
+///
+/// `bind` is pure construction over already-acquired resources. It cannot read
+/// facts, start actors or run handlers: the writer slot is not bound yet. The
+/// original base clock and entropy seed identity and remain pinned in the
+/// returned Effects. Publication transfers actual root/drain custody before
+/// writer startup, preserving the ordinary opening barrier.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // api.open_fact_effects_published(session, base, options, bind, publish)
+/// ```
+@internal
+pub fn open_fact_effects_published(
+  session: Session,
+  base: Effects,
+  options: Options,
+  bind: fn(FactHandle) -> Result(Effects, String),
+  publish: fn(Runtime) -> Result(Nil, String),
+) -> Result(Runtime, String) {
   use Nil <- result.try(
     session.ensure_strand(session, options.strand, options.configuration)
     |> result.map_error(describe_session_error),
@@ -402,20 +434,53 @@ pub fn open_published(
   // every session — file-backed, in-memory, forked or fresh — passes
   // through on its way up (`protocol-change/008`). Idempotent: a session
   // that already carries one hands it back and mints nothing.
-  let #(now, _clock) = clock.read(effects.clock)
+  let #(now, _clock) = clock.read(base.clock)
   use #(session_id, _generator) <- result.try(
     session.ensure_id(
       session,
-      ids.generator(clock.fixed(at: now), seed: effects.entropy()),
+      ids.generator(clock.fixed(at: now), seed: base.entropy()),
     )
     |> result.map_error(describe_session_error),
   )
 
+  let strand = options.strand
+  let settings = options.settings
+  let original_clock = base.clock
+  let original_entropy = base.entropy
+  let describe_runtime = fn(tree, effects) {
+    Runtime(tree:, session:, session_id:, effects:, strand:, settings:)
+  }
+  use #(tree, effects) <- result.try(
+    supervisor.start_effects_published(
+      fn(writer_address) {
+        use bound <- result.try(bind(FactHandle(writer_address)))
+        let effects =
+          effects.Effects(
+            ..bound,
+            clock: original_clock,
+            entropy: original_entropy,
+          )
+        Ok(#(opening_config(session, session_id, effects, options), effects))
+      },
+      fn(tree, effects) { publish(describe_runtime(tree, effects)) },
+    )
+    |> result.map_error(describe_start_error),
+  )
+  Ok(describe_runtime(tree, effects))
+}
+
+// Project retained driver inputs after binding. The transient Options record
+// and binder never travel with a factory's restart closure.
+fn opening_config(
+  session: Session,
+  session_id: SessionId,
+  effects: Effects,
+  options: Options,
+) -> supervisor.Config {
   // These callbacks become retained supervisor restart inputs. Project
   // options before closure construction so writer-only subscribers and
   // callbacks do not travel with every driver and publication callback.
   let strand = options.strand
-  let settings = options.settings
   let stream_options = options.stream_options
   let retry_policy = options.retry_policy
   let poll_interval_ms = options.poll_interval_ms
@@ -430,42 +495,31 @@ pub fn open_published(
       context.for_session(ids.session_id_to_string(session_id)),
     )
 
-  let describe_runtime = fn(tree) {
-    Runtime(tree:, session:, session_id:, effects:, strand:, settings:)
-  }
-  let config =
-    supervisor.Config(
-      writer_options: writer.Options(
-        session:,
-        after_commit: options.after_commit,
-        subscribers: options.subscribers,
-      ),
-      strand_options: fn(writer, claim_reaper) {
-        // Construct the template only after the supervisor has the real
-        // writer address. No placeholder can escape into a live driver.
-        strand_runtime.Options(
-          writer:,
-          strand:,
-          effects:,
-          stream_options:,
-          retry_policy:,
-          poll_interval_ms:,
-          idle_poll_interval_ms:,
-          claim_reaper:,
-          logger:,
-        )
-      },
-      tolerance: options.tolerance,
-      subagent: options.subagent,
-      subagent_tolerance: options.subagent_tolerance,
-    )
-  use tree <- result.try(
-    supervisor.start_published(config, fn(tree) {
-      publish(describe_runtime(tree))
-    })
-    |> result.map_error(describe_start_error),
+  supervisor.Config(
+    writer_options: writer.Options(
+      session:,
+      after_commit: options.after_commit,
+      subscribers: options.subscribers,
+    ),
+    strand_options: fn(writer, claim_reaper) {
+      // Construct the template only after the supervisor has the real
+      // writer address. No placeholder can escape into a live driver.
+      strand_runtime.Options(
+        writer:,
+        strand:,
+        effects:,
+        stream_options:,
+        retry_policy:,
+        poll_interval_ms:,
+        idle_poll_interval_ms:,
+        claim_reaper:,
+        logger:,
+      )
+    },
+    tolerance: options.tolerance,
+    subagent: options.subagent,
+    subagent_tolerance: options.subagent_tolerance,
   )
-  Ok(describe_runtime(tree))
 }
 
 /// This session's canonical id (`protocol-change/008`), minted by `open`

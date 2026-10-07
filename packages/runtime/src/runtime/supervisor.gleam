@@ -76,6 +76,7 @@ import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor as sup
 import gleam/otp/supervision
 import gleam/result
+import runtime/effects.{type Effects}
 import runtime/internal/drain_registry
 import runtime/internal/ffi_sup
 import runtime/registry
@@ -183,6 +184,71 @@ pub fn start_published(
   let registry_name = address.new_address(namespace)
   let writer_name = address.new_address(namespace)
 
+  start_allocated(
+    config,
+    publish,
+    namespace,
+    drains_name,
+    registry_name,
+    writer_name,
+  )
+}
+
+/// Binds finished Effects once to this root's actual allocated writer address.
+///
+/// `build` runs in the original assembly owner before root startup and performs
+/// no I/O or actor acquisition. Only its finished Config and Effects enter the
+/// shared root construction; restart callbacks cannot invoke it again.
+/// Publication remains the first child's custody barrier before any writer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // supervisor.start_effects_published(build_original_effects, retain_runtime)
+/// ```
+@internal
+pub fn start_effects_published(
+  build: fn(address.Address(writer.Message)) ->
+    Result(#(Config, Effects), String),
+  publish: fn(SessionTree, Effects) -> Result(Nil, String),
+) -> Result(#(SessionTree, Effects), actor.StartError) {
+  use namespace <- result.try(
+    address.start() |> result.map_error(actor.InitFailed),
+  )
+  let drains_name = address.new_address(namespace)
+  let registry_name = address.new_address(namespace)
+  let writer_name = address.new_address(namespace)
+
+  use #(config, effects) <- result.try(
+    build(writer_name)
+    |> result.map_error(fn(reason) {
+      // No root exists yet. Retire the one allocated namespace rather than
+      // leaving an unused address available to a replacement opener.
+      let _stopped = address.stop(namespace)
+      actor.InitFailed(reason)
+    }),
+  )
+  use tree <- result.try(start_allocated(
+    config,
+    fn(tree) { publish(tree, effects) },
+    namespace,
+    drains_name,
+    registry_name,
+    writer_name,
+  ))
+  Ok(#(tree, effects))
+}
+
+// Both entry points use the same child specifications, failure disposal and
+// original namespace handoff. Binding callbacks never enter this restart graph.
+fn start_allocated(
+  config: Config,
+  publish: fn(SessionTree) -> Result(Nil, String),
+  namespace: address.Registry,
+  drains_name: address.Address(drain_registry.Message),
+  registry_name: address.Address(registry.Message),
+  writer_name: address.Address(writer.Message),
+) -> Result(SessionTree, actor.StartError) {
   // Each restart closure owns only its child's inputs. Capturing Config
   // here would copy the effects-bearing driver builder into unrelated
   // publication and booter specifications every time the tree starts.

@@ -1038,3 +1038,75 @@ computed timeout cannot replace that durable work address. SystemIntent's
 8192-byte metadata bound does not permit truncating the ordinary input or moving
 unbounded content into control metadata. Local behavior remains unchanged where
 this registered admission path is not selected.
+
+
+## Addendum: original-writer Effects construction
+
+The original owner can bind registered hooks to its actual runtime writer before
+recovered drivers start. This is an assembly prerequisite; it does not select
+registered operation in the shipped daemon or supply the missing FullHost.
+Existing `Config`, `Options`, `Runtime`, `Effects`, `open` and `open_published`
+shapes and ordinary behavior remain unchanged.
+
+The following two assembly-only constructors are accepted:
+
+```gleam
+@internal
+pub fn open_fact_effects_published(
+  session: Session, base: Effects, options: Options,
+  bind: fn(FactHandle) -> Result(Effects, String),
+  publish: fn(Runtime) -> Result(Nil, String),
+) -> Result(Runtime, String)
+
+@internal
+pub fn start_effects_published(
+  build: fn(Address(writer.Message)) -> Result(#(Config, Effects), String),
+  publish: fn(SessionTree, Effects) -> Result(Nil, String),
+) -> Result(#(SessionTree, Effects), actor.StartError)
+```
+
+Session seeding and identity use the original base clock and entropy. The
+supervisor allocates one namespace and its original drain, registry and writer
+addresses. It invokes `build` once, before starting the root. API constructs the
+private `FactHandle` from that actual writer address and invokes `bind` once.
+Binding MUST perform no I/O, actor startup, fact access or fresh admission. The
+finished Effects retain the base clock and entropy and supply every strand's
+options, the publisher and the returned Runtime. Restart closures retain those
+finished Effects, never `build` or `bind`.
+
+The first existing root child publishes the actual root and direct drain
+capability before registry, writer, factories or recovery start. Acknowledged
+custody is required before subsequent children start. The writer address has no
+live recipient during binding or publication. Construction cannot manufacture
+fresh Checking work, hook occurrences, generation authority or system permission.
+Build refusal disposes the original namespace. Publication refusal uses the
+existing failed-root disposal. Successful startup preserves the existing root
+and namespace unlink handoff and root-death namespace retention.
+
+The independent construction review found that existing `wire_registered` starts
+a counter actor; it cannot be called inside pure binding. Split that startup
+from the shared pure gate wrappers. An opaque prepared registered gate retains
+ONE original counter PID and Subject, acquired before opening. Its explicit
+release requests that counter's stop and joins its actual normal exit; timeout,
+abnormal exit or missing evidence refuses cleanup success. Legacy `wire` and
+`wire_registered` keep their existing start-and-compose behavior and shared gate
+reducers. No counter is rebuilt per strand or writer/factory restart.
+
+Assembly publishes the prepared gate's complete release capability through the
+existing original `instance_owner` Services boundary before opening. Refused
+publication or refused opening must explicitly retire the acquired counter even
+when the assembly owner remains alive. Successful opening retains it through the
+Runtime drain, then retires it through Services cleanup. `instance_owner` already
+orders Runtime before Services and blocks later cleanup on a failed release.
+The runtime cleanup retains the projected SessionTree rather than the entire
+Runtime or Effects graph. A lost opening reply after custody acknowledgement
+leaves these original capabilities responsible for cleanup; it never authorizes
+a second opener.
+
+This refinement was accepted after the independent original-writer Effects
+construction review and its counter-ownership correction, under the delegated
+protocol review process in `docs/execution.md` section 7. These additive internal
+constructors change no frozen Part-1 interface, storage schema, control envelope
+or product policy. Implementation review and component gates remain required.
+The separately pending weft Detached selector/pin and executor host-reader
+dependency remain unapproved.
