@@ -211,7 +211,8 @@ one.
 `loom --model-profile <name>` asks for the profile when the terminal creates a
 session. It is kept with the other local launch options, beside `--config`, and
 applies to creation only: opening an existing registration keeps that
-registration's profile. A value that begins with `-` is refused so a forgotten
+registration's profile. A launch that names a profile and opens an existing session says so in one
+transcript line, so the flag is not silently ignored. A value that begins with `-` is refused so a forgotten
 name does not consume the next flag.
 
 The flag is not `--profile`. The native launcher already consumes `--profile`

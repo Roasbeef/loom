@@ -2090,7 +2090,9 @@ pub fn connect_remote(
       // catalogue load queued rather than leaving it for the first event.
       case session {
         "" -> session_control.load_catalogue(model, "", None)
-        id -> session_control.begin_open(model, id)
+        id ->
+          session_control.note_kept_profile(model)
+          |> session_control.begin_open(id)
       }
       |> runtime.flush
     }

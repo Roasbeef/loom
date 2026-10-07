@@ -644,6 +644,30 @@ fn apply_configuration_reply(
   }
 }
 
+/// Says, when the launch named a model profile but opens an existing session
+/// instead of creating one, that the session keeps the profile it was created
+/// with. The profile only applies at creation, so without the line the flag
+/// would be silently ignored. A launch with no `--model-profile` adds nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_control.note_kept_profile(model)
+/// ```
+@internal
+pub fn note_kept_profile(model: Model) -> Model {
+  case chosen_profile(model) {
+    "" -> model
+    name ->
+      tui_model.append_notice(
+        model,
+        "--model-profile "
+          <> name
+          <> " applies to new sessions; this session keeps the profile it was created with",
+      )
+  }
+}
+
 // The model profile the launch asked for, which only a local launch has:
 // `--model-profile` is one of its options, and a terminal attached to a remote
 // session has none. Empty means the configuration's default roles.

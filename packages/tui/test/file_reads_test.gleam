@@ -26,6 +26,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import session_view/composer
 import session_view/pasted_image
 import session_view/transcript_line
@@ -41,6 +42,7 @@ import tui/image_drop
 import tui/job
 import tui/model as tui_model
 import tui/runtime
+import tui/session_control
 import tui/session_selector
 import tui/submit
 import tui/view_set
@@ -349,4 +351,25 @@ pub fn a_creation_carries_the_launch_profile_test() {
       ),
       90_000,
     )
+}
+
+// A launch that names a profile but opens an existing session says the profile
+// only applies to new sessions; a launch without one says nothing.
+pub fn opening_an_existing_session_says_the_profile_is_kept_test() {
+  let named =
+    session_control.note_kept_profile(picker(
+      bootstrap.Options(..absent_config(), profile: "deepseek"),
+    ))
+  assert list.any(named.shared.transcript, fn(line) {
+    case line {
+      transcript_line.Line(_, text) ->
+        string.contains(
+          text,
+          "--model-profile deepseek applies to new sessions",
+        )
+    }
+  })
+  let plain = picker(absent_config())
+  assert session_control.note_kept_profile(plain).shared.transcript
+    == plain.shared.transcript
 }
