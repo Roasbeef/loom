@@ -1173,6 +1173,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
       feed_every_steps: 0,
       block_cooldown_reviews: 2,
     )),
+    go_caches: None,
   )
 }
 

@@ -195,6 +195,7 @@ pub fn conditional_global_identity_resolves_for_linked_worktrees_test() {
     serve.tool_environment(
       linked,
       None,
+      None,
       catalog.default_tools(),
       reading: absent,
     )
@@ -381,6 +382,7 @@ fn with_fixture_under(
   let #(environment, _) =
     serve.tool_environment(
       workspace,
+      None,
       None,
       catalog.default_tools(),
       reading: absent,

@@ -91,7 +91,7 @@ pub fn without_a_home_the_jail_home_stands_test() {
     hookrunner.Context(
       ..ctx,
       env: serve.hook_environment(
-        serve.session_environment(ctx.workspace, None),
+        serve.session_environment(ctx.workspace, None, None),
         None,
         ctx.workspace,
       ),
@@ -244,7 +244,7 @@ fn fixture() -> #(hookrunner.Context, exec.Helper) {
       step_id: "hookcompat-fixture",
       workspace:,
       env: serve.hook_environment(
-        serve.session_environment(workspace, None),
+        serve.session_environment(workspace, None, None),
         Some(operator_home(workspace)),
         workspace,
       ),

@@ -3910,6 +3910,34 @@ these forks because they define the same modules.
   Seatbelt system view grants `/Library` but not `/Applications`, so an
   Xcode.app toolchain's Git is unreadable there; it was already unreachable
   through the shim, which execs the same binary.
+- **A jailed Go tool's caches live outside the checkout, per workspace.**
+  `client/gocache` locates `<cache>/loom/workspace/<sha256 of the
+  workspace path>` (`<cache>` as `lsp_places` resolves it) and
+  `serve.session_environment` points `GOCACHE`, `GOMODCACHE` and
+  `GOLANGCI_LINT_CACHE` beneath it; they used to land under the tool
+  `HOME` inside the operator's checkout (20 GB measured). The root joins
+  `writable_roots` through `gocache.admitting` in `session_base`, the same
+  path a linked worktree's git directories take, and the bash tool asks
+  for the base's roots so the grant reaches macOS and Linux alike. The
+  build cache is never the host's: `go build` trusts `GOCACHE` entries
+  unverified, so a shared one lets a jailed tool plant an object the
+  operator's own build links. `[workspace] go_module_mirror` mounts the
+  host module cache's `cache/download` read-only, optional so a vanished
+  mirror degrades to the public proxy, and sets `GOPROXY` to
+  `file://<mirror>/cache/download,https://proxy.golang.org,direct`;
+  `[tools]` may not name the owned names (`GOPROXY` only with a mirror),
+  checked by `serve.go_cache_fault` at boot together with the mirror's
+  existence and its non-overlap with the workspace, protected paths and
+  the root. `[workspace] go_cache_limit_mib` (default 10240) bounds the
+  build cache: at session start a weft task measures it with `du -sk`,
+  renames it to `<root>/trash-<unique>` when over the limit, creates an
+  empty replacement with Go's 256 fan-out directories, and sweeps every
+  `trash-*` with `del_dir_r` (which unlinks, never follows, a link the jail
+  planted). A rename keeps a live session's open files and fresh opens
+  consistent; a build that wrote an entry before the rename and reads it
+  back after fails once and a retry clears it. The caches are absent, and
+  Go falls back to the tool `HOME`, when the daemon has no cache
+  directory. Existing `.codemode/home/...` caches are not deleted.
 - **The `[tools]` table selects network and extra environment.**
   `catalog.parse_tools` reads an operator's `network = "off" | "full"`
   (full is the default and what an absent table means) plus `env` names

@@ -66,6 +66,7 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
     serve.tool_environment(
       workspace,
       None,
+      None,
       catalog.default_tools(),
       reading: fn(name) { secret.lookup(secret.env(), name) },
     )

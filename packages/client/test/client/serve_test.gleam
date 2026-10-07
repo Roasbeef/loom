@@ -18,6 +18,7 @@ import client/daemon/session_socket
 import client/daemon_server_test as wire
 import client/distill
 import client/distillpass
+import client/gocache
 import client/host
 import client/internal/ffi_os
 import client/jobs
@@ -216,6 +217,7 @@ fn settings_under(root: String) -> serve.Settings {
     // `[tools]` table existed.
     tools: catalog.default_tools(),
     advisor: None,
+    go_caches: None,
   )
 }
 
@@ -226,7 +228,7 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
   // the workspace is the one root the jail lets a tool write — and under
   // its dot-directory, so what a toolchain writes to either stays out of
   // the operator's tree.
-  assert serve.session_environment("/work", None)
+  assert serve.session_environment("/work", None, None)
     == [
       #("PATH", "/usr/local/bin:/usr/bin:/bin"),
       #("HOME", "/work/.codemode/home"),
@@ -236,7 +238,10 @@ pub fn the_session_environment_carries_the_toolchain_home_and_tmpdir_test() {
     ]
   let toolchain = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
   let assert Ok(path) =
-    list.key_find(serve.session_environment("/work", Some(toolchain)), "PATH")
+    list.key_find(
+      serve.session_environment("/work", Some(toolchain), None),
+      "PATH",
+    )
   assert path == toolchain
   assert serve.tool_tmp_directory("/work") == "/work/.codemode/tmp"
   assert serve.tool_home_directory("/work") == "/work/.codemode/home"
@@ -292,7 +297,7 @@ pub fn boot_keeps_its_workspace_directories_out_of_git_status_test() {
 
 pub fn imported_hooks_keep_the_operator_git_configuration_test() {
   let environment =
-    serve.session_environment("/work", None)
+    serve.session_environment("/work", None, None)
     |> serve.hook_environment(Some("/operator"), "/work")
   assert list.key_find(environment, "HOME") == Ok("/operator")
   assert list.key_find(environment, "GIT_CONFIG_GLOBAL") == Error(Nil)
@@ -1848,6 +1853,7 @@ pub fn the_tool_environment_appends_after_the_server_owned_names_test() {
     serve.tool_environment(
       "/work",
       None,
+      None,
       networked_tools(),
       reading: host_reading,
     )
@@ -1871,6 +1877,7 @@ pub fn configured_tools_precede_system_launchers_test() {
     serve.tool_environment(
       "/work",
       Some("/tool/bin:/usr/bin:/bin"),
+      None,
       networked_tools(),
       reading: fn(_name) { Error(Nil) },
     )
@@ -1884,7 +1891,7 @@ pub fn an_unset_configured_name_is_skipped_and_reported_test() {
   let tools =
     catalog.ToolsConfig(..networked_tools(), env: ["GH_TOKEN", "NO_SUCH_VAR"])
   let #(environment, unset) =
-    serve.tool_environment("/work", None, tools, reading: host_reading)
+    serve.tool_environment("/work", None, None, tools, reading: host_reading)
   assert list.key_find(environment, "NO_SUCH_VAR") == Error(Nil)
   assert list.key_find(environment, "GH_TOKEN") == Ok("gho_secret")
   assert unset == ["NO_SUCH_VAR"]
@@ -1895,10 +1902,11 @@ pub fn the_default_tools_table_leaves_the_environment_alone_test() {
     serve.tool_environment(
       "/work",
       None,
+      None,
       catalog.default_tools(),
       reading: host_reading,
     )
-  assert environment == serve.session_environment("/work", None)
+  assert environment == serve.session_environment("/work", None, None)
   assert unset == []
 }
 
@@ -1907,6 +1915,7 @@ pub fn host_path_discovery_needs_no_per_tool_directory_list_test() {
     serve.tool_environment(
       "/work",
       Some("/bundled/bin:/usr/bin:/bin"),
+      None,
       catalog.default_tools(),
       reading: fn(name) {
         case name {
@@ -1975,9 +1984,10 @@ pub fn the_imported_hook_environment_is_a_subset_of_the_base_test() {
   // the session's own four, plus the contract's project directory.
   let asked =
     list.append(
-      list.map(serve.session_environment(settings.workspace, None), fn(pair) {
-        pair.0
-      }),
+      list.map(
+        serve.session_environment(settings.workspace, None, None),
+        fn(pair) { pair.0 },
+      ),
       ["CLAUDE_PROJECT_DIR"],
     )
 
@@ -2641,4 +2651,84 @@ pub fn a_session_that_can_write_the_runtime_root_binds_in_its_workspace_test() {
       "/home/o/.loom",
     )
     == None
+}
+
+pub fn the_session_base_and_environment_carry_the_private_go_caches_test() {
+  let settings = settings_under("build/serve-test-go-caches")
+  let caches =
+    gocache.GoCaches(
+      root: "/cache/loom/workspace/abc",
+      mirror: Some("/host/mod"),
+      limit_kib: 1024,
+    )
+  let with_caches = serve.Settings(..settings, go_caches: Some(caches))
+  let base =
+    serve.session_base(
+      with_caches,
+      settings.session_path <> ".index",
+      settings.session_path <> ".memory",
+      settings.session_path <> ".digest",
+      Error("no toolchain for this fixture"),
+    )
+
+  // The jail may write the private root, may only read the mirror, and
+  // is allowed every name the environment sets.
+  assert list.contains(base.writable_roots, caches.root)
+  assert !list.contains(base.writable_roots, "/host/mod")
+  assert list.any(base.mounts, fn(mount) {
+    mount.path == "/host/mod/cache/download"
+    && mount.access == policy.MountReadOnly
+  })
+  let environment =
+    serve.session_environment(settings.workspace, None, Some(caches))
+  assert list.all(environment, fn(pair) {
+    list.contains(base.env_allow, pair.0)
+  })
+
+  // Neither Go cache is inside the checkout, and the two differ.
+  let assert Ok(build) = list.key_find(environment, "GOCACHE")
+  let assert Ok(modules) = list.key_find(environment, "GOMODCACHE")
+  assert !string.starts_with(build, settings.workspace)
+  assert !string.starts_with(modules, settings.workspace)
+  assert build != modules
+
+  // Without caches the base and environment are what they were.
+  let plain =
+    serve.session_base(
+      settings,
+      settings.session_path <> ".index",
+      settings.session_path <> ".memory",
+      settings.session_path <> ".digest",
+      Error("no toolchain for this fixture"),
+    )
+  assert !list.contains(plain.writable_roots, caches.root)
+  assert list.key_find(
+      serve.session_environment(settings.workspace, None, None),
+      "GOCACHE",
+    )
+    == Error(Nil)
+}
+
+pub fn boot_creates_the_private_go_cache_directories_outside_the_workspace_test() {
+  let location =
+    "build/serve-test-go-boot-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let settings = settings_under(location)
+  let assert Ok(cwd) = simplifile.current_directory()
+  let caches =
+    gocache.GoCaches(
+      root: cwd <> "/" <> location <> "-caches/loom/workspace/w",
+      mirror: None,
+      limit_kib: 10_485_760,
+    )
+  let assert Ok(booted) =
+    serve.boot(serve.Settings(..settings, go_caches: Some(caches)))
+    as "a session with private Go caches boots"
+  serve.shutdown(booted)
+  list.each(gocache.directories(caches), fn(directory) {
+    assert simplifile.is_directory(directory) == Ok(True)
+    assert !string.starts_with(directory, settings.workspace)
+  })
+  let _cleanup = simplifile.delete(location)
+  let _cleanup = simplifile.delete(location <> "-caches")
 }
