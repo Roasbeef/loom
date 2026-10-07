@@ -1,7 +1,8 @@
+-- Pinned pre-provenance format-1 schema; recovery must never backfill its rows.
 -- Permanent generation custody, separate from hot endpoint registrations.
 CREATE TABLE generation_meta (
  id INTEGER PRIMARY KEY CHECK(id=1),
- format INTEGER NOT NULL CHECK(format=2),
+ format INTEGER NOT NULL CHECK(format=1),
  live_limit INTEGER NOT NULL CHECK(live_limit BETWEEN 1 AND 16),
  row_limit INTEGER NOT NULL CHECK(row_limit BETWEEN 1 AND 4096),
  byte_limit INTEGER NOT NULL CHECK(byte_limit BETWEEN 1 AND 268435456)
@@ -33,9 +34,3 @@ CREATE TABLE generation_record (
 );
 CREATE UNIQUE INDEX generation_live_scope ON generation_record(scope) WHERE live=1;
 CREATE UNIQUE INDEX generation_original_owner ON generation_record(owner_use) WHERE claimed=1;
-CREATE TABLE generation_scope_plan (
- key BLOB PRIMARY KEY NOT NULL REFERENCES generation_record(key),
- header BLOB NOT NULL CHECK(length(header) BETWEEN 1 AND 262144),
- enrollment BLOB NOT NULL CHECK(length(enrollment) BETWEEN 1 AND 262144),
- digest BLOB NOT NULL CHECK(length(digest)=32)
-);
