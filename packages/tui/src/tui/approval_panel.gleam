@@ -354,7 +354,17 @@ pub fn render(
       list.map(list.take(list.drop(lines, offset), detail_height), indent),
       gap,
       [
-        choice_line(AllowOnce, "1", "Allow once", once, state, width),
+        choice_line(
+          AllowOnce,
+          "1",
+          case state.review.tool {
+            "loom_config" -> "Approve edit"
+            _ -> "Allow once"
+          },
+          once,
+          state,
+          width,
+        ),
         choice_line(
           AllowSession,
           "2",
@@ -515,15 +525,46 @@ fn detail_lines(
       // the action and the grant.
       list.flatten([
         context,
-        styled_lines(action, plain(), width),
+        action_lines(state.review.tool, action, width),
         [span.line_new([])],
-        [span.line_new([span.span_styled("grant", label())])],
+        [
+          span.line_new([
+            span.span_styled(
+              case state.review.tool {
+                "loom_config" -> "configuration consent"
+                _ -> "grant"
+              },
+              label(),
+            ),
+          ]),
+        ],
         authority
           |> list.map(fn(line) { styled_lines(line, plain(), width) })
           |> list.flatten,
         session,
       ])
     }
+  }
+}
+
+// Configuration rows preserve literal text while removal and addition own color.
+fn action_lines(tool: String, text: String, width: Int) {
+  case tool {
+    "loom_config" ->
+      text
+      |> string.split("\n")
+      |> list.flat_map(fn(row) {
+        let color = case
+          string.starts_with(row, "- "),
+          string.starts_with(row, "+ ")
+        {
+          True, _ -> theme.danger
+          _, True -> theme.added
+          _, _ -> theme.paper
+        }
+        styled_lines(row, style.new(color, style.Default, style.none()), width)
+      })
+    _ -> styled_lines(text, plain(), width)
   }
 }
 

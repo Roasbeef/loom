@@ -1229,6 +1229,8 @@
   .approval-strand{font-weight:600;}
   .approval-question{margin:0 0 6px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
   pre.approval-action{margin:0 0 6px 0;padding:6px 8px;background:var(--color-bg);white-space:pre-wrap; overflow-wrap:anywhere;font:13px/1.4 var(--font-mono);}
+  .config-removed{color:var(--color-danger-text);}
+  .config-added{color:var(--color-added-text);}
   ul.approval-authority{margin:0 0 8px 0;padding-left:20px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-mono);}
   .approval-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
   /* The arming note: shown for the 600 ms the row refuses clicks, and

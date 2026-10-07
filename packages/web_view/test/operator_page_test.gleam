@@ -8,6 +8,7 @@
 //// through Lustre's simulator, which dispatches only to handlers the
 //// rendered tree carries, as the browser runtime does.
 
+import core/json
 import core/message
 import gleam/bit_array
 import gleam/erlang/process
@@ -1139,4 +1140,67 @@ fn refuse_every_read(model, wire, written: List(String), rounds: Int) {
 
 fn count(html: String, part: String) -> Int {
   list.length(string.split(html, part)) - 1
+}
+
+fn config_cell() {
+  let preview =
+    json.to_string(
+      json.Object([
+        #("action", json.String("edit")),
+        #("path", json.String("/home/loom.toml")),
+        #("digest", json.String("base")),
+        #("old", json.String("tokens = 1")),
+        #("new", json.String("tokens = 2\n# <script>")),
+      ]),
+    )
+  let assert json.Object(cell) =
+    page_fixture.escalation("config", 7, "loom_config", preview)
+    as "the fixture is a captured cell"
+  let assert Ok(json.Object(value)) = list.key_find(cell, "value")
+    as "the captured value exists"
+  json.Object(
+    list.map(cell, fn(pair) {
+      case pair.0 {
+        "value" -> #(
+          pair.0,
+          json.Object(
+            list.map(value, fn(field) {
+              case field.0 {
+                "denial" -> #(
+                  "denial",
+                  json.Object([#("wanted", json.Array([]))]),
+                )
+                _ -> field
+              }
+            }),
+          ),
+        )
+        _ -> pair
+      }
+    }),
+  )
+}
+
+pub fn configuration_card_shows_exact_diff_and_sends_once_consent_test() {
+  let #(model, wire) = page("operator", [config_cell()])
+  let html = element.to_string(operator_page.view(model))
+  assert string.contains(html, "Apply this configuration edit?")
+    as "the card names the decision"
+  assert string.contains(html, "config-removed")
+    as "removals have their own semantic styling"
+  assert string.contains(html, "config-added")
+    as "additions have their own semantic styling"
+  assert string.contains(html, "&lt;script&gt;")
+    as "document text is escaped as HTML"
+  assert string.contains(html, "Approve edit")
+    as "the approval button names the mutation"
+  assert !string.contains(html, "Allow for session")
+    as "config consent cannot persist"
+  let _ = send(model, [operator_page.Decided("config", 7, component.AllowOnce)])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one click sends one captured decision"
+  assert string.contains(frame, "\"action\":\"captured-action\"")
+    as "the drawn action digest is echoed"
+  assert string.contains(frame, "\"grants\":[]")
+    as "the config edit grants no sandbox permission"
 }

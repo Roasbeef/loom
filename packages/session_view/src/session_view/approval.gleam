@@ -464,15 +464,83 @@ pub fn presentation(record: Review) -> Result(Presentation, String) {
     Exact(action, grants) -> Ok(#(action, grants))
     Unavailable(reason) -> Error(reason)
   })
-  let preview = case record.preview {
-    "" -> "No action preview was captured."
-    preview -> readable_preview(record.tool, preview)
+  use preview <- result.try(case record.tool, record.preview {
+    "loom_config", preview -> configuration_preview(preview)
+    _, "" -> Ok("No action preview was captured.")
+    tool, preview -> Ok(readable_preview(tool, preview))
+  })
+  let authority = case record.tool, grants {
+    "loom_config", [] -> [
+      "- Approves this exact edit once; no filesystem access is granted.",
+      "- Model settings reload for subsequent operations. Other settings require restart.",
+    ]
+    "loom_config", _ -> []
+    _, [] -> ["- No additional grants requested."]
+    _, grants -> list.map(grants, readable_grant)
   }
-  let authority = case grants {
-    [] -> ["- No additional grants requested."]
-    grants -> list.map(grants, readable_grant)
-  }
+  use <- bool.guard(
+    record.tool == "loom_config" && grants != [],
+    Error("configuration consent cannot include sandbox grants"),
+  )
   Ok(Presentation(question(record.tool), preview, authority))
+}
+
+fn configuration_preview(preview: String) -> Result(String, String) {
+  use <- bool.guard(
+    string.byte_size(preview) > 2048,
+    Error("incomplete configuration edit"),
+  )
+  use value <- result.try(
+    json.parse(preview) |> result.replace_error("incomplete configuration edit"),
+  )
+  use fields <- result.try(object(value))
+  use <- bool.guard(
+    list.length(fields) != 5
+      || list.length(list.unique(list.map(fields, fn(pair) { pair.0 }))) != 5,
+    Error("incomplete configuration edit"),
+  )
+  use Nil <- result.try(
+    only_keys(fields, ["action", "path", "digest", "old", "new"]),
+  )
+  use action <- result.try(text(fields, "action"))
+  use <- bool.guard(
+    action != "edit",
+    Error("configuration approval must describe an edit"),
+  )
+  use path <- result.try(text(fields, "path"))
+  use digest <- result.try(text(fields, "digest"))
+  use old <- result.try(text(fields, "old"))
+  use new <- result.try(text(fields, "new"))
+  let change = case old, new {
+    "", "" -> "No text changes."
+    "", new -> "Append to end of file:\n" <> configuration_rows(new, "+ ")
+    old, "" -> "Delete matched text:\n" <> configuration_rows(old, "- ")
+    old, new ->
+      "Replace exactly one match:\n"
+      <> configuration_rows(old, "- ")
+      <> "\n"
+      <> configuration_rows(new, "+ ")
+  }
+  Ok(
+    "File: "
+    <> literal_body(path)
+    <> "\nBase: "
+    <> literal_body(digest)
+    <> "\n"
+    <> change,
+  )
+}
+
+// Prefixes belong to the display, while every document row remains escaped.
+fn configuration_rows(text: String, prefix: String) -> String {
+  case text {
+    "" -> ""
+    text ->
+      text
+      |> string.split("\n")
+      |> list.map(fn(row) { prefix <> literal_body(row) })
+      |> string.join("\n")
+  }
 }
 
 /// What a request for `tool` asks to do, in words a reader would write:
@@ -493,6 +561,7 @@ pub fn wants(tool: String) -> String {
     "fs_read" -> "read a file"
     "fs_write" -> "write a file"
     "fs_edit" -> "edit a file"
+    "loom_config" -> "update your Loom configuration"
     "" -> "make a request"
     tool -> "use " <> tool
   }
@@ -504,6 +573,7 @@ fn question(tool: String) -> String {
     "fs_read" -> "Allow this file read?"
     "fs_write" -> "Allow this file write?"
     "fs_edit" -> "Allow this file edit?"
+    "loom_config" -> "Apply this configuration edit?"
     "" -> "Allow this request?"
     tool -> "Allow " <> literal_text(tool) <> " to proceed?"
   }
