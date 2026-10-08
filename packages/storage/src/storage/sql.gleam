@@ -1048,6 +1048,58 @@ WHERE seq NOT IN (SELECT seq FROM catalogue_recent_folders ORDER BY seq DESC LIM
   #(sql, [dev.ParamInt(limit)])
 }
 
+pub type SessionMove {
+  SessionMove(op: String, peer: String, state: String)
+}
+
+pub fn session_move(session_id session_id: String) {
+  let sql =
+    "SELECT op, peer, state FROM catalogue_session_moves WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_move_decoder())
+}
+
+pub fn session_move_decoder() -> decode.Decoder(SessionMove) {
+  use op <- decode.field(0, decode.string)
+  use peer <- decode.field(1, decode.string)
+  use state <- decode.field(2, decode.string)
+  decode.success(SessionMove(op:, peer:, state:))
+}
+
+pub fn insert_session_move(
+  session_id session_id: String,
+  op op: String,
+  peer peer: String,
+  state state: String,
+) {
+  let sql =
+    "INSERT INTO catalogue_session_moves (session_id, op, peer, state) VALUES (?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamString(op),
+    dev.ParamString(peer),
+    dev.ParamString(state),
+  ])
+}
+
+pub fn finish_session_move(session_id session_id: String, op op: String) {
+  let sql =
+    "UPDATE catalogue_session_moves SET state = 'moved'
+WHERE session_id = ? AND op = ? AND state = 'moving'"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(op)])
+}
+
+pub fn abort_session_move(session_id session_id: String, op op: String) {
+  let sql =
+    "DELETE FROM catalogue_session_moves
+WHERE session_id = ? AND op = ? AND state = 'moving'"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(op)])
+}
+
+pub fn delete_session_move(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_moves WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
