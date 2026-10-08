@@ -2606,7 +2606,7 @@ pub fn create_for(
       |> result.replace_error(creations.TooMany),
     )
     let key = "web-" <> hex_entropy(16)
-    manager.Creation(key, workspace, name, "", profile, executor_of(place))
+    manager.Creation(key, workspace, name, "", profile, executor_of(place), "")
     |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
     |> result.map_error(creation_refusal)

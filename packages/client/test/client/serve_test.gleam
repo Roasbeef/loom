@@ -443,6 +443,7 @@ fn with_daemon_instance(run) {
               "",
               None,
               "",
+              "",
             ),
             directory: serving.ready.sessions_directory,
             generator: ids.generator(clock.fixed(1000), 887),

@@ -426,7 +426,15 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", "", None, ""),
+        manager.Creation(
+          "visible",
+          ready.state_root,
+          "Visible",
+          "",
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )
@@ -434,7 +442,7 @@ pub fn member_authority_is_checked_again_on_each_control_request_test() {
     let assert Ok(hidden) =
       manager.create(
         ready.registry,
-        manager.Creation("hidden", ready.state_root, "Hidden", "", None, ""),
+        manager.Creation("hidden", ready.state_root, "Hidden", "", None, "", ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 101),
       )
@@ -831,6 +839,7 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
           "",
           None,
           "",
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 200),
@@ -886,6 +895,7 @@ pub fn owner_archives_and_restores_through_the_control_socket_test() {
         catalogue.Reserved,
         profile: option.None,
         executor: "",
+        pool: "",
         subtitle: option.None,
       )
     assert catalogue.reserve(store, registration) == Ok(registration)
@@ -1043,7 +1053,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("source", ready.state_root, "Source", "", None, ""),
+        manager.Creation("source", ready.state_root, "Source", "", None, "", ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 400),
       )
@@ -1051,7 +1061,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("target", ready.state_root, "Target", "", None, ""),
+        manager.Creation("target", ready.state_root, "Target", "", None, "", ""),
         directory: ready.sessions_directory,
         generator: generator,
       )
@@ -1201,7 +1211,15 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert Ok(source) =
       manager.create(
         ready.registry,
-        manager.Creation("cli-source", ready.state_root, "Source", "", None, ""),
+        manager.Creation(
+          "cli-source",
+          ready.state_root,
+          "Source",
+          "",
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 701),
       )
@@ -1209,7 +1227,15 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
     let assert Ok(target) =
       manager.create(
         ready.registry,
-        manager.Creation("cli-target", ready.state_root, "Target", "", None, ""),
+        manager.Creation(
+          "cli-target",
+          ready.state_root,
+          "Target",
+          "",
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 702),
       )
@@ -1384,6 +1410,7 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           "",
           None,
           "",
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 703),
@@ -1447,7 +1474,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
       let assert Ok(created) =
         manager.create(
           ready.registry,
-          manager.Creation(pair.0, ready.state_root, pair.0, "", None, ""),
+          manager.Creation(pair.0, ready.state_root, pair.0, "", None, "", ""),
           directory: ready.sessions_directory,
           generator: ids.generator(clock.fixed(0), pair.1),
         )
@@ -1569,7 +1596,7 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
     let assert Ok(_) =
       manager.create(
         ready.registry,
-        manager.Creation(other_id, ready.state_root, other_id, "", None, ""),
+        manager.Creation(other_id, ready.state_root, other_id, "", None, "", ""),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 804),
       )
@@ -1737,7 +1764,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         let assert Ok(_) =
           manager.create(
             ready.registry,
-            manager.Creation(pair.0, ready.state_root, pair.0, "", None, ""),
+            manager.Creation(pair.0, ready.state_root, pair.0, "", None, "", ""),
             directory: ready.sessions_directory,
             generator: ids.generator(clock.fixed(0), pair.1),
           )
@@ -1908,7 +1935,15 @@ pub fn a_browser_row_authenticates_on_no_v2_route_test() {
     let assert Ok(visible) =
       manager.create(
         ready.registry,
-        manager.Creation("visible", ready.state_root, "Visible", "", None, ""),
+        manager.Creation(
+          "visible",
+          ready.state_root,
+          "Visible",
+          "",
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 100),
       )

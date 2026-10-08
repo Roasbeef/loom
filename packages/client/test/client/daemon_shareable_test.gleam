@@ -42,6 +42,7 @@ fn private(store: catalogue.Catalogue, seed: Int) -> catalogue.Registration {
       state: catalogue.Reserved,
       profile: option.None,
       executor: "",
+      pool: "",
       subtitle: option.None,
     )
   assert catalogue.reserve(store, record) == Ok(record)

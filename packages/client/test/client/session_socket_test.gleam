@@ -110,6 +110,7 @@ fn fixture_with(
         "",
         None,
         "",
+        "",
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1_700_000_000_000), 981),

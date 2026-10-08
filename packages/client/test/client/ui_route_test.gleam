@@ -1343,7 +1343,7 @@ fn create_session(ready: root.Ready(String), key: String, seed: Int) -> String {
   let assert Ok(created) =
     manager.create(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, "", None, ""),
+      manager.Creation(key, ready.state_root, key, "", None, "", ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
     )
@@ -3193,7 +3193,7 @@ fn create_shared_session(
   let assert Ok(created) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, "", None, ""),
+      manager.Creation(key, ready.state_root, key, "", None, "", ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
       scope: domain.SessionOnly,
@@ -6727,6 +6727,7 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
           "",
           None,
           "",
+          "",
         ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 1231),
@@ -6765,6 +6766,7 @@ pub fn the_admin_read_summarises_each_listed_session_test() {
           "admin-rows-private",
           "",
           None,
+          "",
           "",
         ),
         directory: ready.sessions_directory,

@@ -2787,6 +2787,7 @@ fn dispatch_class(
           configuration,
           profile,
           option.unwrap(executor, ""),
+          "",
         ),
         scope,
       )

@@ -246,6 +246,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
         "",
         None,
         "",
+        "",
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),

@@ -377,6 +377,7 @@ pub fn the_resolver_keeps_a_registered_name_and_looks_for_nothing_test() {
       configuration: "",
       profile: None,
       executor: "build-box",
+      pool: "",
       created_at: 0,
       request_key: "resolver",
       state: catalogue.Reserved,

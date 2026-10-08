@@ -86,7 +86,7 @@ fn resident(epoch: String) -> Resident {
   let assert Ok(view) =
     manager.create(
       registry,
-      manager.Creation(epoch, settings.workspace, "reader", "", None, ""),
+      manager.Creation(epoch, settings.workspace, "reader", "", None, "", ""),
       directory: directory <> "/sessions",
       generator: ids.generator(clock.fixed(1), 414),
     )

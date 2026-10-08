@@ -13,7 +13,8 @@
 ////
 //// ## Flow
 ////
-//// `open` → `reserve` → `confirm` → `get` → `rename` → `seed_subtitle` → `page`
+//// `open` → `reserve` → `confirm` → `get` → `rename` → `seed_subtitle` →
+//// `seed_executor` → `page`
 ////
 //// 1. `open` configures one connection and `initialize_schema` creates the
 ////    tables or applies the migrations a version lacks, in one transaction.
@@ -24,8 +25,10 @@
 //// 4. `rename` writes the display-name override after `display_name` accepts it.
 //// 5. `seed_subtitle` reduces a first prompt with `subtitle_from_prompt` and
 ////    writes the result once.
-//// 6. `delete` removes a registration and every row that refers to it.
-//// 7. `remember_folder`, `recent_folders` and `forget_folder` keep the short list
+//// 6. `seed_executor` records the executor a pooled session's first attach
+////    chose, once.
+//// 7. `delete` removes a registration and every row that refers to it.
+//// 8. `remember_folder`, `recent_folders` and `forget_folder` keep the short list
 ////    of folders the owner recently started a session in, which belongs to no
 ////    session and so outlives every one.
 
@@ -44,6 +47,7 @@ import storage/catalogue_credential_kinds_schema
 import storage/catalogue_executors_schema
 import storage/catalogue_logins_schema
 import storage/catalogue_names_schema
+import storage/catalogue_pools_schema
 import storage/catalogue_profiles_schema
 import storage/catalogue_recent_folders_schema
 import storage/catalogue_subtitles_schema
@@ -93,9 +97,17 @@ pub type Registration {
     profile: Option(String),
     /// The executor the session's workspace is registered on, by its
     /// `[executors.<name>]` key, or the empty string for a session whose
-    /// workspace is a path on this host. It is part of the immutable creation
-    /// request, so a retry compares it (protocol-change/078).
+    /// workspace is a path on this host. For a session created with an
+    /// executor it is part of the immutable creation request, so a retry
+    /// compares it. For a session created in a pool it is empty until the
+    /// first successful attach chooses one (`seed_executor`), and a retry then
+    /// compares the pool and not the executor (protocol-change/078).
     executor: String,
+    /// The `[pools.<name>]` the session was created in, or the empty string
+    /// for a session that named none. A pooled session's workspace is a
+    /// registered name, as an executor session's is, and the pool is part of
+    /// the immutable creation request.
+    pool: String,
     /// Creation time in Unix milliseconds.
     created_at: Int,
     /// The immutable creation request key.
@@ -237,7 +249,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 10
+pub const current_version = 11
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -253,6 +265,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(8, catalogue_recent_folders_schema.schema),
     #(9, catalogue_profiles_schema.schema),
     #(10, catalogue_executors_schema.schema),
+    #(11, catalogue_pools_schema.schema),
   ]
 }
 
@@ -318,10 +331,7 @@ fn reserve_record(
 ) {
   case existing {
     [old] -> {
-      case
-        Registration(..old, state: Reserved)
-        == Registration(..record, state: Reserved)
-      {
+      case requested(old) == requested(record) {
         True -> Ok(old)
         False -> Error(Conflict)
       }
@@ -334,6 +344,16 @@ fn reserve_record(
       }
     }
     [_, _, ..] -> Error(Invalid("duplicate creation key"))
+  }
+}
+
+// The part of a registration a creation request fixes. The state moves as the
+// file is confirmed, and a pooled session's executor is chosen by its first
+// attach and not named by the request, so neither is compared.
+fn requested(record: Registration) -> Registration {
+  case record.pool {
+    "" -> Registration(..record, state: Reserved)
+    _ -> Registration(..record, state: Reserved, executor: "")
   }
 }
 
@@ -353,6 +373,7 @@ fn insert(
       request_key: record.request_key,
       profile: option.unwrap(record.profile, ""),
       executor: record.executor,
+      pool: record.pool,
     ),
   ))
   use Nil <- result.try(statement(catalogue, sql.increment_catalogue_revision()))
@@ -536,6 +557,51 @@ pub fn seed_subtitle(
               sql.increment_catalogue_revision(),
             ))
             Ok(Registration(..record, subtitle: Some(subtitle)))
+          }
+        }
+      })
+  }
+}
+
+/// Records the executor a pooled session's first attach chose, once.
+///
+/// A session created in a `[pools.<name>]` has no executor when it is
+/// reserved, because the pool picks one when the session first opens. The pick
+/// is recorded in the session's own store before the attach (the scope record),
+/// and this writes it into the catalogue so that a listing shows it without
+/// opening the store. It changes only a registration that has a pool and no
+/// executor: a session that named an executor, a session with no pool and a
+/// pooled session whose executor is already recorded are returned as they
+/// stand, so a repeated or late call cannot move a session. The executor and
+/// the catalogue revision commit together.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.seed_executor(store, session_id, "build-box")
+/// ```
+pub fn seed_executor(
+  catalogue: Catalogue,
+  id: String,
+  executor: String,
+) -> Result(Registration, Error) {
+  case is_executor_name(executor) {
+    False -> Error(Invalid("executor is not an executor name"))
+    True ->
+      transaction(catalogue.connection, fn() {
+        use record <- result.try(get(catalogue, id))
+        case record.pool == "" || record.executor != "" {
+          True -> Ok(record)
+          False -> {
+            use Nil <- result.try(statement(
+              catalogue,
+              sql.seed_registration_executor(executor, id),
+            ))
+            use Nil <- result.try(statement(
+              catalogue,
+              sql.increment_catalogue_revision(),
+            ))
+            Ok(Registration(..record, executor:))
           }
         }
       })
@@ -746,7 +812,8 @@ pub fn workspace_default(
 /// The mapping and revision update commit together. Selecting the current
 /// identity writes nothing and leaves pagination revisions unchanged. Neither
 /// selection nor validation opens a conversation or changes runtime residency.
-/// A session registered on an executor is refused with `Conflict`.
+/// A session registered on an executor or in a pool is refused with
+/// `Conflict`.
 ///
 /// ## Examples
 ///
@@ -769,7 +836,11 @@ pub fn set_workspace_default(
     // A registered workspace name is only unique within its executor, and a
     // default is keyed by the name alone, so a registered session has none.
     use Nil <- result.try(
-      case record.workspace == workspace && record.executor == "" {
+      case
+        record.workspace == workspace
+        && record.executor == ""
+        && record.pool == ""
+      {
         True -> Ok(Nil)
         False -> Error(Conflict)
       },
@@ -985,6 +1056,7 @@ fn page_for(
             state: Reserved,
             profile: stored_profile(row.profile),
             executor: row.executor,
+            pool: row.pool,
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1041,6 +1113,7 @@ pub fn member_page(
             state: Reserved,
             profile: stored_profile(row.profile),
             executor: row.executor,
+            pool: row.pool,
             subtitle: option.then(row.subtitle, stored_subtitle),
           ),
           row.state,
@@ -1156,6 +1229,7 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
         state: Reserved,
         profile: stored_profile(row.profile),
         executor: row.executor,
+        pool: row.pool,
         subtitle: None,
       ),
       row.state,
@@ -1240,10 +1314,15 @@ fn validate(record: Registration) -> Result(Nil, Error) {
   // A local workspace is an absolute path and a registered one is a name, and
   // the two grammars cannot overlap because a name has no `/`. That is what
   // lets every later reader tell them apart from the text alone.
-  let placed = case record.executor {
-    "" -> string.starts_with(record.workspace, "/")
-    executor ->
+  let placed = case record.executor, record.pool {
+    "", "" -> string.starts_with(record.workspace, "/")
+    executor, "" ->
       is_executor_name(executor) && is_workspace_name(record.workspace)
+    "", pool -> is_pool_name(pool) && is_workspace_name(record.workspace)
+    executor, pool ->
+      is_executor_name(executor)
+      && is_pool_name(pool)
+      && is_workspace_name(record.workspace)
   }
   case
     string.starts_with(record.path, "/")
@@ -1317,6 +1396,21 @@ fn is_letter(grapheme: String) -> Bool {
 /// assert !catalogue.is_executor_name("Build Box")
 /// ```
 pub fn is_executor_name(text: String) -> Bool {
+  is_profile_name(text)
+}
+
+/// Whether text is a pool name: the key of a `[pools.<name>]` table in the
+/// orchestrator's configuration. It has the grammar of an executor name, so a
+/// pool and an executor are named alike on the wire and in a stored
+/// registration (protocol-change/078).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_pool_name("linux-builders")
+/// assert !catalogue.is_pool_name("Linux Builders")
+/// ```
+pub fn is_pool_name(text: String) -> Bool {
   is_profile_name(text)
 }
 

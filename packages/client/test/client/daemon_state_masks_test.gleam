@@ -405,6 +405,7 @@ fn resolved_with(
       catalogue.Saved,
       profile: option.None,
       executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =

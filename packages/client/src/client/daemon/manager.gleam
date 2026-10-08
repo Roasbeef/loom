@@ -161,6 +161,10 @@ pub type Creation {
     /// The executor the workspace is registered on, or the empty string for a
     /// workspace on this host (protocol-change/078).
     executor: String,
+    /// The `[pools.<name>]` whose executors may hold the workspace, or the
+    /// empty string. A creation names an executor or a pool and never both:
+    /// the pool picks the executor when the session first opens.
+    pool: String,
   )
 }
 
@@ -2927,6 +2931,7 @@ fn reserve_creation(
           state: catalogue.Reserved,
           profile: request.profile,
           executor: request.executor,
+          pool: request.pool,
           subtitle: option.None,
         )
       use selected <- result.try(select_creation_domain(

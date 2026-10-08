@@ -108,6 +108,7 @@ fn verify_helper(directory, workspace, configuration, id) {
       catalogue.Saved,
       profile: option.None,
       executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =

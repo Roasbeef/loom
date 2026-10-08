@@ -19,12 +19,12 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 10. Each later version has its own embedded
+- The catalogue is at `user_version` 11. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
   `catalogue_recent_folders_schema`, `catalogue_profiles_schema`,
-  `catalogue_executors_schema`), and
+  `catalogue_executors_schema`, `catalogue_pools_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -62,6 +62,15 @@ with these forks: they define the same modules.
   `Conflict`, because a default is keyed by the name alone and two executors may
   register the same one. `storage/domain.validate` lets only a `SessionOnly`
   domain carry a workspace name; the workspace aggregate stays path-keyed.
+- `Registration.pool: String` names the `[pools.<name>]` a session was created
+  in, empty for a session that named none. Version 11 adds it as a
+  `NOT NULL DEFAULT ''` column, and it is part of the creation request. A
+  pooled session's `executor` is empty at creation and is set once by
+  `seed_executor` after its first attach chose one (the executor shown in
+  listings), so `reserve` compares the pool and not the executor for a pooled
+  registration. A pooled registration's workspace is a registered name, as an
+  executor session's is, and `set_workspace_default` refuses it. `is_pool_name`
+  shares the profile grammar.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived

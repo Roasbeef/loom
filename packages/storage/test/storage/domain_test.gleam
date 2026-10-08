@@ -58,6 +58,7 @@ fn registration(seed) {
     state: catalogue.Reserved,
     profile: option.None,
     executor: "",
+    pool: "",
     subtitle: option.None,
   )
 }
@@ -206,6 +207,7 @@ pub fn a_registered_session_holds_only_a_session_only_domain_test() {
       ..registration(6),
       workspace: "loom-checkout",
       executor: "build-box",
+      pool: "",
     )
 
   // The workspace aggregate is keyed by the workspace text alone, and two

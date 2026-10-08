@@ -976,6 +976,7 @@ fn boot(settings: serve.Settings) -> Result(Booted, String) {
         "",
         None,
         "",
+        "",
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(

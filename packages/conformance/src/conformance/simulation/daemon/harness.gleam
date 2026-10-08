@@ -409,7 +409,7 @@ pub fn reserve(
   name name: String,
   seed seed: Int,
 ) -> Result(catalogue.Registration, String) {
-  let request = manager.Creation(key, workspace, name, "", None, "")
+  let request = manager.Creation(key, workspace, name, "", None, "", "")
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
   manager.create(
     harness.ready.registry,
@@ -779,7 +779,7 @@ pub fn create_isolated(
   name name: String,
   seed seed: Int,
 ) -> Result(catalogue.Registration, String) {
-  let request = manager.Creation(key, workspace, name, "", None, "")
+  let request = manager.Creation(key, workspace, name, "", None, "", "")
   let generator = ids.generator(vclock.clock(harness.clock), seed:)
   let outcome =
     manager.create_scoped(

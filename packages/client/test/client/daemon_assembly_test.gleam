@@ -127,6 +127,7 @@ fn create(
       configuration: "",
       profile: None,
       executor: "",
+      pool: "",
     )
   let assert Ok(view) =
     manager.create(

@@ -526,6 +526,7 @@ fn view(status: manager.Status) -> manager.View {
       state: catalogue.Saved,
       profile: option.None,
       executor: "",
+      pool: "",
       subtitle: option.None,
     ),
     status:,
@@ -566,6 +567,7 @@ pub fn a_listed_entry_names_the_executor_of_a_remote_session_test() {
         ..view(manager.Saved).registration,
         workspace: "app",
         executor: "build-box",
+        pool: "",
       ),
       status: manager.Saved,
     )
