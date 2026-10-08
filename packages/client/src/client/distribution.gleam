@@ -237,6 +237,17 @@ pub fn parse(text: String) -> Result(Option(Config), String) {
   from_document(document)
 }
 
+/// This node's configured name, `name@host`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution.local_node(config) // -> "orchestrator@10.0.0.1"
+/// ```
+pub fn local_node(config: Config) -> String {
+  config.local
+}
+
 /// The node names of the configured peers, in the order the file lists them.
 ///
 /// Another table that names a peer, such as `[executors.<name>]`, checks its
