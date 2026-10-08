@@ -612,6 +612,13 @@ work before the previous one runs.
    the failure matrix, the formal models, an independent review of the
    assembled system, and hosted CI once publication is authorized.
 
+The next step replaces the catalogue rows of phases 3 and 5 with one record
+per session in a Khepri store whose members are the orchestrators and the
+executors, so that a move is one compare-and-set and failover has a record to
+build on. It is proposed in [ADR-019](../adr/019-khepri-for-session-ownership.md)
+and [protocol-change/079](../../protocol-change/079-khepri-session-ownership.md),
+and [docs/architecture/directory.md](../architecture/directory.md) describes it.
+
 Automatic failover and workspace snapshot migration stay deferred. The
 filesystem and cache policy is inherited from the executor's configuration,
 with no aggregate disk quota claimed.
