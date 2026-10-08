@@ -233,3 +233,27 @@ pub fn membership(
 /// ```
 @external(erlang, "client_khepri_ffi", "applied_index")
 pub fn applied_index() -> Int
+
+/// The log index of this member's latest snapshot, or 0 when it has none.
+///
+/// Ra `ra:member_overview/1`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.snapshot_index() // -> 0
+/// ```
+@external(erlang, "client_khepri_ffi", "snapshot_index")
+pub fn snapshot_index() -> Int
+
+/// Whether the directory store answers on another node.
+///
+/// Ra `ra:members/2` addressed to that node's server.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_khepri.store_running_on(node, 2000) // -> False
+/// ```
+@external(erlang, "client_khepri_ffi", "store_running_on")
+pub fn store_running_on(node: Node, timeout_ms: Int) -> Bool
