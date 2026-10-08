@@ -579,8 +579,8 @@ fn unresolved(error: fs.PathError) -> String {
     fs.EmptyPath -> "the path is empty"
     fs.EscapesWorkspace(path:)
     | fs.ProtectedPath(path:, protected: _)
-    | fs.ProtectionMisconfigured(path:, protected: _) ->
-      path <> " did not resolve"
+    | fs.ProtectionMisconfigured(path:, protected: _)
+    | fs.JailReplaced(path:, root: _) -> path <> " did not resolve"
   }
 }
 

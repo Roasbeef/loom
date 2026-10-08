@@ -147,7 +147,7 @@ pub const token_env = "LOOM_CAP_TOKEN_FILE"
 /// Where the Go helper mounts a `ScratchTmpfs` policy's scratch area
 /// (`jail.ScratchMount`). A cap socket under this path is invisible inside
 /// the jail, so the launcher refuses one.
-pub const scratch_mount = "/tmp"
+pub const scratch_mount = policy.jail_scratch_mount
 
 // How long a handoff from a freshly spawned socket process may take.
 const handoff_timeout_ms = 2000

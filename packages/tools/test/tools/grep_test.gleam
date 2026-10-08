@@ -202,7 +202,7 @@ pub fn grep_path_escape_rejected_test() {
       ]),
     )
   assert outcome.is_error
-  assert string.contains(first_text(outcome), "outside the workspace")
+  assert string.contains(first_text(outcome), "outside the readable roots")
 }
 
 pub fn grep_max_results_caps_matches_test() {
