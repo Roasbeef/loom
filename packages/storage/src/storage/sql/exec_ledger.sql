@@ -44,6 +44,12 @@ INSERT INTO call(
   state, outcome, outcome_digest, outcome_bytes)
 VALUES (?, ?, ?, ?, ?, ?, 'admitted', NULL, NULL, ?);
 
+-- name: InsertLedgerFence :exec
+INSERT INTO call(
+  session, op, step, source_index, incarnation, tool,
+  state, outcome, outcome_digest, outcome_bytes)
+VALUES (?, ?, ?, ?, ?, ?, 'terminal', ?, ?, ?);
+
 -- name: FinishLedgerCall :exec
 UPDATE call
 SET state = 'terminal', outcome = ?, outcome_digest = ?, outcome_bytes = ?

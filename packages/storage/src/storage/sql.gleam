@@ -1453,6 +1453,37 @@ VALUES (?, ?, ?, ?, ?, ?, 'admitted', NULL, NULL, ?)"
   ])
 }
 
+pub fn insert_ledger_fence(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+  incarnation incarnation: Int,
+  tool tool: String,
+  outcome outcome: Option(BitArray),
+  outcome_digest outcome_digest: Option(BitArray),
+  outcome_bytes outcome_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO call(
+  session, op, step, source_index, incarnation, tool,
+  state, outcome, outcome_digest, outcome_bytes)
+VALUES (?, ?, ?, ?, ?, ?, 'terminal', ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+    dev.ParamInt(incarnation),
+    dev.ParamString(tool),
+    dev.ParamNullable(option.map(outcome, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(
+      option.map(outcome_digest, fn(v) { dev.ParamBitArray(v) }),
+    ),
+    dev.ParamInt(outcome_bytes),
+  ])
+}
+
 pub fn finish_ledger_call(
   outcome outcome: Option(BitArray),
   outcome_digest outcome_digest: Option(BitArray),
