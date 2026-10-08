@@ -33,6 +33,7 @@ import tools/codemode_recipes
 import tools/directory_access
 import tools/fs
 import tools/prelude
+import tools/proc_failure
 import tools/tool.{type Ctx}
 
 // --- fixtures --------------------------------------------------------------
@@ -202,6 +203,7 @@ fn echoing_over(seams: codemode.Seams) -> codemode.CodeMode {
         refusal: codemode.NothingRefused,
         calls: call_record.empty(),
         edits: [],
+        last_failure: None,
       )
     },
     seams:,
@@ -217,6 +219,7 @@ fn ran(outcome: codemode.Outcome) -> codemode.Execution {
     refusal: codemode.NothingRefused,
     calls: call_record.empty(),
     edits: [],
+    last_failure: None,
   )
 }
 
@@ -635,21 +638,20 @@ pub fn a_program_that_reported_a_failure_is_an_error_result_test() {
 pub fn a_vetting_rejection_names_the_rule_and_the_import_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.VetRejected([
-            codemode.Rejection(
-              rule: codemode.ImportNotAllowed,
-              detail: "`gleam/io` is not an allowed import",
-              location: codemode.SourceSpan(start: 0, end: 14),
-            ),
-          ]),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.ImportNotAllowed,
+            detail: "`gleam/io` is not an allowed import",
+            location: codemode.SourceSpan(start: 0, end: 14),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("import gleam/io"))],
     )
   assert outcome.is_error
@@ -687,26 +689,25 @@ pub fn every_violation_is_listed_in_one_pass_test() {
   // exactly what in-band repair exists to avoid.
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.VetRejected([
-            codemode.Rejection(
-              rule: codemode.ImportNotAllowed,
-              detail: "`gleam/io` is not an allowed import",
-              location: codemode.Unlocated,
-            ),
-            codemode.Rejection(
-              rule: codemode.NoForeignInterface,
-              detail: "an attribute on the function `escape`",
-              location: codemode.SourceSpan(start: 40, end: 61),
-            ),
-          ]),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.ImportNotAllowed,
+            detail: "`gleam/io` is not an allowed import",
+            location: codemode.Unlocated,
+          ),
+          codemode.Rejection(
+            rule: codemode.NoForeignInterface,
+            detail: "an attribute on the function `escape`",
+            location: codemode.SourceSpan(start: 40, end: 61),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   let text = text_of(outcome)
@@ -721,21 +722,20 @@ pub fn every_violation_is_listed_in_one_pass_test() {
 pub fn a_parse_error_points_at_a_byte_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.VetRejected([
-            codemode.Rejection(
-              rule: codemode.Unparseable,
-              detail: "unexpected token",
-              location: codemode.SourcePoint(byte_offset: 12),
-            ),
-          ]),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.Unparseable,
+            detail: "unexpected token",
+            location: codemode.SourcePoint(byte_offset: 12),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("pub fn main( {"))],
     )
   assert string.contains(text_of(outcome), "does not parse")
@@ -754,22 +754,21 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
     <> "Expected type:\n    List(String)\nFound type:\n    String\n"
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.CompileFailed(codemode.BuildRejected(diagnostics:)),
-          enforcement: codemode.Enforcement(
-            build: codemode.Enforced(
-              applied: ["bwrap"],
-              skipped: [],
-              degraded: False,
-            ),
-            node: codemode.Unreported("the program did not compile"),
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildRejected(diagnostics:)),
+        enforcement: codemode.Enforcement(
+          build: codemode.Enforced(
+            applied: ["bwrap"],
+            skipped: [],
+            degraded: False,
           ),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
+          node: codemode.Unreported("the program did not compile"),
         ),
-      ),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   assert outcome.is_error
@@ -790,22 +789,43 @@ pub fn a_compile_error_comes_back_as_readable_text_test() {
 pub fn a_compile_error_about_a_capability_says_which_reference_to_read_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.CompileFailed(codemode.BuildRejected(
-            diagnostics: "error: Unknown module value\n5 │   proc.runn(x)\n",
-          )),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildRejected(
+          diagnostics: "error: Unknown module value\n5 │   proc.runn(x)\n",
+        )),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   assert string.contains(
     text_of(outcome),
     "\nsee fs_read cap://proc for its types, functions and error helpers\n",
+  )
+}
+
+pub fn a_compile_error_about_an_unknown_value_suggests_the_right_module_test() {
+  let outcome =
+    call(
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildRejected(
+          diagnostics: "error: Unknown module value\n"
+          <> "The module `cap/proc` does not have a `int_to_string` value.\n",
+        )),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
+      [#("program", json.String("..."))],
+    )
+  assert string.contains(
+    text_of(outcome),
+    "\n`int_to_string`: maybe `int.to_string` from gleam/int (unchecked)\n",
   )
 }
 
@@ -831,17 +851,16 @@ pub fn removed_imports_are_told_on_success_and_on_failure_test() {
   // numbers the diagnostics use.
   let failed_outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.CompileFailed(codemode.BuildRejected(
-            diagnostics: "error: Type mismatch",
-          )),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [note],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildRejected(
+          diagnostics: "error: Type mismatch",
+        )),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [note],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   assert string.contains(text_of(failed_outcome), "Type mismatch\n" <> note)
@@ -863,17 +882,16 @@ pub fn removed_imports_are_told_on_success_and_on_failure_test() {
 pub fn a_compile_error_about_no_capability_adds_no_reference_line_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.CompileFailed(codemode.BuildRejected(
-            diagnostics: "warning: Unused variable `count`\n",
-          )),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildRejected(
+          diagnostics: "warning: Unused variable `count`\n",
+        )),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   assert !string.contains(text_of(outcome), "fs_read cap://")
@@ -932,17 +950,16 @@ pub fn a_failed_capability_call_says_which_reference_to_read_test() {
 pub fn a_build_that_could_not_run_is_not_blamed_on_the_program_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.CompileFailed(codemode.BuildUnavailable(
-            reason: "the helper pool is empty",
-          )),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.CompileFailed(codemode.BuildUnavailable(
+          reason: "the helper pool is empty",
+        )),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   assert outcome.is_error
@@ -956,22 +973,21 @@ pub fn a_build_that_could_not_run_is_not_blamed_on_the_program_test() {
 pub fn a_deadline_says_what_died_and_how_to_fix_it_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.RunFailed(codemode.DeadlineExceeded),
-          enforcement: codemode.Enforcement(
-            build: enforced(),
-            node: codemode.Enforced(
-              applied: ["bwrap"],
-              skipped: [],
-              degraded: False,
-            ),
+      scripted(codemode.Execution(
+        result: codemode.RunFailed(codemode.DeadlineExceeded),
+        enforcement: codemode.Enforcement(
+          build: enforced(),
+          node: codemode.Enforced(
+            applied: ["bwrap"],
+            skipped: [],
+            degraded: False,
           ),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
         ),
-      ),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   assert outcome.is_error
@@ -990,18 +1006,17 @@ pub fn an_unreported_jail_is_never_implied_test() {
   // helper said so.
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.Ran(
-            outcome: codemode.Completed(msgpack.StringValue("done")),
-            manifest_hash: "sha256-abc",
-          ),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
+      scripted(codemode.Execution(
+        result: codemode.Ran(
+          outcome: codemode.Completed(msgpack.StringValue("done")),
+          manifest_hash: "sha256-abc",
         ),
-      ),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   let text = text_of(outcome)
@@ -1057,25 +1072,24 @@ pub fn a_healthy_run_names_both_jailed_stages_test() {
 pub fn a_degraded_stage_says_so_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.Ran(
-            outcome: codemode.Completed(msgpack.StringValue("done")),
-            manifest_hash: "sha256-abc",
-          ),
-          enforcement: codemode.Enforcement(
-            build: enforced(),
-            node: codemode.Enforced(
-              applied: ["bwrap"],
-              skipped: ["landlock: unavailable"],
-              degraded: True,
-            ),
-          ),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
+      scripted(codemode.Execution(
+        result: codemode.Ran(
+          outcome: codemode.Completed(msgpack.StringValue("done")),
+          manifest_hash: "sha256-abc",
         ),
-      ),
+        enforcement: codemode.Enforcement(
+          build: enforced(),
+          node: codemode.Enforced(
+            applied: ["bwrap"],
+            skipped: ["landlock: unavailable"],
+            degraded: True,
+          ),
+        ),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   let text = text_of(outcome)
@@ -1242,6 +1256,7 @@ pub fn a_rejection_names_the_seam_it_was_judged_against_test() {
       refusal: codemode.NothingRefused,
       calls: call_record.empty(),
       edits: [],
+      last_failure: None,
     )
   let outcome =
     call(scripted_over(both_seams(), refusal), [
@@ -1283,6 +1298,7 @@ pub fn a_workspace_submission_is_judged_against_the_workspace_seam_test() {
       refusal: codemode.NothingRefused,
       calls: call_record.empty(),
       edits: [],
+      last_failure: None,
     )
   let outcome =
     call(scripted_over(both_seams(), refusal), [
@@ -1360,21 +1376,20 @@ pub fn a_parse_rejection_does_not_claim_an_obsolete_dialect_gap_test() {
   // style even though the parser boundary no longer requires that sacrifice.
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.VetRejected([
-            codemode.Rejection(
-              rule: codemode.Unparseable,
-              detail: "unexpected token",
-              location: codemode.SourcePoint(byte_offset: 61),
-            ),
-          ]),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: call_record.empty(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([
+          codemode.Rejection(
+            rule: codemode.Unparseable,
+            detail: "unexpected token",
+            location: codemode.SourcePoint(byte_offset: 61),
+          ),
+        ]),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   assert string.contains(text_of(outcome), "unexpected token")
@@ -1751,6 +1766,7 @@ fn widenable(crossings: Subject(List(policy.Grant))) -> codemode.CodeMode {
             refusal: codemode.NothingRefused,
             calls: call_record.empty(),
             edits: [],
+            last_failure: None,
           )
         False -> run_refused()
       }
@@ -1794,6 +1810,7 @@ fn run_refused() -> codemode.Execution {
     ),
     calls: call_record.empty(),
     edits: [],
+    last_failure: None,
   )
 }
 
@@ -1991,21 +2008,20 @@ fn parse_failure_at(
   location: codemode.Location,
 ) -> tool.ToolOutcome {
   call(
-    scripted(
-      codemode.Execution(
-        result: codemode.VetRejected([
-          codemode.Rejection(
-            rule: codemode.Unparseable,
-            detail: "unexpected token",
-            location:,
-          ),
-        ]),
-        enforcement: nothing_ran(),
-        refusal: codemode.NothingRefused,
-        calls: call_record.empty(),
-        edits: [],
-      ),
-    ),
+    scripted(codemode.Execution(
+      result: codemode.VetRejected([
+        codemode.Rejection(
+          rule: codemode.Unparseable,
+          detail: "unexpected token",
+          location:,
+        ),
+      ]),
+      enforcement: nothing_ran(),
+      refusal: codemode.NothingRefused,
+      calls: call_record.empty(),
+      edits: [],
+      last_failure: None,
+    )),
     [#("program", json.String(source))],
   )
 }
@@ -2203,15 +2219,14 @@ pub fn a_failed_program_result_carries_the_call_record_test() {
 pub fn a_run_failure_carries_the_calls_made_so_far_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.RunFailed(codemode.DeadlineExceeded),
-          enforcement: jailed(),
-          refusal: codemode.NothingRefused,
-          calls: some_calls(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.RunFailed(codemode.DeadlineExceeded),
+        enforcement: jailed(),
+        refusal: codemode.NothingRefused,
+        calls: some_calls(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   assert outcome.is_error
@@ -2223,15 +2238,14 @@ pub fn a_run_failure_carries_the_calls_made_so_far_test() {
 pub fn a_vetting_failure_has_no_call_record_test() {
   let outcome =
     call(
-      scripted(
-        codemode.Execution(
-          result: codemode.VetRejected([]),
-          enforcement: nothing_ran(),
-          refusal: codemode.NothingRefused,
-          calls: some_calls(),
-          edits: [],
-        ),
-      ),
+      scripted(codemode.Execution(
+        result: codemode.VetRejected([]),
+        enforcement: nothing_ran(),
+        refusal: codemode.NothingRefused,
+        calls: some_calls(),
+        edits: [],
+        last_failure: None,
+      )),
       [#("program", json.String("..."))],
     )
   let assert Some(json.Object(fields)) = outcome.details
@@ -2326,4 +2340,79 @@ pub fn the_lsp_sql_recipe_appears_once_however_many_seams_admit_it_test() {
       codemode_recipes.lsp_sql_skeleton(),
     )
     == 1
+}
+
+// --- the last failing command -----------------------------------------------
+
+fn failure_record() -> proc_failure.ProcFailure {
+  proc_failure.ProcFailure(
+    command: "git log --format %h %s",
+    exit_code: 128,
+    ending: proc_failure.Exited,
+    stderr_tail: "fatal: ambiguous argument",
+  )
+}
+
+fn with_failure(execution: codemode.Execution) -> codemode.Execution {
+  codemode.Execution(..execution, last_failure: Some(failure_record()))
+}
+
+const failing_line =
+  "last failing command: `git log --format %h %s` exited 128: fatal: ambiguous argument"
+
+pub fn a_failed_program_shows_the_last_failing_command_test() {
+  let outcome =
+    call(
+      scripted(
+        with_failure(
+          ran(codemode.Errored(message: "exit 128", details: msgpack.NilValue)),
+        ),
+      ),
+      [#("program", json.String("..."))],
+    )
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), failing_line)
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.contains(fields, #(
+    "last_failed_command",
+    proc_failure.to_json(failure_record()),
+  ))
+}
+
+pub fn a_completed_program_does_not_show_the_last_failing_command_test() {
+  let outcome =
+    call(
+      scripted(with_failure(ran(codemode.Completed(msgpack.StringValue("ok"))))),
+      [#("program", json.String("..."))],
+    )
+  assert !outcome.is_error
+  assert !string.contains(text_of(outcome), "last failing command")
+}
+
+pub fn a_run_failure_shows_the_last_failing_command_test() {
+  let outcome =
+    call(
+      scripted(codemode.Execution(
+        result: codemode.RunFailed(codemode.DeadlineExceeded),
+        enforcement: jailed(),
+        refusal: codemode.NothingRefused,
+        calls: call_record.empty(),
+        edits: [],
+        last_failure: Some(failure_record()),
+      )),
+      [#("program", json.String("..."))],
+    )
+  assert outcome.is_error
+  assert string.contains(text_of(outcome), failing_line)
+}
+
+pub fn a_program_failure_without_a_failed_command_has_no_line_test() {
+  let outcome =
+    call(
+      scripted(ran(codemode.Errored(message: "no", details: msgpack.NilValue))),
+      [#("program", json.String("..."))],
+    )
+  assert !string.contains(text_of(outcome), "last failing command")
+  let assert Some(json.Object(fields)) = outcome.details
+  assert !has_key(fields, "last_failed_command")
 }

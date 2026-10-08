@@ -106,6 +106,7 @@ import tools/directory_access
 import tools/fs
 import tools/permissions
 import tools/prelude
+import tools/proc_failure.{type ProcFailure}
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
 // Source selection is decided before authority or I/O. A loaded file then
@@ -453,6 +454,10 @@ pub type Execution {
     /// lines on success and on failure, and a diagnostic's line numbers
     /// then refer to the program after the changes.
     edits: List(String),
+    /// The program's most recent `proc.run` that exited non-zero or timed
+    /// out, with the tail of its stderr (`tools/proc_failure`). Only a
+    /// program that ended in failure shows it to the model.
+    last_failure: Option(ProcFailure),
   )
 }
 
@@ -1785,6 +1790,11 @@ fn compile_outcome(
         <> pointer_suffix(codemode_pointer.compile_modules(
         diagnostics,
         offer.allowed_imports,
+      ))
+        <> suggestion_suffix(codemode_pointer.suggestions(
+        diagnostics,
+        prelude.surfaces,
+        offer.allowed_imports,
       )),
     )
     WorkspaceSetupFailed(reason:) -> #(
@@ -1825,6 +1835,11 @@ fn pointer_suffix(modules: List(String)) -> String {
   }
 }
 
+// One line per suggestion, each after the text it belongs to.
+fn suggestion_suffix(lines: List(String)) -> String {
+  list.map(lines, fn(line) { "\n" <> line }) |> string.concat
+}
+
 fn compile_detail(failure: CompileFailure) -> String {
   case failure {
     BuildRejected(diagnostics:) -> diagnostics
@@ -1859,7 +1874,11 @@ fn run_failed_outcome(
     )
   }
   tool.failure(
-    body <> edits_suffix(execution) <> "\n" <> sandbox_text(execution),
+    body
+    <> edits_suffix(execution)
+    <> failure_line(execution)
+    <> "\n"
+    <> sandbox_text(execution),
   )
   |> tool.with_details(
     json.Object(list.append(
@@ -1870,9 +1889,29 @@ fn run_failed_outcome(
         #("sandbox", enforcement_json(execution.enforcement)),
         #("calls", call_record.to_json(execution.calls)),
       ],
-      edits_fields(execution),
+      list.append(edits_fields(execution), last_failure_fields(execution)),
     )),
   )
+}
+
+// The last failed command as a line of its own, or nothing. Callers use it
+// only when the program ended in failure: a program that completed handled
+// its failed commands itself, so the line would read as a fault it did not
+// have.
+fn failure_line(execution: Execution) -> String {
+  case execution.last_failure {
+    Some(failure) -> "\n" <> proc_failure.line(failure)
+    None -> ""
+  }
+}
+
+// The `last_failed_command` detail for clients, present whenever the host
+// kept a record, whether or not the model is shown the line.
+fn last_failure_fields(execution: Execution) -> List(#(String, JsonValue)) {
+  case execution.last_failure {
+    Some(failure) -> [#("last_failed_command", proc_failure.to_json(failure))]
+    None -> []
+  }
 }
 
 fn run_failure_detail(failure: RunFailure) -> String {
@@ -1926,6 +1965,7 @@ fn ran_outcome(
           #("calls", call_record.to_json(execution.calls)),
         ],
         edits_fields(execution),
+        last_failure_fields(execution),
       ]),
     )
 
@@ -1939,10 +1979,15 @@ fn ran_outcome(
         offer.allowed_imports,
       ))
   }
+  let last_command = case is_error {
+    False -> ""
+    True -> failure_line(execution)
+  }
   let text =
     body
     <> edits_suffix(execution)
     <> pointer
+    <> last_command
     <> "\n"
     <> sandbox_text(execution)
   case is_error {

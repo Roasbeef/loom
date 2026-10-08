@@ -1722,6 +1722,7 @@ fn execute_after_vetting(
         refusal: codemode_tool.NothingRefused,
         calls: call_record.empty(),
         edits: [],
+        last_failure: None,
       )
     }
     Ok(Nil) -> {
@@ -1761,6 +1762,7 @@ fn execute_after_vetting(
         refusal: reported_refusal(shortfalls),
         calls: execution.calls,
         edits: execution.edits,
+        last_failure: execution.last_failure,
       )
     }
   }
@@ -1795,6 +1797,7 @@ fn vet_rejected_execution(
     refusal: codemode_tool.NothingRefused,
     calls: call_record.empty(),
     edits: [],
+    last_failure: None,
   )
 }
 
@@ -2025,6 +2028,7 @@ fn unserved(
     refusal: codemode_tool.NothingRefused,
     calls: call_record.empty(),
     edits: [],
+    last_failure: None,
   )
 }
 

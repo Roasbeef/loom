@@ -54,8 +54,10 @@ import codemode/unused_repair
 import codemode/vet.{type Rejection, type Vetted}
 import codemode/vet/policy.{type VetPolicy}
 import gleam/list
+import gleam/option.{type Option, None}
 import gleam/result
 import tools/call_record.{type CallLog}
+import tools/proc_failure.{type ProcFailure}
 
 /// One whole code-mode execution: how far it got, what the kernel
 /// enforced on each jailed stage, and what an approved escalation
@@ -89,6 +91,10 @@ pub type Execution {
     /// empty, `Ran.source` is the rewritten program, the one that was
     /// vetted, built and run, and diagnostics refer to its line numbers.
     edits: List(String),
+    /// The most recent `proc.run` of the program that exited non-zero or
+    /// timed out, with the tail of its stderr. `None` for an execution that
+    /// never ran a program or whose commands all succeeded.
+    last_failure: Option(ProcFailure),
   )
 }
 
@@ -181,6 +187,7 @@ fn vet_rejected(rejections: List(Rejection), config: ExecConfig) -> Execution {
     ),
     calls: call_record.empty(),
     edits: [],
+    last_failure: None,
   )
 }
 
@@ -304,6 +311,7 @@ fn compile_failed(
     ),
     calls: call_record.empty(),
     edits:,
+    last_failure: None,
   )
 }
 
@@ -331,6 +339,7 @@ fn run_and_report(
     widening: run_widening(approved(config), ran.outcome),
     calls: ran.calls,
     edits:,
+    last_failure: ran.last_failure,
   )
 }
 
