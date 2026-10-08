@@ -704,8 +704,10 @@ Source: (`client/daemon/protocol.gleam:240-244`).
 {"v":2,"id":7,"cmd":"sessions.stop","body":{"session_id":"0198c0de-0000-7000-8000-000000000001","epoch":"ep-7f3a"}}
 ```
 
-The reply body is a status object. A caller's timeout does not cancel
-cleanup and does not free the slot.
+The reply body is a status object. For a resident session it is
+`stopping` with the operation id of the cleanup. A caller's timeout does
+not cancel cleanup and does not free the slot. The id stops being
+readable when cleanup finishes; section 3.10 says how to wait for that.
 Source: (`client/daemon/server.gleam:683-689`).
 
 Errors: `forbidden`, `stale_epoch`, `not_found`, `unavailable`.
@@ -731,6 +733,21 @@ Operation ids contain the daemon epoch and an opening nonce, so a
 request for an old operation cannot observe a replacement as though it
 were the old one. Errors: `stale_operation`, `stale_epoch`, `forbidden`,
 `not_found`, `unavailable`.
+
+The daemon holds an operation only while the session's runtime slot is
+held. `operations.get` therefore answers a finished `sessions.stop` with
+`stale_operation`, and that is the documented outcome, not a lost stop:
+the `stopping` operation id that `sessions.stop` returned is forgotten
+once cleanup completes, and the session is `saved`. A client that
+stops a session and waits for it polls `sessions.get` until
+`status.state` is `saved`. A `stale_operation` from `operations.get` says
+only that the cleanup is no longer pending, so the client confirms the state
+with `sessions.get`. An open behaves differently:
+`operations.get` answers `resident` while the incarnation is held, and
+`start_failed` with the startup reason when the build failed (the daemon
+remembers the failure until the session is opened again), so a client
+that polls an open never meets `stale_operation` unless something else
+opened or stopped the session in between.
 
 ### 3.11 `sessions.invite`
 
@@ -3330,7 +3347,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `too_large` | The message exceeds 65536 bytes, in either direction. | Page the request, or read a smaller listing. |
 | `forbidden` | An owner-only command from a member, or an observer opening a session. | Disable the control. |
 | `stale_epoch` | The supplied epoch is not the daemon's current one. | Re-read `hello` and retry with the new epoch. |
-| `stale_operation` | `operations.get` named an operation from a replaced incarnation. | Re-read the session's status. |
+| `stale_operation` | `operations.get` named an operation the daemon no longer holds: one from a replaced incarnation, or one whose runtime slot has been released. A finished `sessions.stop` is the usual case, because the `stopping` operation id is forgotten when cleanup completes (section 3.10). | Read `sessions.get` for the session's state. After a stop it is `saved`. |
 | `start_failed` | `operations.get` named the operation of an open whose builder returned an error. Distinct from `stale_operation`, which claims the request was overtaken. | Display the bounded startup reason in `message`, then decide whether to retry; the daemon log retains the classified cause. |
 | `revision_changed` | `sessions.list` supplied a revision that no longer holds. | Restart the listing from the empty cursor. |
 | `metadata_too_large` | A single session record exceeds the page budget. | Report; nothing to page around. |
@@ -3347,7 +3364,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
 | `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |
 | `owner_unreachable` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, no orchestrator said it holds it, and some could not be asked. The body also carries `orchestrators`, the names that did not answer. | Retry later, or connect to one of the named orchestrators directly. |
-| `executor_unavailable` | Not a code of its own yet: the leading word of the `message` of a `start_failed` for a session registered on an executor. The daemon has no remote workspace assembly yet, so creating or retrying such a session starts an opening whose operation fails with `executor_unavailable: remote workspace assembly is not available yet`. Nothing is created on the daemon's host for the workspace name. | Treat the session as not openable for now. A later release attaches the registered workspace through the same operation. |
+| `executor_unavailable` | Not a code of its own: the leading word of the `message` of a `start_failed` for a session registered on an executor or a pool. The open could not place the session on its executor. The connection failed (epmd, the distribution port, a pin or a certificate), the executor refused the attach (it holds its maximum number of scopes, its scope is at another incarnation, the workspace name is not registered there), or its answer contradicted its declared platform, enforcement or toolchains. The text after the colon says which. Nothing is created on the daemon's host for the workspace name. | Fix the cause the message names, then retry. A session whose first open failed stays `reserved` and only a `sessions.create` retry under its original request key finishes it (section 3.4). A session that has opened before stays `saved`, and `sessions.open` retries it on the same executor. |
 
 Sources: (`client/daemon/protocol.gleam:124-160`),
 (`client/daemon/server.gleam:749-757`),
