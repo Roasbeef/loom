@@ -740,16 +740,67 @@ fn ask_close(
   incarnation: Int,
   attempts: Int,
 ) -> Result(protocol.CloseOutcome, Nil) {
+  request_close(
+    registered.session,
+    registered.workspace,
+    reach,
+    incarnation,
+    attempts,
+  )
+  |> result.replace_error(Nil)
+}
+
+/// Why a close that no session is running produced no outcome.
+pub type CloseFailure {
+  /// The executor answered and refused. Nothing it holds changed, and asking
+  /// again would be refused again.
+  CloseRefused(refusal: protocol.Refusal)
+
+  /// The executor did not answer: it is unreachable, went away mid-close, or
+  /// took longer than the close is allowed. The scope may or may not have
+  /// closed, and the same question can be asked again.
+  CloseUnanswered
+}
+
+/// Asks the executor to close the scope of a session that is not running, and
+/// answers how the close ended.
+///
+/// A session move uses this when the last close was never recorded: the
+/// orchestrator died, or the executor did not answer, before the session's own
+/// cleanup could write what happened. A scope that already ended at this
+/// incarnation answers the outcome it stored (`host`), so asking again after a
+/// lost reply is how the move learns the cleanup finished. The call connects,
+/// asks once, and reconnects and asks once more if the host went away first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.close_stopped(reach, "0198c0de", "repo", 3)
+/// ```
+pub fn close_stopped(
+  reach: Reach,
+  session: String,
+  workspace: String,
+  incarnation: Int,
+) -> Result(protocol.CloseOutcome, CloseFailure) {
+  case reach.connect() {
+    Ok(Nil) -> request_close(session, workspace, reach, incarnation, 2)
+    Error(_) -> Error(CloseUnanswered)
+  }
+}
+
+fn request_close(
+  session: String,
+  workspace: String,
+  reach: Reach,
+  incarnation: Int,
+  attempts: Int,
+) -> Result(protocol.CloseOutcome, CloseFailure) {
   let reply = process.new_subject()
   let watch = address.watch(reach.address)
   address.deliver(
     reach.address,
-    protocol.Close(
-      session: registered.session,
-      workspace: registered.workspace,
-      incarnation:,
-      reply:,
-    ),
+    protocol.Close(session:, workspace:, incarnation:, reply:),
   )
   let heard =
     process.new_selector()
@@ -759,15 +810,17 @@ fn ask_close(
   process.demonitor_process(watch)
   case heard {
     Ok(Ok(Ok(closed))) -> Ok(closed)
-    Ok(Ok(Error(_refusal))) -> Error(Nil)
+    Ok(Ok(Error(refusal))) -> Error(CloseRefused(refusal))
 
     // The host went away first. One reconnect and one more ask: a close that
-    // already landed answers with a refusal, which records nothing.
+    // already landed answers with its stored outcome, which is how a lost reply
+    // is learned.
     Ok(Error(Nil)) ->
       case attempts > 1, reach.connect() {
-        True, Ok(Nil) -> ask_close(registered, reach, incarnation, attempts - 1)
-        _, _ -> Error(Nil)
+        True, Ok(Nil) ->
+          request_close(session, workspace, reach, incarnation, attempts - 1)
+        _, _ -> Error(CloseUnanswered)
       }
-    Error(Nil) -> Error(Nil)
+    Error(Nil) -> Error(CloseUnanswered)
   }
 }

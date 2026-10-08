@@ -493,3 +493,81 @@ pub fn the_extension_bus_keeps_a_remote_surfaces_recovery_test() {
   let assert Some(recover) = wired.tools.recover
   assert recover(fixtures.tool_run("call_1", 0)) == effects.OutcomeUnknown
 }
+
+// --- closing the scope of a session that is not running ----------------------
+
+pub fn a_scope_nobody_closed_is_closed_for_a_stopped_session_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let executor = standard(probe, protocol.AllRetired)
+  let opened = store()
+
+  // The orchestrator died after attaching, so the scope is open on the executor
+  // and the session's store never recorded a close.
+  let first = attached(executor, opened)
+  assert first.incarnation == 1
+
+  assert workspace.close_stopped(
+      rig.reach(executor),
+      "registered-session",
+      "registered-name",
+      1,
+    )
+    == Ok(protocol.AllRetired)
+  assert fixtures.closes(probe) == 1
+
+  // Asking again, as a mover does after a lost reply or a restart, learns the
+  // stored outcome and closes nothing a second time.
+  assert workspace.close_stopped(
+      rig.reach(executor),
+      "registered-session",
+      "registered-name",
+      1,
+    )
+    == Ok(protocol.AllRetired)
+  assert fixtures.closes(probe) == 1
+  rig.stop(executor)
+}
+
+pub fn a_close_the_executor_could_not_prove_is_reported_as_it_ended_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let executor = standard(probe, protocol.UnknownCleanup(2))
+  let opened = store()
+  let _first = attached(executor, opened)
+  assert workspace.close_stopped(
+      rig.reach(executor),
+      "registered-session",
+      "registered-name",
+      1,
+    )
+    == Ok(protocol.UnknownCleanup(2))
+  rig.stop(executor)
+}
+
+pub fn an_executor_that_refuses_the_close_is_told_apart_from_one_that_is_silent_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let executor = standard(probe, protocol.AllRetired)
+  let opened = store()
+  let _first = attached(executor, opened)
+
+  // A close for an incarnation the executor does not hold is refused, and the
+  // refusal says which one it does.
+  assert workspace.close_stopped(
+      rig.reach(executor),
+      "registered-session",
+      "registered-name",
+      7,
+    )
+    == Error(workspace.CloseRefused(protocol.StaleIncarnation(1)))
+
+  // An executor that cannot be connected to is not a refusal: the scope may
+  // still be open, and the mover waits and asks again.
+  assert workspace.close_stopped(
+      workspace.Reach(..rig.reach(executor), connect: fn() { Error("down") }),
+      "registered-session",
+      "registered-name",
+      1,
+    )
+    == Error(workspace.CloseUnanswered)
+  assert fixtures.closes(probe) == 0
+  rig.stop(executor)
+}
