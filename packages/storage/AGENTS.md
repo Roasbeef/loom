@@ -317,7 +317,9 @@ with these forks: they define the same modules.
   `ScopeNotOpen`, `ScopeClosing`, `UncleanClose`, `CapacityExhausted`,
   `BudgetExhausted`, `DigestMismatch`, `MalformedRow`, ...). Operations:
   `open`, `close`, `attach`, `admit`, `finish`, `mark_unknown`, `query`, `ack`,
-  `begin_close`, `finish_close`, `scope`.
+  `begin_close`, `finish_close`, `scope`, and `unacked`, the attach reply's two
+  key lists as a read that changes nothing (`Unacked(terminal, unknown)`), for
+  a reconciler that must not replace the scope's token to look.
 
 ## Relationships
 

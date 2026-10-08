@@ -6008,3 +6008,85 @@ opening (create initializes), the build fails at `resolve_managed`, and
 reason; the registration stays `reserved`, so `sessions.open` answers
 `not_initialized`. `test/client/daemon_registered_test.gleam` covers the wire,
 and `executors_test` the table.
+
+## Remote tool calls (protocol 078)
+
+`client/remote/*` is the mechanics of running a session's tool calls on another
+machine: the executor's host, the orchestrator's surface and owner port, and the
+closed message vocabulary between them
+(`docs/design-notes/distributed-runtime.md` section 6, `protocol-change/078`).
+It is generic over the workspace plane, so nothing here depends on how `serve`
+assembles one; an integration supplies a `host.PlaneFactory` on the executor and
+composes `surface.Functions` into a `ToolSurface` on the orchestrator. Nothing
+calls it from production yet.
+
+- `remote/protocol` is plain data only: `Key`, `HostMessage(census)` (`Attach`,
+  `Run`, `Query`, `ListUnacked`, `Ack`, `Close`), `OwnerMessage` (one
+  constructor per `OwnerServices` function, plus `Tail` as a cast), the replies
+  (`RunAnswer` = `RunFinished | RunLost | RunRefused`, `Lookup` = `Missing |
+  Admitted | Terminal | Unknown`), `Refusal`, and `CloseOutcome`. The census is
+  a type parameter the host never reads. `unknown_outcome_text` is the model's
+  wording for a lost call.
+- `remote/address` is `{registered name, node}`. `deliver` and `watch` go through
+  `internal/ffi_remote`, three stock-OTP `@external`s (`erlang:send/2` and
+  `erlang:monitor/2` on a `{Name, Node}` destination, and `gleam_stdlib`'s
+  identity to make a `Name` from fixed text) because `gleam_erlang` resolves a
+  named subject only on the sending node. No `.erl` file, and no atom is made
+  from network input.
+- `remote/codec` stores a `ToolOutcome` as the `core/codec` JSON in an envelope
+  and decodes it totally.
+- `remote/host` is the executor's node-level actor (`weft/actor`), registered under
+  `address.default()`. It owns the one `storage/exec_ledger` handle, builds a
+  `Plane(census)` per session through the `PlaneFactory`, runs each tool as a
+  weft run whose result arrives as a message, and commits `finish` before any
+  waiter is answered. Read its module doc for the admission table.
+- `remote/owner_link` is the executor's `OwnerServices` over messages: monitored
+  calls (`broker/internal/call.try_call`), in-band failure when the owner is
+  gone, and a one-cell `Link` that `host.attach` re-points when a later runtime
+  attaches to an open scope.
+- `remote/owner_port` is the orchestrator's per-session actor. Every request runs
+  in a weft run cancelled when its requester exits (`cancel_when_exits`), and a
+  `Tail` is served inline. It reconciles acknowledgements on `bind` and on a
+  weft periodic timer, acknowledging only keys the injected `settled` accepts.
+- `remote/surface` is `attach`, `run`, `recover`, `ack`, `places` and
+  `functions`. A lost connection is repaired with `weft/poll.fold_until` on a
+  doubling interval and the same `Run` is sent again.
+
+Invariants that break things when violated:
+
+- Every runtime incarnation calls `surface.attach` before its first `run` or
+  `recover`. The fresh token is the only fence against a dead runtime's
+  in-flight `Run`; Erlang orders messages per sender pair only. `recover`
+  assumes the attach ran, because "no row" means "never started" only after it.
+- A `Run` is idempotent by call key and the host never starts a second run for a
+  key. The surface relies on this to re-send after a reconnect; do not re-send
+  `Run` anywhere else.
+- The host cancels a run only when its last waiter exits with a reason other
+  than `noconnection` (`host.cancels_run`). `noconnection` leaves the run going
+  and its outcome in the ledger. A waiter that exits with `noconnection` is
+  dropped, and its re-send adds it back.
+- The ledger row is made `terminal` before any reply, `unknown` before a cancelled
+  run's worker is killed, and a request for an `unknown` key never starts the
+  call again.
+- An escalation crosses as a remaining duration, never a deadline. The plane must
+  be built on `AttachSpec.clock` so the executor's deadline and the owner link
+  read one time base.
+- A scope with no plane in this VM closes as `UnknownCleanup(0)`: without a
+  plane there is no retirement witness. A failed plane build leaves the scope
+  open for a retry attach at the same incarnation.
+- The plane build runs inside the host actor, so it should be bounded by the
+  integration. Close runs in a weft run and does not block other sessions.
+- `ffi_remote.send` to an unregistered name on the local node raises, so same-VM
+  tests must keep the host up; across nodes the send is dropped instead.
+
+Tests: `remote/{codec,host,owner_port,surface}_test` run one VM against a real
+ledger and a fake plane (`support/remote_fixtures`, which counts how many times
+the fake tool ran). `remote/remote_nodes_test` drives
+`client_distribution_fixture_ffi`'s `remote_*` scenarios on two real emulators
+(`support/remote_nodes` holds the roles): an undisturbed call that round-trips an
+owner callback, a connection dropped while the tool runs and repaired at once,
+and one that stays down until the tool has finished. Each asserts one outcome and
+one tool run. Making the host ignore the attach token fails the stale-token
+tests, making `noconnection` cancel fails `only_noconnection_leaves_a_call_running`
+and both outage scenarios, and making the surface skip the re-send fails both
+outage scenarios.
