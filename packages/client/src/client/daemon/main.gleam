@@ -716,6 +716,7 @@ pub fn start_movers(
       use control <- result.try(session_movers.start(
         environment,
         session_movers.retry_ms,
+        session_directory.over_distribution(membership),
       ))
       use resumed <- result.try(session_movers.resume(control, ready.registry))
       log.info(logger, "daemon.movers", [

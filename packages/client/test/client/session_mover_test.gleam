@@ -873,6 +873,45 @@ pub fn a_send_that_finds_the_session_activated_retires_without_asking_again_test
   finish(rig)
 }
 
+pub fn the_source_answers_owned_until_it_retires_and_moved_after_test() {
+  let rig =
+    start(
+      "origin-answer",
+      25,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  let move = begin(rig)
+  let drop = times(1)
+  let lossy =
+    Wire(..rig.wire, activate: fn(activation) {
+      let answer = rig.wire.activate(activation)
+      case drop() {
+        True -> Error(Nil)
+        False -> answer
+      }
+    })
+  let assert Stalled(_reason) =
+    session_mover.drive(environment(rig, lossy, fn(_) { Nil }), move)
+
+  // The receiver imported the session and the source has not heard. Until it
+  // retires it answers that it holds the session, which is what keeps the
+  // receiver from handing the session on: a move begun there now would replace
+  // the `imported` row this source's retry depends on.
+  assert custody(rig.target, rig.session)
+    == catalogue.Imported(op:, from: "alpha")
+  assert orchestrator_port.ask(rig.source.port, rig.session, stage_ms)
+    == Ok(orchestrator_port.Owned)
+
+  // Its tombstone is the answer that lets the receiver go on.
+  assert session_mover.drive(plain(rig), move) == Finished
+  assert orchestrator_port.ask(rig.source.port, rig.session, stage_ms)
+    == Ok(orchestrator_port.Moved(to: "bravo"))
+  finish(rig)
+}
+
 pub fn a_receiver_lost_in_the_middle_of_the_copy_gets_the_whole_file_again_test() {
   let rig =
     start(
@@ -1286,10 +1325,19 @@ fn await_custody(rig: Rig, expected: catalogue.Custody) -> Nil {
   assert outcome == poll.Answered(Nil)
 }
 
+// The movers' way of asking an orchestrator whether it holds a session, for
+// tests that begin no move of an imported session and so never use it.
+fn no_holder(
+  _orchestrator: orchestrators.Orchestrator,
+  _session: String,
+) -> Result(orchestrator_port.Ownership, Nil) {
+  Error(Nil)
+}
+
 pub fn the_movers_carry_a_move_to_the_end_test() {
   let rig =
     start("movers", 40, Recorded, protocol.AllRetired, receiver_knows_box(), 0)
-  let assert Ok(control) = session_movers.start(plain(rig), 100)
+  let assert Ok(control) = session_movers.start(plain(rig), 100, no_holder)
   let move = begin(rig)
   control.begin(move)
 
@@ -1312,7 +1360,7 @@ pub fn a_stalled_move_is_retried_until_it_completes_test() {
       }
     })
   let assert Ok(control) =
-    session_movers.start(environment(rig, wire, fn(_) { Nil }), 100)
+    session_movers.start(environment(rig, wire, fn(_) { Nil }), 100, no_holder)
   control.begin(begin(rig))
   await_custody(rig, catalogue.Moved(op:, to: "bravo"))
   finish(rig)
@@ -1325,7 +1373,7 @@ pub fn a_restart_resumes_every_move_that_was_in_flight_test() {
 
   // The daemon that began it is gone and a new one starts: its movers find the
   // row and finish the move without anyone asking.
-  let assert Ok(control) = session_movers.start(plain(rig), 100)
+  let assert Ok(control) = session_movers.start(plain(rig), 100, no_holder)
   assert session_movers.resume(control, rig.source.registry) == Ok(1)
   await_custody(rig, catalogue.Moved(op:, to: "bravo"))
   assert_moved(rig)

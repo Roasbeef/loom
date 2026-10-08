@@ -6971,7 +6971,8 @@ the protocol-change/078 addendum on moving a session have the protocol.
   own (`Budget`), and an expiry is a stall. `Environment.after` is told after each
   step; a daemon passes the crash knob and a test passes a recorder.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
-  linked to the process that starts the daemon's services. One entry per session;
+  linked to the process that starts the daemon's services. `Control` carries the
+  listed orchestrators, `begin` and `holds` (the ask of an origin's port). One entry per session;
   `Begin` starts a mover once, a tick runs a stalled one again, `resume` begins every
   `moving` row at boot. It is not the registry, whose turns are bounded by five
   seconds while a move waits an executor's minute.
@@ -6980,7 +6981,8 @@ the protocol-change/078 addendum on moving a session have the protocol.
   repeated Close at a closed scope answers the stored outcome (`remote/host`), which
   is how a restarted mover learns a lost reply had landed.
 - `daemon/server` has `sessions.move` (owner, epoch, destination in
-  `Config.movers.orchestrators`, then `manager.begin_move`, then
+  `Config.movers.orchestrators`, then `inbound_settled` for an imported session,
+  then `manager.begin_move`, then
   `Config.movers.begin`), the `moving` and `moved` members of `sessions.get`
   (`with_custody`), `moving` on `open` (`in_flight`), and `not_owner` from the
   tombstone for open, archive, restore and delete (`tombstoned`). `daemon/main`
@@ -6999,6 +7001,12 @@ Invariants that break things when violated:
   listed, or the copy is still there. The source abandons on any refusal other than
   a bad digest or a missing copy, so a refusal after the commit leaves two owners.
   `Move.tla` models it as `RefuseUncommitted`, with `MutantRefuse` as its check.
+- A move is begun on an `imported` session only after the orchestrator it came
+  from answers `Moved` for it (`inbound_settled`, through `Control.holds`, outside
+  the registry turn). `begin_move` replaces the `imported` row and `abort_move`
+  deletes it to `resident`, so a move begun earlier loses the record the source's
+  retry needs, and a return move meets the source's own `moving` row. Both
+  daemons would abandon and both would be resident.
 - The intent is committed in the registry turn that cancels the slot, and admission
   reads the custody row in the turn that reserves a slot. Moving the read out of
   that turn lets a runtime open a file whose copy is being cut.

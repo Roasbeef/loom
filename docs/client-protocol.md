@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:359-187`).
+Source: `handle` (`client/daemon/server.gleam:365-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -1422,7 +1422,7 @@ move that was in flight.
 Errors: `forbidden`, `stale_epoch`, `not_found`, `unavailable`,
 `orchestrator_unknown` (the destination is not in this daemon's
 `[orchestrators.<name>]` tables), `not_movable` (the session has no executor yet,
-is archived, or has not finished being created), `conflict` (a move toward
+is archived, has not finished being created, or was imported from an orchestrator that has not yet retired the move that brought it here), `conflict` (a move toward
 another destination is in flight), and `not_owner` (the session already moved).
 `moving` is not a refusal of this command: asking again is how a client learns
 the stored `op`.
@@ -3441,7 +3441,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does; or `sessions.open`, `sessions.archive`, `sessions.restore`, `sessions.delete` or `sessions.move` named a session this daemon handed to another orchestrator. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |
 | `moving` | `sessions.open`, `sessions.archive` or `sessions.delete` named a session that is being handed to another orchestrator (section 3.27). The body also carries `orchestrator`, the destination, and `op`. | Wait and ask again: the move ends in `not_owner` for this daemon or, if it is abandoned, in an ordinary session. |
 | `orchestrator_unknown` | `sessions.move` named a destination that is not a key of the daemon's `[orchestrators.<name>]` tables. | Fix the name, or have the owner add the orchestrator and restart the daemon. |
-| `not_movable` | `sessions.move` named a session that has no executor (a local session, or a pooled one that never opened), is archived, or has not finished being created. | Move a session that lives on an executor, restoring it first if it is archived. |
+| `not_movable` | `sessions.move` named a session that has no executor (a local session, or a pooled one that never opened), is archived, or has not finished being created. It is also the answer for a session this daemon imported when the orchestrator it came from did not answer that it has handed the session on: that orchestrator may still be finishing its move, or is down, or is no longer in this daemon's `[orchestrators.<name>]` tables. | Move a session that lives on an executor, restoring it first if it is archived. For an imported session, ask again after the source's move has finished (`sessions.get` there reports `moved`), or when the source is reachable again. |
 | `owner_unreachable` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, no orchestrator said it holds it, and some could not be asked. The body also carries `orchestrators`, the names that did not answer. | Retry later, or connect to one of the named orchestrators directly. |
 | `executor_unavailable` | Not a code of its own: the leading word of the `message` of a `start_failed` for a session registered on an executor or a pool. The open could not place the session on its executor. The connection failed (epmd, the distribution port, a pin or a certificate), the executor refused the attach (it holds its maximum number of scopes, its scope is at another incarnation, the workspace name is not registered there), or its answer contradicted its declared platform, enforcement or toolchains. The text after the colon says which. Nothing is created on the daemon's host for the workspace name. | Fix the cause the message names, then retry. A session whose first open failed stays `reserved` and only a `sessions.create` retry under its original request key finishes it (section 3.4). A session that has opened before stays `saved`, and `sessions.open` retries it on the same executor. |
 

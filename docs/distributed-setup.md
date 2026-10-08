@@ -941,7 +941,9 @@ It prints `moving 0198c0de-0000-7000-8000-000000000001 to bravo (operation
 move, and will carry it out. The command does not wait. Asking again for the same
 destination prints the same operation. Naming a destination that is not in the
 `[orchestrators.<name>]` tables is refused with `orchestrator_unknown`. A local
-session is refused with `not_movable`.
+session is refused with `not_movable`, and so is a session that was moved here
+until the orchestrator it came from has finished that move; ask again a little
+later.
 
 **3. Wait for it to finish.** On the source, a session that is moving cannot be
 opened. `sessions.open` answers `moving`, naming the destination and the

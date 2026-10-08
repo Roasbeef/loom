@@ -608,6 +608,20 @@ answer, so the port sends nothing, and the source treats silence as a stall.
 `Absent` is sent only when the catalogue was read and holds no such import. The
 source, for its part, retires on a stage of `Activated` without activating again.
 
+A session that was imported cannot be handed on before the source has retired. The
+`imported` row is the record the source's retry depends on, and beginning a move
+on the receiver replaces it with `moving`, which an abort then deletes. A move
+back to the source would meet the source's own `moving` row and be refused, the
+receiver would abandon it and become `resident`, and the source's retry would find
+no `imported` row there and abandon too. So `sessions.move` for a session whose row
+is `imported` first asks the orchestrator named in the row whether it holds the
+session, outside the registry's turn, and begins the move only when it answers
+`Moved`. `Owned`, `NotOwned`, silence, and an origin the daemon no longer lists
+refuse with `not_movable`, and the owner asks again later. A retired source never
+holds the session again under that move, so one `Moved` answer settles the
+question. The cost is that an imported session whose origin is down or removed from
+`[orchestrators]` cannot move on until the origin is listed and reachable.
+
 #### When a move stops
 
 A move ends in one of three ways. It finishes, with the source's row `moved`. It is

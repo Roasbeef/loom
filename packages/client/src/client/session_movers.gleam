@@ -35,6 +35,7 @@
 
 import client/daemon/manager
 import client/orchestrators.{type Orchestrator}
+import client/remote/orchestrator_port.{type Ownership}
 import client/session_mover.{type Environment, Aborted, Finished, Stalled}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -58,6 +59,12 @@ pub type Control {
     /// Tells the movers that a move began, and returns at once. The move is
     /// already `moving` in the catalogue when this is called.
     begin: fn(catalogue.Pending) -> Nil,
+    /// Asks an orchestrator whether it holds a session, and answers what its
+    /// port answers, or `Error(Nil)` for silence. A move of a session this
+    /// daemon imported is begun only after the orchestrator it came from
+    /// answers `Moved`, which that orchestrator can answer only after it
+    /// retired the move that brought the session here.
+    holds: fn(Orchestrator, String) -> Result(Ownership, Nil),
   )
 }
 
@@ -95,7 +102,11 @@ type State(instance) {
 /// assert session_movers.idle().orchestrators == []
 /// ```
 pub fn idle() -> Control {
-  Control(orchestrators: [], begin: fn(_move) { Nil })
+  Control(
+    orchestrators: [],
+    begin: fn(_move) { Nil },
+    holds: fn(_orchestrator, _session) { Error(Nil) },
+  )
 }
 
 /// Starts the actor, linked to the caller, and returns the control that reaches
@@ -105,11 +116,12 @@ pub fn idle() -> Control {
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(control) = session_movers.start(environment, session_movers.retry_ms)
+/// // let assert Ok(control) = session_movers.start(environment, session_movers.retry_ms, session_directory.over_distribution(membership))
 /// ```
 pub fn start(
   environment: Environment(instance),
   every_ms: Int,
+  holds: fn(Orchestrator, String) -> Result(Ownership, Nil),
 ) -> Result(Control, String) {
   let started =
     actor.new_with_initialiser(1000, fn(inbox) {
@@ -122,11 +134,11 @@ pub fn start(
   case started {
     Ok(started) -> {
       let inbox = started.data
-      Ok(
-        Control(orchestrators: environment.orchestrators, begin: fn(move) {
-          process.send(inbox, Begin(move))
-        }),
-      )
+      Ok(Control(
+        orchestrators: environment.orchestrators,
+        begin: fn(move) { process.send(inbox, Begin(move)) },
+        holds:,
+      ))
     }
     Error(error) ->
       Error("the session movers did not start: " <> string.inspect(error))

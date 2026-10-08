@@ -57,6 +57,7 @@ import client/orchestrators
 import client/peer_mail
 import client/peers
 import client/pools
+import client/remote/orchestrator_port
 import client/session_directory
 import client/session_movers
 import core/ids
@@ -2996,6 +2997,8 @@ fn dispatch_class(
         |> result.replace_error(orchestrator_unknown_code),
       )
 
+      use Nil <- result.try(inbound_settled(config.movers, state.registry, id))
+
       // Each asker mints an operation of its own, and the registry keeps the
       // first: a second request toward the same orchestrator answers the stored
       // one, so two owners asking at once start one move.
@@ -3067,6 +3070,55 @@ fn dispatch_class(
         json.Object([#("state", json.String("draining"))]),
       ))
     }
+  }
+}
+
+// A session this daemon imported cannot be handed on until the orchestrator it
+// came from has retired the move that brought it here. Until then that
+// orchestrator still holds the session as `moving`, and its mover may yet ask
+// this one to activate it. Beginning a move here replaces the `imported` row
+// with `moving`, and a move that is then abandoned deletes that row, so the
+// activation of the first move would be refused for a conflict and the source
+// would abandon its move as well: both sides resident. The origin's port
+// answers `Moved` only after its own row says so, and a retired source never
+// holds the session again under that move, so one answer decides and there is
+// no race to lose. The ask runs here, outside the registry's turn, because it
+// crosses the network. Silence, an origin this daemon no longer lists, and any
+// other answer refuse the move, as a session that cannot yet move: the owner
+// asks again later.
+fn inbound_settled(
+  movers: session_movers.Control,
+  registry: manager.Manager(instance),
+  id: String,
+) -> Result(Nil, String) {
+  case manager.custody(registry, id) {
+    Ok(catalogue.Imported(from:, ..)) ->
+      case orchestrators.find(movers.orchestrators, from) {
+        Ok(origin) ->
+          case movers.holds(origin, id) {
+            Ok(orchestrator_port.Moved(..)) -> Ok(Nil)
+            Ok(orchestrator_port.Owned)
+            | Ok(orchestrator_port.NotOwned)
+            | Error(Nil) ->
+              Error(
+                admin_error_code(manager.AdminNotMovable(
+                  "the move in from " <> from <> " has not finished",
+                )),
+              )
+          }
+        Error(Nil) ->
+          Error(
+            admin_error_code(manager.AdminNotMovable(
+              "the orchestrator "
+              <> from
+              <> " is not listed, so it cannot be asked",
+            )),
+          )
+      }
+    Ok(catalogue.Resident)
+    | Ok(catalogue.Moving(..))
+    | Ok(catalogue.Moved(..))
+    | Error(_) -> Ok(Nil)
   }
 }
 

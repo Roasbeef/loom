@@ -11,6 +11,7 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon_server_test as wire
 import client/orchestrators
+import client/remote/orchestrator_port
 import client/session_directory.{type Directory, Directory, Elsewhere}
 import client/session_movers
 import core/clock
@@ -22,6 +23,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import host/bootstrap
+import simplifile
 import storage/access
 import storage/catalogue
 import storage/domain
@@ -82,10 +84,43 @@ fn told(recorder: process.Subject(Note)) -> List(catalogue.Pending) {
   process.call(recorder, 1000, Drain)
 }
 
+// What the orchestrator a session was imported from answers when this daemon
+// asks it whether it holds the session. The test changes the answer as the
+// origin's own move advances, and the daemon's ask is made from a process of
+// its own, so the answer lives in an actor either side can reach.
+type Origin {
+  Answer(Result(orchestrator_port.Ownership, Nil))
+  Ask(reply: process.Subject(Result(orchestrator_port.Ownership, Nil)))
+}
+
+fn origin() -> process.Subject(Origin) {
+  let assert Ok(started) =
+    actor.new(Error(Nil))
+    |> actor.on_message(fn(held, message) {
+      case message {
+        Answer(next) -> actor.continue(next)
+        Ask(reply:) -> {
+          process.send(reply, held)
+          actor.continue(held)
+        }
+      }
+    })
+    |> actor.start
+    as "the origin starts"
+  started.data
+}
+
+fn moving(
+  run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
+) {
+  moving_from(origin(), run)
+}
+
 // A fixture whose directory answers `laptop` for any session it is asked about,
 // as a daemon holding a tombstone for it would, and whose movers list `laptop`
-// and record what they are told.
-fn moving(
+// and `desk`, record what they are told, and ask `desk` through `desk_says`.
+fn moving_from(
+  desk_says: process.Subject(Origin),
   run: fn(root.Ready(String), Int, String, process.Subject(Note)) -> Nil,
 ) {
   let told = recorder()
@@ -99,6 +134,7 @@ fn moving(
     session_movers.Control(
       orchestrators: [laptop(), orchestrators.plain("desk", "desk@10.0.0.8")],
       begin: fn(move) { process.send(told, Began(move)) },
+      holds: fn(_, _) { process.call(desk_says, 1000, Ask) },
     )
   wire.fixture_moving(
     limits.defaults,
@@ -108,6 +144,48 @@ fn moving(
     movers,
     fn(_, ready, port, credential) { run(ready, port, credential, told) },
   )
+}
+
+const import_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e"
+
+// A session on the daemon's executor that arrived from `desk`, as an import
+// leaves it: saved, with the file in place and the custody row `imported`.
+fn imported(ready: root.Ready(String), seed: Int) -> String {
+  let #(minted, _) =
+    ids.mint_session(ids.generator(clock.fixed(1_700_000_000_000), seed))
+  let id = ids.session_id_to_string(minted)
+  let registration =
+    catalogue.Registration(
+      id:,
+      path: ready.sessions_directory <> "/" <> id <> ".db",
+      workspace: "repo",
+      name: "Imported",
+      configuration: "",
+      profile: None,
+      executor: "build-box",
+      pool: "",
+      created_at: 1_700_000_000_000,
+      request_key: "import-" <> import_op,
+      state: catalogue.Reserved,
+      subtitle: None,
+    )
+  let received = ready.state_root <> "/received-" <> id
+  let assert Ok(Nil) = simplifile.write(received, "the session file")
+    as "the copy is written"
+  let assert Ok(_) =
+    manager.import_session(
+      ready.registry,
+      manager.Import(
+        registration:,
+        mapping: manager.session_only_domain(registration, "", ready.state_root),
+        op: import_op,
+        from: "desk",
+        received:,
+        subtitle: None,
+      ),
+    )
+    as "the session is imported"
+  id
 }
 
 // A session on the daemon's one configured executor, and a local one.
@@ -206,6 +284,43 @@ pub fn the_owner_moves_a_session_and_is_told_the_move_and_where_it_goes_test() {
     // and the movers are told again, which they ignore.
     let again = move(socket, 2, session, "laptop", ready.epoch)
     assert field(field(again, "body"), "op") == json.String(op)
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_session_imported_from_a_source_that_has_not_retired_cannot_move_on_test() {
+  let desk = origin()
+  moving_from(desk, fn(ready, port, credential, recorder) {
+    let session = imported(ready, 5)
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    // The source still holds the session as moving, so its activation can yet
+    // arrive here again. Beginning a move now would replace the `imported` row.
+    process.send(desk, Answer(Ok(orchestrator_port.Owned)))
+    assert code(move(socket, 1, session, "laptop", ready.epoch))
+      == json.String("not_movable")
+
+    // Silence from the source decides nothing, and nor does a source that does
+    // not know the session.
+    process.send(desk, Answer(Error(Nil)))
+    assert code(move(socket, 2, session, "laptop", ready.epoch))
+      == json.String("not_movable")
+    process.send(desk, Answer(Ok(orchestrator_port.NotOwned)))
+    assert code(move(socket, 3, session, "laptop", ready.epoch))
+      == json.String("not_movable")
+    assert told(recorder) == []
+    assert manager.custody(ready.registry, session)
+      == Ok(catalogue.Imported(op: import_op, from: "desk"))
+
+    // Once the source has retired it answers with its tombstone, and the move
+    // is admitted over the imported row.
+    process.send(desk, Answer(Ok(orchestrator_port.Moved(to: "here"))))
+    let admitted = move(socket, 4, session, "laptop", ready.epoch)
+    assert field(admitted, "event") == json.String("sessions.move")
+    let assert json.String(op) = field(field(admitted, "body"), "op")
+    assert told(recorder) == [catalogue.Pending(session:, op:, to: "laptop")]
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
