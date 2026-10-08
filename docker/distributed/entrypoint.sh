@@ -30,8 +30,9 @@
 # carries its own loom.toml, so the mount is ignored for one.
 #
 # LOOM_CGROUP_DELEGATE=1 (compose.isolated.yaml) additionally carves out the
-# cgroup v2 base the full-isolation posture needs (docs/docker.md). That step
-# has not been verified end to end from this entrypoint.
+# cgroup v2 base the full-isolation posture needs (docs/docker.md), inside the
+# container's own cgroup, and refuses to run if the container shares the
+# host's cgroup namespace.
 set -eu
 
 uid=10000
@@ -61,11 +62,33 @@ if [ "$(id -u)" = 0 ]; then
 	chown -R "$uid:$gid" "$home"
 
 	if [ "${LOOM_CGROUP_DELEGATE:-0}" = 1 ]; then
+		# Everything below writes under /sys/fs/cgroup. In a private cgroup
+		# namespace that directory is this container's own cgroup, and the
+		# kernel reports it as "0::/". Anything else means the container
+		# shares the host's cgroup tree, where moving processes and creating
+		# directories would change the host, so the script refuses to go on.
+		if [ "$(cat /proc/self/cgroup)" != "0::/" ]; then
+			echo "entrypoint: LOOM_CGROUP_DELEGATE=1 needs a private cgroup namespace (compose.isolated.yaml sets cgroup: private); this container shares the host's cgroup tree" >&2
+			exit 70
+		fi
+
+		# The delegated base must hold no process itself, and neither may the
+		# cgroup above it when it hands controllers down. The daemon and the
+		# helper therefore live in a leaf, loom/host, and every process the
+		# container already has (tini, this script) moves into it. The daemon
+		# is a descendant and inherits that cgroup. LOOM_CGROUP_BASE names the
+		# base for loom-exec, which otherwise takes the daemon's own cgroup
+		# (the leaf) and finds it occupied.
 		mount -o remount,rw /sys/fs/cgroup
 		mkdir -p /sys/fs/cgroup/loom/host
-		echo "+pids +memory" >/sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+		members=$(cat /sys/fs/cgroup/cgroup.procs)
+		for member in $members; do
+			echo "$member" >/sys/fs/cgroup/loom/host/cgroup.procs 2>/dev/null || true
+		done
+		echo "+pids +memory" >/sys/fs/cgroup/cgroup.subtree_control
 		echo "+pids +memory" >/sys/fs/cgroup/loom/cgroup.subtree_control
 		chown -R "$uid:$gid" /sys/fs/cgroup/loom
+		export LOOM_CGROUP_BASE=/sys/fs/cgroup/loom
 	fi
 
 	# The second pass runs unprivileged. HOME is set explicitly because the

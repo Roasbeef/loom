@@ -11,14 +11,15 @@
 #
 # These settings remove pieces of Docker's own confinement; read "Full
 # isolation" in docs/docker.md for what each one gives up before using them.
-# They are the measured flags of that page. Doing the cgroup delegation from
-# the entrypoint, and moving the daemon into the delegated cgroup, has not been
-# verified: run `docker compose exec executor loom-exec --self-test` and expect
-# 10 of 11 probes enforced before trusting this posture.
+# They are the flags of that page with one change: the executor keeps a
+# private cgroup namespace (docs/docker.md uses --cgroupns=host). Its
+# /sys/fs/cgroup is then the container's own cgroup, so the entrypoint carves
+# the delegated base out of that and the host's cgroup tree is never written.
+# The entrypoint refuses to start if the container shares the host's.
 
 services:
   executor:
-    cgroup: host
+    cgroup: private
     cap_add: [SYS_ADMIN]
     security_opt:
       - seccomp=unconfined
