@@ -6153,16 +6153,21 @@ closed message vocabulary between them
 It is generic over the workspace plane, so nothing here depends on how `serve`
 assembles one; an integration supplies a `host.PlaneFactory` on the executor and
 composes `surface.Functions` into a `ToolSurface` on the orchestrator. The
-orchestrator side is assembled by `remote/workspace` and `serve` (next section);
-the executor side is the other half of the same work.
+orchestrator side is assembled by `remote/workspace` and `serve`, and the
+executor side by `daemon/main.start_executor`, which starts the host from
+`[workspaces.<name>]` rows with `executor_plane.factory`; both have sections
+below.
 
 - `remote/protocol` is plain data only: `Key`, `HostMessage(census)` (`Attach`,
-  `Run`, `Query`, `ListUnacked`, `Ack`, `Close`), `OwnerMessage` (one
-  constructor per `OwnerServices` function, plus `Tail` as a cast), the replies
-  (`RunAnswer` = `RunFinished | RunLost | RunRefused`, `Lookup` = `Missing |
-  Admitted | Terminal | Unknown`), `Refusal`, and `CloseOutcome`. The census is
-  a type parameter the host never reads. `unknown_outcome_text` is the model's
-  wording for a lost call.
+  `Run`, `Query`, `QueryOrFence`, `ListUnacked`, `Ack`, `Close`), `OwnerMessage`
+  (one constructor per `OwnerServices` function, plus `Tail` as a cast), the
+  replies (`RunAnswer` = `RunFinished | RunLost | RunRefused`, `Lookup` =
+  `Missing | Admitted | Terminal | Unknown | Fenced`), `Refusal`, and
+  `CloseOutcome`. The census is a type parameter the host never reads.
+  `unknown_outcome_text` is the model's wording for a lost call and
+  `did_not_run_text` the wording of a fenced one. `Attach` carries
+  `protocol.version`; the host refuses any other value with `VersionMismatch`.
+  Change the version whenever a constructor or field changes.
 - `remote/address` is `{registered name, node}`. `deliver` and `watch` go through
   `internal/ffi_remote`, three stock-OTP `@external`s (`erlang:send/2` and
   `erlang:monitor/2` on a `{Name, Node}` destination, and `gleam_stdlib`'s
@@ -6173,9 +6178,13 @@ the executor side is the other half of the same work.
   and decodes it totally.
 - `remote/host` is the executor's node-level actor (`weft/actor`), registered under
   `address.default()`. It owns the one `storage/exec_ledger` handle, builds a
-  `Plane(census)` per session through the `PlaneFactory`, runs each tool as a
-  weft run whose result arrives as a message, and commits `finish` before any
-  waiter is answered. Read its module doc for the admission table.
+  `Plane(census)` per session through the `PlaneFactory` as a weft run (the
+  scope is `Building` until it reports), runs each tool as a weft run whose
+  result arrives as a message, and commits `finish` before any waiter is
+  answered. A `Plane` is `run`, `census`, `children` (adders for a per-scope
+  supervisor the host starts through an owner process) and `close`, which is
+  handed a function that stops those children. Read its module doc for the
+  admission table.
 - `remote/owner_link` is the executor's `OwnerServices` over messages: monitored
   calls (`broker/internal/call.try_call`), in-band failure when the owner is
   gone, and a one-cell `Link` that `host.attach` re-points when a later runtime
@@ -6186,7 +6195,9 @@ the executor side is the other half of the same work.
   weft periodic timer, acknowledging only keys the injected `settled` accepts.
 - `remote/surface` is `attach`, `run`, `recover`, `ack`, `places` and
   `functions`. A lost connection is repaired with `weft/poll.fold_until` on a
-  doubling interval and the same `Run` is sent again.
+  doubling interval and the same `Run` is sent again. `recover` sends
+  `QueryOrFence` for a call whose `run.replay` is `ReplayNever` and plain
+  `Query` for a `ReplaySafe` one.
 
 Invariants that break things when violated:
 
@@ -6213,14 +6224,26 @@ Invariants that break things when violated:
 - A scope with no plane in this VM closes as `UnknownCleanup(0)`: without a
   plane there is no retirement witness. A failed plane build leaves the scope
   open for a retry attach at the same incarnation.
-- The plane build runs inside the host actor, so it should be bounded by the
-  integration. Close runs in a weft run and does not block other sessions.
+- The plane build, a tool run and a close are each a weft run, so none blocks
+  the host or another session. While a scope is `Building`, a second `Attach`,
+  a `Run` and a `Close` for it are refused with `PlaneBuilding` before the
+  ledger is touched; do not move the check after `exec_ledger.attach`, which
+  would replace the token the first attach is waiting on.
+- Recovery of a `ReplayNever` call must fence (`QueryOrFence`). A plain `Query`
+  that finds no row leaves a window in which a dead runtime's `Run` is still in
+  flight and then starts the call that recovery just reported as not started.
+  Making `exec_ledger.query_or_fence` insert nothing fails
+  `a_fence_before_a_stale_run_stops_the_run_from_starting_test`.
+- The host's death must end the daemon. The planes it builds (pool, executor
+  service, broker) are not in its link set, so a lone restart would leave them
+  running and build second ones on the next attach. `daemon/main.start_executor`
+  unlinks the host and `wait` halts on its monitor.
 - `ffi_remote.send` to an unregistered name on the local node raises, so same-VM
   tests must keep the host up; across nodes the send is dropped instead.
 
 Tests: `remote/{codec,host,owner_port,surface}_test` run one VM against a real
 ledger and a fake plane (`support/remote_fixtures`, which counts how many times
-the fake tool ran). `remote/remote_nodes_test` drives
+the fake tool ran and can hold one session's build open). `remote/remote_nodes_test` drives
 `client_distribution_fixture_ffi`'s `remote_*` scenarios on two real emulators
 (`support/remote_nodes` holds the roles): an undisturbed call that round-trips an
 owner callback, a connection dropped while the tool runs and repaired at once,
@@ -6321,3 +6344,50 @@ drives a scripted model through a workspace tool and an owner tool.
 Routing a workspace tool to the owner path fails `a_workspace_call_runs_on_the_executor_...`,
 attaching at the stored incarnation after a clean close fails the reopen tests, and
 dropping the clock offset fails `the_non_tool_clock_reads_the_executors_timebase_test`.
+
+## The executor role (protocol 078)
+
+A `loomd` whose `--config` file has `[distribution]` and at least one
+`[workspaces.<name>]` row serves those checkouts to the peers it pins.
+
+- `client/workspaces` decodes `[workspaces.<name>]` (`root` only: absolute, no
+  `..` segment) the way `client/executors` decodes executors, and requires
+  `[distribution]`. `catalog.parse` validates it; `catalog.parse_lsp` reads only
+  the `[lsp.<name>]` tables because an executor has no model catalogue. A new key
+  means `workspaces.row`, `scripts/config_keys.sh` and `docs/configuration.md`
+  move together.
+- `client/executor_plane` is the real `PlaneFactory`. `machine` reads this
+  executor's own settings once (`--helper`, `--config`, `--codemode-seed`,
+  `--best-effort`, `--full-enforcement`, `--read-scope`, `--network`,
+  `LOOM_HELPER_POOL`, `LOOM_DISABLE_TOOLS`, and the `[tools]`, `[workspace]`,
+  `[lsp]`, `[jobs]`, `[secrets]` tables). `factory` resolves the workspace name
+  against the rows, canonicalizes the root, creates `<state>/scopes/<session>`
+  fresh (the helpers' scratch lives there; the session name is validated before
+  it names a path), and calls `workspace_plane.prepare` then `start` with the
+  `OwnerServices` from the `AttachSpec`, no owner code-mode arms and
+  `codemode_wiring.seam` as the `code_mode` tool. The census it returns is
+  `RemoteCensus` (plain data plus the broker's subject; the prompt facts are read
+  once, at attach). `workspace_plane` itself is unchanged.
+- The plane's cleanups cannot go to custody, because the factory runs in a
+  short-lived weft run. The `Retain` it passes files each `(Part, cleanup)` in the
+  build process and calls `transfer` (unlinking the build from the resource).
+  `retire` runs them in `instance_owner.Part` order after the language servers
+  and the scope's children, and reports `AllRetired` only when nothing failed and
+  the `Helpers` cleanup (`executor.close`, which ends in `exec.close_pool`)
+  succeeded. No helper cleanup means `UnknownCleanup`. The scope directory is
+  removed only on `AllRetired`.
+- `daemon/main.start_executor` starts `remote/host` under `address.default()`
+  with the ledger at `<state>/exec-ledger.db`; a daemon with no rows starts
+  nothing. The host is unlinked and monitored; its death halts the daemon.
+  Rows are checked to be directories at startup (`existing_roots`) and again at
+  each attach.
+
+Tests: `executor_plane_test` runs the factory over a temp checkout with the
+shipped helper (write then read, `bash`, close then reopen, an unknown
+workspace, the census walk for function values and its `term_to_binary` round
+trip, an 8 MiB read, and `retire` with injected cleanups). `daemon_executor_test`
+covers the boot decision. `remote_nodes_test`'s `remote_workspace` scenario
+serves a real workspace to a second node. Making `retire` ignore the helper
+witness fails `a_scope_with_no_helper_cleanup_has_no_witness_test`; building the
+plane back inside the host actor fails the two build-isolation tests in
+`host_test`.

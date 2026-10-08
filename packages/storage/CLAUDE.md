@@ -313,11 +313,12 @@ with these forks: they define the same modules.
   `ScopeState` is `Open | Closing | Closed(AllRetired | UnknownCleanup(n))`;
   `CallState` is `Admitted | Terminal(outcome) | Unknown`; `Lookup` is
   `Missing | Found(CallState)`; `Admission` is `Fresh | Existing(CallState)`;
+  `Fencing` is `Standing(CallState) | Fenced`;
   `Error` is one closed type (`StaleIncarnation`, `StaleToken`,
   `ScopeNotOpen`, `ScopeClosing`, `UncleanClose`, `CapacityExhausted`,
   `BudgetExhausted`, `DigestMismatch`, `MalformedRow`, ...). Operations:
-  `open`, `close`, `attach`, `admit`, `finish`, `mark_unknown`, `query`, `ack`,
-  `begin_close`, `finish_close`, `scope`, and `unacked`, the attach reply's two
+  `open`, `close`, `attach`, `admit`, `finish`, `mark_unknown`, `query`,
+  `query_or_fence`, `ack`, `begin_close`, `finish_close`, `scope`, and `unacked`, the attach reply's two
   key lists as a read that changes nothing (`Unacked(terminal, unknown)`), for
   a reconciler that must not replace the scope's token to look.
 
@@ -595,6 +596,17 @@ with these forks: they define the same modules.
   is therefore refused by content whatever order the network delivered it
   in, and two connections racing one key produce exactly one `Fresh`. Remove
   the token comparison and the stale-token test fails.
+- **`query_or_fence` settles a missing row in the transaction that finds it.**
+  The recovery of a call that must not run twice calls it instead of `query`:
+  an existing row is returned as `Standing`, and no row becomes a `terminal`
+  row carrying the caller's did-not-start outcome (tool `(fence)`), after which
+  `admit` for that key returns `Existing(Terminal)` and never `Fresh`. It checks
+  the scope exists and is at the caller's incarnation, not the attach token (the
+  only thing it writes is that the call did not run), and skips the byte budget
+  (one short outcome per orphaned call, deleted by `ack`). A fence that inserts
+  nothing fails `a_fence_with_no_row_inserts_a_terminal_row_and_blocks_admission_test`.
+  The default ledger budget is 512 MiB: sixteen live calls reserve 16 MiB each,
+  and the rest is room for unacknowledged results.
 - **An `ack` deletes; there is no acknowledged state.** It is safe because
   the orchestrator queries only orphaned calls (an acked call's result is
   already staged in its store) and sends each `Run` exactly once (after a

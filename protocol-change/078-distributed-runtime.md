@@ -91,8 +91,9 @@ On both roles, `[distribution]` names the local node, the TLS credential
 files (CA, certificate, key, cookie, all private to the operator) and the
 pinned peers (node name and leaf SHA-256). On an orchestrator,
 `[executors.<name>]` names a peer node. On an executor, `[workspaces.<name>]`
-names a root and its access, and the machine's own toolchain and LSP tables
-apply. A daemon with no `[distribution]` table never starts distribution.
+names a `root` (absolute, an existing directory, and nothing else for now),
+and the machine's own toolchain, LSP, `[tools]`, `[workspace]` and `[jobs]`
+tables apply. A daemon with at least one row starts the host. A daemon with no `[distribution]` table never starts distribution.
 Every key is documented in `docs/configuration.md` and gated by
 `make doc-check`.
 
@@ -136,10 +137,10 @@ Orchestrator to executor:
 
 | Message | Meaning |
 |---|---|
-| `Attach(session, workspace, incarnation, token, owner_port, reply)` | Sent each time the orchestrator opens the session. Start or adopt the scope at this incarnation and make `token` its only valid attach token. Replies with the census and the scope's unacked terminal keys, or a refusal. |
+| `Attach(version, session, workspace, incarnation, token, owner_port, reply)` | Sent each time the orchestrator opens the session. `version` is `protocol.version` (1); any other value is refused with `VersionMismatch`. Start or adopt the scope at this incarnation and make `token` its only valid attach token. The plane is built asynchronously and the reply, the census and the scope's unacked terminal keys or a refusal, is sent when the build lands. While it builds, a second `Attach`, a `Run` and a `Close` for the session are refused with `PlaneBuilding`. |
 | `Run(key, incarnation, token, run, authority, reply)` | Run one tool call. Idempotent by `key`. Admitted only if `incarnation` and `token` equal the scope's. The host monitors the sender: a DOWN other than `noconnection` cancels the run. |
 | `Query(key, reply)` | Return the ledger state and outcome for `key`, in any scope state or incarnation. |
-| `QueryOrFence(key, reply)` | Like `Query`, but when no row exists, atomically insert a terminal "did not start" row so a stale `Run` for that key can never start. Used to recover an orphaned call that is not replay-safe. |
+| `QueryOrFence(key, incarnation, reply)` | Like `Query`, but when no row exists, atomically insert a terminal "did not start" row so a stale `Run` for that key can never start. Used to recover an orphaned call that is not replay-safe. |
 | `ListUnacked(session, reply)` | List the scope's terminal and unknown keys without attaching, for the orchestrator's acknowledgement reconciler. |
 | `Ack(key)` | The orchestrator has durably staged this outcome. |
 | `Close(session, workspace, incarnation, reply)` | Close the scope and report `all_retired` or `unknown(count)`. |
