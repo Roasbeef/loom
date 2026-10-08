@@ -6497,7 +6497,9 @@ Tests: `executor_plane_test` runs the factory over a temp checkout with the
 shipped helper (write then read, `bash`, close then reopen, an unknown
 workspace, the census walk for function values and its `term_to_binary` round
 trip, an 8 MiB read, the `code_mode` description listing the owner-bound
-capabilities where a seed exists, and `retire` with injected cleanups). `daemon_executor_test`
+capabilities where a seed exists, a real program whose `strand.roster` and
+`notes.put` reach the owner's Agency through the owner port where the host
+has a jail, and `retire` with injected cleanups). `daemon_executor_test`
 covers the boot decision. `remote_nodes_test`'s `remote_workspace` scenario
 serves a real workspace to a second node. Making `retire` ignore the helper
 witness fails `a_scope_with_no_helper_cleanup_has_no_witness_test`; building the
