@@ -559,6 +559,56 @@ pub fn registered(registry: Registry) -> List(Tool) {
   list.filter_map(registry.order, fn(name) { lookup(registry, name) })
 }
 
+/// What a tool says about itself, with its behaviour left behind: the
+/// name the model calls it by, the description and schema it is offered
+/// under, its line in the prompt's tool index, and the two declarations
+/// the effect surface asks about a call.
+///
+/// This is `Tool` minus `requirements` and `run`, which are the two fields
+/// that are functions of the machine a tool runs on. A session whose tools
+/// run on another machine still has to offer them to the model, render the
+/// prompt index and schedule their calls, and all of that needs only these
+/// six fields. They are plain data, so the machine that has the tools can
+/// send them to the machine that talks to the model.
+///
+/// Constructor invariants are `Tool`'s: `name` is unique within a registry
+/// and `schema` is a JSON-schema object.
+pub type Described {
+  Described(
+    /// Unique tool name as the model calls it.
+    name: String,
+    /// Model-facing description.
+    description: String,
+    /// One line for the system prompt's available-tools index, or `None`.
+    prompt_snippet: Option(String),
+    /// JSON schema for the arguments.
+    schema: JsonValue,
+    /// Crash-recovery replay safety.
+    replay: ReplaySafety,
+    /// Batch scheduling constraint.
+    execution_mode: ExecutionMode,
+  )
+}
+
+/// A tool's description of itself, without its behaviour.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tool.describe(bash.tool(door)).name == "bash"
+/// ```
+///
+pub fn describe(tool: Tool) -> Described {
+  Described(
+    name: tool.name,
+    description: tool.description,
+    prompt_snippet: tool.prompt_snippet,
+    schema: tool.schema,
+    replay: tool.replay,
+    execution_mode: tool.execution_mode,
+  )
+}
+
 /// What one registration declares about re-running and scheduling a call,
 /// with the behaviour and the contract it hangs off left behind.
 ///

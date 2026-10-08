@@ -743,7 +743,7 @@ runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 registry (`run_tool`, `client/wiring.gleam:1763`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:659`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:709`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
@@ -1503,7 +1503,7 @@ and revoked when it answers — so a node that outlives an execution
 outlives no authority.
 
 Registration is where an extension meets the harness, and the seam that
-lets it is `registry` (`client/contributions.gleam:451`): the tool table
+lets it is `registry` (`client/contributions.gleam:424`): the tool table
 is an ordered list of contributions, each naming its origin. Within one
 contribution a repeated name is the author overriding themselves; between
 two it takes the boot down naming both, because an extension that could

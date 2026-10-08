@@ -27,6 +27,51 @@ import tools/tool
 /// Reserved against model-controlled fact writes.
 pub const key = "client/directory_access"
 
+/// Resolves one requested directory addition against the filesystem of the
+/// machine it names, and returns the canonical path to record.
+///
+/// This is the half of an operator's `add-dir` which needs the files: a
+/// relative request is taken against `workspace`, a `read` addition must
+/// resolve to a real directory, and any other mode must resolve to one
+/// outside `protected`. The other half, the compare-and-set of the fact,
+/// needs the session's store and not the files, so a session whose
+/// workspace is on another node asks that node for this and writes the
+/// fact itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // directories.resolve_addition("/work", protected, "lib", "read")
+/// // -> Ok("/work/lib")
+/// ```
+pub fn resolve_addition(
+  workspace: String,
+  protected: List(String),
+  requested: String,
+  mode: String,
+) -> Result(String, String) {
+  let filesystem = fs.real_filesystem()
+  let absolute = case requested {
+    "/" <> _ -> requested
+    _ -> workspace <> "/" <> requested
+  }
+  use path <- result.try(
+    case mode {
+      "read" -> fs.resolve_real(filesystem, "/", absolute)
+      _ -> fs.resolve_writable_roots(filesystem, "/", [], protected, absolute)
+    }
+    |> result.map_error(fn(_) {
+      "directory could not be resolved or is protected"
+    }),
+  )
+  use directory <- result.try(
+    simplifile.is_directory(path)
+    |> result.map_error(fn(_) { "directory could not be inspected" }),
+  )
+  use <- bool.guard(!directory, Error("add-dir requires an existing directory"))
+  Ok(path)
+}
+
 /// Authenticated gateway operations over one session's directory additions.
 pub type Admin {
   Admin(
@@ -278,29 +323,12 @@ pub fn admin_with_facts(
     add: fn(value, author) {
       use requested <- result.try(tool.required_string(value, "path"))
       use mode <- result.try(tool.required_string(value, "access"))
-      let filesystem = fs.real_filesystem()
-      let absolute = case requested {
-        "/" <> _ -> requested
-        _ -> workspace <> "/" <> requested
-      }
-      use path <- result.try(
-        case mode {
-          "read" -> fs.resolve_real(filesystem, "/", absolute)
-          _ ->
-            fs.resolve_writable_roots(filesystem, "/", [], protected, absolute)
-        }
-        |> result.map_error(fn(_) {
-          "directory could not be resolved or is protected"
-        }),
-      )
-      use directory <- result.try(
-        simplifile.is_directory(path)
-        |> result.map_error(fn(_) { "directory could not be inspected" }),
-      )
-      use <- bool.guard(
-        !directory,
-        Error("add-dir requires an existing directory"),
-      )
+      use path <- result.try(resolve_addition(
+        workspace,
+        protected,
+        requested,
+        mode,
+      ))
       use live <- result.try(
         facts() |> result.map_error(fn(_) { "session is unavailable" }),
       )

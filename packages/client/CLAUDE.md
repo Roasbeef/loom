@@ -2532,6 +2532,62 @@ catalogue without opening runtimes. Explicit admission invokes
   derives it from `Settings`. `prepare_directories` takes the owner's
   directory as an `Option` first argument, so the workspace half does not
   need the session path. Nothing here reads a session, a store or a mailbox.
+- `client/workspace_plane.{WorkspaceSpec, Prepared, Census, Warning, Attach,
+  CodeModeAttach, Retain, Children, WorkspacePlane, PromptFacts, Started,
+  Local, LspPlane, prepare, start, start_local, worktree_wiring,
+  start_effect_plane, mixed_entropy}` — the workspace half of a session,
+  built alone. `prepare(spec, reading:)` spawns nothing: it discovers the
+  toolchain, composes the session base with `workspace_policy.session_base`,
+  refuses a base the sandbox cannot enforce or a Go cache that cannot be
+  honoured, makes the directories and reads the machine into a `Census`
+  (workspace root as an opaque string, toolchain result, effective language
+  servers with roots resolved, installed-extension discovery, platform,
+  shell, base policy, tool environment and its unset names, Git program,
+  warnings). `WorkspaceSpec` is plain data, including `owner_files` (the
+  index, memory store and digest paths to mask, `None` when the owner is on
+  another machine); `reading` is the one closure `prepare` takes, because
+  `[tools] env` values resolve from the machine's own configuration.
+  `start_local(prepared, attach)` takes the owner's contribution as an
+  `Attach` (logger, namespace, `Retain` custody callback, `OwnerServices`,
+  the session label for the jobs actor, and `CodeModeAttach` carrying the
+  owner's arms of code mode and the `code_mode` tool constructor) and
+  starts the helper pool, the executor service and the broker, publishing
+  `Helpers` then `Broker` through `Retain` in that order. It recomputes
+  `session_base` first, because masks over the owner's files depend on files
+  that exist only after the owner's storage opened (the second computation
+  is the one the returned census carries; a test pins it). It builds the
+  scratch, jobs and language-server wiring, the code-mode configuration
+  (workspace doors first, `CodeModeAttach.arms` last, so the peer router
+  wraps the working-directory router as it did), the workspace's tools
+  (`contributions.workspace_tools` then `directory_tools`, less the
+  operator's deactivations), and prepares the Git identity, whose warning
+  joins the census. `start` returns only the interface a remote workspace
+  matches, `Started{plane, children, decls}`; `start_local` returns `Local`,
+  which adds the pool, executor, language-server plane, code-mode
+  configuration and the real tools that `serve` still needs. `Children` is
+  three adders (`scratch`, `jobs`, `lsp_manager`) because `serve` splices
+  each into its services tree at its established position; each holds only
+  its child specification. `WorkspacePlane` is `run(ToolRun, Authority)` (the
+  workspace half of `wiring.run_tool`), `broker`, `census`, a lazy
+  `prompt_facts` (the workspace's guidance files as text and the helper's
+  health, so a pinned prompt pays for neither), `resolve_directory`
+  (`directories.resolve_addition` against the workspace's filesystem),
+  `live_jobs`, `fatal` (pool, executor, broker pids) and `close` (the
+  language-server stop `close_instance` runs). A local plane never calls
+  `OwnerServices.capability`: the owner's code-mode arms are composed into
+  the router directly. `mixed_entropy` and `start_effect_plane` (the
+  one-shot planes' entry, which `serve.start_effect_plane` delegates to)
+  live here too.
+- `client/contributions.{workspace_tools, directory_tools, OwnerTools,
+  owner_tools, compose}` — `built_in` is now the workspace's tools (the five
+  core tools, `code_mode`, the `job_*` tools) composed with the owner's
+  (`agent_*`, `history_search`, `remember`, `schedule_*`,
+  `context_remaining`). `compose` cuts the workspace's list after the run of
+  core tools and after `code_mode` and wedges the owner's two runs in, so the
+  registration order (the pinned prompt's tool index) is what it always was
+  whichever tools are absent. `tool.Described` is a tool's name, description,
+  snippet, schema, replay and execution mode: what a registry needs to offer a
+  tool whose behavior is on another machine.
 - `client/jobs.{JobsPolicy, Request, Audience, Released, Started, Cursors,
   Polled, Listed, Refusal, Spill, Wiring, Message, StdinEnd, Control, Ask,
   max_jobs_per_strand, default_wall_ms, tail_bytes, settle_grace_ms,
@@ -2841,7 +2897,7 @@ catalogue without opening runtimes. Explicit admission invokes
   registry produces reaches a session once: the prompt index and
   `active_tool_names` are both fixed at session creation, so an
   extension installed later is seen by the next session, not this one.
-- `client/serve.session_base(Settings, String, String, String,
+- `client/workspace_policy.session_base(Settings, String, String, String,
   Result(Toolchain, String))` — the whole composed session base in one
   named function: the index and memory protections, `allowing_tool_tmpdir`,
   `allowing_imported_hook_env`, `under_tools_config`,
@@ -2851,7 +2907,7 @@ catalogue without opening runtimes. Explicit admission invokes
   read the composed allowlist back — `policy.meet` intersects `env_allow`
   against this, so a step left out is not a missing convenience but every
   call that wanted the name refused.
-- `client/serve.protecting_index(SandboxPolicy, String)` — the base
+- `client/workspace_policy.protecting_index(SandboxPolicy, String)` — the base
   policy with the search index added to `protected`. A security property,
   not hygiene: snippets from that index are read back into *future*
   sessions' contexts, so an index a model can write is a channel from one
@@ -2859,7 +2915,7 @@ catalogue without opening runtimes. Explicit admission invokes
   writes and leaves reads alone, which is exactly the asymmetry wanted.
   `assemble` composes it before `base_policy_fault` validates, so the
   addition is checked by the same gate every other path is.
-- `client/serve.protecting_memory(SandboxPolicy, String, String)` — the
+- `client/workspace_policy.protecting_memory(SandboxPolicy, String, String)` — the
   same bargain one step along, over `loom-memory.db` (with its WAL
   family) and `loom-memory.digest`. More direct than the index's: a
   search snippet reaches a later session only if a model searches for it,
@@ -2870,8 +2926,8 @@ catalogue without opening runtimes. Explicit admission invokes
   parent and neither file exists until a distillation run has happened.
   The two functions share one `protecting(always:, where_maskable:)`
   mechanism rather than each carrying a copy.
-- `client/serve.state_root_mask_candidates(String)` and
-  `client/serve.protecting_state_root(SandboxPolicy, String)` — what the
+- `client/workspace_policy.state_root_mask_candidates(String)` and
+  `client/workspace_policy.protecting_state_root(SandboxPolicy, String)` — what the
   daemon masks under its state root, and the composition `resolve_managed`
   applies in place of the root. **The state root is not itself a mask**,
   and that is the invariant: masking `~/.loom` wholesale reads as prudence
@@ -2903,7 +2959,7 @@ catalogue without opening runtimes. Explicit admission invokes
   catalogue WAL readable from every jail. The public
   `state_root_mask_candidates` is the unfiltered list; `protecting_state_root`
   is what a session actually gets.
-- `client/serve.build_plane_policy(writable, state_root)` — the base an
+- `client/workspace_policy.build_plane_policy(writable, state_root)` — the base an
   extension install's jailed build runs under, and the second place the
   state root has to be masked. The extensions root is
   `<state_root>/extensions` by default, so the build runs one directory
@@ -2919,10 +2975,10 @@ catalogue without opening runtimes. Explicit admission invokes
   `serve.start_build_plane` therefore takes a `state_root` argument, and
   `client/extension/cli` derives it as the parent of the extensions root,
   which is the inverse of `record.root_for`.
-- `client/serve.admitting_codemode(base, discovered)` — the base half of
+- `client/workspace_policy.admitting_codemode(base, discovered)` — the base half of
   the code-mode mount plan. The toolchain is located *before* the base
-  policy is built (the discovery call moved up out of `code_mode_seam`,
-  which now only reports it) because the base has to carry what a
+  policy is built (`workspace_plane.prepare` makes the discovery call and
+  `serve.code_mode_mcp` only reports it) because the base has to carry what a
   satellite requires: mounts compose as the meet by path, so a base built
   without them would refuse every code-mode launch. Both halves read
   `client/codemode.toolchain_mounts`, so they cannot drift. A host with no
@@ -2932,20 +2988,20 @@ catalogue without opening runtimes. Explicit admission invokes
   — is refused at boot by `base_policy_fault` naming both paths, which is
   the same treatment `broker/policy.validate` gives every mount-over-mask
   pair.
-- `client/serve.admissible_toolchain(discovered, base)` — the step in
+- `client/workspace_policy.admissible_toolchain(discovered, base)` — the step in
   front of `admitting_codemode`, in both the session assembly and
   `start_build_plane`. It turns a discovered toolchain into an `Error`
   when one of its mounts would shadow a writable root of `base`
   (`codemode.clear_of`), so the base never carries the mount — which
   `validate` and the helper now refuse (`protocol-change/057`), and which
-  would otherwise refuse the whole boot — and `code_mode_seam` registers
-  no tool and logs the sentence. The session asks a base assembled with
+  would otherwise refuse the whole boot — and no `code_mode` tool is built
+  while `serve.code_mode_mcp` logs the sentence. The session asks a base assembled with
   the toolchain already in it for its writable roots, which is the same
   answer, because `admitting_codemode` changes mounts and no root. An
   operator's `[workspace] mounts` line naming a read-only ancestor of the
   workspace is *not* filtered: `base_policy_fault` refuses the boot naming
   both paths, the treatment every written mount gets.
-- `client/serve.{base_policy_for, admitting_config_mounts}` select the
+- `client/workspace_policy.{base_policy_for, admitting_config_mounts}` select the
   session's filesystem view. `catalog.ReadScope` defaults to `HostReads`,
   with readable root `/`; `WorkspaceReads` selects the minimal helper view.
   The trusted `[workspace] read_scope` setting and daemon `--read-scope`
@@ -2956,7 +3012,7 @@ catalogue without opening runtimes. Explicit admission invokes
   caches do not require host-home writes. A configured mount overlapping
   a protected path refuses assembly. Protocol-change/020's addendum records
   why the minimal view is now an explicit restriction.
-- `client/serve.base_policy_fault` refuses a **workspace inside a mask**
+- `client/workspace_policy.base_policy_fault` refuses a **workspace inside a mask**
   as well as a policy `broker/policy.validate` rejects. `protected` is the
   policy's only subtractive verb and no grant carves a hole in one, so a
   writable root at or under a masked entry yields a session that comes up
@@ -2973,10 +3029,13 @@ catalogue without opening runtimes. Explicit admission invokes
   error, not a fallback — a typo that quietly served the workspace seam
   would look exactly like a server ignoring the flag.
 - `client/serve.Instance` owns one session's runtime, broker, helper pool,
-  MCP layer, gateway and composition-service supervisor, and `lsp:
-  Option(LspPlane)` — the language-server manager's handle, the helper-lease
-  counter and the servers' attribution operation, `None` with no
-  configured server.
+  MCP layer, gateway and composition-service supervisor, `plane:
+  WorkspacePlane` (what the owner holds of the workspace half), and `lsp:
+  Option(workspace_plane.LspPlane)` — the language-server manager's handle,
+  the helper-lease counter and the servers' attribution operation, `None`
+  with no configured server. `pool`, `executor`, `broker` and `lsp` stay
+  populated from the local plane for the teardown paths and the tests that
+  read them.
   Its `namespace` owns the 11 reclaimable service addresses and is retired
   after the services stop. `prompt` retains the exact assembled prompt;
   `helper_path` identifies the executable used by this session. Optional
@@ -3044,7 +3103,7 @@ catalogue without opening runtimes. Explicit admission invokes
   server shipped in, `PATH`, `./bin`; `seed_ladder` is `--codemode-seed`,
   the workspace's own seed, the bundled one, and a named path for the
   refusal to point at when nothing answers.
-- `client/serve.{shell_path, base_policy, degraded, helper_probe_ms}` —
+- `client/workspace_policy.{shell_path, base_policy, degraded, helper_probe_ms}` —
   the host facts the system prompt and the jail must agree on: the shell
   jailed commands run under, the *default* session base policy, and the
   one question the prompt has no other source for — whether a helper's
@@ -3062,7 +3121,7 @@ catalogue without opening runtimes. Explicit admission invokes
   inside `broker.clear_call` rather than coming back as a resource
   error. Distinct from the broker's pooled `max_outstanding`, which
   refuses amplification rather than describing what the host affords.
-- `client/serve.start_effect_plane_in` — a session has one execution model,
+- `client/workspace_plane.start_effect_plane_in` — a session has one execution model,
   the executor service (issue #696). There is no lane setting: S3 deleted
   `ExecutorLane`, `Settings.executor_lane` and `LOOM_EXECUTOR_LANE`, so a
   session cannot be opted back into the broker's per-call relay. It builds
@@ -3080,7 +3139,8 @@ catalogue without opening runtimes. Explicit admission invokes
   before the broker serves anything. `start_effect_plane`, which the build
   plane, the check plane and the extension installer use, has no custody
   instance to publish into but runs the same model: it starts the pool, the
-  executor service over it (`start_service_lane`, with a discarded logger)
+  executor service over it (`workspace_plane.start_service_lane`, with a
+  discarded logger and no custody)
   and a `broker.start_dispatching` broker, and returns all three. The
   `BuildPlane` and `CheckPlane` hold the executor, and `stop_build_plane` and
   `stop_check_plane` close it with `executor.drain_ms` and
@@ -5640,12 +5700,13 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   `ClientDown` and `ManagerDown`: an evicted or released keeper, or one
   whose manager died, stops its client gracefully (`lsp/client.stop`).
 - **Serve wiring.** The boot discovers installed extensions once
-  (`discovered_extensions`) and hands both readers that answer: the
+  (`workspace_plane.prepare`, into `Census.extensions`) and hands both
+  readers that answer: the
   `Ready` records' `lsp` go through `profiles.effective_lsp_servers` with
   `Catalog.lsp_servers`, each refusal one `lsp.profile_refused` warning
   (`extension`, `server`, `other`, `reason`), and only `Jailed`
-  extensions become tool contributions. `serve.assemble_in` builds the
-  plane only when the effective server list is non-empty. Each server's `readable`/`writable`
+  extensions become tool contributions. `workspace_plane.start_local` builds
+  the plane only when the effective server list is non-empty. Each server's `readable`/`writable`
   `~/` and `<cache>/` roots are expanded once with
   `profile.expand_path(_, places)`, where `places` is
   `workspace_policy.home_directory()` and `profile.cache_place` over

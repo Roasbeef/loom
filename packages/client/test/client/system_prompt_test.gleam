@@ -921,3 +921,50 @@ fn pool_of(features: List(String)) -> exec.Pool {
     as "the pool must start"
   pool
 }
+
+// The operator's standing instructions are read on the owner and the
+// workspace's own files on the workspace's machine, so each half must be
+// readable without the other, and the two together must be exactly what the
+// single lookup has always returned.
+pub fn the_two_halves_of_guidance_are_the_whole_lookup_test() {
+  let #(workspace, home) = instruction_root("split-halves")
+  write_user_default(home, ".agents", "the operator's standing note\n")
+  write_file(workspace <> "/AGENTS.md", "the project's note\n")
+  write_file(workspace <> "/CLAUDE.md", "the claude-specific note\n")
+
+  let #(standing, standing_notes) = system_prompt.discover_user(Some(home))
+  let #(project, project_notes) = system_prompt.discover_workspace(workspace)
+  assert list.map(option.values([standing]), fn(file) { file.origin })
+    == [system_prompt.UserDefaultFile]
+  assert list.map(project, fn(file) { file.origin })
+    == [system_prompt.WorkspaceFile, system_prompt.WorkspaceFile]
+  assert list.append(option.values([standing]), project)
+    == system_prompt.discover(workspace:, home: Some(home)).0
+  assert list.append(standing_notes, project_notes)
+    == system_prompt.discover(workspace:, home: Some(home)).1
+}
+
+// The workspace half reads no home at all: a machine with no operator
+// instructions still carries the project's.
+pub fn the_workspace_half_needs_no_home_test() {
+  let #(workspace, _home) = instruction_root("workspace-half-alone")
+  write_file(workspace <> "/AGENTS.md", "the project's note\n")
+
+  let #(project, notes) = system_prompt.discover_workspace(workspace)
+  assert notes == []
+  assert list.map(project, fn(file) { file.text }) == ["the project's note"]
+}
+
+// Rendering is the same function whether the files came from one lookup or
+// were gathered from two machines.
+pub fn guidance_renders_files_gathered_from_elsewhere_test() {
+  let file =
+    system_prompt.GuidanceFile(
+      path: "/remote/AGENTS.md",
+      origin: system_prompt.WorkspaceFile,
+      text: "remote note",
+    )
+  assert system_prompt.render_guidance([], ["a note"]) == #(None, ["a note"])
+  assert system_prompt.render_guidance([file], [])
+    == #(Some(system_prompt.render_file(file)), [])
+}

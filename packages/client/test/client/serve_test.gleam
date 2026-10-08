@@ -2007,10 +2007,8 @@ pub fn the_imported_hook_environment_is_a_subset_of_the_base_test() {
   let settings = settings_under("build/serve-test-hook-env")
   let base =
     workspace_policy.session_base(
-      serve.workspace_basis(settings),
-      settings.session_path <> ".index",
-      settings.session_path <> ".memory",
-      settings.session_path <> ".digest",
+      basis(settings),
+      Some(owner_files(settings)),
       Error("no toolchain for this fixture"),
     )
 
@@ -2302,10 +2300,8 @@ pub fn the_session_judges_the_toolchain_against_its_assembled_base_test() {
   let judged = fn(discovered) {
     workspace_policy.session_toolchain(
       discovered,
-      serve.workspace_basis(settings),
-      settings.session_path <> ".index",
-      settings.session_path <> ".memory",
-      settings.session_path <> ".digest",
+      basis(settings),
+      Some(owner_files(settings)),
     )
   }
   let assert Error(reason) = judged(Ok(linked))
@@ -2729,10 +2725,8 @@ pub fn the_session_base_and_environment_carry_the_private_go_caches_test() {
   let with_caches = serve.Settings(..settings, go_caches: Some(caches))
   let base =
     workspace_policy.session_base(
-      serve.workspace_basis(with_caches),
-      settings.session_path <> ".index",
-      settings.session_path <> ".memory",
-      settings.session_path <> ".digest",
+      basis(with_caches),
+      Some(owner_files(settings)),
       Error("no toolchain for this fixture"),
     )
 
@@ -2760,10 +2754,8 @@ pub fn the_session_base_and_environment_carry_the_private_go_caches_test() {
   // Without caches the base and environment are what they were.
   let plain =
     workspace_policy.session_base(
-      serve.workspace_basis(settings),
-      settings.session_path <> ".index",
-      settings.session_path <> ".memory",
-      settings.session_path <> ".digest",
+      basis(settings),
+      Some(owner_files(settings)),
       Error("no toolchain for this fixture"),
     )
   assert !list.contains(plain.writable_roots, caches.root)
@@ -2796,4 +2788,24 @@ pub fn boot_creates_the_private_go_cache_directories_outside_the_workspace_test(
   })
   let _cleanup = simplifile.delete(location)
   let _cleanup = simplifile.delete(location <> "-caches")
+}
+
+// The three owner files a fixture's session masks, named beside its session
+// path the way an embedded host lays them out.
+fn owner_files(settings: serve.Settings) -> workspace_policy.OwnerFiles {
+  workspace_policy.OwnerFiles(
+    index: settings.session_path <> ".index",
+    memory_store: settings.session_path <> ".memory",
+    memory_digest: settings.session_path <> ".digest",
+  )
+}
+
+// The values a session base is composed from, read off a fixture's settings.
+fn basis(settings: serve.Settings) -> workspace_policy.Basis {
+  workspace_policy.Basis(
+    base_policy: settings.base_policy,
+    workspace: settings.workspace,
+    tools: settings.tools,
+    go_caches: settings.go_caches,
+  )
 }

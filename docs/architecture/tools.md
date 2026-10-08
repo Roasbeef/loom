@@ -134,7 +134,7 @@ The rule is enforced in four places, from the tool outward:
    `exec_failure_outcome`). A policy refusal carries the exact wanted
    grants in `details`, ready for the escalation flow.
 2. **The registry's dispatch is total.** For an unknown name,
-   `dispatch` (`tools/tool.gleam:663`) answers with text saying that
+   `dispatch` (`tools/tool.gleam:709`) answers with text saying that
    tool is unavailable, `is_error` set, and no `details`. The
    registry does not invent a value for a tool's details contract.
 3. **The wiring always answers `ToolCompleted`.** The function
@@ -220,7 +220,7 @@ covers how discovery turns an install record into tools.
 
 ### Collisions and deactivation
 
-`registry` (`client/contributions.gleam:451`) refuses a name that two
+`registry` (`client/contributions.gleam:424`) refuses a name that two
 contributions both claim. The refusal is a `Collision` naming both
 origins, and `client/serve` turns it into a boot failure. It is never a
 warning and never "last registration wins". If an extension could

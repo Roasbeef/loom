@@ -90,19 +90,11 @@ import client/hookrunner
 import client/hookserve
 import client/hookwire
 import client/host
-import client/host_git
 import client/install
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/internal/session_owner
 import client/jobs
-import client/jobseam
-import client/jobtools
-import client/lsp/jail as lsp_jail
-import client/lsp/leases as lsp_leases
-import client/lsp/manager as lsp_manager
-import client/lsp/profile
-import client/lsp/profiles as lsp_profiles
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
@@ -116,7 +108,6 @@ import client/schedule
 import client/scheduleadmin
 import client/schedulescan
 import client/scheduleseam
-import client/scratch
 import client/secrets
 import client/server
 import client/session_git
@@ -124,7 +115,7 @@ import client/skill_tool
 import client/system_prompt
 import client/tool_holder
 import client/wiring
-import client/working_directory
+import client/workspace_plane
 import client/workspace_policy
 import client/worktree_diff
 import core/clock.{type Clock}
@@ -616,27 +607,12 @@ pub type Instance {
     /// server was refused at load. Held so `close_instance` can stop the
     /// server gracefully and then abort the plane's operation, the
     /// backstop ADR-015 §1 assigns to session end.
-    lsp: Option(LspPlane),
-  )
-}
-
-/// The session's language-server plane: the manager every `cap/lsp`
-/// capability and post-write diagnostics block asks through, and
-/// what its teardown needs.
-///
-/// One per session, because the helper pool it leases from is one per
-/// session (ADR-015 §1, "Pool pressure").
-pub type LspPlane {
-  LspPlane(
-    /// The handle on the supervised manager, reached through its address
-    /// so a replacement is the same manager to every door built over it.
-    manager: lsp_manager.Manager,
-    /// The session's helper-lease counter, started from the pool size.
-    leases: lsp_leases.Leases,
-    /// The language servers' attribution operation. Session end aborts
-    /// it after the graceful stop, so a server that outlived its grace
-    /// cannot outlive the session.
-    op_id: OpId,
+    lsp: Option(workspace_plane.LspPlane),
+    /// What this assembly holds of the workspace half: the functions and
+    /// data the owner asks of it, the same shape a workspace on another
+    /// node would return. The fields above are the local handles the
+    /// teardown paths and the tests read.
+    plane: workspace_plane.WorkspacePlane,
   )
 }
 
@@ -686,14 +662,13 @@ pub fn start_effect_plane(
   size size: Int,
   clock clock: Clock,
 ) -> Result(#(Pool, Broker, executor.Executor), String) {
-  use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
-  use #(service, broker_actor) <- result.map(start_service_lane(
-    pool,
-    clock,
-    log.discard(),
-    None,
-  ))
-  #(pool, broker_actor, service)
+  workspace_plane.start_effect_plane(
+    helper:,
+    base_policy:,
+    tmp_dir:,
+    size:,
+    clock:,
+  )
 }
 
 // Tears a one-shot plane down: no new calls, then the executor's close, which
@@ -723,134 +698,6 @@ fn stop_one_shot(
     Ok(Nil) -> Nil
     Error(_unconfirmed) -> exec.stop_pool(pool)
   }
-}
-
-// What a session's effect plane is made of: the executor service sits between
-// the broker and the pool and owns the helpers' checkout, checkin and close.
-type EffectPlane {
-  EffectPlane(pool: Pool, broker: Broker, executor: executor.Executor)
-}
-
-// A pool of helpers spawned lazily over the resolved spawn configuration.
-// Both planes build their pool here, exactly as it always was.
-fn start_helper_pool(
-  helper: String,
-  base_policy: policy.SandboxPolicy,
-  tmp_dir: String,
-  size: Int,
-) -> Result(Pool, String) {
-  let spawn_config =
-    exec.SpawnConfig(
-      helper_path: helper,
-      shell_path: workspace_policy.shell_path,
-      base_policy:,
-      // Never an opt-out of enforcement on the caller's behalf: on a
-      // platform with no jail the helper refuses to serve, which is the
-      // refusal `--allow-unenforced` exists to make deliberate.
-      helper_args: [],
-      tmp_dir:,
-      handshake_timeout_ms: 5000,
-      cancel_grace_ms: 3000,
-      heartbeat_interval_ms: 0,
-    )
-  exec.start_pool(size:, spawn: fn() { exec.prepare_helper(spawn_config) })
-  |> result.map_error(fn(error) {
-    "the helper pool did not start: " <> string.inspect(error)
-  })
-}
-
-// A session's effect plane. The owned path publishes parked helper custody
-// before the first checkout. The pool is built first and the executor service
-// is started over its seams before anything can borrow; the broker is then
-// given the service's dispatcher, and is the one door every clearance site
-// goes through.
-fn start_effect_plane_in(
-  helper: String,
-  base_policy: policy.SandboxPolicy,
-  tmp_dir: String,
-  size: Int,
-  clock: Clock,
-  logger: Logger,
-  owner: Option(custody.Owner),
-) -> Result(EffectPlane, String) {
-  use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
-  use #(service, broker_actor) <- result.try(start_service_lane(
-    pool,
-    clock,
-    logger,
-    owner,
-  ))
-  use broker_pid <- result.try(
-    broker.pid(broker_actor)
-    |> result.replace_error("the broker died during startup"),
-  )
-  use Nil <- result.try(
-    retain(
-      owner,
-      custody.Broker,
-      fn() { stop_broker_owned(broker_actor, broker_pid) },
-      fn() { process.unlink(broker_pid) },
-    ),
-  )
-  Ok(EffectPlane(pool:, broker: broker_actor, executor: service))
-}
-
-// The service lane: the executor service is started over the pool's seams
-// before anything can borrow, its `close` becomes the `Helpers` custody
-// step (it drains executions for `executor.drain_ms` and then closes the
-// pool with its own `executor.helpers_ms`, whose verdict it returns unchanged;
-// custody's cleanup steps have no overall deadline, so the 8 s this can take
-// fits), and the broker is given its dispatcher. Custody
-// unlinks the service with the pool, since both are fatal children the
-// instance monitors instead.
-fn start_service_lane(
-  pool: Pool,
-  session_clock: Clock,
-  logger: Logger,
-  owner: Option(custody.Owner),
-) -> Result(#(executor.Executor, Broker), String) {
-  use service <- result.try(
-    executor.start(executor.ExecutorConfig(
-      checkout: fn() { exec.checkout(pool, waiting: 15_000) },
-      checkin: fn(helper) { exec.checkin(pool, helper) },
-      custody: fn() { exec.pool_custody(pool, waiting: 1000) },
-      close_helpers: fn(waiting) { exec.close_pool(pool, waiting:) },
-      incarnation: clock.read(session_clock).0,
-      log: logger,
-    ))
-    |> result.map_error(fn(error) {
-      "the executor service did not start: " <> string.inspect(error)
-    }),
-  )
-  use Nil <- result.try(
-    retain(
-      owner,
-      custody.Helpers,
-      fn() {
-        executor.close(
-          service,
-          draining: executor.drain_ms,
-          helpers: executor.helpers_ms,
-        )
-        |> result.map_error(string.inspect)
-      },
-      fn() {
-        process.unlink(exec.pool_pid(pool))
-        process.unlink(executor.pid(service))
-      },
-    ),
-  )
-  use broker_actor <- result.map(
-    broker.start_dispatching(
-      entropy: token.production_entropy(),
-      clock: session_clock,
-      dispatcher: executor.dispatcher(service),
-    )
-    |> result.map_error(fn(error) {
-      "the broker did not start: " <> string.inspect(error)
-    }),
-  )
-  #(service, broker_actor)
 }
 
 /// Everything a jailed offline build needs, and nothing a session does.
@@ -1285,7 +1132,7 @@ pub fn build_domain(
                 filepath.directory_name(selected.memory_path),
                 distill.no_distiller(),
                 clock:,
-                entropy: mixed_entropy(),
+                entropy: workspace_plane.mixed_entropy(),
               )
             Ok(
               Some(distillpass.DomainConfig(
@@ -1980,21 +1827,6 @@ fn no_helper_anywhere() -> String {
   <> "which ships its own."
 }
 
-/// What the session base is composed from, read off the settings: the
-/// starting policy, the workspace, the `[tools]` table and the Go caches.
-///
-/// The composition itself lives in `workspace_policy`, which takes these
-/// four values and not the whole `Settings`, so that a workspace with no
-/// session beside it can run it too.
-pub fn workspace_basis(settings: Settings) -> workspace_policy.Basis {
-  workspace_policy.Basis(
-    base_policy: settings.base_policy,
-    workspace: settings.workspace,
-    tools: settings.tools,
-    go_caches: settings.go_caches,
-  )
-}
-
 // The subscribe name for a session file: its base name without the
 // extension (`/data/review.db` serves session `review`).
 fn session_id_of(path: String) -> String {
@@ -2366,6 +2198,53 @@ pub fn with_code_mode_peers(
   )
 }
 
+// The label the jobs actor files itself under for the ownership inspector,
+// which is the session's canonical id. A function because the id is known
+// only once the runtime is open, and over the supplier rather than the
+// Agency's whole configuration so that the actor's copy of it holds only a
+// name and a timeout.
+fn session_label(
+  borrow_runtime: fn() -> Result(api.Runtime, Nil),
+) -> fn() -> Result(List(#(String, String)), Nil) {
+  fn() { borrow_runtime() |> result.map(session_owner.path) }
+}
+
+/// What the workspace half of a session is built from, read off the
+/// settings.
+///
+/// Plain data, so a workspace on another node could be built from the same
+/// value. The helper scratch directory is derived from the session path
+/// here, which keeps it beside the session file a local owner already
+/// cleans up; a workspace elsewhere would choose its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_plane.prepare(serve.workspace_spec(settings, option.None), reading: env)
+/// ```
+pub fn workspace_spec(
+  settings: Settings,
+  files: Option(workspace_policy.OwnerFiles),
+) -> workspace_plane.WorkspaceSpec {
+  workspace_plane.WorkspaceSpec(
+    workspace: settings.workspace,
+    scratch_dir: settings.session_path <> ".tmp",
+    helper_path: settings.helper_path,
+    helper_pool_size: settings.helper_pool_size,
+    demand: settings.demand,
+    base_policy: settings.base_policy,
+    tools: settings.tools,
+    deactivated_tools: settings.deactivated_tools,
+    go_caches: settings.go_caches,
+    home: settings.home,
+    codemode_seed: settings.codemode_seed,
+    codemode_sockets: settings.codemode_sockets,
+    lsp_servers: settings.catalog.lsp_servers,
+    jobs_policy: settings.jobs_policy,
+    owner_files: files,
+  )
+}
+
 // Code mode, and the MCP servers it reaches — one decision, because the
 // second is unreachable without the first.
 //
@@ -2378,18 +2257,12 @@ pub fn with_code_mode_peers(
 // no capability. One line says so, because an operator who configured a
 // server and sees nothing would otherwise have only the absent
 // `code_mode` line to reason from.
-fn code_mode_seam(
+fn code_mode_mcp(
   settings: Settings,
   discovered: Result(codemode_wiring.Toolchain, String),
   logger: Logger,
-  broker_actor: Broker,
-  clock: Clock,
-  agency_seam: Agency,
-  scratch_seam: codemode_wiring.Scratch,
-  schedule_door: Option(scheduleseam.Door),
-  jobs_door: jobseam.Door,
   owner: Option(custody.Owner),
-) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
+) -> Result(mcp_wiring.Layer, String) {
   case discovered {
     Error(reason) -> {
       log.warn(logger, "codemode.unavailable", [
@@ -2401,7 +2274,7 @@ fn code_mode_seam(
         "MCP servers are reached from code-mode programs only, and this "
           <> "host registers no code_mode tool, so none was started",
       )
-      Ok(#(None, mcp_wiring.none()))
+      Ok(mcp_wiring.none())
     }
     Ok(toolchain) -> {
       // Which `gleam`, which `erl`, which seed — because the ladder now
@@ -2412,291 +2285,63 @@ fn code_mode_seam(
         field.text(key: "erl", value: toolchain.erl_path),
         field.text(key: "seed", value: toolchain.seed_root),
       ])
-      use layer <- result.try(started_mcp(
-        settings.catalog.mcp_servers,
-        settings.secrets,
-        logger,
-        owner,
-      ))
-      Ok(#(
-        Some(
-          codemode_wiring.default_config(
-            broker: broker_actor,
-            clock:,
-            workspace: settings.workspace,
-            toolchain:,
-          )
-          // Which seams this server offers is the operator's decision, and
-          // the Agency the orchestration one routes onto is the same seam
-          // the `agent_*` tools call — one messaging plane, reached two
-          // ways.
-          |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
-          // `kv.*` is answered by the session's one scratch store, which
-          // starts under the service supervisor below. The seam is a
-          // name, so it can be built here and resolved per call.
-          |> codemode_wiring.over_scratch(scratch_seam)
-          // `schedule.*` is answered by the same door the `schedule_*`
-          // tools call, so a program and a tool call cannot disagree
-          // about what this session's schedules are. A shut door leaves
-          // the capabilities unrouted rather than always-refusing.
-          |> codemode_wiring.over_schedules(schedule_door)
-          // `job.*` is answered by the same door the `job_*` tools and
-          // `bash`'s `mode` argument call, so a job a program started and
-          // one a tool call started are the same record with the same
-          // owner. Unlike the scheduling door this one is always routed:
-          // the model is offered jobs unconditionally, so a program that
-          // could not even ask would be the surprise.
-          |> codemode_wiring.over_jobs(Some(jobs_door))
-          // The MCP layer widens both installed modes' allowlists, their
-          // description and its router together; an empty layer widens
-          // nothing, so this is unconditional.
-          |> codemode_wiring.over_mcp(layer)
-          // Cap sockets under the daemon's short runtime root rather than
-          // the workspace, so the socket path has the same length for a
-          // workspace of any depth (issue #611).
-          |> codemode_wiring.sockets_under(settings.codemode_sockets),
-        ),
-        layer,
-      ))
+      started_mcp(settings.catalog.mcp_servers, settings.secrets, logger, owner)
     }
   }
 }
 
-// --- the language-server plane ----------------------------------------------
-//
-// ADR-015 §§1 and 6: a configured `[lsp.<name>]` server runs in the jail as
-// a session lease, under the session's own enforcement demand, and every
-// surface reaches it through one manager's door. The boot does four things
-// and no more: it resolves each server's `~/` roots once, against the
-// harness's own `HOME`; it starts the lease counter from the session's pool
-// size; it mints the servers' attribution operation; and it describes the
-// manager for the service supervisor. Nothing is spawned here — the first
-// query starts a server, after the manager's enforcement probe.
-
-// The plane and the manager's configuration, which the service supervisor
-// needs to start the manager under its address.
-type LspWiring {
-  LspWiring(
-    plane: LspPlane,
-    name: address.Address(lsp_manager.Msg),
-    config: lsp_manager.Config,
-  )
-}
-
-// A boot with no `[lsp.<name>]` table and no installed profile builds
-// nothing and logs nothing: an unconfigured workspace pays nothing
-// (ADR-015 §6). The servers are the `loom.toml` tables plus every
-// installed profile that survives ADR-016 §4's precedence
-// (`lsp_profiles.effective_lsp_servers`), and from there an installed
-// profile is treated exactly as a table is: the same root resolution, the
-// same plane and the same hints. A refused profile is one
-// `lsp.profile_refused` line naming its extension, its server and the
-// claimant it collided with, and the boot continues. A configured server
-// whose roots will not resolve is refused alone, one `lsp.unavailable`
-// line each, and the others still serve; a counter that will not start
-// refuses them all the same way. Neither refuses the boot, for the reason
-// `mcp.unavailable` does not: a session without semantic queries is still
-// a session, and the operator is told which table to fix.
-fn lsp_wiring(
+// The owner's arms of the code-mode configuration: the doors only the
+// session's owner can serve. The workspace applies them after its own, so
+// the peer router wraps the working-directory router as it always has.
+fn code_mode_arms(
   settings: Settings,
-  installed: List(#(String, profile.LspServer)),
-  logger: Logger,
-  base_policy: policy.SandboxPolicy,
-  toolchain: Result(codemode_wiring.Toolchain, String),
-  broker_actor: Broker,
-  clock: Clock,
-  seed: Int,
-  name: address.Address(lsp_manager.Msg),
-) -> Option(LspWiring) {
-  let places = workspace_policy.lsp_places()
-  let #(effective, refusals) =
-    lsp_profiles.effective_lsp_servers(
-      configured: settings.catalog.lsp_servers,
-      installed:,
-    )
-  list.each(refusals, fn(refusal) {
-    log.warn(logger, "lsp.profile_refused", [
-      field.text(key: "extension", value: refusal.extension),
-      field.text(key: "server", value: refusal.server),
-      field.text(
-        key: "other",
-        value: lsp_profiles.describe_claimant(refusal.other),
-      ),
-      field.text(
-        key: "reason",
-        value: lsp_profiles.describe_conflict(refusal.conflict),
-      ),
-    ])
-  })
-  let servers =
-    list.filter_map(effective, fn(server) {
-      workspace_policy.lsp_server_roots(server, places)
-      |> result.map_error(fn(reason) {
-        log.warn(logger, "lsp.unavailable", [
-          field.text(key: "server", value: server.name),
-          field.text(key: "reason", value: reason),
-        ])
-      })
-    })
-  case servers {
-    [] -> None
-    [_, ..] ->
-      case lsp_leases.start(settings.helper_pool_size) {
-        Error(error) -> {
-          log.warn(logger, "lsp.unavailable", [
-            field.text(
-              key: "servers",
-              value: string.join(list.map(servers, fn(one) { one.name }), ","),
-            ),
-            field.text(
-              key: "reason",
-              value: "the helper-lease counter would not start: "
-                <> string.inspect(error),
-            ),
-          ])
-          None
-        }
-        Ok(leases) ->
-          Some(lsp_plane_wiring(
-            settings,
-            servers,
-            leases,
-            base_policy,
-            toolchain,
-            broker_actor,
-            clock,
-            seed,
-            name,
-            places,
-          ))
-      }
+  agency_seam: Agency,
+  schedule_door: Option(scheduleseam.Door),
+  layer: mcp_wiring.Layer,
+  peer_wiring: peers.Wiring,
+) -> fn(codemode_wiring.Config) -> codemode_wiring.Config {
+  fn(config) {
+    config
+    // Which seams this server offers is the operator's decision, and the
+    // Agency the orchestration one routes onto is the same seam the
+    // `agent_*` tools call — one messaging plane, reached two ways.
+    |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
+    // `schedule.*` is answered by the same door the `schedule_*` tools
+    // call, so a program and a tool call cannot disagree about what this
+    // session's schedules are. A shut door leaves the capabilities
+    // unrouted rather than always-refusing.
+    |> codemode_wiring.over_schedules(schedule_door)
+    // The MCP layer widens both installed modes' allowlists, their
+    // description and its router together; an empty layer widens nothing,
+    // so this is unconditional.
+    |> codemode_wiring.over_mcp(layer)
+    |> with_code_mode_peers(peer_wiring)
   }
 }
 
-// The manager's configuration over the production backend: every server,
-// its probe and every symbol search clear through the session's broker,
-// under the session's demand and the plane's own operation.
-fn lsp_plane_wiring(
-  settings: Settings,
-  servers: List(profile.LspServer),
-  leases: lsp_leases.Leases,
-  base_policy: policy.SandboxPolicy,
-  toolchain: Result(codemode_wiring.Toolchain, String),
-  broker_actor: Broker,
-  clock: Clock,
-  seed: Int,
-  name: address.Address(lsp_manager.Msg),
-  places: profile.Places,
-) -> LspWiring {
-  let op_id = lsp_jail.operation(clock, seed:)
-  let timing = lsp_manager.default_timing()
-  let backend =
-    lsp_manager.jailed(lsp_manager.Jailed(
-      workspace: settings.workspace,
-      session_base: base_policy,
-      demand: settings.demand,
-      toolchain: option.from_result(toolchain),
-      places:,
-      // The session's store, the same reader the jailed tool environment
-      // is built from, so `PATH` and a server's `env` names mean what
-      // they mean to `bash`.
-      reading: fn(variable) { secret.lookup(settings.secrets, variable) },
-      run: tool.broker_runner(
-        broker: broker_actor,
-        waiting: lsp_jail.clearance_wait_ms,
-      ),
-      abort_step: fn(step_id) {
-        broker.abort_step(broker_actor, op_id, step_id:)
-      },
-      leases:,
-      op_id:,
-      clock:,
-      exec_ms: timing.exec_ms,
-    ))
-  let config =
-    lsp_manager.Config(
-      workspace: settings.workspace,
-      servers:,
-      backend:,
-      timing:,
+// The `code_mode` tool over a finished configuration: background execution
+// is the session's, so the owner supplies the seam, and the peer
+// capabilities join the serviced list of every offer.
+fn code_mode_tool(
+  config: codemode_wiring.Config,
+  async_name: address.Address(async_runs.Message),
+  agency_config: agency.Config,
+) -> codemode_tool.CodeMode {
+  let mode = async_codemode.seam(config, async_name, agency_config)
+  let with_peers = fn(offer: codemode_tool.SeamOffer) {
+    codemode_tool.SeamOffer(
+      ..offer,
+      serviced_caps: list.append(offer.serviced_caps, peers.serviced_caps),
     )
-  LspWiring(
-    plane: LspPlane(
-      manager: lsp_manager.addressed(name, config),
-      leases:,
-      op_id:,
+  }
+  codemode_tool.CodeMode(
+    ..mode,
+    seams: codemode_tool.Seams(
+      default: with_peers(mode.seams.default),
+      alternates: list.map(mode.seams.alternates, with_peers),
     ),
-    name:,
-    config:,
   )
 }
-
-// The profile hints of the servers the plane serves, as
-// `#(server name, hint)` in name order, for code-mode discovery. They are
-// read from the wired servers rather than the whole catalogue, so a server
-// refused at boot for roots that would not resolve does not describe a
-// language the session cannot ask about.
-fn lsp_hints(wiring: Option(LspWiring)) -> List(#(String, String)) {
-  case wiring {
-    None -> []
-    Some(wiring) ->
-      list.filter_map(wiring.config.servers, fn(server) {
-        option.to_result(server.hint, Nil)
-        |> result.map(fn(hint) { #(server.name, hint) })
-      })
-      |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
-  }
-}
-
-// The manager as a supervised child, when there is a plane to run.
-fn with_lsp_manager(
-  builder: sup.Builder,
-  wiring: Option(LspWiring),
-) -> sup.Builder {
-  case wiring {
-    None -> builder
-    Some(wiring) ->
-      sup.add(builder, lsp_manager.supervised(wiring.name, wiring.config))
-  }
-}
-
-// Session end for the plane, in ADR-015 §1's order: the graceful stop
-// (`shutdown`, `exit`, stdin EOF, waited for in this process), then the
-// abort of the plane's operation as the backstop for a server that
-// outlived its grace, then the counter.
-fn stop_lsp(plane: Option(LspPlane), broker_actor: Broker) -> Nil {
-  case plane {
-    None -> Nil
-    Some(plane) -> {
-      lsp_manager.stop(plane.manager)
-      broker.abort(broker_actor, plane.op_id)
-      lsp_leases.stop(plane.leases)
-    }
-  }
-}
-
-// --- installed extensions ---------------------------------------------------
-//
-// Discovery is read-only and happens once, here, before the registry is
-// built. `installed.discover` re-derives the tree digest, the artifact's
-// content address, the manifest and the vetting from what is actually on
-// disk and refuses anything that no longer matches what an operator
-// approved, so what reaches this function is already the answer to "is
-// this still the thing that was installed".
-//
-// What is left to decide is what to do with each answer, and there are
-// four. A `Refused` is *logged*, never silently dropped: an operator who
-// installed something and then sees nothing has no way to tell "it is
-// broken" from "I imagined installing it". A `Ready` on a host with no
-// toolchain is logged too and registers nothing, because an extension
-// tool with no `erl` to boot a satellite with is a definition in the
-// provider's cached byte prefix that can only ever fail — the same
-// argument that gates `code_mode` itself. A `Ready` profile extension
-// registers nothing here either: it ships language profiles, which
-// `lsp_wiring` has already taken from the same discovery, and there is no
-// satellite for it to host. Every jailed extension becomes one
-// `Contribution`, and a name two contributions both claim refuses the
-// boot in `contributions.registry`.
 
 // One installed extension, registered: the tools it contributes to the
 // registry, its subscription on the hook bus, and the recipe the
@@ -2711,18 +2356,6 @@ type Registration {
     subscription: Option(extension_hooks.Extension),
     hosting: extension_hosts.Extension,
   )
-}
-
-// Discovery, once per boot. The language-server plane and the tool
-// registry both read this one answer, so a profile and a tool cannot be
-// judged against two different readings of the extensions root. No home
-// is no extensions root, which is the same fact to a booting server as an
-// empty one.
-fn discovered_extensions(settings: Settings) -> List(installed.Discovered) {
-  case settings.home {
-    None -> []
-    Some(home) -> installed.discover(extension_record.root_for(home))
-  }
 }
 
 fn extension_registrations(
@@ -3174,7 +2807,7 @@ fn start_listener(
     bind: settings.bind_host,
     port: settings.bind_port,
     auth: server.LocalAuth(token_path: settings.token_path),
-    entropy: mixed_entropy(),
+    entropy: workspace_plane.mixed_entropy(),
   ))
   |> result.map_error(fn(error) {
     "the websocket server did not start: " <> string.inspect(error)
@@ -3397,70 +3030,40 @@ fn assemble_in(
   use memory_store <- result.try(beside_session(settings, memory.memory_file))
   use memory_digest <- result.try(beside_session(settings, memory.digest_file))
 
-  // The toolchain is located here rather than inside `code_mode_seam`,
-  // which is where it is reported, because the session base has to carry
-  // the toolchain's mounts and the base is built now. Discovery is a
-  // filesystem probe over the settings alone, so hoisting it costs
-  // nothing and buys the one ordering that matters: a base built before
-  // the toolchain is known could not name it, and a launch requiring a
-  // mount the base does not carry is refused by the meet. Discovery says
-  // where the toolchain is; `session_toolchain` says whether this
-  // session may mount it, and the one answer reaches both the base and
-  // the tool registration below.
-  let toolchain =
-    codemode_wiring.discover(settings.codemode_seed)
-    |> workspace_policy.session_toolchain(
-      workspace_basis(settings),
-      index_path,
-      memory_store,
-      memory_digest,
-    )
-  let base_policy =
-    workspace_policy.session_base(
-      workspace_basis(settings),
-      index_path,
-      memory_store,
-      memory_digest,
-      toolchain,
-    )
-
-  // Before a directory is made, a lease is taken or a helper is spawned:
-  // a base policy the sandbox cannot enforce is a boot failure, not a
-  // surprise waiting in the first tool call. See `base_policy_fault`.
-  use Nil <- result.try(workspace_policy.base_policy_fault(base_policy))
-  use Nil <- result.try(workspace_policy.go_cache_fault(
-    workspace_basis(settings),
-    base_policy,
-  ))
-  let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
-  let tmp_dir = settings.session_path <> ".tmp"
-  let go_directories =
-    option.map(settings.go_caches, gocache.directories) |> option.unwrap([])
-  use Nil <- result.try(workspace_policy.prepare_directories(
-    workspace_policy.parent_directory(settings.session_path),
-    settings.workspace,
-    blob_root,
-    tmp_dir,
-    list.append(
-      [
-        workspace_policy.tool_tmp_directory(settings.workspace),
-        workspace_policy.tool_home_directory(settings.workspace),
-      ],
-      go_directories,
+  // The workspace half is prepared here, before anything of the owner's is
+  // opened and before any lease is taken: the toolchain is located and
+  // judged against the session base (a base built before the toolchain is
+  // known could not name its mounts, and a launch requiring a mount the
+  // base does not carry is refused by the meet), a base the sandbox cannot
+  // enforce is a boot failure and not a surprise waiting in the first tool
+  // call, and the workspace's directories are made. Nothing is spawned.
+  // The census it returns is plain data the rest of this assembly reads.
+  use prepared <- result.try(
+    workspace_plane.prepare(
+      workspace_spec(
+        settings,
+        Some(workspace_policy.OwnerFiles(
+          index: index_path,
+          memory_store:,
+          memory_digest:,
+        )),
+      ),
+      reading: fn(name) { secret.lookup(settings.secrets, name) },
     ),
-  ))
-
-  // The trim and the sweep of retired caches run beside the session, not
-  // before it, so a large cache costs the first prompt nothing. See
-  // `client/gocache` for why the retire is a rename.
-  let _maintenance =
-    option.map(settings.go_caches, gocache.start_maintenance(_, logger))
+  )
+  let toolchain = prepared.census.toolchain
+  let blob_root = prepared.blob_root
+  use Nil <- result.try(
+    workspace_policy.create_directories(
+      option.values([workspace_policy.parent_directory(settings.session_path)]),
+    ),
+  )
 
   // One clock function, therefore one era, across session, broker,
   // tools, and provider — the shared-clock requirement the M2
   // integration learned live (spec-gaps, M2 item 1).
   let clock = clock.from_function(ffi_os.system_time_ms)
-  let entropy = mixed_entropy()
+  let entropy = workspace_plane.mixed_entropy()
 
   // Clean close deletes the lease row, so a later open starts again at
   // fence one. A fresh owner prevents an older, expired connection with that
@@ -3519,32 +3122,6 @@ fn assemble_in(
   // and is paid for on every request, so a host whose memory plane will
   // not open registers no tool and says so once.
   let memory_seam = memory_seam(memory_store, clock, entropy, logger)
-
-  // The probes can create or retire SQLite WAL and SHM files. Capture
-  // conditional masks after those mutations, once, for every effect consumer.
-  // The earlier validation still precedes directory creation and lease custody.
-  let base_policy =
-    workspace_policy.session_base(
-      workspace_basis(settings),
-      index_path,
-      memory_store,
-      memory_digest,
-      toolchain,
-    )
-  use Nil <- result.try(workspace_policy.base_policy_fault(base_policy))
-
-  // The effect plane: a pool of jailed helpers behind the one broker.
-  use plane <- result.try(start_effect_plane_in(
-    settings.helper_path,
-    base_policy,
-    tmp_dir,
-    settings.helper_pool_size,
-    clock,
-    logger,
-    owner,
-  ))
-  let pool = plane.pool
-  let broker_actor = plane.broker
 
   // Durable *records* stay credit-driven: a client asks for a cut and the
   // bounded reader answers it. What the hub now also does is push a notice
@@ -3647,19 +3224,6 @@ fn assemble_in(
       interactive: fn() { hub.attached(hub.Gateway(name:)) > 0 },
     )
 
-  // Code mode needs no such indirection — its seam closes over the
-  // broker, which already exists — but it does need a toolchain and a
-  // prepared build seed on this host. A host without them says so once
-  // here and registers no `code_mode` tool, rather than shipping a
-  // definition in the cached prefix that can only ever refuse.
-  // The scratch store `cap/kv` reads and writes: session-scoped,
-  // byte-capped, and gone when the session is. Reached through a name
-  // for the reason the Agency is — the seam is built while this
-  // configuration is assembled and the store starts under the service
-  // supervisor further down — though the knot here is only ordering,
-  // since the store closes over no runtime at all.
-  let scratch_name = address.new_address(namespace)
-
   // The scheduling plane is decided once, here, and reached two ways:
   // the `schedule_*` tools and the `schedule.*` code-mode capabilities.
   // One `Wiring` behind both is what stops a program and a tool call
@@ -3678,135 +3242,82 @@ fn assemble_in(
   // the hub then answers an empty listing and an unsupported cancel.
   let schedule_admin = option.map(schedule_wiring, scheduleadmin.admin)
 
-  // The background jobs actor, on the same two-name pattern: the address
-  // is minted now so the door can close over it, and the actor that
-  // answers it starts under the service supervisor below.
-  let jobs_name = address.new_address(namespace)
+  // The deferred background code-mode actor is the owner's, on the same
+  // two-name pattern: its address is minted now so the `code_mode` tool
+  // can close over it, and the actor starts under the service supervisor
+  // below.
   let async_name = address.new_address(namespace)
 
-  // Both model-facing job surfaces are values over this one door: the
-  // `bash` `mode` argument and the three `job_*` tools on one side, the
-  // five `job.*` capabilities on the other. One door is what stops a
-  // program and a tool call disagreeing about what this strand's jobs
-  // are, and it is why either surface can poll or kill what the other
-  // started.
-  let jobs_door =
-    jobseam.door(jobseam.Wiring(
-      name: jobs_name,
-      clock:,
-      rest: jobseam.real_rest(),
-      // The same clearance budget the actor's own wiring reads, so the
-      // two bounds on one start cannot disagree.
-      clearance_ms: jobs_clearance_ms,
-    ))
+  // The event bus is the node-global `pg` scope, and `bus.start` is the
+  // idempotent way onto it: one daemon assembles many sessions, and the
+  // second one must find the scope running rather than fail to start it
+  // (`docs/architecture/events.md` on why `start` and `supervised` do
+  // not compose). Sessions are kept apart by key, not by scope. Its one
+  // production traffic today is the rolling tail of a running tool call,
+  // published by the observer below and relayed by the hub as pushed
+  // `tool_output` frames (`protocol-change/031`).
+  let event_bus = bus.start()
 
-  // The language-server plane, on the two-name pattern: the manager's
-  // address is minted now so the door the tools, code mode and the write
-  // tools' diagnostics observer all share can close over it, and the
-  // manager starts under the service supervisor below. No `[lsp.<name>]`
-  // table or installed profile, or none that survived its load, means no
-  // plane at all: no
-  // counter, no manager and no `cap/lsp`, and the write
-  // tools are the plain ones.
-  //
-  // The installed extensions are discovered here, once, because a profile
-  // extension's servers join this plane and a jailed extension's tools
-  // join the registry further down, and both must read the same answer.
-  let discovered = discovered_extensions(settings)
-  let lsp_wiring =
-    lsp_wiring(
-      settings,
-      workspace_policy.installed_profiles(discovered),
-      logger,
-      base_policy,
-      toolchain,
-      broker_actor,
-      clock,
-      entropy(),
-      address.new_address(namespace),
-    )
-  let lsp_door =
-    option.map(lsp_wiring, fn(wiring) { lsp_manager.door(wiring.plane.manager) })
-
-  // The host configuration, not the tool seam: an extension dispatch
-  // stands up a satellite under exactly this configuration, so the boot
-  // holds the value both readers derive from rather than one reader's
-  // view of it.
-  use #(code_mode_host, mcp_layer) <- result.try(code_mode_seam(
+  // Code mode, and the MCP servers it reaches, are one decision made on
+  // the census: the second is unreachable without the first. The owner
+  // starts the servers, so this happens between the workspace's two steps.
+  use mcp_layer <- result.try(code_mode_mcp(
     settings,
-    toolchain,
+    prepared.census.toolchain,
     logger,
-    broker_actor,
-    clock,
-    agency_seam,
-    scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
-    schedule_door,
-    jobs_door,
     owner,
   ))
 
-  // `lsp.*` is answered by the same native door, so a
-  // program and a tool call ask the one server this session runs. A
-  // `None` door leaves `cap/lsp` unadmitted, which is what a host with no
-  // configured server has always had.
-  let code_mode_host =
-    option.map(code_mode_host, codemode_wiring.over_lsp(_, lsp_door))
-  let observation_door =
-    option.map(lsp_wiring, fn(wiring) {
-      lsp_manager.observation_door(wiring.plane.manager)
-    })
-  let code_mode_host =
-    option.map(code_mode_host, codemode_wiring.over_lsp_observation(
-      _,
-      observation_door,
-    ))
-
-  // The working directory reaches the session's store through the owner's
-  // fact access, which serves its own prefix and no other. The handle
-  // supplier projects only the writer capability, so this retains neither
-  // the Agency nor the runtime.
-  let directory_facts =
-    owner_services.local_facts(
+  // Everything the workspace half reaches back to the session for, as one
+  // record of plain functions. Locally each is the call it replaced: the
+  // escalation seam, the bus observer, the Agency's holder and its tool-list
+  // check. A local workspace never calls `capability`, since the owner's
+  // code-mode arms are composed straight into its router below.
+  let owner_api =
+    owner_services.local(
       handle: agency.fact_supplier(agency_config),
       runtime: agency.runtime_supplier(agency_config),
+      escalate: escalate.seam(escalate_config).refused,
+      output: hub.tool_output_observer(event_bus, opened),
+      capability: owner_services.no_capability,
+      holds: agency_seam.holds,
     )
-  let shell_directory = working_directory.door(directory_facts)
-  let code_mode_host =
-    option.map(code_mode_host, working_directory.over_code_mode(
-      _,
-      directory_facts,
-    ))
-  let code_mode_host =
-    option.map(code_mode_host, with_code_mode_peers(_, peer_wiring))
-  let code_mode =
-    option.map(code_mode_host, fn(config) {
-      let mode = async_codemode.seam(config, async_name, agency_config)
-      let with_peers = fn(offer: codemode_tool.SeamOffer) {
-        codemode_tool.SeamOffer(
-          ..offer,
-          serviced_caps: list.append(offer.serviced_caps, peers.serviced_caps),
-        )
-      }
-      codemode_tool.CodeMode(
-        ..mode,
-        seams: codemode_tool.Seams(
-          default: with_peers(mode.seams.default),
-          alternates: list.map(mode.seams.alternates, with_peers),
-        ),
-      )
-    })
 
-  // The environment every jailed child of this session inherits, tool
-  // and hook alike. It is built once the code-mode decision is in so the
-  // shell finds the same `gleam` and `erl` the compiler uses.
-  let #(environment, unset_names) =
-    workspace_policy.tool_environment(
-      settings.workspace,
-      option.map(code_mode_host, fn(config) { config.toolchain_path }),
-      settings.go_caches,
-      settings.tools,
-      reading: fn(name) { secret.lookup(settings.secrets, name) },
-    )
+  // The workspace half starts: the helper pool, the executor and the
+  // broker are published to custody, the session base is recomputed now
+  // that storage is open, and the workspace's tools are built over its own
+  // doors. The owner contributes the arms of code mode which only it can
+  // serve. See `workspace_plane` for why the base is computed twice.
+  use local <- result.try(workspace_plane.start_local(
+    prepared,
+    workspace_plane.Attach(
+      logger:,
+      namespace:,
+      retain: fn(part, cleanup, transfer) {
+        retain(owner, part, cleanup, transfer)
+      },
+      owner: owner_api,
+      session_label: session_label(agency.runtime_supplier(agency_config)),
+      code_mode: workspace_plane.CodeModeAttach(
+        arms: code_mode_arms(
+          settings,
+          agency_seam,
+          schedule_door,
+          mcp_layer,
+          peer_wiring,
+        ),
+        tool: code_mode_tool(_, async_name, agency_config),
+      ),
+    ),
+  ))
+  let plane = local.started.plane
+  let broker_actor = plane.broker
+  let pool = local.pool
+  let code_mode_host = local.code_mode_host
+  let discovered = plane.census.extensions
+  let base_policy = plane.census.base_policy
+  let environment = plane.census.env
+  let unset_names = plane.census.unset_env
 
   // A `[secrets]` entry the host could not run is the same class of
   // event as a `[tools] env` name the host has not set, so it is
@@ -3972,24 +3483,21 @@ fn assemble_in(
   })
   use tool_registry <- result.try(
     list.append(
-      contributions.with_directory(
-        contributions.built_in(
-          Some(agency_seam),
-          code_mode,
-          history_seam,
-          memory_seam,
-          schedule_seam,
-          Some(context_seam),
-          Some(jobtools.seam(jobs_door)),
-          // The language-server door, when a server is configured: it
-          // gives `fs_write` and `fs_edit` their settled-diagnostics block
-          // and supplies profile guidance to admitted code-mode offers.
-          lsp_door,
-          lsp_hints(lsp_wiring),
+      [
+        contributions.Contribution(
+          contributions.BuiltIn,
+          contributions.compose(
+            local.tools,
+            contributions.owner_tools(
+              Some(agency_seam),
+              history_seam,
+              memory_seam,
+              schedule_seam,
+              Some(context_seam),
+            ),
+          ),
         ),
-        jobtools.seam(jobs_door),
-        shell_directory,
-      ),
+      ],
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is
       // not what makes an extension unable to shadow `bash` — but the
@@ -4034,32 +3542,13 @@ fn assemble_in(
   // commit. The boot owner still holds the store alone; the runtime writer is
   // started below. Later activations reuse this exact durable baseline.
   let worktree_wiring =
-    worktree_diff.Wiring(
-      workspace: settings.workspace,
-      broker: broker_actor,
-      base_policy:,
-      clock:,
-      demand: settings.demand,
-      env: environment,
-      entropy:,
-      git: host_git.program(),
+    workspace_plane.worktree_wiring(
+      plane.census,
+      broker_actor,
+      settings.demand,
+      clock,
+      entropy,
     )
-
-  // Resolve identity before the runtime can commit. Only global identity
-  // defaults cross into the tool home; repository settings retain precedence.
-  use identity_warning <- result.try(git_identity.prepare(
-    worktree_wiring,
-    settings.home,
-    helper: settings.helper_path,
-    reading: workspace_policy.env_text,
-  ))
-  case identity_warning {
-    None -> Nil
-    Some(reason) ->
-      log.warn(logger, "tools.git_identity_unavailable", [
-        field.text(key: "reason", value: reason),
-      ])
-  }
   use git_start <- result.try(
     session_git.prepare(opened, settings.session_id, settings.workspace, fn() {
       worktree_diff.starting_revision(worktree_wiring)
@@ -4118,34 +3607,6 @@ fn assemble_in(
       }),
     )
 
-  // The event bus is the node-global `pg` scope, and `bus.start` is the
-  // idempotent way onto it: one daemon assembles many sessions, and the
-  // second one must find the scope running rather than fail to start it
-  // (`docs/architecture/events.md` on why `start` and `supervised` do
-  // not compose). Sessions are kept apart by key, not by scope. Its one
-  // production traffic today is the rolling tail of a running tool call,
-  // published by the observer below and relayed by the hub as pushed
-  // `tool_output` frames (`protocol-change/031`).
-  let event_bus = bus.start()
-
-  // Everything the workspace half reaches back to the session for, as one
-  // record of plain functions. Locally each is the call it replaced: the
-  // escalation seam, the bus observer, the Agency's holder and its tool-list
-  // check, and the code-mode owner arms. The tool configuration below takes
-  // its escalation and output functions from this record, so the workspace
-  // half and a future remote one are driven through the same value.
-  let owner_api =
-    owner_services.local(
-      handle: agency.fact_supplier(agency_config),
-      runtime: agency.runtime_supplier(agency_config),
-      escalate: escalate.seam(escalate_config).refused,
-      output: hub.tool_output_observer(event_bus, opened),
-      capability: case code_mode_host {
-        Some(host) -> codemode_wiring.owner_capability(host)
-        None -> owner_services.no_capability
-      },
-      holds: agency_seam.holds,
-    )
   let wiring_config =
     wiring.Config(
       observe_output: owner_api.output,
@@ -4416,6 +3877,12 @@ fn assemble_in(
   let hub_workspace = settings.workspace
   let hub_catalog = settings.catalog
 
+  // The one thing the hub asks the workspace for, projected before the hub's
+  // child specification closes over it: the plane itself holds the
+  // workspace's tool registry, and a specification the supervisor keeps for
+  // restarts must not.
+  let live_jobs = plane.live_jobs
+
   // Directory mutation owns only the restartable writer capability. The hub
   // still receives Runtime for execution, but its admin supplier does not add
   // another executable-effects graph to the initialized gateway State.
@@ -4468,7 +3935,7 @@ fn assemble_in(
     // cannot do without: `cap/kv` requires every caller to tolerate a
     // vanished value, so an emptied store costs a running program a
     // cache miss it was already written to handle.
-    |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
+    |> local.started.children.scratch
     // The satellite registry is in this tier because a restart costs
     // exactly what a satellite crash costs, which extensions are already
     // written to meet: every host it held is `Gone` to its next caller,
@@ -4487,20 +3954,7 @@ fn assemble_in(
     // sweep `job/*` and record every live job as `Lost`. The model
     // learns on its next poll. Losing a session because a job's
     // bookkeeping crashed would be the worse trade.
-    |> sup.add(jobs.supervised(
-      jobs_name,
-      jobs_wiring(
-        settings,
-        owner_services.jobs_owner(owner_api),
-        agency.runtime_supplier(agency_config),
-        broker_actor,
-        base_policy,
-        blob_root,
-        environment,
-        clock,
-        entropy,
-      ),
-    ))
+    |> local.started.children.jobs
     // The advisor actor is in this tier because everything it holds is
     // durable: the guard and the feed cursor are two `fact.custom`
     // cells, and a replacement reads both on its first message. A crash
@@ -4528,7 +3982,7 @@ fn assemble_in(
     // loses nothing a query cannot rebuild: the dead manager's keepers
     // stop their servers when it goes, and the next query starts one
     // again, cold, and says so.
-    |> with_lsp_manager(lsp_wiring)
+    |> local.started.children.lsp_manager
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // Started here rather than inside the boot: the pass dispatches
@@ -4568,10 +4022,7 @@ fn assemble_in(
             |> with_summary_demand(summary_route, summary_name)
             |> hub.with_worktree_diff(observe_worktree)
             |> hub.with_context(context_reader)
-            |> hub.with_live_jobs(fn(strand) {
-              jobs.live_jobs(jobs_name, strand, waiting: 1000)
-              |> result.map_error(string.inspect)
-            })
+            |> hub.with_live_jobs(live_jobs)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(settings.first_prompt)
             |> hub.with_registry(tool_registry)
@@ -4646,7 +4097,8 @@ fn assemble_in(
     broker: broker_actor,
     tools: holder,
     pool:,
-    executor: plane.executor,
+    executor: local.executor,
+    plane:,
     gateway: hub.Gateway(name:),
     worktree: observe_worktree,
     goal: option.map(advisor_wiring, goalcommand.seam),
@@ -4658,7 +4110,7 @@ fn assemble_in(
     prompt: assembled,
     helper_path: settings.helper_path,
     mcp: mcp_layer,
-    lsp: option.map(lsp_wiring, fn(wiring) { wiring.plane }),
+    lsp: local.lsp,
     rulescan: case settings.rules {
       [] -> None
       _configured -> Some(rulescan_name)
@@ -4737,21 +4189,6 @@ fn with_service_custody(
       sup.add(tree, publication)
     }
   }
-}
-
-// Capture the original actor before requesting stop; absence is not drain proof.
-fn stop_broker_owned(broker_actor: Broker, pid: Pid) -> Result(Nil, String) {
-  let watch = process.monitor(pid)
-  broker.stop(broker_actor)
-
-  // The broker is a leaf: its death forbids further lending. The pool's
-  // independent inventory still proves every native helper's retirement.
-  let outcome =
-    process.new_selector()
-    |> process.select_specific_monitor(watch, fn(_down) { Nil })
-    |> process.selector_receive(5000)
-  process.demonitor_process(watch)
-  outcome |> result.replace_error("the broker did not retire")
 }
 
 fn stop_services_owned(pid: Pid) -> Result(Nil, String) {
@@ -4867,7 +4304,7 @@ pub fn close_instance(instance: Instance) -> Nil {
   // The language server stops after the runtime, so no query is still
   // asking it, and before the services, so its manager is stopped
   // deliberately (and not replaced) rather than killed with the tree.
-  stop_lsp(instance.lsp, instance.broker)
+  instance.plane.close()
   stop_services(instance.services)
   let _stopped = address.stop(instance.namespace)
   broker.stop(instance.broker)
@@ -5465,60 +4902,6 @@ fn render_prompt(
   )
 }
 
-// How this session runs background jobs.
-//
-// The broker seam is `tools/tool.broker_runner` — the very closure the
-// `bash` tool clears through — so a background job admits under exactly
-// the rules a foreground one does: the same requirements, the same
-// `RefuseNarrowed`, the same enforcement demand, the same escalation
-// path. What differs is where it is called from. A job's runner owns the
-// events subject, which is what binds the broker relay's caller-watch to
-// the job rather than to the session, and what the actor deliberately
-// does not do itself.
-//
-// The clearance budget is the one the tool plane already uses for the
-// same wait, so a job queued behind a full helper pool gives up when a
-// foreground call would have.
-fn jobs_wiring(
-  settings: Settings,
-  owner: owner_services.JobsOwner,
-  borrow_runtime: fn() -> Result(api.Runtime, Nil),
-  broker_actor: Broker,
-  base_policy: policy.SandboxPolicy,
-  blob_root: String,
-  environment: List(#(String, String)),
-  clock: Clock,
-  entropy: fn() -> Int,
-) -> jobs.Wiring {
-  // The actor reaches the owner only through `owner`, so the same actor runs
-  // beside a session or away from it. The runtime is borrowed for one thing
-  // only, the session id its process label is filed under, and the borrow
-  // is per call for the reason `schedule_wiring` borrows: this wiring is
-  // built before `api.open` returns a runtime.
-  jobs.Wiring(
-    owner:,
-    session_path: fn() { borrow_runtime() |> result.map(session_owner.path) },
-    policy: settings.jobs_policy,
-    clock:,
-    seed: entropy(),
-    workspace: settings.workspace,
-    base_policy:,
-    demand: settings.demand,
-    env: environment,
-    clear_call: tool.broker_runner(
-      broker: broker_actor,
-      waiting: jobs_clearance_ms,
-    ),
-    clearance_ms: jobs_clearance_ms,
-    spill: jobs.blob_spill(root: blob_root),
-    blob_root:,
-  )
-}
-
-/// How long a background job's clearance may wait out a congested helper
-/// pool, matching the tool plane's own `broker_timeout_ms`.
-pub const jobs_clearance_ms = 30_000
-
 // How this session runs the operator's goal check.
 //
 // The seven fields are the jobs wiring's, for the same reason: the broker
@@ -5546,7 +4929,7 @@ fn goal_check_wiring(
     goalcheck.Runner(
       clear_call: tool.broker_runner(
         broker: broker_actor,
-        waiting: jobs_clearance_ms,
+        waiting: workspace_plane.jobs_clearance_ms,
       ),
       base_policy:,
       demand: settings.demand,
@@ -5554,7 +4937,7 @@ fn goal_check_wiring(
       workspace: settings.workspace,
       clock:,
       op_id:,
-      clearance_ms: jobs_clearance_ms,
+      clearance_ms: workspace_plane.jobs_clearance_ms,
     ),
     timeout_ms: goalloop.check_timeout_ms,
   )
@@ -5941,21 +5324,4 @@ fn seed_root(flag: Option(String), workspace: String) -> String {
     bundled: install.bundled_seed,
     otherwise: in_workspace,
   )
-}
-
-// One entropy seam serves two masters: id seeds must never repeat
-// within a session lifetime (spec-gaps WP-E item 6) and the bearer
-// token must be unguessable. A VM-unique monotonic integer gives the
-// first; 64 bits of `crypto:strong_rand_bytes` in the low limb give
-// the second (the token minter keeps only low bits). The sum is
-// injective in the pair, so uniqueness survives the mixing.
-fn mixed_entropy() -> fn() -> Int {
-  let random_bytes = token.production_entropy()
-  fn() {
-    let unique = ffi_os.unique_positive_integer()
-    case random_bytes(8) {
-      <<random:size(64)>> -> unique * 18_446_744_073_709_551_616 + random
-      _ -> unique
-    }
-  }
 }

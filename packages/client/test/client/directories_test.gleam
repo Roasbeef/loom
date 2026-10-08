@@ -222,3 +222,38 @@ pub fn stored_directory_cannot_be_retargeted_through_a_symlink_test() {
   assert result.is_error(directories.read(opened))
   let assert Ok(Nil) = session.close(opened) as "the session must close"
 }
+
+fn addition_root(name: String) -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test workspace must be known"
+  let root = here <> "/build/directories-" <> name
+  let _stale = simplifile.delete(root)
+  let assert Ok(Nil) = simplifile.create_directory_all(root <> "/lib")
+    as "the addition's parent must exist"
+  root
+}
+
+/// Resolving an addition is the half of `add-dir` which needs the files: it
+/// takes a relative request against the workspace and answers the
+/// canonical path to record, without touching a session.
+pub fn an_addition_resolves_against_the_workspace_filesystem_test() {
+  let root = addition_root("resolves")
+  let resolved = directories.resolve_addition(root, [], "lib", "read")
+  assert result.is_ok(resolved)
+  assert resolved
+    == directories.resolve_addition(root, [], root <> "/lib", "read")
+}
+
+/// A request that names no directory is refused in the words the gateway
+/// has always used, and a writable addition may not reach a protected path.
+pub fn an_addition_refuses_a_missing_file_or_protected_path_test() {
+  let root = addition_root("refuses")
+  let assert Ok(Nil) = simplifile.write(root <> "/file.txt", "text")
+    as "a file is not a directory"
+  assert directories.resolve_addition(root, [], "nothing", "read")
+    == Error("add-dir requires an existing directory")
+  assert directories.resolve_addition(root, [], "file.txt", "read")
+    == Error("add-dir requires an existing directory")
+  assert directories.resolve_addition(root, [root <> "/lib"], "lib", "write")
+    == Error("directory could not be resolved or is protected")
+}

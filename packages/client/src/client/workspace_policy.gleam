@@ -61,6 +61,24 @@ import provider/secret
 import simplifile
 import tom
 
+/// The files an owner keeps beside its session that a jailed process must
+/// never write: the search index, and the memory store with the digest
+/// sidecar rendered from it.
+///
+/// Plain paths, because masking a file needs only its name. A workspace
+/// whose owner is on another machine is given none, since those files do
+/// not exist on its filesystem and there is nothing there to protect.
+pub type OwnerFiles {
+  OwnerFiles(
+    /// The absolute path of the search index.
+    index: String,
+    /// The absolute path of the memory store.
+    memory_store: String,
+    /// The absolute path of the memory digest sidecar.
+    memory_digest: String,
+  )
+}
+
 /// What the session base is composed from, apart from the files its
 /// owner protects: the starting policy, the workspace it widens for, the
 /// `[tools]` table and the Go caches.
@@ -789,20 +807,17 @@ fn absolute_path(path: String, against base: String) -> Result(String, Nil) {
 /// ## Examples
 ///
 /// ```gleam
-/// // workspace_policy.session_base(basis, index, store, digest, toolchain)
+/// // workspace_policy.session_base(basis, Some(files), toolchain)
 /// //   .env_allow  // contains "TMPDIR" and "CLAUDE_PROJECT_DIR"
 /// ```
 ///
 @internal
 pub fn session_base(
   basis: Basis,
-  index_path: String,
-  memory_store: String,
-  memory_digest: String,
+  files: Option(OwnerFiles),
   toolchain: Result(codemode_wiring.Toolchain, String),
 ) -> policy.SandboxPolicy {
-  protecting_index(basis.base_policy, index_path)
-  |> protecting_memory(memory_store, memory_digest)
+  protecting_owner_files(basis.base_policy, files)
   |> allowing_tool_tmpdir
   |> allowing_imported_hook_env
   |> under_tools_config(basis.tools)
@@ -827,7 +842,7 @@ pub fn session_base(
 ///
 /// ```gleam
 /// // With `erl` found at /bin/erl:
-/// // workspace_policy.session_toolchain(Ok(found), basis, index, store, digest)
+/// // workspace_policy.session_toolchain(Ok(found), basis, Some(files))
 /// //   == Error("code mode would mount / read-only …")
 /// ```
 ///
@@ -835,13 +850,25 @@ pub fn session_base(
 pub fn session_toolchain(
   discovered: Result(codemode_wiring.Toolchain, String),
   basis: Basis,
-  index_path: String,
-  memory_store: String,
-  memory_digest: String,
+  files: Option(OwnerFiles),
 ) -> Result(codemode_wiring.Toolchain, String) {
-  let assembled =
-    session_base(basis, index_path, memory_store, memory_digest, discovered)
+  let assembled = session_base(basis, files, discovered)
   admissible_toolchain(discovered, assembled)
+}
+
+// The two masks for an owner's files, or none when the workspace has no
+// owner beside it. The index is masked first and the memory store second,
+// the order the composition has always applied them in.
+fn protecting_owner_files(
+  base: policy.SandboxPolicy,
+  files: Option(OwnerFiles),
+) -> policy.SandboxPolicy {
+  case files {
+    None -> base
+    Some(OwnerFiles(index:, memory_store:, memory_digest:)) ->
+      protecting_index(base, index)
+      |> protecting_memory(memory_store, memory_digest)
+  }
 }
 
 /// The policy meet keeps only the environment names the session base
@@ -983,9 +1010,16 @@ fn configured_network(network: catalog.ToolNetwork) -> policy.NetworkPolicy {
   }
 }
 
-// The Go caches' boot refusals against the composed base, so the masked
-// paths of this session are all known. Absent caches have nothing to
-// refuse.
+/// The Go caches' boot refusals against the composed base, so the masked
+/// paths of this session are all known. Absent caches have nothing to
+/// refuse.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace_policy.go_cache_fault(basis_with_no_caches, base) == Ok(Nil)
+/// ```
+///
 pub fn go_cache_fault(
   basis: Basis,
   base: policy.SandboxPolicy,
@@ -1006,6 +1040,22 @@ pub fn go_cache_fault(
   }
 }
 
+/// Makes the directories a workspace half needs before it starts, and
+/// keeps the harness's own two out of the repository's `git status`.
+///
+/// `owner_directory` is the directory the owner keeps its session file in,
+/// when the owner shares this machine; a workspace whose owner is elsewhere
+/// passes `None`. The rest are the workspace itself, the blob overflow
+/// directory, the helper scratch directory and the tool directories. The
+/// first that cannot be created refuses the lot, naming it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.prepare_directories(None, "/work", "/work/.blobs", "/s.tmp", [])
+/// // -> Ok(Nil)
+/// ```
+///
 pub fn prepare_directories(
   owner_directory: Option(String),
   workspace: String,
@@ -1060,6 +1110,15 @@ fn ignore_directory(directory: String) -> Nil {
   }
 }
 
+/// Creates each directory with its parents, stopping at the first that
+/// cannot be made and naming it in the refusal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace_policy.create_directories([]) == Ok(Nil)
+/// ```
+///
 pub fn create_directories(directories: List(String)) -> Result(Nil, String) {
   list.try_each(directories, fn(directory) {
     simplifile.create_directory_all(directory)
@@ -1069,6 +1128,16 @@ pub fn create_directories(directories: List(String)) -> Result(Nil, String) {
   })
 }
 
+/// The directory a path sits in, or `None` for a bare file name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace_policy.parent_directory("/data/session.db")
+///   == Some("/data")
+/// assert workspace_policy.parent_directory("session.db") == None
+/// ```
+///
 pub fn parent_directory(path: String) -> Option(String) {
   case list.reverse(string.split(path, "/")) {
     [_file, ..rest] if rest != [] -> Some(string.join(list.reverse(rest), "/"))
@@ -1792,12 +1861,19 @@ pub fn lsp_places() -> profile.Places {
   )
 }
 
-// The language profiles the loaded profile extensions approved, each
-// paired with its extension's name for a refusal to cite. Read from the
-// install record rather than the manifest beside it: discovery has
-// already refused any extension whose manifest's profiles differ from the
-// record's, and the record is the operator's yes. A jailed extension's
-// record holds none.
+/// The language profiles the loaded profile extensions approved, each
+/// paired with its extension's name for a refusal to cite. Read from the
+/// install record rather than the manifest beside it: discovery has
+/// already refused any extension whose manifest's profiles differ from the
+/// record's, and the record is the operator's yes. A jailed extension's
+/// record holds none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspace_policy.installed_profiles([]) == []
+/// ```
+///
 pub fn installed_profiles(
   discovered: List(installed.Discovered),
 ) -> List(#(String, profile.LspServer)) {
