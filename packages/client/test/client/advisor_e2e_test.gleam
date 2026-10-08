@@ -89,6 +89,7 @@ import provider/model
 import provider/secret
 import runtime/api
 import simplifile
+import support/local_workspace
 import support/provider as provider_test
 import telemetry/log
 import tools/advise
@@ -156,9 +157,10 @@ pub fn a_second_model_reviews_the_primary_and_reaches_it_test_() -> EunitTest {
     // `serve_test`'s own instance turn does it: an instance whose pool
     // never handshook would otherwise fail later, inside a tool call, as a
     // clearance refusal that reads like a policy decision.
-    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+    let assert Ok(helper) =
+      exec.checkout(local_workspace.pool(instance), waiting: 5000)
       as "the instance must have a real, handshaken helper"
-    exec.checkin(instance.pool, helper)
+    exec.checkin(local_workspace.pool(instance), helper)
 
     // The first operator turn, admitted through the instance's own writer
     // and awaited to settlement.

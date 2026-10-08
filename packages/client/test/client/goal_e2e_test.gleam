@@ -69,6 +69,7 @@ import runtime/api
 import session/session
 import simplifile
 import storage/access
+import support/local_workspace
 import support/provider as provider_test
 import telemetry/log
 import tools/advise
@@ -137,9 +138,10 @@ pub fn an_always_continue_reviewer_stops_itself_test_() -> EunitTest {
     let assert Ok(instance) =
       serve.open_instance(settings(root, script), log.discard())
       as "the goal fixture must open a real instance"
-    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+    let assert Ok(helper) =
+      exec.checkout(local_workspace.pool(instance), waiting: 5000)
       as "the instance must have a real, handshaken helper"
-    exec.checkin(instance.pool, helper)
+    exec.checkin(local_workspace.pool(instance), helper)
     // Pin the goal through the instance's goal seam — the same five
     // calls the gateway's commands forward to, held by the instance so
     // the fixture drives the operator's door without booting the
@@ -243,9 +245,10 @@ pub fn an_always_continue_reviewer_stops_at_the_cap_test_() -> EunitTest {
     let assert Ok(instance) =
       serve.open_instance(settings(root, script), log.discard())
       as "the goal fixture must open a real instance"
-    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+    let assert Ok(helper) =
+      exec.checkout(local_workspace.pool(instance), waiting: 5000)
       as "the instance must have a real, handshaken helper"
-    exec.checkin(instance.pool, helper)
+    exec.checkin(local_workspace.pool(instance), helper)
     let assert Some(goal_commands) = instance.goal
       as "an instance with a routed advisor must expose the goal seam"
     let assert Ok(Nil) = goal_commands.set(objective, 100_000_000, None)
@@ -306,9 +309,10 @@ pub fn an_aborted_continuation_pauses_the_goal_test_() -> EunitTest {
     let assert Ok(instance) =
       serve.open_instance(settings(root, script), log.discard())
       as "the goal fixture must open a real instance"
-    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+    let assert Ok(helper) =
+      exec.checkout(local_workspace.pool(instance), waiting: 5000)
       as "the instance must have a real, handshaken helper"
-    exec.checkin(instance.pool, helper)
+    exec.checkin(local_workspace.pool(instance), helper)
     let assert Some(goal_commands) = instance.goal
       as "an instance with a routed advisor must expose the goal seam"
     let assert Ok(Nil) = goal_commands.set(objective, 100_000_000, None)
@@ -410,9 +414,10 @@ pub fn a_scripted_reviewer_is_shown_the_checks_result_test_() -> EunitTest {
     let assert Ok(instance) =
       serve.open_instance(settings(root, script), log.discard())
       as "the goal fixture must open a real instance"
-    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+    let assert Ok(helper) =
+      exec.checkout(local_workspace.pool(instance), waiting: 5000)
       as "the instance must have a real, handshaken helper"
-    exec.checkin(instance.pool, helper)
+    exec.checkin(local_workspace.pool(instance), helper)
     let assert Some(goal_commands) = instance.goal
       as "an instance with a routed advisor must expose the goal seam"
 
@@ -1197,9 +1202,10 @@ pub fn the_six_goal_commands_work_over_the_real_gateway_test_() -> EunitTest {
     let assert Ok(instance) =
       serve.open_instance(settings(root, script), log.discard())
       as "the goal fixture must open a real instance"
-    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+    let assert Ok(helper) =
+      exec.checkout(local_workspace.pool(instance), waiting: 5000)
       as "the instance must have a real, handshaken helper"
-    exec.checkin(instance.pool, helper)
+    exec.checkin(local_workspace.pool(instance), helper)
 
     // A real, authenticated attachment. The instance's hub is a *network*
     // hub, which disconnects a client that sends frames on the unauthenticated

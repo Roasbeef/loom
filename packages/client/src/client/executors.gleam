@@ -41,13 +41,6 @@ pub type Executor {
   )
 }
 
-/// Why opening a session registered on an executor fails today. The workspace
-/// plane that would attach to the executor's registered workspace is not built
-/// yet (protocol-change/078), so the opening operation reports this reason and
-/// nothing is created on the daemon's host for the workspace name.
-pub const unavailable_reason =
-  "executor_unavailable: remote workspace assembly is not available yet"
-
 /// Reads the executors from configuration text, for callers that hold no
 /// parsed document.
 ///

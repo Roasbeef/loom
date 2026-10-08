@@ -24,6 +24,7 @@ import client/internal/ffi_os
 import client/peer_defaults
 import client/peer_mail
 import client/peers
+import client/remote/workspace
 import client/serve
 import core/clock
 import core/glance
@@ -347,21 +348,21 @@ fn bind_address(value: String) -> Result(#(String, Int), String) {
 // Trusted distribution is started first, before the catalogue or any session
 // resource is opened, so a VM booted wrongly is refused with nothing to undo.
 // Without a `[distribution]` table nothing happens and the VM stays
-// non-distributed. The membership is not kept: this slice only joins the
-// cluster, and the code that connects to peers takes it from here.
+// non-distributed. The membership is kept for the sessions registered on an
+// executor, which resolve their peer through it when they open.
 fn start_distribution(
   document: dict.Dict(String, tom.Toml),
   configuration: String,
-) -> Result(Nil, String) {
+) -> Result(Option(distribution.Membership), String) {
   use found <- result.try(
     distribution.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
   case found {
-    None -> Ok(Nil)
+    None -> Ok(None)
     Some(settings) ->
       distribution.start(settings)
-      |> result.replace(Nil)
+      |> result.map(Some)
       |> result.map_error(fn(fault) {
         configuration <> ": " <> distribution.describe(fault)
       })
@@ -445,7 +446,7 @@ pub fn prepare_startup(
     executors.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
-  use Nil <- result.try(start_distribution(document, configuration))
+  use membership <- result.try(start_distribution(document, configuration))
   let config = Config(..config, view:, peer_policy:, executors:)
   root.start(
     root.Config(
@@ -498,7 +499,32 @@ pub fn prepare_startup(
               manager.seed_subtitle(directory, registration.id, text)
             }),
           )
-        serve.assemble_in_domain(settings, identity, logger, owner, services)
+
+        // A workspace registered on an executor is assembled with the
+        // executor's host in reach, and a daemon that cannot reach it says so
+        // in the reason the opening operation reports.
+        case registration.executor {
+          "" ->
+            serve.assemble_in_domain(
+              settings,
+              identity,
+              logger,
+              owner,
+              services,
+            )
+          name ->
+            workspace.reach(membership, config.executors, name)
+            |> result.try(fn(reach) {
+              serve.assemble_registered(
+                settings,
+                identity,
+                logger,
+                owner,
+                Some(services),
+                reach,
+              )
+            })
+        }
         |> diagnose_start(logger, identity, RuntimeAssembly)
         |> result.map(serve.resident)
       },

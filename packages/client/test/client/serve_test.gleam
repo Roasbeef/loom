@@ -61,6 +61,7 @@ import simplifile
 import storage/sqlite
 import support/addresses
 import support/internal/ffi_ws
+import support/local_workspace
 import support/provider as provider_test
 import telemetry/level
 import telemetry/log
@@ -840,9 +841,10 @@ fn instance_cycle(root: String) -> Nil {
 }
 
 fn complete_instance_turn(instance: serve.Instance) -> Nil {
-  let assert Ok(helper) = exec.checkout(instance.pool, waiting: 1000)
+  let assert Ok(helper) =
+    exec.checkout(local_workspace.pool(instance), waiting: 1000)
     as "the instance must have a real, handshaken helper"
-  exec.checkin(instance.pool, helper)
+  exec.checkin(local_workspace.pool(instance), helper)
   let assert Ok(op) = api.prompt(instance.runtime, [user("finish this turn")])
     as "the instance must admit through its own writer"
   let assert Ok(operation.RunLastResult(outcome: operation.RunCompleted(_), ..)) =

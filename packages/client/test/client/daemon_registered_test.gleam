@@ -2,14 +2,14 @@
 //// on the daemon's host (protocol-change/078). The orchestrator keeps that name
 //// exactly as sent: it is never canonicalized, statted or created locally, an
 //// executor the configuration does not define is refused before anything is
-//// reserved, and opening such a session fails cleanly until the remote
-//// workspace plane exists.
+//// reserved, and opening such a session fails cleanly when the daemon cannot
+//// reach the executor.
 
 import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/daemon_server_test as wire
-import client/executors
+import client/remote/workspace
 import client/serve
 import core/json
 import gleam/list
@@ -20,6 +20,7 @@ import simplifile
 import storage/catalogue
 import storage/domain
 import support/internal/ffi_ws
+import support/remote_fixtures as fixtures
 import weft/poll
 
 // A name that is not a directory relative to the test's working directory, so
@@ -263,11 +264,18 @@ pub fn malformed_executor_creations_are_bad_requests_test() {
 }
 
 pub fn opening_a_registered_session_reports_the_executor_is_unavailable_test() {
-  // The builder is the daemon's own resolver, which is where a registration
-  // becomes settings. It is given a state root that does not exist, so any
-  // attempt to create a directory for the session would show.
+  // The builder is the daemon's own resolver followed by its reach for the
+  // executor, which a daemon that never started distribution cannot make. The
+  // resolver is given a state root that does not exist, so any attempt to
+  // create a directory for the session would show.
   let build = fn(record, selected, _services, _owner, _directory) {
-    serve.resolve_managed([], record, selected, "/never-created-state-root")
+    use _settings <- result.try(serve.resolve_managed(
+      [],
+      record,
+      selected,
+      "/never-created-state-root",
+    ))
+    workspace.reach(None, [], record.executor)
     |> result.map(fn(_) { record.id })
   }
   wire.fixture_building(
@@ -294,7 +302,7 @@ pub fn opening_a_registered_session_reports_the_executor_is_unavailable_test() {
 
       // The operation fails with the reason, once the builder has run.
       let first = failed_reason(ready, id, operation)
-      assert first == executors.unavailable_reason
+      assert first == unreachable
       assert string.starts_with(first, "executor_unavailable: ")
 
       // The wire reports it the way an unavailable workspace is reported today.
@@ -311,8 +319,7 @@ pub fn opening_a_registered_session_reports_the_executor_is_unavailable_test() {
           within_ms: 1000,
         )
       assert code_of(polled) == json.String("start_failed")
-      assert field(field(polled, "body"), "message")
-        == json.String(executors.unavailable_reason)
+      assert field(field(polled, "body"), "message") == json.String(unreachable)
 
       // The registration never reached `saved`, because only a successful
       // assembly confirms it, so an explicit open is refused as not
@@ -340,6 +347,9 @@ pub fn opening_a_registered_session_reports_the_executor_is_unavailable_test() {
   )
 }
 
+const unreachable =
+  "executor_unavailable: this daemon was not started with [distribution]"
+
 fn failed_reason(ready: root.Ready(String), id: String, operation: String) {
   let assert poll.Answered(reason) =
     poll.until(within: 2000, every: 1, attempt: fn() {
@@ -353,14 +363,15 @@ fn failed_reason(ready: root.Ready(String), id: String, operation: String) {
   reason
 }
 
-pub fn the_resolver_refuses_a_registration_before_it_reads_any_default_test() {
-  // The refusal comes before the defaults are parsed or any path in them is
-  // resolved, so a default that names a directory which does not exist cannot
-  // turn into a different error, and nothing is canonicalized.
+pub fn the_resolver_keeps_a_registered_name_and_looks_for_nothing_test() {
+  // The defaults name a directory that does not exist, and the registration
+  // overrides it. The name is carried as given: no helper is looked for on
+  // this host, no Go cache is located for it, and nothing is created for it.
+  let directory = fixtures.scratch("resolver")
   let record =
     catalogue.Registration(
       id: "unused",
-      path: "/never-opened/session.db",
+      path: directory <> "/session.db",
       workspace: registered_name,
       name: "Resolver",
       configuration: "",
@@ -377,14 +388,20 @@ pub fn the_resolver_refuses_a_registration_before_it_reads_any_default_test() {
       domain.SessionOnly,
       registered_name,
       "",
-      "/never-opened/memory.db",
-      "/never-opened/search.db",
+      directory <> "/memory/memory.db",
+      directory <> "/index/search.db",
     )
-  assert serve.resolve_managed(
+  let assert Ok(settings) =
+    serve.resolve_managed(
       ["--workspace", "/definitely/not/a/directory"],
       record,
       selected,
       "/never-created-state-root",
     )
-    == Error(executors.unavailable_reason)
+    as "a registration resolves without a local workspace"
+  assert settings.workspace == registered_name
+  assert settings.helper_path == ""
+  assert settings.go_caches == None
+  assert simplifile.is_directory(registered_name) == Ok(False)
+  assert simplifile.is_directory("/never-created-state-root") == Ok(False)
 }

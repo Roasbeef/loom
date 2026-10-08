@@ -53,6 +53,7 @@ import support/internal/ffi_daemon_socket as tcp
 import support/internal/ffi_proc
 import support/internal/ffi_soak
 import support/internal/ffi_ws
+import support/local_workspace
 import support/provider as provider_test
 import telemetry/log
 import weft
@@ -257,10 +258,11 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
 }
 
 fn helper(instance: serve.Instance) {
-  let assert Ok(helper) = exec.checkout(instance.pool, waiting: 3000)
+  let assert Ok(helper) =
+    exec.checkout(local_workspace.pool(instance), waiting: 3000)
     as "every incarnation owns a real handshaken native helper"
   let owner = exec.pid(helper)
-  exec.checkin(instance.pool, helper)
+  exec.checkin(local_workspace.pool(instance), helper)
   owner
 }
 

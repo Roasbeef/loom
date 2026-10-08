@@ -21,6 +21,11 @@
 //// surviving instance custodian. Failed construction keeps those capabilities
 //// retained; it cannot release storage before earlier effects prove retirement.
 ////
+//// A registration that names an executor is assembled by assemble_registered.
+//// It runs the same construction, but its workspace half is attached on the
+//// executor (client/remote/workspace) instead of prepared and started here, so
+//// nothing in it names the registered workspace on this machine's disk.
+////
 //// boot and open_instance remain internal host/test seams. They are not CLI
 //// compatibility modes: invoking this module's main refuses per-session serving.
 ////
@@ -68,7 +73,6 @@ import client/directories
 import client/distill
 import client/distillpass
 import client/escalate
-import client/executors
 import client/extension/dispatch as extension_dispatch
 import client/extension/hooks as extension_hooks
 import client/extension/hosts as extension_hosts
@@ -101,6 +105,8 @@ import client/notes
 import client/owner_services
 import client/peer_mail
 import client/peers
+import client/remote/owner_port
+import client/remote/workspace as remote_workspace
 import client/retryconf
 import client/rules
 import client/rulescan
@@ -193,6 +199,7 @@ fn with_imported_hooks(
   settings: Settings,
   clock: Clock,
   plane: workspace_plane.WorkspacePlane,
+  call_clock: Clock,
   logger: Logger,
   entropy: fn() -> Int,
 ) -> effects.Effects {
@@ -222,7 +229,9 @@ fn with_imported_hooks(
       workspace: census.workspace,
       env: hook_environment(environment, settings.home, census.workspace),
       demand: settings.demand,
-      clock: clock,
+      // The deadline of a hook's command is absolute and the broker compares
+      // it with its own clock, so a hook reads the broker's timebase.
+      clock: call_clock,
       session_id: settings.session_id,
       transcript_path: settings.session_path,
     )
@@ -547,16 +556,20 @@ pub type Instance {
     runtime: api.Runtime,
     /// The original storage actor, monitored before another writer call.
     storage_owner: Pid,
+    /// The capability broker the session's non-tool callers clear through.
+    /// For a workspace on an executor it is a handle on the executor's.
     broker: Broker,
     /// The holder of the configuration tool runs fetch. Kept so the legacy
     /// teardown can stop it after the runtime drains; an owned session
     /// retires it through custody instead, and stopping it twice is a no-op.
     tools: tool_holder.Holder(wiring.Config),
-    pool: Pool,
+    /// The helper pool, or `None` for a workspace on an executor, whose
+    /// helpers are the executor's.
+    pool: Option(Pool),
     /// The executor service. It sits between the broker and the pool, so
     /// teardown closes it and it closes the pool, and its death is as fatal
-    /// as the pool's.
-    executor: executor.Executor,
+    /// as the pool's. `None` exactly when `pool` is.
+    executor: Option(executor.Executor),
     /// The hub's stable address. Everything that talks to the hub — the
     /// listener, the commit forwarder, the provider tap — holds this
     /// name rather than a pid, which is what lets the hub be restarted
@@ -986,12 +999,13 @@ pub fn resolve_managed(
   selected: domain.Domain,
   state_root: String,
 ) -> Result(Settings, String) {
-  // A registered workspace is a name on another machine, which `resolve` would
-  // canonicalize as a local path, so the refusal comes first.
-  use Nil <- result.try(case registration.executor {
-    "" -> Ok(Nil)
-    _ -> Error(executors.unavailable_reason)
-  })
+  // A registered workspace is a name on another machine. It is carried as
+  // given and never canonicalized, and the helper and the Go caches, which are
+  // the executor's, are not looked for here.
+  let placement = case registration.executor {
+    "" -> LocalWorkspace
+    _ -> RegisteredWorkspace
+  }
   use flags <- result.try(parse(defaults))
   let configuration = case registration.configuration {
     "" -> flags.config
@@ -1005,6 +1019,7 @@ pub fn resolve_managed(
       config: configuration,
       profile: registration.profile,
     ),
+    placement,
   ))
   use Nil <- result.try(
     bootstrap.ensure_private_directory(filepath.directory_name(
@@ -1263,13 +1278,21 @@ fn set_demand(
   }
 }
 
+// Where the workspace a session is resolved for lives. A registered workspace
+// is a name that only its executor can resolve, so resolving one must not look
+// for anything on this machine's disk on its behalf.
+type Placement {
+  LocalWorkspace
+  RegisteredWorkspace
+}
+
 // Fills every default and builds the provider gateway from the model
 // catalogue — the `--config` file when given, the environment-shaped
 // one-entry catalogue otherwise — turning Flags into a bootable
 // Settings. The new-strand identity and the wiring's fallback model
 // facts all come from the main route's head entry, so one catalogue is
 // the single source for everything model-shaped.
-fn resolve(flags: Flags) -> Result(Settings, String) {
+fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
   use session_path <- result.try(case flags.session {
     Some(path) -> Ok(path)
     None -> Error("--session is required\n" <> usage)
@@ -1285,7 +1308,10 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
         "the working directory is unreadable: " <> string.inspect(error)
       })
   })
-  use helper_path <- result.try(find_helper(flags.helper))
+  use helper_path <- result.try(case placement {
+    LocalWorkspace -> find_helper(flags.helper)
+    RegisteredWorkspace -> Ok("")
+  })
 
   // The override is clamped to the same range the derived default is,
   // and both ends are load-bearing. A pool must hold at least two
@@ -1358,65 +1384,71 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       clock:,
     )
 
-  Ok(Settings(
-    session_path:,
-    bind_host:,
-    bind_port:,
-    token_path: option.unwrap(flags.token_file, session_path <> ".token"),
-    workspace:,
-    domain_paths: None,
-    peer_directory: None,
-    peer_defaults: None,
-    first_prompt: None,
-    codemode_sockets: None,
-    base_policy: workspace_policy.admitting_config_mounts(
-      workspace_policy.base_policy_for(
-        workspace,
-        option.unwrap(flags.read_scope, workspace_config.read_scope),
+  Ok(
+    Settings(
+      session_path:,
+      bind_host:,
+      bind_port:,
+      token_path: option.unwrap(flags.token_file, session_path <> ".token"),
+      workspace:,
+      domain_paths: None,
+      peer_directory: None,
+      peer_defaults: None,
+      first_prompt: None,
+      codemode_sockets: None,
+      base_policy: workspace_policy.admitting_config_mounts(
+        workspace_policy.base_policy_for(
+          workspace,
+          option.unwrap(flags.read_scope, workspace_config.read_scope),
+        ),
+        workspace_config.mounts,
       ),
-      workspace_config.mounts,
+      helper_path:,
+      helper_pool_size:,
+      session_id: session_id_of(session_path),
+      demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
+      gateway:,
+      catalog: catalogue,
+      secrets: secret_store,
+      secret_failures:,
+      system: option.from_result(workspace_policy.env_text(
+        system_prompt.override_variable,
+      )),
+      home: workspace_policy.home_directory(),
+      model: machine_strand.ModelIdentity(
+        provider: main_entry.name,
+        model_id: main_entry.model_id,
+      ),
+      context_window: main_entry.context_window,
+      max_output_tokens: main_entry.max_output_tokens,
+      api: adapter_api(main_entry.dialect),
+      compaction: compaction_settings(main_entry.context_window),
+      codemode_seed: seed_root(flags.codemode_seed, workspace),
+      codemode_seams:,
+      rules: rule_list,
+      schedules: schedule_list,
+      schedule_policy:,
+      jobs_policy:,
+      retry_policy:,
+      deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
+      memory:,
+      tools: catalog.ToolsConfig(
+        ..tools,
+        network: option.unwrap(flags.network, tools.network),
+      ),
+      advisor: advisor_settings(gateway, advisor_config),
+      go_caches: case placement {
+        LocalWorkspace ->
+          gocache.locate(
+            workspace_policy.lsp_places().cache,
+            workspace,
+            workspace_config.go_module_mirror,
+            workspace_config.go_cache_limit_mib,
+          )
+        RegisteredWorkspace -> None
+      },
     ),
-    helper_path:,
-    helper_pool_size:,
-    session_id: session_id_of(session_path),
-    demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
-    gateway:,
-    catalog: catalogue,
-    secrets: secret_store,
-    secret_failures:,
-    system: option.from_result(workspace_policy.env_text(
-      system_prompt.override_variable,
-    )),
-    home: workspace_policy.home_directory(),
-    model: machine_strand.ModelIdentity(
-      provider: main_entry.name,
-      model_id: main_entry.model_id,
-    ),
-    context_window: main_entry.context_window,
-    max_output_tokens: main_entry.max_output_tokens,
-    api: adapter_api(main_entry.dialect),
-    compaction: compaction_settings(main_entry.context_window),
-    codemode_seed: seed_root(flags.codemode_seed, workspace),
-    codemode_seams:,
-    rules: rule_list,
-    schedules: schedule_list,
-    schedule_policy:,
-    jobs_policy:,
-    retry_policy:,
-    deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
-    memory:,
-    tools: catalog.ToolsConfig(
-      ..tools,
-      network: option.unwrap(flags.network, tools.network),
-    ),
-    advisor: advisor_settings(gateway, advisor_config),
-    go_caches: gocache.locate(
-      workspace_policy.lsp_places().cache,
-      workspace,
-      workspace_config.go_module_mirror,
-      workspace_config.go_cache_limit_mib,
-    ),
-  ))
+  )
 }
 
 // The advisor strand's identity and policy, or `None` when the catalogue
@@ -2826,7 +2858,7 @@ fn assemble_instance(
   stops: Subject(host.Stop),
 ) -> Result(Instance, String) {
   use namespace <- result.try(address.start())
-  assemble_in(settings, logger, stops, namespace, None, None)
+  assemble_in(settings, logger, stops, namespace, None, None, None)
   |> result.map_error(fn(error) {
     let _stopped = address.stop(namespace)
     error
@@ -2852,7 +2884,7 @@ pub fn assemble_owned(
   logger: Logger,
   owner: custody.Owner,
 ) -> Result(Instance, String) {
-  assemble_owned_with(settings, reserved, logger, owner, None)
+  assemble_owned_with(settings, reserved, logger, owner, None, None)
 }
 
 /// Assembles one session using already-published shared domain capabilities.
@@ -2871,10 +2903,43 @@ pub fn assemble_in_domain(
   owner: custody.Owner,
   services: domain_service.Services,
 ) -> Result(Instance, String) {
-  assemble_owned_with(settings, reserved, logger, owner, Some(services))
+  assemble_owned_with(settings, reserved, logger, owner, Some(services), None)
 }
 
-fn assemble_owned_with(settings, reserved, logger, owner, services) {
+/// Assembles one reserved session whose workspace is registered on an executor.
+///
+/// The conversation half is built here exactly as `assemble_in_domain` builds
+/// it. The workspace half is the executor's, reached through `reach`: the
+/// registered name in `settings.workspace` is carried to the executor and
+/// never opened, created or canonicalized on this machine. A connection or
+/// attach that fails fails the assembly with a reason beginning
+/// `executor_unavailable:`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.assemble_registered(settings, id, logger, owner, services, reach)
+/// ```
+@internal
+pub fn assemble_registered(
+  settings: Settings,
+  reserved: ids.SessionId,
+  logger: Logger,
+  owner: custody.Owner,
+  services: Option(domain_service.Services),
+  reach: remote_workspace.Reach,
+) -> Result(Instance, String) {
+  assemble_owned_with(settings, reserved, logger, owner, services, Some(reach))
+}
+
+fn assemble_owned_with(
+  settings,
+  reserved,
+  logger,
+  owner,
+  services,
+  registered,
+) {
   use namespace <- result.try(address.start())
   use Nil <- result.try(
     retain(
@@ -2891,6 +2956,7 @@ fn assemble_owned_with(settings, reserved, logger, owner, services) {
     namespace,
     Some(#(owner, reserved)),
     services,
+    registered,
   )
 }
 
@@ -3010,6 +3076,116 @@ pub fn storage_open_refusal(error: session.OpenError) -> String {
   }
 }
 
+// Where the workspace half of the session in this assembly is, once chosen.
+type Home {
+  Here(prepared: workspace_plane.Prepared)
+  There(reach: remote_workspace.Reach)
+}
+
+// What the rest of the assembly reads of the workspace half, whichever machine
+// it is on. The local fields are `None` for a workspace on an executor.
+type Half {
+  Half(
+    plane: workspace_plane.WorkspacePlane,
+    decls: List(tool.Described),
+    children: workspace_plane.Children,
+    pool: Option(Pool),
+    executor: Option(executor.Executor),
+    lsp: Option(workspace_plane.LspPlane),
+    code_mode_host: Option(codemode_wiring.Config),
+    blob_root: String,
+    call_clock: Clock,
+    recover: Option(fn(effects.ToolRun) -> effects.Recovery),
+  )
+}
+
+// A workspace started in this VM.
+fn here(
+  prepared: workspace_plane.Prepared,
+  clock: Clock,
+  local: workspace_plane.Local,
+) -> Half {
+  Half(
+    plane: local.started.plane,
+    decls: local.started.decls,
+    children: local.started.children,
+    pool: Some(local.pool),
+    executor: Some(local.executor),
+    lsp: local.lsp,
+    code_mode_host: local.code_mode_host,
+    blob_root: prepared.blob_root,
+    call_clock: clock,
+    recover: None,
+  )
+}
+
+// A workspace attached on an executor. Its scope is closed and its owner port
+// ended by one custody part, published before anything can call it.
+fn there(
+  registered: remote_workspace.Registered,
+  owner: Option(custody.Owner),
+) -> Result(Half, String) {
+  use hands <- result.try(remote_workspace.attach(registered))
+  use Nil <- result.map(retain(
+    owner,
+    custody.Workspace,
+    fn() {
+      hands.plane.close()
+      Ok(Nil)
+    },
+    hands.transfer,
+  ))
+  Half(
+    plane: hands.plane,
+    decls: hands.tools,
+    children: workspace_plane.Children(
+      scratch: fn(builder) { builder },
+      jobs: fn(builder) { builder },
+      lsp_manager: fn(builder) { builder },
+    ),
+    pool: None,
+    executor: None,
+    lsp: None,
+    code_mode_host: None,
+    blob_root: hands.plane.census.workspace
+      <> "/"
+      <> codemode_wiring.blob_directory,
+    call_clock: hands.clock,
+    recover: Some(hands.recover),
+  )
+}
+
+/// One notice for each extension installed on the executor, because none of
+/// them registers a tool for a workspace there. A profile extension runs
+/// nothing and so gets none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.remote_extension_refusals([]) == []
+/// ```
+@internal
+pub fn remote_extension_refusals(
+  found: List(installed.Discovered),
+) -> List(String) {
+  list.filter_map(found, fn(each) {
+    case each {
+      installed.Refused(name:, ..) -> Ok(name)
+      installed.Ready(record:, ..) ->
+        case record.tier {
+          extension_manifest.Jailed -> Ok(record.name)
+          extension_manifest.Profile -> Error(Nil)
+        }
+    }
+  })
+  |> list.map(fn(name) {
+    "Extension "
+    <> name
+    <> " is installed on the executor, and its tools are not available to a "
+    <> "workspace on an executor yet."
+  })
+}
+
 // One namespace spans the composition services' restarts, but never a second
 // session. Boot failure retires routing; full partial-boot custody is separate.
 fn assemble_in(
@@ -3019,6 +3195,7 @@ fn assemble_in(
   namespace: address.Registry,
   ownership: Option(#(custody.Owner, ids.SessionId)),
   services: Option(domain_service.Services),
+  registered: Option(remote_workspace.Reach),
 ) -> Result(Instance, String) {
   let owner = option.map(ownership, fn(pair) { pair.0 })
   let builder = process.self()
@@ -3044,21 +3221,27 @@ fn assemble_in(
   // enforce is a boot failure and not a surprise waiting in the first tool
   // call, and the workspace's directories are made. Nothing is spawned.
   // The census it returns is plain data the rest of this assembly reads.
-  use prepared <- result.try(
-    workspace_plane.prepare(
-      workspace_spec(
-        settings,
-        Some(workspace_policy.OwnerFiles(
-          index: index_path,
-          memory_store:,
-          memory_digest:,
-        )),
-      ),
-      reading: fn(name) { secret.lookup(settings.secrets, name) },
-    ),
-  )
-  let toolchain = prepared.census.toolchain
-  let blob_root = prepared.blob_root
+  //
+  // A workspace registered on an executor has nothing to prepare here: the
+  // executor judges its own base, makes its own directories and answers for
+  // its own toolchain when the scope attaches. Nothing in this branch names
+  // the registered workspace on this machine's disk.
+  use home <- result.try(case registered {
+    Some(reach) -> Ok(There(reach))
+    None ->
+      workspace_plane.prepare(
+        workspace_spec(
+          settings,
+          Some(workspace_policy.OwnerFiles(
+            index: index_path,
+            memory_store:,
+            memory_digest:,
+          )),
+        ),
+        reading: fn(name) { secret.lookup(settings.secrets, name) },
+      )
+      |> result.map(Here)
+  })
   use Nil <- result.try(
     workspace_policy.create_directories(
       option.values([workspace_policy.parent_directory(settings.session_path)]),
@@ -3267,12 +3450,22 @@ fn assemble_in(
   // Code mode, and the MCP servers it reaches, are one decision made on
   // the census: the second is unreachable without the first. The owner
   // starts the servers, so this happens between the workspace's two steps.
-  use mcp_layer <- result.try(code_mode_mcp(
-    settings,
-    prepared.census.toolchain,
-    logger,
-    owner,
-  ))
+  //
+  // A workspace on an executor takes neither: its code mode omits the MCP
+  // façades until the MCP layer is split into the data an executor needs and
+  // the clients that stay here, so no server is started on its behalf.
+  use mcp_layer <- result.try(case home {
+    Here(prepared) ->
+      code_mode_mcp(settings, prepared.census.toolchain, logger, owner)
+    There(_) -> {
+      skipped_mcp(
+        settings.catalog.mcp_servers,
+        logger,
+        "a workspace on an executor omits MCP servers from its code mode",
+      )
+      Ok(mcp_wiring.none())
+    }
+  })
 
   // Everything the workspace half reaches back to the session for, as one
   // record of plain functions. Locally each is the call it replaced: the
@@ -3294,33 +3487,59 @@ fn assemble_in(
   // that storage is open, and the workspace's tools are built over its own
   // doors. The owner contributes the arms of code mode which only it can
   // serve. See `workspace_plane` for why the base is computed twice.
-  use local <- result.try(workspace_plane.start_local(
-    prepared,
-    workspace_plane.Attach(
-      logger:,
-      namespace:,
-      retain: fn(part, cleanup, transfer) {
-        retain(owner, part, cleanup, transfer)
-      },
-      owner: owner_api,
-      session_label: session_label(agency.runtime_supplier(agency_config)),
-      code_mode: workspace_plane.CodeModeAttach(
-        arms: code_mode_arms(
-          settings,
-          agency_seam,
-          schedule_door,
-          mcp_layer,
-          peer_wiring,
+  use half <- result.try(case home {
+    Here(prepared) ->
+      workspace_plane.start_local(
+        prepared,
+        workspace_plane.Attach(
+          logger:,
+          namespace:,
+          retain: fn(part, cleanup, transfer) {
+            retain(owner, part, cleanup, transfer)
+          },
+          owner: owner_api,
+          session_label: session_label(agency.runtime_supplier(agency_config)),
+          code_mode: workspace_plane.CodeModeAttach(
+            arms: code_mode_arms(
+              settings,
+              agency_seam,
+              schedule_door,
+              mcp_layer,
+              peer_wiring,
+            ),
+            tool: code_mode_tool(_, async_name, agency_config),
+          ),
         ),
-        tool: code_mode_tool(_, async_name, agency_config),
-      ),
-    ),
-  ))
-  let plane = local.started.plane
+      )
+      |> result.map(here(prepared, clock, _))
+    There(reach) ->
+      there(
+        remote_workspace.Registered(
+          reach:,
+          session: settings.session_id,
+          workspace: settings.workspace,
+          opened:,
+          owner: owner_api,
+          clock:,
+          reconcile_every_ms: owner_port.default_reconcile_every_ms,
+        ),
+        owner,
+      )
+  })
+  let plane = half.plane
   let broker_actor = plane.broker
-  let pool = local.pool
-  let code_mode_host = local.code_mode_host
-  let discovered = plane.census.extensions
+  let blob_root = half.blob_root
+  let toolchain = plane.census.toolchain
+
+  // The clock every caller that builds an absolute deadline for the broker
+  // reads: this session's own for a local workspace, and the executor's
+  // timebase for one that is not.
+  let call_clock = half.call_clock
+  let code_mode_host = half.code_mode_host
+  let discovered = case home {
+    Here(_) -> plane.census.extensions
+    There(_) -> []
+  }
   let base_policy = plane.census.base_policy
   let environment = plane.census.env
   let unset_names = plane.census.unset_env
@@ -3394,25 +3613,34 @@ fn assemble_in(
       clock:,
       margin_ms: extension_host_margin_ms,
     )
-  let #(extensions, extension_refusals) =
-    extension_registrations(
-      settings,
-      discovered,
-      logger,
-      hosts_seam,
-      extension_hosts.invoker(
+
+  // An extension's tool is not placed on either side of the workspace
+  // boundary, and running it here would act on this machine rather than the
+  // checkout the model believes it is in. A workspace on an executor
+  // therefore registers none, and says so once for each extension installed
+  // on the executor.
+  let #(extensions, extension_refusals) = case home {
+    Here(_) ->
+      extension_registrations(
+        settings,
+        discovered,
+        logger,
         hosts_seam,
-        at: hook_coordinates(
-          settings,
-          base_policy,
-          entropy(),
-          clock,
-          environment,
+        extension_hosts.invoker(
+          hosts_seam,
+          at: hook_coordinates(
+            settings,
+            base_policy,
+            entropy(),
+            clock,
+            environment,
+          ),
         ),
-      ),
-      code_mode_host,
-      extension_memory.for_session(agency_config),
-    )
+        code_mode_host,
+        extension_memory.for_session(agency_config),
+      )
+    There(_) -> #([], remote_extension_refusals(plane.census.extensions))
+  }
 
   // The model's own door onto the compaction arithmetic. It reads the
   // strand's window the way the threshold will — the strand's own
@@ -3446,7 +3674,7 @@ fn assemble_in(
         // so a captured runtime would be a value cycle.
         runtime: fn() { agency.borrow_runtime(agency_config) },
         settings: advisor_settings,
-        check: goal_check_wiring(settings, plane, clock, entropy()),
+        check: goal_check_wiring(settings, plane, call_clock, entropy()),
         clock:,
         logger:,
         name: advisor_name,
@@ -3486,7 +3714,7 @@ fn assemble_in(
         contributions.Contribution(
           contributions.BuiltIn,
           contributions.compose(
-            contributions.described_tools(local.started.decls),
+            contributions.described_tools(half.decls),
             contributions.owner_tools(
               Some(agency_seam),
               history_seam,
@@ -3545,7 +3773,7 @@ fn assemble_in(
       plane.census,
       broker_actor,
       settings.demand,
-      clock,
+      call_clock,
       entropy,
     )
   use git_start <- result.try(
@@ -3624,7 +3852,7 @@ fn assemble_in(
       broker: broker_actor,
       broker_timeout_ms: 30_000,
       registry: tool_registry,
-      workspace: settings.workspace,
+      workspace: plane.census.workspace,
       blob_root:,
       base_policy:,
       escalations: escalate.Escalations(refused: owner_api.escalate),
@@ -3679,6 +3907,9 @@ fn assemble_in(
       tools: effects.ToolSurface(
         ..held.tools,
         run: wiring.run_placed(held.tools.run, run_holder, opened, clock),
+        // A workspace on an executor keeps a record of the calls it ran, which
+        // the runtime asks about an orphaned one. A local workspace has none.
+        recover: half.recover,
       ),
     )
   let effects_record =
@@ -3779,6 +4010,7 @@ fn assemble_in(
       settings,
       clock,
       plane,
+      call_clock,
       logger,
       entropy,
     )
@@ -3960,7 +4192,7 @@ fn assemble_in(
     // cannot do without: `cap/kv` requires every caller to tolerate a
     // vanished value, so an emptied store costs a running program a
     // cache miss it was already written to handle.
-    |> local.started.children.scratch
+    |> half.children.scratch
     // The satellite registry is in this tier because a restart costs
     // exactly what a satellite crash costs, which extensions are already
     // written to meet: every host it held is `Gone` to its next caller,
@@ -3979,7 +4211,7 @@ fn assemble_in(
     // sweep `job/*` and record every live job as `Lost`. The model
     // learns on its next poll. Losing a session because a job's
     // bookkeeping crashed would be the worse trade.
-    |> local.started.children.jobs
+    |> half.children.jobs
     // The advisor actor is in this tier because everything it holds is
     // durable: the guard and the feed cursor are two `fact.custom`
     // cells, and a replacement reads both on its first message. A crash
@@ -4007,7 +4239,7 @@ fn assemble_in(
     // loses nothing a query cannot rebuild: the dead manager's keepers
     // stop their servers when it goes, and the next query starts one
     // again, cold, and says so.
-    |> local.started.children.lsp_manager
+    |> half.children.lsp_manager
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
     // Started here rather than inside the boot: the pass dispatches
@@ -4120,8 +4352,8 @@ fn assemble_in(
     storage_owner:,
     broker: broker_actor,
     tools: holder,
-    pool:,
-    executor: local.executor,
+    pool: half.pool,
+    executor: half.executor,
     plane:,
     gateway: hub.Gateway(name:),
     worktree: observe_worktree,
@@ -4134,7 +4366,7 @@ fn assemble_in(
     prompt: assembled,
     helper_path: settings.helper_path,
     mcp: mcp_layer,
-    lsp: local.lsp,
+    lsp: half.lsp,
     rulescan: case settings.rules {
       [] -> None
       _configured -> Some(rulescan_name)
@@ -4362,8 +4594,18 @@ pub fn close_instance(instance: Instance) -> Nil {
   instance.plane.close()
   stop_services(instance.services)
   let _stopped = address.stop(instance.namespace)
-  broker.stop(instance.broker)
-  stop_helpers(instance)
+
+  // The broker and the helpers are this session's only for a local workspace.
+  // For one on an executor the broker is a handle on the executor's, which
+  // must not be stopped from here, and the plane's close already closed the
+  // scope that owns the helpers.
+  case instance.executor {
+    Some(service) -> {
+      broker.stop(instance.broker)
+      stop_helpers(service)
+    }
+    None -> Nil
+  }
 
   // Last, and after the runtime: an MCP client owns a child OS process,
   // and stopping one closes that child's stdin and kills it. Nothing can
@@ -4378,10 +4620,10 @@ pub fn close_instance(instance: Instance) -> Nil {
 // verdict and ends the service. A verdict that is not `Ok` leaves the pool
 // and the service alive holding the custody that could not be shown retired,
 // which is what the pool's own `stop_pool` does on the same failure.
-fn stop_helpers(instance: Instance) -> Nil {
+fn stop_helpers(service: executor.Executor) -> Nil {
   let _verdict =
     executor.close(
-      instance.executor,
+      service,
       draining: executor.drain_ms,
       helpers: executor.helpers_ms,
     )

@@ -298,9 +298,9 @@ pub fn reach(
   ))
   use executor <- result.try(
     executors.find(configured, name)
-    |> result.replace_error(unavailable(
-      "no executor named " <> name <> " is configured",
-    )),
+    |> result.map_error(fn(_missing) {
+      unavailable("no executor named " <> name <> " is configured")
+    }),
   )
   use peer <- result.try(
     distribution.peer(membership, executor.node)

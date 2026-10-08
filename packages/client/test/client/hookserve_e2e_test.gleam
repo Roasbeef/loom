@@ -81,6 +81,7 @@ import provider/model
 import provider/secret
 import runtime/api
 import simplifile
+import support/local_workspace
 import support/provider as provider_test
 import telemetry/level
 import telemetry/log
@@ -535,9 +536,10 @@ fn sse(event: String, data: String) -> String {
 // handshook would otherwise fail later, inside the tool call, as a
 // clearance refusal that reads like a policy decision.
 fn complete(instance: serve.Instance) -> Result(operation.LastResult, Nil) {
-  let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+  let assert Ok(helper) =
+    exec.checkout(local_workspace.pool(instance), waiting: 5000)
     as "the instance must have a real, handshaken helper"
-  exec.checkin(instance.pool, helper)
+  exec.checkin(local_workspace.pool(instance), helper)
   let assert Ok(op) =
     api.prompt(instance.runtime, [
       message.UserMessage(
