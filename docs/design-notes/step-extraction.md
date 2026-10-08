@@ -45,8 +45,8 @@ The terminal's whole update is `runtime.settle(step(runtime.message(event,
 model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1764`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:59` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
-(`packages/tui/src/tui.gleam:2328` (`apply_input`),
-`packages/tui/src/tui.gleam:2329` (`settle_update`)), or an `Arrived`
+(`packages/tui/src/tui.gleam:2334` (`apply_input`),
+`packages/tui/src/tui.gleam:2335` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:392` (`Model`)), whose `view` field already holds the
@@ -184,7 +184,7 @@ terminal, 4 handles, 3 split.
 | `captured` | a | The last cut and its view. |
 | `last_capture`, `notices` | a | Live-delivery witnesses the fixtures read. |
 | `daemon_host` | b | The control connection's key and build. |
-| `control_request`, `activity_poll`, `reconnect`, `creation_key`, `configuring` | b | Daemon-control job slots; their replies are `weft.Pulled` values (`tui/job.gleam:401` (`ControlReply`)), which R6 keeps out of `session_view`. |
+| `control_request`, `activity_poll`, `reconnect`, `creation_key`, `configuring` | b | Daemon-control job slots; their replies are `weft.Pulled` values (`tui/job.gleam:407` (`ControlReply`)), which R6 keeps out of `session_view`. |
 | `approvals` | a | Pending and settled reviews; both hosts project them. |
 | `prompted_approvals`, `inspecting_approval` | b | Which questions the terminal's inspector has opened; the page draws every pending record as a card. |
 | `unconfirmed` | a | The last mutation with a lost reply. |
@@ -641,7 +641,7 @@ The worst cases in the code, and the cut for each:
    lookup's inspector (`LookupAnswered`) are facts the terminal applies
    after the update.
 
-7. **`settle_update`** (`packages/tui/src/tui.gleam:2329`
+7. **`settle_update`** (`packages/tui/src/tui.gleam:2335`
    (`settle_update`)) runs nine calls after every event. Three are
    shared and move into `step.update`'s own settle: `sync_context`,
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
@@ -656,7 +656,7 @@ The worst cases in the code, and the cut for each:
    `apply_input` describes keeps its shape: the shared `update` applies
    its settle to a parameter, and the terminal's `settle_update` applies
    its remaining steps to `updated` as it does now
-   (`packages/tui/src/tui.gleam:2328` (`apply_input`)).
+   (`packages/tui/src/tui.gleam:2334` (`apply_input`)).
 
 8. **The tick** (`tui/tick.gleam:139` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
@@ -2078,7 +2078,7 @@ them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
-   `packages/tui/src/tui.gleam:2328` (`apply_input`)). S3 creates a third
+   `packages/tui/src/tui.gleam:2334` (`apply_input`)). S3 creates a third
    chain, the shell's edges. *Recommendation:* every S3 landing measures
    `erlc +time` on the generated modules and keeps the parameter boundary
    in each of the three chains; the `beam-compile-review` skill has the
