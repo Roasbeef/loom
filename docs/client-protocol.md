@@ -1034,7 +1034,10 @@ metadata. The harness constructs provenance from the selected resident endpoint
 and its catalogue record.
 
 The success event is `peers.send`, and its body is the recipient's admission
-receipt. Retrying requires the same message ID, target, and text. A changed body
+receipt. When the recipient's owner is on another orchestrator and cannot be
+reached, the body is instead `{"state": "queued", "session", "message_id",
+"note"}`, and the message is delivered when the owner answers (see the
+[sender outbox](architecture/messaging.md#the-sender-outbox)). Retrying requires the same message ID, target, and text. A changed body
 is refused; revoking a grant can also refuse a retry. During daemon drain the
 command is refused like other control mutations. See the
 [API guide](async-collaboration.md#peer-messaging) for an example.

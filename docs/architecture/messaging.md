@@ -429,6 +429,71 @@ commits that original operation ID with the brief, so a later run cannot
 replace it. See the [API guide](../async-collaboration.md) for examples
 and recovery limits.
 
+### The sender outbox
+
+A peer message is admitted by the recipient's owner. On a distributed
+deployment that owner can be another node, and it can be unreachable for a
+while. [Protocol 078](../../protocol-change/078-distributed-runtime.md) (the
+sender outbox addendum) therefore has `peers.send` record each message in the
+sending session before it asks the recipient. The answer depends on what the
+recipient's owner does:
+
+| The recipient's owner | `peer_send` returns | The row becomes |
+|---|---|---|
+| answers with a receipt | the receipt, as before | `admitted`, holding the receipt |
+| answers with a refusal (not running, no grant, id reused with other content) | the refusal, as before | `refused`, holding the reason |
+| does not answer (`peer_mail.owner_unreachable`) | `{"state": "queued", ...}` | stays `pending`, holding the text |
+
+A local recipient never produces the third case, so within one daemon
+`peer_send` behaves as it did before the outbox, apart from the row. The
+unreachable answer is an error text, `peer_mail.owner_unreachable`, that a
+remote endpoint returns through the channel `Endpoint.call` already has.
+`peers.send` treats exactly that text as "nobody answered" and every other
+error as the recipient's own refusal.
+
+The rows are reserved facts in the sender's own store, one per message, under
+`client/peers/outbox/<digest(sending strand, recipient session, message id)>`.
+They are not in the catalogue: the link authority and the sender identity they
+depend on are in the session's store, and a session that moves to another
+orchestrator carries its pending messages with it. A row holds the recipient
+session and strand, the message id, the time it was first written, and its
+state. `client/peer_outbox` is the pure module that decides what a row means;
+`client/internal/peer_outbox_store` applies those decisions to the store; and
+`peer_mail` exposes them as four endpoint commands (`OutboxClaim`,
+`OutboxSettle`, `OutboxDue`, `OutboxReceipt`) so that they run in the sender's
+serialized Agency actor.
+
+`client/peer_outbox_drain` delivers a queued message later. It is a
+`weft/state_machine` in the session's restartable service tier, with one named
+timeout. It makes one pass when the session opens, so a restart resumes
+delivery. After that it arms a pass every 5 seconds while any row is pending,
+and it holds no timer when none is. A pass reads the due rows from the Agency,
+resolves each recipient through the same `Directory.resolve` seam `peers.send`
+uses, and records the outcome. A recipient that does not answer is asked once
+per pass, so a pass over many rows to one dead node costs one deadline.
+
+If the recipient committed a message and its reply was lost, the row stays
+pending. The next attempt reaches `peer_mail.deliver`, which finds the stored
+receipt and returns it (`same_receipt`), so the message is in the recipient
+exactly once and the sender's row learns the receipt.
+
+The outbox is bounded:
+
+- A sending strand keeps at most 64 rows. At the bound, `peer_send` evicts the
+  oldest finished row, or is refused with `outbox_full` when all 64 are
+  pending.
+- A row that has been pending for more than one hour becomes
+  `refused("owner unreachable")` and is not attempted again.
+- Removing a link deletes the pending rows to that target. Finished rows stay.
+- A refused row is not final. Sending the same message id again attempts it
+  again, because nothing was admitted and the cause may have passed.
+- The `peer.sent_receipt` capability reads the sender's own admitted row first,
+  and asks the recipient only when there is none.
+
+`cap/peer.send` returns a typed receipt, so a program that sends to an
+unreachable owner receives the denial `peer_queued` with the model-facing note
+rather than a receipt.
+
 ## What is durable, and what is ephemeral
 
 | Message | Carrier | On loss |
@@ -446,6 +511,8 @@ and recovery limits.
 | A model-created schedule | commit: a `schedule/config/…` cell claimed on its absence | never lost; a second claim of the name is told `NameTaken` rather than overwriting |
 | A schedule's observation instant | commit: a `schedule/seen/…` cell claimed once by the scanner | never lost; the expiry clock a restart re-derives is the one every incarnation agreed on |
 | A schedule's retirement | commit: its marks, then its seen cell, then its config cell deleted | a fault mid-way leaves a live schedule with a reset count, never an orphan clock for a reused name |
+| A queued peer message | commit: a `client/peers/outbox/…` row in the sender's session, `pending` | never lost; the drainer attempts it every 5 s for up to an hour, and a retry after a lost reply gets the recipient's stored receipt |
+| The outbox drainer's timer | process timer | lost with the process; the restart's first pass reads the rows again |
 
 The rule reads straight down the table: if a row is a commit, a crash
 cannot lose it; if a row is a process message, losing it costs latency or
@@ -486,6 +553,7 @@ bounds one schedule, and a model can create another. The
 | `events/bus.gleam` | The EventBus: typed per-session topics of thin hints. |
 | `events/projection.gleam` | Pull-based read models that converge from the store on each hint. |
 | `client/schedule*.gleam`, `client/cron.gleam` | Scheduled heartbeats: the store, the timer-driven scanner, and the model's and operator's doors. See [automation.md](automation.md#where-the-code-lives). |
+| `client/peer_outbox.gleam`, `client/peer_outbox_drain.gleam`, `client/peers.gleam` | The sender outbox: the pure row rules, the drainer state machine, and `send`/`resend`. See [the sender outbox](#the-sender-outbox). |
 | `client/advisor.gleam` | The advisor loop: the run-boundary hooks, the branch scan from a stored cursor, the framed feed, and the `advise` seam that refuses any caller but the advisor strand. |
 
 Each path is relative to its package's source root: `runtime/api.gleam`

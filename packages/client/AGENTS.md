@@ -5492,6 +5492,35 @@ clear it, each in one `api.edit_reserved_facts` transaction. Default rows carry
 nothing opens a session. Default entries share the 64-link bound after the
 explicit ones. A new `[peers]` key means `peer_defaults` and its test.
 
+Sender outbox (protocol-change/078 addendum). `peers.send` records each message
+in the sending session before it asks the recipient: `peer_mail.OutboxClaim`
+writes `client/peers/outbox/<digest(strand, session, id)>` `pending`
+(`put_reserved_fact_expecting`, expecting absent), the inline attempt runs, and
+`OutboxSettle` flips the row to `admitted` (receipt) or `refused` (reason). An
+unreachable owner is the error text `peer_mail.owner_unreachable`, which a local
+endpoint never returns; `peers.send` then leaves the row `pending` and returns
+`{"state": "queued"}` (`peers.queued`, `peers.is_queued`), and the router
+answers a program with the denial `peer_queued` because `cap/peer.send` is typed
+to a receipt. `client/peer_outbox` is the pure module (row, `claim`, `room`,
+`settle`, `expire`, codec); `client/internal/peer_outbox_store` applies it to the
+store inside the Agency actor; `OutboxDue` also refuses rows pending over an
+hour. `client/peer_outbox_drain` is a `weft/state_machine` (`Idle`/`Waiting`)
+with one named timeout `peer-outbox-drain`: a pass at session open, then every
+`retry_interval_ms` (5000) while any row is owed, no timer when none is. It is
+built from a `peers.Wiring` and an injected `after`, reads rows through
+`OutboxDue`, and attempts each through `peers.resend`, which resolves through
+`Directory.resolve` like `send`. `agency.Config.outbox_queued` rings it
+(`peer_outbox_drain.poke`) after an `OutboxSettle(Unanswered)`; `serve` wires the
+closure and adds the drainer beside the schedule scanner. Bounds: 64 rows per
+strand (`outbox_full` when all pending, else the oldest finished row is evicted),
+one hour pending, `Unlink` deletes the pending rows to the link,
+the `peer.sent_receipt` router arm reads an admitted local row first. A refused row is replaced
+by a repeat of its id. The drainer is not labelled with a `telemetry/owner` role
+(roles are frozen by the protocol), so an ownership inspector reports it as
+`unknown`. Tests: `peer_outbox_test` (pure), `peer_outbox_flow_test` and
+`peer_outbox_drain_test` over `support/peer_rig` (two real runtimes behind a
+scripted network, a fake timer wheel, a file-backed reopen).
+
 An owner's web page manages links through `daemon/ui_peers`: `run` executes a
 `web_view/peer_links.Request` against `peers.inspect`, `peers.link` and
 `peers.unlink_session` (also what the `peers.unlink` control calls), judges strands

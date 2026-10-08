@@ -461,6 +461,68 @@ refused, because the row is the only record of who owns it.
 Nothing is added to the node vocabulary or the client protocol by this change,
 so no Part 1 interface moves.
 
+### Addendum: the sender outbox
+
+Phase 4 of the design note carries peer mail between orchestrators. The first
+half is a durable outbox on the sender, for the one case a synchronous call
+cannot answer: the recipient's owner is unreachable. It changes no wire frame
+and no frozen interface. It adds four `peer_mail.Command` variants that only a
+session's own endpoint receives, one reserved fact namespace, and one
+model-visible `peer_send` result.
+
+#### Cells and commands
+
+Each message the session sends has one reserved fact,
+`client/peers/outbox/<digest(sending strand, recipient session, message id)>`,
+in the sending session's store. Its value is the strand, the recipient session
+and strand, the message id, `queued_at` in the session clock's milliseconds, and
+a state: `pending` with the text, `admitted` with the recipient's receipt, or
+`refused` with a reason. The key space is not in the catalogue and is not
+readable through the blackboard tools.
+
+`peer_mail.OutboxClaim` writes the row `pending` with a compare-and-set that
+expects the key to be absent. A row already stored answers instead: the same
+request that is `pending` is resumed, the same request that is `admitted` is
+answered with its receipt, a `refused` row is replaced, and a different request
+is refused with the recipient's own text, `message id was already used for
+different content or target`. `OutboxSettle` records an attempt's outcome on a
+`pending` row only, so the first outcome stands. `OutboxDue` lists the pending
+rows after refusing any older than one hour, and `OutboxReceipt` reads an
+admitted row's receipt. `Unlink` also deletes the pending rows to the removed
+link.
+
+An endpoint reports that nobody answered with the error text
+`peer_mail.owner_unreachable` (`owner unreachable`). Every other error from a
+recipient is definitive. A local endpoint never returns it.
+
+#### The `queued` result
+
+When the first attempt finds the owner unreachable, `peer_send` and
+`peers.send` return `{"state": "queued", "session", "message_id", "note"}`
+instead of a receipt, and the sender's drainer keeps attempting the message. A
+program calling `cap/peer.send`, which is typed to return a receipt, receives
+the denial code `peer_queued` with the same note, so `cap/peer` and the
+capability prelude do not change. `peer.sent_receipt` returns the receipt from
+the sender's own row once the message is admitted, and so does sending the same
+message id again.
+
+#### Bounds
+
+A sending strand keeps at most 64 rows. Sending a new message at the bound
+evicts the oldest finished row, and is refused with `outbox_full` when every row
+is pending. A row pending for more than one hour is refused with
+`owner unreachable`.
+
+#### What it costs
+
+Every `peer_send`, including one to a local session, writes one row and
+updates it: two extra Agency calls and two small commits in the sender. A
+finished row stays until it is evicted, so a strand that sends many messages
+holds up to 64 rows of receipts, each about the size of the message. A message
+queued for an hour and then refused has been attempted about 720 times, each a
+bounded call. And a model that sends the same id again after an hour gets a new
+attempt, because a refused row is not final.
+
 ## Impact
 
 - `client`: the workspace plane is split out of `serve.assemble_in`; new
