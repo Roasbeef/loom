@@ -293,3 +293,10 @@ message. The client monitors each semantic request's reply owner. Owner death
 removes that pending id and sends `$/cancelRequest`; a late reply is ignored
 and the shared server keeps serving. Cancellation is a protocol request, so
 it does not prove that a server which ignores cancellation stopped computing.
+
+## No-path diagnostics coverage
+
+The door distinguishes freshness from coverage: an explicit file can settle,
+while a no-path snapshot is `Unsettled` because the manager holds only one
+package server. `Unsettled` also covers partial scope, not just a deadline.
+Protocol 078 records this without adding wire fields.

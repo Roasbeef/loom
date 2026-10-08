@@ -30,7 +30,7 @@
 ////   862cacde4152ef13b16e817de8ff0d3d73d4e5f53b751b2346e5e47cf89f2c54  packages/cap/src/cap/git.gleam
 ////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
 ////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
-////   9d69171624d282c2cf4dfea2f07a725d38938764a864d02577e47b291ab7c7f4  packages/cap/src/cap/lsp.gleam
+////   8b96a19ff255ccef4624d7f331eadd846694d28e6db3f5edb7e3d98d3392f9ce  packages/cap/src/cap/lsp.gleam
 ////   92d8ef8e146f4085e17964c285334ca8085457c382228876d52691e5be23d3f3  packages/cap/src/cap/lsp_sql.gleam
 ////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
 ////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
@@ -46,7 +46,7 @@
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   13e21c346eea7292f312ec82b6fb42a6b86158b9211ec18f4d574186313f7f0d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): 4b6f441a696548a9b3838031148ce9f482e509f48841e4ec1070c2fedc37b51f
+//// Body digest (every line after the marker): 2dae3a8e88e28b3573f305c939ef11f8b321ce492d0f79e5446c8834100e6acd
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -871,7 +871,8 @@ pub type Diagnostic {
 ///
 /// Two variants rather than a flag, because the two are different claims
 /// and a program must not read one as the other: `Settled([])` is clean
-/// code, and `Unsettled([])` is only that nothing had arrived yet.
+/// for the explicitly requested file. `Unsettled([])` proves neither
+/// freshness nor complete coverage, even when no errors have arrived.
 pub type Diagnostics {
   /// The server finished reacting to the latest change. An empty list is
   /// a clean result.
@@ -1049,8 +1050,11 @@ pub fn calls(Query, CallDirection) -> Result(List(Call), LspError)
 ///
 ///
 pub fn definition(Query) -> Result(Found(Site), LspError)
-/// Diagnostics for one file, or for every file the server has reported on
-/// when `path` is `None`.
+/// Diagnostics for one file, or a partial snapshot of the current
+/// server's open files when `path` is `None`. The snapshot is always
+/// `Unsettled`: another package's server may be unavailable or may never
+/// have been queried. Name a file to obtain a settled answer for that
+/// file's owning server.
 ///
 /// Capability: `lsp.diagnostics`.
 ///
@@ -3955,7 +3959,8 @@ pub type Diagnostic {
 ///
 /// Two variants rather than a flag, because the two are different claims
 /// and a program must not read one as the other: `Settled([])` is clean
-/// code, and `Unsettled([])` is only that nothing had arrived yet.
+/// for the explicitly requested file. `Unsettled([])` proves neither
+/// freshness nor complete coverage, even when no errors have arrived.
 pub type Diagnostics {
   /// The server finished reacting to the latest change. An empty list is
   /// a clean result.

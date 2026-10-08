@@ -5877,3 +5877,17 @@ that storage reader and its existing handles, never the runtime effect graph.
 `ui_result` reads one fragment per viewer page or a complete bounded byte tree
 under a shared five-second download deadline. No component callback or result
 ledger is registered in `ui_sessions`.
+
+## Offline LSP readiness and diagnostics scope
+
+Automatic code-mode selection admits a workspace seed only after `seed.verify`
+accepts it; an incomplete snapshot therefore falls through to the bundled
+seed. An explicit seed flag remains authoritative and receives its own failure.
+`lsp/manager.connect_jailed` resolves host Git before composing the downloader
+and offline-server environments. `host_git.tool_path` changes subprocess lookup
+without granting filesystem reads or network authority.
+
+The manager owns one package server at a time. `diagnostics(None)` always returns
+a partial `Unsettled` snapshot, while explicit file queries retain their own
+server acquisition and settlement. A healthy control cannot certify unavailable
+owners elsewhere in the workspace. Protocol 078 records that scope contract.

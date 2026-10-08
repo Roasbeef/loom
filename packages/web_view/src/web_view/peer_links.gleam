@@ -111,19 +111,20 @@ pub const row_limit = 40
 /// a session's default link joins.
 pub const default_target = "main"
 
-/// Whether the focused strand already sends into `target` of `session`, by a
+/// Whether the focused strand already sends to any strand of `session`, by a
 /// grant or by the daemon's default link. The board's rows come from the same
 /// listing the daemon delivers by, so a default link is in them exactly when
-/// delivery admits it, and the page decides nothing of its own.
+/// delivery admits it, and the page decides nothing of its own. Incoming rows
+/// do not count, and neither does the other end's strand.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert !peer_links.sends_into(Board("main", [], AllShown), "s", "main")
+/// assert !peer_links.sends_to(Board("main", [], AllShown), "s")
 /// ```
-pub fn sends_into(board: Board, session: String, target: String) -> Bool {
+pub fn sends_to(board: Board, session: String) -> Bool {
   list.any(board.rows, fn(row) {
-    row.direction == Outgoing && row.session == session && row.strand == target
+    row.direction == Outgoing && row.session == session
   })
 }
 

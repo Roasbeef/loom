@@ -123,6 +123,8 @@ import client/tool_holder
 import client/wiring
 import client/working_directory
 import client/worktree_diff
+import codemode/compile
+import codemode/seed
 import core/clock.{type Clock}
 import core/glance as diagnostic
 import core/ids.{type OpId}
@@ -7565,10 +7567,21 @@ fn seed_root(flag: Option(String), workspace: String) -> String {
   let in_workspace = workspace <> "/" <> default_seed_directory
   seed_ladder(
     flag,
-    in_workspace: fn() { install.existing_directory(in_workspace) },
+    in_workspace: fn() { usable_seed(in_workspace) },
     bundled: install.bundled_seed,
     otherwise: in_workspace,
   )
+}
+
+// An existing workspace snapshot outranks the release only when it contains
+// the capabilities this host admits. Explicit flags still reach discovery
+// unchanged, where an invalid operator selection receives its own refusal.
+fn usable_seed(root: String) -> Result(String, Nil) {
+  use Nil <- result.try(
+    seed.verify(root, compile.default_dependencies())
+    |> result.replace_error(Nil),
+  )
+  Ok(root)
 }
 
 // One entropy seam serves two masters: id seeds must never repeat

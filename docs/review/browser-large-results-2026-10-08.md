@@ -69,3 +69,23 @@ The reviewer did not independently run the HTTP suite or Linux signoff.
 Hosted CI and required Linux signoff are separate gates on the eventual
 published head; local success is not a substitute for either. See
 `protocol-change/079-browser-result-records.md` for the interface decision.
+
+## Integration before merge
+
+PR #927's readiness head `71887e1b7` and main `16f886bd0` are integrated so
+CI exercises both requested fixes together. No source conflict occurred. Both
+client documentation sections are preserved; the handoff is reconciled and
+shifted source citations are checked against the merged tree. Generated browser
+assets are rebuilt rather than manually resolving CSS. The PR still targets
+main and will show only its browser changes after #927 merges.
+
+The readiness follow-up corrects a Darwin-only declaration for two existing
+broker /proc prerequisites, without changing their tests or assertions. The
+original browser gate remains historical evidence; fresh CI and Linux signoff
+are required for this integration head before the authorized merge.
+
+A narrow independent integration review found no findings. Browser read,
+authorization, identity and paging/download modules match reviewed `0d1bd8180`;
+readiness files match `71887e1b7`, and the Link-form source/tests match main
+`16f886bd0`. It confirmed the client doc mirror and Darwin-only prerequisite
+scope. This was a source-composition review, not a replacement for fresh tests.

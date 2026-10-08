@@ -176,6 +176,7 @@ import broker/budget
 import broker/exec
 import broker/policy.{type SandboxPolicy}
 import client/codemode.{type Toolchain}
+import client/host_git
 import client/lsp/dependency_state
 import client/lsp/jail
 import client/lsp/leases
@@ -1432,8 +1433,9 @@ fn diagnostics(
       settled(manager, session, [owned.path])
     }
 
-    // Every open document is what "all of them" can mean: the server was
-    // told about exactly those, and publishes about what they break.
+    // This manager holds one package server at a time. Its open documents
+    // cannot attest to other packages, including owners that failed to start.
+    // Keep their publications useful without claiming the workspace is clean.
     None -> {
       use identity <- result.try(option.to_result(
         peek(manager).identity,
@@ -1448,7 +1450,12 @@ fn diagnostics(
         lsp.open_paths(session.client)
         |> result.map_error(request_error(session, _)),
       )
-      settled(manager, session, open)
+      use served <- result.map(settled(manager, session, open))
+      let seen = case served.value {
+        query.Settled(diagnostics:) -> diagnostics
+        query.Unsettled(seen:) -> seen
+      }
+      Served(..served, value: query.Unsettled(seen:))
     }
   }
 }
@@ -2481,6 +2488,18 @@ pub fn connect_jailed(
   jailed: Jailed,
   identity: Identity,
 ) -> Result(Transport, String) {
+  // Resolve Apple's shim on the host before either the finite downloader or
+  // offline server shells out to Git. PATH does not enlarge filesystem reach.
+  let git = host_git.program()
+  let reading = jailed.reading
+  let jailed =
+    Jailed(..jailed, reading: fn(name) {
+      use value <- result.map(reading(name))
+      case name {
+        "PATH" -> host_git.tool_path(value, git)
+        _ -> value
+      }
+    })
   use built <- result.try(jail_for(jailed, identity.server, identity.root))
   let #(now, _clock) = clock.read(jailed.clock)
   use Nil <- result.try(probe(
