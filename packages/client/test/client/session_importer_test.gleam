@@ -322,6 +322,26 @@ pub fn a_registry_that_cannot_be_read_gives_no_stage_test() {
   Nil
 }
 
+pub fn a_copy_path_that_cannot_be_examined_gives_no_stage_test() {
+  let rig = rig("silent-path", box())
+  let copy = cut(rig, 43, clean())
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+  assert session_importer.activate(rig.context, activation(copy, op))
+    == session_move.Accepted
+  assert session_importer.stage(rig.context, copy.session, op)
+    == Ok(session_move.Activated)
+
+  // The directory the copies wait in is replaced by a plain file, so no path
+  // below it can be examined. The row says `imported`, and an unplaced copy
+  // might be waiting there for all the importer can tell, so `Activated` would
+  // let the source retire over a session whose file is not in place.
+  let incoming = session_move.incoming_directory(rig.directory)
+  let assert Ok(Nil) = simplifile.delete_all([incoming])
+  let assert Ok(Nil) = simplifile.write(incoming, "not a directory")
+  assert session_importer.stage(rig.context, copy.session, op) == Error(Nil)
+  finish(rig)
+}
+
 pub fn a_restart_at_zero_replaces_what_was_received_test() {
   let rig = rig("restart", box())
   let copy = cut(rig, 3, clean())

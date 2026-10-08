@@ -206,10 +206,10 @@ fn file_failure(path: String) -> fn(simplifile.FileError) -> Verdict {
 /// waiting is `Received`, because an activation that crashed between its commit
 /// and the rename is finished by the sender asking again.
 ///
-/// A catalogue that cannot be read gives no answer at all, which the port sends
-/// as silence. `Absent` would tell the sender that nothing is here, and it
-/// would send the whole file again to a receiver that may already hold the
-/// session.
+/// A catalogue that cannot be read, or a copy's path that cannot be examined,
+/// gives no answer at all, which the port sends as silence. `Absent` would tell
+/// the sender that nothing is here, and it would send the whole file again to a
+/// receiver that may already hold the session.
 ///
 /// ## Examples
 ///
@@ -222,7 +222,13 @@ pub fn stage(
   op: String,
 ) -> Result(Stage, Nil) {
   let whole = session_move.incoming_path(context.state_root, session, op)
-  let waiting = simplifile.is_file(whole) == Ok(True)
+
+  // A file that cannot be examined is not a copy that is absent. With the row
+  // `imported` the answer would be `Activated` while an unplaced copy may still
+  // wait, and the source would retire over a session whose file is not in place.
+  use waiting <- result.try(
+    simplifile.is_file(whole) |> result.replace_error(Nil),
+  )
   case manager.custody(context.registry, session) {
     Ok(catalogue.Imported(op: held, ..)) if held == op ->
       case waiting {

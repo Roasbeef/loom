@@ -6956,9 +6956,11 @@ the protocol-change/078 addendum on moving a session have the protocol.
   `[orchestrators.<name>]`, then the digest, then the scope cell read from a
   scratch copy (opening a session file rewrites it), then the executor row, and
   only then hands the registry the import. A copy refused for a reason a resend
-  cannot cure is removed. `stage` returns `Result(Stage, Nil)`: a registry read that
-  fails is `Error(Nil)` and the port sends no reply, because `Absent` would make
-  the source send the file again to a receiver that may hold the session.
+  cannot cure is removed. `stage` returns `Result(Stage, Nil)`: a registry read
+  or a copy path that cannot be examined is `Error(Nil)` and the port sends no
+  reply, because `Absent` would make the source send the file again to a receiver
+  that may hold the session, and `Activated` over an unexamined path could let the
+  source retire while a copy still waits.
 - `session_mover` is the source's driver. `drive` takes the steps in order and every
   run starts from what is on disk: it reads the row, asks the receiver how far the
   move has got, and does what remains. A move finishes, is abandoned only on an
