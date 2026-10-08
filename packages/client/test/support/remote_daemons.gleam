@@ -1798,3 +1798,125 @@ pub fn scope_if_held(
   let assert Ok(Nil) = exec_ledger.close(ledger) as "the copy closes"
   found
 }
+
+// --- moving a session between orchestrators -----------------------------------
+
+/// `sessions.move` for `session` toward the orchestrator `to`, without waiting
+/// for the daemon to answer.
+///
+/// A daemon started with `LOOM_MOVE_CRASH_AFTER=intent` halts as it accepts the
+/// move, and may end before the reply is written, so the request is posted and
+/// the reply is read only if one arrives. The answer is the reply when it did,
+/// and `None` when the connection ended or nothing came within `within_ms`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let reply = remote_daemons.begin_move(control, 40, session, "bravo", 5000)
+/// ```
+pub fn begin_move(
+  control: Control,
+  id: Int,
+  session: String,
+  to: String,
+  within_ms: Int,
+) -> Option(JsonValue) {
+  wire.post(
+    control.socket,
+    id,
+    "sessions.move",
+    json.Object([
+      #("session_id", json.String(session)),
+      #("to", json.String(to)),
+      #("epoch", json.String(control.epoch)),
+    ]),
+  )
+  case ffi_ws.tcp_receive(control.socket, 2, within_ms) {
+    Ok(<<0x81, marker>>) -> {
+      let size = case marker {
+        126 ->
+          case ffi_ws.tcp_receive(control.socket, 2, within_ms) {
+            Ok(<<size:16>>) -> Ok(size)
+            _ -> Error(Nil)
+          }
+        size if size < 126 -> Ok(size)
+        _ -> Error(Nil)
+      }
+      case size {
+        Ok(size) ->
+          case ffi_ws.tcp_receive(control.socket, size, within_ms) {
+            Ok(bytes) ->
+              case bit_array.to_string(bytes) {
+                Ok(text) ->
+                  case json.parse(text) {
+                    Ok(value) -> Some(value)
+                    Error(_) -> None
+                  }
+                Error(_) -> None
+              }
+            Error(_) -> None
+          }
+        Error(_) -> None
+      }
+    }
+    _ -> None
+  }
+}
+
+/// Waits until a daemon's recorded process is gone, however it ended.
+///
+/// A daemon that halts itself leaves its endpoint record behind, as a crash
+/// does, and this reads the record's process identity until that process no
+/// longer exists. It signals nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.await_departure(source.layout)
+/// ```
+pub fn await_departure(layout: Layout) -> Nil {
+  let assert Ok(Some(record)) = endpoint.load(layout.paths)
+    as "the daemon recorded its identity"
+  let assert poll.Answered(Nil) =
+    poll.until(within: 60_000, every: 25, attempt: fn() {
+      case endpoint.is_present(record.fence) {
+        Ok(False) -> poll.Done(Nil)
+        Ok(True) -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+    as "the halted daemon's native identity departs"
+  Nil
+}
+
+/// Polls `sessions.get` until the session reports a `moved` member, and returns
+/// that member. Every poll is a new request, so the control ids used are
+/// `first_id` and the ones after it, as many as the polls take.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let moved = remote_daemons.await_moved(control, 500, session, 120)
+/// ```
+pub fn await_moved(
+  control: Control,
+  first_id: Int,
+  session: String,
+  polls: Int,
+) -> JsonValue {
+  assert polls > 0 as "the move ends within its bounded polls"
+  case session_record(control, first_id, session) {
+    json.Object(fields) ->
+      case list.key_find(fields, "moved") {
+        Ok(moved) -> moved
+        Error(Nil) -> {
+          process.sleep(500)
+          await_moved(control, first_id + 1, session, polls - 1)
+        }
+      }
+    _ -> {
+      process.sleep(500)
+      await_moved(control, first_id + 1, session, polls - 1)
+    }
+  }
+}

@@ -292,6 +292,20 @@ pub fn frame(socket: Socket, within_ms within_ms: Int) {
 /// forwards it unchanged to the read that follows the write.
 @internal
 pub fn send(socket, id, command, body, within_ms within_ms: Int) {
+  post(socket, id, command, body)
+  frame(socket, within_ms:)
+}
+
+/// Writes one v2 command and reads nothing, for a test whose daemon may end
+/// before it answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon_server_test.post(socket, 9, "sessions.move", body)
+/// ```
+@internal
+pub fn post(socket, id, command, body) -> Nil {
   let text =
     json.to_string(
       json.Object([
@@ -308,7 +322,6 @@ pub fn send(socket, id, command, body, within_ms within_ms: Int) {
     False -> <<0x81, 0xfe, size:16, 0:32, bytes:bits>>
   }
   assert ffi_daemon_socket.send(socket, masked) == Ok(Nil)
-  frame(socket, within_ms:)
 }
 
 /// One request, answered past whatever the daemon pushed around it.
