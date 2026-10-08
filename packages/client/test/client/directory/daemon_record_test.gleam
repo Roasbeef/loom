@@ -5,7 +5,8 @@
 //// delete marks the session, deletes the record and only then the
 //// registration, a record that names someone else refuses the delete and
 //// clears the mark, and a write without a quorum is refused `no_quorum` and
-//// leaves the mark so nothing opens the session. The store is a VM-wide
+//// leaves the mark so nothing opens the session, and opening a session the
+//// daemon holds needs no store at all. The store is a VM-wide
 //// singleton, so the module is declared serial.
 
 import client/daemon/limits
@@ -263,6 +264,31 @@ pub fn a_delete_without_a_quorum_keeps_the_mark_and_the_session_closed_test() {
     // Nothing opens a session whose deletion has begun.
     let opened = command(socket, 4, "sessions.open", id, ready.epoch)
     assert code(opened) == json.String("busy")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_recorded_session_opens_with_the_store_stopped_test() {
+  use <- with_store
+  member_daemon(ownership.over_store(alpha), fn(ready, port, credential) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let id = saved_remote(socket, ready, "opens")
+
+    // Opening a session this daemon holds asks nothing of the directory, so a
+    // member with no store at all, as one cut off from the majority, opens it.
+    store.stop()
+    let opened = command(socket, 3, "sessions.open", id, ready.epoch)
+    assert field(opened, "event") == json.String("sessions.open")
+    let assert poll.Answered(Nil) =
+      poll.until(within: 15_000, every: 20, attempt: fn() {
+        case manager.get(ready.registry, id) {
+          Ok(manager.View(status: manager.Resident(..), ..)) -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      as "the session opens without the store"
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
