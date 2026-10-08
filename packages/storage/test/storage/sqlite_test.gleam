@@ -695,3 +695,36 @@ pub fn export_requires_an_existing_file_and_a_distinct_destination_test() {
   assert simplifile.is_file(path) == Ok(True)
   assert lease_rows(path) == []
 }
+
+pub fn releasing_an_export_frees_the_original_for_its_next_writer_test() {
+  let #(path, _entry_id) = closed_session("export_release")
+  let copy = path <> ".move.op1"
+  let assert Ok(_digest) =
+    sqlite.export_closed(
+      path:,
+      to: copy,
+      owner: "move:op1",
+      clock: clock.fixed(at: 100_000),
+    )
+  assert lease_rows(path) == [#("move:op1", 1)]
+
+  // Another owner's release does nothing: a move cannot free a claim that is
+  // not its own.
+  assert sqlite.release_export(path:, owner: "move:op2") == Ok(Nil)
+  assert lease_rows(path) == [#("move:op1", 1)]
+
+  // The owner's release removes the claim, and the session opens at once
+  // instead of after the export's TTL. A repeat finds nothing and succeeds.
+  assert sqlite.release_export(path:, owner: "move:op1") == Ok(Nil)
+  assert lease_rows(path) == []
+  assert sqlite.release_export(path:, owner: "move:op1") == Ok(Nil)
+  let assert Ok(reopened) =
+    sqlite.open(sqlite.config(path:, owner: "writer"), clock.fixed(at: 100_001))
+  let assert Ok(Nil) = storage.close(reopened)
+}
+
+pub fn releasing_an_export_of_a_file_that_is_gone_is_nothing_to_do_test() {
+  let path = fresh_path("export_release_absent")
+  assert sqlite.release_export(path:, owner: "move:op1") == Ok(Nil)
+  assert simplifile.is_file(path) == Ok(False)
+}

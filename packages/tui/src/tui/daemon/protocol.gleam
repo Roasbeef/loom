@@ -240,6 +240,16 @@ pub type Command {
     session_id: String,
   )
 
+  /// Hands a session to another orchestrator (protocol-change/078, phase 5).
+  /// The reply says the move is in flight; the daemon carries it to its end.
+  MoveSession(
+    /// Canonical registration selected by the owner.
+    session_id: String,
+    /// The destination, named as the daemon's `[orchestrators.<name>]` table
+    /// names it.
+    to: String,
+  )
+
   /// Observes an operation only in the epoch where it was obtained.
   GetOperation(
     /// The authorized session whose lifecycle is being observed.
@@ -555,6 +565,17 @@ pub type Reply {
     session_id: String,
   )
 
+  /// A move the daemon accepted and is carrying out.
+  MovedReply(
+    /// The session being moved.
+    session_id: String,
+    /// The move's identity, which the daemon stores and a repeat of the request
+    /// answers again.
+    op: String,
+    /// The orchestrator the session is going to.
+    to: String,
+  )
+
   /// The daemon accepted its drain request.
   ShutdownReply
 
@@ -673,6 +694,7 @@ pub fn name(command: Command) -> String {
     OpenSession(..) -> "sessions.open"
     StopSession(..) -> "sessions.stop"
     DeleteSession(..) -> "sessions.delete"
+    MoveSession(..) -> "sessions.move"
     GetOperation(..) -> "operations.get"
     InspectPeers(..) -> "peers.inspect"
     LinkPeers(..) -> "peers.link"
@@ -713,6 +735,7 @@ pub fn mutates(command: Command) -> Bool {
     | OpenSession(..)
     | StopSession(..)
     | DeleteSession(..)
+    | MoveSession(..)
     | ArchiveSession(..)
     | RestoreSession(..)
     | LinkPeers(..)
@@ -863,6 +886,11 @@ fn command_fields(command: Command, epoch: Epoch) {
     | RestoreSession(id) -> {
       use fields <- result.map(identity_fields(id))
       [#("epoch", json.String(epoch_value)), ..fields]
+    }
+    MoveSession(id, to) -> {
+      use fields <- result.try(identity_fields(id))
+      use destination <- result.map(text_fields([#("to", to, 64)]))
+      [#("epoch", json.String(epoch_value)), ..list.append(fields, destination)]
     }
     GetOperation(id, operation, expected) -> {
       use Nil <- result.try(case expected == epoch {
@@ -1174,6 +1202,12 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.open" | "sessions.stop" ->
       result.map(lifecycle(body), LifecycleReply)
     "sessions.delete" -> result.map(deletion(body), DeletedReply)
+    "sessions.move" -> {
+      use session_id <- result.try(text_at(body, "session_id", 64))
+      use op <- result.try(text_at(body, "op", 64))
+      use to <- result.map(text_at(body, "to", 64))
+      MovedReply(session_id, op, to)
+    }
     "peers.inspect" -> Ok(PeersInspectionReply(body))
     "peers.link" | "peers.unlink" -> Ok(PeersMutationReply(body))
     "principals.list" | "principals.memberships" -> Ok(AccessListingReply(body))

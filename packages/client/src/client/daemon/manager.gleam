@@ -129,6 +129,16 @@ pub type Error {
 
   /// Parked process preparation failed before session work began.
   Preparation(reason: String)
+
+  /// This catalogue is handing the session to the orchestrator `to` under the
+  /// move `op`, so nothing here may open it until the move finishes or aborts
+  /// (protocol-change/078, phase 5).
+  SessionMoving(op: String, to: String)
+
+  /// This catalogue handed the session to the orchestrator `to`. Its row is a
+  /// tombstone that only records who owns the session now, and no open,
+  /// restore or delete runs here.
+  SessionMoved(to: String)
 }
 
 /// Metadata plus the registry's current lifecycle observation.
@@ -607,6 +617,37 @@ type Message(instance) {
     String,
     Subject(Result(catalogue.Registration, AdminError)),
   )
+
+  /// Who serves a session, read without waking it.
+  Custody(String, Subject(Result(catalogue.Custody, Error)))
+
+  /// The owner's request to hand a session to the orchestrator named, under the
+  /// operation identity the caller minted: the caller, the epoch, the session,
+  /// the destination and the identity.
+  BeginMove(
+    access.Digest,
+    String,
+    String,
+    String,
+    String,
+    Subject(Result(catalogue.Custody, AdminError)),
+  )
+
+  /// The mover's compare-and-set that ends a move, for the session and the
+  /// operation: `Moving -> Moved`.
+  FinishMove(String, String, Subject(Result(catalogue.Custody, Error)))
+
+  /// The mover's compare-and-set that abandons a move before anything reached
+  /// the receiver: `Moving -> Resident`.
+  AbortMove(String, String, Subject(Result(catalogue.Custody, Error)))
+
+  /// The importer's request to take in a session another orchestrator handed
+  /// over.
+  ImportSession(Import, Subject(Result(catalogue.Custody, AdminError)))
+
+  /// The moves still in `Moving`, for a restart to resume.
+  MovingSessions(Subject(Result(List(catalogue.Pending), Error)))
+
   WorkspaceDefault(String, Subject(Result(View, Error)))
   SetDefault(String, String, Subject(Result(View, Error)))
   Open(String, Subject(Result(Status, Error)))
@@ -750,6 +791,47 @@ pub type AdminError {
 
   /// The atomic durable mutation was refused.
   AdminMetadata(error: catalogue.Error)
+
+  /// The session is being handed to the orchestrator `to` under the move `op`,
+  /// so it may not be archived, restored or deleted until the move ends.
+  AdminMoving(op: String, to: String)
+
+  /// The session was handed to the orchestrator `to`, which owns it now.
+  AdminMoved(to: String)
+
+  /// The session cannot be moved, with the reason in words. A local session has
+  /// no executor whose scope could follow it, a reserved one has no file and an
+  /// archived one must be restored first.
+  AdminNotMovable(reason: String)
+
+  /// A file the operation had to place could not be, with the reason.
+  AdminFailed(reason: String)
+}
+
+/// A session handed over by another orchestrator, in the form the registry
+/// applies it: the registration and domain mapping the importer built from the
+/// move's manifest, the move's identity, and where the verified copy waits
+/// (protocol-change/078, phase 5).
+@internal
+pub type Import {
+  Import(
+    /// The registration to create, with its path under this daemon's sessions
+    /// directory. A session returning to this catalogue keeps the one it has.
+    registration: catalogue.Registration,
+    /// The session-only domain mapping to bind with a new registration.
+    mapping: domain.Domain,
+    /// The move's identity.
+    op: String,
+    /// The `[orchestrators.<name>]` the session came from.
+    from: String,
+    /// Where the verified copy waits. It is moved to the registration's path in
+    /// the same registry turn that records the import, and it is already
+    /// there, with nothing waiting, when a repeat of the same import arrives.
+    received: String,
+    /// The first-prompt subtitle the source showed, kept so a listing reads the
+    /// same on this side.
+    subtitle: Option(String),
+  )
 }
 
 /// Reauthenticates owner and epoch in the same dispatch as the mutation.
@@ -1636,6 +1718,133 @@ pub fn delete_session(
   |> result.unwrap(Error(AdminUnavailable))
 }
 
+/// Reads who serves a session without opening its conversation: this
+/// catalogue (`Resident`), another orchestrator it was handed to (`Moved`), or
+/// a move in either direction that has not finished.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.custody(registry, session_id) == Ok(catalogue.Resident)
+/// ```
+@internal
+pub fn custody(
+  manager: Manager(instance),
+  id: String,
+) -> Result(catalogue.Custody, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: Custody(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Begins handing a session to the orchestrator `to` under the move `op`, as
+/// the owner, in one registry turn: the intent is committed and the session's
+/// slot is stopped together, so no runtime can open the store after the intent
+/// is durable.
+///
+/// A repeat toward the same orchestrator answers the stored `Moving`, with the
+/// operation identity that is stored and not the one offered. A session that is
+/// moving toward another orchestrator is a conflict, one that has moved is
+/// `AdminMoved`, and a session that cannot be moved at all is
+/// `AdminNotMovable` with the reason.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.begin_move(registry, owner, epoch, id, to: "laptop", op: "0192f3c1")
+/// ```
+@internal
+pub fn begin_move(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  id: String,
+  to to: String,
+  op op: String,
+) -> Result(catalogue.Custody, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: BeginMove(
+    caller,
+    epoch,
+    id,
+    to,
+    op,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Ends a move on the side that gave the session up, once the receiver
+/// activated it: `Moving -> Moved`. A repeat answers the stored `Moved`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.finish_move(registry, id, op: "0192f3c1")
+/// ```
+@internal
+pub fn finish_move(
+  manager: Manager(instance),
+  id: String,
+  op op: String,
+) -> Result(catalogue.Custody, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: FinishMove(id, op, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Abandons a move before anything reached the receiver: `Moving -> Resident`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.abort_move(registry, id, op: "0192f3c1")
+/// ```
+@internal
+pub fn abort_move(
+  manager: Manager(instance),
+  id: String,
+  op op: String,
+) -> Result(catalogue.Custody, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: AbortMove(id, op, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Takes in a session another orchestrator handed over, in one registry turn:
+/// the registration, mapping and `Imported` custody are written together and
+/// the verified copy is moved to the registration's path. A repeat of the same
+/// import answers the stored custody and finishes a placement that a crash
+/// interrupted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.import_session(registry, manager.Import(registration:, mapping:, op:, from:, received:, subtitle:))
+/// ```
+@internal
+pub fn import_session(
+  manager: Manager(instance),
+  incoming: Import,
+) -> Result(catalogue.Custody, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: ImportSession(
+    incoming,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// The moves still in `Moving`, in session order, for a restart to resume.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.moving_sessions(registry)
+/// ```
+@internal
+pub fn moving_sessions(
+  manager: Manager(instance),
+) -> Result(List(catalogue.Pending), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: MovingSessions)
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Reads a workspace default without opening it, including after restart.
 ///
 /// ## Examples
@@ -2117,6 +2326,7 @@ fn handle(
           True -> Error(AdminBusy)
           False -> Ok(Nil)
         })
+        use Nil <- result.try(refuse_moved(book, id))
         use record <- result.map(
           catalogue.set_visibility(book.catalogue, id, visibility)
           |> result.map_error(AdminMetadata),
@@ -2190,6 +2400,46 @@ fn handle(
     }
     Delete(caller, epoch, id, sessions, reply) -> {
       process.send(reply, delete_now(phase, book, caller, epoch, id, sessions))
+      sm.keep(book)
+    }
+    Custody(id, reply) -> {
+      process.send(
+        reply,
+        catalogue.custody(book.catalogue, id) |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    BeginMove(caller, epoch, id, to, op, reply) -> {
+      let #(book, outcome) =
+        begin_move_now(phase, book, caller, epoch, id, to, op)
+      process.send(reply, outcome)
+      step(phase, book)
+    }
+    FinishMove(id, op, reply) -> {
+      process.send(
+        reply,
+        catalogue.finish_move(book.catalogue, id, op:)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    AbortMove(id, op, reply) -> {
+      process.send(
+        reply,
+        catalogue.abort_move(book.catalogue, id, op:)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    ImportSession(incoming, reply) -> {
+      process.send(reply, import_now(phase, book, incoming))
+      sm.keep(book)
+    }
+    MovingSessions(reply) -> {
+      process.send(
+        reply,
+        catalogue.moving(book.catalogue) |> result.map_error(Catalogue),
+      )
       sm.keep(book)
     }
 
@@ -2749,6 +2999,176 @@ fn isolate_now(phase, book: Book(instance), caller, epoch, id, state_root) {
   domain.isolate(book.catalogue, id, fresh) |> result.map_error(AdminMetadata)
 }
 
+// A session that is moving or has moved is not this catalogue's to archive,
+// restore or delete: the move row is the only record of who owns it. Both
+// answers name the other side, so the caller can say where the session went.
+fn refuse_moved(book: Book(instance), id: String) -> Result(Nil, AdminError) {
+  case catalogue.custody(book.catalogue, id) {
+    Ok(catalogue.Moving(op:, to:)) -> Error(AdminMoving(op:, to:))
+    Ok(catalogue.Moved(to:, ..)) -> Error(AdminMoved(to:))
+    Ok(catalogue.Resident) | Ok(catalogue.Imported(..)) -> Ok(Nil)
+    Error(error) -> Error(AdminMetadata(error))
+  }
+}
+
+// The write-ahead step of a move: the intent and the stop share this turn, so
+// nothing can open the store between deciding to hand the session over and
+// recording that the decision was made. The intent is committed before the slot
+// is cancelled, which leaves a crash between the two with a `Moving` row and a
+// slot that does not exist after restart, the state the mover resumes from.
+fn begin_move_now(
+  phase: Phase,
+  book: Book(instance),
+  caller: access.Digest,
+  epoch: String,
+  id: String,
+  to: String,
+  op: String,
+) -> #(Book(instance), Result(catalogue.Custody, AdminError)) {
+  let decided = {
+    use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+    use record <- result.try(
+      catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
+    )
+    use Nil <- result.try(movable(book, record))
+    use custody <- result.try(
+      catalogue.custody(book.catalogue, id) |> result.map_error(AdminMetadata),
+    )
+    case custody {
+      catalogue.Moved(to: owner, ..) -> Error(AdminMoved(to: owner))
+      catalogue.Moving(to: heading, ..) if heading == to -> Ok(custody)
+      catalogue.Moving(..) -> Error(AdminMetadata(catalogue.Conflict))
+      catalogue.Resident | catalogue.Imported(..) ->
+        catalogue.begin_move(book.catalogue, id, op:, to:)
+        |> result.map_error(AdminMetadata)
+    }
+  }
+  case decided {
+    Ok(custody) -> #(stop_slot(book, id), Ok(custody))
+    Error(error) -> #(book, Error(error))
+  }
+}
+
+// Whether a registration can be handed over: a session on an executor, whose
+// scope the receiver can reopen, that has a file and is not archived. A local
+// session's checkout is a directory on this machine, which does not travel.
+fn movable(
+  book: Book(instance),
+  record: catalogue.Registration,
+) -> Result(Nil, AdminError) {
+  use visibility <- result.try(
+    catalogue.visibility(book.catalogue, record.id)
+    |> result.map_error(AdminMetadata),
+  )
+  case record.state, visibility, record.executor {
+    catalogue.Reserved, _, _ ->
+      Error(AdminNotMovable("the session has not finished being created"))
+    _, catalogue.Archived, _ ->
+      Error(AdminNotMovable("the session is archived; restore it first"))
+    _, _, "" ->
+      Error(AdminNotMovable(
+        "only a session on an executor can move; this one has no executor yet",
+      ))
+    catalogue.Saved, catalogue.Active, _ -> Ok(Nil)
+  }
+}
+
+// Applies a session another orchestrator handed over. The registration, the
+// mapping and the import row commit together, then the verified copy is moved
+// into place, all in this turn, so no open sees the row without the file. A
+// crash between the commit and the rename leaves the copy where it was, and the
+// same import arriving again finishes the rename.
+fn import_now(
+  phase: Phase,
+  book: Book(instance),
+  incoming: Import,
+) -> Result(catalogue.Custody, AdminError) {
+  use Nil <- result.try(case phase {
+    Ready -> Ok(Nil)
+    ShuttingDown -> Error(AdminUnavailable)
+  })
+  let id = incoming.registration.id
+  use Nil <- result.try(case dict.has_key(book.slots, id) {
+    True -> Error(AdminBusy)
+    False -> Ok(Nil)
+  })
+
+  // Whether this import already committed is read before it is applied, since
+  // the answer to a repeat is the same row. A repeat must not put a copy over a
+  // file that is in place: whatever waits is a late duplicate, and the session
+  // may have run on the placed file since.
+  let repeat =
+    catalogue.custody(book.catalogue, id)
+    == Ok(catalogue.Imported(op: incoming.op, from: incoming.from))
+  use custody <- result.try(
+    domain.import_session(
+      book.catalogue,
+      incoming.registration,
+      incoming.mapping,
+      op: incoming.op,
+      from: incoming.from,
+    )
+    |> result.map_error(AdminMetadata),
+  )
+  use Nil <- result.try(case repeat {
+    True -> finish_placement(incoming)
+    False -> place_received(incoming)
+  })
+  case incoming.subtitle {
+    option.Some(text) -> {
+      let _seeded = catalogue.seed_subtitle(book.catalogue, id, text)
+      Nil
+    }
+    option.None -> Nil
+  }
+  Ok(custody)
+}
+
+// Completes the placement a repeated import may have left unfinished. A file
+// already at the session's path was placed by the import that committed, so a
+// copy still waiting is a late duplicate and is removed; with no file there, the
+// commit was not followed by its rename, and the waiting copy is placed now.
+fn finish_placement(incoming: Import) -> Result(Nil, AdminError) {
+  case simplifile.is_file(incoming.registration.path) {
+    Ok(True) -> {
+      let _removed = simplifile.delete_file(incoming.received)
+      Ok(Nil)
+    }
+    Ok(False) | Error(_) -> place_received(incoming)
+  }
+}
+
+// Moves the verified copy to the session's path. A copy that is no longer
+// waiting is the repeat of an import that already placed it, which is fine only
+// if the session's file is there.
+fn place_received(incoming: Import) -> Result(Nil, AdminError) {
+  let path = incoming.registration.path
+  case simplifile.is_file(incoming.received) {
+    Ok(True) ->
+      case simplifile.create_directory_all(filepath.directory_name(path)) {
+        Ok(Nil) ->
+          simplifile.rename(at: incoming.received, to: path)
+          |> result.map_error(fn(error) {
+            AdminFailed(
+              "the session file could not be put in place: "
+              <> simplifile.describe_error(error),
+            )
+          })
+        Error(error) ->
+          Error(AdminFailed(
+            "the sessions directory is unusable: "
+            <> simplifile.describe_error(error),
+          ))
+      }
+    Ok(False) | Error(_) ->
+      case simplifile.is_file(path) {
+        Ok(True) -> Ok(Nil)
+        Ok(False) | Error(_) ->
+          Error(AdminFailed("the received session file is gone"))
+      }
+  }
+}
+
 // Deletion runs entirely inside this actor turn, which is what makes the
 // busy check meaningful: no open can take a slot between the check and the
 // removal, and once the row is gone `admit` can no longer find the session
@@ -2761,6 +3181,7 @@ fn delete_now(phase, book: Book(instance), caller, epoch, id, sessions) {
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
+  use Nil <- result.try(refuse_moved(book, id))
 
   // Containment is decided against the row still in the catalogue, before
   // the transaction removes it. A row naming a path outside the sessions
@@ -3010,6 +3431,25 @@ fn select_creation_domain(
   }
 }
 
+/// The session-only domain a session on an executor is given: its own memory
+/// and index files below `state_root`, beside no other session's. A session that
+/// another orchestrator handed over gets the same mapping a session created here
+/// does, so the registry never has to ask which of the two it is looking at.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.session_only_domain(registration, "", "/state")
+/// ```
+@internal
+pub fn session_only_domain(
+  record: catalogue.Registration,
+  configuration: String,
+  state_root: String,
+) -> domain.Domain {
+  domain_record(record, domain.SessionOnly, configuration, state_root)
+}
+
 fn domain_record(
   record: catalogue.Registration,
   scope,
@@ -3089,6 +3529,19 @@ fn prepare_slot(
     use Nil <- result.try(case visibility {
       catalogue.Active -> Ok(Nil)
       catalogue.Archived -> Error(SessionArchived)
+    })
+
+    // A session that is being handed to another orchestrator, or was, is not
+    // this catalogue's to run. The row is read here, in the turn that reserves
+    // the slot, so a move that began a turn earlier is always seen.
+    use custody <- result.try(
+      catalogue.custody(book.catalogue, record.id)
+      |> result.map_error(Catalogue),
+    )
+    use Nil <- result.try(case custody {
+      catalogue.Moving(op:, to:) -> Error(SessionMoving(op:, to:))
+      catalogue.Moved(to:, ..) -> Error(SessionMoved(to:))
+      catalogue.Resident | catalogue.Imported(..) -> Ok(Nil)
     })
     domain.for_session(book.catalogue, record.id) |> result.map_error(Catalogue)
   }

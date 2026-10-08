@@ -6775,8 +6775,8 @@ created on, and owned by, the orchestrator the client is connected to, and a
 daemon asked about a session its catalogue lacks asks the others which one holds
 it. The decision is the owner's option C: a Khepri-shaped directory interface
 backed, for now, by a parallel lookup over pinned peers; each catalogue stays the
-source of truth; an authoritative store replaces the backing in phase 5; failover
-is deferred.
+source of truth; phase 5 added the write half (`activate`) and kept the catalogues
+as the authority (the next section); failover is deferred.
 
 - `client/orchestrators` decodes `[orchestrators.<name>]` (`node`, which must be a
   `[[distribution.peers]]` node as an executor's must, and an optional `address`
@@ -6883,3 +6883,117 @@ commands, an unreachable then returning owner under the drainer, a lost reply),
 and `daemon_shipped_peer_mail_test` (two shipped daemons: a send to a stopped
 orchestrator is queued and delivered once, over the fixture in
 `support/remote_duo`).
+
+## Moving a session between orchestrators (protocol 078, phase 5)
+
+An owner hands a session on an executor to another orchestrator with
+`sessions.move`. Two catalogue rows are the authority, the source's `moving` and
+`moved` and the receiver's `imported`, ordered by a write-ahead intent. No third
+store decides and the executor records no owner; its incarnation fence is a second
+guard, because a copied cell makes the receiver attach at `incarnation + 1` and
+the executor refuses the old token by value. The storage half is in
+`packages/storage/CLAUDE.md` (`Custody`, `export_closed`, `release_export`,
+`domain.import_session`). `docs/design-notes/distributed-runtime.md` section 8 and
+the protocol-change/078 addendum on moving a session have the protocol.
+
+- `session_move` is the vocabulary and nothing else: the six `Step`s, the `Manifest`
+  (the registration without its path and configuration, which name files on the
+  source's machine), `Chunk`, `Activation`, `Stage` (`Absent | Received |
+  Activated`), `Verdict` (`Accepted | Refused(Refusal) | Failed`) and the file and
+  lease-owner names. It performs no I/O, so the mover, the importer and the port
+  import it without importing one another.
+- `daemon/manager` carries the catalogue half. `begin_move` commits `moving` and
+  cancels the slot in one registry turn, so nothing can open the store after the
+  intent. `prepare_slot` reads the custody row and refuses `moving` and `moved`
+  (`SessionMoving`, `SessionMoved`); archive, restore and delete refuse them too
+  (`AdminMoving`, `AdminMoved`). `movable` refuses a session with no executor, an
+  archived one and a reserved one (`AdminNotMovable`). `finish_move`, `abort_move`,
+  `moving_sessions` and `custody` are the mover's reads and compare-and-sets, and
+  `import_session` registers, records the import and renames the copy into place
+  in one turn, finishing the rename for a repeat and removing a late duplicate
+  instead of putting it over the placed file.
+- `remote/orchestrator_port` gains `Import`, `ImportStatus` and `Activate` beside
+  `Owns`, and `Ownership` gains `Moved(to)`. The daemon supplies an `Importer` of
+  three functions, so the port knows neither the catalogue nor the filesystem. A
+  daemon that never receives sessions starts the port with `declining()` and
+  refuses all three. Pieces and the status run in the port's own turn, so the
+  pieces of one copy land in order; `Activate` hashes and opens a whole file, so it
+  runs in a task linked to the port and cancelled with its requester, and `Owns` is
+  never kept waiting behind it.
+- `session_directory` is `Directory(lookup, activate)` and `Courier(send, stage)`.
+  A catalogue's own tombstone answers `lookup` as `Elsewhere` with no question to a
+  peer, and a peer's tombstone redirects when nobody holds the session. The
+  courier and `activate` are built over the pinned connection, one connection
+  attempt per call, as `over_distribution` is.
+- `session_importer` is the receiving end. `take` writes pieces to a `.part` file
+  that becomes the copy only when the last piece lands; a piece that does not
+  start where the file stands is `OutOfOrder` and the sender begins again.
+  `activate` checks the sender's node against `[orchestrators.<name>]`, asks the
+  registry first (a repeat of the same move is answered without looking at the
+  copy), then the digest, then the scope cell read from a scratch copy (opening a
+  session file rewrites it), then the executor row, and only then hands the registry
+  the import. A copy refused for a reason a resend cannot cure is removed.
+- `session_mover` is the source's driver. `drive` takes the steps in order and every
+  run starts from what is on disk: it reads the row, asks the receiver how far the
+  move has got, and does what remains. A move finishes, is abandoned only on an
+  answer, or stalls. `Abandon` comes from an unproven cleanup, an executor that
+  refused the close, a corrupt or oversized file, a receiver's `Refused` and
+  nothing else; silence is `Stall`, because an unreachable receiver may have
+  activated the session. A digest the receiver refuses, or a copy it no longer has,
+  sends the whole file once more. Each step is bounded by a weft deadline of its
+  own (`Budget`), and an expiry is a stall. `Environment.after` is told after each
+  step; a daemon passes the crash knob and a test passes a recorder.
+- `session_movers` is the daemon's actor, started beside the orchestrator port and
+  linked to the process that starts the daemon's services. One entry per session;
+  `Begin` starts a mover once, a tick runs a stalled one again, `resume` begins every
+  `moving` row at boot. It is not the registry, whose turns are bounded by five
+  seconds while a move waits an executor's minute.
+- `remote/workspace.close_stopped` closes the scope of a session that has no
+  runtime and tells `CloseRefused` (final) from `CloseUnanswered` (retried). A
+  repeated Close at a closed scope answers the stored outcome (`remote/host`), which
+  is how a restarted mover learns a lost reply had landed.
+- `daemon/server` has `sessions.move` (owner, epoch, destination in
+  `Config.movers.orchestrators`, then `manager.begin_move`, then
+  `Config.movers.begin`), the `moving` and `moved` members of `sessions.get`
+  (`with_custody`), `moving` on `open` (`in_flight`), and `not_owner` from the
+  tombstone for open, archive, restore and delete (`tombstoned`). `daemon/main`
+  builds the movers in `start_movers`, gives the port its importer, and reads
+  `LOOM_MOVE_CRASH_AFTER`.
+
+`LOOM_MOVE_CRASH_AFTER=<step>` is **test-only**: it halts the VM the moment the
+named step (`intent`, `close`, `cut`, `send`, `activate`, `retire`) is durable,
+so `daemon_shipped_remote_move_test` can lose the source at each step. It is read
+once at startup, is not a configuration key, and is not an operator setting.
+
+Invariants that break things when violated:
+
+- The intent is committed in the registry turn that cancels the slot, and admission
+  reads the custody row in the turn that reserves a slot. Moving the read out of
+  that turn lets a runtime open a file whose copy is being cut.
+- Only an answer abandons a move. An unreachable receiver, an unanswered close and
+  an expired deadline are stalls. Abandoning on silence can leave two owners.
+- The activation is the compare-and-set on the receiver and the retirement is the
+  one on the source; `moved` has no way out under the same operation, and a
+  returning move needs a new one.
+- The receiver reads the copy's cell from a scratch copy and never from the file it
+  hashed. A path that holds no file is refused before `scope.read_at` opens it,
+  because opening creates a missing file.
+- A returning session keeps the registration and mapping its catalogue already
+  has; only the custody row changes.
+- The cut reclaims its own lease and nothing else's. `sqlite.release_export` frees
+  it on abort and before the original is set aside, so a refused move never makes
+  the owner wait out ten minutes.
+
+Not built, on purpose: a merged list, an owner column on the executor, resume inside
+a file, abandoning after a send except on a refusal, failover, a local-session move,
+memory-domain, membership and claim transfer, and a web surface.
+
+Tests: `session_move_test`, `session_importer_test` (the pieces, every refusal, a
+return trip), `session_directory_test` and `remote/orchestrator_port_test` (the new
+answers and messages), `daemon_manager_test` (the registry's half),
+`remote/workspace_test` and `remote/scope_test`, `session_mover_test` (two
+registries, the real port and an executor host in one VM: every interruption, the
+trip there and back, the movers' retry and resume), `daemon_move_test` (the command,
+views and refusals across the real control socket), and
+`daemon_shipped_remote_move_test` (three shipped daemons, a clean move and the
+source lost after each step). The terminal's side is `tui`'s `sessions_move_test`.

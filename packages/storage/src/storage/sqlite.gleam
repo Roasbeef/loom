@@ -1332,6 +1332,60 @@ pub fn export_closed(
   }
 }
 
+/// Releases the writer lease that `export_closed` left held in the original
+/// under `owner`, so the file can be opened again before the TTL lapses. A move
+/// that aborts calls it to give the session back, and a move that finishes calls
+/// it before the original is set aside.
+///
+/// Only a lease held by `owner` is removed: another owner's claim, or no claim at
+/// all, is left as it was and the call still succeeds. A path that holds no file
+/// is also success, since there is nothing to release.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // sqlite.release_export(path: "/state/s.db", owner: "move:op1") == Ok(Nil)
+/// ```
+///
+pub fn release_export(
+  path path: String,
+  owner owner: String,
+) -> Result(Nil, RewriteError) {
+  case simplifile.is_file(path) {
+    Ok(False) -> Ok(Nil)
+    Error(error) ->
+      Error(RewriteFailed(reason: simplifile.describe_error(error)))
+    Ok(True) ->
+      case sqlight.open(path) {
+        Error(error) ->
+          Error(RewriteFailed(
+            reason: "sqlite open: " <> describe_sqlight(error),
+          ))
+        Ok(conn) -> {
+          let released = {
+            use Nil <- result.try(
+              sqlite_policy.configure_connection(conn, sqlite_policy.defaults())
+              |> result.map_error(fn(error) {
+                RewriteFailed(
+                  reason: "busy_timeout: " <> describe_sqlight(error),
+                )
+              }),
+            )
+            sqlight.exec(
+              "DELETE FROM writer_lease WHERE owner_id = " <> sql_quote(owner),
+              on: conn,
+            )
+            |> result.map_error(fn(error) {
+              RewriteFailed(reason: "release: " <> describe_sqlight(error))
+            })
+          }
+          let _ = sqlight.close(conn)
+          released
+        }
+      }
+  }
+}
+
 // The SHA-256 of a whole file, as lowercase hex.
 fn digest_of(path: String) -> Result(String, RewriteError) {
   case simplifile.read_bits(path) {

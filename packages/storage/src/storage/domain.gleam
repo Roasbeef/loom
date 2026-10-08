@@ -129,6 +129,46 @@ pub fn reserve_session(
   })
 }
 
+/// Takes in a session that another orchestrator handed over: registers it with
+/// its domain mapping, confirms it and records the import, in one transaction.
+///
+/// A session that has never been here gets `record` as its registration and
+/// `mapping` as its domain, both new, and is confirmed because the file that
+/// backs it has been verified. A session that comes back to the catalogue that
+/// once gave it up keeps the registration and mapping it already has, and only
+/// the custody row changes. Either way the answer is the stored `Imported`
+/// custody, and a repeat of the same op and source answers it again without
+/// writing. A refusal at any step, such as a session moving under another op or
+/// a registration that conflicts with `record`, leaves nothing behind, so no
+/// confirmed registration can exist without the import row that explains it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // domain.import_session(store, record, mapping, op: "0192f3c1", from: "desk")
+/// ```
+pub fn import_session(
+  store: Catalogue,
+  record: catalogue.Registration,
+  mapping: Domain,
+  op op: String,
+  from from: String,
+) -> Result(catalogue.Custody, Error) {
+  catalogue.atomic(store, fn() {
+    use Nil <- result.try(case catalogue.get(store, record.id) {
+      Ok(_kept) -> Ok(Nil)
+      Error(Missing) -> {
+        use saved <- result.try(catalogue.reserve_in_transaction(store, record))
+        use _bound <- result.try(bind_initial(store, saved, mapping))
+        catalogue.confirm_in_transaction(store, saved.id)
+        |> result.replace(Nil)
+      }
+      Error(error) -> Error(error)
+    })
+    catalogue.import_in_transaction(store, record.id, op:, from:)
+  })
+}
+
 /// Adds an explicit imported mapping to already registered metadata.
 ///
 /// Existing mappings may be repeated exactly, never silently replaced.

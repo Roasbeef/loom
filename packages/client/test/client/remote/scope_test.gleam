@@ -1,15 +1,18 @@
 //// The scope record decides which incarnation an open attaches at, and must
 //// read back exactly what it wrote.
 
+import client/internal/ffi_os
 import client/remote/protocol
 import client/remote/scope
 import core/clock
 import core/json
 import core/register
 import core/tx
+import gleam/int
 import gleam/option.{None, Some}
 import gleam/string
 import session/session
+import simplifile
 import storage/storage
 
 fn store() -> session.Session {
@@ -157,4 +160,101 @@ pub fn clearing_removes_the_cell_and_is_idempotent_test() {
   assert scope.clear(opened) == Ok(Nil)
   assert scope.read(opened) == Ok(None)
   assert scope.clear(opened) == Ok(Nil)
+}
+
+// --- the cell of a closed file, read and written by path -----------------------
+
+fn closed_file(label: String) -> String {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the working directory is known"
+  let directory = here <> "/build/test_db/scope-file-" <> label
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the directory exists"
+  let path =
+    directory
+    <> "/session-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+    <> ".db"
+  let assert Ok(opened) =
+    session.open_sqlite(
+      path:,
+      owner: "writer",
+      lease_ttl_ms: 30_000,
+      clock: clock.fixed(at: 1000),
+    )
+    as "the session file is created"
+  let assert Ok(Nil) =
+    scope.write(opened, scope.Scope(4, Some(protocol.AllRetired), Some("box")))
+  let assert Ok(Nil) = session.close(opened)
+  path
+}
+
+pub fn a_closed_file_gives_up_its_cell_by_path_test() {
+  let path = closed_file("read")
+  assert scope.read_at(path, "reader", clock.fixed(at: 2000))
+    == Ok(Some(scope.Scope(4, Some(protocol.AllRetired), Some("box"))))
+
+  // The access closes the file and releases its lease, so a second access
+  // under another owner is not refused and a writer can open it after.
+  assert scope.read_at(path, "other-reader", clock.fixed(at: 2001))
+    == Ok(Some(scope.Scope(4, Some(protocol.AllRetired), Some("box"))))
+  let assert Ok(opened) =
+    session.open_sqlite(
+      path:,
+      owner: "writer",
+      lease_ttl_ms: 30_000,
+      clock: clock.fixed(at: 2002),
+    )
+  let assert Ok(Nil) = session.close(opened)
+}
+
+pub fn a_cell_written_by_path_is_the_one_read_back_test() {
+  let path = closed_file("write")
+  let recorded = scope.Scope(5, Some(protocol.UnknownCleanup(2)), Some("box"))
+  assert scope.write_at(path, "writer", clock.fixed(at: 2000), recorded)
+    == Ok(Nil)
+  assert scope.read_at(path, "reader", clock.fixed(at: 2001))
+    == Ok(Some(recorded))
+}
+
+pub fn a_file_a_writer_holds_is_not_read_from_under_it_test() {
+  let path = closed_file("held")
+  let assert Ok(live) =
+    session.open_sqlite(
+      path:,
+      owner: "running-session",
+      lease_ttl_ms: 60_000,
+      clock: clock.fixed(at: 2000),
+    )
+  let assert Error(reason) =
+    scope.read_at(path, "reader", clock.fixed(at: 2001))
+  assert string.contains(reason, "running-session")
+  assert scope.write_at(
+      path,
+      "writer",
+      clock.fixed(at: 2001),
+      scope.Scope(9, None, None),
+    )
+    != Ok(Nil)
+  let assert Ok(Nil) = session.close(live)
+  assert scope.read_at(path, "reader", clock.fixed(at: 2002))
+    == Ok(Some(scope.Scope(4, Some(protocol.AllRetired), Some("box"))))
+}
+
+pub fn a_path_with_no_file_is_an_error_and_creates_none_test() {
+  let path = closed_file("absent") <> ".gone"
+  let assert Error(reason) =
+    scope.read_at(path, "reader", clock.fixed(at: 2000))
+  assert string.contains(reason, ".gone")
+  assert scope.write_at(
+      path,
+      "writer",
+      clock.fixed(at: 2000),
+      scope.Scope(1, None, None),
+    )
+    != Ok(Nil)
+
+  // Opening a session creates a missing file, so the refusal has to come
+  // first: neither call may leave a session where there was none.
+  assert simplifile.is_file(path) == Ok(False)
 }

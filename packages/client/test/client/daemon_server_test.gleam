@@ -15,6 +15,7 @@ import client/peer_mail
 import client/peers
 import client/pools
 import client/session_directory
+import client/session_movers
 import core/clock
 import core/ids
 import core/json
@@ -111,6 +112,34 @@ pub fn fixture_directing(
   asked: session_directory.Directory,
   run,
 ) {
+  fixture_moving(
+    connection_limits,
+    peer_endpoint,
+    build,
+    asked,
+    session_movers.idle(),
+    run,
+  )
+}
+
+/// `fixture_directing` with the control the daemon's owner commands use to hand
+/// a session to another orchestrator, for a test of `sessions.move`. The default
+/// is `session_movers.idle()`, which lists no destination.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_moving(limits.defaults, fn(_) { None }, build, stub, movers, run)
+/// ```
+@internal
+pub fn fixture_moving(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -147,6 +176,7 @@ pub fn fixture_directing(
         ),
       ],
       directory: asked,
+      movers:,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -262,6 +292,20 @@ pub fn frame(socket: Socket, within_ms within_ms: Int) {
 /// forwards it unchanged to the read that follows the write.
 @internal
 pub fn send(socket, id, command, body, within_ms within_ms: Int) {
+  post(socket, id, command, body)
+  frame(socket, within_ms:)
+}
+
+/// Writes one v2 command and reads nothing, for a test whose daemon may end
+/// before it answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // daemon_server_test.post(socket, 9, "sessions.move", body)
+/// ```
+@internal
+pub fn post(socket, id, command, body) -> Nil {
   let text =
     json.to_string(
       json.Object([
@@ -278,7 +322,6 @@ pub fn send(socket, id, command, body, within_ms within_ms: Int) {
     False -> <<0x81, 0xfe, size:16, 0:32, bytes:bits>>
   }
   assert ffi_daemon_socket.send(socket, masked) == Ok(Nil)
-  frame(socket, within_ms:)
 }
 
 /// One request, answered past whatever the daemon pushed around it.
@@ -1837,6 +1880,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           executors: [],
           pools: [],
           directory: session_directory.none(),
+          movers: session_movers.idle(),
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)

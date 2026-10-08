@@ -30,6 +30,7 @@ import client/gateway
 import client/peer_mail
 import client/peers
 import client/session_directory
+import client/session_movers
 import core/clock
 import core/ids
 import core/json
@@ -209,6 +210,7 @@ fn fixture_lasting(
       executors: [],
       pools: [],
       directory: session_directory.none(),
+      movers: session_movers.idle(),
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(server.Ui(

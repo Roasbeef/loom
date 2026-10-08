@@ -232,6 +232,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.SessionsReply(_)
     | protocol.SessionReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -303,6 +304,7 @@ pub fn create_named(
     | protocol.SessionsReply(_)
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -381,6 +383,32 @@ pub fn archive_using(
   remove_using(session, KeepHistory, request)
 }
 
+/// Hands a session to another orchestrator and answers once the daemon has
+/// accepted the move (protocol-change/078, phase 5). The daemon carries it to its
+/// end, so the answer is the move's identity and destination, not its outcome.
+/// Asking again for the same destination answers the same identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // selection.move(host, selected_id, "laptop")
+/// ```
+pub fn move(
+  host: Host,
+  session: String,
+  to: String,
+) -> Result(#(String, String), String) {
+  use reply <- result.try(
+    daemon.request(host.control, protocol.MoveSession(session, to), 10_000)
+    |> result.map_error(failure_for(session, _)),
+  )
+  case reply {
+    protocol.MovedReply(session_id, op, destination) if session_id == session ->
+      Ok(#(op, destination))
+    _ -> Error("move returned an unexpected control reply")
+  }
+}
+
 /// Restores metadata without opening or selecting the session as a default.
 ///
 /// ## Examples
@@ -411,6 +439,7 @@ fn remove_using(
     | protocol.SessionsReply(_)
     | protocol.SessionReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -489,6 +518,7 @@ fn await_retirement(session, operation, request) {
         | Ok(protocol.SessionReply(_))
         | Ok(protocol.LifecycleReply(_))
         | Ok(protocol.DeletedReply(_))
+        | Ok(protocol.MovedReply(..))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))
@@ -529,6 +559,7 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     | protocol.SessionReply(_)
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -591,6 +622,7 @@ fn selected_row(reply) {
     | protocol.SessionsReply(_)
     | protocol.LifecycleReply(_)
     | protocol.DeletedReply(_)
+    | protocol.MovedReply(..)
     | protocol.ShutdownReply
     | protocol.PeersInspectionReply(_)
     | protocol.PeersMutationReply(_)
@@ -657,6 +689,7 @@ fn await(host: Host, session, operation) {
         | Ok(protocol.SessionsReply(_))
         | Ok(protocol.LifecycleReply(_))
         | Ok(protocol.DeletedReply(_))
+        | Ok(protocol.MovedReply(..))
         | Ok(protocol.ShutdownReply)
         | Ok(protocol.PeersInspectionReply(_))
         | Ok(protocol.PeersMutationReply(_))

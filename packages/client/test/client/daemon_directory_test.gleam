@@ -369,3 +369,41 @@ pub fn the_catalogue_answers_owned_for_every_state_and_not_owned_for_absence_tes
     assert catalogue.close(store) == Ok(Nil)
   })
 }
+
+pub fn a_session_that_moved_away_is_answered_as_moved_to_its_new_owner_test() {
+  wire.fixture(fn(_, ready, _port, _credential) {
+    let holds = main.catalogue_holds(ready.registry)
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the durable catalogue"
+    let #(moving, _) = ids.mint_session(ids.generator(clock.fixed(0), 811))
+    let moving = ids.session_id_to_string(moving)
+    let record =
+      catalogue.Registration(
+        id: moving,
+        path: "/never-opened-directory-test/" <> moving <> ".db",
+        workspace: "repo",
+        name: "Moving",
+        configuration: "",
+        profile: None,
+        executor: "box",
+        pool: "",
+        created_at: 0,
+        request_key: moving,
+        state: catalogue.Reserved,
+        subtitle: None,
+      )
+    assert catalogue.reserve(store, record) == Ok(record)
+    let assert Ok(_) = catalogue.confirm(store, moving)
+
+    // While the move is in flight the session is still this daemon's.
+    let op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e"
+    let assert Ok(_) = catalogue.begin_move(store, moving, op:, to: "laptop")
+    assert holds(moving) == Ok(Owned)
+
+    // Once it has moved, the registration remains as a tombstone, and the
+    // answer is where the session went and not that this daemon holds it.
+    let assert Ok(_) = catalogue.finish_move(store, moving, op:)
+    assert holds(moving) == Ok(orchestrator_port.Moved(to: "laptop"))
+    assert catalogue.close(store) == Ok(Nil)
+  })
+}

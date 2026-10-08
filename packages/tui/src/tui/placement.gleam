@@ -137,6 +137,21 @@ pub fn label(executor: Option(String), workspace: String) -> String {
   }
 }
 
+/// Whether text is the name of an orchestrator: the key of an
+/// `[orchestrators.<name>]` table, which has the grammar of an executor name.
+/// `loom sessions move --to` takes one, and refuses anything else before a
+/// daemon is asked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert placement.is_orchestrator_name("laptop")
+/// assert !placement.is_orchestrator_name("Laptop")
+/// ```
+pub fn is_orchestrator_name(text: String) -> Bool {
+  is_executor_name(text)
+}
+
 // An executor or pool name has the grammar of a profile name.
 fn is_executor_name(text: String) -> Bool {
   case string.to_graphemes(text) {

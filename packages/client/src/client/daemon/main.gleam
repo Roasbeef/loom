@@ -8,7 +8,8 @@
 //// ## Flow
 ////
 //// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
-//// `start_orchestrator_port` → `listen_serving` → `publish_endpoint` → `wait`
+//// `start_orchestrator_port` → `start_movers` → `listen_moving` →
+//// `publish_endpoint` → `wait`
 ////
 //// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
 ////    `prepare_startup` reads the configuration once and prepares the root.
@@ -16,8 +17,9 @@
 ////    first, so a machine that serves workspaces answers peers before any
 ////    client can connect, and `start_orchestrator_port` follows it, so a
 ////    daemon with distribution answers a peer's question about which sessions
-////    it holds.
-//// 3. `listen_serving` binds the listener, and `publish_endpoint` records the
+////    it holds and takes the sessions a peer moves to it. `start_movers`
+////    follows that and resumes every move this daemon had in flight.
+//// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
 ////    loss of either of the last two ends the daemon.
@@ -51,12 +53,18 @@ import client/remote/remote_peer
 import client/remote/workspace
 import client/serve
 import client/session_directory
+import client/session_importer
+import client/session_move
+import client/session_mover
+import client/session_movers
 import client/workspaces
 import core/clock
 import core/glance
 import core/ids
 import core/json.{type JsonValue}
 import gleam/dict
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -530,11 +538,27 @@ pub fn start_orchestrator_port(
     None -> Ok(Nil)
     Some(_) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
+      use domain_configuration <- result.try(captured_domain_configuration(
+        config.session_defaults,
+        "",
+      ))
+      let importer =
+        session_importer.new(session_importer.Context(
+          registry: ready.registry,
+          state_root: ready.state_root,
+          sessions_directory: ready.sessions_directory,
+          domain_configuration:,
+          clock: clock.from_function(ffi_os.system_time_ms),
+          orchestrators: config.orchestrators,
+          executors: config.executors,
+          logger:,
+        ))
       use _started <- result.try(
-        orchestrator_port.start_serving(
+        orchestrator_port.start_with(
           orchestrator_port.default(),
           catalogue_holds(ready.registry),
           peer_command(ready.registry, peer_endpoint),
+          importer,
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
@@ -584,6 +608,11 @@ pub fn peer_command(
 /// creation retried under its original key has to land on the orchestrator that
 /// reserved it.
 ///
+/// A session this catalogue handed to another orchestrator is `Moved` and names
+/// it. The registration is still here, but only as the tombstone that records
+/// whom the session went to, so the answer says so and not `Owned`: a peer that
+/// asked whether this daemon holds the session is told where it went.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -595,7 +624,14 @@ pub fn catalogue_holds(
 ) -> fn(String) -> Result(orchestrator_port.Ownership, Nil) {
   fn(id) {
     case manager.get(registry, id) {
-      Ok(_) -> Ok(orchestrator_port.Owned)
+      Ok(_) ->
+        case manager.custody(registry, id) {
+          Ok(catalogue.Moved(to:, ..)) -> Ok(orchestrator_port.Moved(to:))
+          Ok(catalogue.Resident)
+          | Ok(catalogue.Moving(..))
+          | Ok(catalogue.Imported(..)) -> Ok(orchestrator_port.Owned)
+          Error(_) -> Error(Nil)
+        }
       Error(manager.Catalogue(catalogue.Missing)) ->
         Ok(orchestrator_port.NotOwned)
       Error(_) -> Error(Nil)
@@ -618,6 +654,115 @@ fn session_directory_of(
         session_directory.over_distribution(membership),
       )
       |> session_directory.with_reach(remote_peer.over_distribution(membership))
+      |> session_directory.activating(session_directory.activation_over(
+        membership,
+      ))
+  }
+}
+
+/// Starts the movers that hand sessions to other orchestrators, resumes every
+/// move this daemon had in flight, and returns the control the listener gives its
+/// owner commands (protocol-change/078, phase 5).
+///
+/// A daemon with no `[distribution]` has no peer to hand a session to, so it
+/// moves nothing and its control lists no destination. One with distribution
+/// always starts the movers, whether or not it lists an orchestrator, because a
+/// move begun before a restart is resumed from the catalogue and not from the
+/// configuration that began it. The actor is linked to the process that starts
+/// the daemon's services, as the orchestrator port is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(control) = main.start_movers(config, daemon, logger)
+/// ```
+@internal
+pub fn start_movers(
+  config: Config,
+  daemon: root.Root(instance),
+  logger: Logger,
+) -> Result(session_movers.Control, String) {
+  case config.membership {
+    None -> {
+      // Without distribution there is nobody to hand a session to, but a move
+      // begun under a configuration that had it is still in the catalogue. It
+      // cannot be resumed, and the operator is told so rather than left to find
+      // a session that refuses to open.
+      use ready <- result.map(root.ready(daemon, within: 20_000))
+      case manager.moving_sessions(ready.registry) {
+        Ok([_, ..] as stuck) ->
+          log.warn(logger, "daemon.moves_cannot_resume", [
+            field.count("moves", list.length(stuck)),
+          ])
+        Ok([]) | Error(_) -> Nil
+      }
+      session_movers.idle()
+    }
+    Some(membership) -> {
+      use ready <- result.try(root.ready(daemon, within: 20_000))
+      let environment =
+        session_mover.Environment(
+          registry: ready.registry,
+          orchestrators: config.orchestrators,
+          directory: session_directory_of(config, ready.registry),
+          courier: session_directory.courier_over(membership),
+          close: closer_of(config, membership),
+          clock: clock.from_function(ffi_os.system_time_ms),
+          node: atom.to_string(node.name(node.self())),
+          budget: session_mover.default_budget(),
+          after: crash_after_step(),
+          logger:,
+        )
+      use control <- result.try(session_movers.start(
+        environment,
+        session_movers.retry_ms,
+      ))
+      use resumed <- result.try(session_movers.resume(control, ready.registry))
+      log.info(logger, "daemon.movers", [
+        field.count("resumed", resumed),
+        field.count("orchestrators", list.length(config.orchestrators)),
+      ])
+      Ok(control)
+    }
+  }
+}
+
+// How a mover asks an executor to close the scope of a session that has no
+// runtime. An executor this daemon does not list, or whose node it does not
+// trust, cannot be asked, and the move waits as it does for one that is down.
+fn closer_of(
+  config: Config,
+  membership: distribution.Membership,
+) -> session_mover.Closer {
+  let configured = config.executors
+  fn(executor, session, workspace_name, incarnation) {
+    case workspace.reach(Some(membership), configured, executor) {
+      Ok(reach) ->
+        workspace.close_stopped(reach, session, workspace_name, incarnation)
+      Error(_unreachable) -> Error(workspace.CloseUnanswered)
+    }
+  }
+}
+
+// TEST-ONLY. `LOOM_MOVE_CRASH_AFTER=<step>` halts the VM the moment the named
+// step of a session move is durable, so a shipped test can lose the source at
+// each of the six steps and watch a restart finish the move. The steps are
+// `intent`, `close`, `cut`, `send`, `activate` and `retire`. Unset, or set to
+// anything else, it does nothing. It is read once at startup, is not documented
+// for operators, and has no counterpart in the configuration file.
+fn crash_after_step() -> fn(session_move.Step) -> Nil {
+  case
+    bootstrap.getenv("LOOM_MOVE_CRASH_AFTER")
+    |> result.replace_error(Nil)
+    |> result.try(session_move.parse_step)
+  {
+    Ok(wanted) -> fn(step) {
+      case step == wanted {
+        True -> ffi_os.halt(1)
+        False -> Nil
+      }
+    }
+    Error(Nil) -> fn(_step) { Nil }
   }
 }
 
@@ -1041,6 +1186,35 @@ pub fn listen_serving(
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   ui: Option(server.Ui(instance)),
 ) -> Result(Serving(instance), String) {
+  listen_moving(
+    config,
+    daemon,
+    upgrade,
+    peer_endpoint,
+    ui,
+    session_movers.idle(),
+  )
+}
+
+/// Starts the daemon listener as `listen_serving` does, with the control its
+/// owner commands use to hand sessions to other orchestrators. `start_movers`
+/// builds it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.listen_moving(config, daemon, upgrade, peers, Some(ui), movers)
+/// ```
+@internal
+pub fn listen_moving(
+  config: Config,
+  daemon: root.Root(instance),
+  upgrade: fn(Request(mist.Connection), server.Attachment(instance)) ->
+    Response(mist.ResponseData),
+  peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+  ui: Option(server.Ui(instance)),
+  movers: session_movers.Control,
+) -> Result(Serving(instance), String) {
   use ready <- result.try(root.ready(daemon, within: 20_000))
   use domain_configuration <- result.try(captured_domain_configuration(
     config.session_defaults,
@@ -1054,6 +1228,7 @@ pub fn listen_serving(
       executors: config.executors,
       pools: config.pools,
       directory: session_directory_of(config, ready.registry),
+      movers:,
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),
@@ -1117,8 +1292,9 @@ fn run(
           fn(resident: serve.Resident) { Some(resident.peer) },
         ),
       )
+      use movers <- result.try(start_movers(config, daemon, logger))
       use ui <- result.try(web_view(config, daemon))
-      use serving <- result.try(listen_serving(
+      use serving <- result.try(listen_moving(
         config,
         daemon,
         fn(request, attachment) {
@@ -1131,6 +1307,7 @@ fn run(
         },
         fn(resident: serve.Resident) { Some(resident.peer) },
         ui,
+        movers,
       ))
       publish_endpoint(config, serving, paths, fence)
       |> result.replace(#(serving, executor))

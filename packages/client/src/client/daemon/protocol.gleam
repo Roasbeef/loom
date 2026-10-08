@@ -243,6 +243,12 @@ pub type Command {
   /// Requests ordered cleanup without deleting the conversation.
   StopSession(session_id: String, epoch: String)
 
+  /// Hands a stopped session to another orchestrator, named as the owner's
+  /// `[orchestrators.<name>]` table names it (protocol-change/078, phase 5).
+  /// Owner-only. The reply names the move and says it is in flight; the move
+  /// itself runs on, and outlasts, the connection.
+  MoveSession(session_id: String, to: String, epoch: String)
+
   /// Removes a stopped registration and its conversation database.
   DeleteSession(session_id: String, epoch: String)
 
@@ -600,6 +606,16 @@ fn decode_fields(
       use id <- result.try(session_id(fields))
       use epoch <- result.map(text_field(fields, "epoch", 256))
       DeleteSession(id, epoch)
+    }
+    "sessions.move" -> {
+      use id <- result.try(session_id(fields))
+      use to <- result.try(text_field(fields, "to", 64))
+      use Nil <- result.try(case catalogue.is_orchestrator_name(to) {
+        True -> Ok(Nil)
+        False -> Error("to must be the name of an orchestrator")
+      })
+      use epoch <- result.map(text_field(fields, "epoch", 256))
+      MoveSession(id, to, epoch)
     }
     "operations.get" -> {
       use id <- result.try(session_id(fields))

@@ -79,6 +79,7 @@ fn hosts(seed: Int) -> Hosts {
   let beta = orchestrators.plain("beta", "beta@127.0.0.1")
   let sessions =
     session_directory.Directory(
+      ..session_directory.none(),
       lookup: fn(session) {
         case session == recipient_name {
           True -> Ok(session_directory.Elsewhere(orchestrator: beta))
@@ -365,6 +366,7 @@ pub fn a_resident_session_is_never_looked_up_test() {
     peers.routed(
       fn(_) { Ok(peer_mail.Endpoint("here", fn(_) { Ok(json.Null) })) },
       session_directory.Directory(
+        ..session_directory.none(),
         lookup: fn(session) {
           process.send(lookups, session)
           Error(session_directory.Unknown)
@@ -382,6 +384,7 @@ pub fn a_miss_is_unreachable_only_when_the_directory_could_not_tell_test() {
     peers.routed(
       fn(_) { missing },
       session_directory.Directory(
+        ..session_directory.none(),
         lookup: fn(_) { answer },
         reach: fn(_, session) { remote_peer_unused(session) },
       ),

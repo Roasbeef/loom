@@ -11,8 +11,11 @@ one table for session movement),
 orchestrator, `[pools.*]` tables beside them, `[workspaces.*]` rows on an
 executor, and `[orchestrators.*]` rows for a deployment with two
 orchestrators), two refusal codes of `sessions.get` and `sessions.open`
-(see the second addendum), one orchestrator-port message for peer mail (see the
-last addendum), `effects.ToolSurface`
+(see the second addendum), one orchestrator-port message for peer mail (see
+the peer mail addendum), the control command `sessions.move`, the members
+`moving` and `moved` of `sessions.get`, three refusal codes (`moving`,
+`orchestrator_unknown` and `not_movable`, see the session movement addendum),
+`effects.ToolSurface`
 (one slot), and two new formats that are not Part 1 interfaces: the closed
 message vocabulary between orchestrator and executor nodes, and the
 executor's execution ledger. The helper wire (Part 1.4) is unchanged.
@@ -409,9 +412,10 @@ whatever the others did; otherwise a missing answer makes the result
 
 The lookup sits behind a `Directory` interface whose only operation is
 `lookup(session) -> Here | Elsewhere(orchestrator) | Unknown | Unreachable`, shaped
-so that the authoritative store of phase 5 replaces its backing and adds a write
-half beside it. A caller asks the directory and never reasons that a record in its
-own catalogue settles ownership.
+so that a different backing could replace it and a write half could sit beside it.
+Phase 5 added that half, `activate`, and kept the catalogues as the authority (see
+the addendum on moving a session). A caller asks the directory and never reasons
+that a record in its own catalogue settles ownership.
 
 #### What it costs
 
@@ -436,9 +440,8 @@ asked for. Neither client connects to the owner itself.
 ### Addendum: session movement (catalogue storage)
 
 Phase 5 moves a session between orchestrators under the source's control. This
-addendum records the catalogue half, which has no wire surface yet. The control
-command, the `moving` and `moved` views and the host messages that drive it
-arrive with the mover and extend this document then.
+addendum records the catalogue half. The next addendum records the command, the
+views, the messages and the mover that drive it.
 
 The catalogue is at version 12. The migration from version 11 adds one table,
 `catalogue_session_moves(session_id, op, peer, state)`, keyed by session and
@@ -451,16 +454,187 @@ end and `peer` is an `[orchestrators.<name>]` key.
 The transitions are compare-and-set on the row, in one immediate transaction
 each. The side that gives a session up runs `resident -> moving -> moved`, with
 `moving -> resident` for an abort before anything reached the receiver. The side
-that receives it runs `resident -> imported`. A repeat of the same op answers the
-stored state and writes nothing. Any other op, and any transition the stored
-state does not allow, is a conflict. `moved` has no outgoing transition, which is
-what keeps a stale mover or a late message from returning a session to a
-catalogue that handed it over. The read of a row that breaks the grammar fails
+that receives it runs `resident -> imported`. A session can travel more than
+once, so two further transitions each take a new op: an `imported` session goes
+`imported -> moving` to move onward, and a `moved` session goes `moved ->
+imported` to come back, each replacing the row in one transaction. A repeat of
+the same op answers the stored state and writes nothing. Any other op, and any
+transition the stored state does not allow, is a conflict. The op that wrote a
+`moved` row cannot undo it, which is what keeps a stale mover or a late message
+from returning a session to a catalogue that handed it over. The read of a row that breaks the grammar fails
 and is never taken as resident. Deleting a `moving` or `moved` session is
 refused, because the row is the only record of who owns it.
 
 Nothing is added to the node vocabulary or the client protocol by this change,
 so no Part 1 interface moves.
+
+### Addendum: moving a session between orchestrators
+
+Phase 5 of the design note lets an owner hand a session from one orchestrator to
+another. The two catalogue rows of the previous addendum are the whole
+authority: the source's row says whether it still serves the session, the
+receiver's says whether it does, and a write-ahead intent orders the two. No
+third store decides, and no executor column records an owner. The executor's
+incarnation fence stops a stale source on the machine that holds the checkout,
+and the source's own rows stop it everywhere else.
+
+#### Wire
+
+`sessions.move` takes `session_id`, `to` and `epoch` and is owner-only. `to` is a
+key of the daemon's `[orchestrators.<name>]` tables, and the daemon checks it
+before it asks the registry. The reply is `{session_id, op, to, state:
+"moving"}` and comes back as soon as the intent is committed: the move itself runs
+on, and outlasts the connection. `op` is minted by the daemon, stored in the
+source's row, in the receiver's row and in every file name, and a repeat of the
+request toward the same orchestrator answers the stored one, so two owners asking
+at once start one move. Toward another orchestrator it is `conflict`.
+
+`sessions.get` gains one member while a move is in flight and another once it
+finished. `moving` is `{op, to}` and `moved` is `{to}`. A session with neither
+carries neither, so its record is what an older daemon sent. `sessions.open`
+answers `moving` with `orchestrator` and `op` while the move runs. Once it has
+finished, `sessions.open`, `sessions.archive`, `sessions.restore`,
+`sessions.delete` and `sessions.move` answer `not_owner` with `orchestrator` and,
+when the daemon's row configures one, `address`. The new owner comes from the
+source's own tombstone through the directory and no peer is asked. The other new
+codes are `orchestrator_unknown`, for a destination that is not in the
+configuration, and `not_movable`, for a session with no executor yet, an archived
+one and one that has not finished being created. A local session cannot move: its
+checkout is a directory on the source's machine.
+
+A client that does not know the two members ignores them, and one that does not
+know `moving` or `orchestrator_unknown` reads them as an ordinary refusal with a
+code. The terminal prints the launch line for `not_owner` as it does for any
+redirect, and `loom sessions move <session-id> --to <orchestrator>` sends the
+command and prints the move's identity. The web view gains nothing.
+
+#### Who owns the session at each moment
+
+1. **Before the intent**, the source's row is `resident` and it serves the session.
+2. **The intent** commits `moving(op, to)` in the same registry turn that stops the
+   slot. Admission refuses a session whose row is `moving` or `moved`, so after
+   this commit no runtime on the source can open the file. The row is committed
+   before the slot is cancelled, so a crash between the two leaves a `moving` row
+   and no slot, which is the state a restart resumes from.
+3. **Until the activation**, the receiver has no row, and the source's row is still
+   the owner. A source that is unreachable to the receiver, or a receiver
+   unreachable to the source, changes nothing about who owns the session.
+4. **The activation** is the compare-and-set on the receiver's catalogue:
+   `absent -> imported(op, from)` with the file in place. From it the receiver
+   owns the session. Between it and the source's retirement both rows say that
+   their side is not serving: the source's is `moving`, which refuses admission,
+   and the receiver does not serve until a client opens the session.
+5. **The retirement** moves the source's row to `moved(to)`, which has no way out
+   under the same `op`, and sets the file aside. A late message of the same move
+   cannot bring the session back.
+
+The executor's fence is the belt: once the receiver attaches at `incarnation + 1`,
+the old token is refused by value, and the source's scope was already closed
+cleanly before the copy was cut, so the source has no live runtime to refuse in
+the first place.
+
+#### The six steps
+
+| Step | Durable afterward | A crash leaves | Resumed by |
+|---|---|---|---|
+| 1 Intend and stop | the source's row `moving(op, to)`, the slot stopped | the row | a restart starts a mover for each `moving` row |
+| 2 Close | the file's scope cell reads a clean close | the cell with no close recorded, or an unproven one | a cell with no close asks the executor to close again and writes the answer into the file; an unproven cleanup refuses the move |
+| 3 Cut | `<id>.db.move.<op>`, with the file's lease held under `move:<op>` | a partial copy | the next cut replaces the copy and reclaims its own lease |
+| 4 Send | the whole copy at `incoming/<id>.<op>` on the receiver | a partial copy under `.part` | the receiver says `Absent` or `Received`; absent is sent again in full |
+| 5 Activate | the receiver's row `imported(op, from)` and the file in place | the row without the rename, or a lost reply | a repeat answers the stored result and finishes the rename |
+| 6 Retire | the source's row `moved(to)`, `<id>.db.moved`, the lease released | the row without the file work | the next run finds `moved` and does the file work |
+
+Every step starts from what is on disk, because a mover has no memory of its own:
+each run reads the row, asks the receiver how far the move has got, and takes only
+the steps that remain. A receiver that already activated the session sends the run
+straight to step 6.
+
+The cut copies the closed file with `VACUUM INTO` after the writer lease is claimed
+under the reserved owner `move:<op>`, then deletes the lease row from the copy, so
+the lease never travels. The copy is hashed, and the whole file is read into
+memory to be hashed and cut into pieces, so a move refuses a file larger than 256
+MiB. The pieces are 256 KiB and acknowledged one at a time. There is no resume
+inside a file: any failure sends the whole file again.
+
+Activation verifies before it writes. The receiver checks that the sender's node is
+one of its `[orchestrators.<name>]`, that the copy's SHA-256 is the digest the
+sender took, that the copy's scope cell reads `closed: AllRetired` at the
+incarnation the sender claims, and that it has the `[executors.<name>]` the cell
+names. The cell is read from a scratch copy, because opening a session file
+rewrites its header and its lease. Then one registry turn registers the session
+with a session-only domain mapping, confirms it, records the import and renames the
+copy into place. The source's configuration path is not carried: it names a file on
+the source's machine, and the session is registered with the receiver's default.
+Memberships, claims and the memory domain stay on the source, as principals are per
+daemon.
+
+#### Messages on the orchestrator port
+
+Three constructors join `Owns` on `loom_orchestrator`'s message type, and `Owns`
+gains a third answer. `Import(chunk)` carries one piece of the copy and is
+answered `Accepted`, `Refused` or `Failed`. `ImportStatus(session, op)` is
+answered `Absent`, `Received` or `Activated`. `Activate(activation)` carries the
+digest, the incarnation, the sender's node and the manifest, and is answered the
+same way as a piece. `Owns` answers `Moved(to)` from a tombstone, and the
+directory maps it to `Elsewhere`. A daemon that does not receive sessions starts
+the port without an importer and refuses all three. `Directory` gains `activate` as
+the second field the phase 3 note reserved.
+
+A `Refused` verdict means the receiver looked and said no. `Failed` and silence
+mean it could not decide. The distinction is what lets a mover decide whether to
+give up.
+
+#### When a move stops
+
+A move ends in one of three ways. It finishes, with the source's row `moved`. It is
+abandoned, with the source's row back to `resident` and its lease released, and
+that is allowed only on an answer: the executor could not prove the scope's cleanup
+(`UnknownCleanup`), the file is corrupt or too large, or the receiver refused the
+copy after at most one resend. It stalls, with the row still `moving`, and the
+daemon retries it on a timer: an executor or a receiver that did not answer, a
+lease that has not lapsed, a step that ran out of its deadline. An unreachable
+receiver never abandons a move, because it may have activated the session and lost
+the reply, and `moving` is still exactly one owner. A receiver's `Refused` after
+the send is final and the copy it keeps is removed, except when it refused the
+digest or reported no copy, which a new send cures.
+
+Each step runs under a weft deadline of its own. The daemon owns the movers as one
+actor beside the orchestrator port, and not the registry, whose turns are bounded
+by five seconds while a move waits on an executor for a minute.
+
+#### Configuration
+
+Both orchestrators list the executor and each other. The source needs
+`[orchestrators.<receiver>]` to name the destination and `[executors.<name>]` to
+close the scope. The receiver needs `[orchestrators.<source>]` to recognise the
+sender and the same `[executors.<name>]` to attach. The executor trusts both
+orchestrators' nodes as distribution peers, as it does any orchestrator. No new
+`loom.toml` key is added.
+
+`LOOM_MOVE_CRASH_AFTER=<step>` is a test-only environment variable. The daemon
+reads it once at startup and halts its VM the moment the named step is durable;
+the steps are `intent`, `close`, `cut`, `send`, `activate` and `retire`. The
+shipped test uses it to lose the source after each step and checks that a restart
+finishes the move. It is not a setting for operators and has no counterpart in the
+configuration file.
+
+#### What it costs
+
+The formal model `protocol/models/session-move/Move.tla` checks the six steps with
+a crash possible between any two. Its mutations show what each rule buys: without
+the write-ahead intent a crash lets two orchestrators serve the session, abort
+after the send does the same, and retiring without having seen the receiver's row
+leaves a session no one has. The P model of the remote execution against the ledger
+is phase 6 acceptance work.
+
+Not built: a designated node or table that decides ownership, an owner column on
+the executor's scope, resuming inside a file, abandoning after a send except on the
+receiver's refusal, automatic failover, moving a workspace snapshot, moving the
+memory domain, moving memberships and claims, moving a local session, and a web
+view of a move. Events a client has not caught up on are not carried across: a
+client reconnects to the receiver. A move of a session with a background job lets
+the job die with the scope's clean close, as a stop does, and the receiver's
+records for it are what the source wrote.
 
 ### Addendum: the sender outbox
 

@@ -229,3 +229,121 @@ pub fn a_registered_session_holds_only_a_session_only_domain_test() {
   assert domain.for_session(store, record.id) == Ok(own)
   assert catalogue.close(store) == Ok(Nil)
 }
+
+// --- importing a session another orchestrator handed over --------------------
+
+const import_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e"
+
+const import_other_op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9f"
+
+// A session registered on an executor, with its session-only domain, as an
+// importing orchestrator builds them from a manifest.
+fn handed_over(seed) -> #(catalogue.Registration, domain.Domain) {
+  let base = registration(seed)
+  let record =
+    catalogue.Registration(
+      ..base,
+      workspace: "repo",
+      configuration: "",
+      executor: "box",
+    )
+  let mapping =
+    domain.Domain(
+      domain.key(domain.SessionOnly, "repo", record.id),
+      domain.SessionOnly,
+      "repo",
+      "",
+      "/never-opened-domain/" <> record.id <> "-memory.db",
+      "/never-opened-domain/" <> record.id <> "-search.db",
+    )
+  #(record, mapping)
+}
+
+pub fn a_first_import_registers_confirms_and_records_the_session_together_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(record, mapping) = handed_over(50)
+  let imported = catalogue.Imported(op: import_op, from: "desk")
+  assert domain.import_session(
+      store,
+      record,
+      mapping,
+      op: import_op,
+      from: "desk",
+    )
+    == Ok(imported)
+
+  // The registration is saved and not reserved, since the file behind it was
+  // verified, its mapping is bound, and the import row names its source.
+  assert catalogue.get(store, record.id)
+    == Ok(catalogue.Registration(..record, state: catalogue.Saved))
+  assert domain.for_session(store, record.id) == Ok(mapping)
+  assert catalogue.custody(store, record.id) == Ok(imported)
+
+  // A repeat of the same move answers the stored custody and writes nothing.
+  let assert Ok(before) = catalogue.page(store, after: "")
+  assert domain.import_session(
+      store,
+      record,
+      mapping,
+      op: import_op,
+      from: "desk",
+    )
+    == Ok(imported)
+  let assert Ok(after) = catalogue.page(store, after: "")
+  assert after.revision == before.revision
+}
+
+pub fn a_refused_import_leaves_no_registration_behind_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(record, mapping) = handed_over(51)
+
+  // A malformed op fails the custody step, after the registration and the
+  // mapping were staged. Nothing of either remains.
+  let assert Error(catalogue.Invalid(_)) =
+    domain.import_session(store, record, mapping, op: "a b", from: "desk")
+  assert catalogue.get(store, record.id) == Error(catalogue.Missing)
+  assert domain.for_session(store, record.id) == Error(catalogue.Missing)
+
+  // The same registration imports cleanly afterwards.
+  let assert Ok(_) =
+    domain.import_session(store, record, mapping, op: import_op, from: "desk")
+  assert catalogue.get(store, record.id)
+    == Ok(catalogue.Registration(..record, state: catalogue.Saved))
+}
+
+pub fn a_session_that_comes_back_keeps_its_registration_and_mapping_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let #(record, mapping) = handed_over(52)
+  let assert Ok(saved) = catalogue.reserve(store, record)
+  let assert Ok(_) = domain.bind(store, saved.id, mapping)
+  let assert Ok(_) = catalogue.confirm(store, saved.id)
+  let assert Ok(_) =
+    catalogue.begin_move(store, saved.id, op: import_op, to: "desk")
+  let assert Ok(_) = catalogue.finish_move(store, saved.id, op: import_op)
+
+  // The record and mapping the caller passes are not applied: the ones the
+  // catalogue kept from before the session left are. Only the row changes,
+  // and the move that gave the session up cannot bring it back.
+  let different =
+    catalogue.Registration(..record, name: "built from a manifest")
+  assert domain.import_session(
+      store,
+      different,
+      mapping,
+      op: import_op,
+      from: "desk",
+    )
+    == Error(catalogue.Conflict)
+  let imported = catalogue.Imported(op: import_other_op, from: "desk")
+  assert domain.import_session(
+      store,
+      different,
+      mapping,
+      op: import_other_op,
+      from: "desk",
+    )
+    == Ok(imported)
+  let assert Ok(kept) = catalogue.get(store, record.id)
+  assert kept.name == record.name
+  assert catalogue.custody(store, record.id) == Ok(imported)
+}

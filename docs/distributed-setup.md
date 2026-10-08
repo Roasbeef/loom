@@ -875,6 +875,150 @@ reopen into a full executor fails without moving. That test is not the cross-hos
 run. The terminal's `--pool` flag is covered by its own unit tests and was not run
 against these daemons. The web home does not offer pools yet.
 
+### Moving a session to another orchestrator
+
+You can hand a remote session from one orchestrator to another while the
+executor's checkout stays where it is. Use it to retire a machine that runs an
+orchestrator, or to put a session where its owner now works. The session's
+conversation database moves. The files, the checkout and the executor do not.
+
+Only a session that lives on an executor can move. A local session's checkout is a
+directory on the orchestrator, so there is nothing for a second orchestrator to
+attach to. A session also has to have opened at least once, so that the executor
+holds a scope for it, and it cannot be archived.
+
+**What you need** (**Pending** as a hand-run procedure; the shipped move test,
+described below, runs it over the control protocol). Both orchestrators and the
+executor are distribution nodes under one authority and one cookie (section 3).
+Each orchestrator pins the other and the executor, and the executor pins both:
+
+```toml
+# On orchestrator alpha, the one that holds the session.
+[executors.box]
+node = "exec@10.0.0.2"
+
+[orchestrators.bravo]
+node = "bravo@10.0.0.4"
+address = "wss://bravo.example.com:8443/v2/control"
+```
+
+```toml
+# On orchestrator bravo, the one that will receive it.
+[executors.box]
+node = "exec@10.0.0.2"
+
+[orchestrators.alpha]
+node = "alpha@10.0.0.1"
+```
+
+Each `[orchestrators.<name>]` node must also be a `[[distribution.peers]]` entry.
+The name is yours to choose, and each daemon uses its own name for the other.
+`address` is optional, and is only what a client is told when it asks the wrong
+orchestrator where a session is. The receiver must list the sender as an
+orchestrator, because it recognises the machine that hands it a session by its
+node, and it must list the same `[executors.box]`, because it attaches to the
+executor when the session opens. A session registered on the executor under one
+name is attached under that name, so the executor name must match on both.
+
+**1. Pick the session.** On the orchestrator that holds it, list the sessions and
+find the one on the executor:
+
+```sh
+loom sessions list
+```
+
+A remote session shows its workspace as `box:proj`. The first column is the
+session id.
+
+**2. Start the move.** Name the session and the orchestrator that receives it:
+
+```sh
+loom sessions move 0198c0de-0000-7000-8000-000000000001 --to bravo
+```
+
+It prints `moving 0198c0de-0000-7000-8000-000000000001 to bravo (operation
+<id>)` and returns. That means the daemon has stopped the session, recorded the
+move, and will carry it out. The command does not wait. Asking again for the same
+destination prints the same operation. Naming a destination that is not in the
+`[orchestrators.<name>]` tables is refused with `orchestrator_unknown`. A local
+session is refused with `not_movable`.
+
+**3. Wait for it to finish.** On the source, a session that is moving cannot be
+opened. `sessions.open` answers `moving`, naming the destination and the
+operation. When the move finishes it answers `not_owner`, naming the destination
+and the address in your `[orchestrators.bravo]` row, and `sessions.get` reports
+`moved` with `to`. The control protocol reports both
+([client protocol, sections 3.5 and 3.27](client-protocol.md)). A move of an
+ordinary session takes seconds: the executor closes the scope, the file is
+copied, and the receiver checks it. The source daemon's log records
+`daemon.move_finished` when it ends.
+
+**4. Open it on the receiver.** Connect to the receiver as you would to any
+orchestrator, with a credential for that daemon:
+
+```sh
+loom --addr wss://bravo.example.com:8443/v2/control --session 0198c0de-0000-7000-8000-000000000001 --token-file ~/bravo-owner.token
+```
+
+The session is saved there, so the terminal opens it. The executor attaches it at
+the next incarnation, and a tool call reads the files the first incarnation wrote.
+
+**What to expect.** The shipped move test runs three real daemons, two
+orchestrators and one executor, and checks each of these over the control protocol
+(**Verified**, the test `daemon_shipped_remote_move_test` on commit `56b384df4`,
+on macOS). The `loom sessions move` command and the terminal launch above were not
+run by hand.
+
+- The executor's scope for the session is closed `all_retired` at incarnation 1
+  before the copy is cut, and a background job the session had started is gone, so
+  the file it appended to stops growing. A move does not carry running processes.
+- The source keeps its file as `<id>.db.moved` and no file under the session's
+  name. The receiver has the file under its sessions directory.
+- The receiver opens the session at incarnation 2. The source's old token is
+  refused by the executor.
+- With `LOOM_MOVE_CRASH_AFTER` halting the source after each of the six steps, a
+  restart finishes the move without being asked, and the session ends in the same
+  place as a move with no fault. That variable belongs to the test; an operator
+  never sets it.
+
+**When a move does not finish.** The source retries a move that cannot proceed and
+keeps it as `moving` in the meantime, so the session is not lost and is not served
+by two orchestrators. The reason is in the source daemon's log as
+`daemon.move_stalled`, repeated until it clears:
+
+| Reason in the log | What to check |
+|---|---|
+| `the orchestrator bravo did not answer` | The receiver is down, the nodes are not connected, or its pins are wrong. Section 9 has the checks. The move continues when it answers. |
+| `the executor box did not answer the close` | The executor is down, or the source does not list it. The move continues when the executor answers. |
+| `the session file is held by ...` | A writer's lease has not expired, as after a crash of this daemon. Wait; it is at most a minute. |
+| `this daemon does not list an orchestrator named bravo` | The configuration changed after the move began. Restore the `[orchestrators.bravo]` row and restart the daemon. |
+
+A move that ends is logged as `daemon.move_aborted` with the reason, and the
+session is the source's again and can be opened there. The reasons are final: the
+executor could not prove it had retired every child of the scope; the file is
+larger than 256 MiB or fails its own checks; or the receiver refused. The receiver
+refuses when it does not list the sender, does not list the executor, holds the
+session already, or finds that the copy's scope is not closed cleanly. Its own log
+has `daemon.move_refused` with the same words. Fix the cause and start a new move.
+
+A daemon that restarts resumes every move it had in flight. A receiver that is
+restarted in the middle holds at most a partial file, which is never taken for a
+copy, so the source sends the file again from the start.
+
+**What does not move.** The memory the session distilled stays with the source's
+workspace. Members and their grants stay on the source, which still lists them for
+a session it no longer serves; the receiver's owner grants access on the receiver.
+Nothing follows a client from the source to the receiver, so a client that held
+the session open reconnects to the receiver and catches up from there.
+
+The source keeps a tombstone. The session stays in its listing, shown as saved, and
+opening it, archiving it, restoring it or deleting it names the new owner. The
+tombstone is what stops a late message of the move from bringing the session back,
+and what lets the session return to the source later: moving it from the receiver
+back to the source is a new move, and the source takes it in over the tombstone.
+If you remove `[distribution]` from a daemon while a move is in flight, the move
+cannot resume, and the daemon logs `daemon.moves_cannot_resume` at startup.
+
 ## 8. Verify it is working
 
 | Check | How | Status |
@@ -994,7 +1138,8 @@ not yet do the following.
 - **One executor per session, chosen at its first open.** A pool picks the
   executor in the order you list, but there is no failover to a second executor
   and no moving a session from one executor to another. If the executor is down,
-  the session shows it as unavailable and waits.
+  the session shows it as unavailable and waits. A session can move between
+  orchestrators (section 7), but it keeps its executor.
 - **No extension tools on remote sessions.** Extensions are installed under the
   orchestrator's home and would have to run beside the checkout. A remote session
   refuses them.

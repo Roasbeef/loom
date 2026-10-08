@@ -1100,6 +1100,24 @@ pub fn delete_session_move(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
+pub type MovingSessions {
+  MovingSessions(session_id: String, op: String, peer: String)
+}
+
+pub fn moving_sessions() {
+  let sql =
+    "SELECT session_id, op, peer FROM catalogue_session_moves
+WHERE state = 'moving' ORDER BY session_id"
+  #(sql, [], moving_sessions_decoder())
+}
+
+pub fn moving_sessions_decoder() -> decode.Decoder(MovingSessions) {
+  use session_id <- decode.field(0, decode.string)
+  use op <- decode.field(1, decode.string)
+  use peer <- decode.field(2, decode.string)
+  decode.success(MovingSessions(session_id:, op:, peer:))
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,

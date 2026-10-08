@@ -226,6 +226,10 @@ type Launch {
 pub type SessionsCommand {
   ListRegistrations(showing: Showing)
   RemoveRegistration(session_id: String, consent: Consent)
+
+  // Hands a session to the orchestrator the daemon's `[orchestrators.<name>]`
+  // table calls `to` (protocol-change/078, phase 5).
+  MoveRegistration(session_id: String, to: String)
 }
 
 // Whether the person has already agreed to lose a conversation. `--yes` is
@@ -1212,7 +1216,32 @@ fn parse_sessions(arguments: List(String)) -> Launch {
     ["rm", id, ..flags] ->
       sessions_launch(flags, RemoveRegistration(id, consent))
     ["rm"] -> Invalid("sessions rm needs a session id\n" <> sessions_usage())
+    ["move", id, ..flags] -> parse_move(id, flags)
+    ["move"] ->
+      Invalid("sessions move needs a session id\n" <> sessions_usage())
     _unknown -> Invalid(sessions_usage())
+  }
+}
+
+// `loom sessions move <id> --to <orchestrator>`. The destination is required and
+// is a name from the daemon's configuration, not an address, so it is refused here
+// if it is not the shape of one, before any daemon is started or asked.
+fn parse_move(id: String, flags: List(String)) -> Launch {
+  case take_value(flags, "--to") {
+    Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
+    Ok(#(None, _)) ->
+      Invalid("sessions move needs --to <orchestrator>\n" <> sessions_usage())
+    Ok(#(Some(to), rest)) ->
+      case placement.is_orchestrator_name(to) {
+        True -> sessions_launch(rest, MoveRegistration(id, to))
+        False ->
+          Invalid(
+            "--to must be the name of an orchestrator in the daemon's configuration, got "
+            <> to
+            <> "\n"
+            <> sessions_usage(),
+          )
+      }
   }
 }
 
@@ -1243,6 +1272,7 @@ fn take_switch(arguments: List(String), flag: String) -> #(Bool, List(String)) {
 fn sessions_usage() -> String {
   "usage: loom sessions list [--all] [--state-dir <path>] [--server <path>]\n"
   <> "       loom sessions rm <session-id> [--yes] [--state-dir <path>]\n"
+  <> "       loom sessions move <session-id> --to <orchestrator> [--state-dir <path>]\n"
   <> "  list shows the resident track by default; --all adds every saved\n"
   <> "  registration and reservation\n"
   <> "  resident: running in the daemon now\n"
@@ -1250,7 +1280,12 @@ fn sessions_usage() -> String {
   <> "  reserved: a creation that never finished, an id with no database\n"
   <> "  behind it; retry the create or remove it\n"
   <> "  rm asks for confirmation unless --yes is given, and refuses a\n"
-  <> "  session the daemon still holds open; stop it first"
+  <> "  session the daemon still holds open; stop it first\n"
+  <> "  move hands a session on an executor to the orchestrator the daemon's\n"
+  <> "  [orchestrators.<name>] table calls <orchestrator>. It returns once the\n"
+  <> "  daemon has accepted the move, which it then carries out; the session\n"
+  <> "  cannot be opened here until the move ends, and afterward it is opened on\n"
+  <> "  the other orchestrator"
 }
 
 /// What `loom ui` was asked for: the daemon options, the session to link
@@ -1512,6 +1547,8 @@ fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
         ListRegistrations(showing:) -> list_registrations(host, showing)
         RemoveRegistration(session_id:, consent:) ->
           remove_registration(host, session_id, consent)
+        MoveRegistration(session_id:, to:) ->
+          move_registration(host, session_id, to)
       }
       daemon.close(control)
       case outcome {
@@ -1718,6 +1755,25 @@ fn remove_registration(
   })
   use deleted <- result.map(daemon_selection.delete(host, session_id))
   "deleted " <> deleted
+}
+
+fn move_registration(
+  host: daemon_selection.Host,
+  session_id: String,
+  to: String,
+) -> Result(String, String) {
+  use #(op, destination) <- result.map(daemon_selection.move(
+    host,
+    session_id,
+    to,
+  ))
+  "moving "
+  <> session_id
+  <> " to "
+  <> destination
+  <> " (operation "
+  <> op
+  <> ")"
 }
 
 // Anything but an explicit yes cancels, including an empty line, so the
