@@ -6,7 +6,7 @@
 %% This module lives in the test tree so `src` keeps its FFI budget.
 -module(tui_probe_ffi).
 
--export([probe/1, collected/1, node_memory/0]).
+-export([probe/1, collected/1, node_memory/0, reductions/1]).
 
 %% A leak measurement has to separate what a process retains from what it has
 %% merely not collected yet, so every settled sample is taken after a forced
@@ -44,3 +44,10 @@ probe(Pid) ->
 %% Node totals, for the series a leak hunt reads beside the per-process one.
 node_memory() ->
     {node_memory, erlang:memory(total), erlang:memory(binary)}.
+
+%% The VM's reduction counter bounds wrapping work without a wall-clock gate.
+%% Pure Gleam cannot inspect scheduler accounting. This reads only the test
+%% process; it never traces, collects, or samples a resident client.
+reductions(Pid) ->
+    {reductions, Count} = erlang:process_info(Pid, reductions),
+    Count.
