@@ -17,6 +17,7 @@ import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import runtime/effects.{type ToolRun}
+import sqlight
 import support/remote_fixtures as fixtures
 import tools/fs
 
@@ -702,5 +703,29 @@ pub fn a_build_that_fails_is_reported_and_retried_by_the_next_attach_test() {
   assert attach(rig, 0, token(2)) == Error(protocol.NoPlane("no checkout here"))
   assert process.receive(attempts, 100) == Ok(0)
   assert process.receive(attempts, 100) == Ok(0)
+  stop(rig)
+}
+
+pub fn a_plane_the_ledger_no_longer_explains_is_closed_before_a_new_one_is_built_test() {
+  // Scope rows are never deleted, so this is a ledger changed outside the host.
+  // The host holds a plane for the scope while the ledger says the scope is new.
+  let rig = rig(fixtures.Open)
+  let assert Ok(protocol.Attached(census: "census-0", ..)) =
+    attach(rig, 0, token(1))
+  assert fixtures.closes(rig.probe) == 0
+  let assert Ok(connection) = sqlight.open(rig.path)
+    as "the tamper connection opens"
+  let assert Ok(Nil) =
+    sqlight.exec("DELETE FROM scope WHERE session = 's1';", on: connection)
+    as "the scope row is removed"
+  let assert Ok(Nil) = sqlight.close(connection)
+    as "the tamper connection closes"
+
+  let assert Ok(protocol.Attached(census: "census-0", ..)) =
+    attach(rig, 0, token(2))
+
+  // The first plane was retired and the second was built beside nothing.
+  assert fixtures.closes(rig.probe) == 1
+  assert list.length(fixtures.builds(rig.probe)) == 2
   stop(rig)
 }

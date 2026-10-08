@@ -532,12 +532,21 @@ fn place(
       )
       state
     }
+
+    // The ledger says this scope is new, or came back from a close, while this
+    // VM holds a plane for it. Scope rows are never deleted, and a close removes
+    // the placement before it starts, so only a ledger changed outside the host
+    // reaches this arm. The plane is retired before the new one is built, so
+    // that a scope that did get here leaks no helper pool. It blocks the host
+    // for the retirement, which is the price of a path that does not happen.
     exec_ledger.Created, Ok(Ready(stale))
     | exec_ledger.Reopened, Ok(Ready(stale))
     -> {
+      let _outcome = stale.plane.close(fn() { retire_children(stale.children) })
       owner_link.stop(stale.link)
       built(state)
     }
+
     exec_ledger.Rebound, Ok(Building(..))
     | exec_ledger.Created, Ok(Building(..))
     | exec_ledger.Reopened, Ok(Building(..))
