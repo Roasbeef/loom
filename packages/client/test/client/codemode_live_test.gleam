@@ -156,12 +156,16 @@ fn run_live(ready: Ready) -> Nil {
   // so this line named the build alone and the tool had to say it could
   // not vouch for the stage the program actually ran in (issue #5).
   let sandbox = sandbox_line(text)
-  assert string.contains(sandbox, codemode_tool.build_stage <> " enforced [")
-  assert string.contains(
-    sandbox,
-    codemode_tool.satellite_stage <> " enforced [",
-  )
+  assert string.contains(sandbox, " enforced [")
   assert !string.contains(sandbox, "made NO enforcement report")
+  assert string.contains(sandbox, "build and node enforced [")
+    || {
+      string.contains(sandbox, codemode_tool.build_stage <> " enforced [")
+      && string.contains(
+        sandbox,
+        codemode_tool.satellite_stage <> " enforced [",
+      )
+    }
   // Printed, so a degraded run is visible rather than silently green:
   // *which* layers held is a property of this kernel, not of the harness.
   io.println("code-mode tool e2e: " <> sandbox)
@@ -2997,6 +3001,24 @@ fn run_advertised_recipes(ready: Ready) -> Nil {
   assert notes_program_value(outcome) == json.Object([#("count", json.Int(8))])
   assert simplifile.read(rig.workspace <> "/analysis.json")
     == Ok("{\"count\":8}")
+
+  // The shell-probe recipe must vet, compile without warnings and run. Whether
+  // `git` and `gh` exist or are permitted here is not the claim: a probe that
+  // fails must come back as text in its own section, not as a failed run.
+  assert string.contains(description, codemode_recipes.shell_probes())
+  assert simplifile.read("../../docs/examples/shell_probes.gleam")
+    == Ok(codemode_recipes.shell_probes())
+  let probes =
+    run_notes_program(
+      config,
+      rig,
+      codemode_recipes.shell_probes(),
+      "recipe-shell-probes",
+    )
+  assert !probes.is_error as rendered_text(probes)
+  assert string.contains(rendered_text(probes), "log:")
+  assert string.contains(rendered_text(probes), "fix PRs:")
+  assert !string.contains(rendered_text(probes), "removed unused")
 
   let ctx =
     tool.Ctx(
