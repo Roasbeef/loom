@@ -134,6 +134,7 @@ fn exercise(server: String, directory: String, paths: endpoint.Paths) -> Nil {
       configuration,
       "",
       "",
+      "",
     )
   let session = created.expected.session
   await_resident(connected.control, session, paths)

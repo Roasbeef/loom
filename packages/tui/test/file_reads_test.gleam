@@ -247,6 +247,7 @@ pub fn a_resolved_configuration_continues_the_creation_test() {
         "/cfg/loom.toml",
         "",
         "",
+        "",
       ),
       90_000,
     )
@@ -413,6 +414,7 @@ pub fn a_creation_carries_the_launch_profile_test() {
         "work",
         "/cfg/loom.toml",
         "deepseek",
+        "",
         "",
       ),
       90_000,

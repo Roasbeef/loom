@@ -3193,6 +3193,16 @@ gave it: `interactive` builds the context directly and `selection.target` skips
 name relative to the terminal's working directory and could show the branch of an
 unrelated local folder.
 
+`loom --pool <name> --workspace <registered name>` is the same for a
+`[pools.<name>]`: the placement is `InPool(pool, workspace)`, the creation sends
+`pool` and no `executor` (`job.CreateSession.pool`,
+`protocol.CreateSession.pool`), and the daemon picks the executor when the
+session first opens. `--pool` and `--executor` are exclusive, and every other
+rule above holds for it. The terminal words `pool_unknown`. A pooled session's
+row carries no `executor` until its first open has chosen one, and the terminal
+does not read the row's `pool`, so until then the row lists with its registered
+name where a path would be.
+
 `protocol.Session.executor` is the optional `executor` member of a session row
 (`Some` only for a remote session; absent, empty, over-long and non-string read
 as `None`, as the subtitle does). Listings show it. The picker groups by

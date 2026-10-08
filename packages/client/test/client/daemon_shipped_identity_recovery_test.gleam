@@ -143,6 +143,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       configuration,
       "",
       "",
+      "",
     )
   let assert Ok(protocol.SessionReply(created)) =
     daemon.request(first.control, request, 5000)

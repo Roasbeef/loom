@@ -1,6 +1,6 @@
 //// Where a newly created session's workspace lives: a directory on the
-//// daemon's own host, or a name registered on an executor
-//// (protocol-change/078).
+//// daemon's own host, a name registered on an executor, or a name registered
+//// on the executors of a pool (protocol-change/078).
 ////
 //// The two are different kinds of text. A path on the daemon's host is
 //// canonicalized there; a registered name is never canonicalized, statted or
@@ -8,8 +8,8 @@
 //// terminal therefore keeps the name apart from every path it handles. It
 //// never reaches the launcher's `--workspace` resolution, the footer's
 //// repository probe or the picker's path arithmetic as if it were a
-//// directory, and a launch cannot name an executor without a workspace or a
-//// workspace without an executor, because both live in one variant.
+//// directory, and a launch cannot name an executor or a pool without a
+//// workspace or a workspace without one, because both live in one variant.
 ////
 //// The shape rules below repeat the daemon's (`storage/catalogue`), which this
 //// package cannot import. They exist to refuse a typo before a daemon round
@@ -21,7 +21,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
-/// The longest executor name the daemon accepts, in characters.
+/// The longest executor or pool name the daemon accepts, in characters.
 const executor_name_limit = 32
 
 /// The longest registered workspace name the daemon accepts, in bytes.
@@ -40,35 +40,59 @@ pub type Placement {
     /// The workspace name registered on that executor, kept exactly as typed.
     workspace: String,
   )
+
+  /// The workspace is the name registered on the executors of this pool, a
+  /// `[pools.<name>]` key of the daemon's configuration. The daemon picks the
+  /// executor when the session first opens.
+  InPool(
+    /// The pool, as the daemon's configuration names it.
+    pool: String,
+    /// The workspace name registered on the pool's executors, kept exactly as
+    /// typed.
+    workspace: String,
+  )
 }
 
-/// Builds a placement from the words of `--executor` and `--workspace`.
+/// Builds a placement from the words of `--executor`, `--pool` and
+/// `--workspace`.
 ///
-/// Neither flag means a path on this host, and `--workspace` alone is that
-/// path, so only an executor makes the workspace a registered name. An
-/// executor with no workspace is refused, because the daemon has no default
-/// registered workspace to fall back on. The refusals name the flag and say
-/// what it wanted, and they never echo a value that is not a name.
+/// Neither of the first two means a path on this host, and `--workspace` alone
+/// is that path, so only an executor or a pool makes the workspace a registered
+/// name. Naming both is refused, and so is either one with no workspace,
+/// because the daemon has no default registered workspace to fall back on. The
+/// refusals name the flag and say what it wanted, and they never echo a value
+/// that is not a name.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert placement.new(None, Some("/work")) == Ok(placement.OnThisHost)
-/// assert placement.new(Some("box"), Some("app"))
+/// assert placement.new(None, None, Some("/work")) == Ok(placement.OnThisHost)
+/// assert placement.new(Some("box"), None, Some("app"))
 ///   == Ok(placement.OnExecutor("box", "app"))
-/// let assert Error(_) = placement.new(Some("box"), None)
+/// assert placement.new(None, Some("builders"), Some("app"))
+///   == Ok(placement.InPool("builders", "app"))
+/// let assert Error(_) = placement.new(Some("box"), None, None)
 /// ```
 pub fn new(
   executor: Option(String),
+  pool: Option(String),
   workspace: Option(String),
 ) -> Result(Placement, String) {
-  case executor, workspace {
-    None, _ -> Ok(OnThisHost)
-    Some(_), None ->
+  case executor, pool, workspace {
+    None, None, _ -> Ok(OnThisHost)
+    Some(_), Some(_), _ ->
+      Error(
+        "--executor and --pool are exclusive: name where a session goes once",
+      )
+    Some(_), None, None ->
       Error(
         "--executor needs --workspace <registered name>, the name of a workspace registered on that executor",
       )
-    Some(executor), Some(workspace) ->
+    None, Some(_), None ->
+      Error(
+        "--pool needs --workspace <registered name>, the name of a workspace registered on that pool's executors",
+      )
+    Some(executor), None, Some(workspace) ->
       case is_executor_name(executor), is_workspace_name(workspace) {
         False, _ ->
           Error(
@@ -79,6 +103,18 @@ pub fn new(
             "--workspace with --executor needs a registered workspace name: 1 to 128 bytes with no / and no NUL, not a path",
           )
         True, True -> Ok(OnExecutor(executor, workspace))
+      }
+    None, Some(pool), Some(workspace) ->
+      case is_executor_name(pool), is_workspace_name(workspace) {
+        False, _ ->
+          Error(
+            "--pool needs a pool name: a lowercase letter, then lowercase letters, numbers, _ or -, at most 32 characters",
+          )
+        True, False ->
+          Error(
+            "--workspace with --pool needs a registered workspace name: 1 to 128 bytes with no / and no NUL, not a path",
+          )
+        True, True -> Ok(InPool(pool, workspace))
       }
   }
 }
@@ -101,7 +137,7 @@ pub fn label(executor: Option(String), workspace: String) -> String {
   }
 }
 
-// An executor name has the grammar of a profile name.
+// An executor or pool name has the grammar of a profile name.
 fn is_executor_name(text: String) -> Bool {
   case string.to_graphemes(text) {
     [first, ..rest] ->

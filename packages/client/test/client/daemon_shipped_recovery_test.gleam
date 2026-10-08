@@ -124,6 +124,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
         configuration,
         "",
         "",
+        "",
       ),
       5000,
     )
@@ -138,6 +139,7 @@ fn exercise(server, directory, paths: endpoint.Paths) {
       workspace,
       "target",
       configuration,
+      "",
       "",
       "",
     )

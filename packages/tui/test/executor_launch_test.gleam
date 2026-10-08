@@ -131,7 +131,15 @@ pub fn creation_sends_the_executor_only_for_a_registered_workspace_test() {
     let assert Ok(body) =
       protocol.encode(
         7,
-        protocol.CreateSession("key", workspace, "app", "/config", "", executor),
+        protocol.CreateSession(
+          "key",
+          workspace,
+          "app",
+          "/config",
+          "",
+          executor,
+          "",
+        ),
         protocol.Epoch("current"),
       )
     body
@@ -153,6 +161,7 @@ pub fn an_over_long_executor_name_is_refused_before_it_is_sent_test() {
         "",
         "",
         string.repeat("a", 65),
+        "",
       ),
       protocol.Epoch("current"),
     )
@@ -162,7 +171,7 @@ pub fn an_over_long_executor_name_is_refused_before_it_is_sent_test() {
 @external(erlang, "effects_test_ffi", "host_on")
 fn host_on(owner: Subject(Dynamic)) -> daemon_selection.Host
 
-fn executor_options() -> bootstrap.Options {
+fn options_in(placed: placement.Placement) -> bootstrap.Options {
   bootstrap.Options(
     "",
     "",
@@ -170,20 +179,25 @@ fn executor_options() -> bootstrap.Options {
     "build",
     "build/s6-absent/loom.toml",
     "",
-    placement.OnExecutor("build-box", "app"),
+    placed,
   )
 }
 
 // A terminal at the session picker whose launch named an executor, with a
 // stand-in daemon host, ready for `n`.
 fn picker() -> tui_model.Model {
+  picker_in(placement.OnExecutor("build-box", "app"))
+}
+
+// The same picker for any placement.
+fn picker_in(placed: placement.Placement) -> tui_model.Model {
   let owner: Subject(Dynamic) = process.new_subject()
   let base =
     tui.new_model(connection.new_inbox(), workspace.Context("/cwd", None))
   tui_model.Model(
     ..base,
     view: base.view
-      |> view_set.local_options(Some(executor_options()))
+      |> view_set.local_options(Some(options_in(placed)))
       |> view_set.overlay(
         tui_model.DaemonSelector(session_selector.new(
           protocol.Page(0, [], None),
@@ -233,6 +247,7 @@ pub fn a_creation_carries_the_launch_executor_test() {
         "/cfg/loom.toml",
         "",
         "build-box",
+        "",
       ),
       90_000,
     )
@@ -295,4 +310,155 @@ pub fn daemon_failures_for_an_executor_are_worded_test() {
     == "session startup failed (executor_unavailable): this daemon was not started with [distribution]"
   assert daemon_selection.failure(daemon.Refused("start_failed", "other"))
     == "session startup failed: other"
+}
+
+// --- pools -------------------------------------------------------------------
+
+pub fn the_flag_names_a_pool_and_a_registered_workspace_test() {
+  let assert Ok(options) =
+    tui.launch_options([
+      "--pool", "builders", "--workspace", "app", "--model-profile", "cheap",
+    ])
+  assert options.placement == placement.InPool("builders", "app")
+  assert options.workspace == ""
+  assert options.profile == "cheap"
+  let assert Ok(options) =
+    tui.launch_options(["--workspace", "app", "--pool", "builders"])
+  assert options.placement == placement.InPool("builders", "app")
+}
+
+pub fn a_pool_and_an_executor_are_exclusive_test() {
+  let assert Error(reason) =
+    tui.launch_options([
+      "--executor", "box", "--pool", "builders", "--workspace", "app",
+    ])
+  assert string.contains(reason, "--executor and --pool are exclusive")
+}
+
+pub fn a_pool_needs_a_registered_workspace_name_test() {
+  let assert Error(reason) = tui.launch_options(["--pool", "builders"])
+  assert string.contains(reason, "--pool needs --workspace")
+  let assert Error(reason) =
+    tui.launch_options(["--pool", "builders", "--workspace", "/work/app"])
+  assert string.contains(reason, "registered workspace name")
+  let assert Error(reason) =
+    tui.launch_options(["--pool", "Big Pool", "--workspace", "app"])
+  assert string.contains(reason, "--pool needs a pool name")
+  let assert Error(reason) =
+    tui.launch_options(["--pool", "a", "--pool", "b", "--workspace", "app"])
+  assert string.contains(reason, "--pool was given more than once")
+}
+
+pub fn a_pool_cannot_choose_where_an_existing_session_lives_test() {
+  let assert Error(reason) =
+    tui.launch_options([
+      "--pool", "builders", "--workspace", "app", "--session", "01a11401",
+    ])
+  assert string.contains(reason, "--session opens an existing one")
+}
+
+pub fn the_other_commands_do_not_take_the_pool_flag_test() {
+  let assert Error(reason) = tui.launch_sessions(["list", "--pool", "builders"])
+  assert string.contains(reason, "unknown local launch option --pool")
+}
+
+pub fn the_usage_names_the_pool_flag_test() {
+  let assert Error(reason) = tui.launch_options(["--bogus", "x"])
+  assert string.contains(reason, "--pool <name> --workspace <registered name>")
+}
+
+pub fn creation_sends_the_pool_only_for_a_pooled_workspace_test() {
+  let encoded = fn(workspace, pool) {
+    let assert Ok(body) =
+      protocol.encode(
+        7,
+        protocol.CreateSession("key", workspace, "app", "/config", "", "", pool),
+        protocol.Epoch("current"),
+      )
+    body
+  }
+  let pooled = encoded("app", "builders")
+  assert string.contains(pooled, "\"pool\":\"builders\"")
+  assert string.contains(pooled, "\"workspace\":\"app\"")
+  assert !string.contains(pooled, "\"executor\"")
+  assert !string.contains(encoded("/work", ""), "\"pool\"")
+}
+
+pub fn an_over_long_pool_name_is_refused_before_it_is_sent_test() {
+  let assert Error(_) =
+    protocol.encode(
+      7,
+      protocol.CreateSession(
+        "key",
+        "app",
+        "app",
+        "",
+        "",
+        "",
+        string.repeat("a", 65),
+      ),
+      protocol.Epoch("current"),
+    )
+  Nil
+}
+
+// Pressing `n` in a terminal launched with `--pool` asks the daemon to create in
+// that pool: the attachment job carries the registered name and the pool, and no
+// executor.
+pub fn a_creation_carries_the_launch_pool_test() {
+  let #(asked, _effects) =
+    stepping.step(
+      backend.KeyPress("n"),
+      picker_in(placement.InPool("builders", "app")),
+    )
+  let assert Some(slot) = asked.view.configuring
+    as "the creation waits for its configuration job"
+  let resolved =
+    runtime.hold(
+      asked,
+      job.ConfigurationArrived(
+        job.key(slot),
+        weft.PulledOutcome(weft.Completed(0, "/cfg/loom.toml")),
+      ),
+    )
+  let #(created, effects) = stepping.step(backend.Tick, resolved)
+  let assert Some(creation_key) = created.view.creation_key
+    as "the creation retained its key once the configuration arrived"
+  let assert Some(host) = created.view.daemon_host
+    as "the stand-in host remains"
+  let assert [effect.StartJob(_, spec)] = list.filter(effects, is_job)
+    as "the tick starts exactly the attachment job"
+  assert spec
+    == job.Attach(
+      job.CreateSession(
+        host.control,
+        creation_key,
+        "app",
+        "app",
+        "/cfg/loom.toml",
+        "",
+        "",
+        "builders",
+      ),
+      90_000,
+    )
+}
+
+pub fn daemon_failures_for_a_pool_are_worded_test() {
+  assert daemon_selection.failure(daemon.Refused(
+      "pool_unknown",
+      "no pool with that name is configured on this daemon",
+    ))
+    == "pool_unknown: no pool with that name is configured on this daemon; --pool must be a [pools.<name>] key of the daemon's configuration"
+}
+
+pub fn the_placement_new_rules_are_total_test() {
+  assert placement.new(None, None, None) == Ok(placement.OnThisHost)
+  assert placement.new(None, None, Some("/work")) == Ok(placement.OnThisHost)
+  assert placement.new(Some("box"), None, Some("app"))
+    == Ok(placement.OnExecutor("box", "app"))
+  assert placement.new(None, Some("builders"), Some("app"))
+    == Ok(placement.InPool("builders", "app"))
+  let assert Error(_) = placement.new(Some("a"), Some("b"), Some("app"))
+  let assert Error(_) = placement.new(Some("a"), Some("b"), None)
 }

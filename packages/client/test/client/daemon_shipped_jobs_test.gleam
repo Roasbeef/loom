@@ -1202,6 +1202,7 @@ fn attach(
       config,
       "",
       "",
+      "",
     )
     as "the session is explicitly created"
   bind(connected, created.expected.session)

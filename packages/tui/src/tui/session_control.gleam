@@ -710,7 +710,7 @@ fn chosen_profile(model: Model) -> String {
 
 // Where the launch asked new sessions to be created. Like the profile, only a
 // local launch has one, and it applies to every creation this terminal makes,
-// so a terminal started with `--executor` keeps creating on that executor until
+// so a terminal started with `--executor` or `--pool` keeps creating there until
 // it exits. Without local options a session is created on this host.
 fn chosen_placement(model: Model) -> placement.Placement {
   case model.view.local_options {
@@ -762,16 +762,25 @@ fn create_session_configured(model: Model, config: String) -> Model {
         <> int.to_string(model.shared.next_id)
 
       // The workspace is the launch's directory unless the launch named an
-      // executor, whose registered name goes to the daemon exactly as typed.
-      let #(target, name, executor) = case chosen_placement(model) {
+      // executor or a pool, whose registered name goes to the daemon exactly as
+      // typed.
+      let #(target, name, executor, pool) = case chosen_placement(model) {
         placement.OnExecutor(executor:, workspace: registered) -> #(
           registered,
           workspace.session_name(workspace.Context(registered, None)),
           executor,
+          "",
+        )
+        placement.InPool(pool:, workspace: registered) -> #(
+          registered,
+          workspace.session_name(workspace.Context(registered, None)),
+          "",
+          pool,
         )
         placement.OnThisHost -> #(
           model.view.workspace.path,
           workspace.session_name(model.view.workspace),
+          "",
           "",
         )
       }
@@ -784,6 +793,7 @@ fn create_session_configured(model: Model, config: String) -> Model {
           config,
           chosen_profile(model),
           executor,
+          pool,
         )
       let #(model, job_key) =
         tui_model.start_job(model, job.Attach(route, attach_timeout_ms))

@@ -51,7 +51,10 @@ profile it was created with. It is not `--profile`, which enables BEAM
 profiling. `--executor <name> --workspace <registered name>` makes the
 picker's `n` create sessions in a workspace registered on one of the daemon's
 `[executors.<name>]` (the name is not resolved as a path on this machine, and
-the flag cannot be combined with `--session`). It never loads workspace configuration
+the flag cannot be combined with `--session`). `--pool <name> --workspace
+<registered name>` does the same for one of the daemon's `[pools.<name>]`, which
+picks the executor when the session first opens; it is exclusive with
+`--executor`. It never loads workspace configuration
 implicitly or runs the server from the workspace, because repository
 content is not launch authority. It also ignores relative `PATH` entries
 when looking for `loomd`. `loom --demo` renders a canned preview without a

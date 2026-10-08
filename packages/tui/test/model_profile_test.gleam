@@ -47,7 +47,15 @@ pub fn creation_sends_the_profile_only_when_one_was_asked_for_test() {
     let assert Ok(body) =
       protocol.encode(
         7,
-        protocol.CreateSession("key", "/work", "name", "/config", profile, ""),
+        protocol.CreateSession(
+          "key",
+          "/work",
+          "name",
+          "/config",
+          profile,
+          "",
+          "",
+        ),
         protocol.Epoch("current"),
       )
     string.contains(body, "\"profile\"")
@@ -66,6 +74,7 @@ pub fn an_over_long_profile_name_is_refused_before_it_is_sent_test() {
         "name",
         "",
         string.repeat("a", 65),
+        "",
         "",
       ),
       protocol.Epoch("current"),

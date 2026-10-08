@@ -336,6 +336,7 @@ fn exercise_peer_fixture(
       configuration,
       "",
       "",
+      "",
     )
   let assert Ok(target) =
     selection.create_named(
@@ -344,6 +345,7 @@ fn exercise_peer_fixture(
       target_workspace,
       workspace.session_name(workspace.Context(target_workspace, None)),
       configuration,
+      "",
       "",
       "",
     )
@@ -461,6 +463,7 @@ fn exercise(
       configuration,
       "",
       "",
+      "",
     )
     as "explicit creation opens the fixture session"
   let id = target.expected.session
@@ -505,6 +508,7 @@ fn exercise(
       foreign_workspace,
       workspace.session_name(workspace.Context(foreign_workspace, None)),
       configuration,
+      "",
       "",
       "",
     )
@@ -761,6 +765,7 @@ fn live_tool_switches(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       configuration,
+      "",
       "",
       "",
     )

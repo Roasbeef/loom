@@ -214,6 +214,7 @@ pub fn tui_daemon_real_control_create_default_stop_lazy_open_test() {
         ready.state_root <> "/tui-config.toml",
         "",
         "",
+        "",
       )
     let assert Ok(protocol.SessionReply(created)) =
       daemon.request(control, creation, 1000)
@@ -366,7 +367,7 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
     ),
     #(protocol.SetDefault("/work", id), server_protocol.SetDefault("/work", id)),
     #(
-      protocol.CreateSession("key", "/work", "é \\\"", "/config", "", ""),
+      protocol.CreateSession("key", "/work", "é \\\"", "/config", "", "", ""),
       server_protocol.CreateSession(
         "key",
         "/work",
@@ -651,6 +652,7 @@ pub fn tui_daemon_disconnect_leaves_mutation_outcome_unknown_test() {
               "/work",
               "Name",
               "/config",
+              "",
               "",
               "",
             ),

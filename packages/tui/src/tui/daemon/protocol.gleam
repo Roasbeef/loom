@@ -216,6 +216,10 @@ pub type Command {
     /// a path on the daemon's host (protocol-change/078). With an executor the
     /// workspace is a registered name, which the daemon keeps exactly as sent.
     executor: String,
+    /// The pool of executors `workspace` is registered on, or empty
+    /// (protocol-change/078). Exclusive with `executor`: the daemon picks the
+    /// executor when the session first opens.
+    pool: String,
   )
 
   /// Explicitly starts the selected session in this connection's epoch.
@@ -783,7 +787,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       use other <- result.map(text_fields([#("workspace", workspace, 4096)]))
       list.append(fields, other)
     }
-    CreateSession(key, workspace, name, configuration, profile, executor) -> {
+    CreateSession(key, workspace, name, configuration, profile, executor, pool) -> {
       use fields <- result.try(
         text_fields([
           #("request_key", key, 256),
@@ -808,13 +812,20 @@ fn command_fields(command: Command, epoch: Epoch) {
 
       // The executor is absent for a workspace on the daemon's host, for the
       // same reason, and present only beside a registered workspace name.
-      use executor <- result.map(case executor {
+      use executor <- result.try(case executor {
         "" -> Ok([])
         name -> text_fields([#("executor", name, 64)])
       })
+
+      // A pool is absent for the same reason, and the daemon refuses a request
+      // that carries both, so this client never sends one.
+      use pool <- result.map(case pool {
+        "" -> Ok([])
+        name -> text_fields([#("pool", name, 64)])
+      })
       [
         #("configuration", json.String(configuration)),
-        ..list.append(fields, list.append(profile, executor))
+        ..list.append(fields, list.flatten([profile, executor, pool]))
       ]
     }
     OpenSession(id)

@@ -127,6 +127,7 @@ pub fn request_scalar_limits_and_stale_operation_epoch_test() {
         "/config",
         "",
         "",
+        "",
       ),
       epoch,
     )
@@ -288,7 +289,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
   let assert Ok(encoded) =
     protocol.encode(
       1,
-      protocol.CreateSession("key", "/work", "New session", "", "", ""),
+      protocol.CreateSession("key", "/work", "New session", "", "", "", ""),
       epoch,
     )
     as "omitted config can reach the daemon's inherited defaults"
@@ -301,6 +302,7 @@ pub fn creation_allows_empty_configuration_but_bounds_explicit_paths_test() {
         "/work",
         "New session",
         string.repeat("x", 4097),
+        "",
         "",
         "",
       ),

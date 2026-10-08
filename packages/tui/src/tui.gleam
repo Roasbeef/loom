@@ -797,8 +797,9 @@ fn interactive(launch: Launch, record: String) -> Nil {
             |> view_set.workspace(case options.placement, options.workspace {
               // A registered name is no directory here, so it is never probed
               // for a repository: the footer shows the name as given.
-              placement.OnExecutor(workspace: name, ..), _ ->
-                workspace.Context(path: name, branch: None)
+              placement.OnExecutor(workspace: name, ..), _
+              | placement.InPool(workspace: name, ..), _
+              -> workspace.Context(path: name, branch: None)
               placement.OnThisHost, "" -> base.view.workspace
               placement.OnThisHost, path -> workspace.discover_from(path)
             }),
@@ -1125,30 +1126,31 @@ fn parse_terminal_launch(arguments: List(String)) -> Launch {
 }
 
 // A local terminal launch: the shared local options, and the placement that
-// `--executor` and `--workspace` name together. `--executor` is read here and
-// not by `parse_local_options`, so `loom ui` and `loom sessions`, which have no
-// session to create, refuse it as the unknown option it is for them. With an
-// executor the `--workspace` value is a registered name and not a directory, so
-// it is taken out of the words before the options parser can store it as one:
-// the launcher canonicalizes `Options.workspace`, and a name must never reach
-// that.
+// `--executor` or `--pool` and `--workspace` name together. They are read here
+// and not by `parse_local_options`, so `loom ui` and `loom sessions`, which have
+// no session to create, refuse them as the unknown options they are for them.
+// With an executor or a pool the `--workspace` value is a registered name and
+// not a directory, so it is taken out of the words before the options parser
+// can store it as one: the launcher canonicalizes `Options.workspace`, and a
+// name must never reach that.
 fn parse_local_launch(
   arguments: List(String),
   selected: String,
 ) -> Result(Launch, String) {
   use #(executor, rest) <- result.try(take_value(arguments, "--executor"))
-  use #(registered, rest) <- result.try(case executor {
+  use #(pool, rest) <- result.try(take_value(rest, "--pool"))
+  use #(registered, rest) <- result.try(case option.or(executor, pool) {
     Some(_) -> take_value(rest, "--workspace")
     None -> Ok(#(None, rest))
   })
-  use Nil <- result.try(case executor, selected {
+  use Nil <- result.try(case option.or(executor, pool), selected {
     Some(_), "" | None, _ -> Ok(Nil)
     Some(_), _ ->
       Error(
-        "--executor names where a new session is created; --session opens an existing one",
+        "--executor and --pool name where a new session is created; --session opens an existing one",
       )
   })
-  use chosen <- result.try(placement.new(executor, registered))
+  use chosen <- result.try(placement.new(executor, pool, registered))
   use options <- result.map(parse_local_options(
     rest,
     default_bootstrap_options(),
@@ -1819,6 +1821,8 @@ fn launch_usage() -> String {
   <> "[--model-profile <name>]\n"
   <> "       loom --executor <name> --workspace <registered name> "
   <> "[--config <loom.toml>] [--model-profile <name>]\n"
+  <> "       loom --pool <name> --workspace <registered name> "
+  <> "[--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
   <> "  version            Print version, build commit and platform.\n"
@@ -1842,6 +1846,8 @@ fn launch_usage() -> String {
   <> "       [executors.<name>] of the daemon's configuration; --workspace is\n"
   <> "       then the registered name, not a path, and is never resolved on this\n"
   <> "       machine. It cannot be combined with --session\n"
+  <> "  --pool is the same for a [pools.<name>]: the daemon picks the executor\n"
+  <> "       when the session first opens. It cannot be combined with --executor\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]\n"

@@ -518,6 +518,7 @@ fn create(
       config,
       "",
       "",
+      "",
     )
     as "the session is explicitly created"
   created.expected.session

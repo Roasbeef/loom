@@ -260,7 +260,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
 /// ## Examples
 ///
 /// ```gleam
-/// // selection.create_named(host, key, project.path, workspace.session_name(project), config, "", "")
+/// // selection.create_named(host, key, project.path, workspace.session_name(project), config, "", "", "")
 /// ```
 pub fn create_named(
   host: Host,
@@ -270,6 +270,7 @@ pub fn create_named(
   configuration: String,
   profile: String,
   executor: String,
+  pool: String,
 ) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
@@ -281,6 +282,7 @@ pub fn create_named(
         configuration,
         profile,
         executor,
+        pool,
       ),
       10_000,
     )
@@ -709,6 +711,11 @@ pub fn failure(reason: daemon.Failure) -> String {
       "executor_unknown: "
       <> message
       <> "; --executor must be an [executors.<name>] key of the daemon's configuration"
+
+    daemon.Refused("pool_unknown", message) ->
+      "pool_unknown: "
+      <> message
+      <> "; --pool must be a [pools.<name>] key of the daemon's configuration"
 
     daemon.Refused(code, message) -> code <> ": " <> message
     daemon.UnknownOutcome(command) ->

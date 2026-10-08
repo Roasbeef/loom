@@ -655,6 +655,7 @@ fn resolve(
       config:,
       profile:,
       executor:,
+      pool:,
     ) ->
       with_control(running, control, fn(host) {
         fn() {
@@ -667,6 +668,7 @@ fn resolve(
             config,
             profile,
             executor,
+            pool,
           )
         }
       })

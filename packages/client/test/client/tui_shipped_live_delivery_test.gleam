@@ -250,6 +250,7 @@ fn exercise(
       configuration,
       "",
       "",
+      "",
     )
     as "explicit creation opens the fixture session"
   let id = target.expected.session

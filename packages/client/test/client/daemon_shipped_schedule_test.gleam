@@ -186,6 +186,7 @@ fn exercise(
       a_config,
       "",
       "",
+      "",
     )
     as "A is explicitly created"
   let assert Ok(b) =
@@ -195,6 +196,7 @@ fn exercise(
       directory <> "/b",
       workspace.session_name(workspace.Context(directory <> "/b", None)),
       b_config,
+      "",
       "",
       "",
     )
