@@ -263,7 +263,7 @@ pub fn a_session_in_flight_cannot_be_opened_and_says_where_it_is_going_test() {
   })
 }
 
-pub fn open_restore_and_delete_name_the_new_owner_after_the_move_test() {
+pub fn open_archive_restore_and_delete_name_the_new_owner_after_the_move_test() {
   moving(fn(ready, port, credential, _recorder) {
     let session = remote(ready, "moved-away")
     let #(socket, _) = wire.connect(port, credential, "/v2/control")
@@ -278,7 +278,8 @@ pub fn open_restore_and_delete_name_the_new_owner_after_the_move_test() {
       [
         #(2, "sessions.open"),
         #(3, "sessions.restore"),
-        #(4, "sessions.delete"),
+        #(4, "sessions.archive"),
+        #(6, "sessions.delete"),
       ],
       fn(each) {
         let refused = command(socket, each.0, each.1, session, ready.epoch)
@@ -291,7 +292,7 @@ pub fn open_restore_and_delete_name_the_new_owner_after_the_move_test() {
     )
 
     // A second move is refused the same way.
-    assert code(move(socket, 5, session, "laptop", ready.epoch))
+    assert code(move(socket, 7, session, "laptop", ready.epoch))
       == json.String("not_owner")
     let _ = ffi_ws.tcp_close(socket)
     Nil

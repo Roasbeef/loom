@@ -240,8 +240,38 @@ pub fn activate(context: Context(instance), activation: Activation) -> Verdict {
     Ok(Nil) -> Accepted
     Error(verdict) -> verdict
   }
+  discard_refused(context, activation, verdict)
   record(context, activation, verdict)
   verdict
+}
+
+// A copy this daemon refused for a reason that sending it again cannot cure is
+// removed, because the move it belongs to is over and nothing else will. A
+// digest that does not match and a copy that is missing are cured by a new send,
+// which replaces the file, so those leave it where it is.
+fn discard_refused(
+  context: Context(instance),
+  activation: Activation,
+  verdict: Verdict,
+) -> Nil {
+  case verdict {
+    Refused(refusal: session_move.DigestMismatch)
+    | Refused(refusal: session_move.NothingReceived)
+    | Accepted
+    | Failed(..) -> Nil
+    Refused(..) -> {
+      let whole =
+        session_move.incoming_path(
+          context.state_root,
+          activation.session,
+          activation.op,
+        )
+      list.each([whole, whole <> ".part", whole <> ".check"], fn(leftover) {
+        let _removed = simplifile.delete_file(leftover)
+        Nil
+      })
+    }
+  }
 }
 
 fn activated(

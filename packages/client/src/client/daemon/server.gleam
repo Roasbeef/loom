@@ -2312,10 +2312,12 @@ fn dispatch(
       |> result.map_error(redirected(config, principal, id, _))
       |> result.map_error(in_flight(state, id, _))
 
-    // Restoring and deleting a session that moved away name the new owner from
-    // the tombstone, and ask no one: the directory is not consulted for a
-    // session this daemon never held.
-    protocol.RestoreSession(id, _) | protocol.DeleteSession(id, _) ->
+    // Archiving, restoring and deleting a session that moved away name the new
+    // owner from the tombstone, and ask no one: the directory is not consulted
+    // for a session this daemon never held.
+    protocol.ArchiveSession(id, _)
+    | protocol.RestoreSession(id, _)
+    | protocol.DeleteSession(id, _) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
       |> result.map_error(tombstoned(config, principal, id, _))

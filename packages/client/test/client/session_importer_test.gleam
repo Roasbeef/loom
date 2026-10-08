@@ -484,23 +484,53 @@ pub fn a_copy_that_is_not_the_one_cut_is_refused_and_registers_nothing_test() {
   finish(rig)
 }
 
-pub fn checking_the_cell_never_changes_the_bytes_whose_digest_was_checked_test() {
-  let rig = rig("bytes", [])
+pub fn a_copy_refused_for_good_is_removed_and_one_a_resend_cures_is_kept_test() {
+  let rig = rig("discard", [])
+  let copy = cut(rig, 16, clean())
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+
+  // No executor by that name: sending the same copy again would be refused the
+  // same way, so the move is over and the copy goes.
+  assert session_importer.activate(rig.context, activation(copy, op))
+    == session_move.Refused(session_move.NoExecutor("box"))
+  assert !file_exists(waiting(rig, copy, op))
+
+  // A digest that does not match is cured by a new send, which replaces the
+  // file, so the file stays.
+  assert send(rig, copy, other_op, 65_536) == session_move.Accepted
+  let wrong =
+    session_move.Activation(
+      ..activation(copy, other_op),
+      digest: string.repeat("0", 64),
+    )
+  assert session_importer.activate(rig.context, wrong)
+    == session_move.Refused(session_move.DigestMismatch)
+  assert file_exists(waiting(rig, copy, other_op))
+  finish(rig)
+}
+
+fn file_exists(path: String) -> Bool {
+  simplifile.is_file(path) == Ok(True)
+}
+
+pub fn the_scratch_copy_used_to_read_the_cell_does_not_outlive_the_check_test() {
+  let rig = rig("scratch", [])
   let copy = cut(rig, 15, clean())
   assert send(rig, copy, op, 65_536) == session_move.Accepted
 
-  // The activation reads the cell and then finds no executor, so it refuses
-  // after the file was opened. The copy waiting is still exactly what was cut,
-  // which is what lets a repeat check the same digest.
+  // The activation reads the cell from a copy of the file, because opening a
+  // session file rewrites its header, and the file whose digest was just checked
+  // must stay what the sender cut. It is the placed file in the success case
+  // above that shows the bytes unchanged. Here the activation refuses after the
+  // cell was read, and no scratch file is left beside the incoming copy.
   assert session_importer.activate(rig.context, activation(copy, op))
     == session_move.Refused(session_move.NoExecutor("box"))
-  assert simplifile.read_bits(waiting(rig, copy, op)) == Ok(copy.bytes)
-  assert simplifile.is_file(session_move.check_path(
-      rig.directory,
-      copy.session,
-      op,
-    ))
-    == Ok(False)
+  let leftovers = case simplifile.read_directory(rig.directory <> "/incoming") {
+    Ok(names) -> names
+    Error(_) -> []
+  }
+  assert list.filter(leftovers, fn(name) { string.contains(name, copy.session) })
+    == []
   finish(rig)
 }
 
