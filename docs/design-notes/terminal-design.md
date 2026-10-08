@@ -96,10 +96,10 @@ What changes from today (A's list; the "before" captures are in
 - Two hint rows, in two tiers: movement and opening first, rarer keys second.
 
 Data: everything is on the page the picker already holds, so there is no wire
-change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:438`)
+change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:452`)
 (`Session`). The state, strand counts, approvals, last message and up to four
-glance lines come from `Activity` (`packages/tui/src/tui/daemon/protocol.gleam:342`)
-(`Activity`) and `GlanceLine` (`packages/tui/src/tui/daemon/protocol.gleam:362`)
+glance lines come from `Activity` (`packages/tui/src/tui/daemon/protocol.gleam:356`)
+(`Activity`) and `GlanceLine` (`packages/tui/src/tui/daemon/protocol.gleam:376`)
 (`GlanceLine`). The tabs are `Filter` (`packages/tui/src/tui/session_selector.gleam:75`)
 (`Filter`). Age is the creation age, because the page has no last-activity
 time; a "last active" field would be a change to `sessions.activity`.

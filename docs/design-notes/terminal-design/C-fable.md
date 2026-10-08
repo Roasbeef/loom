@@ -98,7 +98,7 @@ two-line preview of the highlighted row sits above the help line. An empty
 filter says what to press next and keeps the counts.
 
 **Data.** Everything drawn exists today except one figure. Rows come from
-`Session` (`tui/daemon/protocol.gleam:438`) and the page from `Page`
+`Session` (`tui/daemon/protocol.gleam:452`) and the page from `Page`
 (`tui/daemon/protocol.gleam:412`). The state phrase, counts, last message,
 model and the strand rows come from `Activity`
 (`tui/daemon/protocol.gleam:300`) with its `ActivityState`
