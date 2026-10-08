@@ -6723,3 +6723,68 @@ confirms and contradicts. `daemon_registered_test`, `daemon_protocol_test`,
 `support/remote_daemons.trio`. Dropping the record write before the attach fails
 five tests of `placement_test`, and letting a reopen treat a capacity refusal as
 "next" fails `a_reopen_into_a_full_executor_never_moves_to_another_test`.
+
+## Two orchestrators (protocol 078, phase 3)
+
+A deployment may run two orchestrators, each with its own catalogue. A session is
+created on, and owned by, the orchestrator the client is connected to, and a
+daemon asked about a session its catalogue lacks asks the others which one holds
+it. The decision is the owner's option C: a Khepri-shaped directory interface
+backed, for now, by a parallel lookup over pinned peers; each catalogue stays the
+source of truth; an authoritative store replaces the backing in phase 5; failover
+is deferred.
+
+- `client/orchestrators` decodes `[orchestrators.<name>]` (`node`, which must be a
+  `[[distribution.peers]]` node as an executor's must, and an optional `address`
+  held to `host/claim.remote_address`, so a bearer never goes over cleartext to a
+  remote host or into a URL with credentials). Two names for one node are
+  refused. `catalog.parse` validates it and `daemon/main.prepare_startup`
+  captures it in `Config.orchestrators`; a new key means `orchestrators.row`,
+  `scripts/config_keys.sh` and `docs/configuration.md`.
+- `remote/address` is `Address(message)`: the node and a `Name(message)`, no longer
+  pinned to the executor host's `HostMessage`.
+- `remote/orchestrator_port` is the answering end: one weft actor per daemon under
+  the fixed name `loom_orchestrator`, with its own closed `Message` (`Owns(session,
+  reply)`) and `Ownership` (`Owned | NotOwned`). It reads the catalogue through a
+  function `daemon/main.catalogue_holds` builds over `manager.get`: a registration
+  in any state and either visibility is `Owned`, a missing one `NotOwned`, and a
+  read that fails sends nothing, so the asker's deadline reports it as unreachable
+  and a fault is never mistaken for proof. `daemon/main.start_orchestrator_port`
+  starts it, linked to the process that runs the daemon's services, whenever
+  `[distribution]` is present, whether or not the daemon lists any orchestrator.
+  `ask` takes the monitor before it sends, as `surface` does, so a node that is
+  already gone ends the wait at once.
+- `client/session_directory` is the interface: `Directory(lookup)` answering
+  `Ok(Here)`, `Ok(Elsewhere(Orchestrator))`, `Error(Unknown)` or
+  `Error(Unreachable(names))`. `peers` is the phase 3 backing: the local
+  catalogue first, then every configured orchestrator at once in one weft run
+  under `deadline_ms` (2 s), each task `distribution.connect` then
+  `orchestrator_port.ask`. `decide` is the pure policy: the first holder in
+  configuration order wins over any silence; with no holder, any silence makes the
+  miss `Unreachable`; only a full set of "not held" is `Unknown`. A callback that
+  crashes or runs past the deadline is silence. Nothing is cached, registered or
+  retried, and no connection is made at startup.
+- `daemon/server` takes the directory as `Config.directory`
+  (`session_directory.none()` when there is no distribution or no orchestrator).
+  `dispatch` runs `sessions.get` and `sessions.open` as it always did and, only
+  when the answer is `not_found` and the principal is the owner, asks the
+  directory (`redirected`): `Elsewhere` becomes `not_owner` with `orchestrator`
+  and the row's `address`, `Unreachable` becomes `owner_unreachable` with
+  `orchestrators`, and `Here` or `Unknown` leave `not_found`. A member is always
+  `not_found` and the directory is not asked, because a member's standing is the
+  owning daemon's to judge; a stale epoch is refused before the lookup. Control
+  refusals are the `Refused(code, message, detail)` record, whose `detail` is
+  empty except for these two, and `refusal_with` writes the members.
+
+Not built, on purpose: a merged `sessions.list`, a `register` step (ids are UUIDv7
+and creation is local), a `not_owner` on the session socket, an address advertised
+by the owner, any automatic follow (a client would need a credential for a second
+daemon), and a new constructor on `remote/protocol.HostMessage`.
+
+Tests: `orchestrators_test` (the table), `remote/orchestrator_port_test` (the
+answers and the silence), `session_directory_test` (the policy, the fan-out's
+concurrency and its deadline, a crashing question), `daemon_directory_test` (a
+stub directory behind the real control socket: which commands ask, which
+principals are redirected, what the refusals carry; and `catalogue_holds` against
+a real registry including a reserved and an archived row), and
+`daemon_shipped_directory_test` (two shipped daemons).

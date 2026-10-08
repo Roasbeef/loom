@@ -3226,3 +3226,31 @@ flag's own words appended because the refusal does not repeat the name) and a
 startup failed (executor_unavailable): <reason>`. Tests are
 `executor_launch_test` (flag parsing, the request, the creation job, listings,
 grouping, the failure words) and `daemon_protocol_test` (the optional member).
+
+## Orchestrator redirects (protocol 078, phase 3)
+
+A daemon that does not hold a session the owner names can say which other
+orchestrator does. `sessions.get` and `sessions.open` then refuse with
+`not_owner` (the owner's `orchestrator` name and, when the daemon's operator
+configured one, its `address`) or `owner_unreachable` (the `orchestrators` that
+did not answer). The two codes carry members beyond `code` and `message`, so
+`tui/daemon/protocol.decode` turns them into their own `Event`, `Redirected(id,
+Redirect)`, with `Redirect` = `NotOwner(orchestrator, Option(address))` |
+`OwnerUnreachable(names)`, and `tui/daemon` carries it to the caller as
+`Failure.Redirected`. The decoder is total about the members: a redirect whose
+members are missing, empty or the wrong type is the ordinary `Refused` with its
+code and words, so the operator still learns the daemon refused.
+
+The terminal never follows a redirect. It holds a token for the local daemon (or
+the one `--addr` named) and none for another, so `selection.failure_for(session,
+reason)` words the launch that reaches the owner: `loom --addr <address>
+--session <id> --token-file <owner token file on that host>`, or the same with
+`<its control address>` when the daemon configured none, or the names that could
+not be asked. `selection.failure` is `failure_for` with a `<session-id>`
+placeholder, and `selection.open` (the path of `--session`, and of `loom ui
+<session>` through `opened_for_link`) is the caller that has the id. The web view
+has no path that can meet a redirect: a page, its ticket, cookie and key are
+bound to the daemon that minted them, and `loom ui <session>` is a terminal
+command that opens the session first, so its wording is this one. Tests are
+`orchestrator_redirect_test` (the decoder, its fallbacks and the three
+sentences).
