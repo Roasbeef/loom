@@ -82,3 +82,17 @@ VALUES (?, ?, ?, ?, ?);
 SELECT workspace, incarnation, was, released_at_ms FROM scope_release
 WHERE session = ?
 ORDER BY id;
+
+-- name: InsertLedgerAck :exec
+INSERT OR IGNORE INTO call_ack(session, op, step, source_index, incarnation)
+SELECT call.session, call.op, call.step, call.source_index, call.incarnation
+FROM call
+WHERE call.session = ? AND call.op = ? AND call.step = ?
+  AND call.source_index = ? AND call.state IN ('terminal', 'unknown');
+
+-- name: LedgerAck :many
+SELECT incarnation FROM call_ack
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?;
+
+-- name: DeleteLedgerAcks :exec
+DELETE FROM call_ack WHERE session = ?;
