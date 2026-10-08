@@ -44,8 +44,15 @@ observe anything that depends on two machines, such as a host name that differs
 between the two roles, a tunnel or a firewall, so those marks stay with the
 cross-host run or stay **Pending**.
 
-Steps that an earlier edition of this page ran on one machine, and that neither
-run repeated, are also **Pending**.
+A third run covers section 6, the Compose run on commit `caf8bfcac`. It ran on a
+Linux x86_64 box with Docker 29.1.3 and Compose 2.40.3. It built the image from the
+commit, followed section 6 command by command in both postures, and created
+remote sessions over the control protocol with a scripted model provider that ran
+`fs_write`, `fs_read`, `bash` and `git` on the executor. It did not use a real
+model, a terminal prompt or the web page.
+
+Steps that an earlier edition of this page ran on one machine, and that no run
+repeated, are also **Pending**.
 
 ## 1. The two roles
 
@@ -667,7 +674,7 @@ project = "/work/project"
 ```
 
 Save it as `plan.toml`, then run `provision` from the image, as your own user so
-that the bundles are yours:
+that the bundles are yours (**Verified**, Compose run `caf8bfcac`):
 
 ```sh
 docker run --rm --user $(id -u):$(id -g) -e HOME=/plan/home -v $PWD:/plan -w /plan --entrypoint loom loom-runtime:dev distribution provision plan.toml out
@@ -679,7 +686,9 @@ cp out/orchestrator.loombundle out/executor.loombundle docker/distributed/
 
 ### Give the orchestrator a model
 
-Only the orchestrator calls a model. Edit `docker/distributed/orchestrator.loom.toml`,
+Only the orchestrator calls a model (**Verified**, Compose run `caf8bfcac`, with the
+catalogue's `base_url` pointed at a scripted provider and the key passed through
+`orchestrator.env`). Edit `docker/distributed/orchestrator.loom.toml`,
 which holds one model and the `main` role, to name the model you use. The
 [configuration reference](configuration.md#modelsname) lists the keys. Put the
 provider's key in `docker/distributed/orchestrator.env`, one line in the form that
@@ -696,6 +705,9 @@ copies the catalogue to `~/.loom/loom.toml` and the install appends the bundle's
 tables to it, so do not put `[distribution]` or `[executors.*]` tables in it.
 
 ### Start
+
+**Verified**, Compose run `caf8bfcac`: both containers were `healthy` within five
+seconds, and `epmd -names` in each listed its node on port 9100.
 
 ```sh
 docker compose -f docker/distributed/compose.yaml up -d
@@ -715,13 +727,15 @@ seconds.
 
 The executor's checkout is a named volume mounted at `/work`, and the entrypoint
 has already made `/work/project` in it, owned by uid 10000, the user the daemon
-runs as. Stream the project in as that user:
+runs as. Stream the project in as that user (**Verified**, Compose run `caf8bfcac`;
+the session opened and its files were owned by `loom`):
 
 ```sh
 tar -C ./myproj -c . | docker compose -f docker/distributed/compose.yaml exec -T -u 10000 executor tar -x -C /work/project
 ```
 
-Do not use `docker compose cp` for this. It keeps the files' host owner, the daemon
+Do not use `docker compose cp` for this (the failure is **Verified**, from the
+first run of this section on commit `23a39695a`). It keeps the files' host owner, the daemon
 cannot create its `.blobs` directory beside them, and the session fails with
 `executor_unavailable` and `Eacces`. If you set `EXECUTOR_CHECKOUT` to a host
 directory instead of the volume, that directory must be writable by uid 10000.
@@ -741,9 +755,12 @@ docker compose -f docker/distributed/compose.yaml --profile client-port up -d
 docker compose -f docker/distributed/compose.yaml cp orchestrator:/var/lib/loom/owner.token ./owner.token
 ```
 
-The forwarder publishes `127.0.0.1:7331`; set `LOOM_CLIENT_PORT` to publish a
-different host port. A client on the host speaks the control protocol there with
-that token, and `loom access` runs its control commands through it:
+**Verified**, Compose run `caf8bfcac`: the forwarder published `127.0.0.1:7331`, the
+copied token was accepted, and `loom access ... list` printed the owner. That run
+used the `loom` binary of the image on the host network, as the host user, since
+the host had none. Set `LOOM_CLIENT_PORT` to publish a different host port. A
+client on the host speaks the control protocol there with that token, and `loom
+access` runs its control commands through it:
 
 ```sh
 loom access --addr ws://127.0.0.1:7331/v2/control --token-file ./owner.token list
@@ -751,7 +768,10 @@ loom access --addr ws://127.0.0.1:7331/v2/control --token-file ./owner.token lis
 
 The terminal client cannot do the same. `loom --executor … --workspace …` finds
 the daemon through its state directory and has no remote address form, so run it
-inside the orchestrator container, as the daemon's user, with a terminal:
+inside the orchestrator container, as the daemon's user, with a terminal
+(**Verified** as far as the session picker, which listed `PROJECT on executor`
+with its sessions, and `n`, which created a session that reached `resident` on the
+executor, Compose run `caf8bfcac`; no prompt was typed):
 
 ```sh
 docker compose -f docker/distributed/compose.yaml exec -it -u 10000 -e HOME=/home/loom orchestrator loom --state-dir /var/lib/loom --config /home/loom/.loom/loom.toml --executor executor --workspace project
@@ -763,6 +783,8 @@ that take no `--addr`.
 
 ### Postures
 
+Both rows are **Verified**, Compose run `caf8bfcac`.
+
 | Posture | How | What it gives | What it costs |
 |---|---|---|---|
 | Plain (default) | `compose.yaml` alone | Docker's boundary is the jail. This is the right posture for the orchestrator, which runs no model-written code. | Loom's own sandbox does not come up: `loom-exec --self-test` enforces 0 of 11 probes and fails 9. **An executor in this posture cannot run commands.** |
@@ -773,7 +795,8 @@ because the daemon does them itself, but every `bash` call fails: `bwrap` cannot
 create a namespace under Docker's default profile and exits 1, and without it
 the daemon refuses the command as degraded. Starting the executor with
 `--best-effort`, which accepts a degraded jail, does not change that, since the
-jail does not come up at all. Use the plain posture for an executor only to read
+jail does not come up at all: the command runs nowhere and exits 1 with the `bwrap`
+message (**Verified**, same run). Use the plain posture for an executor only to read
 and write files, never to run commands. To run commands, use full isolation:
 
 ```sh
@@ -787,18 +810,41 @@ created in the host's cgroup tree and nothing is left behind after `down`. The
 entrypoint refuses to delegate if the container shares the host's cgroup
 namespace, so a changed override cannot make it move host processes.
 
-Run the self-test with the same migration step that the
-[Docker guide](docker.md) uses, because a process started by `docker compose exec`
-lives in the container's top cgroup, outside the delegated base:
+Start it with both files, as above (**Verified**, Compose run `caf8bfcac`: the
+executor's `bash` ran with `degraded: false` and the enforcement list carried
+`bwrap` and the mount plan, `git` ran in the project, and a stopped session
+reopened and ran `bash` again). Then run the self-test with
+`LOOM_CGROUP_BASE` set, because `docker compose exec` starts a process outside the
+entrypoint, which does not give it that variable:
 
 ```sh
-docker compose -f docker/distributed/compose.yaml exec executor sh -c 'echo $$ > /sys/fs/cgroup/loom/host/cgroup.procs; exec env LOOM_CGROUP_BASE=/sys/fs/cgroup/loom loom-exec --self-test'
+docker compose -f docker/distributed/compose.yaml -f docker/distributed/compose.isolated.yaml exec executor env LOOM_CGROUP_BASE=/sys/fs/cgroup/loom loom-exec --self-test
 ```
 
 Expect 10 of 11 probes enforced and the Erlang one skipped, as in the measured
-table in the Docker guide. Without the migration step, `exec executor loom-exec
---self-test` reports 9 enforced and also skips the fork-bomb probe, because that
-process is outside the delegated base; the daemon's own commands are not affected.
+table in the [Docker guide](docker.md) (**Verified**, same run, as root and as uid
+10000). Without the variable, `exec executor loom-exec --self-test` reports 9
+enforced and also skips the fork-bomb probe, because `loom-exec` then takes its own
+cgroup, which holds the daemon, as the base. The daemon's own commands are not
+affected, since it has the variable. The host's `/sys/fs/cgroup` was listed before
+and after the run, and nothing was added in either posture. If the
+override is changed to `cgroup: host`, the executor exits at start with status 70
+and that message, and the host's cgroup tree is left alone (**Verified**, same
+run).
+
+### Stop and remove
+
+`down` stops and removes the containers and the network but keeps the named
+volumes, which hold each daemon's state and the project copy. Add `-v` to delete
+the volumes too, which discards every session on both nodes and the project.
+Give `down` the same `-f` files and `--profile` that you started with, or it
+leaves the services those files add running (**Verified**, Compose run
+`caf8bfcac`: `down` kept the volumes and the project was still in the executor
+after the next `up`; `down -v` left no container, volume or network):
+
+```sh
+docker compose -f docker/distributed/compose.yaml -f docker/distributed/compose.isolated.yaml --profile client-port down
+```
 
 The smoke test (`make docker-distributed-smoke`) starts the pair with throwaway
 credentials from `mint-fixture.sh`, waits for both daemons to be ready, checks that
