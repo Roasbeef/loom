@@ -36,6 +36,7 @@
 //// tmpfs.
 
 import broker/token
+import client/codemode
 import client/daemon_server_test as wire
 import client/tui_e2e_test.{type EunitTest, Timeout}
 import core/codec
@@ -279,6 +280,30 @@ pub fn models(url: String, advisor_url: Option(String)) -> String {
   }
 }
 
+/// The orchestrator's models for a scripted provider at `url`, with the
+/// summarizing role routed to a model on a closed port.
+///
+/// A session with a child strand runs the glance loop, which asks the
+/// `summarize` role for a one-line title of the child. Unrouted, that request
+/// falls back to the main model and so reaches the scripted provider, whose
+/// next step it is not. Routing the role to a port nothing listens on makes
+/// every glance fail where the loop expects failure, logs it at warning level
+/// and backs off. The child's own turns and the title are unrelated, so the
+/// script lists only the conversation the test is about.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_pair.models_without_glance(url)
+/// ```
+pub fn models_without_glance(url: String) -> String {
+  "[models.fixture]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \""
+  <> url
+  <> "\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n"
+  <> "[models.sink]\ndialect = \"anthropic\"\napi_key_env = \"LOOM_TEST_PROVIDER_KEY\"\nbase_url = \"http://127.0.0.1:9\"\nmodel_id = \"fixture\"\ncontext_window = 100000\nmax_output_tokens = 4096\n"
+  <> "[roles]\nmain = [\"fixture\"]\nsummarize = [\"sink\"]\n[memory]\ndistill = \"off\"\n"
+}
+
 /// Tables with the orchestrator's models for `url` and nothing else.
 ///
 /// ## Examples
@@ -298,6 +323,28 @@ pub fn plain(url: String) -> Tables {
 /// // remote_pair.configure(pair, keys, remote_pair.plain(url))
 /// ```
 pub fn configure(prepared: Pair, keys: Credentials, tables: Tables) -> Nil {
+  configure_trusting(prepared, keys, tables, [])
+}
+
+/// Writes both daemons' configuration as `configure` does, with each daemon
+/// also pinning every identity in `others`.
+///
+/// A test that asks the cluster a question from outside, or cuts a link, adds
+/// the probe's identity here. The probe holds full privileges over any node
+/// that lists it, so the pin appears only in the files of this fixture's own
+/// directory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_pair.configure_trusting(pair, keys, remote_pair.plain(url), [probe])
+/// ```
+pub fn configure_trusting(
+  prepared: Pair,
+  keys: Credentials,
+  tables: Tables,
+  others: List(Identity),
+) -> Nil {
   // The executor refuses to start when a registered root is not a directory,
   // so the checkout exists before the first daemon does.
   let assert Ok(Nil) = simplifile.create_directory_all(prepared.checkout)
@@ -307,6 +354,7 @@ pub fn configure(prepared: Pair, keys: Credentials, tables: Tables) -> Nil {
       as "the daemon configuration is written"
     remote_daemons.write_options(layout)
   }
+  let also = list.map(others, fn(each) { Trust(each.node, each.pin) })
   write(
     prepared.executor,
     string.join(
@@ -314,6 +362,7 @@ pub fn configure(prepared: Pair, keys: Credentials, tables: Tables) -> Nil {
         remote_daemons.model_table("http://127.0.0.1:9"),
         remote_daemons.distribution_table(keys.executor, keys.authority, [
           Trust(keys.orchestrator.node, keys.orchestrator.pin),
+          ..also
         ]),
         remote_daemons.workspace_table(workspace_name, prepared.checkout),
         tables.executor,
@@ -328,6 +377,7 @@ pub fn configure(prepared: Pair, keys: Credentials, tables: Tables) -> Nil {
         tables.models,
         remote_daemons.distribution_table(keys.orchestrator, keys.authority, [
           Trust(keys.executor.node, keys.executor.pin),
+          ..also
         ]),
         remote_daemons.executor_table(executor_name, keys.executor.node),
         tables.orchestrator,
@@ -335,6 +385,72 @@ pub fn configure(prepared: Pair, keys: Credentials, tables: Tables) -> Nil {
       "\n",
     ),
   )
+}
+
+/// Issues the probe's credentials: a third node, with a home of its own and the
+/// cluster's cookie, that `drop_link` boots as a throwaway emulator.
+///
+/// The identity is for `configure_trusting`. Both daemons must list it before
+/// they start, because they read their peers once at boot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let probe = remote_pair.probe_identity(pair, keys)
+/// ```
+pub fn probe_identity(prepared: Pair, keys: Credentials) -> Identity {
+  let home = prepared.directory <> "/probe-home"
+  let assert Ok(Nil) = native.ensure_private_directory(home)
+    as "the probe has a home of its own"
+  let identity =
+    remote_daemons.issue(
+      keys.authority,
+      prepared.directory <> "/credentials",
+      "probe",
+      "loom_e2e_probe_" <> remote_daemons.random_hex(4) <> "@127.0.0.1",
+      home,
+    )
+  let assert Ok(cookie) =
+    simplifile.read(keys.orchestrator.home <> "/.erlang.cookie")
+    as "the orchestrator's cookie is readable"
+  remote_daemons.write_cookie(identity, cookie)
+  identity
+}
+
+/// Has the orchestrator drop its distribution connection to the executor, and
+/// asserts that it held one.
+///
+/// Both daemons stay up and neither chose the partition. Each side sees the
+/// other's processes go down with `noconnection`. The probe boots, connects to
+/// the orchestrator, runs `erlang:disconnect_node` there and ends, which takes a
+/// second or two, so a call that runs longer than that is cut in flight. The
+/// orchestrator's session surface repairs the connection by itself afterwards.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_pair.drop_link(pair, keys, probe)
+/// ```
+pub fn drop_link(prepared: Pair, keys: Credentials, probe: Identity) -> Nil {
+  let orch = keys.orchestrator.node
+  let exec = keys.executor.node
+  let cutter =
+    remote_daemons.probe(
+      prepared.orchestrator.launcher,
+      prepared.directory,
+      "cutter",
+      probe,
+      keys.authority,
+      [Trust(orch, keys.orchestrator.pin), Trust(exec, keys.executor.pin)],
+    )
+  assert remote_daemons.run_probe(cutter, prepared.directory, [
+      "connect " <> orch,
+      "drop " <> orch <> " " <> exec,
+    ])
+    == [
+      "RESULT connect " <> orch <> " connected",
+      "RESULT drop " <> orch <> " " <> exec <> " dropped",
+    ]
 }
 
 /// Writes files into the executor's checkout, creating their directories.
@@ -513,6 +629,33 @@ pub fn stop_and_close(prepared: Pair, opened: Opened, incarnation: Int) -> Nil {
 /// ```
 pub fn close_daemons(running: List(Running)) -> Nil {
   list.each(running, fn(each) { daemon.close(each.connected.control) })
+}
+
+/// The build seed code mode compiles against, or the first thing the host
+/// lacks.
+///
+/// The seed is what `make codemode-seed` prepares at the repository root, two
+/// levels above the package the tests run in. A test that runs a `code_mode`
+/// program on the executor hands the path to the executor with
+/// `--codemode-seed`, as an operator would, and prints a skip line naming the
+/// reason when this answers an error, because a host without a toolchain
+/// proves nothing about that route.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(seed) = remote_pair.code_mode_seed()
+/// // remote_pair.open_registered(pair, ["--codemode-seed", seed], "e2e-program")
+/// ```
+pub fn code_mode_seed() -> Result(String, String) {
+  use seed <- result.try(
+    native.canonical_directory("../../build/codemode-seed")
+    |> result.replace_error(
+      "no seed at build/codemode-seed (run make codemode-seed)",
+    ),
+  )
+  use _toolchain <- result.try(codemode.discover(seed))
+  Ok(seed)
 }
 
 // --- the orchestrator's side of the session --------------------------------
