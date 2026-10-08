@@ -6235,6 +6235,34 @@ leading block of the first user message, so a scripted reviewer can be fed.
   the `worktree_diff` board lists a file the model added. The system prompt has
   no Git state (`prompt/default`), local or remote.
 
+`test/client/daemon_shipped_remote_strand_test.gleam` and
+`daemon_shipped_remote_owner_loss_test.gleam` run a `code_mode` program on the
+executor that spawns a child strand, on the same `remote_pair` fixture. Both
+need the build seed (`remote_pair.code_mode_seed`, passed to the executor as
+`--codemode-seed`) and print a `SKIP shipped remote ...` line without it. A
+spawned child makes the glance loop ask the `summarize` role for a title, and an
+unrouted role falls back to `main`, which is the scripted provider and refuses
+the request as out of order; `remote_pair.models_without_glance` routes the role
+to a closed port so the script lists only the conversation under test. A child's
+first request is matched by `AwaitPromptPrefix(strand_framing.brief_head("main"))`.
+
+- `daemon_shipped_remote_strand_test_`: the program calls `strand.spawn` and
+  `strand.wait`; the orchestrator's Agency creates the child and runs its turn
+  against the same scripted provider. The child's `bash` call prints the
+  executor's checkout as its working directory and writes a file there, which is
+  absent from the orchestrator. The child's final text returns through the join
+  into the program's report, and the scope closes `all_retired`.
+- `daemon_shipped_remote_owner_loss_test_`: the program joins a detached child
+  whose `bash` call takes 40 seconds. After the call has started, a probe (the
+  third distribution node, issued by `remote_pair.probe_identity`, listed in
+  both configurations by `remote_pair.configure_trusting`) has the orchestrator
+  drop its connection to the executor (`remote_pair.drop_link`). The program is
+  told `owner_unavailable` and the model answers within 20 seconds of the cut,
+  with the child's command run once and the provider's script consumed in order.
+  An owner that is up and silent is not covered: its bound is a constant of the
+  executor, and no daemon can be made to hold a reply back without a hook in
+  production code.
+
 ## Naming a registered workspace (protocol 078)
 
 `sessions.create` takes an optional `executor`. `client/executors` decodes the
