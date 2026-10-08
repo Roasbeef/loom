@@ -10,6 +10,7 @@
 -include_lib("public_key/include/public_key.hrl").
 
 -define(DIST, 'client@distribution').
+-define(NODES, 'support@directory_nodes').
 
 %% Runs one named scenario and reports Ok or a description of what failed.
 scenario(Name) ->
@@ -181,6 +182,67 @@ run(<<"member_needs_connect_all_off">>, Root) ->
     Port = open_vm(A, Config, member_refused,
                    #{members => [name_of(A), name_of(B)]}, []),
     try await_complete(Port, <<>>) after close_port(Port) end,
+    ok;
+
+%% Three directory members (protocol-change/079). The first bootstraps the
+%% cluster; the other two start the real member actor and must become voters.
+%% The third then loses its disk: its emulator ends, its directory is deleted,
+%% and 24 MiB of writes push the leader past a snapshot. Started again, it must
+%% rejoin (as a non-voter that Ra promotes once caught up) and read the last
+%% write. The second member then cuts its link to the third, and the member
+%% actor must make it again. Last, a member must see that the first runs a
+%% store, which is what stops a second bootstrap.
+run(<<"directory_rejoin">>, Root) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "seed", Ca, name("seed"), same, Cookie),
+    B = provision(Root, "second", Ca, name("second"), same, Cookie),
+    C = provision(Root, "third", Ca, name("third"), same, Cookie),
+    Members = [name_of(A), name_of(B), name_of(C)],
+    ConfigA = config_all(A, [B, C], none),
+    ConfigB = config_all(B, [A, C], none),
+    ConfigC = config_all(C, [A, B], none),
+    [write_options(N, Cfg) || {N, Cfg} <- [{A, ConfigA}, {B, ConfigB}, {C, ConfigC}]],
+    Dir = fun(#{home := Home}) -> filename:join(Home, "directory") end,
+    Aux = fun(N) -> #{members => Members, directory => bin(Dir(N)),
+                      lifetime => 300000} end,
+    Isolated = ["-kernel", "connect_all", "false"],
+    PortA = open_vm(A, ConfigA, dir_seed, Aux(A), Isolated),
+    try
+        await_text(PortA, <<"FIXTURE_READY">>, 60000),
+        PortB = open_vm(B, ConfigB, dir_member, Aux(B), Isolated),
+        try
+            await_text(PortB, <<"FIXTURE_READY">>, 120000),
+            PortC = open_vm(C, ConfigC, dir_member, Aux(C), Isolated),
+            await_text(PortC, <<"FIXTURE_READY">>, 120000),
+            close_port(PortC),
+            await_unregistered(name_of(C), 15000),
+            ok = file:del_dir_r(Dir(C)),
+            command(PortA, "bulk 6000 4096"),
+            await_text(PortA, <<"BULK_DONE">>, 120000),
+            %% The leader must have snapshotted, so the rejoin below takes the
+            %% snapshot path that a hidden link breaks. Khepri waits ten seconds
+            %% between snapshot requests, so a few more writes follow until it
+            %% has taken one.
+            await_snapshot(PortA, 8),
+            PortC2 = open_vm(C, ConfigC, dir_member, Aux(C), Isolated),
+            try
+                await_text(PortC2, <<"FIXTURE_READY">>, 150000),
+                command(PortC2, "counter"),
+                await_text(PortC2, <<"COUNTER 6000">>, 30000),
+                command(PortB, "relink " ++ str(name_of(C))),
+                await_text(PortB, <<"RELINKED">>, 30000),
+                command(PortB, "probe " ++ str(name_of(A))),
+                await_text(PortB, <<"RUNNING true">>, 30000),
+                true = port_command(PortC2, <<"stop\n">>),
+                await_complete(PortC2, <<>>)
+            after close_port(PortC2) end,
+            true = port_command(PortB, <<"stop\n">>),
+            await_complete(PortB, <<>>)
+        after close_port(PortB) end,
+        true = port_command(PortA, <<"stop\n">>),
+        await_complete(PortA, <<>>)
+    after close_port(PortA) end,
     ok;
 
 %% Boot-precondition and credential refusals, one emulator each.
@@ -620,11 +682,12 @@ close_port(Port) -> try port_close(Port) catch _:_ -> ok end.
 %% The entry point of each child emulator. It has a finite lifetime and prints
 %% a witness only after every assertion of its role held.
 child(Encoded, Role) ->
-    _ = spawn(fun() -> timer:sleep(50000), halt(3) end),
+    {Config, Aux} = binary_to_term(base64:decode(Encoded)),
+    Lifetime = maps:get(lifetime, Aux, 50000),
+    _ = spawn(fun() -> timer:sleep(Lifetime), halt(3) end),
     Self = self(),
     _ = spawn(fun() -> stdin_loop(Self) end),
     try
-        {Config, Aux} = binary_to_term(base64:decode(Encoded)),
         role(Role, Config, Aux),
         io:format("BOOTSTRAP_COMPLETE~n"),
         halt(0)
@@ -698,6 +761,20 @@ role(member_refused, Config, #{members := Members}) ->
     {error, {unsafe_boot, connect_all_enabled}} =
         ?DIST:start(Config, {member, Members}),
     false = erlang:is_alive();
+role(dir_seed, Config, #{members := Members, directory := Dir}) ->
+    {ok, Membership} = ?DIST:start(Config, {member, Members}),
+    {ok, nil} = ?NODES:bootstrap(Dir),
+    Local = atom_to_binary(node(), utf8),
+    {ok, Handle} = ?NODES:member(Dir, Members, Local, Membership),
+    ready(),
+    directory_commands(Handle);
+role(dir_member, Config, #{members := Members, directory := Dir}) ->
+    {ok, Membership} = ?DIST:start(Config, {member, Members}),
+    Local = atom_to_binary(node(), utf8),
+    {ok, Handle} = ?NODES:member(Dir, Members, Local, Membership),
+    {ok, nil} = ?NODES:await_voter(Handle, Local),
+    ready(),
+    directory_commands(Handle);
 role(serve, Config, _Aux) ->
     {ok, _} = ?DIST:start(Config, not_member),
     true = register(loom_dist_probe, self()),
@@ -769,6 +846,100 @@ role(remote_orchestrator, Config, #{peer := PeerName, scenario := Scenario}) ->
 
 ready() -> io:format("FIXTURE_READY~n").
 
+%% The commands a directory member's emulator takes on stdin. Node names in a
+%% command become atoms, which is acceptable in a test child: the names are the
+%% fixture's own.
+directory_commands(Handle) ->
+    receive
+        stop -> ok;
+        {line, "bulk " ++ Rest} ->
+            [Count, Bytes] = [list_to_integer(T) || T <- string:tokens(Rest, " ")],
+            {ok, nil} = ?NODES:write_bulk(Count, Bytes),
+            io:format("BULK_DONE~n"),
+            directory_commands(Handle);
+        {line, "pad " ++ Rest} ->
+            [Count, Bytes] = [list_to_integer(T) || T <- string:tokens(Rest, " ")],
+            {ok, nil} = ?NODES:write_padding(Count, Bytes),
+            io:format("BULK_DONE~n"),
+            directory_commands(Handle);
+        {line, "snapshot"} ->
+            case ?NODES:snapshot_index() of
+                Index when Index > 0 -> io:format("SNAPSHOT taken~n");
+                _ -> io:format("SNAPSHOT none~n")
+            end,
+            directory_commands(Handle);
+        {line, "counter"} ->
+            {ok, Value} = ?NODES:counter(),
+            io:format("COUNTER ~p~n", [Value]),
+            directory_commands(Handle);
+        {line, "relink " ++ Name} ->
+            {ok, nil} = ?NODES:cut_and_relink(list_to_atom(Name)),
+            io:format("RELINKED~n"),
+            directory_commands(Handle);
+        {line, "probe " ++ Name} ->
+            io:format("RUNNING ~p~n", [?NODES:running_on(list_to_atom(Name))]),
+            directory_commands(Handle)
+    after 280000 -> error(no_command)
+    end.
+
+await_snapshot(_Port, 0) -> error(no_snapshot);
+await_snapshot(Port, Tries) ->
+    command(Port, "snapshot"),
+    receive
+        {Port, {data, Data}} ->
+            case binary:match(Data, <<"SNAPSHOT taken">>) of
+                nomatch ->
+                    timer:sleep(3000),
+                    command(Port, "pad 200 4096"),
+                    await_text(Port, <<"BULK_DONE">>, 60000),
+                    await_snapshot(Port, Tries - 1);
+                _ -> ok
+            end
+    after 30000 -> error(no_snapshot_answer)
+    end.
+
+command(Port, Text) ->
+    true = port_command(Port, iolist_to_binary([Text, "\n"])).
+
+%% Waits for a line of output, failing at the deadline or if the child exits.
+await_text(Port, Witness, TimeoutMs) ->
+    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+    await_text(Port, Witness, Deadline, <<>>).
+
+await_text(Port, Witness, Deadline, Acc) ->
+    Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {Port, {data, Data}} ->
+            All = <<Acc/binary, Data/binary>>,
+            case binary:match(All, Witness) of
+                nomatch -> await_text(Port, Witness, Deadline, All);
+                _ -> ok
+            end;
+        {Port, {exit_status, Status}} -> error({early_exit, Witness, Status, Acc})
+    after Left -> error({text_timeout, Witness, Acc})
+    end.
+
+%% A node's name stays registered with epmd for a moment after its emulator
+%% ends, and a new emulator under the same name is refused until it is gone.
+await_unregistered(Name, TimeoutMs) ->
+    [Short | _] = string:split(binary_to_list(Name), "@"),
+    Deadline = erlang:monotonic_time(millisecond) + TimeoutMs,
+    await_unregistered_loop(Short, Deadline).
+
+await_unregistered_loop(Short, Deadline) ->
+    Registered = case erl_epmd:names({127,0,0,1}) of
+        {ok, Names} -> lists:keymember(Short, 1, Names);
+        _ -> false
+    end,
+    case Registered of
+        false -> ok;
+        true ->
+            case erlang:monotonic_time(millisecond) >= Deadline of
+                true -> error({still_registered, Short});
+                false -> timer:sleep(100), await_unregistered_loop(Short, Deadline)
+            end
+    end.
+
 ready_and_stop() ->
     ready(),
     receive stop -> ok after 40000 -> error(no_stop) end.
@@ -779,5 +950,7 @@ stdin_loop(Parent) ->
     case io:get_line("") of
         eof -> halt(4);
         "stop\n" -> Parent ! stop, stdin_loop(Parent);
+        Line when is_list(Line) ->
+            Parent ! {line, string:trim(Line)}, stdin_loop(Parent);
         _ -> stdin_loop(Parent)
     end.

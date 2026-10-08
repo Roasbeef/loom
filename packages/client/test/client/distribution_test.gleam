@@ -335,3 +335,13 @@ pub fn a_member_with_connect_all_on_is_refused_test() {
     "A directory member's VM booted with connect_all on must be refused.",
   )
 }
+
+pub fn a_member_that_lost_its_disk_rejoins_and_catches_up_test() {
+  proves(
+    "directory_rejoin",
+    "A bootstrapped cluster takes two members in as voters; a member whose "
+      <> "directory is deleted while the leader writes past a snapshot rejoins, is promoted, "
+      <> "and reads the last write; a cut link is made again; and a member sees "
+      <> "the store running on another.",
+  )
+}
