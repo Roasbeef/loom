@@ -18,14 +18,18 @@ import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/distribution
+import client/executor_plane
 import client/executors
 import client/host
 import client/internal/ffi_os
 import client/peer_defaults
 import client/peer_mail
 import client/peers
+import client/remote/address
+import client/remote/host as executor_host
 import client/remote/workspace
 import client/serve
+import client/workspaces
 import core/clock
 import core/glance
 import core/ids
@@ -44,6 +48,7 @@ import host/build_identity
 import host/endpoint
 import mist
 import simplifile
+import storage/exec_ledger
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
@@ -73,6 +78,10 @@ pub type Config {
     /// The executors sessions may be placed on, read from `[executors.<name>]`
     /// at startup and never reread (protocol-change/078).
     executors: List(executors.Executor),
+    /// The checkouts this machine serves to orchestrators, read from
+    /// `[workspaces.<name>]` at startup and never reread (protocol-change/078).
+    /// A daemon with none starts no executor host.
+    workspaces: List(workspaces.Workspace),
   )
 }
 
@@ -100,6 +109,7 @@ pub type Serving(instance) {
 type Event {
   Signal(host.Stop)
   RootGone(process.ExitReason)
+  ExecutorGone(process.ExitReason)
 }
 
 /// Which half of session startup produced a failure.
@@ -234,7 +244,18 @@ fn acquire_launch_lock(paths: endpoint.Paths) {
 @internal
 pub fn parse(arguments: List(String)) -> Result(Config, String) {
   let initial =
-    Config("", "127.0.0.1", 0, 8, "Owner", [], ViewOff, peer_defaults.off, [])
+    Config(
+      "",
+      "127.0.0.1",
+      0,
+      8,
+      "Owner",
+      [],
+      ViewOff,
+      peer_defaults.off,
+      [],
+      [],
+    )
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
     "" ->
@@ -369,6 +390,81 @@ fn start_distribution(
   }
 }
 
+// Each served checkout has to be a directory now, so an operator who mistyped
+// a root learns it at startup and not from the first session that attaches.
+// The plane factory checks again at every attach, because a directory can go
+// away in between.
+fn existing_roots(served: List(workspaces.Workspace)) -> Result(Nil, String) {
+  list.try_each(served, fn(workspace) {
+    bootstrap.canonical_directory(workspace.root)
+    |> result.map(fn(_resolved) { Nil })
+    |> result.map_error(fn(reason) {
+      "workspaces."
+      <> workspace.name
+      <> ".root "
+      <> workspace.root
+      <> " is not a directory: "
+      <> reason
+    })
+  })
+}
+
+/// Starts the executor host when the configuration serves any workspace, and
+/// returns the monitor `wait` watches it by. A configuration with none starts
+/// nothing and registers no name.
+///
+/// The host is deliberately not linked and not restarted. The workspace planes
+/// it builds are not in its link set, so a host that restarted alone would leave
+/// their helper pools and jobs actors running and build a second set beside
+/// them on the next attach. Its death therefore ends the daemon, and the
+/// ledger's recovery on the next boot turns every call it had in flight into an
+/// unknown outcome.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_executor(Config(..config, workspaces: []), logger) == Ok(None)
+/// ```
+@internal
+pub fn start_executor(
+  config: Config,
+  logger: Logger,
+) -> Result(Option(process.Monitor), String) {
+  case config.workspaces {
+    [] -> Ok(None)
+    configured -> {
+      use configuration <- result.try(captured_domain_configuration(
+        config.session_defaults,
+        "",
+      ))
+      use machine <- result.try(executor_plane.machine(
+        config.session_defaults,
+        configuration,
+        config.state_root,
+        logger,
+      ))
+      use started <- result.try(
+        executor_host.start(executor_host.Config(
+          name: address.default(),
+          ledger_path: config.state_root <> "/exec-ledger.db",
+          limits: exec_ledger.default_limits(),
+          max_result_bytes: executor_host.default_max_result_bytes,
+          clock: clock.from_function(ffi_os.system_time_ms),
+          factory: executor_plane.factory(machine, configured),
+        ))
+        |> result.map_error(fn(error) {
+          "the executor host did not start: " <> string.inspect(error)
+        }),
+      )
+      process.unlink(started.pid)
+      log.info(logger, "daemon.executor_serving", [
+        field.count("workspaces", list.length(configured)),
+      ])
+      Ok(Some(process.monitor(started.pid)))
+    }
+  }
+}
+
 /// Prepares the root before acquiring any daemon file or session resource.
 /// The caller retains the returned handle through listen or shutdown failures.
 ///
@@ -446,8 +542,16 @@ pub fn prepare_startup(
     executors.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+  use workspaces <- result.try(
+    workspaces.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use Nil <- result.try(
+    existing_roots(workspaces)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   use membership <- result.try(start_distribution(document, configuration))
-  let config = Config(..config, view:, peer_policy:, executors:)
+  let config = Config(..config, view:, peer_policy:, executors:, workspaces:)
   root.start(
     root.Config(
       config.state_root,
@@ -780,26 +884,29 @@ fn run(
   let signals = process.new_subject()
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
   case
-    web_view(config, daemon)
-    |> result.try(fn(ui) {
-      listen_serving(
-        config,
-        daemon,
-        fn(request, attachment) {
-          session_socket.upgrade(
-            daemon,
-            request,
-            attachment,
-            attachment.instance.gateway,
-          )
-        },
-        fn(resident: serve.Resident) { Some(resident.peer) },
-        ui,
-      )
-    })
-    |> result.try(fn(serving) {
-      publish_endpoint(config, serving, paths, fence)
-      |> result.replace(serving)
+    start_executor(config, logger)
+    |> result.try(fn(executor) {
+      web_view(config, daemon)
+      |> result.try(fn(ui) {
+        listen_serving(
+          config,
+          daemon,
+          fn(request, attachment) {
+            session_socket.upgrade(
+              daemon,
+              request,
+              attachment,
+              attachment.instance.gateway,
+            )
+          },
+          fn(resident: serve.Resident) { Some(resident.peer) },
+          ui,
+        )
+      })
+      |> result.try(fn(serving) {
+        publish_endpoint(config, serving, paths, fence)
+        |> result.replace(#(serving, executor))
+      })
     })
   {
     Error(reason) -> {
@@ -808,7 +915,7 @@ fn run(
       report_shutdown(logger, outcome)
       ffi_os.halt(1)
     }
-    Ok(serving) -> {
+    Ok(#(serving, executor)) -> {
       let host = case config.bind_host {
         "::1" -> "[::1]"
         host -> host
@@ -830,7 +937,7 @@ fn run(
       log.info(logger, "daemon.listening", [
         field.count("port", serving.listener.port),
       ])
-      wait(daemon, watch, signals, logger)
+      wait(daemon, watch, executor, signals, logger)
     }
   }
 }
@@ -905,13 +1012,19 @@ fn web_view(
   }
 }
 
-fn wait(daemon, watch, signals, logger) {
-  let event =
+fn wait(daemon, watch, executor, signals, logger) {
+  let selector =
     process.new_selector()
     |> process.select_map(signals, Signal)
     |> process.select_specific_monitor(watch, fn(down) { RootGone(down.reason) })
-    |> process.selector_receive_forever
-  case event {
+  let selector = case executor {
+    Some(monitor) ->
+      process.select_specific_monitor(selector, monitor, fn(down) {
+        ExecutorGone(down.reason)
+      })
+    None -> selector
+  }
+  case process.selector_receive_forever(selector) {
     Signal(host.Signalled) -> {
       let outcome = root.shutdown(daemon, within: 30_000)
       report_shutdown(logger, outcome)
@@ -925,6 +1038,13 @@ fn wait(daemon, watch, signals, logger) {
     | RootGone(process.Abnormal(_))
     | Signal(host.Faulted(..)) -> {
       log.error(logger, "daemon.retirement_unconfirmed", [])
+      ffi_os.halt(1)
+    }
+
+    // The host ending at all, however it ended, is fatal: see `start_executor`
+    // for why it is never restarted on its own.
+    ExecutorGone(_reason) -> {
+      log.error(logger, "daemon.executor_lost", [])
       ffi_os.halt(1)
     }
   }
