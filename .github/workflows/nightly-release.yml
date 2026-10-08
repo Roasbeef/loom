@@ -1,0 +1,37 @@
+# Only main can publish nightlies; each release keeps its immutable source SHA.
+name: Publish nightly
+on:
+  schedule:
+    - cron: '23 8 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: publish-nightly
+  cancel-in-progress: false
+jobs:
+  resolve:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.main.outputs.commit }}
+    steps:
+      - name: Capture main once
+        id: main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          commit=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+  publish:
+    needs: resolve
+    permissions:
+      contents: write
+      packages: read
+    uses: ./.github/workflows/release.yml
+    with:
+      source_commit: ${{ needs.resolve.outputs.commit }}
