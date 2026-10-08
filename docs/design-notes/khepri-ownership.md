@@ -1,84 +1,48 @@
 # Khepri session ownership: the model and the implementation plan
 
-Status: **proposed, 2026-10-08, revised after review.** This note orders the
-work that [protocol-change/079](../../protocol-change/079-khepri-session-ownership.md)
+Status: **implemented, 2026-10-08.** This note ordered the work that [protocol-change/079](../../protocol-change/079-khepri-session-ownership.md)
 specifies and [docs/architecture/directory.md](../architecture/directory.md)
-describes. It has three parts: what the TLA+ model of a move must become, the
-implementation slices in order, and what is left open.
+describes. It has three parts: the TLA+ model of a move under the record, the
+implementation slices in order with what each became, and what is left open.
 [ADR-019](../adr/019-khepri-for-session-ownership.md) has the spikes.
 
 ## 1. The model
 
 `protocol/models/session-move/Move.tla` models the phase 5 move, where two
 catalogue rows decide ownership. With a directory, the record decides and the
-rows remember, so the model gains a register and keeps the rows. It is rewritten
-as a new specification beside the old one, `KhepriMove.tla`, because a
-deployment without `[directory]` still runs the phase 5 protocol and its model
-stays gated.
+rows remember, so the model gains a register and keeps the rows. It is a new
+specification beside the old one, `KhepriMove.tla`, because a deployment
+without `[directory]` still runs the phase 5 protocol and its model stays
+gated. [The model's README](../../protocol/models/session-move/README.md)
+describes both in full; this section says what the review asked for and where
+the model has it.
 
-### What the model holds
+- **The intent split from the stop.** `Intend` is the registry turn (row
+  `moving`, serving stopped) and `IntentCAS` is a separate step, so every
+  interleaving between them is explored. The review's `MutantStopBeforeIntend`
+  was for a design whose intent write came first; with the rows kept, the
+  dangerous order is the reverse, and `KhepriMutantIntendBeforeStop` lets the
+  CAS run before the row that remembers it. It violates `MovingIsRemembered`.
+- **A second move and a return.** Op 1 moves the session from A to B and op 2
+  from B back to A, and an activation may arrive at any time once a copy is
+  sent. The session has a content version, so serving an old copy is a
+  violation (`OwnerHasNewest`), not a quiet success.
+- **The refusal edge.** `RefuseConflict` (the receiver's own row holds the
+  session in another state) and `RefuseEnded` (the record names someone else)
+  are separate. `KhepriMutantRefuseOwned` refuses although the record names the
+  receiver, and `KhepriMutantImportOverMoving` writes the record before the row
+  check; both violate `OwnerHasNewest`.
+- **The compare-and-sets.** `KhepriMutantBlindActivate` and
+  `KhepriMutantBlindAbandon` drop the expected value and violate `OneOwner`;
+  `KhepriMutantImportBeforeCAS` imports before the record names the receiver
+  and violates `ServeOnlyAsOwner`; `KhepriMutantRetireStale` retires on a value
+  the record held before and violates `OwnerHasNewest`.
+- **Liveness.** `MoveSettles` and `MoverEnds` hold under weak fairness of the
+  protocol steps, the restarts and the return of the majority, and fail when
+  any one of those is dropped.
 
-Two orchestrators A and B, one executor, and up to two moves (A to B, then B
-back to A):
-
-| Variable | Meaning |
-|---|---|
-| `reg` | The record: `[owner, state, op]`, `state` in `{serving, moving}`. Every write is atomic and commits only while `quorum` holds. |
-| `rowA`, `rowB` | Each node's custody row: `resident`, `moving(op)`, `moved(op)`, `imported(op)` or `absent`. |
-| `quorum` | Whether a majority is up. The environment toggles it. |
-| `copy[op]` | `none`, `cut` or `sent`. |
-| `file[n]` | Whether node `n` has the session file in place. |
-| `exec` | The executor ledger row `[inc, holder]`, as in `Move.tla`. |
-| `serving[n]`, `alive[n]`, `mover[n]`, `replied[n]` | As in `Move.tla`, per node. |
-
-### Actions
-
-| Action | Effect |
-|---|---|
-| `Open(n)` | `alive[n]`, the row allows serving (`resident` or `imported`), no mover on `n`, `n` holds the executor token: `serving[n]`. No read of `reg`. |
-| `Intend(n, op)` | The row becomes `moving(op)` and `serving[n]` stops, in one step (the registry turn). |
-| `IntentCAS(n, op)` | `quorum`, `reg = [n, serving]`: `reg := [n, moving, op]`. A separate step, so an `Open` can interleave between `Intend` and it. |
-| `RevertIntent(n, op)` | `reg` is absent: the row goes back to `resident`. |
-| `StopClose`, `Cut`, `Send` | As in `Move.tla`, for the moving node. |
-| `ActivateCAS(m, op)` | `quorum`, `copy[op] = sent`, `reg = [source, moving, op]`: `reg := [m, serving]`. |
-| `Import(m, op)` | After `ActivateCAS` committed (or `reg.owner = m`): `row[m] := imported(op)`, `file[m] := TRUE`. |
-| `Refuse(m, op)` | `reg.owner # m`: the receiver drops only its copy. |
-| `AbandonCAS(n, op)` | `quorum`, `reg = [n, moving, op]`: `reg := [n, serving]`. |
-| `Unmark(n, op)` | After `AbandonCAS` committed: `row[n] := resident`. |
-| `Retire(n, op)` | The receiver answered, and `reg.owner # n` read consistently: `row[n] := moved(op)`, `file[n] := FALSE`. |
-| `Crash(n)`, `Restart(n)`, `QuorumLoss`, `QuorumBack` | Memory is lost; `reg`, rows, files and the ledger survive. A restart resumes a mover for a `moving` row. |
-
-### Properties
-
-- `OneOwner`: `~(serving[A] /\ serving[B])`.
-- `ServeOnlyAsOwner`: `serving[n] => reg.owner = n`.
-- `OwnerHasFile`: `reg.state = serving => file[reg.owner]`, once the owner's
-  import has run; `reg.state = moving => file[reg.owner]`.
-- `RowsFollowRecord`: a row that allows serving on `n` implies `reg.owner = n` or
-  `n`'s own revert or import is the next step.
-- `OneServingHolder`: unchanged from `Move.tla`.
-- `MoveSettles`: `reg.state = moving ~> reg.state = serving`, under weak
-  fairness of `QuorumBack`, `Restart`, the protocol steps and `AbandonCAS`.
-
-### Mutants
-
-| Mutant | Rule removed | Expected violation |
-|---|---|---|
-| `MutantIntendBeforeStop` | `IntentCAS` may run before `Intend` stops serving (the local revoke follows the write) | `OneOwner`: A serves after the record says `moving`, and B activates |
-| `MutantBlindActivate` | `ActivateCAS` writes `[m, serving]` without expecting `[source, moving, op]` | `OneOwner`: A abandons, reopens, and B's late activation takes the session too |
-| `MutantBlindAbandon` | `AbandonCAS` writes `[n, serving]` without expecting `moving` | `OneOwner`: B activated and serves; A takes it back |
-| `MutantImportBeforeCAS` | `Import` runs without `ActivateCAS` having committed | `ServeOnlyAsOwner`: B serves a session A then takes back by abandoning |
-| `MutantRefuseOwned` | `Refuse` runs whatever `reg.owner` is, and removes B's file | `OwnerHasFile`: B refuses a late repeat of a move it completed, then deletes its own file |
-| `MutantRetireStale` | `Retire` reads a stale copy of `reg` | `OwnerHasFile`: during the return move, A's old mover sets aside the file the return just placed |
-
-The review named its first mutant `MutantStopBeforeIntend`, for the design in
-which the intent write came before any local change. With the rows kept, the
-dangerous order is the reverse, the local revoke after the write, and the mutant
-is named for it. The refusal edge is covered by `Refuse` and `MutantRefuseOwned`:
-a receiver may refuse only when the record names someone else.
-
-The model is gated by `make model-check` beside `Move.tla`, and the README of
-`protocol/models/session-move` describes both.
+The plan named `RowsFollowRecord`; the model states the same thing as
+`MovingIsRemembered` for the moving case and `ServeOnlyAsOwner` for serving.
 
 ## 2. The slices
 
@@ -121,8 +85,10 @@ the members list and pin executors to each other.
 ### Slice 3: the store, the keeper, bootstrap, join, status
 
 `client/directory/store` starts the store at boot, joins a fresh member as a
-non-voter with retries, and refuses calls until joined. `client/directory/links`
-is the keeper. `loomd directory bootstrap` and `directory.status`.
+non-voter with retries, and refuses calls until joined. The keeper became
+`client/directory/member`, which also runs the join and reports the member's
+status. `loomd directory bootstrap` (`client/daemon/directory_cli`) and
+`directory.status`.
 
 Tests: a three-emulator fixture that bootstraps, joins two members, writes past
 a snapshot while one is stopped with its directory deleted, and checks that the
@@ -135,9 +101,9 @@ reconnects after a cut; bootstrap refuses a second time.
 `manager.reserve` and the record; catalogue version 13 and the deletion mark;
 delete through `begin_delete`, the record and `delete_session`; `no_quorum`.
 
-Tests: `session_directory_test` with a one-member store; `daemon_directory_test`
-for each refusal; `daemon_shipped_directory_test` with two orchestrators and one
-executor as members.
+Tests: `session_directory_test` with a one-member store;
+`directory/daemon_record_test` for each refusal; `daemon_shipped_directory_test`
+with two orchestrators and one executor as members.
 
 ### Slice 5: the move over the record
 
@@ -146,21 +112,27 @@ activation write before its import; `move_ended`; the thirty-minute rule and
 `abandon: true`; no `inbound_settled` on members.
 
 Tests: `session_mover_test` and `session_importer_test` in the store mode;
-`daemon_shipped_remote_move_test` with members, the source lost after each step,
-and a move onward without waiting.
+`daemon_shipped_remote_move_test` with members and the source lost after each
+step. A move onward of a just-imported session is not exercised by a shipped
+test.
 
 ### Slice 6: migration
 
 `client/directory/migrate` and the marker.
 
-Tests: version 12 catalogues on two orchestrators with a resident, an imported, a
-moving and a moved session, upgraded and checked; a conflict.
+Tests: `directory/migrate_test`, one catalogue in the test VM holding a
+resident, an imported, a moving and a moved session and a conflict, seeded and
+seeded again; and a seed without a quorum, which writes no marker. The seed
+runs in the movers' periodic pass.
 
 ### Slice 7: quorum loss and rejoin, shipped
 
-Three shipped daemons: stop two members and check the table in the architecture
-page; restart one and check recovery. A member that loses its directory rejoins
-as a non-voter and serves lookups.
+`daemon_shipped_directory_quorum_test`: three shipped daemons; two members are
+killed and the table in the architecture page is checked from the one left, then
+the members return and the refused creation and the stalled move finish. A
+member that loses its directory is refused a second bootstrap, rejoins as a
+non-voter and serves lookups. The peer-mail and directory shipped tests gained
+member variants.
 
 ### Slice 8: the model
 
@@ -184,3 +156,9 @@ The architecture page and 079 at the implemented spellings, the package
    deadlines, and worth reporting upstream.
 4. **Retiring the phase 5 path.** Once every deployment has a directory, the
    fan-out, `inbound_settled` and the rows-as-authority mover can go.
+5. **Local sessions across members.** A member records only remote sessions, so
+   another member answers `not_found` for a local session and peer mail to a
+   local session on another orchestrator is not routed. Phase 3's fan-out
+   answered both. This follows the ruling that local sessions are not recorded;
+   recording them, or asking peers for a miss, is the choice to revisit if the
+   mail matters.

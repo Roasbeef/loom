@@ -1,6 +1,6 @@
 # ADR-019: Khepri holds session ownership, and its members are the orchestrators and the executors
 
-**Status**: proposed, revised after review · **Date**: 2026-10-08 · **Supersedes**: the phase 5 ruling
+**Status**: accepted (the owner's rulings of 2026-10-08), implemented · **Date**: 2026-10-08 · **Supersedes**: the phase 5 ruling
 that two catalogue rows are the move authority (protocol-change/078, the
 addendum on moving a session) · **Spec ref**: protocol-change/079 ·
 **Issue**: #697
@@ -277,6 +277,35 @@ so lint R6 is unaffected.
   of the exact pin, an upgrade happens only on purpose, and because every call goes
   through one FFI module, an upgrade's code changes stay in that module and its
   shim.
+
+## As built
+
+The implementation follows the decision. The details a reader of the code
+needs, which the decision left open:
+
+- The Ra system is `loom_directory_ra` and the store `loom_directory`, both
+  started by `client_khepri_ffi` on `<state root>/directory`. The system is
+  Loom's own, started with Ra's default configuration, so that a joining
+  member can start its server without an election; the bootstrap member's store
+  and every joined member's store are then started through `khepri:start/2`.
+- The non-voter join is `client_khepri_ffi:join/2`: remove the old identity,
+  add a `promotable` member with a fresh UId, retry
+  `cluster_change_not_permitted` until the deadline, wait for the promotion in
+  `ra:members_info`, stop the server, and restart it through Khepri.
+  `client/directory/member` calls it when a member boots with no joined store,
+  with a sixty-second deadline, and writes the `joined` marker after it.
+- The deadlines: three seconds for a write, five for an activation, three for a
+  consistent read. Each runs in a weft run.
+- Ra's, Khepri's and aten's loggers are set to `warning`, so their routine
+  election and membership reports do not fill the daemon log.
+- A daemon that is a member and was booted without `-kernel connect_all false`
+  refuses to start (`ConnectAllEnabled`). The launchers (`bin/loomd` and the
+  release's) add the flag whenever they add the TLS distribution flags, member
+  or not, so the refusal is reached only by a hand-built command line.
+- `protocol/models/session-move/KhepriMove.tla` checks the move and a move back
+  under the record. One of its mutants showed that the receiver must refuse a
+  session its own row still holds `moving` before it writes the record, not
+  after; the importer already did, from phase 5.
 
 ## Appendix: the spike
 
