@@ -30,19 +30,18 @@ local handle crosses it. The distributed runtime puts the machine boundary at
 that slot, so a remote session sends whole tool calls to the executor and gets
 outcomes back: one round trip per call, never one per file access.
 
-```text
-   clients (terminal, web)
-            |
-            v
-   +-----------------------+   TLS Erlang distribution   +-----------------------+
-   | orchestrator          | --------------------------> | executor              |
-   |                       |   Attach, Run, Query, Ack   |                       |
-   | runtime, session      |                             | checkout, broker,     |
-   | SQLite, catalogue,    | <-------------------------- | helper pool and jail, |
-   | approvals, clearance, |   replies, owner callbacks  | jobs, LSP, code mode, |
-   | provider keys, hooks  |                             | execution ledger      |
-   | trust, owner tools    |                             |                       |
-   +-----------------------+                             +-----------------------+
+```mermaid
+flowchart LR
+    clients["clients<br/>(terminal, web)"]
+    subgraph orch["orchestrator"]
+        o["runtime, session SQLite,<br/>catalogue, approvals, clearance,<br/>provider keys, hooks trust,<br/>owner tools"]
+    end
+    subgraph exec["executor"]
+        e["checkout, broker,<br/>helper pool and jail, jobs,<br/>LSP, code mode,<br/>execution ledger"]
+    end
+    clients --> o
+    o -- "Attach, Run, Query, Ack<br/>(TLS Erlang distribution)" --> e
+    e -- "replies, owner callbacks" --> o
 ```
 
 The cut sits there for three reasons. The runtime already makes a call durable
@@ -276,32 +275,24 @@ call is sent as a `Run` and admitted by key into the executor's ledger, the
 outcome is committed before any reply, and the orchestrator later acknowledges
 it. Recovery and reconnection reuse the same messages.
 
-```text
-orchestrator                                   executor host + ledger
-------------                                   ----------------------
-session open
-  connect peer, write scope record
-  Attach(version, session, workspace,  ----->  attach in one transaction:
-         incarnation, token, owner_port)         Created | Rebound | Reopened
-                                                 build plane (weft run)
-                                       <-----  Attached(census, executor_now_ms,
-                                                        unacked keys)
-strand driver commits intent
-effect process: surface.run
-  Run(key, incarnation, token,         ----->  admit in one transaction:
-      run, authority)                            token and incarnation equal?
-                                                 no row -> insert admitted, start
-                                                 admitted -> join waiters
-                                                 terminal -> stored outcome
-                                                 unknown/acked -> RunLost
-                    ... owner callbacks over the owner port ...
-                                               tool finishes
-                                               finish: row terminal (committed)
-                                       <-----  RunFinished(outcome)
-runtime stages the outcome
-owner port reconciler (at attach,
-  then every 60 s)
-  Ack(key)                             ----->  delete row, write tombstone
+```mermaid
+sequenceDiagram
+    participant O as orchestrator
+    participant E as executor host + ledger
+    Note over O: session open:<br/>connect peer, write scope record
+    O->>E: Attach(version, session, workspace,<br/>incarnation, token, owner_port)
+    Note over E: attach in one transaction:<br/>Created | Rebound | Reopened<br/>build plane (weft run)
+    E-->>O: Attached(census, executor_now_ms, unacked keys)
+    Note over O: strand driver commits intent<br/>effect process: surface.run
+    O->>E: Run(key, incarnation, token, run, authority)
+    Note over E: admit in one transaction:<br/>token and incarnation equal?<br/>no row: insert admitted, start<br/>admitted: join waiters<br/>terminal: stored outcome<br/>unknown or acked: RunLost
+    E-)O: owner callbacks over the owner port
+    Note over E: tool finishes<br/>finish: row terminal (committed)
+    E-->>O: RunFinished(outcome)
+    Note over O: runtime stages the outcome
+    Note over O: owner port reconciler<br/>(at attach, then every 60 s)
+    O->>E: Ack(key)
+    Note over E: delete row, write tombstone
 ```
 
 ### Attach, once per open

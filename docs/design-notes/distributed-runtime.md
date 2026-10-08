@@ -37,20 +37,17 @@ holds the checkout.
 
 A deployment has two roles, both served by the same release:
 
-```text
-   clients (TUI, web, phone)
-            |
-            v
-   +---------------------+   TLS Erlang distribution   +----------------------+
-   | orchestrator        | <-------------------------> | executor             |
-   | "brains"            |   ToolRun / ToolOutcome     | "hands"              |
-   |                     |   owner callbacks           |                      |
-   | runtime, SQLite,    |                             | checkout, broker,    |
-   | approvals, budgets, |                             | helper pool + jail,  |
-   | provider creds,     |                             | jobs, LSP, code mode,|
-   | gateway, owner tools|                             | hook commands,       |
-   +---------------------+                             | execution ledger     |
-                                                       +----------------------+
+```mermaid
+flowchart LR
+    clients["clients<br/>(TUI, web, phone)"]
+    subgraph orch["orchestrator (brains)"]
+        o["runtime, SQLite, approvals,<br/>budgets, provider creds,<br/>gateway, owner tools"]
+    end
+    subgraph exec["executor (hands)"]
+        e["checkout, broker,<br/>helper pool + jail, jobs,<br/>LSP, code mode, hook commands,<br/>execution ledger"]
+    end
+    clients --> o
+    o <-- "TLS Erlang distribution:<br/>ToolRun / ToolOutcome,<br/>owner callbacks" --> e
 ```
 
 Either machine can play either role. The demo runs the orchestrator on a
