@@ -627,6 +627,7 @@ pub type FindRegistrations {
     state: String,
     profile: String,
     executor: String,
+    pool: String,
   )
 }
 
@@ -636,7 +637,7 @@ pub fn find_registrations(
   path path: String,
 ) {
   let sql =
-    "SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, profile, executor
+    "SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, profile, executor, pool
 FROM catalogue_sessions
 WHERE session_id = ? OR request_key = ? OR path = ?"
   #(
@@ -661,6 +662,7 @@ pub fn find_registrations_decoder() -> decode.Decoder(FindRegistrations) {
   use state <- decode.field(7, decode.string)
   use profile <- decode.field(8, decode.string)
   use executor <- decode.field(9, decode.string)
+  use pool <- decode.field(10, decode.string)
   decode.success(FindRegistrations(
     session_id:,
     path:,
@@ -672,6 +674,7 @@ pub fn find_registrations_decoder() -> decode.Decoder(FindRegistrations) {
     state:,
     profile:,
     executor:,
+    pool:,
   ))
 }
 
@@ -685,11 +688,12 @@ pub fn insert_registration(
   request_key request_key: String,
   profile profile: String,
   executor executor: String,
+  pool pool: String,
 ) {
   let sql =
     "INSERT INTO catalogue_sessions
-  (session_id, path, workspace, name, configuration, created_at, request_key, state, profile, executor)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)"
+  (session_id, path, workspace, name, configuration, created_at, request_key, state, profile, executor, pool)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)"
   #(sql, [
     dev.ParamString(session_id),
     dev.ParamString(path),
@@ -700,7 +704,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)"
     dev.ParamString(request_key),
     dev.ParamString(profile),
     dev.ParamString(executor),
+    dev.ParamString(pool),
   ])
+}
+
+pub fn seed_registration_executor(
+  executor executor: String,
+  session_id session_id: String,
+) {
+  let sql =
+    "UPDATE catalogue_sessions SET executor = ?
+WHERE session_id = ? AND pool != '' AND executor = ''"
+  #(sql, [dev.ParamString(executor), dev.ParamString(session_id)])
 }
 
 pub fn confirm_registration(session_id session_id: String) {
@@ -776,6 +791,7 @@ pub type RegistrationPage {
     state: String,
     profile: String,
     executor: String,
+    pool: String,
     subtitle: Option(String),
   )
 }
@@ -783,7 +799,7 @@ pub type RegistrationPage {
 pub fn registration_page(after after: String, archived archived: Int) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
-       s.configuration, s.created_at, s.request_key, s.state, s.profile, s.executor, t.subtitle
+       s.configuration, s.created_at, s.request_key, s.state, s.profile, s.executor, s.pool, t.subtitle
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = s.session_id
@@ -810,7 +826,8 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
   use state <- decode.field(7, decode.string)
   use profile <- decode.field(8, decode.string)
   use executor <- decode.field(9, decode.string)
-  use subtitle <- decode.field(10, decode.optional(decode.string))
+  use pool <- decode.field(10, decode.string)
+  use subtitle <- decode.field(11, decode.optional(decode.string))
   decode.success(RegistrationPage(
     session_id:,
     path:,
@@ -822,6 +839,7 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
     state:,
     profile:,
     executor:,
+    pool:,
     subtitle:,
   ))
 }
@@ -852,6 +870,7 @@ pub type MemberRegistrationPage {
     state: String,
     profile: String,
     executor: String,
+    pool: String,
     subtitle: Option(String),
   )
 }
@@ -862,7 +881,7 @@ pub fn member_registration_page(
 ) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
-       s.created_at, s.request_key, s.state, s.profile, s.executor, t.subtitle
+       s.created_at, s.request_key, s.state, s.profile, s.executor, s.pool, t.subtitle
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
@@ -893,7 +912,8 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
   use state <- decode.field(7, decode.string)
   use profile <- decode.field(8, decode.string)
   use executor <- decode.field(9, decode.string)
-  use subtitle <- decode.field(10, decode.optional(decode.string))
+  use pool <- decode.field(10, decode.string)
+  use subtitle <- decode.field(11, decode.optional(decode.string))
   decode.success(MemberRegistrationPage(
     session_id:,
     path:,
@@ -905,6 +925,7 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
     state:,
     profile:,
     executor:,
+    pool:,
     subtitle:,
   ))
 }
