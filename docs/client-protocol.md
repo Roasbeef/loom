@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:341-187`).
+Source: `handle` (`client/daemon/server.gleam:348-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1754`).
+`hello_view` (`client/daemon/server.gleam:1767`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -537,7 +537,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:2733`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:2741`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -630,6 +630,10 @@ daemon's configuration, before anything is reserved; `conflict` when
 the key was reused with different metadata, a different `profile` or
 `executor` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
+
+`loom --executor <name> --workspace <registered name>` is the terminal's way to
+send `executor`, and the web home's "New session on an executor" form is the
+browser's; neither adds a member to this command.
 
 The server assigns the database path beneath its own private session
 directory. A client MUST NOT expect its `name` to appear in any path.
@@ -941,7 +945,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2073-1130`).
+`control_use` (`client/daemon/server.gleam:2086-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 

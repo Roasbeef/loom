@@ -31,6 +31,7 @@ Worked, commented files:
 | `loom --config <path>` | The path given, passed on to the daemon the launcher starts. |
 | `loom` with no `--config` | `<state-dir>/loom.toml` when that file exists, where the state directory is `--state-dir` or `~/.loom`. When it does not exist, no file is read. |
 | `loom --model-profile <name>` | Selects a `[profiles.<name>]` table of the file for a newly created session. A resumed session keeps the profile it was created with. |
+| `loom --executor <name> --workspace <registered name>` | Not a file choice: creates new sessions in the workspace registered under that name on that `[executors.<name>]` of the file the daemon loaded. With `--executor`, `--workspace` is a name and not a path. |
 
 A file given with `--config` replaces the `LOOM_*` environment surface for model
 and role configuration entirely. Precedence is command-line flags, then the
@@ -513,8 +514,10 @@ can use instead of a directory on this host: `sessions.create` accepts an
 workspace registered on that machine. `<name>` is a lowercase letter, then
 lowercase letters, digits, `_` or `-`, at most 32 characters. The tables require a
 `[distribution]` table, because an executor is a pinned peer, and a daemon
-without `[executors]` refuses every creation that names an executor. This release
-only records the choice: a session registered on an executor does not open yet.
+without `[executors]` refuses every creation that names an executor. A session is
+created on one with `loom --executor <name> --workspace <registered name>` or with
+the web home's "New session on an executor" form, which is offered only when this
+table has an entry; see [Setting up a distributed Loom](distributed-setup.md).
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |

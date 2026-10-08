@@ -78,6 +78,34 @@ scope and refuses `workspace_private`, because the workspace aggregate is
 keyed by path and two executors may register the same name. For the same
 reason a registered session can never be a workspace default.
 
+#### Addendum: the first-party clients
+
+Both clients now send `executor`; the control protocol gains nothing for it.
+
+The terminal takes `loom --executor <name> --workspace <registered name>`. With
+an executor `--workspace` is a name, never a path: it is kept apart from the
+launcher's canonicalized `Options.workspace`, validated against the shapes above
+before a request is built, and refused together with `--session`, which names a
+session that exists. The picker's `n` then sends `sessions.create` with
+`workspace` set to the name and `executor` set. The terminal words
+`executor_unknown` and an `executor_unavailable:` start failure as such, and
+shows a session row's optional `executor` member (`box:proj` in listings, `PROJ
+on box` as a picker group, since two executors may register the same name).
+
+The web home learns the executor names in process and not over the wire: the
+daemon hands them to the owner's page that holds the creation capability when the
+page opens (`server.HomeAttachment.executors`, the startup capture of
+`[executors.<name>]`), as it hands it the model profile names. The new-session
+section then offers a form with an executor select, a typed registered name and
+an optional session name. An executor travels as a position in the list the page
+was given and is turned back into the name by the form's decoder, so a browser
+can choose among the executors the page drew and name no other. The daemon's
+creation (`ui_socket.create_for`) judges only the name's shape and the
+executor's presence in the configuration, and makes the session session-only
+whatever the form said. A session list entry carries the optional executor, and a
+remote group is headed `executor:name` and offers no directory-style "New
+session" button.
+
 ### Catalogue (version 10)
 
 `Registration` gains `executor: String`, empty for a local session. The

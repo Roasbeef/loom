@@ -419,32 +419,54 @@ executor instead of a directory on the orchestrator. A client asks for one by
 passing `executor` and `workspace` to `sessions.create`
 ([client protocol, section 3.7](client-protocol.md)).
 
-**The terminal client and the web view cannot do this yet.** Neither has a
-control for choosing an executor, and `loom`'s new-session flow always uses a
-directory on the daemon's host. Until they do, create the session over the
-control protocol. The repository has a small script for it (**Verified**
-against a local daemon; needs Node 22 or newer):
+Both clients can create one. Each needs a `loom.toml` on the orchestrator that
+defines at least one model and a `main` role, as any session does. The
+workspace name is the executor's `[workspaces.<name>]` key. It is a name and not
+a path: the orchestrator never looks for it on its own disk.
+
+**In the terminal** (**Verified** against the pair from section 4), start `loom`
+as the orchestrator's user with the executor and the registered name:
 
 ```sh
-node scripts/distributed/create-remote-session.mjs 7441 \
-  $HOME/loom-demo/orchestrator/home/.loom/owner.token \
-  box proj $HOME/loom-demo/orchestrator/home/.loom/loom.toml
+HOME=$HOME/loom-demo/orchestrator/home loom --executor box --workspace proj
 ```
 
-The arguments are the orchestrator's client port, its owner token, the
-`[executors.<name>]` name, the executor's workspace name, and a `loom.toml` on
-the orchestrator for the session to load. The reply is the new session record,
-with `"executor":"box"`.
+`--executor` is an `[executors.<name>]` key of the orchestrator's `loom.toml`,
+and with it `--workspace` is the registered name, not a directory. The session
+picker opens as it always does, with the remote sessions you already have
+grouped under `PROJ  on box`. Press `n` to create a new one in that workspace on
+that executor. Every `n` in that terminal does the same until you quit. Add
+`--model-profile <name>` to choose a model profile. `--executor` cannot be
+combined with `--session`, which opens a session that exists, and
+`loom sessions list` shows a remote session's workspace as `box:proj`.
 
-What to expect today:
+**In the browser** (**Verified** against the same pair), run
+`HOME=$HOME/loom-demo/orchestrator/home loom ui --open`. When the orchestrator
+configures any executor, the home page's "Other folders" section has a "New
+session on an executor" button. It opens a form with the executor to choose, the
+registered workspace name to type, and an optional session name. A remote
+session is listed under a `box:proj` heading, and that heading has no "New
+session" button of its own: use the form.
+
+What to expect:
 
 - A name that is not an `[executors.<name>]` key is refused with
-  `executor_unknown` (**Verified**).
-- A valid name creates the session (**Verified**). **The session then fails to
-  open** with `executor_unavailable: remote workspace assembly is not
-  available yet`, because remote assembly is the executor-role slice. Once
-  that lands, the session opens, and you attach to it like any other session,
-  with `loom` or the web view pointed at the orchestrator (**Pending**).
+  `executor_unknown`. The terminal says `executor_unknown: no executor with that
+  name is configured on this daemon; --executor must be an [executors.<name>] key
+  of the daemon's configuration` (**Verified**). The page says the executor is
+  not in the daemon's configuration, in fixed words that its tests pin.
+- A workspace name that holds a `/` is refused before a daemon is asked. The
+  terminal refuses it at launch (**Verified**), and the page's daemon refuses it
+  in fixed words (tests only).
+- A valid name creates the session. If the executor cannot be reached, the
+  session fails to open with a reason that begins `executor_unavailable:`. The
+  terminal shows it as `session startup failed (executor_unavailable): <reason>`,
+  and the page shows the reason after saying whether the session was kept
+  (**Pending**: an unreachable executor was not run against these clients).
+  A reachable executor assembles the session on its side. In the run behind this
+  page the executor ran the session's startup commands, but the orchestrator then
+  reported `stale_operation` and an open that "did not open in time", so opening
+  the session was not verified (**Pending**).
 
 Once a remote session is open (**Pending**), tool calls such as `fs_read`, `bash`
 and `grep` run on the executor, in the registered workspace, and their results
@@ -546,7 +568,6 @@ does not yet do the following.
   sessions.** Foreground `code_mode` works, without those two features.
 - **No automatic connection.** Nodes connect only to the peers you list, only
   when asked.
-- **Clients cannot choose an executor yet** (section 7).
 
 The orchestrator and executor trust each other completely. Do not put an
 executor on a machine you would not trust with the orchestrator's provider keys.
