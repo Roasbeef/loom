@@ -105,3 +105,28 @@ pub fn a_missing_seed_names_the_command_that_makes_one_test() {
     seed.verify("/nonexistent/codemode-seed", compile.default_dependencies())
   assert string.contains(reason, "make codemode-seed")
 }
+
+pub fn a_built_seed_missing_an_admitted_module_is_stale_test() {
+  let dir = fresh_dir("missing-lsp-sql")
+  assert lay_out(dir) == Ok(Nil)
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/manifest.toml", "packages = []\n")
+    as "the fixture has a resolved manifest"
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/build/packages")
+    as "the fixture has an installation directory"
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/build/packages/packages.toml", "[packages]\n")
+    as "the fixture has an installation inventory"
+  assert seed.verify(dir, compile.default_dependencies()) == Ok(Nil)
+
+  // A stale workspace seed used to pass discovery and fail as a bad import
+  // in every satellite. The refusal now belongs to the host's seed selection.
+  let assert Ok(Nil) =
+    simplifile.delete(dir <> "/vendor/cap/src/cap/lsp_sql.gleam")
+    as "the reproduction removes only the advertised capability"
+  let assert Error(reason) = seed.verify(dir, compile.default_dependencies())
+    as "an incomplete capability snapshot must refuse"
+  assert string.contains(reason, "stale")
+  assert string.contains(reason, "cap/lsp_sql")
+  assert string.contains(reason, "make codemode-seed")
+}

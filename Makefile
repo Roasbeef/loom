@@ -466,6 +466,10 @@ conformance: sandbox ## Run the shared suites (storage conformance + wiring + e2
 codemode-seed: ## Prepare the offline package cache code-mode builds clone
 	@scripts/codemode_seed.sh
 
+.PHONY: lsp-seed
+lsp-seed: ## Download workspace package dependencies before offline LSP use
+	@.github/scripts/hex_retry.sh bash scripts/lsp_seed.sh
+
 .PHONY: e2e-codemode
 e2e-codemode: sandbox codemode-seed ## Code-mode end to end: jailed build, real satellite, real cap call
 	@bash scripts/test.sh codemode

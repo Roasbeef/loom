@@ -19,7 +19,9 @@
 //// anywhere other than `/usr/bin/git` is used as found.
 
 import client/internal/ffi_os
+import filepath
 import gleam/bool
+import gleam/list
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -95,6 +97,28 @@ pub fn program() -> String {
   host_probes()
   |> resolve
   |> result.unwrap("git")
+}
+
+/// Places the resolved Git ahead of toolchain shims for subprocess lookup.
+///
+/// Language servers invoke Git by name rather than receiving an explicit
+/// argv. This changes lookup only; the jail's filesystem policy still decides
+/// whether that executable can be read. An unresolved shim leaves PATH intact.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert host_git.tool_path("/usr/bin:/bin", "/Library/Developer/bin/git")
+///   == "/Library/Developer/bin:/usr/bin:/bin"
+/// ```
+pub fn tool_path(path: String, git: String) -> String {
+  case git {
+    "/" <> _ if git != xcode_shim ->
+      [filepath.directory_name(git), ..string.split(path, ":")]
+      |> list.unique
+      |> string.join(":")
+    _ -> path
+  }
 }
 
 /// The production probes: `os:type/0`, `os:find_executable/1`, and a bounded

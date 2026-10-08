@@ -560,3 +560,10 @@ fields return `MalformedScheduleResult`, separately from transport failure.
 These types grant no authority and change no queue, receipt or schedule custody.
 
 See [protocol 057](../../protocol-change/057-typed-capability-results.md).
+
+## Diagnostics scope
+
+`lsp.diagnostics(None)` is an always-unsettled snapshot of the current package
+server. `Settled([])` is meaningful for an explicit file scope, not as workspace
+coverage. The wire variants and explicit-file behavior remain the same;
+protocol 078 records the correction.

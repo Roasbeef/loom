@@ -216,8 +216,8 @@ pub type Diagnostics {
   /// Current as of the change. An empty list is a clean result.
   Settled(diagnostics: List(Diagnostic))
 
-  /// The bound expired first. `seen` is whatever arrived, which may be
-  /// stale or partial.
+  /// Freshness or complete scope was not established. `seen` is whatever
+  /// arrived, which may be stale or partial.
   Unsettled(seen: List(Diagnostic))
 }
 
@@ -275,8 +275,9 @@ pub type Door {
     /// One level of the call hierarchy around the queried symbol.
     calls: fn(SymbolQuery, CallDirection) ->
       Result(Served(List(Call)), QueryError),
-    /// Settled diagnostics for one file, or for every file the server has
-    /// published about when the path is `None`.
+    /// Diagnostics for one explicit file, or an always-unsettled snapshot
+    /// of the current server's open files when the path is `None`. A single
+    /// package server cannot attest to workspace-wide coverage.
     diagnostics: fn(Option(String)) -> Result(Served(Diagnostics), QueryError),
     /// Ask the server to rename the queried symbol to `new_name`, and
     /// return every file's edited text without writing any of it.
