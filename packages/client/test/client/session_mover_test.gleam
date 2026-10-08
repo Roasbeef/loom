@@ -824,6 +824,55 @@ pub fn a_retry_after_the_session_opened_on_the_receiver_still_finishes_the_move_
   finish(rig)
 }
 
+pub fn a_send_that_finds_the_session_activated_retires_without_asking_again_test() {
+  let rig =
+    start(
+      "lost-reply-silent",
+      24,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  let move = begin(rig)
+  let drop = times(1)
+  let lossy =
+    Wire(..rig.wire, activate: fn(activation) {
+      let answer = rig.wire.activate(activation)
+      case drop() {
+        True -> Error(Nil)
+        False -> answer
+      }
+    })
+  let assert Stalled(_reason) =
+    session_mover.drive(environment(rig, lossy, fn(_) { Nil }), move)
+
+  // The retry's first question is not answered, so the run goes through the close
+  // and the cut, and the send asks again and is told the session has arrived.
+  // That answer is all the retirement needs; the activation is not repeated.
+  let silent = times(1)
+  let asked = process.new_subject()
+  let retry =
+    Wire(
+      ..rig.wire,
+      stage: fn(session, op) {
+        case silent() {
+          True -> Error(Nil)
+          False -> rig.wire.stage(session, op)
+        }
+      },
+      activate: fn(activation) {
+        process.send(asked, Nil)
+        rig.wire.activate(activation)
+      },
+    )
+  assert session_mover.drive(environment(rig, retry, fn(_) { Nil }), move)
+    == Finished
+  assert process.receive(asked, 0) == Error(Nil)
+  assert_moved(rig)
+  finish(rig)
+}
+
 pub fn a_receiver_lost_in_the_middle_of_the_copy_gets_the_whole_file_again_test() {
   let rig =
     start(

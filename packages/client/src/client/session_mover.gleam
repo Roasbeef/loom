@@ -257,11 +257,25 @@ fn carried(
   environment.after(session_move.Close)
   use copy <- result.try(cut(environment, move, registration))
   environment.after(session_move.Cut)
-  use Nil <- result.try(send(environment, move, copy))
+  use stage <- result.try(send(environment, move, copy))
   environment.after(session_move.Send)
-  use Nil <- result.try(activate(environment, move, registration, cell, copy))
-  environment.after(session_move.Activate)
-  retire(environment, move, registration)
+  case stage {
+    // The question the send asked was answered by a receiver that has already
+    // taken the session in. Asking it to activate again would only ask what it
+    // has told us, and the stage is the observation the retirement needs.
+    session_move.Activated -> retire(environment, move, registration)
+    session_move.Received | session_move.Absent -> {
+      use Nil <- result.try(activate(
+        environment,
+        move,
+        registration,
+        cell,
+        copy,
+      ))
+      environment.after(session_move.Activate)
+      retire(environment, move, registration)
+    }
+  }
 }
 
 // --- the row and the registration --------------------------------------------
@@ -523,17 +537,23 @@ fn cut_halt(error: sqlite.RewriteError) -> Halt {
 // Sends the whole copy unless the receiver already holds a complete one, which a
 // run restarting after the send finds out by asking. A receiver that cannot be
 // asked is a stall, since sending to it would find out the same thing slower.
+// What it answers is returned: `Activated` means there is nothing left to send
+// or to ask, and the caller goes straight to the retirement.
 fn send(
   environment: Environment(instance),
   move: catalogue.Pending,
   copy: Copy,
-) -> Result(Nil, Halt) {
+) -> Result(session_move.Stage, Halt) {
   use receiver <- result.try(destination(environment, move))
   case environment.courier.stage(receiver, move.session, move.op) {
     Error(Nil) ->
       Error(Stall("the orchestrator " <> move.to <> " did not answer"))
-    Ok(session_move.Received) | Ok(session_move.Activated) -> Ok(Nil)
-    Ok(session_move.Absent) -> send_all(environment, move, receiver, copy)
+    Ok(session_move.Activated) -> Ok(session_move.Activated)
+    Ok(session_move.Received) -> Ok(session_move.Received)
+    Ok(session_move.Absent) -> {
+      use Nil <- result.try(send_all(environment, move, receiver, copy))
+      Ok(session_move.Absent)
+    }
   }
 }
 
