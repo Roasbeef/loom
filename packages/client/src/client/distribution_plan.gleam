@@ -37,9 +37,11 @@
 ////
 //// A plan may list, under a top-level `directory`, the nodes that form the
 //// session directory's Khepri cluster (protocol-change/079): three to seven
-//// of them, orchestrators and executors. Every member peers with every other
-//// member, because any member may become the cluster's leader, and each
-//// member's bundle carries a `[directory]` table naming all of them.
+//// of them, orchestrators and executors, including every orchestrator, since a
+//// member daemon refuses an `[orchestrators.<name>]` peer that is not a member.
+//// Every member peers with every other member, because any member may become
+//// the cluster's leader, and each member's bundle carries a `[directory]` table
+//// naming all of them.
 
 import client/distribution
 import gleam/dict.{type Dict}
@@ -252,7 +254,9 @@ pub fn directory_members(plan: Plan, node: Node) -> List(String) {
 }
 
 // A directory names plan nodes, once each, and enough of them that losing one
-// still leaves a majority.
+// still leaves a majority. It names every orchestrator, because a member
+// daemon refuses an `[orchestrators.<name>]` peer that is not a member, and
+// every orchestrator lists every other one.
 fn valid_directory(plan: Plan) -> Result(Nil, String) {
   case plan.directory {
     [] -> Ok(Nil)
@@ -270,11 +274,24 @@ fn valid_directory(plan: Plan) -> Result(Nil, String) {
         True -> Ok(Nil)
         False -> Error("directory lists a node twice")
       })
-      list.try_each(names, fn(name) {
-        case list.any(plan.nodes, fn(node) { node.name == name }) {
-          True -> Ok(Nil)
-          False ->
-            Error("directory names \"" <> name <> "\", which is not a node")
+      use Nil <- result.try(
+        list.try_each(names, fn(name) {
+          case list.any(plan.nodes, fn(node) { node.name == name }) {
+            True -> Ok(Nil)
+            False ->
+              Error("directory names \"" <> name <> "\", which is not a node")
+          }
+        }),
+      )
+      list.try_each(plan.nodes, fn(node) {
+        case node.role, list.contains(names, node.name) {
+          Orchestrator, False ->
+            Error(
+              "directory must list every orchestrator; \""
+              <> node.name
+              <> "\" is missing",
+            )
+          Orchestrator, True | Executor, _ -> Ok(Nil)
         }
       })
     }
