@@ -6485,6 +6485,13 @@ Invariants that break things when violated:
   a `Run` and a `Close` for it are refused with `PlaneBuilding` before the
   ledger is touched; do not move the check after `exec_ledger.attach`, which
   would replace the token the first attach is waiting on.
+- A repeated `Close` on a scope that already ended at that incarnation answers
+  the stored `CloseOutcome` and does not ask the plane again, so an orchestrator
+  whose reply was lost, or whose move resumes after a restart, learns the
+  cleanup finished. The scope row is the evidence, not the host's memory. A
+  `Close` at another incarnation is still refused. A second `Close` that arrives
+  while the first is running is not guarded yet: it finds no plane and records
+  `UnknownCleanup(0)` before the first job finishes.
 - Recovery of a `ReplayNever` call must fence (`QueryOrFence`). A plain `Query`
   that finds no row leaves a window in which a dead runtime's `Run` is still in
   flight and then starts the call that recovery just reported as not started.

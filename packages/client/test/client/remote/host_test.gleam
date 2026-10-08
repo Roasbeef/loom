@@ -369,6 +369,50 @@ pub fn reopening_after_a_clean_close_builds_a_new_plane_test() {
   stop(rig)
 }
 
+pub fn a_repeated_close_answers_the_stored_outcome_without_closing_again_test() {
+  let rig = rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  assert close(rig, 0) == Ok(protocol.AllRetired)
+  assert fixtures.closes(rig.probe) == 1
+
+  // The orchestrator asks again when the reply was lost. The scope is closed,
+  // so the answer is what the ledger stored and the plane is not asked twice.
+  assert close(rig, 0) == Ok(protocol.AllRetired)
+  assert close(rig, 0) == Ok(protocol.AllRetired)
+  assert fixtures.closes(rig.probe) == 1
+
+  // A repeat names the incarnation it closed, so a request from another one is
+  // still refused and never learns this scope's outcome.
+  assert close(rig, 1) == Error(protocol.StaleIncarnation(0))
+  stop(rig)
+}
+
+pub fn a_repeated_close_after_a_restart_still_answers_what_was_stored_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let path = fixtures.scratch("host") <> "/ledger.db"
+  let unclean =
+    fixtures.factory(probe, fixtures.AsksNothing, protocol.UnknownCleanup(2))
+  let rig = start_at(path, probe, unclean)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  assert close(rig, 0) == Ok(protocol.UnknownCleanup(2))
+  stop(rig)
+  process.sleep(50)
+
+  // The row, not the host's memory, is the evidence, so a new host over the
+  // same ledger gives the same answer, and still grants no successor.
+  let probe = fixtures.probe(fixtures.Open)
+  let restarted =
+    start_at(
+      path,
+      probe,
+      fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired),
+    )
+  assert close(restarted, 0) == Ok(protocol.UnknownCleanup(2))
+  assert fixtures.closes(probe) == 0
+  assert attach(restarted, 1, token(2)) == Error(protocol.UncleanClose(2))
+  stop(restarted)
+}
+
 pub fn an_unclean_close_gets_no_successor_test() {
   let probe = fixtures.probe(fixtures.Open)
   let rig =

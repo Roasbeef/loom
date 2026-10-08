@@ -1107,7 +1107,8 @@ fn is_noconnection(detail: dynamic.Dynamic) -> Bool {
 // Closes a scope. The ledger commit that sets `Closing` is the fence: from it
 // on no call is admitted. Live calls are then cancelled and their waiters told
 // the outcome is lost, and the plane retires its children off the host's own
-// process so other sessions keep being served.
+// process so other sessions keep being served. A repeat of a close that has
+// finished answers the stored outcome and does no work.
 fn close(
   state: State(census),
   session: String,
@@ -1135,6 +1136,16 @@ fn close_scope(
   reply: Subject(Result(CloseOutcome, Refusal)),
 ) -> State(census) {
   case exec_ledger.begin_close(state.ledger, session, workspace, incarnation) {
+    // A scope that already ended at this incarnation answers what it stored.
+    // The orchestrator asks again when a reply was lost or the host went
+    // away mid-close, and a refusal would leave it unable to learn that the
+    // cleanup finished. The plane is not asked a second time: the ledger row
+    // is the evidence, and `begin_close` has already checked the workspace
+    // and the incarnation.
+    Error(exec_ledger.ScopeNotOpen(state: exec_ledger.Closed(outcome:))) -> {
+      process.send(reply, Ok(from_ledger_close(outcome)))
+      state
+    }
     Error(error) -> {
       process.send(reply, Error(refusal_of(error)))
       state
@@ -1359,6 +1370,13 @@ fn to_ledger_close(outcome: CloseOutcome) -> exec_ledger.CloseOutcome {
   case outcome {
     protocol.AllRetired -> exec_ledger.AllRetired
     protocol.UnknownCleanup(count:) -> exec_ledger.UnknownCleanup(count:)
+  }
+}
+
+fn from_ledger_close(outcome: exec_ledger.CloseOutcome) -> CloseOutcome {
+  case outcome {
+    exec_ledger.AllRetired -> protocol.AllRetired
+    exec_ledger.UnknownCleanup(count:) -> protocol.UnknownCleanup(count:)
   }
 }
 
