@@ -417,6 +417,40 @@ pub fn a_verified_copy_becomes_the_session_and_a_repeat_answers_again_test() {
   finish(rig)
 }
 
+pub fn a_repeat_of_a_committed_move_is_accepted_whatever_the_sender_is_called_now_test() {
+  let rig = rig("renamed", box())
+  let copy = cut(rig, 40, clean())
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+  let request = activation(copy, op)
+  assert session_importer.activate(rig.context, request)
+    == session_move.Accepted
+
+  // The operator renamed the sender in `[orchestrators]` and restarted between
+  // the first activation and the retry. The row recorded `alpha`, and the
+  // answer to the retry is the row, not a comparison with today's name.
+  let renamed =
+    session_importer.Context(..rig.context, orchestrators: [
+      orchestrators.plain("charlie", alpha_node),
+    ])
+  assert session_importer.activate(renamed, request) == session_move.Accepted
+
+  // The sender's row is gone altogether, which is the same promise: the commit
+  // exists, so the answer is yes.
+  let unlisted = session_importer.Context(..rig.context, orchestrators: [])
+  assert session_importer.activate(unlisted, request) == session_move.Accepted
+  assert manager.custody(rig.registry, copy.session)
+    == Ok(catalogue.Imported(op:, from: "alpha"))
+
+  // A node that is not listed still learns nothing about other moves of the
+  // session: a different operation is refused as an unknown source.
+  assert session_importer.activate(
+      unlisted,
+      session_move.Activation(..request, op: other_op),
+    )
+    == session_move.Refused(session_move.UnknownSource(alpha_node))
+  finish(rig)
+}
+
 pub fn the_session_the_sender_cut_is_admitted_here_and_keeps_its_cell_test() {
   let rig = rig("opens", box())
   let copy = cut(rig, 11, clean())

@@ -23,14 +23,19 @@
 //// that can be checked is checked before it, and nothing is changed until it
 //// passes. The order matters, because each check protects the next.
 ////
-//// 1. The sender's node is one of this daemon's `[orchestrators.<name>]`.
-////    Without that there is no name to record as the session's origin, and no
-////    standing to tell this daemon about sessions.
-//// 2. The catalogue is asked first. A session this daemon already took in under
-////    the same move is answered again without looking at the copy, because the
-////    first activation looked at it before it committed, and a reply the sender
-////    never saw must be answerable twice. A session held under any other state
-////    is refused.
+//// 1. The catalogue is asked first. A session this daemon already took in under
+////    the same move is answered again without looking at the copy and without
+////    looking at who is asking, because the first activation checked both
+////    before it committed. Once that commit exists, every activation of the
+////    same move is accepted: the sender abandons the move on a refusal, so a
+////    refusal after the commit would leave the session owned by both daemons.
+////    A reply the sender never saw must be answerable any number of times, and
+////    whatever has changed since, such as a session opened here, an
+////    `[orchestrators.<name>]` row renamed, or the copy gone, must not change
+////    the answer. A session held under any other state is refused.
+//// 2. Otherwise the sender's node is one of this daemon's
+////    `[orchestrators.<name>]`. Without that there is no name to record as the
+////    session's origin, and no standing to tell this daemon about sessions.
 //// 3. The copy's SHA-256 is the digest the sender took when it cut the file.
 ////    A different digest means the copy is not what was cut, and the sender
 ////    sends the whole file again.
@@ -279,12 +284,6 @@ fn activated(
   activation: Activation,
 ) -> Result(Nil, Verdict) {
   use Nil <- result.try(well_formed(activation.session, activation.op))
-  use source <- result.try(
-    orchestrators.by_node(context.orchestrators, activation.from_node)
-    |> result.replace_error(
-      Refused(session_move.UnknownSource(node: activation.from_node)),
-    ),
-  )
   use found <- result.try(
     case manager.custody(context.registry, activation.session) {
       Ok(custody) -> Ok(Some(custody))
@@ -297,23 +296,47 @@ fn activated(
   )
   case found {
     // The first activation of this move committed and the sender did not hear.
-    // It checked the copy then; asking again finishes what it left undone, and
-    // there may be no copy left to check.
+    // It checked the copy and the sender then; asking again finishes what it
+    // left undone, and there may be no copy left to check. The origin is the
+    // one the row recorded, so a sender that this daemon no longer lists is
+    // still answered: refusing here would be a refusal after the commit.
     Some(catalogue.Imported(op:, from:)) if op == activation.op ->
-      case from == source.name {
-        True -> import_it(context, activation, source)
-        False -> Error(Refused(session_move.Conflict))
-      }
+      import_it(context, activation, from)
     Some(catalogue.Resident)
     | Some(catalogue.Moving(..))
-    | Some(catalogue.Imported(..)) -> Error(Refused(session_move.Conflict))
+    | Some(catalogue.Imported(..)) -> conflict(context, activation)
     Some(catalogue.Moved(op:, ..)) if op == activation.op ->
-      Error(Refused(session_move.Conflict))
+      conflict(context, activation)
 
     // A session that was never here, or that was here and went away under an
     // earlier move, can be taken in.
-    Some(catalogue.Moved(..)) | None -> verified(context, activation, source)
+    Some(catalogue.Moved(..)) | None -> {
+      use source <- result.try(listed(context, activation))
+      verified(context, activation, source)
+    }
   }
+}
+
+// The orchestrator this daemon lists for the activation's node.
+fn listed(
+  context: Context(instance),
+  activation: Activation,
+) -> Result(Orchestrator, Verdict) {
+  orchestrators.by_node(context.orchestrators, activation.from_node)
+  |> result.replace_error(
+    Refused(session_move.UnknownSource(node: activation.from_node)),
+  )
+}
+
+// The refusal for a session this daemon holds under another state or move. It
+// is for a listed sender only, so a node this daemon does not know learns
+// nothing about which sessions it holds.
+fn conflict(
+  context: Context(instance),
+  activation: Activation,
+) -> Result(Nil, Verdict) {
+  use _source <- result.try(listed(context, activation))
+  Error(Refused(session_move.Conflict))
 }
 
 // The checks on the copy, and then the arrival.
@@ -362,7 +385,7 @@ fn verified(
       True, Ok(_) -> Ok(Nil)
     },
   )
-  import_it(context, activation, source)
+  import_it(context, activation, source.name)
 }
 
 // The copy's scope cell, which must read a clean close at the claimed
@@ -441,7 +464,7 @@ fn closed_cell(
 fn import_it(
   context: Context(instance),
   activation: Activation,
-  source: Orchestrator,
+  from: String,
 ) -> Result(Nil, Verdict) {
   let manifest = activation.manifest
   let received =
@@ -478,7 +501,7 @@ fn import_it(
         registration:,
         mapping:,
         op: activation.op,
-        from: source.name,
+        from:,
         received:,
         subtitle: manifest.subtitle,
       ),
