@@ -352,7 +352,8 @@ lease under a caller-chosen owner, retires the WAL, takes the `VACUUM INTO`
 copy at a destination, clears the copy's lease rows (with secure delete on,
 so the copy's bytes do not depend on the lease's fence or expiry), and
 returns the copy's SHA-256. A session move uses it to cut the file it sends
-to another orchestrator.
+to another orchestrator. The original keeps the claim until its owner calls
+`sqlite.release_export`, which a move that aborts or finishes does.
 
 ## Beside the session file
 
