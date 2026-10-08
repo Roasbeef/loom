@@ -41,6 +41,7 @@ import machine/strand
 import runtime/effects
 import simplifile
 import support/internal/ffi_memory
+import support/remote_fixtures as fixtures
 import weft/actor
 
 // A settings file of the ordinary shape: hooks under their own key,
@@ -116,6 +117,32 @@ pub fn wrappers_do_not_copy_unrelated_slots_test() {
     > ffi_memory.flat_words(small.hooks.run_end) + 4096
   assert ffi_memory.flat_words(other.hooks.run_start)
     == ffi_memory.flat_words(small.hooks.run_start)
+}
+
+/// A remote session's surface offers recovery, and the imported-hook layer
+/// wraps that surface after it is composed. Rebuilding the record without the
+/// slot would silently turn recovery off for exactly the sessions that need it.
+pub fn a_wrapped_surface_keeps_its_recovery_test() {
+  let rig = rig()
+  let serving = load(rig, None)
+  let base = effects_placing(None)
+  let remote =
+    effects.Effects(
+      ..base,
+      tools: effects.ToolSurface(
+        ..base.tools,
+        recover: Some(fn(_run) { effects.OutcomeUnknown }),
+      ),
+    )
+
+  let assert Ok(wrapped) =
+    hookserve.wire(remote, serving, rig.clock, fn(_) { False })
+  let assert Ok(local) =
+    hookserve.wire(base, serving, rig.clock, fn(_) { False })
+
+  let assert Some(recover) = wrapped.tools.recover
+  assert recover(fixtures.tool_run("call_1", 0)) == effects.OutcomeUnknown
+  assert option.is_none(local.tools.recover)
 }
 
 // --- the load ----------------------------------------------------------------

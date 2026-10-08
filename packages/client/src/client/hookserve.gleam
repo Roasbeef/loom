@@ -854,7 +854,7 @@ pub fn wire(
         ..tools,
         clear: fn(query) { cleared(serving, clear, query) },
         run: fn(query) { ran(serving, run(query), query) },
-        recover: None,
+        recover: tools.recover,
       ),
     ),
   )
