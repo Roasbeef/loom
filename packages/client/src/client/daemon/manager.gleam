@@ -3093,9 +3093,28 @@ fn import_now(
   // the answer to a repeat is the same row. A repeat must not put a copy over a
   // file that is in place: whatever waits is a late duplicate, and the session
   // may have run on the placed file since.
-  let repeat =
-    catalogue.custody(book.catalogue, id)
-    == Ok(catalogue.Imported(op: incoming.op, from: incoming.from))
+  //
+  // The read must not fail silently into "not a repeat". A session the catalogue
+  // has no row for is the ordinary first arrival, but any other failure leaves
+  // the question open, and treating it as a first import would answer a repeat
+  // with a refusal when a slot is open, or put a late duplicate over the placed
+  // file when none is. It is reported as `AdminFailed`, and not as a metadata
+  // error, because the importer turns an invalid-metadata error into a refusal
+  // and a refusal is final for the source; a failure is a stall, and the source
+  // asks again. No test injects the failure: every write to the move table goes
+  // through validation, so the rows the public API can produce always decode,
+  // and a closed database crashes the registry in the driver instead of
+  // returning an error. The rule is held by the shape of the case, which has no
+  // arm that maps an unreadable row to `False`.
+  use repeat <- result.try(case catalogue.custody(book.catalogue, id) {
+    Ok(held) ->
+      Ok(held == catalogue.Imported(op: incoming.op, from: incoming.from))
+    Error(catalogue.Missing) -> Ok(False)
+    Error(other) ->
+      Error(AdminFailed(
+        "the session's move record could not be read: " <> string.inspect(other),
+      ))
+  })
 
   // An open slot refuses a first import, which would replace the file under a
   // running session. It cannot refuse a repeat. Once the commit exists the
