@@ -115,3 +115,20 @@ DELETE FROM catalogue_recent_folders WHERE seq = ?;
 -- name: TrimRecentFolders :exec
 DELETE FROM catalogue_recent_folders
 WHERE seq NOT IN (SELECT seq FROM catalogue_recent_folders ORDER BY seq DESC LIMIT ?);
+
+-- name: SessionMove :many
+SELECT op, peer, state FROM catalogue_session_moves WHERE session_id = ?;
+
+-- name: InsertSessionMove :exec
+INSERT INTO catalogue_session_moves (session_id, op, peer, state) VALUES (?, ?, ?, ?);
+
+-- name: FinishSessionMove :exec
+UPDATE catalogue_session_moves SET state = 'moved'
+WHERE session_id = ? AND op = ? AND state = 'moving';
+
+-- name: AbortSessionMove :exec
+DELETE FROM catalogue_session_moves
+WHERE session_id = ? AND op = ? AND state = 'moving';
+
+-- name: DeleteSessionMove :exec
+DELETE FROM catalogue_session_moves WHERE session_id = ?;
