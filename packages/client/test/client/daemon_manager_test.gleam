@@ -2286,9 +2286,15 @@ pub fn an_import_registers_records_and_places_the_file_in_one_turn_test() {
   assert manager.custody(registry, id) == Ok(imported_row)
 
   // The same import arriving again, as a source does when the reply was lost,
-  // answers the stored row and leaves the placed file alone.
+  // answers the stored row and leaves the placed file alone. A copy that waits
+  // beside it is a late duplicate, and it is removed and never put over the
+  // file the session may have run on.
   assert manager.import_session(registry, request) == Ok(imported_row)
   assert simplifile.read(request.registration.path) == Ok("the session file")
+  let assert Ok(Nil) = simplifile.write(received, "a late duplicate")
+  assert manager.import_session(registry, request) == Ok(imported_row)
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  assert simplifile.is_file(received) == Ok(False)
 
   // The imported session is this catalogue's now: it opens, and it can move on
   // under a new op once it is stopped.
@@ -2309,6 +2315,56 @@ pub fn an_import_whose_copy_is_gone_is_refused_and_leaves_nothing_placed_test() 
   let assert Error(manager.AdminFailed(_)) =
     manager.import_session(registry, request)
   assert simplifile.is_file(request.registration.path) == Ok(False)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  let _removed = simplifile.delete_all([directory])
+  Nil
+}
+
+pub fn an_import_that_committed_before_its_rename_is_finished_by_its_repeat_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let directory = scratch("import-crash")
+  let received = directory <> "/incoming"
+  let assert Ok(Nil) = simplifile.write(received, "the session file")
+  let request = imported(928, directory, received)
+
+  // What a crash between the commit and the rename leaves: the row is written
+  // and the copy still waits where it was received.
+  let assert Ok(_) =
+    domain.import_session(
+      store,
+      request.registration,
+      request.mapping,
+      op: op_a,
+      from: "desk",
+    )
+  assert simplifile.is_file(request.registration.path) == Ok(False)
+
+  // The source asks again, and the rename is done.
+  assert manager.import_session(registry, request)
+    == Ok(catalogue.Imported(op: op_a, from: "desk"))
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  assert simplifile.is_file(received) == Ok(False)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+  let _removed = simplifile.delete_all([directory])
+  Nil
+}
+
+pub fn a_new_import_replaces_a_stale_file_at_the_sessions_path_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = start(store, 1, fn(record, _) { Ok(record.id) })
+  let directory = scratch("import-stale")
+  let received = directory <> "/incoming"
+  let assert Ok(Nil) = simplifile.write(received, "the session file")
+  let request = imported(929, directory, received)
+
+  // An orphan from an earlier attempt that left no row is not the session.
+  let assert Ok(Nil) = simplifile.write(request.registration.path, "orphan")
+  assert manager.import_session(registry, request)
+    == Ok(catalogue.Imported(op: op_a, from: "desk"))
+  assert simplifile.read(request.registration.path) == Ok("the session file")
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
   let _removed = simplifile.delete_all([directory])

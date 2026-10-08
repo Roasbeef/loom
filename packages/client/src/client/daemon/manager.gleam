@@ -3092,6 +3092,14 @@ fn import_now(
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
+
+  // Whether this import already committed is read before it is applied, since
+  // the answer to a repeat is the same row. A repeat must not put a copy over a
+  // file that is in place: whatever waits is a late duplicate, and the session
+  // may have run on the placed file since.
+  let repeat =
+    catalogue.custody(book.catalogue, id)
+    == Ok(catalogue.Imported(op: incoming.op, from: incoming.from))
   use custody <- result.try(
     domain.import_session(
       book.catalogue,
@@ -3102,7 +3110,10 @@ fn import_now(
     )
     |> result.map_error(AdminMetadata),
   )
-  use Nil <- result.try(place_received(incoming))
+  use Nil <- result.try(case repeat {
+    True -> finish_placement(incoming)
+    False -> place_received(incoming)
+  })
   case incoming.subtitle {
     option.Some(text) -> {
       let _seeded = catalogue.seed_subtitle(book.catalogue, id, text)
@@ -3111,6 +3122,20 @@ fn import_now(
     option.None -> Nil
   }
   Ok(custody)
+}
+
+// Completes the placement a repeated import may have left unfinished. A file
+// already at the session's path was placed by the import that committed, so a
+// copy still waiting is a late duplicate and is removed; with no file there, the
+// commit was not followed by its rename, and the waiting copy is placed now.
+fn finish_placement(incoming: Import) -> Result(Nil, AdminError) {
+  case simplifile.is_file(incoming.registration.path) {
+    Ok(True) -> {
+      let _removed = simplifile.delete_file(incoming.received)
+      Ok(Nil)
+    }
+    Ok(False) | Error(_) -> place_received(incoming)
+  }
 }
 
 // Moves the verified copy to the session's path. A copy that is no longer
@@ -3404,6 +3429,25 @@ fn select_creation_domain(
       Ok(domain_record(record, scope, configuration, state_root))
     Error(error) -> Error(error)
   }
+}
+
+/// The session-only domain a session on an executor is given: its own memory
+/// and index files below `state_root`, beside no other session's. A session that
+/// another orchestrator handed over gets the same mapping a session created here
+/// does, so the registry never has to ask which of the two it is looking at.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.session_only_domain(registration, "", "/state")
+/// ```
+@internal
+pub fn session_only_domain(
+  record: catalogue.Registration,
+  configuration: String,
+  state_root: String,
+) -> domain.Domain {
+  domain_record(record, domain.SessionOnly, configuration, state_root)
 }
 
 fn domain_record(
