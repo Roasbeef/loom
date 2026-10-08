@@ -50,3 +50,16 @@ pub fn launcher_commands_are_not_forwarded_test() {
   assert tui.server_arguments(["replay", "recording.jsonl"]) == None
   assert tui.server_arguments(["sessions", "list"]) == None
 }
+
+pub fn executor_is_forwarded_with_its_arguments_untouched_test() {
+  assert tui.server_arguments([
+      "executor",
+      "release",
+      "7f3a9c1e",
+      "--state-dir",
+      "/var/lib/loom",
+    ])
+    == Some(["executor", "release", "7f3a9c1e", "--state-dir", "/var/lib/loom"])
+  assert tui.server_arguments(["help", "executor"])
+    == Some(["executor", "--help"])
+}

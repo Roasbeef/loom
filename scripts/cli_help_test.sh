@@ -144,6 +144,22 @@ for spelling in "distribution --help" "dist --help" "dist -h" "help dist" "help 
   cmp "$scratch/loom-distribution.stdout" "$scratch/loomd.stdout"
 done
 
+# `loom executor` is a passthrough in the same way: the launcher prints the
+# help text itself, and the text must equal the server's.
+run_help loom "usage: loom executor" executor --help
+cp "$scratch/loom.stdout" "$scratch/loom-executor.stdout"
+LOOM_SERVER="$scratch/no-loomd" run_help loom "usage: loom executor" help executor
+cmp "$scratch/loom-executor.stdout" "$scratch/loom.stdout"
+for spelling in "executor --help" "executor -h" "help executor"; do
+  # shellcheck disable=SC2086
+  run_help loomd "usage: loom executor" $spelling
+  cmp "$scratch/loom-executor.stdout" "$scratch/loomd.stdout"
+done
+
+# A bare `loomd executor` is the command's own usage error and never starts a
+# daemon.
+run_failure loomd executor
+
 # Both spellings reach the command itself on `loomd`: a bare `dist` is the
 # command's own usage error and never starts a daemon.
 run_failure loomd dist

@@ -340,7 +340,7 @@ fn attach_to(
     }
     Error(refusal) -> {
       owner_port.stop(port)
-      Error(Failed(refused(refusal, incarnation)))
+      Error(Failed(refused(refusal, incarnation, registered.session)))
     }
     Ok(surface.Attachment(surface: joined, attached: reply)) ->
       case executors.contradiction(candidate.executor, observed(reply.census)) {
@@ -612,9 +612,23 @@ fn unavailable(reason: String) -> String {
 // An attach the executor refused. A stale incarnation means the record in this
 // store and the executor's ledger disagree about how often the scope has been
 // reopened; retrying cannot reconcile them, so the open fails and says both
-// numbers.
-fn refused(refusal: protocol.Refusal, attempted: Int) -> String {
+// numbers. A scope that closed unproven, or was left closing, is not retried
+// either: only the executor's operator can release it, so the message names the
+// command and the session to give it.
+fn refused(
+  refusal: protocol.Refusal,
+  attempted: Int,
+  session: String,
+) -> String {
   case refusal {
+    protocol.UncleanClose(..) | protocol.ScopeClosing ->
+      unavailable(
+        protocol.describe(refusal)
+        <> "; an operator on the executor can release it with `loomd executor"
+        <> " release "
+        <> session
+        <> "` once the executor daemon is stopped",
+      )
     protocol.StaleIncarnation(stored:) ->
       unavailable(
         "this session's record attaches at incarnation "

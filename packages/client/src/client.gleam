@@ -20,6 +20,7 @@
 import argv
 import client/daemon/admin
 import client/daemon/distribution_cli
+import client/daemon/executor_cli
 import client/daemon/main as daemon
 import client/daemon/peer_cli
 import client/extension/cli
@@ -53,6 +54,7 @@ pub fn main() -> Nil {
         ["ext", ..rest] -> cli.main(rest)
         ["distribution", ..rest] | ["dist", ..rest] ->
           distribution_cli.main(rest)
+        ["executor", ..rest] -> executor_cli.main(rest)
         _other -> daemon.main()
       }
   }
@@ -89,6 +91,7 @@ pub fn help_for(arguments: List(String)) -> Option(String) {
         Ok("peer") -> Some(peer_cli.usage)
         Ok("ext") -> Some(cli.usage)
         Ok("distribution") | Ok("dist") -> Some(distribution_cli.usage)
+        Ok("executor") -> Some(executor_cli.usage)
         Ok(_other) | Error(Nil) -> Some(usage)
       }
   }
@@ -96,10 +99,10 @@ pub fn help_for(arguments: List(String)) -> Option(String) {
 
 fn is_topic(word: String) -> Bool {
   case word {
-    "access" | "peer" | "ext" | "distribution" | "dist" -> True
+    "access" | "peer" | "ext" | "distribution" | "dist" | "executor" -> True
     _ -> False
   }
 }
 
 const usage =
-  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  ext <command>       Manage extensions.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n\nRun `loomd help <command>` for command usage."
+  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  ext <command>       Manage extensions.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n  executor <command>  Release a scope an executor will not reopen itself.\n\nRun `loomd help <command>` for command usage."

@@ -168,7 +168,8 @@ type Launch {
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
-  // `loom ext …` and `loom distribution …` (`dist` for short) are not
+  // `loom ext …`, `loom distribution …` (`dist` for short) and
+  // `loom executor …` are not
   // terminal applications at all: they are passthroughs to `loomd`, whose
   // own subcommand owns every verb. Forwarding rather than reimplementing
   // is what stops the launcher and the server disagreeing about what an
@@ -312,6 +313,7 @@ pub fn main() {
         ["ext", ..]
         | ["distribution", ..]
         | ["dist", ..]
+        | ["executor", ..]
         | ["replay", ..]
         | ["sessions", ..]
         | ["claim", ..]
@@ -435,6 +437,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
     Ok("distribution") | Ok("dist") -> Some(distribution_usage())
+    Ok("executor") -> Some(executor_usage())
     Ok("update") -> Some(update_options.usage())
     Ok("version") -> Some(version_usage())
     Ok("ui") | Ok("--ui") -> Some(ui_usage())
@@ -449,6 +452,7 @@ fn is_topic(word: String) -> Bool {
     | "ext"
     | "distribution"
     | "dist"
+    | "executor"
     | "update"
     | "version"
     | "claim"
@@ -1017,10 +1021,12 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["ext", ..rest] -> Forward(verb: "ext", arguments: rest)
     ["distribution", ..rest] | ["dist", ..rest] ->
       Forward(verb: "distribution", arguments: rest)
+    ["executor", ..rest] -> Forward(verb: "executor", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(verb: "ext", arguments: ["--help"])
     ["help", "distribution"] | ["help", "dist"] ->
       Forward(verb: "distribution", arguments: ["--help"])
+    ["help", "executor"] -> Forward(verb: "executor", arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
@@ -1909,7 +1915,9 @@ fn launch_usage() -> String {
   <> "  ext <command>       Manage daemon extensions.\n"
   <> "  distribution <command>\n"
   <> "                      Provision trusted distribution between daemons\n"
-  <> "                      (init, provision, install, show). `dist` is short.\n\n"
+  <> "                      (init, provision, install, show). `dist` is short.\n"
+  <> "  executor release SESSION\n"
+  <> "                      Release a scope an executor will not reopen itself.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --model-profile names a [profiles.<name>] table of that file whose\n"
   <> "       roles a newly created session uses; a resumed session keeps its own\n"
@@ -2015,9 +2023,39 @@ Example:
   ssh devbox loom dist install devbox.loombundle"
 }
 
+// The help text of `loom executor`, held here for the reason
+// `distribution_usage` is, and compared with `loomd executor --help` by the
+// same shipped acceptance.
+fn executor_usage() -> String {
+  "usage: loom executor release SESSION [--state-dir PATH]   (also: loomd executor release)
+
+Release a scope on this machine's executor that the executor will not reopen by
+itself. Run it on the executor, with the executor daemon stopped.
+
+An executor refuses to attach a session to a scope that closed with unknown
+cleanup, or that was left closing when the daemon ended mid-close, because it
+cannot prove the scope's processes are gone. After the executor restarts, every
+session that closes ends this way. `release` is the operator saying the
+processes are gone: it closes the scope as retired and records that it did, in
+the executor's ledger. The session's next open then reopens the scope at the
+next incarnation.
+
+SESSION is the orchestrator's session id, as the refused open names it.
+--state-dir is the executor daemon's state directory (default ~/.loom), where
+exec-ledger.db lives.
+
+Check that nothing from the session still runs on this machine first. The
+command refuses a scope that is open, and a scope that is already closed
+cleanly.
+
+Example:
+  loom executor release 7f3a9c1e --state-dir /var/lib/loom"
+}
+
 /// The arguments `loom` would hand to the server for a passthrough command,
 /// or `None` when the command is the launcher's own. `loom ext` and
-/// `loom distribution` (with its `dist` shorthand) are passthroughs, and the
+/// `loom distribution` (with its `dist` shorthand) and `loom executor` are
+/// passthroughs, and the
 /// server sees the subcommand spelled the way it spells it.
 ///
 /// ## Examples

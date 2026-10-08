@@ -221,6 +221,7 @@ pub fn a_scope_an_executor_restart_left_unproven_reopens_after_a_release_test() 
   let assert Error(refused) =
     workspace.attach(rig.registered(second, opened, clock.fixed(at: 1000)))
   assert string.contains(refused, "0 children")
+  assert string.contains(refused, "`loomd executor release registered-session`")
 
   // The executor daemon is stopped for the release.
   rig.stop(second)
