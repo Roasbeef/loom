@@ -32,6 +32,14 @@
 //// An orchestrator peers with every executor it uses and with every other
 //// orchestrator. An executor peers with every orchestrator that uses it. Every
 //// edge is symmetric, because a pin is checked by both ends of a connection.
+////
+//// ## The directory
+////
+//// A plan may list, under a top-level `directory`, the nodes that form the
+//// session directory's Khepri cluster (protocol-change/079): three to seven
+//// of them, orchestrators and executors. Every member peers with every other
+//// member, because any member may become the cluster's leader, and each
+//// member's bundle carries a `[directory]` table naming all of them.
 
 import client/distribution
 import gleam/dict.{type Dict}
@@ -91,9 +99,11 @@ pub type Node {
   )
 }
 
-/// A validated plan: its nodes in the order the operator wrote them.
+/// A validated plan: its nodes in the order the operator wrote them, and the
+/// names of the nodes in the session directory's cluster, empty when the plan
+/// has no directory.
 pub type Plan {
-  Plan(nodes: List(Node))
+  Plan(nodes: List(Node), directory: List(String))
 }
 
 /// How a plan file is spelled.
@@ -193,7 +203,7 @@ pub fn parse(text: String, format: Format) -> Result(Plan, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// assert result.is_error(distribution_plan.validate(Plan(nodes: [])))
+/// assert result.is_error(distribution_plan.validate(Plan(nodes: [], directory: [])))
 /// ```
 pub fn validate(plan: Plan) -> Result(Plan, String) {
   use Nil <- result.try(case plan.nodes {
@@ -206,12 +216,74 @@ pub fn validate(plan: Plan) -> Result(Plan, String) {
     list.try_each(plan.nodes, references_executors(plan, _)),
   )
   use Nil <- result.try(list.try_each(plan.nodes, valid_peers(plan, _)))
+  use Nil <- result.try(valid_directory(plan))
   Ok(plan)
+}
+
+/// Whether a node is a member of the plan's directory.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution_plan.in_directory(plan, laptop) // -> True
+/// ```
+pub fn in_directory(plan: Plan, node: Node) -> Bool {
+  list.contains(plan.directory, node.name)
+}
+
+/// The Erlang node names of the directory's members, in plan order, for a
+/// node that is one of them; empty for any other node.
+///
+/// ## Examples
+///
+/// ```gleam
+/// distribution_plan.directory_members(plan, laptop)
+/// // -> ["loom@laptop.example", "loom@desk.example", "loom@devbox.example"]
+/// ```
+pub fn directory_members(plan: Plan, node: Node) -> List(String) {
+  case in_directory(plan, node) {
+    False -> []
+    True ->
+      list.filter_map(plan.directory, fn(name) {
+        list.find(plan.nodes, fn(other) { other.name == name })
+        |> result.map(fn(member) { member.erlang_node })
+      })
+  }
+}
+
+// A directory names plan nodes, once each, and enough of them that losing one
+// still leaves a majority.
+fn valid_directory(plan: Plan) -> Result(Nil, String) {
+  case plan.directory {
+    [] -> Ok(Nil)
+    names -> {
+      let count = list.length(names)
+      use Nil <- result.try(case count >= 3 && count <= 7 {
+        True -> Ok(Nil)
+        False ->
+          Error(
+            "directory must list between 3 and 7 nodes, not "
+            <> int.to_string(count),
+          )
+      })
+      use Nil <- result.try(case list.unique(names) == names {
+        True -> Ok(Nil)
+        False -> Error("directory lists a node twice")
+      })
+      list.try_each(names, fn(name) {
+        case list.any(plan.nodes, fn(node) { node.name == name }) {
+          True -> Ok(Nil)
+          False ->
+            Error("directory names \"" <> name <> "\", which is not a node")
+        }
+      })
+    }
+  }
 }
 
 /// The nodes a node trusts as peers, in plan order: for an orchestrator, the
 /// executors it uses and the other orchestrators, and for an executor the
-/// orchestrators that use it.
+/// orchestrators that use it. Two members of the directory always peer.
 ///
 /// ## Examples
 ///
@@ -221,11 +293,15 @@ pub fn validate(plan: Plan) -> Result(Plan, String) {
 pub fn peers(plan: Plan, node: Node) -> List(Node) {
   list.filter(plan.nodes, fn(other) {
     other.name != node.name
-    && case node.role, other.role {
-      Orchestrator, Executor -> list.contains(node.executors, other.name)
-      Orchestrator, Orchestrator -> True
-      Executor, Orchestrator -> list.contains(other.executors, node.name)
-      Executor, Executor -> False
+    && {
+      case node.role, other.role {
+        Orchestrator, Executor -> list.contains(node.executors, other.name)
+        Orchestrator, Orchestrator -> True
+        Executor, Orchestrator -> list.contains(other.executors, node.name)
+        Executor, Executor -> False
+      }
+      || in_directory(plan, node)
+      && in_directory(plan, other)
     }
   })
 }
@@ -373,13 +449,14 @@ fn tree_decoder() -> decode.Decoder(Tree) {
 
 fn plan_of(tree: Tree) -> Result(Plan, String) {
   use root <- result.try(table(tree, "the plan"))
-  use Nil <- result.try(known_keys(root, ["node"], "the plan"))
+  use Nil <- result.try(known_keys(root, ["node", "directory"], "the plan"))
+  use directory <- result.try(optional_names(root, "directory", "the plan"))
   case dict.get(root, "node") {
     Error(Nil) -> Error("the plan needs at least one [[node]]")
     Ok(Items(rows)) ->
       list.index_map(rows, fn(row, index) { #(row, index) })
       |> list.try_map(fn(entry) { node_of(entry.0, entry.1) })
-      |> result.map(Plan)
+      |> result.map(fn(nodes) { Plan(nodes:, directory:) })
     Ok(_) -> Error("node must be a list of [[node]] tables")
   }
 }
