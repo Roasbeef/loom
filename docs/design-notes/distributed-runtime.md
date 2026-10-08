@@ -5,6 +5,8 @@ for [issue #697](https://github.com/Roasbeef/loom/issues/697). It replaces the
 design carried by draft [PR #819](https://github.com/Roasbeef/loom/pull/819),
 which is kept as an archive. The wire and durable formats it introduces are
 specified in [protocol-change/078](../../protocol-change/078-distributed-runtime.md).
+How the built system fits together, and what it does under each failure, is
+described in [the distributed runtime architecture page](../architecture/distributed.md).
 
 ## 1. Why this note exists
 

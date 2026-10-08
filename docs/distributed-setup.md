@@ -7,6 +7,9 @@ to set that up, in the order you would do it.
 The design is in [the distributed runtime note](design-notes/distributed-runtime.md)
 and [protocol-change/078](../protocol-change/078-distributed-runtime.md). You do
 not need either to follow this page.
+[The architecture page](architecture/distributed.md) explains how the parts fit
+and what the system does under each failure, which helps when a step below
+fails for a reason this page does not list.
 
 ## How to read the status marks
 
