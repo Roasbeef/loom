@@ -144,7 +144,9 @@ fn rig_over(
 // The entries a daemon has created in its state root before it builds any
 // session's policy. The jail masks them, and under full enforcement it cannot
 // mask a path which does not exist, so a rig which stands in for a daemon
-// creates them as a daemon would.
+// creates them as a daemon would. The rig mirrors the state root the jail
+// masks, `run/` included: Linux refuses a spawn when a protected path is
+// missing, and macOS does not notice.
 fn establish(state: String) -> Nil {
   list.each(["owner.token", "catalogue.db", "daemon.lock"], fn(name) {
     let assert Ok(Nil) = simplifile.write(state <> "/" <> name, "")
@@ -153,6 +155,8 @@ fn establish(state: String) -> Nil {
   })
   let assert Ok(Nil) = simplifile.create_directory_all(state <> "/sessions")
     as "the sessions directory is created"
+  let assert Ok(Nil) = simplifile.create_directory_all(state <> "/run")
+    as "the runtime directory is created"
   Nil
 }
 
