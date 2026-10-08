@@ -40,10 +40,20 @@ fn handlers(view: Element(message)) -> List(String)
 // A session that is what `start` names, `A`, and the ones listed beside it.
 fn listing() -> List(Entry) {
   [
-    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None),
-    Entry("A", "web ui", "/src/loom", 100, Live, None, None, None),
-    Entry("C", "hex release", "/src/weft", 900, Saved, None, None, None),
-    Entry("lint-census", "census", "/src/loom", 50, Live, None, None, None),
+    Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None, None),
+    Entry("A", "web ui", "/src/loom", 100, Live, None, None, None, None),
+    Entry("C", "hex release", "/src/weft", 900, Saved, None, None, None, None),
+    Entry(
+      "lint-census",
+      "census",
+      "/src/loom",
+      50,
+      Live,
+      None,
+      None,
+      None,
+      None,
+    ),
   ]
 }
 
@@ -299,6 +309,7 @@ pub fn the_open_button_escapes_the_catalogues_name_test() {
         None,
         None,
         None,
+        None,
       ),
     ])
   let html = drawn(model)
@@ -524,9 +535,29 @@ pub fn a_blocked_row_is_text_test() {
     component.update(
       model,
       component.SessionsListed([
-        Entry("B", "vetting lint", "/src/loom", 300, Live, None, None, None),
-        Entry("A", "web ui", "/src/loom", 100, Live, None, None, None),
-        Entry("Z", "stuck", "/src/loom", 50, sessions.Blocked, None, None, None),
+        Entry(
+          "B",
+          "vetting lint",
+          "/src/loom",
+          300,
+          Live,
+          None,
+          None,
+          None,
+          None,
+        ),
+        Entry("A", "web ui", "/src/loom", 100, Live, None, None, None, None),
+        Entry(
+          "Z",
+          "stuck",
+          "/src/loom",
+          50,
+          sessions.Blocked,
+          None,
+          None,
+          None,
+          None,
+        ),
       ]),
     )
   assert list.length(sidebar_clicks(handlers(operator_page.view(model)))) == 1

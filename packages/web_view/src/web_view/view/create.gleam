@@ -36,6 +36,20 @@
 //// The field is uncontrolled and the server never writes it back, so what the
 //// owner typed is not echoed even in a refusal.
 ////
+//// When the daemon has executors (protocol-change/078), a third form creates a
+//// session in a workspace registered on one of them. It is the other place a
+//// workspace is a field, and the only one where it is a name and not a path: an
+//// executor chosen from a select, the registered name typed into a text field,
+//// and the optional session name. There is no Shareable box, because the daemon
+//// makes a session on an executor session-only whatever the form says. The
+//// executor follows the profile's rule: an option's `value` is its position in
+//// the list the page was given, its label is the name as a text node, and the
+//// decoder (`remote_fields`) turns the position back into the name from that
+//// same list, so the browser can choose among the executors the page drew and
+//// name no other. It accepts exactly one `executor`, one `workspace` and one
+//// `name`. Without executors the button, the form and the decoder's only
+//// possible answer do not exist: a list of none refuses every event.
+////
 //// While a creation is out the form is drawn disabled with "Creating" on its
 //// button, and every other workspace's button has no handler. That is the
 //// page's half of "a second press asks nothing", and the component's update
@@ -75,6 +89,14 @@ pub type State {
   /// The creation for a typed folder is out. The form is drawn disabled until
   /// the answer arrives.
   Sending
+
+  /// The form for a workspace registered on an executor is open
+  /// (protocol-change/078).
+  Remote
+
+  /// The creation for a registered workspace is out. The form is drawn disabled
+  /// until the answer arrives.
+  Dispatching
 }
 
 /// What a page offers for creating a session.
@@ -91,7 +113,12 @@ pub type Create(message) {
   /// is what it sends, given the typed path, the typed name, the sharing and the
   /// chosen profile; `state` is where the person is; `profiles` is the profile
   /// names the forms offer beside the default roles, which may be none, and a
-  /// profile a submit carries is always one of them.
+  /// profile a submit carries is always one of them. `remote` opens the form
+  /// for a workspace registered on an executor and `submit_remote` is what it
+  /// sends, given the executor, the typed workspace name and the typed session
+  /// name; `executors` is the executor names the daemon gave the page, which may
+  /// be none, and then the page offers no such form. The executor a submit
+  /// carries is always one of them.
   Offered(
     choose: fn(String) -> message,
     submit: fn(String, String, Sharing, Option(String)) -> message,
@@ -100,6 +127,9 @@ pub type Create(message) {
     submit_elsewhere: fn(String, String, Sharing, Option(String)) -> message,
     state: State,
     profiles: List(String),
+    remote: message,
+    submit_remote: fn(String, String, String) -> message,
+    executors: List(String),
   )
 }
 
@@ -163,11 +193,64 @@ fn opener(
   ]
   html.button(
     case state {
-      Waiting(_) | Sending -> [attribute.disabled(True), ..attributes]
-      Idle | Composing(_) | Elsewhere -> [event.on_click(press()), ..attributes]
+      Waiting(_) | Sending | Dispatching -> [
+        attribute.disabled(True),
+        ..attributes
+      ]
+      Idle | Composing(_) | Elsewhere | Remote -> [
+        event.on_click(press()),
+        ..attributes
+      ]
     },
     [html.text(words)],
   )
+}
+
+/// The button that opens the form for a workspace registered on an executor, or
+/// nothing when the page may not create or the daemon has no executors to offer.
+/// It has a handler only while no creation is out, as the other buttons do.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // create.remote_button(create)
+/// ```
+pub fn remote_button(create: Create(message)) -> Element(message) {
+  case create {
+    Offered(remote:, state:, executors: [_, ..], ..) ->
+      opener("New session on an executor\u{2026}", state, fn() { remote })
+    Offered(executors: [], ..) | Never -> element.none()
+  }
+}
+
+/// The form for a registered workspace when it is open, and nothing otherwise.
+/// It says in words that the workspace is a name registered on the executor and
+/// not a folder on this machine, and what a blank session name gets.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // create.remote_form(create)
+/// ```
+pub fn remote_form(create: Create(message)) -> Element(message) {
+  case create {
+    Never -> element.none()
+    Offered(submit_remote:, cancel:, state:, executors:, ..) ->
+      case state, executors {
+        Remote, [_, ..] ->
+          registered(submit_remote, cancel, Editable, executors)
+        Dispatching, [_, ..] ->
+          registered(submit_remote, cancel, Locked, executors)
+        Idle, _
+        | Composing(_), _
+        | Waiting(_), _
+        | Elsewhere, _
+        | Sending, _
+        | Remote, []
+        | Dispatching, []
+        -> element.none()
+      }
+  }
 }
 
 /// The form under a workspace's heading when it is the one open, and nothing
@@ -187,7 +270,13 @@ pub fn form(create: Create(message), workspace: String) -> Element(message) {
           drawn(workspace, submit, cancel, Editable, profiles)
         Waiting(open) if open == workspace ->
           drawn(workspace, submit, cancel, Locked, profiles)
-        Idle | Composing(_) | Waiting(_) | Elsewhere | Sending -> element.none()
+        Idle
+        | Composing(_)
+        | Waiting(_)
+        | Elsewhere
+        | Sending
+        | Remote
+        | Dispatching -> element.none()
       }
   }
 }
@@ -207,7 +296,8 @@ pub fn elsewhere_form(create: Create(message)) -> Element(message) {
       case state {
         Elsewhere -> typed(submit_elsewhere, cancel, Editable, profiles)
         Sending -> typed(submit_elsewhere, cancel, Locked, profiles)
-        Idle | Composing(_) | Waiting(_) -> element.none()
+        Idle | Composing(_) | Waiting(_) | Remote | Dispatching ->
+          element.none()
       }
   }
 }
@@ -294,6 +384,69 @@ fn typed(
       profile_field(fields, profiles),
       html.p([attribute.class("home-create-hint")], [
         html.text("Left blank, the session is named for the folder."),
+      ]),
+      actions(fields, cancel),
+    ],
+  )
+}
+
+// The form for a workspace registered on an executor: which executor, the name
+// the workspace is registered under there, and the optional session name. There
+// is no Shareable box, because the daemon makes a session on an executor
+// session-only (its workspace aggregate is keyed by a path on the daemon's
+// host), which is what Shareable asks for. The executor is a select whose option
+// values are positions in the list the page was given and whose labels are the
+// names as text nodes, so no executor name is ever an attribute, and the
+// decoder turns the position back into the name from that same list.
+fn registered(
+  submit: fn(String, String, String) -> message,
+  cancel: message,
+  fields: Fields,
+  executors: List(String),
+) -> Element(message) {
+  html.form(
+    [
+      attribute.class("home-create"),
+      attribute.aria_label("New session on an executor"),
+      event.on("submit", remote_submitted(submit, executors))
+        |> event.prevent_default,
+    ],
+    [
+      html.label([attribute.class("home-create-profile")], [
+        html.span([attribute.class("home-create-profile-name")], [
+          html.text("Executor"),
+        ]),
+        html.select(
+          [
+            attribute.name("executor"),
+            attribute.class("home-create-profile-select"),
+            attribute.aria_label("Executor"),
+            ..locks(fields)
+          ],
+          list.index_map(executors, fn(name, position) {
+            html.option([attribute.value(int.to_string(position))], name)
+          }),
+        ),
+      ]),
+      html.input([
+        attribute.type_("text"),
+        attribute.name("workspace"),
+        attribute.class("home-create-path"),
+        attribute.placeholder("Registered workspace name, for example app"),
+        attribute.aria_label("Workspace name"),
+        attribute.attribute("maxlength", "128"),
+        attribute.autocomplete("off"),
+        attribute.autofocus(True),
+        ..locks(fields)
+      ]),
+      html.p([attribute.class("home-create-hint")], [
+        html.text(
+          "The name the workspace is registered under on that executor. It is a name, not a folder: the daemon does not look for it on this machine.",
+        ),
+      ]),
+      name_field(fields),
+      html.p([attribute.class("home-create-hint")], [
+        html.text("Left blank, the session is named for the workspace."),
       ]),
       actions(fields, cancel),
     ],
@@ -418,6 +571,20 @@ fn typed_submitted(
     Ok(#(path, name, sharing, profile)) ->
       decode.success(submit(path, name, sharing, profile))
     Error(Nil) -> decode.failure(submit("", "", Private, None), "folder form")
+  }
+}
+
+// The registered-workspace form's decoder, refused unless `remote_fields`
+// accepts the list.
+fn remote_submitted(
+  submit: fn(String, String, String) -> message,
+  executors: List(String),
+) -> decode.Decoder(message) {
+  use listed <- decode.subfield(["detail", "formData"], decode.list(field()))
+  case remote_fields(listed, executors) {
+    Ok(#(executor, workspace, name)) ->
+      decode.success(submit(executor, workspace, name))
+    Error(Nil) -> decode.failure(submit("", "", ""), "executor form")
   }
 }
 
@@ -553,6 +720,50 @@ fn chosen_profile(
   }
 }
 
+/// The executor, workspace name and session name a submitted registered-
+/// workspace form's fields stand for, given the executor names the form offered:
+/// exactly one `executor` whose value is the position of one of `executors`,
+/// which is turned back into the name here, exactly one `workspace`, exactly one
+/// `name`, and no other field. A position past the list, a negative or
+/// non-numeric one, a name where a position goes, a repeat and a missing field
+/// all refuse the event, so the browser can choose among the executors the page
+/// drew and name no other. The workspace and the session name are the browser's
+/// text and nothing else is: the daemon judges both again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert create.remote_fields(
+///     [#("executor", "1"), #("workspace", "app"), #("name", "")],
+///     ["a", "b"],
+///   )
+///   == Ok(#("b", "app", ""))
+/// assert create.remote_fields(
+///     [#("executor", "2"), #("workspace", "app"), #("name", "")],
+///     ["a", "b"],
+///   )
+///   == Error(Nil)
+/// ```
+pub fn remote_fields(
+  listed: List(#(String, String)),
+  executors: List(String),
+) -> Result(#(String, String, String), Nil) {
+  let chosen = list.filter(listed, fn(field) { field.0 == "executor" })
+  let workspaces = list.filter(listed, fn(field) { field.0 == "workspace" })
+  let names = list.filter(listed, fn(field) { field.0 == "name" })
+  case chosen, workspaces, names, list.length(listed) {
+    [#(_, position)], [#(_, workspace)], [#(_, name)], 3 ->
+      case int.parse(position) {
+        Ok(index) if index >= 0 ->
+          list.drop(executors, index)
+          |> list.first
+          |> result.map(fn(executor) { #(executor, workspace, name) })
+        Ok(_) | Error(Nil) -> Error(Nil)
+      }
+    _, _, _, _ -> Error(Nil)
+  }
+}
+
 /// The workspace a form is open for, if one is, which the component's update
 /// uses to refuse a submit for a form that is not the open one. The typed
 /// folder's form is open for no workspace.
@@ -565,7 +776,7 @@ fn chosen_profile(
 /// ```
 pub fn open_for(state: State) -> Option(String) {
   case state {
-    Idle | Elsewhere | Sending -> None
+    Idle | Elsewhere | Sending | Remote | Dispatching -> None
     Composing(workspace:) | Waiting(workspace:) -> Some(workspace)
   }
 }

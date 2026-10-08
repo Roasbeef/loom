@@ -96,13 +96,14 @@ fn listed(
       model,
       operator_page.Observed(
         component.SessionsListed([
-          Entry("A", "this one", "/src/loom", 100, Live, None, None, None),
+          Entry("A", "this one", "/src/loom", 100, Live, None, None, None, None),
           Entry(
             "B",
             "review <b>auth</b>",
             "/src/loom",
             50,
             Live,
+            None,
             None,
             None,
             None,
@@ -113,6 +114,7 @@ fn listed(
             "/src/loom",
             20,
             sessions.Saved,
+            None,
             None,
             None,
             None,

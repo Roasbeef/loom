@@ -6165,6 +6165,24 @@ a refused handshake or attach) fails the build, and `operations.get` reports
 retries. `test/client/daemon_registered_test.gleam` covers the wire, and
 `executors_test` the table.
 
+Both first-party clients create such a session. The terminal sends the same
+`sessions.create` from `loom --executor <name> --workspace <registered name>` (see
+`packages/tui`). The web home reaches `create_session` through
+`ui_socket.create_for` with a `creations.Registered(executor, workspace)` place:
+`placed` judges only the shape of the name (`creations.registered_name`) and never
+calls the folder check, `executor_of` puts the executor on the `manager.Creation`,
+and `scope_of` makes a registered place session-only whatever the form said, which
+the control decoder does for `domain_scope` and a direct `create_session` call does
+not. `server.create_session` then answers `executor_unknown` for an executor the
+daemon does not configure, which `creation_refusal` words as
+`creations.UnknownExecutor`. The page learns the executor names from
+`server.HomeAttachment.executors` (`list.map(config.executors, ...)` in
+`home_upgrade`), which `ui_socket.upgrade_home` hands to `home.Start.executors`
+only for a page that holds the creation capability; nothing about it is on the
+control protocol. `listed_entry` copies `Registration.executor` into the sidebar's
+`sessions.Entry`, and `with_projects` skips a registered entry, whose workspace is
+a name and not a path to look a repository up from.
+
 ## Remote tool calls (protocol 078)
 
 `client/remote/*` is the mechanics of running a session's tool calls on another

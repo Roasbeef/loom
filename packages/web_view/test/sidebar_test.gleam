@@ -42,6 +42,7 @@ fn entry(
     subtitle: None,
     role: None,
     project: None,
+    executor: None,
   )
 }
 

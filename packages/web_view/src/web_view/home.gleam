@@ -186,6 +186,15 @@
 //// | `Waiting(w)` | asks nothing | asks nothing | asks nothing | departs and `Idle`, or says why and `Composing(w)`, or `Idle` for a session made and not opened | stays `Waiting(w)` |
 //// | `Elsewhere` | `Composing` that workspace | stays `Elsewhere` | asks the daemon for the typed path, then `Sending` | nothing to answer | `Idle` |
 //// | `Sending` | asks nothing | asks nothing | asks nothing | departs and `Idle`, or says why and `Elsewhere`, or `Idle` for a session made and not opened | stays `Sending` |
+////
+//// The form for a workspace registered on an executor (protocol-change/078) is
+//// a fourth pair of states, `Remote` and `Dispatching`, drawn only when
+//// `Start.executors` is not empty. `Remote` behaves as `Elsewhere` does:
+//// another form's button moves to that form, "New session on an executor" is
+//// the only way in, a submit asks the daemon and moves to `Dispatching`, and
+//// Cancel returns to `Idle`. `Dispatching` behaves as `Sending` does: it asks
+//// nothing, and the answer departs and returns to `Idle`, says why and returns
+//// to `Remote`, or returns to `Idle` for a session made and not opened.
 
 import gleam/bool
 import gleam/dict.{type Dict}
@@ -362,6 +371,14 @@ pub type Start {
     /// then the forms draw no select. The daemon checks the profile against its
     /// configuration again when the creation runs, whatever this page said.
     profiles: List(String),
+    /// The executor names the daemon's configuration defines, as the daemon
+    /// knew them when the page opened (protocol-change/078). The section for
+    /// folders offers a form for a workspace registered on one of them, and a
+    /// creation carries an executor only if it is in this list. It is `[]`
+    /// unless `create` is `Some`, and then the page draws no such form. The
+    /// daemon checks the executor against its configuration again when the
+    /// creation runs, whatever this page said.
+    executors: List(String),
     /// Reads and edits the owner's recent folders (protocol-change/074). It is
     /// `Some` exactly where `create` is, and a page with `None` lists no folder
     /// and ignores the messages. The daemon checks the page, its ceiling and the
@@ -649,6 +666,18 @@ pub type Msg {
     sharing: Sharing,
     profile: Option(String),
   )
+
+  /// The "New session on an executor" button was pressed: open its form. A page
+  /// with no `Start.create`, or no `Start.executors`, ignores it.
+  OpeningRemote
+
+  /// The form for a registered workspace was submitted: ask the daemon to create
+  /// the session on the executor. The executor is one of `Start.executors` (the
+  /// form's decoder, `view/create.remote_fields`, turns the browser's position
+  /// back into the name from that list), and the workspace and the session name
+  /// are the browser's text and nothing else is: the daemon judges both again.
+  /// The page asks only for the form that is open, and only once.
+  CreatingRemote(executor: String, workspace: String, name: String)
 
   /// A remembered folder's "Forget this folder" was pressed. The identity is the
   /// daemon's, fixed when the tree was drawn, so a press names an entry that was
@@ -951,12 +980,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Some(_), Connected, create.Idle
         | Some(_), Connected, create.Composing(_)
         | Some(_), Connected, create.Elsewhere
+        | Some(_), Connected, create.Remote
         -> #(
           Model(..model, creating: create.Composing(workspace), note: None),
           effect.none(),
         )
         Some(_), Connected, create.Waiting(_)
         | Some(_), Connected, create.Sending
+        | Some(_), Connected, create.Dispatching
         | Some(_), Connecting, _
         | Some(_), Ended(_), _
         | None, _, _
@@ -986,11 +1017,11 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     Cancelled ->
       case model.creating {
-        create.Composing(_) | create.Elsewhere -> #(
+        create.Composing(_) | create.Elsewhere | create.Remote -> #(
           Model(..model, creating: create.Idle),
           effect.none(),
         )
-        create.Idle | create.Waiting(_) | create.Sending -> #(
+        create.Idle | create.Waiting(_) | create.Sending | create.Dispatching -> #(
           model,
           effect.none(),
         )
@@ -1004,16 +1035,62 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
         Some(_), Connected, create.Idle
         | Some(_), Connected, create.Composing(_)
         | Some(_), Connected, create.Elsewhere
+        | Some(_), Connected, create.Remote
         -> #(
           Model(..model, creating: create.Elsewhere, note: None),
           effect.none(),
         )
         Some(_), Connected, create.Waiting(_)
         | Some(_), Connected, create.Sending
+        | Some(_), Connected, create.Dispatching
         | Some(_), Connecting, _
         | Some(_), Ended(_), _
         | None, _, _
         -> #(model, effect.none())
+      }
+
+    // The button opens the form for a registered workspace, if the page may
+    // create, the daemon gave it executors and no creation is out. It closes
+    // another form, as the other buttons do.
+    OpeningRemote ->
+      case
+        model.start.create,
+        model.start.executors,
+        model.status,
+        model.creating
+      {
+        Some(_), [_, ..], Connected, create.Idle
+        | Some(_), [_, ..], Connected, create.Composing(_)
+        | Some(_), [_, ..], Connected, create.Elsewhere
+        | Some(_), [_, ..], Connected, create.Remote
+        -> #(Model(..model, creating: create.Remote, note: None), effect.none())
+        Some(_), _, _, _ | None, _, _, _ -> #(model, effect.none())
+      }
+
+    // The registered form's submit is honoured only for its form while it is
+    // open, as the others are, and only for an executor the page offered. The
+    // decoder resolved the executor from a position in the same list, so a
+    // submit that fails the list check did not come from a form the page drew.
+    // The session is always shareable: the daemon makes a session on an
+    // executor session-only, because its workspace aggregate is keyed by a path
+    // on the daemon's host.
+    CreatingRemote(executor:, workspace:, name:) ->
+      case model.start.create, model.status, model.creating {
+        Some(ask), Connected, create.Remote ->
+          case list.contains(model.start.executors, executor) {
+            True -> #(
+              Model(..model, creating: create.Dispatching, note: None),
+              creation(
+                ask,
+                creations.Registered(executor, workspace),
+                name,
+                creations.Shareable,
+                None,
+              ),
+            )
+            False -> #(model, effect.none())
+          }
+        Some(_), _, _ | None, _, _ -> #(model, effect.none())
       }
 
     // The typed folder's submit is honoured only for its form while it is open,
@@ -1733,7 +1810,11 @@ fn refused_at(model: Model) -> home_table.Place {
         True -> home_table.Workspace(workspace)
         False -> home_table.Elsewhere
       }
-    None, create.Sending | None, create.Elsewhere -> home_table.Elsewhere
+    None, create.Sending
+    | None, create.Elsewhere
+    | None, create.Remote
+    | None, create.Dispatching
+    -> home_table.Elsewhere
     None, create.Idle | None, create.Composing(_) | None, create.Waiting(_) ->
       home_table.Page
   }
@@ -1753,10 +1834,16 @@ type Outcome {
 // which leaves nothing to correct.
 fn reopened(state: create.State, outcome: Outcome) -> create.State {
   case state, outcome {
-    create.Waiting(_), Kept | create.Sending, Kept -> create.Idle
+    create.Waiting(_), Kept | create.Sending, Kept | create.Dispatching, Kept ->
+      create.Idle
     create.Waiting(workspace), Correctable -> create.Composing(workspace)
     create.Sending, Correctable -> create.Elsewhere
-    create.Idle, _ | create.Composing(_), _ | create.Elsewhere, _ -> state
+    create.Dispatching, Correctable -> create.Remote
+    create.Idle, _
+    | create.Composing(_), _
+    | create.Elsewhere, _
+    | create.Remote, _
+    -> state
   }
 }
 
@@ -2138,6 +2225,9 @@ fn create_offer(model: Model) -> Create(Msg) {
         CreatingElsewhere,
         model.creating,
         model.start.profiles,
+        OpeningRemote,
+        CreatingRemote,
+        model.start.executors,
       )
     None -> create.Never
   }

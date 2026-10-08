@@ -37,6 +37,7 @@ fn entry(id: String) -> Entry {
     subtitle: None,
     role: None,
     project: None,
+    executor: None,
   )
 }
 
@@ -84,6 +85,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    executors: [],
   )
 }
 

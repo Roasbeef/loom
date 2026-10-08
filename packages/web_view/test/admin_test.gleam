@@ -61,6 +61,7 @@ fn entry(id: String, name: String, residency: sessions.Residency) -> Entry {
     subtitle: None,
     role: None,
     project: None,
+    executor: None,
   )
 }
 

@@ -254,6 +254,13 @@ pub type HomeAttachment(instance) {
     /// it: the home socket asks once when the page opens. A configuration the
     /// daemon cannot read has no names.
     profiles: fn() -> List(String),
+    /// The `[executors.<name>]` names of the daemon's configuration, in the
+    /// order the configuration lists them, which the owner's page offers a form
+    /// for a registered workspace on (protocol-change/078). They are the
+    /// daemon's startup capture (`Config.executors`) and never reread, so unlike
+    /// the profiles they cost no read. A page learns them once, when it opens,
+    /// and only an owner's page that holds the creation capability is told.
+    executors: List(String),
   )
 }
 
@@ -563,6 +570,7 @@ fn home_upgrade(
               profiles.names(config.domain_configuration)
               |> result.unwrap([])
             },
+            executors: list.map(config.executors, fn(executor) { executor.name }),
           ),
           open,
           seen,

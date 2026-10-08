@@ -4404,6 +4404,96 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
   })
 }
 
+// A creation on an executor (protocol-change/078) asks for a registered place:
+// the workspace is a name that is never judged as a folder (the folder check is
+// not asked at all), the executor reaches the creation, the scope is
+// session-only whatever the sharing said, and a name that is a path is refused
+// before anything is asked.
+pub fn a_registered_workspace_is_created_as_a_name_on_an_executor_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "registered-known", 1108)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let create = fn(_, creation, scope) {
+      process.send(asked, #(creation, scope))
+      manager.get(ready.registry, existing)
+      |> result.replace_error("unavailable")
+    }
+    let attempt = fn(place, name, sharing) {
+      ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        create,
+        no_release,
+        fn(_) { panic as "a registered name is no folder to check" },
+        place,
+        name,
+        sharing,
+        None,
+        within: 2000,
+      )
+    }
+
+    // The name reaches the creation as typed (trimmed), with the executor, as
+    // the session-only session an executor's workspace requires. A blank
+    // session name is the workspace's.
+    let _ = attempt(creations.Registered("box", " app "), "", creations.Private)
+    let assert Ok(#(creation, scope)) = process.receive(asked, 0)
+    assert creation.workspace == "app"
+    assert creation.executor == "box"
+    assert creation.name == "app"
+    assert creation.configuration == ""
+    assert scope == domain.SessionOnly
+
+    // A shareable one is the same scope.
+    let _ =
+      attempt(creations.Registered("box", "app"), "named", creations.Shareable)
+    let assert Ok(#(creation, scope)) = process.receive(asked, 0)
+    assert creation.name == "named"
+    assert scope == domain.SessionOnly
+
+    // A name that could be a path, or is empty, is refused before `create`.
+    assert attempt(
+        creations.Registered("box", "/work/app"),
+        "",
+        creations.Private,
+      )
+      == creations.Declined(creations.InvalidWorkspaceName)
+    assert attempt(creations.Registered("box", "a/b"), "", creations.Private)
+      == creations.Declined(creations.InvalidWorkspaceName)
+    assert attempt(creations.Registered("box", "  "), "", creations.Private)
+      == creations.Declined(creations.InvalidWorkspaceName)
+    assert process.receive(asked, 0) == Error(Nil)
+  })
+}
+
+// The daemon's own `executor_unknown` is the page's fixed words, and the other
+// codes are as they were.
+pub fn an_unconfigured_executor_is_refused_in_fixed_words_test() {
+  fixture(fn(ready, _, credential) {
+    let _existing = create_session(ready, "unknown-executor-known", 1109)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let refused = fn(_, _, _) { Error("executor_unknown") }
+    assert ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        refused,
+        no_release,
+        new_folder.check(_, ready.state_root),
+        creations.Registered("gone", "app"),
+        "",
+        creations.Private,
+        None,
+        within: 2000,
+      )
+      == creations.Declined(creations.UnknownExecutor)
+  })
+}
+
 // The owner's page creates, and a creation the daemon refused before it asked
 // costs no allowance: an invalid name and an unknown workspace come first, and
 // then ten creations are granted and the eleventh in the hour is refused with

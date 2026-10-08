@@ -194,7 +194,7 @@ pub fn listed_entries_take_the_project_of_their_workspace_test() {
   let notes = base <> "/notes"
   let assert Ok(Nil) = simplifile.create_directory_all(notes)
   let in_tree =
-    sessions.Entry("a", "", tree, 0, sessions.Saved, None, None, None)
+    sessions.Entry("a", "", tree, 0, sessions.Saved, None, None, None, None)
   let in_notes = sessions.Entry(..in_tree, id: "b", workspace: notes)
 
   assert ui_socket.with_projects([in_tree, in_notes])

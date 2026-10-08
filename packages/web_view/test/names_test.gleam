@@ -35,6 +35,7 @@ fn listing() -> List(Entry) {
       subtitle: None,
       role: None,
       project: None,
+      executor: None,
     ),
   ]
 }
@@ -65,6 +66,7 @@ fn start(
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self:,
+    executors: [],
   )
 }
 

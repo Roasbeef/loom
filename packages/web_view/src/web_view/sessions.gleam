@@ -108,6 +108,14 @@ pub type Entry {
     /// `title`. The daemon derives it once per workspace and the page never
     /// asks the filesystem.
     project: Option(String),
+    /// The executor the session's workspace is registered on
+    /// (protocol-change/078), or `None` for a session in a directory on the
+    /// daemon's own host. For a remote session `workspace` is the registered
+    /// name and not a path, so the page draws the two together and never
+    /// treats the name as a directory: it has no project and no worktree, and
+    /// it is no workspace a "New session" button can create in. It is the
+    /// catalogue's own text, drawn as a text node.
+    executor: Option(String),
   )
 }
 
@@ -143,7 +151,7 @@ pub fn role_words(role: Role) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved, None, None, None))
+/// assert sessions.label(Entry("0198a2f4-7c3b", "", "/w", 0, Saved, None, None, None, None))
 ///   == "Session 0198a2f4"
 /// ```
 pub fn label(entry: Entry) -> String {
@@ -345,16 +353,41 @@ pub type Group {
 }
 
 /// The key an entry groups under: its project, or its own workspace when it
-/// has none.
+/// has none. A remote session's key is `executor:name`, as the terminal writes
+/// it, because the executor is part of a registered workspace's identity: two
+/// executors may each register `app`, and their sessions are not one project.
+/// The key is also its heading, since a registered name has no directory name
+/// to take.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let entry = Entry("a", "", "/w/tree", 0, Saved, None, None, Some("/w"))
+/// let entry = Entry("a", "", "/w/tree", 0, Saved, None, None, Some("/w"), None)
 /// assert sessions.project_of(entry) == "/w"
+/// let remote = Entry("b", "", "app", 0, Saved, None, None, None, Some("box"))
+/// assert sessions.project_of(remote) == "box:app"
 /// ```
 pub fn project_of(entry: Entry) -> String {
-  option.unwrap(entry.project, entry.workspace)
+  case entry.executor {
+    option.Some(executor) -> executor <> ":" <> entry.workspace
+    option.None -> option.unwrap(entry.project, entry.workspace)
+  }
+}
+
+/// The executor a group's sessions are registered on, or `None` for a group of
+/// directories on the daemon's host. Every entry of a group shares a key, and a
+/// remote key holds its executor, so the first entry answers for the group.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert sessions.executor_of(Group("/w", "/w", [])) == None
+/// ```
+pub fn executor_of(group: Group) -> Option(String) {
+  case group.entries {
+    [first, ..] -> first.executor
+    [] -> option.None
+  }
 }
 
 /// The directory name of the worktree an entry runs in, when that differs from
@@ -364,13 +397,13 @@ pub fn project_of(entry: Entry) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// let entry = Entry("a", "", "/w/.claude/worktrees/x", 0, Saved, None, None, Some("/w"))
+/// let entry = Entry("a", "", "/w/.claude/worktrees/x", 0, Saved, None, None, Some("/w"), None)
 /// assert sessions.worktree(entry) == Some("x")
 /// ```
 pub fn worktree(entry: Entry) -> Option(String) {
-  case project_of(entry) == entry.workspace {
-    True -> option.None
-    False -> option.Some(base_name(entry.workspace))
+  case entry.executor, project_of(entry) == entry.workspace {
+    option.Some(_), _ | option.None, True -> option.None
+    option.None, False -> option.Some(base_name(entry.workspace))
   }
 }
 

@@ -547,10 +547,33 @@ pub fn a_listed_entry_names_the_session_and_nothing_private_test() {
       subtitle: option.None,
       role: option.None,
       project: None,
+      executor: None,
     )
   assert !string.contains(string.inspect(entry), "secret.sqlite")
   assert !string.contains(string.inspect(entry), "request-key")
   assert !string.contains(string.inspect(entry), "config-ref")
+}
+
+// A session on an executor (protocol-change/078) carries the executor beside
+// its registered name, and a local session carries none. Its name is not a
+// directory, so no project is looked up for it: a repository that happens to
+// have the same name relative to the daemon's working directory is not its
+// project.
+pub fn a_listed_entry_names_the_executor_of_a_remote_session_test() {
+  let remote =
+    manager.View(
+      registration: catalogue.Registration(
+        ..view(manager.Saved).registration,
+        workspace: "app",
+        executor: "build-box",
+      ),
+      status: manager.Saved,
+    )
+  let entry = ui_socket.listed_entry(remote)
+  assert entry.executor == Some("build-box")
+  assert entry.workspace == "app"
+  assert ui_socket.listed_entry(view(manager.Saved)).executor == None
+  assert ui_socket.with_projects([entry]) == [entry]
 }
 
 // A session the daemon runs, opens or closes is live; one it holds no process
@@ -590,6 +613,7 @@ pub fn only_an_operators_page_is_listed_sessions_test() {
       subtitle: option.None,
       role: option.None,
       project: None,
+      executor: None,
     )
   let asked = process.new_subject()
   let read = fn() {
@@ -620,6 +644,7 @@ pub fn the_sidebar_read_runs_off_the_runtime_test() {
       subtitle: option.None,
       role: option.None,
       project: option.None,
+      executor: None,
     )
   let read = fn() {
     process.sleep(300)

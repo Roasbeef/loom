@@ -810,6 +810,16 @@ pub fn upgrade_home(
     None -> []
   }
 
+  // The executors a registered workspace may be created on (protocol-change/078)
+  // are told to the same page for the same reason, and are the daemon's startup
+  // capture, so there is no read to make. A creation checks the executor again
+  // when it runs (`server.create_session`), so a name a page was never told of
+  // is refused as `UnknownExecutor` whatever it sends.
+  let executors = case creating {
+    Some(_) -> attachment.executors
+    None -> []
+  }
+
   // The owner's recent folders (protocol-change/074) go with the creation, since
   // they exist to start one from. A read or a forget runs in a task of its own
   // and the daemon's home directory is read there too, so the runtime never
@@ -915,6 +925,7 @@ pub fn upgrade_home(
       managing,
       creating,
       profiles,
+      executors,
       folders,
       signing,
       administering,
@@ -1218,6 +1229,7 @@ fn admit_home(
     ) -> Nil,
   ),
   profiles: List(String),
+  executors: List(String),
   folders: Option(home.Folders),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
@@ -1259,6 +1271,7 @@ fn admit_home(
       manage: managing,
       create: creating,
       profiles:,
+      executors:,
       folders:,
       signins: fn(deliver) { read_task(deliver, signing.read) },
       login: signing.login,
@@ -2593,8 +2606,8 @@ pub fn create_for(
       |> result.replace_error(creations.TooMany),
     )
     let key = "web-" <> hex_entropy(16)
-    manager.Creation(key, workspace, name, "", profile, "")
-    |> create(principal, _, scope_of(sharing))
+    manager.Creation(key, workspace, name, "", profile, executor_of(place))
+    |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
     |> result.map_error(creation_refusal)
   }
@@ -2724,6 +2737,14 @@ fn placed(
 ) -> Result(String, creations.Reason) {
   case place {
     creations.Typed(path:) -> folder(path)
+
+    // A registered name is no folder on this host and is never statted or
+    // canonicalized here: only its shape is judged, so a name that could be
+    // taken for a path is refused. The executor is judged by the creation, which
+    // knows the daemon's configuration.
+    creations.Registered(workspace:, ..) ->
+      creations.registered_name(workspace)
+      |> result.replace_error(creations.InvalidWorkspaceName)
     creations.Drawn(workspace:) ->
       case known_workspace(standing, workspace) {
         Ok(Nil) -> Ok(workspace)
@@ -2782,10 +2803,26 @@ fn known_workspace(
   }
 }
 
-fn scope_of(sharing: creations.Sharing) -> domain.Scope {
-  case sharing {
-    creations.Shareable -> domain.SessionOnly
-    creations.Private -> domain.WorkspacePrivate
+// The domain scope a creation asks for. A session on an executor is always
+// session-only, whatever the form said: its workspace aggregate would be keyed
+// by a path on this host, which a registered name is not (protocol-change/078).
+fn scope_of(
+  place: creations.Place,
+  sharing: creations.Sharing,
+) -> domain.Scope {
+  case place, sharing {
+    creations.Registered(..), _ | _, creations.Shareable -> domain.SessionOnly
+    creations.Drawn(_), creations.Private
+    | creations.Typed(_), creations.Private
+    -> domain.WorkspacePrivate
+  }
+}
+
+// The executor a creation names, or the empty string for a place on this host.
+fn executor_of(place: creations.Place) -> String {
+  case place {
+    creations.Registered(executor:, ..) -> executor
+    creations.Drawn(_) | creations.Typed(_) -> ""
   }
 }
 
@@ -2799,6 +2836,7 @@ fn creation_refusal(code: String) -> creations.Reason {
     "invalid_workspace" -> creations.NotAFolder
     "capacity" -> creations.Full
     "unknown_profile" -> creations.UnknownProfile
+    "executor_unknown" -> creations.UnknownExecutor
     _ -> creations.Unavailable
   }
 }
@@ -5432,6 +5470,10 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
     subtitle: record.subtitle,
     role: None,
     project: None,
+    executor: case record.executor {
+      "" -> None
+      executor -> Some(executor)
+    },
   )
 }
 
@@ -5452,7 +5494,13 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
 @internal
 pub fn with_projects(entries: List(sessions.Entry)) -> List(sessions.Entry) {
   list.map(entries, fn(entry) {
-    sessions.Entry(..entry, project: ui_project.locate(entry.workspace))
+    case entry.executor {
+      // A registered workspace is a name, not a directory on this host, so
+      // there is nothing here to stat and it is its own project.
+      Some(_) -> entry
+      None ->
+        sessions.Entry(..entry, project: ui_project.locate(entry.workspace))
+    }
   })
 }
 

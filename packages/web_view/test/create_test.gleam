@@ -21,6 +21,9 @@ fn drawn_with(profiles: List(String)) -> String {
     submit_elsewhere: fn(_, _, _, _) { Nil },
     state: create.Composing("/src/loom"),
     profiles:,
+    remote: Nil,
+    submit_remote: fn(_, _, _) { Nil },
+    executors: [],
   )
   |> create.form("/src/loom")
   |> element.to_string
@@ -35,6 +38,9 @@ fn drawn_elsewhere(profiles: List(String)) -> String {
     submit_elsewhere: fn(_, _, _, _) { Nil },
     state: create.Elsewhere,
     profiles:,
+    remote: Nil,
+    submit_remote: fn(_, _, _) { Nil },
+    executors: [],
   )
   |> create.elsewhere_form
   |> element.to_string
