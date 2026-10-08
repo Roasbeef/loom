@@ -36,7 +36,7 @@
 ////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
 ////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
 ////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
-////   65722a205812d78ae90cfb0f93e804bb2d3da1be02500c88f4607d824964c320  packages/cap/src/cap/proc.gleam
+////   f85773eec68e467d8d8aa0cd389d68a759a2ffae04e4fa13a7f68b573611c73a  packages/cap/src/cap/proc.gleam
 ////   102f12585b03c0a8f50790e891d3420d3b04decb444aaf5bef82ccf802de7e1e  packages/cap/src/cap/report.gleam
 ////   909bbbc014278c57bb888b3e4c834ba52e405855bd52156a2ff35345283a1274  packages/cap/src/cap/runtime.gleam
 ////   3156b1ffaca196b1fec58975df71e52158b8ee298b2f1b36a4cbe9df72de3f64  packages/cap/src/cap/schedule.gleam
@@ -46,7 +46,7 @@
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   13e21c346eea7292f312ec82b6fb42a6b86158b9211ec18f4d574186313f7f0d  scripts/gen-prelude.py
 ////
-//// Body digest (every line after the marker): fa88db34d1027cf1f1ecd6d3bd24b06bd715dbf1bc93b3c862a7f5b78a151c9e
+//// Body digest (every line after the marker): 4b6f441a696548a9b3838031148ce9f482e509f48841e4ec1070c2fedc37b51f
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -1994,6 +1994,53 @@ pub fn in_dir(Command, String) -> Command
 ///
 /// Capability: `proc.run`.
 pub fn run(Command) -> Result(Output, ProcError)
+/// Runs the command and returns its stdout, or one error string.
+///
+/// Only exit code 0 counts as success. The error text names the command
+/// and says why it failed, so a program that runs several independent
+/// probes can keep each probe's result or error without losing the
+/// reason.
+///
+/// When the output exceeded the policy's byte cap, the text is cut
+/// without a marker; use `run` and read `stdout_truncated` when that
+/// matters.
+///
+/// Capability: `proc.run`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  let probes = [
+///    proc.command([\"git\", \"log\", \"-1\", \"--format=%h %s\"]) |> proc.stdout,
+///    proc.command([\"gh\", \"pr\", \"list\", \"--json\", \"number\"]) |> proc.stdout,
+///  ]
+///  // Each element is Ok(text) or an Error naming the failed command.
+///  ```
+///
+///
+pub fn stdout(Command) -> Result(String, String)
+/// Runs the command and returns its stdout when the exit code is one of
+/// `exit_codes`, or one error string otherwise.
+///
+/// A timed-out run is always an error, whatever its exit code.
+///
+/// When the output exceeded the policy's byte cap, the text is cut
+/// without a marker; use `run` and read `stdout_truncated` when that
+/// matters.
+///
+/// Capability: `proc.run`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  // grep exits 1 when nothing matches, which is an answer, not a failure.
+///  let hits =
+///    proc.command([\"grep\", \"-rn\", \"TODO\", \"src\"])
+///    |> proc.stdout_accepting([0, 1])
+///  ```
+///
+///
+pub fn stdout_accepting(Command, List(Int)) -> Result(String, String)
 /// Adds one environment variable. The executor still drops anything the
 /// policy's `env_allow` does not permit.
 pub fn with_env(Command, String, String) -> Command
