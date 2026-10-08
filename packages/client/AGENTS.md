@@ -6125,6 +6125,40 @@ the fixture:
   re-sends the same `Run`, the file shows one run, and the executor lists the
   orchestrator again afterwards.
 
+`test/client/daemon_shipped_remote_codemode_test.gleam` runs the two heavier
+effects on the same two-daemon fixture, with no probe node. Both tests need the
+build seed (`make codemode-seed`), which the fixture hands the executor with
+`remote_daemons.start_with(layout, ["--codemode-seed", seed])`; the executor
+reads that flag as a local daemon does (`executor_plane.machine`). The fixture
+directory is a short one under `/var/tmp` because code mode's capability socket
+is bound below the executor's state root and an AF_UNIX path is about a hundred
+bytes. A missing seed, `gleam` or `rg` prints a `SKIP shipped remote code mode`
+line and passes. The provider is started with `provider.with_server_for` for a
+longer callback budget and, in the code-mode test, `provider.AlsoFailed`, which
+lets the model receive an error result.
+
+- `daemon_shipped_remote_codemode_test_`: one `code_mode` program is vetted,
+  compiled and launched on the executor, writes a file through `cap/fs` into the
+  executor's checkout and reports a computed value with the text of `README.md`;
+  a second program that does not type check comes back as an error result with
+  the compiler's diagnostic. The program's file and the `.codemode` and `.blobs`
+  directories are absent from the orchestrator, and a stop leaves the scope
+  `closed`/`all_retired`.
+- `daemon_shipped_remote_lsp_test_`: the executor's `loom.toml` carries
+  `[lsp.gleam]` and the orchestrator's does not. A `cap/lsp` program reads the
+  hover, definition and references of `greet`; a rename preview names three files
+  and leaves the disk alone; the apply rewrites all three in the executor's
+  checkout with settled, empty diagnostics; an `fs_write` of a module that does
+  not type check returns a settled diagnostics block with one error, and
+  `lsp.diagnostics` reads it back. The executor is started with `--helper` naming
+  the real `bin/loom-exec`, not the isolated launcher's symbolic link to it: the
+  helper re-executes itself inside the sandbox profile, a language server's
+  profile reads only the system directories and the project, and the link lives
+  in the fixture's home, so the profile cannot follow it (the exec fails with
+  `sandbox-exec: execvp() ... Operation not permitted` and the probe exits 71).
+  `bash` and code mode run under a profile that reads the whole host and never
+  notice.
+
 ## Naming a registered workspace (protocol 078)
 
 `sessions.create` takes an optional `executor`. `client/executors` decodes the
