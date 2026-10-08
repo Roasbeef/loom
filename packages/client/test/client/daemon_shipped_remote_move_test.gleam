@@ -447,6 +447,18 @@ fn continued(
   assert after.state == exec_ledger.Closed(exec_ledger.AllRetired)
 }
 
+// Waits, in 50 ms steps, until the session's file has been renamed aside.
+fn wait_for_set_aside(sessions: String, polls: Int) -> Result(Nil, Nil) {
+  case simplifile.is_file(sessions <> ".moved"), polls {
+    Ok(True), _ -> Ok(Nil)
+    _, 0 -> Error(Nil)
+    _, _ -> {
+      process.sleep(50)
+      wait_for_set_aside(sessions, polls - 1)
+    }
+  }
+}
+
 fn executor_scope(prepared: Trio, session: String) -> exec_ledger.Scope {
   remote_daemons.executor_scope(
     prepared.executor,
@@ -462,7 +474,12 @@ fn gave_up(source: Running, control: Control, session: String) -> Nil {
   let moved = remote_daemons.await_moved(control, 500, session, move_polls)
   assert moved == json.Object([#("to", json.String(target_name))])
 
+  // The retirement records the row and then renames the file, so a source that
+  // resumed the move can show `moved` a moment before the rename lands. Admission
+  // is already closed by the row; the file is waited for, not assumed.
   let sessions = source.layout.paths.root <> "/sessions/" <> session <> ".db"
+  let assert Ok(Nil) = wait_for_set_aside(sessions, 200)
+    as { sessions <> " is set aside once the move is recorded" }
   assert simplifile.is_file(sessions) == Ok(False)
   assert simplifile.is_file(sessions <> ".moved") == Ok(True)
 
