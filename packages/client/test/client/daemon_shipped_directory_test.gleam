@@ -49,19 +49,13 @@
 //// other shipped remote fixtures use, because a daemon binds unix sockets below
 //// its state root.
 
-import broker/token
-import client/tui_e2e_test.{type EunitTest, Timeout}
+import client/tui_e2e_test.{type EunitTest}
 import core/json.{type JsonValue}
-import gleam/bit_array
-import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
-import gleam/string
+import gleam/option.{Some}
 import host/bootstrap as native
-import simplifile
-import support/enforcement
-import support/remote_daemons.{Trust}
-import weft
+import support/remote_daemons
+import support/remote_duo
 
 const skip_label = "shipped remote directory"
 
@@ -72,160 +66,9 @@ const alphas_address = "wss://alpha.example.test:8443/v2/control"
 // A canonical identity no catalogue holds.
 const nobody_has = "0198c0de-0000-7000-8000-0000000000ff"
 
-// The longest the body may run, and the EUnit timeout, which the runner scales
-// by ten.
-const body_ms = 420_000
-
-const eunit_seconds = 60
-
 // A lookup that cannot reach its peer must end well inside this, which is
 // the directory's own two-second deadline with room for the connection attempt.
 const unreachable_ms = 6000
-
-type Duo {
-  Duo(
-    directory: String,
-    alpha: remote_daemons.Layout,
-    bravo: remote_daemons.Layout,
-  )
-}
-
-type Credentials {
-  Credentials(
-    authority: remote_daemons.Authority,
-    alpha: remote_daemons.Identity,
-    bravo: remote_daemons.Identity,
-  )
-}
-
-// Gates the test on the host and runs `body` against a fresh duo, retiring both
-// daemons by their recorded identity afterward whether it passed or not.
-fn shipped(body: fn(Duo) -> Nil) -> EunitTest {
-  Timeout(eunit_seconds, fn() {
-    case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
-      Error(Nil) ->
-        io.println_error(
-          "SKIP " <> skip_label <> ": LOOM_BOOTSTRAP_E2E_SERVER is unset",
-        )
-      Ok(server) ->
-        case enforcement.probe(server, skip_label) {
-          enforcement.EnforcementAbsent -> Nil
-          enforcement.EnforcementLive -> fixture(body)
-        }
-    }
-  })
-}
-
-fn fixture(body: fn(Duo) -> Nil) -> Nil {
-  let directory =
-    "/var/tmp/loom-rt-"
-    <> string.lowercase(bit_array.base16_encode(token.production_entropy()(4)))
-  let assert Ok(Nil) = native.ensure_private_directory(directory)
-    as "the fixture's state stays private"
-  let assert Ok(directory) = native.canonical_directory(directory)
-    as "the daemons receive absolute paths"
-  let duo =
-    Duo(
-      directory:,
-      alpha: remote_daemons.layout(directory, "alpha"),
-      bravo: remote_daemons.layout(directory, "bravo"),
-    )
-  io.println_error(skip_label <> " fixture: " <> directory)
-  let outcomes =
-    weft.new([
-      fn() {
-        body(duo)
-        Ok(Nil)
-      },
-    ])
-    |> weft.deadline(body_ms)
-    |> weft.start
-
-  // Native cleanup runs outside the body's deadline and before the outcome is
-  // read, so a body that failed mid-drive still retires every daemon. A daemon
-  // the body already killed has no process to retire, which `retire` accepts.
-  list.each([duo.alpha, duo.bravo], fn(layout) {
-    remote_daemons.retire(layout.paths)
-  })
-  let assert [weft.Completed(0, Nil)] = outcomes
-    as "the shipped directory body completes before native teardown"
-  let _removed = simplifile.delete_all([directory])
-  Nil
-}
-
-// Mints the authority, one leaf per node and the cookie both share.
-fn provision(duo: Duo) -> Credentials {
-  let secrets = duo.directory <> "/credentials"
-  let assert Ok(Nil) = native.ensure_private_directory(secrets)
-    as "the credentials directory is private"
-  let authority = remote_daemons.mint_authority(secrets)
-  let suffix = remote_daemons.random_hex(4)
-  let name = fn(role) { "loom_e2e_" <> role <> "_" <> suffix <> "@127.0.0.1" }
-  let keys =
-    Credentials(
-      authority:,
-      alpha: remote_daemons.issue(
-        authority,
-        secrets,
-        "alpha",
-        name("alpha"),
-        duo.alpha.home,
-      ),
-      bravo: remote_daemons.issue(
-        authority,
-        secrets,
-        "bravo",
-        name("bravo"),
-        duo.bravo.home,
-      ),
-    )
-  let cookie = "loom-e2e-cookie-" <> remote_daemons.random_hex(16)
-  list.each([keys.alpha, keys.bravo], fn(identity) {
-    remote_daemons.write_cookie(identity, cookie)
-  })
-  keys
-}
-
-// Writes both configuration files. Each daemon lists the other, `alpha`'s row
-// for `bravo` with no address and `bravo`'s row for `alpha` with one, so both
-// shapes of the refusal are exercised.
-fn configure(duo: Duo, keys: Credentials) -> Nil {
-  let write = fn(layout: remote_daemons.Layout, text) {
-    let assert Ok(Nil) = simplifile.write(layout.config, text)
-      as "the daemon configuration is written"
-    remote_daemons.write_options(layout)
-  }
-  write(
-    duo.alpha,
-    string.join(
-      [
-        remote_daemons.model_table("http://127.0.0.1:9"),
-        remote_daemons.distribution_table(keys.alpha, keys.authority, [
-          Trust(keys.bravo.node, keys.bravo.pin),
-        ]),
-        remote_daemons.orchestrator_table("bravo", keys.bravo.node, None),
-      ],
-      "\n",
-    ),
-  )
-  write(
-    duo.bravo,
-    string.join(
-      [
-        remote_daemons.model_table("http://127.0.0.1:9"),
-        remote_daemons.distribution_table(keys.bravo, keys.authority, [
-          Trust(keys.alpha.node, keys.alpha.pin),
-        ]),
-        remote_daemons.orchestrator_table(
-          "alpha",
-          keys.alpha.node,
-          Some(alphas_address),
-        ),
-      ],
-      "\n",
-    ),
-  )
-}
 
 fn body_of(reply: JsonValue) -> JsonValue {
   remote_daemons.field(reply, "body")
@@ -278,9 +121,9 @@ fn timed(attempt: fn() -> a) -> a {
 }
 
 pub fn a_session_is_found_on_the_orchestrator_that_owns_it_test_() -> EunitTest {
-  shipped(fn(duo) {
-    let keys = provision(duo)
-    configure(duo, keys)
+  remote_duo.shipped(skip_label, fn(duo) {
+    let keys = remote_duo.provision(duo)
+    remote_duo.configure(duo, keys, Some(alphas_address))
     let alpha = remote_daemons.start(duo.alpha)
     let bravo = remote_daemons.start(duo.bravo)
     let on_alpha = remote_daemons.open_control(alpha)
