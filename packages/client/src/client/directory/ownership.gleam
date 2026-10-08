@@ -50,6 +50,10 @@ pub type Ownership {
     migrated: fn(String) -> Result(Bool, Unavailable),
     /// Records that this node has seeded the store from its catalogue.
     mark_migrated: fn() -> Result(Nil, WriteRefusal),
+    /// Creates the record of a session this node was moving to `to` under
+    /// `op` when the store was seeded: given the session, the op and the
+    /// receiver's node.
+    seed_moving: fn(String, String, String) -> Result(Nil, WriteRefusal),
   )
 }
 
@@ -98,5 +102,12 @@ pub fn over_store(node: String) -> Ownership {
     release: fn(session) { store.delete_if(session, serving) },
     migrated: store.migrated,
     mark_migrated: fn() { store.mark_migrated(node) },
+    seed_moving: fn(session, op, to) {
+      let moving = Record(owner: node, state: Moving(op:, to:))
+      case store.create(session, moving) {
+        Error(Mismatch(Some(found))) if found == moving -> Ok(Nil)
+        outcome -> outcome
+      }
+    },
   )
 }

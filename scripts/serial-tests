@@ -98,3 +98,4 @@ broker|broker@leak_census_test|differences erlang:system_info(process_count) acr
 client|client@directory@store_test|the Khepri store and its Ra system are registered once per emulator under fixed names
 client|client@directory@daemon_record_test|the Khepri store and its Ra system are registered once per emulator under fixed names
 client|client@directory@ownership_test|the Khepri store and its Ra system are registered once per emulator under fixed names
+client|client@directory@migrate_test|the Khepri store and its Ra system are registered once per emulator under fixed names

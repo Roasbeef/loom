@@ -38,6 +38,7 @@ import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/directory/deletion
 import client/directory/member
+import client/directory/migrate
 import client/directory/ownership
 import client/directory/settings as directory_settings
 import client/directory/store
@@ -798,7 +799,16 @@ pub fn start_movers(
       use ready <- result.try(root.ready(daemon, within: 20_000))
       let directory = session_directory_of(config, ready.registry)
       let #(authority, deletions) = case directory.ownership {
+        // The movers' periodic pass seeds the store from the catalogue until
+        // it has once, then finishes the deletions left marked.
         Some(ownership) -> #(session_mover.Recorded(ownership:), fn() {
+          let _seeded =
+            migrate.seed(
+              ready.registry,
+              ownership,
+              config.orchestrators,
+              logger,
+            )
           deletion.finish_pending(
             ready.registry,
             ready.sessions_directory,

@@ -693,6 +693,12 @@ type Message(instance) {
   /// The sessions marked for deletion, for a pass that finishes them.
   DeletingSessions(Subject(Result(List(String), Error)))
 
+  /// Every remote registration, active or archived, with its custody row, for
+  /// seeding the directory store from this catalogue (protocol-change/079).
+  RemoteRegistrations(
+    Subject(Result(List(#(catalogue.Registration, catalogue.Custody)), Error)),
+  )
+
   WorkspaceDefault(String, Subject(Result(View, Error)))
   SetDefault(String, String, Subject(Result(View, Error)))
   Open(String, Subject(Result(Status, Error)))
@@ -1853,6 +1859,21 @@ pub fn finish_delete(
   |> result.unwrap(Error(AdminUnavailable))
 }
 
+/// Every remote registration, active or archived, with its custody row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.remote_registrations(registry)
+/// ```
+@internal
+pub fn remote_registrations(
+  manager: Manager(instance),
+) -> Result(List(#(catalogue.Registration, catalogue.Custody)), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: RemoteRegistrations)
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// The sessions marked for deletion, in identity order.
 ///
 /// ## Examples
@@ -2623,6 +2644,10 @@ fn handle(
     }
     FinishDelete(id, sessions, reply) -> {
       process.send(reply, finish_delete_now(phase, book, id, sessions))
+      sm.keep(book)
+    }
+    RemoteRegistrations(reply) -> {
+      process.send(reply, remote_registrations_in(book.catalogue))
       sm.keep(book)
     }
     DeletingSessions(reply) -> {
@@ -3417,6 +3442,39 @@ fn begin_delete_now(
     |> result.map_error(AdminMetadata),
   )
   Ok(record)
+}
+
+// Every registration placed on an executor or a pool, in both visibilities,
+// paired with its custody row. Local sessions have no directory record.
+fn remote_registrations_in(
+  store: catalogue.Catalogue,
+) -> Result(List(#(catalogue.Registration, catalogue.Custody)), Error) {
+  use active <- result.try(all_pages(store, catalogue.page, "", []))
+  use archived <- result.try(all_pages(store, catalogue.archived_page, "", []))
+  list.append(active, archived)
+  |> list.filter(fn(record) { record.executor != "" || record.pool != "" })
+  |> list.try_map(fn(record) {
+    catalogue.custody(store, record.id)
+    |> result.map(fn(custody) { #(record, custody) })
+  })
+  |> result.map_error(Catalogue)
+}
+
+fn all_pages(
+  store: catalogue.Catalogue,
+  page: fn(catalogue.Catalogue, String) ->
+    Result(catalogue.Page, catalogue.Error),
+  after: String,
+  seen: List(catalogue.Registration),
+) -> Result(List(catalogue.Registration), Error) {
+  case page(store, after) {
+    Error(error) -> Error(Catalogue(error))
+    Ok(catalogue.Page(records: [], ..)) -> Ok(list.reverse(seen))
+    Ok(catalogue.Page(records:, ..)) -> {
+      let last = list.fold(records, after, fn(_, record) { record.id })
+      all_pages(store, page, last, list.append(list.reverse(records), seen))
+    }
+  }
 }
 
 // The second half: the record is gone, so the registration, its mark and its

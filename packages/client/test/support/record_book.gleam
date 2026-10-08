@@ -151,5 +151,12 @@ pub fn ownership(book: Book, name: String, peer: String) -> Ownership {
     release: fn(session) { swap(session, Some(serving), None) },
     migrated: fn(_node) { Ok(True) },
     mark_migrated: fn() { Ok(Nil) },
+    seed_moving: fn(session, op, _to) {
+      swap(
+        session,
+        None,
+        Some(Record(owner: name, state: Moving(op:, to: peer))),
+      )
+    },
   )
 }
