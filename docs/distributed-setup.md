@@ -1198,6 +1198,110 @@ back to the source is a new move, and the source takes it in over the tombstone.
 If you remove `[distribution]` from a daemon while a move is in flight, the move
 cannot resume, and the daemon logs `daemon.moves_cannot_resume` at startup.
 
+### The session directory: ownership in a Khepri cluster
+
+With two orchestrators, each one's catalogue decides which sessions it owns, and
+a daemon asked about a session it does not hold asks the others. A deployment
+can instead keep one authoritative record of each remote session's owner in a
+Khepri cluster whose members are the orchestrators and the executors
+([the session directory](architecture/directory.md),
+[protocol-change/079](../protocol-change/079-khepri-session-ownership.md)). Choose
+it when you run two orchestrators and want a move that can be abandoned when the
+receiver goes silent, lookups that never wait on a peer that is down, and the
+record that failover will need. Everything above still applies; this adds to
+it.
+
+**What you need** (**Pending** as a hand-run procedure; the shipped tests
+described below run it with three daemons). Three, five or seven members,
+because the cluster commits a write only while a majority of members is up. Two
+orchestrators and one executor is the smallest useful set: any one of them can
+be down. Every orchestrator listed under `[orchestrators.<name>]` must be a
+member, and every member must pin every other member, executors included,
+because any member can become the cluster's leader.
+
+With `loom distribution provision`, list the members at the top of the plan by
+their plan names. Provisioning then peers every member with every other and
+writes the `[directory]` table into each member's bundle:
+
+```toml
+directory = ["alpha", "bravo", "box"]
+```
+
+By hand, every member's `loom.toml` names the same members by node:
+
+```toml
+[directory]
+members = ["alpha@10.0.0.1", "bravo@10.0.0.4", "exec@10.0.0.2"]
+```
+
+**1. Create the cluster once.** On one member, with its daemon stopped, run the
+bootstrap through the same launcher and options file the daemon uses:
+
+```sh
+LOOM_DISTRIBUTION_OPTFILE=/etc/loom/dist.options \
+  loomd directory bootstrap --state-dir /var/lib/loom --config /etc/loom/loom.toml
+```
+
+It prints `created the directory cluster on <node> in <state-dir>/directory`
+and names any member it could not reach. It refuses when this member already
+has a store, and when a member it reaches already runs one, because either
+would start a second cluster. Run it once per deployment, never again: a member
+that lost its disk rejoins by itself.
+
+**2. Start the daemons.** Start the bootstrapped member first, then the others.
+Each joins the cluster by itself as a non-voter, catches up, and becomes a voter.
+The control command `directory.status` reports the configured members, the
+members in force with their votes, the leader, and whether this member has
+joined ([client protocol](client-protocol.md)). There is no terminal command for
+it yet.
+
+**What changes.**
+
+- A remote session is created only if its record can be written. Without a
+  majority, `sessions.create` for an executor or a pool is refused `no_quorum`;
+  the reservation stays and the same request key completes it later. Local
+  sessions are created as before.
+- Opening a session, running it, its tool calls and archive and restore never
+  touch the cluster, so they work without a majority.
+- A daemon asked about a session it does not hold answers from its own copy of
+  the records: `not_owner` with the owner, at once, even when the owner is down.
+  `owner_unreachable` is no longer sent. A local session has no record, so the
+  other orchestrator answers `not_found` for it, and peer mail to a local session
+  on another orchestrator is not delivered; use remote sessions for sessions that
+  mail each other across orchestrators.
+- A move is decided by the record. If the receiver stays silent for thirty
+  minutes while the cluster has a majority, the source abandons the move and
+  serves the session again. The owner can abandon a move at once with
+  `sessions.move` and `abandon: true`. A move that cannot write the record for
+  want of a majority logs `daemon.move_stalled` with the cluster's reason, waits
+  for the majority, and does not count toward the thirty minutes.
+- Deleting a remote session needs a majority, and is refused `no_quorum`
+  without one; the session stays closed and the delete is finished once the
+  majority returns.
+
+**A member that loses its disk.** Stop it, give it a fresh state directory (or
+keep the catalogue and delete only `<state-dir>/directory`), and start it. It
+removes its old identity from the cluster, joins as a non-voter and becomes a
+voter once it has caught up. Do not run the bootstrap. Losing the disks of a
+majority of members at once is not a rejoin; it is a restore from backup.
+
+**Adding the directory to a running deployment.** Let every move finish first.
+Then add `[directory]` and the pins between members to every member, bootstrap
+one member with its daemon stopped, and restart them all. Each orchestrator
+copies its catalogue's remote sessions into the cluster the first time it has a
+majority, and logs `directory.migrated` with the count, or
+`directory.migration_conflict` for a session whose record already names another
+orchestrator.
+
+**What to expect** (**Verified**, the shipped tests on macOS on the branch
+`directory/khepri`, three real daemons as members):
+`daemon_shipped_remote_move_test` (the member variants: one clean move, and the
+source halted after each of the six steps), `daemon_shipped_directory_test` and
+`daemon_shipped_peer_mail_test` (the member variants), and
+`daemon_shipped_directory_quorum_test` (two of three members killed and
+returned; a member's directory deleted and rejoined). The commands above were
+not run by hand.
+
 ## 8. Verify it is working
 
 | Check | How | Status |
@@ -1366,7 +1470,8 @@ not yet do the following.
 - **No background code mode and no MCP facades in code mode on remote sessions.**
   Foreground `code_mode` works, without those two features.
 - **No automatic connection.** Nodes connect only to the peers you list, only when
-  asked.
+  asked. Members of a session directory are the exception: each keeps a
+  connection to every other member, and those connections are visible.
 - **Provisioning is one-shot.** `provision` discards the authority's key, so adding
   a node or renewing a certificate means provisioning again and installing every
   bundle with `--force`.

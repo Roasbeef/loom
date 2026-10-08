@@ -768,6 +768,17 @@ orchestrator, and each executor peers with the orchestrators that use it, always
 both directions. An executor that no orchestrator uses, and an orchestrator with no
 peer, are errors. Unknown keys are refused.
 
+A plan may also name, in a top-level `directory` list of node `name`s, the members
+of a session directory (`[directory]` above): three to seven distinct nodes,
+including every orchestrator, because a member refuses an
+`[orchestrators.<name>]` peer that is not a member. Provisioning then peers every
+member with every other member, executors included, and writes the `[directory]`
+table into each member's bundle. `directory` comes before the first `[[node]]`:
+
+```toml
+directory = ["laptop", "desk", "devbox"]
+```
+
 ## Releasing an executor's stuck scope
 
 An executor keeps one scope for each session whose checkout it holds. When a
