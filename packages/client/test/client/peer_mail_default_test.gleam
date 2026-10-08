@@ -349,10 +349,12 @@ fn pair(
   let first_endpoint =
     peer_mail.Endpoint(name(first), fn(command) {
       peer_mail.handle_with(first_runtime, clock.fixed(0), defaults, command)
+      |> peer_mail.refused
     })
   let second_endpoint =
     peer_mail.Endpoint(name(second), fn(command) {
       peer_mail.handle_with(second_runtime, clock.fixed(0), defaults, command)
+      |> peer_mail.refused
     })
   let directory =
     peers.Directory(
@@ -360,7 +362,7 @@ fn pair(
         case id == name(first), id == name(second) {
           True, _ -> Ok(first_endpoint)
           _, True -> Ok(second_endpoint)
-          _, _ -> Error("unknown")
+          _, _ -> Error(peer_mail.Refused("unknown"))
         }
       },
       describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
@@ -419,6 +421,7 @@ pub fn a_closed_default_peer_is_listed_as_not_running_and_refuses_a_send_test() 
   let endpoint =
     peer_mail.Endpoint(name(first), fn(command) {
       peer_mail.handle_with(runtime, clock.fixed(0), defaults, command)
+      |> peer_mail.refused
     })
 
   // Only the first session is resident; the directory cannot resolve the other.
@@ -427,7 +430,7 @@ pub fn a_closed_default_peer_is_listed_as_not_running_and_refuses_a_send_test() 
       resolve: fn(id) {
         case id == name(first) {
           True -> Ok(endpoint)
-          False -> Error("session is saved, not open")
+          False -> Error(peer_mail.Refused("session is saved, not open"))
         }
       },
       describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },

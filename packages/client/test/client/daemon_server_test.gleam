@@ -1087,7 +1087,7 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
           // the rows `peers.send` records around the delivery it observes.
           peer_mail.OutboxClaim(..) | peer_mail.OutboxSettle(..) ->
             Ok(json.Null)
-          _ -> Error("unexpected peer command")
+          _ -> Error(peer_mail.Refused("unexpected peer command"))
         }
       }),
     )
@@ -1232,7 +1232,8 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           peer_mail.Activity(_) -> Ok(json.Object([]))
           peer_mail.Deliver(_, _, id, _) ->
             Ok(json.Object([#("message_id", json.String(id))]))
-          peer_mail.Revoke(_) -> Error("recipient unavailable")
+          peer_mail.Revoke(_) ->
+            Error(peer_mail.Refused("recipient unavailable"))
           peer_mail.Allow(_)
           | peer_mail.Link(_, _, _)
           | peer_mail.Unlink(_, _, _)
@@ -1441,7 +1442,7 @@ pub fn peer_cli_collects_bounded_inspection_pages_test() {
           peer_mail.Activity(_) -> Ok(json.Object([]))
           peer_mail.Links(_) -> Ok(json.Array([]))
           peer_mail.Grants(_) -> Ok(json.Array(grants))
-          _ -> Error("unexpected peer command")
+          _ -> Error(peer_mail.Refused("unexpected peer command"))
         }
       }),
     )
@@ -1499,19 +1500,21 @@ pub fn session_activity_reports_residents_and_omits_saved_sessions_test() {
         Some(
           peer_mail.Endpoint(instance, fn(command) {
             peer_mail.handle(runtime, clock.fixed(0), command)
+            |> peer_mail.refused
           }),
         )
       False, True ->
         Some(
           peer_mail.Endpoint(instance, fn(command) {
             peer_mail.handle(other_runtime, clock.fixed(0), command)
+            |> peer_mail.refused
           }),
         )
       False, False ->
         Some(
           peer_mail.Endpoint(instance, fn(_) {
             process.sleep_forever()
-            Error("never answers")
+            Error(peer_mail.Refused("never answers"))
           }),
         )
     }
@@ -1792,13 +1795,14 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
         Some(
           peer_mail.Endpoint(instance, fn(command) {
             peer_mail.handle(runtime, clock.fixed(0), command)
+            |> peer_mail.refused
           }),
         )
       False ->
         Some(
           peer_mail.Endpoint(instance, fn(_) {
             process.sleep_forever()
-            Error("never answers")
+            Error(peer_mail.Refused("never answers"))
           }),
         )
     }

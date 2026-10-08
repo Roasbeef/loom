@@ -2590,7 +2590,7 @@ fn peer_wiring() -> peers.Wiring {
     own: peer_mail.Endpoint("test-session", fn(command) {
       case command {
         peer_mail.Inbox(strand, _, _) -> Ok(json.String(strand))
-        _ -> Error("only inbox is used by this fixture")
+        _ -> Error(peer_mail.Refused("only inbox is used by this fixture"))
       }
     }),
     metadata: json.Object([]),

@@ -201,7 +201,7 @@ pub fn mailbox(seen: Subject(String)) -> peers.Wiring {
           process.send(seen, "links " <> source_strand)
           Ok(json.Array([]))
         }
-        _ -> Error("unexpected peer command")
+        _ -> Error(peer_mail.Refused("unexpected peer command"))
       }
     }),
     metadata: json.Null,

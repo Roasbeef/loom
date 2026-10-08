@@ -390,6 +390,7 @@ fn routed(runtime: api.Runtime, caller: String, id: String) -> String {
     peers.Wiring(
       own: peer_mail.Endpoint("owned-session", fn(command) {
         peer_mail.handle(runtime, clock.fixed(0), command)
+        |> peer_mail.refused
       }),
       metadata: json.Null,
       directory: None,

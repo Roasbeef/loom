@@ -82,7 +82,7 @@ fn asking(
   answer: Result(session_directory.Owner, session_directory.Miss),
   asked: process.Subject(Note),
 ) -> Directory {
-  Directory(lookup: fn(session) {
+  Directory(..session_directory.none(), lookup: fn(session) {
     process.send(asked, Asked(session))
     answer
   })

@@ -2469,7 +2469,10 @@ fn dispatch_class(
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
       use source <- result.try(peer_endpoint(config, state.registry, source))
-      use target <- result.try(peer_endpoint(config, state.registry, target))
+      use target <- result.try(
+        peer_directory(config, state.registry).resolve(target)
+        |> peer_mail.plain,
+      )
       peers.link(source, target, from, to, wake)
       |> result.map(fn(value) { #("peers.link", value) })
     }
@@ -3495,7 +3498,7 @@ fn activity(
     |> list.map(fn(pair) {
       case pair.1 {
         Some(peer_mail.Endpoint(call:, ..)) -> fn() { call(peer_mail.Overview) }
-        None -> fn() { Error("peer_service_unavailable") }
+        None -> fn() { Error(peer_mail.Refused("peer_service_unavailable")) }
       }
     })
     |> weft.new
@@ -3637,14 +3640,19 @@ fn unknown_row(id: String) -> JsonValue {
   ])
 }
 
-// The daemon's resident-only peer lookups, which the control commands and an
-// owner's web page share so that both resolve a session the same way.
+// The daemon's peer lookups, which the control commands and an owner's web
+// page share so that both resolve a session the same way. A session resident
+// here resolves to its Agency, and one a configured orchestrator owns resolves
+// to that orchestrator's port (`peers.routed`); discovery is the catalogue's.
 fn peer_directory(
   config: Config(instance),
   registry: manager.Manager(instance),
 ) -> peers.Directory {
   peers.Directory(
-    resolve: fn(id) { peer_endpoint(config, registry, id) },
+    resolve: peers.routed(
+      fn(id) { peer_endpoint(config, registry, id) |> peer_mail.refused },
+      config.directory,
+    ),
     describe: fn(id) {
       manager.get(registry, id)
       |> result.map(view_json)

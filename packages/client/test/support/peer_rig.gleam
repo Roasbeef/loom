@@ -179,6 +179,7 @@ pub fn network(seed: Int, modes: List(Mode), then: Mode) -> Network {
     script: start_script(modes, then),
     target: peer_mail.Endpoint(recipient_name, fn(command) {
       peer_mail.handle(recipient, clock.fixed(0), command)
+      |> peer_mail.refused
     }),
   )
 }
@@ -195,6 +196,7 @@ pub fn attach(
   let source =
     peer_mail.Endpoint(sender_name, fn(command) {
       peer_mail.handle(sender, sender_clock, command)
+      |> peer_mail.refused
     })
   let script = network.script
   let target = network.target
@@ -258,13 +260,13 @@ pub fn resolve(
   source: peer_mail.Endpoint,
   target: peer_mail.Endpoint,
   id: String,
-) -> Result(peer_mail.Endpoint, String) {
+) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
   case id == source.session {
     True -> Ok(source)
     False ->
       case process.call(script, 1000, Lookup) {
         Resident -> Ok(target)
-        Saved -> Error("session is saved, not open")
+        Saved -> Error(peer_mail.Refused("session is saved, not open"))
       }
   }
 }
@@ -281,10 +283,10 @@ pub fn scripted(
       peer_mail.Deliver(..) ->
         case process.call(script, 1000, NextMode) {
           Pass -> real.call(command)
-          Down -> Error(peer_mail.owner_unreachable)
+          Down -> Error(peer_mail.Unreachable)
           Lose -> {
             let _committed = real.call(command)
-            Error(peer_mail.owner_unreachable)
+            Error(peer_mail.Unreachable)
           }
         }
       _ -> real.call(command)

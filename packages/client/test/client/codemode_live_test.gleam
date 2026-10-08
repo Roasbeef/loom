@@ -3391,6 +3391,7 @@ fn run_message_inspection(ready: Ready) -> Nil {
   let endpoint =
     peer_mail.Endpoint("00000000-0000-7000-8000-000000000002", fn(command) {
       peer_mail.handle(owner.runtime, wall_clock(), command)
+      |> peer_mail.refused
     })
   let assert Ok(_) =
     endpoint.call(

@@ -47,6 +47,7 @@ import client/pools
 import client/remote/address
 import client/remote/host as executor_host
 import client/remote/orchestrator_port
+import client/remote/remote_peer
 import client/remote/workspace
 import client/serve
 import client/session_directory
@@ -54,6 +55,7 @@ import client/workspaces
 import core/clock
 import core/glance
 import core/ids
+import core/json.{type JsonValue}
 import gleam/dict
 import gleam/erlang/process
 import gleam/http/request.{type Request}
@@ -515,22 +517,24 @@ pub fn start_executor(
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger) == Ok(Nil)
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer) == Ok(Nil)
 /// ```
 @internal
 pub fn start_orchestrator_port(
   config: Config,
   daemon: root.Root(instance),
   logger: Logger,
+  peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
 ) -> Result(Nil, String) {
   case config.membership {
     None -> Ok(Nil)
     Some(_) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
       use _started <- result.try(
-        orchestrator_port.start(
+        orchestrator_port.start_serving(
           orchestrator_port.default(),
           catalogue_holds(ready.registry),
+          peer_command(ready.registry, peer_endpoint),
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
@@ -540,6 +544,35 @@ pub fn start_orchestrator_port(
         field.count("orchestrators", list.length(config.orchestrators)),
       ])
       Ok(Nil)
+    }
+  }
+}
+
+/// Forwards one peer-mail command from another orchestrator to a session
+/// resident here, the way the control commands reach the same session
+/// (`server.peer_endpoint`): resolve the identity with the manager and call the
+/// session's own endpoint. A session that is not resident answers
+/// `peers.not_running`, the refusal a send within one daemon gets, so the
+/// sender cannot tell where the recipient was supposed to be.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.peer_command(ready.registry, fn(resident) { Some(resident.peer) })("0198...", command)
+/// ```
+@internal
+pub fn peer_command(
+  registry: manager.Manager(instance),
+  endpoint: fn(instance) -> Option(peer_mail.Endpoint),
+) -> fn(String, peer_mail.Command) -> Result(JsonValue, String) {
+  fn(session, command) {
+    case manager.resolve(registry, session) {
+      Error(_) -> Error(peers.not_running)
+      Ok(resident) ->
+        case endpoint(resident) {
+          None -> Error("peer_service_unavailable")
+          Some(found) -> found.call(command) |> peer_mail.plain
+        }
     }
   }
 }
@@ -584,6 +617,7 @@ fn session_directory_of(
         catalogue_holds(registry),
         session_directory.over_distribution(membership),
       )
+      |> session_directory.with_reach(remote_peer.over_distribution(membership))
   }
 }
 
@@ -725,11 +759,11 @@ pub fn prepare_startup(
         let settings =
           serve.Settings(
             ..settings,
-            peer_directory: Some(
-              peer_directory(directory, fn(resident: serve.Resident) {
-                resident.peer
-              }),
-            ),
+            peer_directory: Some(peer_directory_across(
+              directory,
+              fn(resident: serve.Resident) { resident.peer },
+              session_directory_of(config, directory),
+            )),
             peer_defaults: Some(
               peer_mail.Defaults(policy: config.peer_policy, eligible: fn() {
                 manager.unshared_sessions(directory)
@@ -1075,7 +1109,14 @@ fn run(
   case
     {
       use executor <- result.try(start_executor(config, logger))
-      use Nil <- result.try(start_orchestrator_port(config, daemon, logger))
+      use Nil <- result.try(
+        start_orchestrator_port(
+          config,
+          daemon,
+          logger,
+          fn(resident: serve.Resident) { Some(resident.peer) },
+        ),
+      )
       use ui <- result.try(web_view(config, daemon))
       use serving <- result.try(listen_serving(
         config,
@@ -1259,12 +1300,35 @@ pub fn peer_directory(
   registry: manager.Manager(instance),
   endpoint: fn(instance) -> peer_mail.Endpoint,
 ) -> peers.Directory {
+  peer_directory_across(registry, endpoint, session_directory.none())
+}
+
+/// Supplies the peer directory a session's tools use: a resident session
+/// resolves to its Agency, and a session another orchestrator owns resolves to
+/// that orchestrator's port, found through `sessions` (`peers.routed`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.peer_directory_across(registry, fn(resident) { resident.peer }, sessions)
+/// ```
+@internal
+pub fn peer_directory_across(
+  registry: manager.Manager(instance),
+  endpoint: fn(instance) -> peer_mail.Endpoint,
+  sessions: session_directory.Directory,
+) -> peers.Directory {
   peers.Directory(
-    resolve: fn(id) {
-      manager.resolve(registry, id)
-      |> result.map(endpoint)
-      |> result.map_error(string.inspect)
-    },
+    resolve: peers.routed(
+      fn(id) {
+        manager.resolve(registry, id)
+        |> result.map(endpoint)
+        |> result.map_error(fn(error) {
+          peer_mail.Refused(string.inspect(error))
+        })
+      },
+      sessions,
+    ),
     describe: fn(id) {
       manager.get(registry, id)
       |> result.map(server.view_json)

@@ -27,6 +27,7 @@ import client/daemon/ui_socket
 import client/daemon_claim_test
 import client/daemon_server_test
 import client/gateway
+import client/peer_mail
 import client/peers
 import client/session_directory
 import core/clock
@@ -8551,9 +8552,10 @@ pub fn an_unknown_profile_is_declined_in_its_own_words_test() {
 // authority checks is refused at the first resolution with the fixed words for
 // an unavailable read, and any refusal before that is the owner-only words.
 fn unreachable_directory() -> peers.Directory {
-  peers.Directory(resolve: fn(_) { Error("not resident") }, describe: fn(_) {
-    Error("not resident")
-  })
+  peers.Directory(
+    resolve: fn(_) { Error(peer_mail.Refused("not resident")) },
+    describe: fn(_) { Error("not resident") },
+  )
 }
 
 // The authority is re-derived at each request: a member of the very session, a

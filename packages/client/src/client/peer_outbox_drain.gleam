@@ -309,9 +309,9 @@ fn pass(data: State) -> Backlog {
       ])
       Owed
     }
-    Error(reason) -> {
+    Error(failure) -> {
       log.warn(options.logger, "peer_outbox.unreadable", [
-        field.text("reason", reason),
+        field.text("reason", peer_mail.reason(failure)),
       ])
       Owed
     }

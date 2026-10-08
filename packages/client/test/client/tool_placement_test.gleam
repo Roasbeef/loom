@@ -142,7 +142,9 @@ fn a_skill_catalogue() -> skill.Catalogue {
 
 fn a_peer_wiring() -> peers.Wiring {
   peers.Wiring(
-    own: peer_mail.Endpoint("placement", fn(_command) { Error("a fixture") }),
+    own: peer_mail.Endpoint("placement", fn(_command) {
+      Error(peer_mail.Refused("a fixture"))
+    }),
     metadata: json.Object([]),
     directory: None,
   )

@@ -2518,12 +2518,14 @@ pub fn peer_endpoint(config: Config, session_id: String) -> peer_mail.Endpoint {
   let timeout = config.holder_timeout_ms
   peer_mail.Endpoint(session_id, fn(command) {
     use subject <- result.try(
-      address.lookup(name) |> result.replace_error("peer session unavailable"),
+      address.lookup(name)
+      |> result.replace_error(peer_mail.Refused("peer session unavailable")),
     )
     let reply = process.new_subject()
     process.send(subject, PeerRequest(command:, reply:))
     process.receive(reply, timeout)
     |> result.unwrap(Error("peer session did not answer"))
+    |> peer_mail.refused
   })
 }
 

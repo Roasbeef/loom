@@ -50,6 +50,7 @@
 
 import client/distribution.{type Membership}
 import client/orchestrators.{type Orchestrator}
+import client/peer_mail
 import client/remote/address
 import client/remote/orchestrator_port.{type Ownership, NotOwned, Owned}
 import gleam/list
@@ -99,6 +100,11 @@ pub type Directory {
   Directory(
     /// Which orchestrator owns the session with this canonical identity.
     lookup: fn(String) -> Result(Owner, Miss),
+    /// How to speak to an owner that is not this orchestrator: the peer-mail
+    /// endpoint for a session the orchestrator owns (phase 4). A directory
+    /// that cannot reach anyone gives an endpoint whose every call is
+    /// `Unreachable`.
+    reach: fn(Orchestrator, String) -> peer_mail.Endpoint,
   )
 }
 
@@ -118,7 +124,33 @@ pub type Reply =
 ///   == Error(session_directory.Unknown)
 /// ```
 pub fn none() -> Directory {
-  Directory(lookup: fn(_session) { Error(Unknown) })
+  Directory(lookup: fn(_session) { Error(Unknown) }, reach: cannot_reach)
+}
+
+// The reach of a daemon with no way to connect: an endpoint nobody answers.
+fn cannot_reach(
+  _orchestrator: Orchestrator,
+  session: String,
+) -> peer_mail.Endpoint {
+  peer_mail.Endpoint(session:, call: fn(_command) {
+    Error(peer_mail.Unreachable)
+  })
+}
+
+/// The same directory with `reach` as the way to speak to an owner. The
+/// lookup is unchanged; only the daemon that has a distribution membership
+/// knows how to build a connected endpoint.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_directory.with_reach(directory, remote_peer.over_distribution(membership))
+/// ```
+pub fn with_reach(
+  directory: Directory,
+  reach: fn(Orchestrator, String) -> peer_mail.Endpoint,
+) -> Directory {
+  Directory(..directory, reach:)
 }
 
 /// The phase 3 directory over the configured orchestrators.
@@ -141,12 +173,15 @@ pub fn peers(
   case asked {
     [] -> none()
     _ ->
-      Directory(lookup: fn(session) {
-        case held(session) {
-          Ok(Owned) -> Ok(Here)
-          Ok(NotOwned) | Error(Nil) -> fan_out(asked, session, ask) |> decide
-        }
-      })
+      Directory(
+        lookup: fn(session) {
+          case held(session) {
+            Ok(Owned) -> Ok(Here)
+            Ok(NotOwned) | Error(Nil) -> fan_out(asked, session, ask) |> decide
+          }
+        },
+        reach: cannot_reach,
+      )
   }
 }
 

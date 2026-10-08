@@ -140,6 +140,7 @@ pub fn a_directory_that_cannot_reach_the_owner_queues_the_message_test() {
   let source =
     peer_mail.Endpoint("sender", fn(command) {
       peer_mail.handle(sender, clock.fixed(0), command)
+      |> peer_mail.refused
     })
   let wiring =
     peers.Wiring(
@@ -150,7 +151,7 @@ pub fn a_directory_that_cannot_reach_the_owner_queues_the_message_test() {
           resolve: fn(id) {
             case id == "sender" {
               True -> Ok(source)
-              False -> Error(peer_mail.owner_unreachable)
+              False -> Error(peer_mail.Unreachable)
             }
           },
           describe: fn(_) { Ok(json.Null) },
@@ -216,6 +217,7 @@ pub fn a_pending_row_older_than_an_hour_is_refused_test() {
         clock.fixed(peer_outbox.pending_ttl_ms + 1),
         command,
       )
+      |> peer_mail.refused
     })
   let assert Ok(json.Array(items)) = later.call(peer_mail.OutboxDue)
   assert items == []
@@ -241,6 +243,7 @@ pub fn a_row_not_yet_an_hour_old_is_still_due_test() {
         clock.fixed(peer_outbox.pending_ttl_ms),
         command,
       )
+      |> peer_mail.refused
     })
   let assert Ok(json.Array([_])) = still.call(peer_mail.OutboxDue)
     as "the row is exactly an hour old and still owed"

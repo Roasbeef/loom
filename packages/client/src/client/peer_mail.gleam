@@ -235,22 +235,69 @@ pub type Endpoint {
   Endpoint(
     /// Canonical resident identity, checked after directory lookup.
     session: String,
-    /// One bounded request to the recipient's Agency actor.
-    call: fn(Command) -> Result(JsonValue, String),
+    /// One bounded request to the recipient's Agency actor, here or on the
+    /// orchestrator that owns the session.
+    call: fn(Command) -> Result(JsonValue, Failure),
   )
 }
 
-/// The refusal an endpoint answers with when nobody answered for the
-/// recipient: the node that owns the session cannot be reached, so the message
-/// is neither admitted nor refused. A local endpoint never produces it. The
-/// sender's outbox treats exactly this text as "try again later" and every
-/// other error as the recipient's definitive answer.
+/// Why an endpoint call produced no answer from the recipient.
+pub type Failure {
+  /// The recipient, or the host in front of it, answered and said no: not
+  /// resident, no grant, an id reused for different text, a command the host
+  /// does not accept. Asking again unchanged cannot succeed.
+  Refused(reason: String)
+
+  /// Nobody answered for the recipient: the orchestrator that owns the session
+  /// cannot be reached, so the message is neither admitted nor refused. Only a
+  /// remote endpoint, or a directory that could not tell who owns the session,
+  /// produces it. The sender's outbox treats exactly this as "try again later"
+  /// and every `Refused` as the recipient's definitive answer.
+  Unreachable
+}
+
+/// The text recorded in an outbox row that waited too long, and the text a
+/// model or an operator is shown for an `Unreachable` failure.
+pub const unreachable_reason = "owner unreachable"
+
+/// The failure of a call that was answered locally with an error text. Every
+/// local endpoint answers this way, because a local call is always answered.
 ///
-/// It is an error text rather than a variant of `Endpoint.call`'s result so
-/// that a recipient endpoint stays `fn(Command) -> Result(JsonValue, String)`
-/// on every host, and a remote endpoint reports an unreachable owner through
-/// the channel it already has.
-pub const owner_unreachable = "owner unreachable"
+/// ## Examples
+///
+/// ```gleam
+/// assert peer_mail.refused(Error("no grant")) == Error(peer_mail.Refused("no grant"))
+/// ```
+pub fn refused(answer: Result(a, String)) -> Result(a, Failure) {
+  result.map_error(answer, Refused)
+}
+
+/// The failure as the single error text the model-facing and operator-facing
+/// paths carry.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert peer_mail.reason(peer_mail.Unreachable) == "owner unreachable"
+/// ```
+pub fn reason(failure: Failure) -> String {
+  case failure {
+    Refused(reason:) -> reason
+    Unreachable -> unreachable_reason
+  }
+}
+
+/// A call's answer with its failure reduced to text, for a caller that does
+/// not distinguish an unreachable owner from a refusal.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert peer_mail.plain(Error(peer_mail.Unreachable)) == Error("owner unreachable")
+/// ```
+pub fn plain(answer: Result(a, Failure)) -> Result(a, String) {
+  result.map_error(answer, reason)
+}
 
 /// The defaults of a host that links nothing implicitly: every embedded
 /// session, and a daemon whose configuration has no `[peers]` table.
@@ -524,7 +571,7 @@ pub fn handle_with(
       |> result.replace(json.Null)
     OutboxDue -> {
       let #(now, _) = clock.read(clock)
-      peer_outbox_store.due(runtime, now, owner_unreachable)
+      peer_outbox_store.due(runtime, now, unreachable_reason)
       |> result.map(fn(rows) { json.Array(list.map(rows, peer_outbox.encode)) })
     }
     OutboxReceipt(strand, session, id) ->

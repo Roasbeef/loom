@@ -3000,7 +3000,7 @@ pub fn peer_delivery_requires_exact_grant_and_commits_one_receipt_test() {
             case id {
               "target-session" -> Ok(target_endpoint)
               "source-session" -> Ok(source_endpoint)
-              _ -> Error("not resident")
+              _ -> Error(peer_mail.Refused("not resident"))
             }
           },
           describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
@@ -3172,7 +3172,7 @@ fn run_collaboration_exchange(
         case id {
           "00000000-0000-7000-8000-000000000001" -> Ok(first_peer)
           "00000000-0000-7000-8000-000000000002" -> Ok(second_peer)
-          _ -> Error("not resident")
+          _ -> Error(peer_mail.Refused("not resident"))
         }
       },
       describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
@@ -3540,7 +3540,7 @@ pub fn outgoing_peer_links_stop_at_the_roster_bound_test() {
   let assert Error(reason) =
     source_endpoint.call(peer_mail.Link("main", "extra-64", "main"))
     as "the next distinct link is refused at admission"
-  assert reason == "peer roster exceeds the 64-link bound"
+  assert reason == peer_mail.Refused("peer roster exceeds the 64-link bound")
   let assert Ok(json.Array(still_full)) =
     source_endpoint.call(peer_mail.Links("main"))
     as "refusal does not poison the outgoing index"
@@ -3558,7 +3558,7 @@ pub fn outgoing_peer_links_stop_at_the_roster_bound_test() {
           resolve: fn(id) {
             case id {
               "target-session" -> Ok(target_endpoint)
-              _ -> Error("not resident")
+              _ -> Error(peer_mail.Refused("not resident"))
             }
           },
           describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },

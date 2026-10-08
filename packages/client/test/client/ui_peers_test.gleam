@@ -39,6 +39,7 @@ fn resident_pair(
   let endpoint = fn(id, runtime) {
     peer_mail.Endpoint(id, fn(command) {
       peer_mail.handle_with(runtime, clock.fixed(0), defaults, command)
+      |> peer_mail.refused
     })
   }
   let first_endpoint = endpoint(first, first_runtime)
@@ -50,7 +51,7 @@ fn resident_pair(
     directory: peers.Directory(
       resolve: fn(id) {
         case list.contains(open, id), id == first {
-          False, _ -> Error("session is saved, not open")
+          False, _ -> Error(peer_mail.Refused("session is saved, not open"))
           True, True -> Ok(first_endpoint)
           True, False -> Ok(second_endpoint)
         }

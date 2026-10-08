@@ -70,7 +70,7 @@ fn read(
   strand: String,
 ) -> Answer {
   let outcome = {
-    use own <- result.try(directory.resolve(session_id))
+    use own <- result.try(directory.resolve(session_id) |> peer_mail.plain)
     use metadata <- result.try(directory.describe(session_id))
     use inspected <- result.try(peers.inspect(
       peers.Wiring(own, metadata, Some(directory)),
