@@ -976,6 +976,15 @@ to become `saved`, and then sends this command. The daemon does not stop
 the session on the caller's behalf, so a delete can never race a live
 writer.
 
+A session this daemon received from another orchestrator is also `busy` until
+that orchestrator has finished handing it over. Until then the source may still
+retry its activation, and a delete would remove the record that retry depends on,
+so the source would import the session again and undo the delete. The daemon asks
+the source whether it has retired the move and deletes only when it says so. A
+source that is down, silent or no longer in this daemon's `[orchestrators.<name>]`
+tables gives the same `busy`. Ask again once the source's move has finished
+(`sessions.get` there reports `moved`) or the source is reachable.
+
 On success the daemon removes, in one catalogue transaction: the
 registration, every membership in it, a workspace default that named it,
 and its domain mapping. The catalogue revision is incremented, so an open

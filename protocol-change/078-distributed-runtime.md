@@ -622,6 +622,12 @@ holds the session again under that move, so one `Moved` answer settles the
 question. The cost is that an imported session whose origin is down or removed from
 `[orchestrators]` cannot move on until the origin is listed and reachable.
 
+`sessions.delete` follows the same rule, because a delete removes the `imported` row
+and the source's retry would then import the session afresh and undo it. It is
+refused `busy`, the code a delete already has for a session that cannot be removed
+yet, until the origin answers `Moved`. Archive and restore change visibility and
+not custody, so they are not held.
+
 #### When a move stops
 
 A move ends in one of three ways. It finishes, with the source's row `moved`. It is

@@ -2997,7 +2997,14 @@ fn dispatch_class(
         |> result.replace_error(orchestrator_unknown_code),
       )
 
-      use Nil <- result.try(inbound_settled(config.movers, state.registry, id))
+      use Nil <- result.try(
+        inbound_settled(config.movers, state.registry, id)
+        |> result.replace_error(
+          admin_error_code(manager.AdminNotMovable(
+            "the move in from the session's origin has not finished",
+          )),
+        ),
+      )
 
       // Each asker mints an operation of its own, and the registry keeps the
       // first: a second request toward the same orchestrator answers the stored
@@ -3033,6 +3040,17 @@ fn dispatch_class(
       }
     }
     protocol.DeleteSession(id, supplied) -> {
+      // A session imported from an orchestrator that has not retired its move is
+      // busy: deleting it would be undone by that orchestrator's retry. The
+      // question crosses the network, so only the owner holding a current epoch
+      // may cause it; the registry decides both again inside its own turn.
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use Nil <- result.try(
+        inbound_settled(config.movers, state.registry, id)
+        |> result.replace_error(admin_error_code(manager.AdminBusy)),
+      )
+
       // Owner, epoch and the busy check are all re-decided inside the
       // registry's own dispatch; the check here would only widen the window
       // between deciding and removing.
@@ -3073,24 +3091,26 @@ fn dispatch_class(
   }
 }
 
-// A session this daemon imported cannot be handed on until the orchestrator it
-// came from has retired the move that brought it here. Until then that
-// orchestrator still holds the session as `moving`, and its mover may yet ask
-// this one to activate it. Beginning a move here replaces the `imported` row
-// with `moving`, and a move that is then abandoned deletes that row, so the
+// A session this daemon imported cannot be handed on, or deleted, until the
+// orchestrator it came from has retired the move that brought it here. Until
+// then that orchestrator still holds the session as `moving`, and its mover may
+// yet ask this one to activate it. Beginning a move here replaces the `imported`
+// row with `moving`, and a move that is then abandoned deletes that row, so the
 // activation of the first move would be refused for a conflict and the source
-// would abandon its move as well: both sides resident. The origin's port
-// answers `Moved` only after its own row says so, and a retired source never
-// holds the session again under that move, so one answer decides and there is
-// no race to lose. The ask runs here, outside the registry's turn, because it
-// crosses the network. Silence, an origin this daemon no longer lists, and any
-// other answer refuse the move, as a session that cannot yet move: the owner
-// asks again later.
+// would abandon its move as well: both sides resident. A delete removes the row
+// outright, so the source's retry finds nothing, sends the file again and
+// imports it afresh, and the delete is undone. The origin's port answers `Moved`
+// only after its own row says so, and a retired source never holds the session
+// again under that move, so one answer decides and there is no race to lose. The
+// ask runs here, outside the registry's turn, because it crosses the network.
+// Silence, an origin this daemon no longer lists, and any other answer say the
+// session is not settled yet, and the caller refuses in the words of its own
+// command: the owner asks again later.
 fn inbound_settled(
   movers: session_movers.Control,
   registry: manager.Manager(instance),
   id: String,
-) -> Result(Nil, String) {
+) -> Result(Nil, Unsettled) {
   case manager.custody(registry, id) {
     Ok(catalogue.Imported(from:, ..)) ->
       case orchestrators.find(movers.orchestrators, from) {
@@ -3099,27 +3119,21 @@ fn inbound_settled(
             Ok(orchestrator_port.Moved(..)) -> Ok(Nil)
             Ok(orchestrator_port.Owned)
             | Ok(orchestrator_port.NotOwned)
-            | Error(Nil) ->
-              Error(
-                admin_error_code(manager.AdminNotMovable(
-                  "the move in from " <> from <> " has not finished",
-                )),
-              )
+            | Error(Nil) -> Error(Unsettled)
           }
-        Error(Nil) ->
-          Error(
-            admin_error_code(manager.AdminNotMovable(
-              "the orchestrator "
-              <> from
-              <> " is not listed, so it cannot be asked",
-            )),
-          )
+        Error(Nil) -> Error(Unsettled)
       }
     Ok(catalogue.Resident)
     | Ok(catalogue.Moving(..))
     | Ok(catalogue.Moved(..))
     | Error(_) -> Ok(Nil)
   }
+}
+
+// The origin of an imported session has not said it retired the move. It is a
+// value of its own so each command can name the refusal its contract has.
+type Unsettled {
+  Unsettled
 }
 
 /// The control command `sessions.create`, as a function of what it needs, so

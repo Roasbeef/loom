@@ -7007,12 +7007,15 @@ Invariants that break things when violated:
   listed, or the copy is still there. The source abandons on any refusal other than
   a bad digest or a missing copy, so a refusal after the commit leaves two owners.
   `Move.tla` models it as `RefuseUncommitted`, with `MutantRefuse` as its check.
-- A move is begun on an `imported` session only after the orchestrator it came
-  from answers `Moved` for it (`inbound_settled`, through `Control.holds`, outside
-  the registry turn). `begin_move` replaces the `imported` row and `abort_move`
-  deletes it to `resident`, so a move begun earlier loses the record the source's
-  retry needs, and a return move meets the source's own `moving` row. Both
-  daemons would abandon and both would be resident.
+- A move is begun on an `imported` session, and `sessions.delete` removes one,
+  only after the orchestrator it came from answers `Moved` for it
+  (`inbound_settled`, through `Control.holds`, outside the registry turn; a move
+  is refused `not_movable` and a delete `busy`). `begin_move` replaces the
+  `imported` row and `abort_move` deletes it to `resident`, so a move begun
+  earlier loses the record the source's retry needs, and a return move meets the
+  source's own `moving` row. A delete removes the row, so the retry imports the
+  session afresh. Both daemons would abandon and both would be resident. The
+  web page's delete in `ui_socket` does not make this check yet.
 - The intent is committed in the registry turn that cancels the slot, and admission
   reads the custody row in the turn that reserves a slot. Moving the read out of
   that turn lets a runtime open a file whose copy is being cut.

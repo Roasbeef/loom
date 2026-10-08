@@ -326,6 +326,40 @@ pub fn a_session_imported_from_a_source_that_has_not_retired_cannot_move_on_test
   })
 }
 
+pub fn a_session_imported_from_a_source_that_has_not_retired_cannot_be_deleted_test() {
+  let desk = origin()
+  moving_from(desk, fn(ready, port, credential, _recorder) {
+    let session = imported(ready, 6)
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    // The source still holds the session as moving. A delete here would remove
+    // the row its retry depends on, and the retry would import the session
+    // again, so the delete is refused as busy while the source holds it, is
+    // silent, or does not know the session.
+    process.send(desk, Answer(Ok(orchestrator_port.Owned)))
+    assert code(command(socket, 1, "sessions.delete", session, ready.epoch))
+      == json.String("busy")
+    process.send(desk, Answer(Error(Nil)))
+    assert code(command(socket, 2, "sessions.delete", session, ready.epoch))
+      == json.String("busy")
+    process.send(desk, Answer(Ok(orchestrator_port.NotOwned)))
+    assert code(command(socket, 3, "sessions.delete", session, ready.epoch))
+      == json.String("busy")
+    assert manager.custody(ready.registry, session)
+      == Ok(catalogue.Imported(op: import_op, from: "desk"))
+
+    // Once the source has retired, the session is this daemon's alone.
+    process.send(desk, Answer(Ok(orchestrator_port.Moved(to: "here"))))
+    let deleted = command(socket, 4, "sessions.delete", session, ready.epoch)
+    assert field(deleted, "event") == json.String("sessions.delete")
+    assert manager.get(ready.registry, session)
+      == Error(manager.Catalogue(catalogue.Missing))
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
 pub fn the_session_get_shows_a_move_in_flight_and_one_that_finished_test() {
   moving(fn(ready, port, credential, _recorder) {
     let session = remote(ready, "viewed")
