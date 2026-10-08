@@ -18,6 +18,11 @@
 # version control. It is mounted read-only and copied into the container's own
 # home, so nothing private is written back to the host.
 #
+# The orchestrator also needs a model. orchestrator.loom.toml in this directory
+# is its catalogue (edit the model there), and the provider key goes in
+# orchestrator.env, one line such as ANTHROPIC_API_KEY=..., which is passed to
+# the orchestrator's environment if the file exists.
+#
 # Ports. Only the client port is published, and only on the host's loopback.
 # Distribution (epmd on 4369 and the node's listener on 9100) stays on the
 # private network. The daemon itself binds container loopback, which a
@@ -36,6 +41,7 @@
 # Environment (all optional):
 #   LOOM_IMAGE            image to run (default loom-runtime:dev)
 #   ORCHESTRATOR_BUNDLE   path of the orchestrator bundle (default ./orchestrator.loombundle)
+#   ORCHESTRATOR_CONFIG   the orchestrator's model catalogue (default ./orchestrator.loom.toml)
 #   EXECUTOR_BUNDLE       path of the executor bundle (default ./executor.loombundle)
 #   EXECUTOR_CHECKOUT     a host directory or named volume mounted at /work on the executor
 #                         (default: a named volume, which the entrypoint fills with
@@ -62,10 +68,19 @@ services:
   orchestrator:
     <<: *node
     hostname: orchestrator
+    env_file:
+      - path: ./orchestrator.env
+        required: false
     volumes:
       - type: bind
         source: ${ORCHESTRATOR_BUNDLE:-./orchestrator.loombundle}
         target: /bundle
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ORCHESTRATOR_CONFIG:-./orchestrator.loom.toml}
+        target: /config/loom.toml
         read_only: true
         bind:
           create_host_path: false

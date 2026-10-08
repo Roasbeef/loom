@@ -24,6 +24,11 @@
 # the installed configuration names is created if it is missing, so an
 # executor starts before any project has been copied into it.
 #
+# The orchestrator also mounts /config/loom.toml, a model catalogue and role
+# routes. It is copied to ~/.loom/loom.toml before the install, which appends
+# the bundle's own tables to it and leaves these alone. A fixture directory
+# carries its own loom.toml, so the mount is ignored for one.
+#
 # LOOM_CGROUP_DELEGATE=1 (compose.isolated.yaml) additionally carves out the
 # cgroup v2 base the full-isolation posture needs (docs/docker.md). That step
 # has not been verified end to end from this entrypoint.
@@ -33,6 +38,7 @@ uid=10000
 gid=10000
 home=/home/loom
 bundle=/bundle
+config_in=/config/loom.toml
 
 if [ "$(id -u)" = 0 ]; then
 	if [ ! -e "$bundle" ]; then
@@ -48,6 +54,9 @@ if [ "$(id -u)" = 0 ]; then
 		cp -a "$bundle/home/." "$home/"
 	else
 		install -m 0600 -o "$uid" -g "$gid" "$bundle" "$home/node.loombundle"
+		if [ -f "$config_in" ]; then
+			install -m 0600 -o "$uid" -g "$gid" "$config_in" "$home/.loom/loom.toml"
+		fi
 	fi
 	chown -R "$uid:$gid" "$home"
 
