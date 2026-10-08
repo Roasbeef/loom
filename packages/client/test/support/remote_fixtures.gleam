@@ -60,6 +60,9 @@ pub type ProbeMessage {
   Builds(reply: Subject(List(OwnerServices)))
   Closed
   Closes(reply: Subject(Int))
+  HoldBuild(session: String)
+  ReleaseBuild(session: String)
+  BuildGate(session: String, reply: Subject(Nil))
 }
 
 type ProbeState {
@@ -69,6 +72,8 @@ type ProbeState {
     released: Bool,
     builds: List(OwnerServices),
     closes: Int,
+    held_builds: List(String),
+    build_waiters: List(#(String, Subject(Nil))),
   )
 }
 
@@ -96,7 +101,15 @@ fn probe_builder(
     Held -> False
   }
   let state =
-    ProbeState(runs: [], waiters: [], released:, builds: [], closes: 0)
+    ProbeState(
+      runs: [],
+      waiters: [],
+      released:,
+      builds: [],
+      closes: 0,
+      held_builds: [],
+      build_waiters: [],
+    )
   actor.new(state) |> actor.on_message(probe_loop)
 }
 
@@ -139,7 +152,50 @@ fn probe_loop(
       process.send(reply, state.closes)
       actor.continue(state)
     }
+    HoldBuild(session:) ->
+      actor.continue(
+        ProbeState(..state, held_builds: [session, ..state.held_builds]),
+      )
+    ReleaseBuild(session:) -> {
+      let #(released, kept) =
+        list.partition(state.build_waiters, fn(entry) { entry.0 == session })
+      list.each(released, fn(entry) { process.send(entry.1, Nil) })
+      actor.continue(
+        ProbeState(
+          ..state,
+          held_builds: list.filter(state.held_builds, fn(held) {
+            held != session
+          }),
+          build_waiters: kept,
+        ),
+      )
+    }
+    BuildGate(session:, reply:) ->
+      case list.contains(state.held_builds, session) {
+        True ->
+          actor.continue(
+            ProbeState(..state, build_waiters: [
+              #(session, reply),
+              ..state.build_waiters
+            ]),
+          )
+        False -> {
+          process.send(reply, Nil)
+          actor.continue(state)
+        }
+      }
   }
+}
+
+/// Makes the fake factory wait, when it builds a plane for `session`, until
+/// `release_build`. Other sessions build at once.
+pub fn hold_build(probe: Probe, session: String) -> Nil {
+  process.send(probe.subject, HoldBuild(session:))
+}
+
+/// Lets the held build for `session` finish.
+pub fn release_build(probe: Probe, session: String) -> Nil {
+  process.send(probe.subject, ReleaseBuild(session:))
 }
 
 /// Lets every held tool, and every later one, finish.
@@ -199,12 +255,15 @@ pub fn factory(
 ) -> host.PlaneFactory(String) {
   fn(spec: host.AttachSpec) {
     process.send(probe.subject, Built(owner: spec.owner))
+    process.call(probe.subject, 30_000, BuildGate(spec.session, _))
     Ok(
       host.Plane(
         run: fn(run, _authority) { fake_tool(probe, spec.owner, asks, run) },
         census: "census-" <> int.to_string(spec.incarnation),
-        close: fn() {
+        children: fn(builder) { builder },
+        close: fn(retire_children) {
           process.send(probe.subject, Closed)
+          let _retired = retire_children()
           close_outcome
         },
       ),

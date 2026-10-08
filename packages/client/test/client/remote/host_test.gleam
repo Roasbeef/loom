@@ -16,6 +16,7 @@ import gleam/int
 import gleam/list
 import runtime/effects.{type ToolRun}
 import support/remote_fixtures as fixtures
+import tools/fs
 
 type Rig {
   Rig(address: Address(String), pid: Pid, probe: fixtures.Probe, path: String)
@@ -72,6 +73,7 @@ fn attach(
   address.deliver(
     rig.address,
     protocol.Attach(
+      version: protocol.version,
       session: "s1",
       workspace: "/work",
       incarnation:,
@@ -117,6 +119,21 @@ fn query(rig: Rig, run: ToolRun) -> Result(protocol.Lookup, Refusal) {
   address.deliver(rig.address, protocol.Query(key_of(run), reply))
   let assert Ok(answer) = process.receive(reply, 5000)
     as "the host answers a query"
+  answer
+}
+
+fn query_or_fence(
+  rig: Rig,
+  run: ToolRun,
+  incarnation: Int,
+) -> Result(protocol.Lookup, Refusal) {
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.QueryOrFence(key_of(run), incarnation, reply),
+  )
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the host answers a fence query"
   answer
 }
 
@@ -430,5 +447,209 @@ pub fn an_ack_deletes_the_row_and_a_listing_reports_what_waits_test() {
   address.deliver(rig.address, protocol.Ack(key_of(run)))
   assert fixtures.eventually(fn() { query(rig, run) == Ok(protocol.Missing) })
   assert listed() == Ok(protocol.Unacked(terminal: [], unknown: []))
+  stop(rig)
+}
+
+pub fn a_fence_before_a_stale_run_stops_the_run_from_starting_test() {
+  let rig = rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let run = fixtures.tool_run("call_1", 0)
+
+  // Recovery asked first and found no row, so it stored "did not start".
+  assert query_or_fence(rig, run, 0) == Ok(protocol.Fenced)
+  let did_not_run = effects.ToolFailed(reason: protocol.did_not_run_text)
+  assert query(rig, run) == Ok(protocol.Terminal(did_not_run))
+
+  // The dead runtime's `Run` arrives with the current token. The key is taken,
+  // so it is told what the fence stored and the tool never starts.
+  assert heard(send_run(rig, run, 0, token(1)))
+    == protocol.RunFinished(did_not_run)
+  assert fixtures.run_count(rig.probe, "call_1") == 0
+  assert fixtures.runs(rig.probe) == []
+  stop(rig)
+}
+
+pub fn a_fence_after_a_stale_run_finds_it_live_and_waits_for_it_test() {
+  let rig = rig(fixtures.Held)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let run = fixtures.tool_run("call_1", 0)
+  let stale = send_run(rig, run, 0, token(1))
+  assert running(rig, "call_1")
+
+  // Recovery arrives second: the call is live, and nothing is written.
+  assert query_or_fence(rig, run, 0) == Ok(protocol.Admitted)
+  fixtures.release(rig.probe)
+  assert heard(stale) == protocol.RunFinished(fixtures.expected_outcome(run))
+  assert query_or_fence(rig, run, 0)
+    == Ok(protocol.Terminal(fixtures.expected_outcome(run)))
+  assert fixtures.run_count(rig.probe, "call_1") == 1
+  stop(rig)
+}
+
+pub fn a_second_fence_reports_the_stored_did_not_run_test() {
+  let rig = rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let run = fixtures.tool_run("call_1", 0)
+  assert query_or_fence(rig, run, 0) == Ok(protocol.Fenced)
+
+  // Recovery that repeats after another restart reads the row the first one
+  // wrote, so the answer does not change and no second row appears.
+  assert query_or_fence(rig, run, 0)
+    == Ok(
+      protocol.Terminal(effects.ToolFailed(reason: protocol.did_not_run_text)),
+    )
+  stop(rig)
+}
+
+pub fn a_fence_from_the_wrong_incarnation_or_no_scope_is_refused_test() {
+  let rig = rig(fixtures.Open)
+  let run = fixtures.tool_run("call_1", 0)
+  assert query_or_fence(rig, run, 0) == Error(protocol.NoSuchScope)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  assert query_or_fence(rig, run, 1) == Error(protocol.StaleIncarnation(0))
+
+  // Nothing was written, so the key is still free for a real run.
+  assert query(rig, run) == Ok(protocol.Missing)
+  stop(rig)
+}
+
+pub fn an_attach_from_another_protocol_version_is_refused_test() {
+  let rig = rig(fixtures.Open)
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Attach(
+      version: protocol.version + 1,
+      session: "s1",
+      workspace: "/work",
+      incarnation: 0,
+      token: token(1),
+      owner_port: process.new_subject(),
+      reply:,
+    ),
+  )
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the host answers a skewed attach"
+  assert answer == Error(protocol.VersionMismatch(supported: protocol.version))
+
+  // Nothing was built or bound, so a correct attach still creates the scope.
+  assert fixtures.builds(rig.probe) == []
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  stop(rig)
+}
+
+pub fn the_result_reservation_covers_the_largest_file_read_test() {
+  // A maximum-size image inflates by a third under base64, and the result is
+  // wrapped in JSON on top, so twice the read limit is the reservation.
+  assert host.default_max_result_bytes >= 2 * fs.max_read_bytes
+}
+
+fn attach_as(
+  rig: Rig,
+  session: String,
+  attach_token: BitArray,
+) -> Subject(Result(protocol.Attached(String), Refusal)) {
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Attach(
+      version: protocol.version,
+      session:,
+      workspace: "/work",
+      incarnation: 0,
+      token: attach_token,
+      owner_port: process.new_subject(),
+      reply:,
+    ),
+  )
+  reply
+}
+
+fn run_as(rig: Rig, session: String, run: ToolRun) -> Subject(RunAnswer) {
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.Run(
+      key: protocol.key_of(session, run),
+      incarnation: 0,
+      token: token(1),
+      run:,
+      authority: fixtures.authority(),
+      reply:,
+    ),
+  )
+  reply
+}
+
+pub fn a_slow_build_for_one_session_does_not_delay_another_test() {
+  let rig = rig(fixtures.Open)
+  fixtures.hold_build(rig.probe, "slow")
+
+  // The slow session's attach is accepted and its build is parked in the
+  // factory, so the host has no answer for it yet.
+  let slow = attach_as(rig, "slow", token(1))
+  assert fixtures.eventually(fn() {
+    list.length(fixtures.builds(rig.probe)) == 1
+  })
+  assert process.receive(slow, 100) == Error(Nil)
+
+  // Another session attaches and runs a tool while that build is in flight.
+  let quick = attach_as(rig, "quick", token(1))
+  let assert Ok(Ok(protocol.Attached(census: "census-0", ..))) =
+    process.receive(quick, 2000)
+  let run = fixtures.tool_run("call_1", 0)
+  assert heard(run_as(rig, "quick", run))
+    == protocol.RunFinished(fixtures.expected_outcome(run))
+  assert process.receive(slow, 100) == Error(Nil)
+
+  // The held build lands and its attach is answered.
+  fixtures.release_build(rig.probe, "slow")
+  let assert Ok(Ok(protocol.Attached(census: "census-0", ..))) =
+    process.receive(slow, 2000)
+  stop(rig)
+}
+
+pub fn a_session_that_is_building_refuses_attach_run_and_close_test() {
+  let rig = rig(fixtures.Open)
+  fixtures.hold_build(rig.probe, "s1")
+  let first = attach_as(rig, "s1", token(1))
+  assert fixtures.eventually(fn() {
+    list.length(fixtures.builds(rig.probe)) == 1
+  })
+
+  // A second attach is refused, not queued, and it did not replace the token
+  // the first attach is waiting on.
+  assert process.receive(attach_as(rig, "s1", token(2)), 2000)
+    == Ok(Error(protocol.PlaneBuilding))
+  let run = fixtures.tool_run("call_1", 0)
+  assert heard(send_run(rig, run, 0, token(1)))
+    == protocol.RunRefused(protocol.PlaneBuilding)
+  assert close(rig, 0) == Error(protocol.PlaneBuilding)
+  assert fixtures.run_count(rig.probe, "call_1") == 0
+
+  fixtures.release_build(rig.probe, "s1")
+  let assert Ok(Ok(_attached)) = process.receive(first, 2000)
+  assert heard(send_run(rig, run, 0, token(1)))
+    == protocol.RunFinished(fixtures.expected_outcome(run))
+  assert list.length(fixtures.builds(rig.probe)) == 1
+  stop(rig)
+}
+
+pub fn a_build_that_fails_is_reported_and_retried_by_the_next_attach_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let path = fixtures.scratch("host") <> "/ledger.db"
+  let attempts = process.new_subject()
+  let rig =
+    start_at(path, probe, fn(spec: host.AttachSpec) {
+      process.send(attempts, spec.incarnation)
+      Error("no checkout here")
+    })
+  assert attach(rig, 0, token(1)) == Error(protocol.NoPlane("no checkout here"))
+
+  // The scope stayed open without a plane, so the retry builds again at the
+  // same incarnation instead of finding a closed scope.
+  assert attach(rig, 0, token(2)) == Error(protocol.NoPlane("no checkout here"))
+  assert process.receive(attempts, 100) == Ok(0)
+  assert process.receive(attempts, 100) == Ok(0)
   stop(rig)
 }

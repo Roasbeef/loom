@@ -29,7 +29,10 @@
 //// can no longer say how it ended, so the caller must not run it again. A
 //// `Lookup` answers a query by call key from the executor's execution ledger,
 //// and `Missing` is only trustworthy after an attach, because the attach token
-//// is what stops a dead runtime's late request from creating the row.
+//// is what stops a dead runtime's late request from creating the row. A call
+//// that must never run twice is asked about with `QueryOrFence` instead, which
+//// turns a missing row into a stored "did not start", so no late `Run` for the
+//// same key can start the call after the answer was given.
 ////
 //// There is no cancel message. The executor monitors the process that sent each
 //// `Run`, and the death of that process (an abort) cancels the call.
@@ -49,6 +52,13 @@ import runtime/api
 import runtime/effects.{type ToolOutcome, type ToolRun}
 import tools/agent
 import tools/tool
+
+/// The version of this vocabulary. Every `Attach` carries the sender's, and the
+/// host refuses any other value with `VersionMismatch`, so two builds that
+/// disagree about the messages learn it at the first exchange and not from a
+/// crash on a term one of them does not recognise. Change it whenever a
+/// constructor or field of `HostMessage`, `OwnerMessage` or a reply changes.
+pub const version = 1
 
 /// A tool call's identity: the one the orchestrator's planner already uses and
 /// the executor's ledger keys its rows by.
@@ -125,6 +135,10 @@ pub type Refusal {
   /// The call's result reservation would pass the ledger's byte budget.
   BudgetExhausted(limit: Int)
 
+  /// The peer speaks another version of this vocabulary. `supported` is the
+  /// host's own (`protocol.version`).
+  VersionMismatch(supported: Int)
+
   /// The session's scope is for another workspace.
   WorkspaceMismatch(stored: String)
 
@@ -134,6 +148,10 @@ pub type Refusal {
   /// The scope has no workspace plane, because building it failed or the
   /// executor restarted since it was built. Attach again.
   NoPlane(reason: String)
+
+  /// The session's workspace plane is still being built. Nothing changed; ask
+  /// again shortly.
+  PlaneBuilding
 
   /// An argument was outside its domain.
   Invalid(reason: String)
@@ -172,6 +190,12 @@ pub type Lookup {
 
   /// The call's outcome is lost.
   Unknown
+
+  /// There was no row, and the host stored a "did not start" outcome for the
+  /// key, so a late `Run` for it is answered with that outcome and never
+  /// starts. Only `QueryOrFence` answers this; `Query` writes nothing and
+  /// answers `Missing` instead, and `QueryOrFence` never answers `Missing`.
+  Fenced
 }
 
 /// What an orchestrator says to the executor's host.
@@ -179,11 +203,13 @@ pub type Lookup {
 /// `census` is the type of the workspace plane's startup census, which only the
 /// two ends of an integration need to agree on.
 pub type HostMessage(census) {
-  /// Sent by every runtime incarnation before its first run or recovery. It
-  /// starts or adopts the scope at `incarnation` and makes `token` its only
+  /// Sent by every runtime incarnation before its first run or recovery.
+  /// `version` is the sender's `protocol.version`. It starts or adopts the
+  /// scope at `incarnation` and makes `token` its only
   /// valid attach token, which is the fence against a dead runtime's in-flight
   /// `Run`. `owner_port` is where the scope's workspace calls back.
   Attach(
+    version: Int,
     session: String,
     workspace: String,
     incarnation: Int,
@@ -207,6 +233,18 @@ pub type HostMessage(census) {
 
   /// Asks what the ledger holds for `key`, in any scope state.
   Query(key: Key, reply: Subject(Result(Lookup, Refusal)))
+
+  /// Asks what the ledger holds for `key`, and when it holds nothing stores a
+  /// "did not start" outcome for the key in the same transaction (`Fenced`).
+  /// `incarnation` is the asking runtime's, checked against the scope's. This
+  /// is the recovery question for a call whose replay is not safe: the answer
+  /// stays true whichever order a dead runtime's late `Run` and this request
+  /// reach the host in.
+  QueryOrFence(
+    key: Key,
+    incarnation: Int,
+    reply: Subject(Result(Lookup, Refusal)),
+  )
 
   /// Asks for the session's unacknowledged calls without attaching.
   ListUnacked(session: String, reply: Subject(Result(Unacked, Refusal)))
@@ -338,16 +376,28 @@ pub fn describe(refusal: Refusal) -> String {
       "the executor's ledger is full at "
       <> int.to_string(limit)
       <> " bytes of unacknowledged results"
+    VersionMismatch(supported:) ->
+      "the executor speaks protocol version "
+      <> int.to_string(supported)
+      <> " and this orchestrator does not"
     WorkspaceMismatch(stored:) ->
       "the executor's scope for this session is for the workspace " <> stored
     NoSuchScope -> "the executor has no scope for this session"
     NoPlane(reason:) ->
       "the executor has no workspace for this session: " <> reason
+    PlaneBuilding ->
+      "the executor is still preparing this session's workspace; try again shortly"
     Invalid(reason:) -> "the executor refused the request: " <> reason
     ExecutorFault(reason:) -> "the executor failed: " <> reason
     Unreachable(reason:) -> "the executor could not be reached: " <> reason
   }
 }
+
+/// The outcome text of a call that never started. The host stores it when it
+/// fences a key, and the runtime stages the same sentence when recovery says a
+/// call was not started, so the model reads one wording for both.
+pub const did_not_run_text =
+  "the call never reached the executor and did not run"
 
 /// The text a model reads when a remote call's outcome is lost. It says
 /// plainly that the call may have run, because the model's next move depends

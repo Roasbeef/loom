@@ -47,16 +47,42 @@
 ////
 //// ## Work that does not block the host
 ////
-//// Every tool run and every scope close is a weft run whose result arrives as
-//// a message, so the host keeps answering other sessions while a tool runs. A
-//// plane build (`PlaneFactory`) is the one step that runs inside the host,
-//// because attach must finish before the next request for that session can be
-//// valid. Integrations should keep the build bounded.
+//// Every tool run, every scope close and every plane build is a weft run whose
+//// result arrives as a message, so the host keeps answering other sessions
+//// while a tool runs or a workspace is still being prepared. A build can take
+//// seconds (it probes the toolchain, starts a helper pool and creates
+//// directories), and a host that built inside its own loop would stall every
+//// other session for that long. The attach is answered when its build lands.
+////
+//// While a session's build is in flight the scope is `Building`. A second
+//// `Attach`, a `Run` and a `Close` for it are each refused with
+//// `PlaneBuilding`, which tells the sender to ask again shortly. Refusing is
+//// smaller than queueing: the caller already has a retry loop for an executor
+//// that is not ready, and a refusal changes no ledger row. The refusal comes
+//// before the ledger is touched, so a refused attach does not replace the
+//// attach token the first attach is still waiting on.
+////
+//// ## The scope's children
+////
+//// A plane's supervised children (its jobs actor, scratch store and language
+//// server manager) run under a supervisor of their own for each scope, started
+//// by the host once the build lands. A supervisor ends when its parent does, so
+//// the short-lived build process cannot be its parent; a small owner process
+//// is, and the owner ends when the host does. The planes themselves (the
+//// helper pool, the executor service, the broker) are not linked to the host,
+//// so a host that restarted alone would leave them running and build second
+//// ones beside them. The daemon therefore treats the host's death as its own
+//// (see `client/daemon/main`) and never restarts the host independently.
+//// Closing a scope hands the plane a function that stops its supervisor, and
+//// the plane calls it at the point in its own teardown order where children
+//// must go. A supervisor that gives up after repeated child crashes ends only
+//// its own scope's services; the scope keeps answering with those tools failing
+//// until the session closes and reattaches.
 ////
 //// ## Flow
 ////
 //// `start` → `initialise` → `handle_event` → `handle_peer` → `attach`,
-//// `admit_run`, `close`
+//// `admit_run`, `fenced_lookup`, `close`
 ////
 //// 1. `initialise` registers the name and opens the ledger, which turns every
 ////    row the previous VM left `Admitted` into `Unknown`.
@@ -64,15 +90,19 @@
 ////    caller's `DOWN`, and rebuilds the selector so every live job is listened
 ////    to.
 //// 3. `attach` binds a runtime incarnation to its scope in the ledger and
-////    builds or re-points the scope's plane.
+////    starts a build, or re-points the scope's plane. `plane_built` completes
+////    the attach when the build lands.
 //// 4. `admit_run` consults the ledger and either `start_run`s the tool,
 ////    `join_run`s a live call, or answers from the stored row.
 //// 5. `job_finished` commits a tool's outcome with `commit_outcome` and answers
 ////    every waiter, or settles the call as lost.
 //// 6. `caller_down` applies `cancels_run` to an aborted or unreachable caller.
-//// 7. `close` fences the scope, cancels its calls, and `finish_closed` records
+//// 7. `fenced_lookup` answers a recovery query and, for a key with no row,
+////    stores "did not start" so a late `Run` for it never starts.
+//// 8. `close` fences the scope, cancels its calls, and `finish_closed` records
 ////    how the plane's cleanup ended.
 
+import client/internal/ffi_os
 import client/owner_services.{type OwnerServices}
 import client/remote/address.{type Address}
 import client/remote/codec
@@ -87,11 +117,12 @@ import gleam/dynamic
 import gleam/erlang/atom
 import gleam/erlang/node
 import gleam/erlang/process.{
-  type Down, type ExitReason, type Monitor, type Name, type Selector,
+  type Down, type ExitReason, type Monitor, type Name, type Pid, type Selector,
   type Subject,
 }
 import gleam/int
 import gleam/list
+import gleam/otp/static_supervisor as sup
 import gleam/result
 import gleam/string
 import runtime/effects.{type ToolOutcome, type ToolRun, ToolFailed}
@@ -127,9 +158,16 @@ pub type Plane(census) {
     run: fn(ToolRun, Authority) -> ToolOutcome,
     /// What the plane reports about its machine, returned with every attach.
     census: census,
-    /// Retires the plane's children and reports how that ended. Only this
-    /// result is a retirement witness; a timeout or a `DOWN` never is.
-    close: fn() -> CloseOutcome,
+    /// The plane's supervised children. The host starts them under a supervisor
+    /// of its own for this scope, after the build and before the attach is
+    /// answered.
+    children: fn(sup.Builder) -> sup.Builder,
+    /// Retires the plane and reports how that ended. Its argument stops the
+    /// scope's supervisor and answers `Ok` only when the children are gone; the
+    /// plane calls it where its teardown order wants the children stopped, and
+    /// must not report `AllRetired` after an `Error`. Only this result is a
+    /// retirement witness; a timeout or a `DOWN` never is.
+    close: fn(fn() -> Result(Nil, String)) -> CloseOutcome,
   )
 }
 
@@ -157,26 +195,30 @@ pub type Config(census) {
   )
 }
 
-/// The default reservation per call: four mebibytes.
-pub const default_max_result_bytes = 4_194_304
+/// The default reservation per call: sixteen mebibytes, twice the largest file
+/// `fs_read` returns. An image inflates by a third when it is base64 encoded and
+/// the result is wrapped in JSON, so the reservation needs the headroom for a
+/// maximum-size read to succeed remotely exactly as it does locally.
+pub const default_max_result_bytes = 16_777_216
 
 // One message the host handles. A peer's request arrives on the host's name, a
 // job's result on the sink of the weft run that produced it, and a monitored
 // caller's exit as a `DOWN`.
 type Event(census) {
   FromPeer(message: HostMessage(census))
-  JobFinished(job: Int, pulled: weft.Pulled(JobResult, Nil))
+  JobFinished(job: Int, pulled: weft.Pulled(JobResult(census), Nil))
   CallerDown(down: Down)
 }
 
 // What a job's task returns when it completes.
-type JobResult {
+type JobResult(census) {
   ToolRan(outcome: ToolOutcome)
   ScopeClosed(outcome: CloseOutcome)
+  PlaneBuilt(built: Result(Plane(census), String))
 }
 
 // What a job is for.
-type Job {
+type Job(census) {
   RunJob(key: Key)
   CloseJob(
     session: String,
@@ -185,20 +227,34 @@ type Job {
     link: owner_link.Link,
     reply: Subject(Result(CloseOutcome, Refusal)),
   )
+  BuildJob(
+    session: String,
+    link: owner_link.Link,
+    unacked: protocol.Unacked,
+    reply: Subject(Result(protocol.Attached(census), Refusal)),
+  )
 }
 
 // A started job: where its result arrives, and the signal that cancels it.
-type Tracked {
+type Tracked(census) {
   Tracked(
-    job: Job,
-    sink: Subject(weft.Pulled(JobResult, Nil)),
+    job: Job(census),
+    sink: Subject(weft.Pulled(JobResult(census), Nil)),
     cancel: weft.Cancel,
   )
 }
 
-// A scope's plane and the link its owner callbacks go through.
+// A session's scope as this VM holds it. A scope is `Building` from the attach
+// that created it until the build job reports, and `Ready` after.
+type Slot(census) {
+  Building(job: Int)
+  Ready(placement: Placement(census))
+}
+
+// A scope's plane, the link its owner callbacks go through, and the
+// supervisor its children live under.
 type Placement(census) {
-  Placement(plane: Plane(census), link: owner_link.Link)
+  Placement(plane: Plane(census), link: owner_link.Link, children: Pid)
 }
 
 // A call that is running now: the job that runs it and everyone waiting on it.
@@ -215,10 +271,10 @@ type State(census) {
   State(
     config: Config(census),
     ledger: exec_ledger.Ledger,
-    placements: Dict(String, Placement(census)),
+    placements: Dict(String, Slot(census)),
     live: Dict(Key, Live),
     watches: Dict(Monitor, Key),
-    jobs: Dict(Int, Tracked),
+    jobs: Dict(Int, Tracked(census)),
     next_job: Int,
   )
 }
@@ -333,6 +389,7 @@ fn handle_peer(
 ) -> State(census) {
   case message {
     protocol.Attach(
+      version:,
       session:,
       workspace:,
       incarnation:,
@@ -340,11 +397,33 @@ fn handle_peer(
       owner_port:,
       reply:,
     ) ->
-      attach(state, session, workspace, incarnation, token, owner_port, reply)
+      case version == protocol.version {
+        True ->
+          attach(
+            state,
+            session,
+            workspace,
+            incarnation,
+            token,
+            owner_port,
+            reply,
+          )
+        False -> {
+          process.send(
+            reply,
+            Error(protocol.VersionMismatch(supported: protocol.version)),
+          )
+          state
+        }
+      }
     protocol.Run(key:, incarnation:, token:, run:, authority:, reply:) ->
       admit_run(state, key, incarnation, token, run, authority, reply)
     protocol.Query(key:, reply:) -> {
       process.send(reply, lookup(state, key))
+      state
+    }
+    protocol.QueryOrFence(key:, incarnation:, reply:) -> {
+      process.send(reply, fenced_lookup(state, key, incarnation))
       state
     }
     protocol.ListUnacked(session:, reply:) -> {
@@ -365,7 +444,8 @@ fn handle_peer(
 
 // Binds a runtime incarnation to the session's scope. The ledger decides
 // whether this created, rebound or reopened the scope, and the answer decides
-// whether a plane is built or only re-pointed.
+// whether a plane is built or only re-pointed. A scope that is still being
+// built is refused before the ledger is asked, so the refusal changes no row.
 fn attach(
   state: State(census),
   session: String,
@@ -375,38 +455,42 @@ fn attach(
   owner_port: Subject(protocol.OwnerMessage),
   reply: Subject(Result(protocol.Attached(census), Refusal)),
 ) -> State(census) {
-  let attached =
-    exec_ledger.attach(
-      state.ledger,
-      session,
-      workspace,
-      incarnation,
-      token,
-      state.config.limits,
-    )
-  case attached {
-    Error(error) -> {
-      process.send(reply, Error(refusal_of(error)))
+  case dict.get(state.placements, session) {
+    Ok(Building(..)) -> {
+      process.send(reply, Error(protocol.PlaneBuilding))
       state
     }
-    Ok(bound) -> {
-      let unacked =
-        protocol.Unacked(
-          terminal: list.map(bound.terminal, from_ledger),
-          unknown: list.map(bound.unknown, from_ledger),
+    Ok(Ready(..)) | Error(Nil) -> {
+      let attached =
+        exec_ledger.attach(
+          state.ledger,
+          session,
+          workspace,
+          incarnation,
+          token,
+          state.config.limits,
         )
-      case
-        place(state, session, workspace, incarnation, owner_port, bound.how)
-      {
-        Ok(#(state, census)) -> {
-          process.send(reply, Ok(protocol.Attached(census:, unacked:)))
+      case attached {
+        Error(error) -> {
+          process.send(reply, Error(refusal_of(error)))
           state
         }
-        Error(reason) -> {
-          // The scope stays open without a plane, so the next attach retries the
-          // build at the same incarnation instead of finding a closed scope.
-          process.send(reply, Error(protocol.NoPlane(reason)))
-          state
+        Ok(bound) -> {
+          let unacked =
+            protocol.Unacked(
+              terminal: list.map(bound.terminal, from_ledger),
+              unknown: list.map(bound.unknown, from_ledger),
+            )
+          place(
+            state,
+            session,
+            workspace,
+            incarnation,
+            owner_port,
+            bound.how,
+            unacked,
+            reply,
+          )
         }
       }
     }
@@ -414,7 +498,8 @@ fn attach(
 }
 
 // Gives the scope a plane. A rebind keeps the plane it has and re-points its
-// owner link; every other case builds one, retiring a stale link first.
+// owner link, and answers at once. Every other case starts a build, retiring a
+// stale link first, and the answer is sent when the build lands.
 fn place(
   state: State(census),
   session: String,
@@ -422,51 +507,206 @@ fn place(
   incarnation: Int,
   owner_port: Subject(protocol.OwnerMessage),
   how: exec_ledger.Attachment,
-) -> Result(#(State(census), census), String) {
+  unacked: protocol.Unacked,
+  reply: Subject(Result(protocol.Attached(census), Refusal)),
+) -> State(census) {
+  let built = fn(state) {
+    build_plane(
+      state,
+      session,
+      workspace,
+      incarnation,
+      owner_port,
+      unacked,
+      reply,
+    )
+  }
   case how, dict.get(state.placements, session) {
-    exec_ledger.Rebound, Ok(placement) -> {
+    exec_ledger.Rebound, Ok(Ready(placement)) -> {
       owner_link.replace(placement.link, owner_port)
-      Ok(#(state, placement.plane.census))
+      process.send(
+        reply,
+        Ok(protocol.Attached(census: placement.plane.census, unacked:)),
+      )
+      state
     }
-    exec_ledger.Rebound, Error(Nil) ->
-      build_plane(state, session, workspace, incarnation, owner_port)
-    exec_ledger.Created, Ok(stale) | exec_ledger.Reopened, Ok(stale) -> {
+    exec_ledger.Created, Ok(Ready(stale))
+    | exec_ledger.Reopened, Ok(Ready(stale))
+    -> {
       owner_link.stop(stale.link)
-      build_plane(state, session, workspace, incarnation, owner_port)
+      built(state)
     }
-    exec_ledger.Created, Error(Nil) | exec_ledger.Reopened, Error(Nil) ->
-      build_plane(state, session, workspace, incarnation, owner_port)
+    exec_ledger.Rebound, Ok(Building(..))
+    | exec_ledger.Created, Ok(Building(..))
+    | exec_ledger.Reopened, Ok(Building(..))
+    -> {
+      // `attach` refuses a building scope before it reaches the ledger.
+      process.send(reply, Error(protocol.PlaneBuilding))
+      state
+    }
+    exec_ledger.Rebound, Error(Nil)
+    | exec_ledger.Created, Error(Nil)
+    | exec_ledger.Reopened, Error(Nil)
+    -> built(state)
   }
 }
 
+// Starts the factory as a weft run. The scope is `Building` until the run
+// reports, so no other request for the session can slip in between.
 fn build_plane(
   state: State(census),
   session: String,
   workspace: String,
   incarnation: Int,
   owner_port: Subject(protocol.OwnerMessage),
-) -> Result(#(State(census), census), String) {
-  use link <- result.try(owner_link.start(owner_port))
-  let spec =
-    AttachSpec(
-      session:,
-      workspace:,
-      incarnation:,
-      owner: owner_link.services(link, state.config.clock),
-      clock: state.config.clock,
-    )
-  case state.config.factory(spec) {
-    Ok(plane) -> {
-      let placements =
-        dict.insert(state.placements, session, Placement(plane:, link:))
-      Ok(#(State(..state, placements:), plane.census))
-    }
+  unacked: protocol.Unacked,
+  reply: Subject(Result(protocol.Attached(census), Refusal)),
+) -> State(census) {
+  case owner_link.start(owner_port) {
     Error(reason) -> {
-      owner_link.stop(link)
-      Error(reason)
+      process.send(reply, Error(protocol.NoPlane(reason)))
+      state
+    }
+    Ok(link) -> {
+      let spec =
+        AttachSpec(
+          session:,
+          workspace:,
+          incarnation:,
+          owner: owner_link.services(link, state.config.clock),
+          clock: state.config.clock,
+        )
+      let factory = state.config.factory
+      let #(state, id, sink, cancel) =
+        start_job(state, fn() { Ok(PlaneBuilt(factory(spec))) })
+      let tracked =
+        Tracked(
+          job: BuildJob(session:, link:, unacked:, reply:),
+          sink:,
+          cancel:,
+        )
+      State(
+        ..state,
+        jobs: dict.insert(state.jobs, id, tracked),
+        placements: dict.insert(state.placements, session, Building(job: id)),
+      )
     }
   }
 }
+
+// The build landed. A plane whose children start becomes the scope's, and the
+// attach it was started for is answered; any other ending leaves the scope open
+// in the ledger and without a plane, so the next attach builds again.
+fn plane_built(
+  state: State(census),
+  session: String,
+  link: owner_link.Link,
+  unacked: protocol.Unacked,
+  reply: Subject(Result(protocol.Attached(census), Refusal)),
+  built: Result(Plane(census), String),
+) -> State(census) {
+  case built {
+    Error(reason) -> build_failed(state, session, link, reply, reason)
+    Ok(plane) ->
+      case start_children(plane) {
+        Ok(children) -> {
+          let placement = Placement(plane:, link:, children:)
+          process.send(
+            reply,
+            Ok(protocol.Attached(census: plane.census, unacked:)),
+          )
+          State(
+            ..state,
+            placements: dict.insert(state.placements, session, Ready(placement)),
+          )
+        }
+
+        // The plane exists and its helpers are running, so a plane whose
+        // children would not start is closed before it is forgotten. This path
+        // is rare and blocks the host for the close, which is the cost of not
+        // leaking a pool.
+        Error(reason) -> {
+          let _outcome = plane.close(fn() { Ok(Nil) })
+          build_failed(state, session, link, reply, reason)
+        }
+      }
+  }
+}
+
+fn build_failed(
+  state: State(census),
+  session: String,
+  link: owner_link.Link,
+  reply: Subject(Result(protocol.Attached(census), Refusal)),
+  reason: String,
+) -> State(census) {
+  owner_link.stop(link)
+  process.send(reply, Error(protocol.NoPlane(reason)))
+  State(..state, placements: dict.delete(state.placements, session))
+}
+
+// The scope's supervisor, started by a process of its own that outlives the
+// build and ends with the host. A supervisor exits when its parent does, so the
+// build process cannot be the parent. The host cannot be either: stopping a
+// supervisor on purpose ends it with a `shutdown` exit, and a host linked to it
+// would receive that signal and die. The owner has no link to the host. It
+// watches the host instead and returns when the host is gone, which ends the
+// supervisor and its children with it.
+fn start_children(plane: Plane(census)) -> Result(Pid, String) {
+  let host = process.self()
+  let started = process.new_subject()
+  let _owner =
+    process.spawn_unlinked(fn() {
+      let supervisor = sup.new(sup.OneForOne) |> plane.children |> sup.start
+      case supervisor {
+        Ok(running) -> {
+          process.send(started, Ok(running.pid))
+          wait_for_host(host)
+        }
+        Error(error) ->
+          process.send(
+            started,
+            Error(
+              "the workspace's services did not start: "
+              <> string.inspect(error),
+            ),
+          )
+      }
+    })
+  case process.receive(started, children_grace_ms) {
+    Ok(outcome) -> outcome
+    Error(Nil) -> Error("the workspace's services did not start in time")
+  }
+}
+
+// Returns when the host process is gone.
+fn wait_for_host(host: Pid) -> Nil {
+  let watch = process.monitor(host)
+  process.new_selector()
+  |> process.select_specific_monitor(watch, fn(_down) { Nil })
+  |> process.selector_receive_forever
+}
+
+// Stops a scope's supervisor and its children, and answers `Ok` only when the
+// supervisor has been seen to go. A monitor taken first cannot miss the exit.
+fn retire_children(children: Pid) -> Result(Nil, String) {
+  let watch = process.monitor(children)
+  let asked = ffi_os.terminate_supervisor(children, children_grace_ms)
+  let outcome = case asked {
+    Ok(Nil) ->
+      process.new_selector()
+      |> process.select_specific_monitor(watch, fn(down) { down.reason })
+      |> process.selector_receive(children_grace_ms)
+      |> result.replace_error("the scope's services did not stop in time")
+      |> result.map(fn(_reason) { Nil })
+    Error(Nil) -> Error("the scope's services did not acknowledge shutdown")
+  }
+  process.demonitor_process(watch)
+  outcome
+}
+
+// How long a scope's supervisor has to stop its children.
+const children_grace_ms = 5000
 
 // --- run ----------------------------------------------------------------------
 
@@ -482,13 +722,14 @@ fn admit_run(
 ) -> State(census) {
   case dict.get(state.placements, key.session), process.subject_owner(reply) {
     Error(Nil), _ -> refuse_run(state, reply, no_plane())
+    Ok(Building(..)), _ -> refuse_run(state, reply, protocol.PlaneBuilding)
     _, Error(Nil) ->
       refuse_run(
         state,
         reply,
         protocol.Invalid("the reply subject has no owner to watch"),
       )
-    Ok(placement), Ok(_owner) -> {
+    Ok(Ready(placement)), Ok(_owner) -> {
       let admitted =
         exec_ledger.admit(
           state.ledger,
@@ -598,8 +839,13 @@ fn add_waiter(
 // bookkeeping the host needs to hear it and to cancel it.
 fn start_job(
   state: State(census),
-  task: fn() -> Result(JobResult, Nil),
-) -> #(State(census), Int, Subject(weft.Pulled(JobResult, Nil)), weft.Cancel) {
+  task: fn() -> Result(JobResult(census), Nil),
+) -> #(
+  State(census),
+  Int,
+  Subject(weft.Pulled(JobResult(census), Nil)),
+  weft.Cancel,
+) {
   let id = state.next_job
   let sink = process.new_subject()
   let cancel = weft.cancel_signal()
@@ -615,7 +861,7 @@ fn start_job(
 fn job_finished(
   state: State(census),
   id: Int,
-  pulled: weft.Pulled(JobResult, Nil),
+  pulled: weft.Pulled(JobResult(census), Nil),
 ) -> State(census) {
   case dict.get(state.jobs, id), pulled {
     Error(Nil), _ -> state
@@ -634,14 +880,14 @@ fn job_finished(
 fn settle_job(
   state: State(census),
   id: Int,
-  tracked: Tracked,
-  outcome: weft.Outcome(JobResult, Nil),
+  tracked: Tracked(census),
+  outcome: weft.Outcome(JobResult(census), Nil),
 ) -> State(census) {
   case outcome {
     weft.Completed(index: _, value: ToolRan(outcome: finished)) ->
       case tracked.job {
         RunJob(key:) -> run_finished(state, id, key, finished)
-        CloseJob(..) -> job_lost(state, id, tracked)
+        CloseJob(..) | BuildJob(..) -> job_lost(state, id, tracked)
       }
     weft.Completed(index: _, value: ScopeClosed(outcome: closed)) ->
       case tracked.job {
@@ -655,7 +901,13 @@ fn settle_job(
             closed,
             reply,
           )
-        RunJob(..) -> job_lost(state, id, tracked)
+        RunJob(..) | BuildJob(..) -> job_lost(state, id, tracked)
+      }
+    weft.Completed(index: _, value: PlaneBuilt(built:)) ->
+      case tracked.job {
+        BuildJob(session:, link:, unacked:, reply:) ->
+          plane_built(state, session, link, unacked, reply, built)
+        RunJob(..) | CloseJob(..) -> job_lost(state, id, tracked)
       }
     weft.Failed(index: _, error: Nil)
     | weft.Crashed(index: _, reason: _)
@@ -743,7 +995,11 @@ fn lose(state: State(census), key: Key) -> RunAnswer {
 
 // A job ended without a result. For a call that is still live, that makes its
 // outcome lost; for a call already settled or cancelled it changes nothing.
-fn job_lost(state: State(census), id: Int, tracked: Tracked) -> State(census) {
+fn job_lost(
+  state: State(census),
+  id: Int,
+  tracked: Tracked(census),
+) -> State(census) {
   case tracked.job {
     RunJob(key:) ->
       case dict.get(state.live, key) {
@@ -760,6 +1016,17 @@ fn job_lost(state: State(census), id: Int, tracked: Tracked) -> State(census) {
         link,
         protocol.UnknownCleanup(count: 1),
         reply,
+      )
+
+    // A build that died without a result may have started helpers nobody
+    // holds, so the scope is left without a plane and the sender is told why.
+    BuildJob(session:, link:, unacked: _, reply:) ->
+      build_failed(
+        state,
+        session,
+        link,
+        reply,
+        "the workspace build ended without a result",
       )
   }
 }
@@ -846,6 +1113,25 @@ fn close(
   incarnation: Int,
   reply: Subject(Result(CloseOutcome, Refusal)),
 ) -> State(census) {
+  case dict.get(state.placements, session) {
+    Ok(Building(..)) -> {
+      process.send(reply, Error(protocol.PlaneBuilding))
+      state
+    }
+    Ok(Ready(..)) | Error(Nil) ->
+      close_scope(state, session, workspace, incarnation, reply)
+  }
+}
+
+// The ledger half of a close, then the plane's: the fence first, so nothing is
+// admitted from here on.
+fn close_scope(
+  state: State(census),
+  session: String,
+  workspace: String,
+  incarnation: Int,
+  reply: Subject(Result(CloseOutcome, Refusal)),
+) -> State(census) {
   case exec_ledger.begin_close(state.ledger, session, workspace, incarnation) {
     Error(error) -> {
       process.send(reply, Error(refusal_of(error)))
@@ -854,7 +1140,7 @@ fn close(
     Ok(Nil) -> {
       let state = cancel_session(state, session)
       case dict.get(state.placements, session) {
-        Ok(placement) -> {
+        Ok(Ready(placement)) -> {
           let state =
             State(..state, placements: dict.delete(state.placements, session))
           start_close(state, placement, session, workspace, incarnation, reply)
@@ -862,7 +1148,7 @@ fn close(
 
         // No plane in this VM means no witness: the executor restarted, or the
         // build never succeeded. Without a witness the cleanup is unproven.
-        Error(Nil) ->
+        Ok(Building(..)) | Error(Nil) ->
           finish_closed_without_link(
             state,
             session,
@@ -885,8 +1171,11 @@ fn start_close(
   reply: Subject(Result(CloseOutcome, Refusal)),
 ) -> State(census) {
   let close_plane = placement.plane.close
+  let children = placement.children
   let #(state, id, sink, cancel) =
-    start_job(state, fn() { Ok(ScopeClosed(close_plane())) })
+    start_job(state, fn() {
+      Ok(ScopeClosed(close_plane(fn() { retire_children(children) })))
+    })
   let job =
     CloseJob(session:, workspace:, incarnation:, link: placement.link, reply:)
   State(
@@ -957,13 +1246,46 @@ fn finish_closed_without_link(
 fn lookup(state: State(census), key: Key) -> Result(protocol.Lookup, Refusal) {
   case exec_ledger.query(state.ledger, to_ledger(key)) {
     Ok(exec_ledger.Missing) -> Ok(protocol.Missing)
-    Ok(exec_ledger.Found(exec_ledger.Admitted)) -> Ok(protocol.Admitted)
-    Ok(exec_ledger.Found(exec_ledger.Unknown)) -> Ok(protocol.Unknown)
-    Ok(exec_ledger.Found(exec_ledger.Terminal(stored))) ->
+    Ok(exec_ledger.Found(found)) -> lookup_of(found)
+    Error(error) -> Error(refusal_of(error))
+  }
+}
+
+// What a row says, in the protocol's words. A stored outcome that no longer
+// decodes is a fault, never a different result.
+fn lookup_of(found: exec_ledger.CallState) -> Result(protocol.Lookup, Refusal) {
+  case found {
+    exec_ledger.Admitted -> Ok(protocol.Admitted)
+    exec_ledger.Unknown -> Ok(protocol.Unknown)
+    exec_ledger.Terminal(stored) ->
       case codec.decode_outcome(stored) {
         Ok(outcome) -> Ok(protocol.Terminal(outcome))
         Error(report) -> Error(damaged(report.expected))
       }
+  }
+}
+
+// Answers a query that must not leave a gap. A key with a row is reported as
+// `lookup` reports it. A key without one is fenced in the ledger's own
+// transaction, so a `Run` that is still in flight from a dead runtime finds the
+// key taken and the answer given here stays true.
+fn fenced_lookup(
+  state: State(census),
+  key: Key,
+  incarnation: Int,
+) -> Result(protocol.Lookup, Refusal) {
+  let outcome =
+    codec.encode_outcome(ToolFailed(reason: protocol.did_not_run_text))
+  case
+    exec_ledger.query_or_fence(
+      state.ledger,
+      to_ledger(key),
+      incarnation,
+      outcome,
+    )
+  {
+    Ok(exec_ledger.Fenced) -> Ok(protocol.Fenced)
+    Ok(exec_ledger.Standing(found)) -> lookup_of(found)
     Error(error) -> Error(refusal_of(error))
   }
 }

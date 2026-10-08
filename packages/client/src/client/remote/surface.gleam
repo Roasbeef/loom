@@ -43,6 +43,20 @@
 //// `recover` is the same repair for a call whose effect process is gone, after
 //// a runtime restart: it asks the ledger what became of the call and re-sends
 //// `Run` only when the answer is that the call is still running.
+////
+//// ## A missing row is not yet an answer
+////
+//// A dead runtime's effect process may have sent its `Run` just before it was
+//// killed, and Erlang orders messages only per sender, so recovery's question
+//// can overtake that `Run`. The attach token refuses the stale `Run` if the new
+//// runtime attached first, but nothing orders that attach against the `Run`
+//// at the host. So a call that must not run twice is recovered with
+//// `QueryOrFence`: the host stores "did not start" for a key with no row in the
+//// same transaction that found it missing. If the stale `Run` arrived first,
+//// the row is `admitted` and recovery waits for it. If the fence arrived
+//// first, the stale `Run` finds the key taken and never starts. A call that is
+//// safe to run again needs no fence, because the planner replays it under the
+//// same key and admission deduplicates the replay against any stale `Run`.
 
 import broker/internal/ffi_crypto
 import client/remote/address.{type Address}
@@ -53,6 +67,7 @@ import client/remote/protocol.{
 import client/wiring.{type Authority}
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import machine/operation
 import runtime/effects.{type Recovery, type ToolOutcome, type ToolRun}
 import weft/poll
 
@@ -177,6 +192,7 @@ pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
   let sent =
     exchange(config, Within(config.attach_within_ms), fn(reply) {
       protocol.Attach(
+        version: protocol.version,
         session: config.session,
         workspace: config.workspace,
         incarnation: config.incarnation,
@@ -261,9 +277,12 @@ pub fn run(surface: Surface(census), run: ToolRun) -> ToolOutcome {
 
 /// Asks the executor what became of a call whose effect process is gone.
 ///
-/// It assumes `attach` already ran for this runtime incarnation, which is what
-/// makes a missing row mean the call never reached the executor and now never
-/// can. A call that is still running is waited for by re-sending its `Run`.
+/// It assumes `attach` already ran for this runtime incarnation. A call that is
+/// safe to replay is looked up, and a missing row means the planner may run it
+/// again under the same key. Any other call is looked up with a fence, which
+/// is what makes a missing row mean the call never reached the executor and now
+/// never can. A call that is still running is waited for by re-sending its
+/// `Run`.
 ///
 /// ## Examples
 ///
@@ -271,9 +290,19 @@ pub fn run(surface: Surface(census), run: ToolRun) -> ToolOutcome {
 /// // surface.recover(attached_surface, tool_run)
 /// ```
 pub fn recover(surface: Surface(census), run: ToolRun) -> Recovery {
-  let key = protocol.key_of(surface.config.session, run)
-  case exchange(surface.config, Forever, protocol.Query(key, _)) {
-    Ok(Ok(protocol.Missing)) -> effects.NotStarted
+  let config = surface.config
+  let key = protocol.key_of(config.session, run)
+  let asked = case run.replay {
+    operation.ReplaySafe -> exchange(config, Forever, protocol.Query(key, _))
+    operation.ReplayNever ->
+      exchange(config, Forever, protocol.QueryOrFence(
+        key,
+        config.incarnation,
+        _,
+      ))
+  }
+  case asked {
+    Ok(Ok(protocol.Missing)) | Ok(Ok(protocol.Fenced)) -> effects.NotStarted
     Ok(Ok(protocol.Terminal(outcome:))) -> effects.Recovered(outcome:)
     Ok(Ok(protocol.Unknown)) -> effects.OutcomeUnknown
     Ok(Ok(protocol.Admitted)) -> await_live(surface, run)

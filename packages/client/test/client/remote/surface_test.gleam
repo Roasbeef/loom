@@ -19,6 +19,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/string
+import machine/operation
 import runtime/effects.{type ToolRun}
 import support/remote_fixtures as fixtures
 
@@ -69,6 +70,10 @@ fn config(rig: Rig, token_n: Int) -> surface.Config(String) {
       bit_array.from_string("token-" <> int.to_string(token_n))
     },
   )
+}
+
+fn replayable(run: ToolRun) -> ToolRun {
+  effects.ToolRun(..run, replay: operation.ReplaySafe)
 }
 
 fn attached(rig: Rig, token_n: Int) -> surface.Surface(String) {
@@ -165,8 +170,11 @@ pub fn recovery_reads_the_ledger_for_every_row_it_can_hold_test() {
   let remote = attached(rig, 1)
   let run = fixtures.tool_run("call_1", 0)
 
-  // After an attach, no row means the call never reached the executor.
-  assert surface.recover(remote, run) == effects.NotStarted
+  // After an attach, no row means the call never reached the executor. A call
+  // that is safe to replay is only looked up, so its key stays free.
+  let safe = replayable(fixtures.tool_run("call_2", 1))
+  assert surface.recover(remote, safe) == effects.NotStarted
+  assert surface.run(remote, safe) == fixtures.expected_outcome(safe)
 
   // A finished call is staged from the stored outcome, and nothing reruns.
   let _outcome = surface.run(remote, run)
@@ -317,5 +325,64 @@ pub fn the_survivors_of_a_replaced_port_serve_the_new_one_test() {
     )
   assert process.receive(seen, 1000) == Ok("second port decided")
   assert list.length(fixtures.builds(rig.probe)) == 1
+  stop(rig)
+}
+
+pub fn recovery_fences_a_call_that_must_not_run_twice_test() {
+  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let run = fixtures.tool_run("call_1", 0)
+
+  // Recovery finds no row and stores "did not start" for the key.
+  assert surface.recover(remote, run) == effects.NotStarted
+
+  // The dead runtime's effect process sent its `Run` before it was killed, and
+  // it reaches the host after the fence with the same token, because a restart
+  // inside one open keeps the token. It must not start the call.
+  assert surface.run(remote, run)
+    == effects.ToolFailed(reason: protocol.did_not_run_text)
+  assert fixtures.run_count(rig.probe, "call_1") == 0
+
+  // Asking again reads the stored row and says the same thing.
+  assert surface.recover(remote, run)
+    == effects.Recovered(effects.ToolFailed(reason: protocol.did_not_run_text))
+  stop(rig)
+}
+
+pub fn recovery_waits_for_a_stale_run_that_beat_the_fence_test() {
+  let rig = rig(fixtures.Held, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let run = fixtures.tool_run("call_1", 0)
+
+  // The stale `Run` is admitted first, from the same attach.
+  let _stale = run_in_background(remote, run)
+  assert fixtures.eventually(fn() {
+    fixtures.run_count(rig.probe, "call_1") == 1
+  })
+
+  // Recovery's fence finds it live, waits, and returns the real outcome.
+  let recovered = process.new_subject()
+  let _recoverer =
+    process.spawn_unlinked(fn() {
+      process.send(recovered, surface.recover(remote, run))
+    })
+  assert process.receive(recovered, 100) == Error(Nil)
+  fixtures.release(rig.probe)
+  assert process.receive(recovered, 2000)
+    == Ok(effects.Recovered(fixtures.expected_outcome(run)))
+  assert fixtures.run_count(rig.probe, "call_1") == 1
+  stop(rig)
+}
+
+pub fn a_replayable_call_is_not_fenced_so_the_replay_runs_test() {
+  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  let remote = attached(rig, 1)
+  let run = replayable(fixtures.tool_run("call_1", 0))
+
+  // Recovery says not started and writes nothing. The planner then replays the
+  // call under the same key, and it runs.
+  assert surface.recover(remote, run) == effects.NotStarted
+  assert surface.run(remote, run) == fixtures.expected_outcome(run)
+  assert fixtures.run_count(rig.probe, "call_1") == 1
   stop(rig)
 }
