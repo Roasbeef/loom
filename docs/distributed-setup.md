@@ -1083,7 +1083,8 @@ loom executor release SESSION --state-dir ~/.loom
 
 `SESSION` is the session id in the refusal. The command closes the scope as retired
 and records the release in the executor's ledger, and it refuses to run while the
-daemon is up. Start the daemon again and open the session. It reopens the scope, even when the orchestrator never recorded the close that the release replaced. A
+daemon is up. A daemon started while it runs is refused, and `loom` may report that
+the daemon is still starting until you start it again. Start the daemon again and open the session. It reopens the scope, even when the orchestrator never recorded the close that the release replaced. A
 scope that is open is refused by the command, because its session may be running:
 close the session first. See "Releasing an executor's stuck scope" in
 [configuration](configuration.md).

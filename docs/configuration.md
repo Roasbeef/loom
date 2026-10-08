@@ -744,6 +744,11 @@ session id that the refused open names. The session's next open reopens the scop
 Check first that nothing from the session still runs on the machine, because the
 command trusts you on that point and nothing else does.
 
+The command holds the state directory's daemon reservation while it runs and leaves
+that record behind when it exits. A daemon started during the release is refused
+and has to be started again, and `loom` may report that the daemon is still
+starting until the next daemon starts.
+
 ## What this file does not configure
 
 - **Hooks.** Claude-compatible hooks are read from `~/.claude/settings.json`, the

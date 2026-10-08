@@ -24,6 +24,14 @@
 //// when it admits a call, so a dead open's late `Run` is refused whatever the
 //// network did. Recovery follows attach, never the reverse.
 ////
+//// An attach that is sent again, because the link dropped or the host was still
+//// building the scope's workspace, uses a new reply subject for each send. A
+//// reply to an earlier send that arrives later, such as the `Attached` of the
+//// build the first send started, stays unread in the mailbox of the process
+//// that called `attach`. There is at most one per send that went unanswered, and
+//// the process is the session open, which ends soon after, so the surface does
+//// not collect them.
+////
 //// ## Lost connections are repaired by sending again
 ////
 //// A `Run` is idempotent by call key, so re-sending it is the reconciliation

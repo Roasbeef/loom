@@ -64,6 +64,11 @@ Check that nothing from the session still runs on this machine first. The
 command refuses a scope that is open, and a scope that is already closed
 cleanly.
 
+While it runs it holds the state directory's daemon reservation, and it leaves
+that record behind when it exits. A daemon started during the release is
+refused and must be started again, and `loom` may report that the daemon is
+still starting until the next daemon starts.
+
 Example:
   loom executor release 7f3a9c1e --state-dir /var/lib/loom"
 
