@@ -1041,4 +1041,12 @@ pub fn a_directory_that_breaks_a_rule_is_refused_test() {
     "directory = [\"laptop\", \"desk\", \"nobody\"]\n" <> base,
     "\"nobody\", which is not a node",
   )
+
+  // A member orchestrator refuses an [orchestrators.<name>] peer that is not a
+  // member, so a plan that leaves an orchestrator out would write a bundle its
+  // daemon refuses at startup.
+  refused_plan(
+    "directory = [\"laptop\", \"devbox\", \"buildbox\"]\n" <> base,
+    "every orchestrator; \"desk\" is missing",
+  )
 }
