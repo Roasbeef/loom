@@ -61,7 +61,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import host/bootstrap as native
 import host/endpoint
@@ -1467,4 +1467,276 @@ pub fn executor_scope(
     as "the executor holds a scope for the session"
   let assert Ok(Nil) = exec_ledger.close(ledger) as "the copy closes"
   scope
+}
+
+// --- one orchestrator and two executors ----------------------------------------
+
+/// Three daemons under one directory: an orchestrator and the two executors of
+/// a pool. The layouts are the ordinary ones, so every function above that
+/// takes a `Layout` or a `Running` works on each of them.
+pub type Trio {
+  Trio(
+    /// The directory holding everything of the three.
+    directory: String,
+    /// The orchestrator, which holds the conversations and the pool.
+    orchestrator: Layout,
+    /// The first executor of the pool.
+    alpha: Layout,
+    /// The second executor of the pool.
+    bravo: Layout,
+  )
+}
+
+/// Lays out the three daemons under `directory`, each with an isolated home.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let trio = remote_daemons.trio(directory)
+/// ```
+pub fn trio(directory: String) -> Trio {
+  Trio(
+    directory:,
+    orchestrator: layout(directory, "orchestrator"),
+    alpha: layout(directory, "alpha"),
+    bravo: layout(directory, "bravo"),
+  )
+}
+
+/// The `[executors.<name>]` table of an orchestrator whose row declares the
+/// platform its machine provides.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.declared_executor_table("alpha", node, "linux/x86_64")
+/// ```
+pub fn declared_executor_table(
+  name: String,
+  node: String,
+  platform: String,
+) -> String {
+  "[executors."
+  <> name
+  <> "]\nnode = \""
+  <> node
+  <> "\"\nplatform = \""
+  <> platform
+  <> "\"\n"
+}
+
+/// The `[pools.<name>]` table of an orchestrator: the executors in the order
+/// they are tried, and the platform the pool requires when it names one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.pool_table("fleet", ["alpha", "bravo"], None)
+/// ```
+pub fn pool_table(
+  name: String,
+  executors: List(String),
+  platform: Option(String),
+) -> String {
+  let members =
+    list.map(executors, fn(each) { "\"" <> each <> "\"" })
+    |> string.join(", ")
+  let required = case platform {
+    Some(label) -> "platform = \"" <> label <> "\"\n"
+    None -> ""
+  }
+  "[pools." <> name <> "]\nexecutors = [" <> members <> "]\n" <> required
+}
+
+/// Starts the daemon as `start_with` does, with `environment` exported to it
+/// beside the distribution options file.
+///
+/// A fixture uses this for a variable a real operator would set for one daemon,
+/// such as `LOOM_EXECUTOR_MAX_SCOPES`. The launcher is the same wrapper with
+/// more `export` lines, written beside the isolated launcher, and it still
+/// `exec`s, so the process the endpoint fences is the daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.start_with_environment(layout, [], [#("LOOM_EXECUTOR_MAX_SCOPES", "1")])
+/// ```
+pub fn start_with_environment(
+  layout: Layout,
+  arguments: List(String),
+  environment: List(#(String, String)),
+) -> Running {
+  let path = filepath.directory_name(layout.launcher) <> "/loomd-environment"
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      string.join(
+        list.flatten([
+          ["#!/bin/sh"],
+          list.flat_map(
+            [#("LOOM_DISTRIBUTION_OPTFILE", layout.options), ..environment],
+            fn(variable) {
+              [
+                variable.0 <> "=" <> quote(variable.1),
+                "export " <> variable.0,
+              ]
+            },
+          ),
+          ["exec " <> quote(layout.launcher) <> " \"$@\"", ""],
+        ]),
+        "\n",
+      ),
+    )
+    as "the environment launcher is written"
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o700)
+    as "the environment launcher is executable"
+  let started =
+    daemon_bootstrap.resolve(
+      layout.paths,
+      process.self(),
+      fn() {
+        Ok(daemon_bootstrap.Launch(
+          path,
+          list.append(
+            bootstrap.daemon_launch_arguments(
+              layout.paths.root,
+              path,
+              layout.config,
+            ),
+            arguments,
+          ),
+        ))
+      },
+      60_000,
+    )
+  let connected = case started {
+    Ok(connected) -> connected
+    Error(reason) ->
+      panic as {
+        layout.label
+        <> " did not start: "
+        <> reason
+        <> "\ndaemon log:\n"
+        <> log_tail(layout)
+      }
+  }
+  let assert Ok(address) = endpoint.address(connected.record)
+    as "the daemon published its address"
+  let assert endpoint.Ready(port:, ..) = connected.record
+    as "the daemon published its port"
+  let assert Ok(secret) = simplifile.read(connected.paths.token)
+    as "the fixture owner reads its private credential"
+  Running(layout:, connected:, port:, address:, owner: string.trim(secret))
+}
+
+/// `sessions.create` for a workspace registered on the executors of a pool.
+///
+/// The reply is returned whole, as `create_registered` returns it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.create_pooled(control, 1, "key", "repo", "fleet")
+/// ```
+pub fn create_pooled(
+  control: Control,
+  id: Int,
+  key: String,
+  workspace: String,
+  pool: String,
+) -> JsonValue {
+  command(
+    control,
+    id,
+    "sessions.create",
+    json.Object([
+      #("request_key", json.String(key)),
+      #("workspace", json.String(workspace)),
+      #("name", json.String("pooled " <> key)),
+      #("configuration", json.String("")),
+      #("pool", json.String(pool)),
+    ]),
+  )
+}
+
+/// Creates a session in a pool and waits for its opening to settle, returning
+/// the session identity and the reply that settled it. Unlike
+/// `create_and_settle` it does not insist the opening succeeded: a pool that
+/// cannot place the session settles on a failure the caller reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(session, settled) = remote_daemons.create_pooled_and_settle(control, 1, "key", "repo", "fleet")
+/// ```
+pub fn create_pooled_and_settle(
+  control: Control,
+  id: Int,
+  key: String,
+  workspace: String,
+  pool: String,
+) -> #(String, JsonValue) {
+  let created = create_pooled(control, id, key, workspace, pool)
+  assert field(created, "event") == json.String("sessions.create")
+  let body = field(created, "body")
+  let assert json.String(session) = field(body, "session_id")
+    as "the pooled session was created"
+  let assert json.String(operation) = field(field(body, "status"), "operation")
+    as "creation starts one opening operation"
+  #(session, await_operation(control, id + 1, session, operation))
+}
+
+/// The record of a session as `sessions.get` answers it: its `executor` and
+/// `pool` members are what the catalogue holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let record = remote_daemons.session_record(control, 40, session)
+/// ```
+pub fn session_record(control: Control, id: Int, session: String) -> JsonValue {
+  let read =
+    command(
+      control,
+      id,
+      "sessions.get",
+      json.Object([#("session_id", json.String(session))]),
+    )
+  assert field(read, "event") == json.String("sessions.get")
+  field(read, "body")
+}
+
+/// The executor's scope row for `session`, or `None` when its ledger holds no
+/// scope for it, read from a copy as `executor_scope` reads it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.scope_if_held(alpha, scratch, session)
+/// ```
+pub fn scope_if_held(
+  executor: Layout,
+  scratch: String,
+  session: String,
+) -> Option(exec_ledger.Scope) {
+  let assert Ok(Nil) = simplifile.create_directory_all(scratch)
+    as "the ledger copy has a directory"
+  let source = executor.paths.root <> "/exec-ledger.db"
+  let copy = scratch <> "/exec-ledger-" <> random_hex(4) <> ".db"
+  list.each(["", "-wal", "-shm"], fn(suffix) {
+    case simplifile.is_file(source <> suffix) {
+      Ok(True) -> {
+        let assert Ok(Nil) =
+          simplifile.copy_file(source <> suffix, copy <> suffix)
+          as "the ledger file is copied"
+        Nil
+      }
+      _ -> Nil
+    }
+  })
+  let assert Ok(ledger) = exec_ledger.open(copy) as "the copied ledger opens"
+  let assert Ok(found) = exec_ledger.scope(ledger, session)
+    as "the copied ledger answers"
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the copy closes"
+  found
 }

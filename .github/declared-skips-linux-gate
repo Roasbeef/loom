@@ -32,6 +32,12 @@ declared|linux|SKIP shipped remote: platform enforcement unavailable|The ordinar
 # Linux sign-off gate run it for real.
 declared|linux|SKIP shipped remote caps: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the remote program scenario for real.
 
+# The executor pool fixture boots an orchestrator and two executors, creates
+# sessions in a pool, and reads each executor's ledger. The executors jail every
+# call, so a runner whose helper cannot enforce a policy declines the whole
+# fixture and asks the same measured question through the same probe.
+declared|linux|SKIP shipped remote pool: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the pool scenarios for real.
+
 # The shipped confinement fixture reads the daemon's own credentials from a
 # jailed `bash` call and asserts the secret did not come back. Without a
 # helper that enforces a policy the reads succeed, which measures the absence
