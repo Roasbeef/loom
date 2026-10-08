@@ -93,3 +93,54 @@ change. macOS could verify code-mode registration, but the smoke test explicitly
 could not prove a jailed offline bundled-toolchain compilation because the
 kernel lacked the required unprivileged network namespace. Nothing was pushed,
 merged, installed or restarted.
+
+## Publication and the next measured targets
+
+[PR #917](https://github.com/Roasbeef/loom/pull/917) publishes this change. It
+was rebased onto main `7091d5a42`, with only a handoff conflict. The reviewer
+rechecked that the upstream profiling reader, `tom` dependency, launchers and
+bundled profiling smoke tests remain intact. The older matched comparison
+above remains historical; it is not a timing comparison of the rebased source.
+
+A fresh rebased `make -j1 dist` at `2495ca8eb` returned exit 0 in 105.975
+seconds, including version resolution and a 14.05-second development rebuild.
+Its server and TUI production compiles reported 36.07 and 16.51 seconds.
+This is a validation run with different rebuild scope, not a matched regression
+comparison. Both release smoke tests and archive checks passed, including the
+new profiling true/false reader checks. All 477 exported TUI BEAM/application
+files matched both staged clients, and every distribution checksum matched.
+
+Before rebasing, diagnostic PATH wrappers timed subprocesses without changing
+compiler options on the pinned source. A 35.624-second server export spent
+23.620 seconds in five dependency `rebar3` invocations: cowlib 5.429, esqlite
+10.067, yamerl 1.192, gun 6.156 and hpack 0.776 seconds. Within esqlite, compiling
+SQLite C took 8.970 seconds. A 16.075-second TUI export spent 11.897 seconds
+rebuilding cowlib, yamerl and gun. Nested escript timings include these waits
+and must not be added again. These observations identify dependency rebuilds
+as the next target; they do not establish savings from a cache.
+
+Canonical gzip-9 packaging of the existing server, bundled client and slim
+shipment took 6.198, 2.232 and 0.988 seconds, respectively, in a diagnostic pass.
+The slim probe used the shipment directly, rather than the final staging root.
+Increasing tar copy buffers preserved the server archive's exact SHA-256 but
+changed CPU only from 4.847 to 4.747 seconds in one pair; the streaming variant
+used 4.970 seconds. Neither experiment was retained. Compression level and
+canonical archive metadata remain unchanged.
+
+The rebased full `make check` returned exit 2 when its aggregate Python runner
+reached the unchanged 20-second deadline (runner exit 124). Package tests had
+not run. The signoff fixture `test_a_red_run_brings_back_why` independently
+failed its expected lane-log assertion on both the PR and pristine main, with
+exit 1 in each focused run. Those scripts are unchanged by this PR. A broader
+signoff-script diagnostic reached its own 120-second deadline. These are
+unresolved local gate limitations, not green validation or proven flakes.
+The rebased launcher checks passed in the native rerun after a sandboxed
+fixture failure. Documentation checks returned exit 0 with zero errors and
+198 warnings after the new evidence was added.
+
+Optional ccache support would target SQLite's repeated C compile; reusable
+production exports could also avoid repeated Erlang dependency compilation,
+but require a freshness contract for changed and removed modules, dependencies
+and toolchains. The owner was asked to choose before introducing a dependency
+or cache pattern. Neither has been installed or implemented. Hosted CI and
+Linux signoff remain separate from these local observations.

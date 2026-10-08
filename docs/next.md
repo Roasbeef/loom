@@ -47,12 +47,17 @@ should measure Gleam generation, dependency compilation and shipment work
 separately before choosing another source refactor. Do not infer a source
 compiler regression from a whole-export wall time.
 
-Full `make check`, hosted CI and Linux signoff remain unverified for this
-branch. macOS smoke tests prove bundled startup and code-mode registration;
+The full local gate remains red; hosted CI and Linux signoff remain
+unverified for this branch. macOS smoke tests prove bundled startup and code-mode registration;
 they do not prove jailed offline bundled-toolchain compilation on Linux.
 [PR #917](https://github.com/Roasbeef/loom/pull/917) publishes the build change.
 The first full gate was interrupted with exit 130 to rebase its stale source;
-it establishes no complete-gate verdict. Fresh-base validation is pending.
+it establishes no complete-gate verdict. Fresh-base distribution validation passed on `2495ca8eb`, including both
+release smoke tests, archive checks, 477 matching TUI BEAM/application files
+and the upstream profiling reader checks. The full `make check` returned
+exit 2 at the unchanged 20-second aggregate Python deadline. Its failing
+signoff lane-log fixture also fails independently on pristine main. Package
+tests and Linux signoff remain unverified; see the report for exact limits.
 No change has been merged, installed or used to restart a production process.
 
 Keep necessary development warning checks and release probes when changing
@@ -60,3 +65,17 @@ the pipeline. Any persistent shipment cache needs an explicit freshness
 contract; this change avoids that machinery by reusing the export only
 within the same distribution invocation. Each gate must be judged by its
 own exit code, as [execution](execution.md) requires.
+
+## Next compile-time iteration
+
+Diagnostic dependency builds consumed 23.620 seconds of a 35.624-second
+server export and 11.897 seconds of a 16.075-second TUI export on the original
+pinned source. SQLite C compilation alone took 8.970 seconds. Archive
+compression consumed another roughly nine seconds; a larger-buffer experiment
+showed little CPU improvement and was discarded. No compiler options changed.
+
+The pending owner choice is optional ccache support versus a broader reusable
+production export design. AGENTS.md requires a choice before a new dependency
+or cache pattern. No cache has been added; retain the current fresh-export
+contract until that choice is settled. The detailed subprocess measurements
+are in the compile-time report, with their original-source boundary explicit.
