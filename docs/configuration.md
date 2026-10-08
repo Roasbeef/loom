@@ -720,6 +720,30 @@ orchestrator, and each executor peers with the orchestrators that use it, always
 both directions. An executor that no orchestrator uses, and an orchestrator with no
 peer, are errors. Unknown keys are refused.
 
+## Releasing an executor's stuck scope
+
+An executor keeps one scope for each session whose checkout it holds. When a
+session closes and the executor cannot prove that every process of the scope has
+exited, the scope records unknown cleanup and the executor refuses every later
+open of that session. The executor never decides on its own that those processes
+are gone. After an executor daemon restarts this happens to every session that
+closes, because the new daemon has no workspace for the scope to retire. A daemon
+that ends in the middle of a close leaves the scope closing, which is refused in
+the same way. Each such scope holds one of the executor's sixteen slots for scopes
+that are not cleanly closed.
+
+`loom executor release SESSION [--state-dir PATH]` is the operator's override. It
+is also `loomd executor release`. Run it on the executor, with the executor daemon
+stopped: it opens the daemon's ledger at `<state-dir>/exec-ledger.db` (the state
+directory defaults to `~/.loom`), and it refuses to start while a daemon holds that
+state directory. It closes a closing scope, or one with unknown cleanup, as having
+every child retired, and records the release in the ledger with the state the scope
+was in and the time. It refuses a scope that is open, because its session may be
+running, and a scope that is already closed cleanly. `SESSION` is the orchestrator
+session id that the refused open names. The session's next open reopens the scope.
+Check first that nothing from the session still runs on the machine, because the
+command trusts you on that point and nothing else does.
+
 ## What this file does not configure
 
 - **Hooks.** Claude-compatible hooks are read from `~/.claude/settings.json`, the

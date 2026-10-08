@@ -1064,6 +1064,28 @@ running the daemon (a different `HOME` means a different file); and this node's
 certificate must carry its own node name as a DNS name. Check the name with
 `openssl x509 -in cert.pem -noout -ext subjectAltName`.
 
+**After an executor restart, a remote session will not open: `could not prove N
+children of the closed scope are gone`** (**Pending**). The executor daemon
+restarted while the session was open. The new daemon has no workspace for the
+session's scope, so when the session closed, the executor could not prove the
+scope's processes were gone and recorded unknown cleanup. It refuses every open of
+that session after that, and a scope that was left closing by a daemon that ended
+in the middle of a close is refused the same way (`... is closing`). The open does
+not retry, because the executor will not decide for itself that the processes are
+gone. Check on the executor that nothing from the session still runs, stop the
+executor daemon, and release the scope:
+
+```sh
+loom executor release SESSION --state-dir ~/.loom
+```
+
+`SESSION` is the session id in the refusal. The command closes the scope as retired
+and records the release in the executor's ledger, and it refuses to run while the
+daemon is up. Start the daemon again and open the session. It reopens the scope. A
+scope that is open is refused by the command, because its session may be running:
+close the session first. See "Releasing an executor's stuck scope" in
+[configuration](configuration.md).
+
 **A remote session fails to open with `executor_unavailable:`.** The reason after
 the colon says what to check. It is in `operations.get` and in the daemon's
 `daemon.session_start_failed` log record. For an unreachable executor, work

@@ -807,6 +807,34 @@ as old as the scope. Every absolute deadline a hook, a goal check or a Git
 observation then put into a `CallSpec` was in the executor's past by that age.
 Tool runs were unaffected, because their deadlines are made on the executor.
 
+#### The operator's release of a stuck scope
+
+The ruling that a scope with unknown cleanup gets no automatic successor left no
+way out, and a restart of the executor's VM makes that scope the usual outcome. The
+new VM has no plane for a scope it did not build, so when the session closes, its
+close finds no witness and records `UnknownCleanup(0)`. Every later attach of that
+session is refused as an unclean close, the scope holds one of the sixteen slots,
+and the only remedy was deleting the ledger file, which also discards the
+unacknowledged outcomes. A host that ends between `begin_close` and `finish_close`
+leaves a `closing` scope with the same effect.
+
+`loomd executor release SESSION [--state-dir PATH]` is the explicit, recorded
+override. It runs on the executor with the executor daemon stopped, and it takes the
+state directory's endpoint reservation first, which a live daemon holds, so it
+cannot open the ledger beside one. It moves a `closing` scope, or a `closed` one
+with unknown cleanup, to `closed` with `all_retired`, and refuses an `open` scope
+and a clean one. The ledger is at schema version 2 for this: a `scope_release`
+table gets one row per release, with the former state and the executor's clock,
+written in the same transaction as the change. A version 1 file gains the table
+when it is opened, and an older build refuses a version 2 file.
+
+The orchestrator's record changes with it. A close with unknown cleanup used to
+attach again at the stored incarnation, which a released scope refuses as stale,
+because a reopen names the next incarnation. The record now attaches at the
+incarnation after any close that ended one, clean or not. While the scope still
+holds unknown cleanup the executor refuses that attach as before. The refusal now
+names the command.
+
 ## Impact
 
 - `client`: the workspace plane is split out of `serve.assemble_in`; new

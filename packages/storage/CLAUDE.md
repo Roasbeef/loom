@@ -357,12 +357,16 @@ with these forks: they define the same modules.
   `protocol-change/078`): one SQLite file per executor, rows keyed by
   session, no process of its own (a later node-level actor owns the single
   connection). Its DDL is `sql/exec_ledger.sql` (embedded as
-  `exec_ledger_schema`, `PRAGMA user_version` 1, its own `application_id`) and
-  its named queries are `src/storage/sql/exec_ledger.sql`, generated into
+  `exec_ledger_schema`, with `sql/exec_ledger_releases.sql` as its second
+  version, embedded as `exec_ledger_releases_schema`; `PRAGMA user_version` 2,
+  its own `application_id`; a version 1 file gains the second table when it is
+  opened) and its named queries are `src/storage/sql/exec_ledger.sql`, generated into
   `sql.gleam` with the `Ledger*` names. Two tables: `scope(session, workspace,
   incarnation, state open|closing|closed, close_outcome, attach_token)` and
   `call(session, op, step, source_index, incarnation, tool, state
-  admitted|terminal|unknown, outcome, outcome_digest, outcome_bytes)`.
+  admitted|terminal|unknown, outcome, outcome_digest, outcome_bytes)`, plus
+  `scope_release(session, workspace, incarnation, was, released_at_ms)`, the
+  operator release record.
   `Ledger` is opaque; `Key` is the planner's call identity;
   `Limits(max_unclean_scopes, max_ledger_bytes)` is passed on every call;
   `ScopeState` is `Open | Closing | Closed(AllRetired | UnknownCleanup(n))`;
@@ -370,10 +374,11 @@ with these forks: they define the same modules.
   `Missing | Found(CallState)`; `Admission` is `Fresh | Existing(CallState)`;
   `Fencing` is `Standing(CallState) | Fenced`;
   `Error` is one closed type (`StaleIncarnation`, `StaleToken`,
-  `ScopeNotOpen`, `ScopeClosing`, `UncleanClose`, `CapacityExhausted`,
+  `ScopeNotOpen`, `ScopeClosing`, `UncleanClose`, `NotReleasable`, `CapacityExhausted`,
   `BudgetExhausted`, `DigestMismatch`, `MalformedRow`, ...). Operations:
   `open`, `close`, `attach`, `admit`, `finish`, `mark_unknown`, `query`,
-  `query_or_fence`, `ack`, `begin_close`, `finish_close`, `scope`, and `unacked`, the attach reply's two
+  `query_or_fence`, `ack`, `begin_close`, `finish_close`, `release` (with
+  `Released`, and `releases` listing the `Release` rows), `scope`, and `unacked`, the attach reply's two
   key lists as a read that changes nothing (`Unacked(terminal, unknown)`), for
   a reconciler that must not replace the scope's token to look.
 
@@ -672,12 +677,19 @@ with these forks: they define the same modules.
 - **`exec_ledger.open` is restart recovery, so one opener per VM.** It turns
   every `admitted` row into `unknown` and nothing turns one back; a second
   `open` while runs are in flight would mark them lost. The node-level actor is
-  the only opener. A call still `admitted` at close is the actor's to settle
-  (`finish` or `mark_unknown`); `finish_close` does not look for it.
+  the only opener among daemons. `open` itself takes no lock; the executor daemon
+  holds the state directory's endpoint reservation for its VM's life, and
+  `loomd executor release`, the only other opener, takes the same reservation
+  first and refuses to run beside a daemon. A call still `admitted` at close is
+  the actor's to settle (`finish` or `mark_unknown`); `finish_close` does not
+  look for it.
 - **Scope rules.** A session has one scope (`attach` refuses a second
   workspace, so a call key finds its scope without a workspace). Reopen needs
   `Closed(AllRetired)` and exactly `incarnation + 1`; `UnknownCleanup` never
-  reopens. At most `max_unclean_scopes` (16) scopes may be anything but
+  reopens by itself. `release` is the one exit, taken by an operator: it moves
+  a `Closing` or `Closed(UnknownCleanup)` scope to `Closed(AllRetired)` and
+  writes the `scope_release` row in the same transaction, and it refuses an
+  `Open` scope and a clean one (`NotReleasable`). At most `max_unclean_scopes` (16) scopes may be anything but
   `Closed(AllRetired)`, and a clean close frees its slot immediately.
 - **The ledger byte budget** is `sum(outcome_bytes)` over `admitted` (the
   reservation) and `terminal` (the real size) rows plus the new reservation,
@@ -687,9 +699,11 @@ with these forks: they define the same modules.
   decode together, a `terminal` row's outcome must match its SHA-256 digest
   and recorded size (`DigestMismatch`), and a state that fits no variant is
   `MalformedRow`. Nothing defaults.
-- **`exec_ledger_schema` is generated** from `sql/exec_ledger.sql` by
-  `make gen-sql`, and the ledger's `Ledger*` queries are in the generated
-  `sql.gleam`; `exec_ledger_test` checks the embedded schema against the file.
+- **`exec_ledger_schema` and `exec_ledger_releases_schema` are generated** from
+  `sql/exec_ledger.sql` and `sql/exec_ledger_releases.sql` by `make gen-sql`, and
+  the ledger's `Ledger*` queries are in the generated `sql.gleam`;
+  `exec_ledger_test` checks each embedded schema against its file. An older
+  build refuses a version 2 file as `Unsupported`.
 
 ## Deep Docs
 

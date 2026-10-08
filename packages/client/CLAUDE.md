@@ -6340,6 +6340,15 @@ each own one step:
 - `daemon/distribution_cli` dispatches `init`, `provision`, `show`, `install`
   and `options`. `run` returns the text to print; `main` prints and halts. No
   command prints a key, cookie or certificate.
+- `daemon/executor_cli` is `loomd executor release SESSION [--state-dir PATH]`
+  (`loom executor release` forwards to it from the launcher, with the help text
+  duplicated in `tui` and compared by `scripts/cli_help_test.sh`). It takes the
+  state directory's endpoint reservation through `daemon.claim_endpoint`, which
+  refuses while a live daemon holds it, then opens `<state-dir>/exec-ledger.db`
+  and calls `exec_ledger.release`. It never creates the state directory. The
+  orchestrator's side of the same exit is `scope.attach_at`: a close with unknown
+  cleanup attaches at the next incarnation, which the executor refuses until the
+  release and reopens after it.
 
 The only new foreign code is `src/client_pki_ffi.erl` behind
 `client/internal/ffi_pki`: five operations (`authority`, `issue`, `pin`,

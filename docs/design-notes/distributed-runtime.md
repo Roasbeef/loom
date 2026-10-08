@@ -306,7 +306,16 @@ DOWN, a timeout or a lost reply never counts as a witness; missing evidence
 leaves the scope `closing` or `unknown`. Reopen is allowed only from
 `closed, all_retired`, and it bumps the incarnation. Archive closes; restore
 reopens. A scope with unknown cleanup gets no automatic successor; an operator
-override is explicit and recorded.
+override is explicit and recorded. The override is `loomd executor release
+SESSION`, run on the executor with its daemon stopped. It closes a `closing`
+scope, or a `closed` one with unknown cleanup, as `all_retired`, so the next
+attach reopens it one incarnation higher, and it writes a `scope_release` row
+with the scope's former state and the time. It refuses an `open` scope and a
+scope that is already `all_retired`. An orchestrator whose record holds a close
+with unknown cleanup attaches at the next incarnation, so the same attach is
+refused before the release and reopens after it. This is the routine exit after
+an executor restart: the new VM has no plane for any scope it did not build, so
+every session that then closes records `unknown(0)`.
 
 Result recovery uses the same ledger. A query by call key works in any scope
 state and for any incarnation, because the rows never move. So the property
