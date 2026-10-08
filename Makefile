@@ -52,7 +52,7 @@ check-affected: ## Run only the gates a change against BASE can affect (BASE=ori
 	@bash scripts/check_affected.sh "$(BASE)"
 
 .PHONY: model-check
-model-check: ## Check the P protocol models under protocol/models (needs the P tool)
+model-check: ## Check the protocol models under protocol/models (TLC for TLA+, the P tool for P)
 	@bash scripts/model_check.sh
 
 # The real-helper suites in broker, tools, codemode and conformance run the

@@ -272,7 +272,7 @@ The selection:
   package runs through `scripts/check.sh <pkg>`, the body of
   `make check-<pkg>`, in the signoff's lane grouping.
 - **Other gates:** a change under `protocol/models/` runs
-  `make model-check` (the P models, which need the P tool); a sandbox
+  `make model-check` (the TLA+ model, which needs a jar and Java 11 or later, and the P models, which need the P tool); a sandbox
   change runs the helper's `--self-test`.
 - **The full `make check`,** instead of a package list, for a change to
   `scripts/`, the `Makefile`, `.github/`, the image files, any package's
