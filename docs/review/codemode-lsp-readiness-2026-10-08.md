@@ -77,3 +77,24 @@ simplifications. It independently ran the three script tests and whitespace
 checks. It did not independently verify real jailed execution or Linux signoff.
 Linux signoff and hosted CI remain required on the published head. No installed
 client or daemon was replaced, restarted or patched by this change.
+
+## CI and main integration follow-up
+
+The original head `d72948088` passed fresh-container Linux signoff in 1,287
+seconds with a clean skip census and release/update verification. All individual
+hosted CI jobs passed. The macOS aggregate nevertheless failed because two
+existing broker `/proc` prerequisite skips were undeclared. Its tests and the
+skip metadata were unchanged from main. The Linux fast job ran both
+`real_helper_witnessed_kill_retires_a_stopped_helper_test` and
+`real_helper_kill_verdict_precedes_no_late_payload_write_test` successfully.
+
+A report-only independent classifier confirmed the Darwin prerequisite is
+checked before helper setup and assertions. A Darwin-only declaration matches
+the shared reason, without changing tests or assertions. The strict census
+still rejects an unused declaration or any different skip. The local census
+reproduced the old aggregate failure before applying this metadata correction.
+
+Main at `16f886bd0` is integrated, preserving the merged terminal wrapping and
+Link-form fixes. Only the shared handoff needed conflict resolution. The
+original-head signoff does not certify the integrated head; obtain fresh CI and
+Linux signoff before the user-authorized merge.

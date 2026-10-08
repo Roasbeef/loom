@@ -43,3 +43,8 @@ declared|darwin|no /proc on this host, so a stopped server's death cannot be obs
 # bucket installs the component, rust-src and std's dependencies
 # (.github/scripts/install_rust_analyzer.sh) and runs it for real.
 declared|darwin|SKIP lsp manager rust-analyzer: rust-analyzer does not run|macOS runners carry no rust-analyzer component; the Linux client bucket installs it and runs the fixture for real.
+
+# Both broker kill-custody fixtures inspect /proc to identify the helper and
+# observe its descendants before asserting Linux/bwrap kill ordering. Darwin
+# lacks that prerequisite. The Linux gate runs both fixtures for real.
+declared|darwin|the kill evidence is read from /proc, which darwin lacks|Darwin has no procfs; both broker kill-custody fixtures require /proc to identify the running helper and observe its descendants before exercising the Linux/bwrap assertions.
