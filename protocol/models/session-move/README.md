@@ -47,7 +47,8 @@ meaningful.
 | `Activate` | 5. B's row goes from `absent` to `active`, which needs `copy = sent`. |
 | `LoseReply` | The reply to `Activate` is dropped. |
 | `Retire` | 6. A writes `moved`. It needs to have observed B's row active, by the reply or by a status query to a live B. |
-| `AbortEarly` | The only way back, `moving` to `active`. It needs `copy # sent`. |
+| `AbortEarly` | The way back before the send, `moving` to `active`. It needs `copy # sent`. |
+| `RefuseActivate` | B's definitive refusal of an activation. A abandons the move, `moving` to `active`. B refuses only while its row is `absent`, and the copy it deletes with the refusal is gone. |
 | `AttachExec(n)`, `OpenA`, `OpenB` | A node attaches to the executor, then starts serving. |
 | `CrashA`, `CrashB`, `Restart` | A crash clears memory and keeps rows. A restart of A respawns the mover only for a `moving` row. |
 
@@ -64,9 +65,22 @@ prevent, and why the catalogue rows, not the ledger, are the authority.
 
 - A scope that closes with `UnknownCleanup` refuses the move before any
   send. The model assumes the clean close: `StopA` always succeeds.
-- B's definitive `Refused` (a bad digest after one re-send, a missing
-  executor configuration) is the one abort after the send in the design. It
-  is not modelled, so the model has no abort after the send at all.
+- B's definitive `Refused` is one action, `RefuseActivate`, and it stands for
+  every refusal the receiver can send: a missing executor configuration, a
+  scope that is not cleanly closed, a session held under another state. The
+  model does not tell them apart. A bad digest or a missing copy is not an
+  abort in the code (the source sends the file again, once), and is not
+  modelled. The rule `RefuseUncommitted` says B never refuses once its row is
+  `active`; the code holds it by answering a repeat of a committed activation
+  from the row before it looks at anything else.
+- Messages are not duplicated or reordered. `Activate` is one step, and the
+  retries of an activation, which the code answers again from the row,
+  collapse into it. A refusal of a retry is therefore a `RefuseActivate` from
+  a state with `b = active`, which is what the mutant allows. `Send` does not
+  need `aliveB`: the pieces are acknowledged one by one in the code, and a
+  dead receiver makes the send stall until it is up. The model lets the copy
+  arrive while B is down. That cannot produce two owners, because B's row
+  stays `absent` until `Activate`, which needs B up.
 - The file is cut and sent whole. A partial copy and the re-send are one
   step each.
 - Incarnations are bounded by `MaxInc` and the first attach is a reopen from
@@ -82,7 +96,7 @@ prevent, and why the catalogue rows, not the ledger, are the authority.
 | `NoResurrection` | `everMoved => a = moved`. No action leaves `moved`. |
 | `ActiveImpliesComplete` | `b = active => copy = sent`, and `a = moved => b = active`. B's row is active only over the complete copy, and A retires only over an active B, so there is no state with a moved session and no complete owner. |
 | `OneServingHolder` | `servingA => holder # B`, and `servingB => holder # A`. A node that serves holds the executor token. The design states the A half. |
-| `MoveSettles` | `a = moving ~> a \in {moved, active}`, under weak fairness of `StopA`, `Cut`, `Send`, `Activate`, `Retire` and `Restart`. |
+| `MoveSettles` | `a = moving ~> a \in {moved, active}`, under weak fairness of `StopA`, `Cut`, `Send`, `Activate`, `Retire` and `Restart`. `RefuseActivate` is not fair: the move must settle without it. |
 
 The second conjunct of `ActiveImpliesComplete` is an addition to the design's
 statement. Without it, retiring early (the third mutation below) would leave
@@ -121,9 +135,10 @@ TLC 2.19 (one worker):
 
 | Configuration | Outcome | States generated | Distinct | Depth |
 |---|---|---|---|---|
-| `Move.cfg` | no error, `MoveSettles` holds | 1,167 | 392 | 20 |
-| `MutantIntend.cfg` | `OneOwner` violated | 758 | 279 | 11 |
-| `MutantAbort.cfg` | `OneOwner` violated | 693 | 254 | 10 |
+| `Move.cfg` | no error, `MoveSettles` holds | 1,179 | 392 | 20 |
+| `MutantIntend.cfg` | `OneOwner` violated | 765 | 279 | 11 |
+| `MutantAbort.cfg` | `OneOwner` violated | 700 | 254 | 10 |
+| `MutantRefuse.cfg` | `OneOwner` violated | 555 | 216 | 10 |
 | `MutantRetire.cfg` | `ActiveImpliesComplete` violated | 53 | 30 | 5 |
 
 Reachability was also checked once by hand with throwaway invariants: B can
@@ -144,6 +159,7 @@ when a weaker invariant breaks one step earlier.
 |---|---|---|
 | `Intend` writes nothing | `IntendDurable = FALSE` | The copy is sent, B activates and serves. A then crashes and restarts, finds an `active` row and no mover, and serves again. `OneOwner` breaks. |
 | `AbortEarly` allowed after the send | `AbortGuardsSent = FALSE` | B has the file and activates. A aborts, reopens at the next incarnation and serves. B attaches by rebinding the same incarnation and serves too. `OneOwner` breaks. |
+| B refuses after its row is active | `RefuseUncommitted = FALSE` | B activates, and the reply is lost or the retry arrives. B refuses the retry, A treats the refusal as final and takes the session back, reopens it at the next incarnation and serves. B attaches by rebinding the same incarnation and serves too. `OneOwner` breaks. The shipped code did this when the owner had opened the session on B before the retry (the receiver answered busy), and when B no longer listed the sender. |
 | `Retire` without the observation | `RetireObserves = FALSE` | A retires right after the send, before B's row is active. `ActiveImpliesComplete` breaks: `moved` with `b = absent`. |
 
 To add a mutation, add a `Mutant<Name>.cfg` with an `expect-violation` line.

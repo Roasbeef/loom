@@ -11,8 +11,8 @@
 (* of it? It does not model the data in the copy, the directory lookups    *)
 (* (phase 3), or more than one move at a time.                             *)
 (*                                                                         *)
-(* Three constants switch a rule off so that its mutation can be checked.  *)
-(* A clean run sets all three to TRUE. Each Mutant*.cfg sets one to FALSE  *)
+(* Four constants switch a rule off so that its mutation can be checked.   *)
+(* A clean run sets all four to TRUE. Each Mutant*.cfg sets one to FALSE   *)
 (* and names the invariant the checker must then violate.                  *)
 (***************************************************************************)
 EXTENDS Naturals
@@ -21,6 +21,7 @@ CONSTANTS
     IntendDurable,   \* Intend writes the `moving` row before anything else.
     AbortGuardsSent, \* AbortEarly is refused once the copy is on B.
     RetireObserves,  \* Retire needs to have seen B's row active.
+    RefuseUncommitted, \* B refuses an Activate only while its row is absent.
     MaxInc,          \* Bound on the executor incarnation.
     MaxCrashes       \* Bound on crashes of either node in one behaviour.
 
@@ -157,8 +158,8 @@ Retire ==
                    crashes>>
 
 (***************************************************************************)
-(* The only way back. A cut that never left A is reaped; a copy already on *)
-(* B stays there. The mutant allows the abort after the send.              *)
+(* The way back before the send. A cut that never left A is reaped; a copy *)
+(* already on B stays there. The mutant allows the abort after the send.   *)
 (***************************************************************************)
 AbortEarly ==
     /\ aliveA /\ mover = "run" /\ a # "moved"
@@ -166,6 +167,30 @@ AbortEarly ==
     /\ a' = "active"
     /\ mover' = "idle"
     /\ copy' = IF copy = "sent" THEN "sent" ELSE "none"
+    /\ replied' = FALSE
+    /\ UNCHANGED <<b, exec, servingA, servingB, aliveA, aliveB, everMoved,
+                   crashes>>
+
+(***************************************************************************)
+(* B's definitive refusal of an Activate, which A treats as final: it      *)
+(* abandons the move and takes the session back, as AbortEarly does. In    *)
+(* the shipped code a refusal is sent only for a copy the receiver cannot  *)
+(* accept, and the receiver deletes the copy with it, so with B's row      *)
+(* still absent the copy is gone. The reply must reach A, so A is up and   *)
+(* its mover waits. RefuseUncommitted is the rule that B never refuses     *)
+(* once its row is active: a repeat of a committed activation is answered  *)
+(* yes, whatever else is true of B, such as a runtime already serving or   *)
+(* a sender it no longer lists. The mutant refuses after the commit, which *)
+(* is the defect the rule removes. The model collapses duplicate Activates *)
+(* into one step, so a refusal of a repeat is a refusal in this step.      *)
+(***************************************************************************)
+RefuseActivate ==
+    /\ aliveA /\ mover = "run" /\ a # "moved"
+    /\ aliveB /\ copy = "sent"
+    /\ b = "absent" \/ ~RefuseUncommitted
+    /\ a' = "active"
+    /\ mover' = "idle"
+    /\ copy' = IF b = "absent" THEN "none" ELSE copy
     /\ replied' = FALSE
     /\ UNCHANGED <<b, exec, servingA, servingB, aliveA, aliveB, everMoved,
                    crashes>>
@@ -235,7 +260,7 @@ Restart ==
 
 Next ==
     \/ Intend \/ StopA \/ Cut \/ Send \/ Activate \/ LoseReply \/ Retire
-    \/ AbortEarly
+    \/ AbortEarly \/ RefuseActivate
     \/ AttachExec("A") \/ AttachExec("B") \/ OpenA \/ OpenB
     \/ CrashA \/ CrashB \/ Restart
 
