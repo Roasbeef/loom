@@ -50,6 +50,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_http
 import client/daemon/ui_login
 import client/daemon/ui_relay
+import client/daemon/ui_result
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/executors
@@ -81,10 +82,12 @@ import session_view/transcript_image
 import storage/access
 import storage/catalogue
 import storage/domain
+import storage/snapshot as storage_snapshot
 import web_view/ending.{type Ending}
 import web_view/image
 import web_view/page
 import web_view/sessions as listed_sessions
+import web_view/tool_result
 import weft
 
 /// Capabilities owned by the daemon, not supplied over the wire.
@@ -127,6 +130,8 @@ pub type Ui(instance) {
   Ui(
     /// The ticket and UI-session tables.
     sessions: ui_sessions.Sessions,
+    /// Reads only immutable result records from the authorized resident.
+    result_reader: fn(instance) -> storage_snapshot.Reader,
     /// The page's stylesheet and scripts and Lustre's client runtime, read
     /// once when the daemon started.
     assets: ui_assets.Assets,
@@ -732,6 +737,20 @@ fn web_document(
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden fetch")
         True -> image_of(config, ui, request, key, id, ref, position)
+      }
+
+    // Every explicit result read repeats the page's current authorization and
+    // resolves its immutable identity within this session, before reading bytes.
+    ui_http.ResultPage(key, id, ref, index) ->
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden fetch")
+        True -> result_of(config, ui, request, key, id, ref, Some(index))
+      }
+
+    ui_http.ResultDownload(key, id, ref) ->
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden fetch")
+        True -> result_of(config, ui, request, key, id, ref, None)
       }
 
     // A ticket presented against another session's path, or a home's ticket
@@ -1381,6 +1400,66 @@ fn image_of(
     ui_sessions.images(ui.sessions, cookie)
     |> result.map(fn(read) { picture(read(ref, position)) })
     |> result.replace_error(plain(404, "unknown image"))
+  }
+  case found {
+    Ok(answer) | Error(answer) -> answer
+  }
+}
+
+// The result identity is resolved only through this session's concrete store.
+// The resident is resolved without opening or attaching another session. The
+// grant is checked again after a bounded read, so expiry while reading cannot
+// deliver result bytes after the handler's final authorization check.
+fn result_of(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  key,
+  id,
+  ref,
+  index,
+) {
+  let found = {
+    use #(ready, _, _) <- result.try(page_grant(config, ui, request, key, id))
+    use resident <- result.try(
+      manager.resolve(ready.registry, id)
+      |> result.map_error(fn(_) { plain(404, "session unavailable") }),
+    )
+    let reader = ui.result_reader(resident)
+    use descriptor <- result.try(
+      ui_result.descriptor(reader, ref)
+      |> result.map_error(fn(_) { plain(404, "result unavailable") }),
+    )
+    use answer <- result.try(case index {
+      Some(index) -> {
+        use #(text, pages) <- result.map(
+          ui_result.page(reader, descriptor, index)
+          |> result.map_error(fn(_) { plain(404, "result page unavailable") }),
+        )
+        document(
+          200,
+          "text/html; charset=utf-8",
+          tool_result.document(text, index, pages, descriptor.byte_length),
+        )
+      }
+      None -> {
+        use bytes <- result.map(
+          ui_result.download(reader, descriptor)
+          |> result.map_error(fn(_) {
+            plain(503, "result download unavailable")
+          }),
+        )
+        response.new(200)
+        |> response.set_header("content-type", "application/json")
+        |> response.set_header(
+          "content-disposition",
+          "attachment; filename=\"loom-tool-result.json\"",
+        )
+        |> response.set_body(mist.Bytes(bytes))
+      }
+    })
+    use _ <- result.map(page_grant(config, ui, request, key, id))
+    answer
   }
   case found {
     Ok(answer) | Error(answer) -> answer

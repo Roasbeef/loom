@@ -210,8 +210,8 @@ pub fn a_page_with_no_capability_draws_nothing_and_asks_nothing_test() {
   assert process.receive(asked, 0) == Error(Nil)
 }
 
-// A session the focused strand already sends into on `main`, by a grant or by
-// the default link, is not offered: the board says so and the form follows it.
+// A session the focused strand already sends to, in any strand, by a grant or
+// by the default link, is not offered: the board says so and the form follows it.
 pub fn a_session_already_linked_is_not_offered_by_the_form_test() {
   let asked = process.new_subject()
   let model = listed(page(True, asked), [out("B", "main")])
@@ -221,11 +221,14 @@ pub fn a_session_already_linked_is_not_offered_by_the_form_test() {
   assert !string.contains(html, "auth&lt;/b&gt;</button>")
   assert string.contains(html, "Every other running session is already linked.")
 
-  // A link to another strand of the same session does not occupy `main`, so
-  // the session is still offered for it.
+  // A link into another strand of the same session hides it as well.
   let other = listed(page(True, asked), [out("B", "worker")])
   let other = deliver(other, operator_page.Peering(peer_links.OpenLink))
-  assert string.contains(section(other), "auth&lt;/b&gt;</button>")
+  assert !string.contains(section(other), "auth&lt;/b&gt;</button>")
+  assert string.contains(
+    section(other),
+    "Every other running session is already linked.",
+  )
 }
 
 pub fn the_link_form_asks_for_the_chosen_session_wake_and_both_directions_test() {

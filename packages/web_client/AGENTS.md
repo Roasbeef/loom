@@ -676,3 +676,10 @@ sends the server nothing.
 - `docs/lustre.md`: server components, client components inside them, the
   security rules, and how the bundle is built and gated.
 - `protocol-change/051-web-view-route.md`: the page's threat model.
+
+## Result-page layout
+
+The stylesheet lays out the daemon's explicit result viewer and wraps its long
+text lines within the viewport. The viewer uses ordinary navigation links and
+adds no client component, JavaScript state or websocket event. `make gen-client`
+regenerates its committed CSS and source digest alongside the existing assets.

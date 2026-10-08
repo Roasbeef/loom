@@ -10,6 +10,7 @@
 //// them in the order 051 gives: the host first, then the check that belongs
 //// to the route, then the cookie.
 
+import core/ids
 import gleam/bit_array
 import gleam/http
 import gleam/http/request.{type Request}
@@ -51,6 +52,12 @@ pub type Route {
   /// in the row (protocol-change/051, the addendum on images). Neither is
   /// trusted: the page answers for a name and place it drew and no other.
   Image(key: String, session_id: String, ref: String, position: Int)
+
+  /// One bounded text page of an immutable result, behind its page grant.
+  ResultPage(key: String, session_id: String, ref: ids.EntryId, index: Int)
+
+  /// An explicit download of that result's complete stored JSON record.
+  ResultDownload(key: String, session_id: String, ref: ids.EntryId)
 
   /// `GET /ui/home?ticket=<ticket>`: the home page's ticket exchange
   /// (protocol-change/065).
@@ -150,6 +157,17 @@ pub fn route(request: Request(body)) -> Route {
         True, Ok(place) if place >= 0 && place < max_position ->
           Image(key, id, ref, place)
         _, _ -> Unknown
+      }
+    http.Get, ["ui", "p", key, "sessions", id, "result", ref, "page", index] ->
+      case ids.parse_entry_id(ref), int.parse(index) {
+        Ok(ref), Ok(index) if index >= 0 && index < 2098 ->
+          ResultPage(key, id, ref, index)
+        _, _ -> Unknown
+      }
+    http.Get, ["ui", "p", key, "sessions", id, "result", ref, "download"] ->
+      case ids.parse_entry_id(ref) {
+        Ok(ref) -> ResultDownload(key, id, ref)
+        Error(_) -> Unknown
       }
     http.Get, ["ui", "home"] ->
       case query(request, "ticket") {

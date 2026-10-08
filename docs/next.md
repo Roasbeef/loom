@@ -28,6 +28,37 @@ addenda for the wire and the rules, and [the setup guide](distributed-setup.md)
 for running it. `packages/client/CLAUDE.md` has one section per phase, from
 "Trusted distribution membership" to "Moving a session between orchestrators".
 
+## Merged from main
+
+A second merge of `main` (after `3a541c1d4`) brought in four PRs, each
+described in its own record. None changes the distributed runtime's rulings
+below; the two code conflicts were in `client/serve.gleam` (main's
+`usable_seed` beside this branch's move of `mixed_entropy` into
+`workspace_plane`) and the imports of `ui_route_test`.
+
+- [PR #925](https://github.com/Roasbeef/loom/pull/925): terminal large-result
+  wrapping by a linear cursor over code rows. Measurements are in
+  [the wrapping report](review/tui-large-result-wrap-2026-10-08.md).
+- [PR #926](https://github.com/Roasbeef/loom/pull/926): the web Link form hides
+  sessions that are already linked.
+- [PR #927](https://github.com/Roasbeef/loom/pull/927): code-mode and LSP
+  readiness. Automatic code-mode selection admits a workspace seed only after
+  `seed.verify` accepts it, and the LSP diagnostics scope is recorded in
+  `protocol-change/078-lsp-diagnostics-scope.md`.
+- [PR #928](https://github.com/Roasbeef/loom/pull/928): paged and downloadable
+  full tool results in the browser, keyed by immutable result records
+  ([protocol-change/079](../protocol-change/079-browser-result-records.md),
+  [the browser report](review/browser-large-results-2026-10-08.md)). Paging
+  reads one storage fragment through `serve.Resident.result_reader`, and a
+  download reads a complete bounded record under one deadline. Search in the
+  viewer applies to one page, and byte windows can split JSON syntax or lines.
+  Output summarization and whole-result browser search are not done.
+
+Main's handoff for that work also said: run `make gen-client` after changing
+browser source, and judge every gate by its own exit code. A gate run on a
+PR's original head does not attest to a later integration head, so each merge
+checks its own current SHA.
+
 ## Where the tree is
 
 | Phase | What exists |

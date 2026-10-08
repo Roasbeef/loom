@@ -7074,3 +7074,27 @@ trip there and back, the movers' retry and resume), `daemon_move_test` (the comm
 views and refusals across the real control socket), and
 `daemon_shipped_remote_move_test` (three shipped daemons, a clean move and the
 source lost after each step). The terminal's side is `tui`'s `sessions_move_test`.
+
+## Explicit browser result reads
+
+Protocol change 079 adds keyed result-page and result-download GETs. Each request
+uses `server.page_grant` before and after its bounded read and resolves the entry
+through the authorized resident's `result_reader`. `serve.Resident` holds only
+that storage reader and its existing handles, never the runtime effect graph.
+`ui_result` reads one fragment per viewer page or a complete bounded byte tree
+under a shared five-second download deadline. No component callback or result
+ledger is registered in `ui_sessions`.
+
+## Offline LSP readiness and diagnostics scope
+
+Automatic code-mode selection admits a workspace seed only after `seed.verify`
+accepts it; an incomplete snapshot therefore falls through to the bundled
+seed. An explicit seed flag remains authoritative and receives its own failure.
+`lsp/manager.connect_jailed` resolves host Git before composing the downloader
+and offline-server environments. `host_git.tool_path` changes subprocess lookup
+without granting filesystem reads or network authority.
+
+The manager owns one package server at a time. `diagnostics(None)` always returns
+a partial `Unsettled` snapshot, while explicit file queries retain their own
+server acquisition and settlement. A healthy control cannot certify unavailable
+owners elsewhere in the workspace. Protocol 078 records that scope contract.

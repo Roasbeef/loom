@@ -1494,3 +1494,13 @@ directory's button creates a `Drawn` place and the daemon would refuse a name it
 holds no folder for. The sidebar and the home draw the key as the heading.
 Tests are `executor_form_test` (the form, the messages, the decoder, the lists)
 and, in `client`, `ui_route_test` and `ui_socket_test` (the daemon's half).
+
+## Large result access
+
+`tool_result` renders links to immutable result records, a bounded escaped page
+and full JSON download navigation (protocol change 079). Both joined steps and
+orphan result blocks offer those links. `view/expansion` uses `utf8_window` to
+keep its preview within 8,000 UTF-8 bytes without grapheme-scanning the complete
+output. The viewer's 16,000-byte windows partition complete codepoints; its
+requests and storage reads belong to client, not to the component or this
+package. No browser websocket event or component reader was added.

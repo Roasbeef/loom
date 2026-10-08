@@ -840,3 +840,11 @@ Other limits and mixed requests remain unavailable. `remembered_authority`
 states that this consent permits only the captured action on its strand; the
 wire still echoes the exact action, grant subset, and displayed sequence.
 The client gateway owns persistence and matching; this pure UI grants nothing.
+
+## Immutable result identities
+
+`turns.Item.Step.result_source` retains the result entry identity independently
+of its host-capped expansion. Narrative joins keep the identity alongside the
+exact joined outcome; compact groups already carry it in `tool_activity.Call`.
+`turns.block_result` reads an orphan result identity from its existing source.
+These are portable, pure projection facts and contain no I/O or result reader.

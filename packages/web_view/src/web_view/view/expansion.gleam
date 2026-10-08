@@ -22,13 +22,13 @@ import gleam/int
 import gleam/list
 import gleam/string
 import session_view/transcript_line.{type Line, Line}
+import web_view/utf8_window
 
 /// The most lines one expanded row draws.
 pub const max_lines = 300
 
-/// The most text one expanded row draws. A text is measured in bytes, which
-/// is never fewer than its characters, and is cut by characters, at most this
-/// many, so a cut never splits a multi-byte character.
+/// The most bytes of text one expanded row draws. The cut moves back to a
+/// UTF-8 codepoint boundary, so it never splits a multi-byte character.
 pub const max_characters = 8000
 
 /// Whether a line of text was drawn whole.
@@ -63,7 +63,7 @@ pub fn notice() -> String {
   <> int.to_string(max_lines)
   <> " lines or "
   <> int.to_string(max_characters)
-  <> " characters of an expanded row; the terminal shows the whole of it."
+  <> " bytes of an expanded row. Tool results offer paged viewing and a full download."
 }
 
 // Takes lines while the budget lasts. `rows` and `chars` are what is left;
@@ -93,12 +93,12 @@ fn take(
 }
 
 // One line's text cut to `rows` lines and `chars` bytes, with the number of
-// lines the result spans. The byte check comes first and cuts by characters,
+// lines the result spans. The byte check comes first and cuts by codepoints,
 // so the split that counts newlines never sees more than the budget however
 // long the text is.
 fn clipped(text: String, rows: Int, chars: Int) -> #(String, Int, Clip) {
   let #(text, by_size) = case string.byte_size(text) > chars {
-    True -> #(string.slice(text, 0, chars), Clipped)
+    True -> #(utf8_window.prefix(text, chars), Clipped)
     False -> #(text, Whole)
   }
   let rows_of = string.split(text, "\n")

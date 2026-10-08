@@ -1176,6 +1176,53 @@ pub fn after_write_pushes_only_to_a_running_owner_test() {
   Nil
 }
 
+pub fn a_healthy_control_cannot_make_a_workspace_snapshot_clean_test() {
+  let workspace = scratch("partial-diagnostics")
+  let down = project(workspace, "down")
+  let _healthy = project(workspace, "healthy")
+  let connect = fn(identity: resolve.Identity) {
+    case identity.root == down {
+      True -> Error("offline cache is missing envoy")
+      False ->
+        Ok(fake_lsp.seam(fake_lsp.start(fake_lsp.everything(), outline_script)))
+    }
+  }
+  let assert Ok(started) =
+    manager.start(manager.Config(
+      workspace:,
+      servers: [fake_server()],
+      backend: manager.Backend(
+        connect:,
+        search: no_search,
+        protected: [],
+        metadata_roots: [workspace],
+      ),
+      timing: quick_timing(),
+    ))
+    as "the manager must start"
+  let door = manager.door(started)
+  let assert Error(query.NoServer(reason:)) = door.outline("down/src/a.gleam")
+    as "the first package cannot start"
+  assert string.contains(reason, "envoy")
+  let assert Ok(control) = door.outline("healthy/src/a.gleam")
+    as "the healthy control must answer"
+  assert list.length(control.value) == 1
+
+  // The same run used to answer Settled([]) here after the healthy control.
+  let assert Ok(snapshot) = door.diagnostics(None)
+    as "the partial snapshot remains available"
+  assert snapshot.value == query.Unsettled([])
+  let assert Ok(explicit) = door.diagnostics(Some("healthy/src/a.gleam"))
+    as "a file scope still settles normally"
+  assert explicit.value == query.Settled([])
+  let assert Error(query.NoServer(_)) =
+    door.diagnostics(Some("down/src/a.gleam"))
+    as "the unavailable owner must refuse its explicit scope"
+  manager.stop(started)
+  let _ = simplifile.delete_all([workspace])
+  Nil
+}
+
 // --- (c') the gate on what a server names ---------------------------------------
 //
 // The jail bounds what a server reads, never which paths it names, and the

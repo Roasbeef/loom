@@ -3,6 +3,7 @@
 import etui/span
 import etui/style
 import etui/text
+import gleam/erlang/process
 import gleam/list
 import gleam/string
 import gleeunit/should
@@ -689,4 +690,73 @@ pub fn a_number_gutter_cannot_hide_source_in_a_narrow_pane_test() {
   assert list.all(rows, fn(row) { span.line_width(row) <= 6 })
   assert rows |> list.map(line_text) |> list.contains("-old")
   assert rows |> list.map(line_text) |> list.contains("+new")
+}
+
+// Scheduler accounting has no pure Gleam equivalent. The existing test-only
+// probe reads OTP process_info(reductions), so unrelated host load cannot
+// turn this complexity regression into a timing failure.
+@external(erlang, "tui_probe_ffi", "reductions")
+fn reductions(pid: process.Pid) -> Int
+
+// Doubling one uninterrupted code span used to quadruple the work because
+// every output row segmented and measured the entire remaining string.
+pub fn huge_code_row_wrapping_work_grows_linearly_test() {
+  let small = wrapping_reductions(100_000)
+  let large = wrapping_reductions(200_000)
+  assert large < small * 3 as "doubling source must not quadruple wrapping work"
+}
+
+fn wrapping_reductions(size: Int) -> Int {
+  let source = string.repeat("x", size)
+  let row = span.line_new([span.span_plain("▎ "), span.span_plain(source)])
+  let before = reductions(process.self())
+  let rows = markdown.wrap_lines([row], 80)
+  let used = reductions(process.self()) - before
+  assert list.length(rows) == { size + 77 } / 78
+  used
+}
+
+// The expanded code-mode result which stalled the terminal had a scalar
+// exceeding 820k characters. Keep every byte through a larger synthetic row.
+pub fn million_character_code_row_keeps_complete_styled_source_test() {
+  let source = string.repeat("x", 1_000_000)
+  let painted = span.span_styled(source, theme.signal_bold())
+  let rows =
+    [span.line_new([span.span_plain("▎ "), painted])]
+    |> markdown.wrap_lines(80)
+  let recovered =
+    list.flat_map(rows, fn(row) {
+      let assert [gutter, ..content] = row.spans
+        as "every row repeats its gutter"
+      assert gutter.content == "▎ "
+      list.map(content, fn(part) {
+        assert part.style == painted.style
+        part.content
+      })
+    })
+    |> string.concat
+  assert recovered == source
+  assert list.length(rows) == 12_821
+}
+
+pub fn code_cursor_keeps_graphemes_and_span_styles_at_boundaries_test() {
+  let first = span.span_styled("é中", theme.signal_bold())
+  let second = span.span_styled("🇯🇵x", theme.quiet_text())
+  let rows =
+    markdown.wrap_lines(
+      [
+        span.line_new([span.span_plain("▎ "), first, second]),
+      ],
+      3,
+    )
+  let parts =
+    list.flat_map(rows, fn(row) { row.spans })
+    |> list.filter(fn(part) { part.content != "▎ " && part.content != "" })
+  assert list.map(parts, fn(part) { #(part.content, part.style) })
+    == [
+      #("é", first.style),
+      #("中", first.style),
+      #("🇯🇵", second.style),
+      #("x", second.style),
+    ]
 }

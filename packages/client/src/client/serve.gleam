@@ -126,6 +126,8 @@ import client/wiring
 import client/workspace_plane
 import client/workspace_policy
 import client/worktree_diff
+import codemode/compile
+import codemode/seed
 import core/clock.{type Clock}
 import core/glance as diagnostic
 import core/ids.{type OpId}
@@ -166,6 +168,7 @@ import session/session
 import simplifile
 import storage/catalogue
 import storage/domain
+import storage/snapshot as storage_snapshot
 import storage/sqlite
 import storage/storage.{type StorageError}
 import telemetry/context
@@ -2154,6 +2157,8 @@ pub type Resident {
     children: List(#(String, Pid)),
     /// The tree and session a graceful drain reaches strands through.
     drain: api.Drain,
+    /// Immutable-record reads without retaining the runtime effect graph.
+    result_reader: storage_snapshot.Reader,
   )
 }
 
@@ -2172,6 +2177,7 @@ pub fn resident(instance: Instance) -> Resident {
     worktree: instance.worktree,
     children: instance_children(instance),
     drain: api.draining(instance.runtime),
+    result_reader: instance.runtime.session.snapshot_reader,
   )
 }
 
@@ -5678,8 +5684,19 @@ fn seed_root(flag: Option(String), workspace: String) -> String {
   let in_workspace = workspace <> "/" <> default_seed_directory
   seed_ladder(
     flag,
-    in_workspace: fn() { install.existing_directory(in_workspace) },
+    in_workspace: fn() { usable_seed(in_workspace) },
     bundled: install.bundled_seed,
     otherwise: in_workspace,
   )
+}
+
+// An existing workspace snapshot outranks the release only when it contains
+// the capabilities this host admits. Explicit flags still reach discovery
+// unchanged, where an invalid operator selection receives its own refusal.
+fn usable_seed(root: String) -> Result(String, Nil) {
+  use Nil <- result.try(
+    seed.verify(root, compile.default_dependencies())
+    |> result.replace_error(Nil),
+  )
+  Ok(root)
 }

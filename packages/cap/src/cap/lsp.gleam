@@ -313,8 +313,9 @@ pub type Diagnostic {
 /// Diagnostics, and whether they are known to be current.
 ///
 /// Two variants rather than a flag, because the two are different claims
-/// and a program must not read one as the other: `Settled([])` is clean
-/// code, and `Unsettled([])` is only that nothing had arrived yet.
+/// and a program must not read one as the other: `Settled([])` is clean for
+/// the explicitly requested file. `Unsettled([])` proves neither freshness
+/// nor complete coverage, even when no errors have arrived.
 pub type Diagnostics {
   /// The server finished reacting to the latest change. An empty list is
   /// a clean result.
@@ -540,8 +541,10 @@ pub fn calls(
   })
 }
 
-/// Diagnostics for one file, or for every file the server has reported
-/// on when `path` is `None`.
+/// Diagnostics for one file, or a partial snapshot of the current server's
+/// open files when `path` is `None`. The snapshot is always `Unsettled`:
+/// another package's server may be unavailable or may never have been queried.
+/// Name a file to obtain a settled answer for that file's owning server.
 ///
 /// Capability: `lsp.diagnostics`.
 ///

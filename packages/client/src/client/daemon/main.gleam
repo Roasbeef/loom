@@ -1376,6 +1376,7 @@ fn web_view(
       Some(
         server.Ui(
           sessions:,
+          result_reader: fn(resident: serve.Resident) { resident.result_reader },
           assets:,
           root_key:,
           upgrade: fn(request, attachment, open, register, seen) {

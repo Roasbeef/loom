@@ -120,6 +120,28 @@ Preparing dependencies does not compile the whole repository. Gleam resolves
 the package and its path dependencies, writes the installation inventory, and
 the language server then compiles the project for analysis.
 
+For Loom's own monorepo, `make lsp-seed` downloads dependencies for every
+workspace package and repeats resolution until each inventory is stable.
+It is separate from `make codemode-seed`, whose dependency graph belongs to
+submitted satellite programs. Run both after changing capabilities or preparing
+a fresh workspace for analysis. Neither target grants networking to an LSP
+server. The automatic recipe remains the supported way to prepare an arbitrary
+project through the approved profile's private cache.
+
+On macOS, Loom resolves `/usr/bin/git` through the host's `xcrun` before the
+Gleam downloader or server starts, then puts the real Git directory on their
+PATH. This avoids invoking Apple's shim with a jailed HOME. A PATH entry does
+not grant a read: a Git inside a nonstandard Xcode installation must still
+fit the session or profile's readable roots. If the host itself cannot run
+`xcrun --find git`, install or select the Command Line Tools, or put a working
+Git ahead of `/usr/bin` on the daemon's PATH.
+
+`lsp.diagnostics(None)` is a partial snapshot of the current package server,
+always returned as `Unsettled`. It cannot establish that the whole workspace
+is clean, even after a healthy control query. Use an explicit file path for a
+settled answer; a package whose server cannot start returns an error for that
+file rather than a clean result.
+
 ## Go
 
 Install Go, then install `gopls`. With the default Go executable directory:

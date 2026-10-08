@@ -31,6 +31,7 @@ import client/peer_mail
 import client/peers
 import client/session_directory
 import client/session_movers
+import client/ui_result_test
 import core/clock
 import core/ids
 import core/json
@@ -215,6 +216,7 @@ fn fixture_lasting(
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(server.Ui(
         sessions:,
+        result_reader: fn(_) { ui_result_test.reader(ui_result_test.payload()) },
         assets:,
         root_key:,
         upgrade: fn(request, attachment, open, register, seen) {
@@ -8668,5 +8670,128 @@ pub fn a_session_with_a_member_is_not_unshared_test() {
     assert list.contains(listed, alone)
     assert !list.contains(listed, shared)
     assert list.sort(listed, string.compare) == listed
+  })
+}
+
+// Explicit result reads go through a real HTTP listener and the same page grant
+// as images. Their fixture reader supplies immutable bytes, never HTML.
+fn result_read(port: Int, page: Entered, suffix: String) -> Answer {
+  get(
+    port,
+    page.page
+      <> "/result/"
+      <> ids.entry_id_to_string(ui_result_test.result_id())
+      <> "/"
+      <> suffix,
+    [
+      host(port),
+      #("sec-fetch-site", "same-origin"),
+      #("cookie", "loom_ui=" <> page.cookie),
+    ],
+  )
+}
+
+pub fn large_results_page_and_download_through_the_authenticated_router_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "results", 951)
+    let early = enter(port, operate(port, credential, session))
+    assert result_read(port, early, "page/0").status == 200
+    let page = opened(port, link(port, credential, session))
+    let answer = result_read(port, page, "page/0")
+    assert answer.status == 200
+    assert bit_array.byte_size(answer.raw) < 35_000
+    assert !string.contains(answer.body, "<script>")
+    assert string.contains(answer.body, "&lt;script&gt;")
+    assert list.key_find(answer.headers, "cache-control") == Ok("no-store")
+    assert list.key_find(answer.headers, "content-security-policy")
+      == Ok(policy(port))
+    assert result_read(port, page, "page/-1").status == 404
+    assert result_read(port, page, "page/2098").status == 404
+    let download = result_read(port, page, "download")
+    assert download.status == 200
+    assert download.raw == bit_array.from_string(ui_result_test.payload())
+    assert list.key_find(download.headers, "content-type")
+      == Ok("application/json")
+    assert list.key_find(download.headers, "content-disposition")
+      == Ok("attachment; filename=\"loom-tool-result.json\"")
+    assert list.key_find(download.headers, "x-content-type-options")
+      == Ok("nosniff")
+    let unknown =
+      get(
+        port,
+        page.page <> "/result/0198c0de-0000-7000-8000-000000000002/download",
+        [
+          host(port),
+          #("sec-fetch-site", "same-origin"),
+          #("cookie", "loom_ui=" <> page.cookie),
+        ],
+      )
+    assert unknown.status == 404
+  })
+}
+
+pub fn a_result_read_keeps_page_isolation_and_fetch_site_checks_test() {
+  fixture_with(Pictured, fn(ready, port, credential) {
+    let session = create_session(ready, "result-guards", 952)
+    let page = opened(port, operate(port, credential, session))
+    let other = opened(port, operate(port, credential, session))
+    let address =
+      page.page
+      <> "/result/"
+      <> ids.entry_id_to_string(ui_result_test.result_id())
+      <> "/download"
+    assert get(port, address, [host(port), #("sec-fetch-site", "same-origin")]).status
+      == 401
+    assert get(port, address, [
+        host(port),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", "loom_ui=" <> other.cookie),
+      ]).status
+      == 401
+    assert get(port, address, [
+        host(port),
+        #("sec-fetch-site", "cross-site"),
+        #("cookie", "loom_ui=" <> page.cookie),
+      ]).status
+      == 403
+  })
+}
+
+pub fn a_revoked_credential_reads_neither_a_result_page_nor_download_test() {
+  fixture_with(Pictured, fn(ready, port, _) {
+    let session = create_session(ready, "revoked-results", 953)
+    let credential = member(ready, "ui-result", session, access.Operator)
+    let page = opened(port, operate(port, credential, session))
+    assert result_read(port, page, "page/0").status == 200
+    let assert Ok(digest) =
+      credential
+      |> bit_array.from_string
+      |> bootstrap.sha256
+      |> bit_array.base16_encode
+      |> string.lowercase
+      |> access.credential_digest
+      as "the member digest is valid"
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the catalogue"
+    assert access.revoke_credential(store, digest) == Ok(Nil)
+    assert catalogue.close(store) == Ok(Nil)
+    assert result_read(port, page, "page/0").status == 401
+    assert result_read(port, page, "download").status == 401
+  })
+}
+
+pub fn an_expired_page_reads_neither_a_result_page_nor_download_test() {
+  fixture_lasting(Pictured, 1500, fn(ready, port, credential) {
+    let session = create_session(ready, "expired-results", 954)
+    let page = opened(port, operate(port, credential, session))
+    assert result_read(port, page, "page/0").status == 200
+    assert poll.until(within: 5000, every: 100, attempt: fn() {
+        case result_read(port, page, "page/0").status {
+          401 -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      == poll.Answered(Nil)
+    assert result_read(port, page, "download").status == 401
   })
 }

@@ -1265,7 +1265,13 @@ boundaries and the split's measurements under Invariants.
   speaker mark or list marker is cells the grid does not have. Code rows
   carry a `▎ ` gutter rather than the block quote's `│ `, which is how
   `wrap_lines` recognises them without comparing styles, and they are
-  hard-wrapped on cell boundaries so source indentation survives. GFM
+  hard-wrapped on cell boundaries so source indentation survives. `CellSpan`
+  holds a span's style, unconsumed graphemes and remaining cell width:
+  segmentation and measurement occur once per original span, and continuation
+  rows share the remaining list tail. Expanded code-mode scalars can exceed a
+  million characters; concatenating or measuring their suffix for every row
+  makes wrapping quadratic. The reduction-count regression pins linear growth,
+  and the full Ctrl-G wire-to-frame fixture preserves the complete value. GFM
   alerts, task boxes, footnotes, reference links and bare links arrive as
   nodes of the tree. The parser folds a soft line break into the text
   around it, so `join_soft_break` joins the space into the plain span on

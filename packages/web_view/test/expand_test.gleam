@@ -86,12 +86,12 @@ pub fn the_expanded_text_is_cut_to_the_budget_and_says_so_test() {
   assert list.last(kept) == Ok(Line(System, expansion.notice()))
 }
 
-pub fn one_long_line_is_cut_by_characters_test() {
+pub fn one_long_unicode_line_is_cut_by_bytes_test() {
   let long = string.repeat("é", expansion.max_characters + 500)
   let assert [Line(Reasoning, cut), Line(System, _)] =
     expansion.capped([Line(Reasoning, long)])
     as "one cut line and the notice"
-  assert string.length(cut) == expansion.max_characters
+  assert string.byte_size(cut) == expansion.max_characters
 }
 
 pub fn text_within_the_budget_is_left_alone_test() {

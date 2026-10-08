@@ -38,12 +38,13 @@
 //// `packages/ext` and the seed is stale until it is rebuilt, and programs
 //// will compile against the old one. `make codemode-seed` rebuilds it
 //// from scratch; `make
-//// e2e-codemode` always does so first. `verify` checks the one thing that
-//// silently changes the *meaning* of a build — that the seed's dependency
-//// table is byte-identical to the one the compile service generates — and
-//// the builder refuses to run against a seed that fails it.
+//// e2e-codemode` always does so first. `verify` checks the dependency table
+//// and every statically admitted prelude module before discovery or build.
+//// Missing modules are a stale host seed, not a bad submitted import. This
+//// checks presence, not the source identity of an unchanged module name.
 
 import codemode/compile.{type Dependency}
+import codemode/vet/policy
 import gleam/io
 import gleam/list
 import gleam/result
@@ -104,7 +105,7 @@ pub fn prepare(
 /// Checks that a seed at `root` is one a hermetic build may use: it was
 /// built (so `build/packages` and a resolved `manifest.toml` exist), and
 /// its dependency table is byte-identical to the one the compile service
-/// generates for `dependencies`.
+/// generates for `dependencies`, and every admitted prelude module exists.
 ///
 /// The byte comparison is the point. A seed prepared from a different
 /// dependency table resolved a different dependency graph, so building
@@ -134,10 +135,31 @@ pub fn verify(
     root <> "/manifest.toml",
     "the seed has no resolved manifest.toml; run `make codemode-seed`",
   ))
-  exists(
+  use _ <- result.try(exists(
     root <> "/build/packages/packages.toml",
     "the seed has no resolved package cache; run `make codemode-seed`",
-  )
+  ))
+
+  // Discovery and every build share this check. A host cannot advertise an
+  // admitted capability whose source disappeared from its seed snapshot.
+  let modules =
+    list.append(policy.program_cap_modules(), policy.harness_only_cap_modules())
+    |> list.append(policy.extension_cap_modules())
+    |> list.unique
+  list.try_each(modules, fn(module) {
+    let package = case module {
+      "cap/" <> _ -> "cap"
+      _ -> "ext"
+    }
+    exists(
+      root <> "/vendor/" <> package <> "/src/" <> module <> ".gleam",
+      "the seed at "
+        <> root
+        <> " is stale: missing admitted module "
+        <> module
+        <> "; run `make codemode-seed`",
+    )
+  })
 }
 
 /// Lays out the default seed and reports where. Run as
