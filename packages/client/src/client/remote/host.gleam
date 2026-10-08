@@ -735,6 +735,8 @@ const children_grace_ms = 5000
 // --- run ----------------------------------------------------------------------
 
 // Admits one call. The ledger's answer, not the request, decides what happens.
+// A scope with no plane in this VM still answers a key the ledger holds a row
+// for (`answer_without_plane`), before it refuses for the missing plane.
 fn admit_run(
   state: State(census),
   key: Key,
@@ -745,8 +747,9 @@ fn admit_run(
   reply: Subject(RunAnswer),
 ) -> State(census) {
   case dict.get(state.placements, key.session), process.subject_owner(reply) {
-    Error(Nil), _ -> refuse_run(state, reply, no_plane())
-    Ok(Building(..)), _ -> refuse_run(state, reply, protocol.PlaneBuilding)
+    Error(Nil), _ -> answer_without_plane(state, key, reply, no_plane())
+    Ok(Building(..)), _ ->
+      answer_without_plane(state, key, reply, protocol.PlaneBuilding)
     _, Error(Nil) ->
       refuse_run(
         state,
@@ -780,6 +783,44 @@ fn admit_run(
         }
       }
     }
+  }
+}
+
+// A `Run` for a scope this VM holds no plane for. The ledger outlives the VM,
+// so a key it already holds a row for has an answer that does not need a plane:
+// the call may have run before the executor restarted, and a refusal for lack of
+// a workspace would tell the model it did not. A key with a stored outcome or a
+// lost one is answered as the ledger has it. Only a key with no row is refused
+// for the missing plane, because for that key nothing started.
+fn answer_without_plane(
+  state: State(census),
+  key: Key,
+  reply: Subject(RunAnswer),
+  refusal: Refusal,
+) -> State(census) {
+  case exec_ledger.query(state.ledger, to_ledger(key)) {
+    Ok(exec_ledger.Missing) -> refuse_run(state, reply, refusal)
+    Ok(exec_ledger.Found(exec_ledger.Terminal(stored))) -> {
+      process.send(reply, stored_answer(stored))
+      state
+    }
+    Ok(exec_ledger.Found(exec_ledger.Unknown)) -> {
+      process.send(reply, protocol.RunLost)
+      state
+    }
+
+    // An admitted row with no live run in this VM can only follow a failed
+    // write, as in `join_run`, and its outcome is lost.
+    Ok(exec_ledger.Found(exec_ledger.Admitted)) ->
+      case dict.get(state.live, key) {
+        Ok(_live) -> refuse_run(state, reply, refusal)
+        Error(Nil) -> {
+          let _marked = exec_ledger.mark_unknown(state.ledger, to_ledger(key))
+          process.send(reply, protocol.RunLost)
+          state
+        }
+      }
+    Error(error) -> refuse_run(state, reply, refusal_of(error))
   }
 }
 

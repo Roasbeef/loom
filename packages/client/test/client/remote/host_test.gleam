@@ -729,3 +729,55 @@ pub fn a_plane_the_ledger_no_longer_explains_is_closed_before_a_new_one_is_built
   assert list.length(fixtures.builds(rig.probe)) == 2
   stop(rig)
 }
+
+pub fn a_restarted_host_answers_a_key_it_holds_a_row_for_before_it_refuses_the_plane_test() {
+  // The call started, then the executor restarted. The effect process sends the
+  // same `Run` again before anything attaches. The ledger says the call may have
+  // run, and the answer must say so, not that there is no workspace.
+  let rig = rig(fixtures.Held)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let lost = fixtures.tool_run("call_1", 0)
+  let _waiting = send_run(rig, lost, 0, token(1))
+  assert running(rig, "call_1")
+  stop(rig)
+  process.sleep(50)
+  let probe = fixtures.probe(fixtures.Open)
+  let restarted =
+    start_at(
+      rig.path,
+      probe,
+      fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired),
+    )
+
+  assert heard(send_run(restarted, lost, 0, token(1))) == protocol.RunLost
+
+  // A key the ledger has no row for never started, so the plane is what is
+  // missing.
+  let fresh = fixtures.tool_run("call_2", 1)
+  let assert protocol.RunRefused(protocol.NoPlane(_)) =
+    heard(send_run(restarted, fresh, 0, token(1)))
+  assert fixtures.run_count(probe, "call_1") == 0
+  assert fixtures.run_count(probe, "call_2") == 0
+  stop(restarted)
+}
+
+pub fn a_restarted_host_answers_a_stored_outcome_without_a_plane_test() {
+  let rig = rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let run = fixtures.tool_run("call_1", 0)
+  assert heard(send_run(rig, run, 0, token(1)))
+    == protocol.RunFinished(fixtures.expected_outcome(run))
+  stop(rig)
+  process.sleep(50)
+  let probe = fixtures.probe(fixtures.Open)
+  let restarted =
+    start_at(
+      rig.path,
+      probe,
+      fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired),
+    )
+
+  assert heard(send_run(restarted, run, 0, token(1)))
+    == protocol.RunFinished(fixtures.expected_outcome(run))
+  stop(restarted)
+}

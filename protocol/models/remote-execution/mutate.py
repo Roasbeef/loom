@@ -89,6 +89,14 @@ MUTATIONS = {
     ("PSrc/Types.p",
      "event eStep;\n",
      "event eStep;\nevent eLateCommit: (key: tKey, inc: int);\n")]),
+
+  # host.admit_run answers a key it holds a row for before it refuses for lack
+  # of a plane. Here the plane is checked first, so a restarted executor
+  # refuses a call it may have run.
+  "M6-plane-checked-before-ledger": ("tcDefectNoPlane", 4000, r"told the executor refused", [
+    ("PSrc/Host.p",
+     "      if (m.key in ledger) {\n        answerFromRow(m);\n      } else {\n        reply(m, K_ANSWER, ANS_NOPLANE, LOOK_MISSING, 0);\n      }\n",
+     "      reply(m, K_ANSWER, ANS_NOPLANE, LOOK_MISSING, 0);\n")]),
 }
 
 

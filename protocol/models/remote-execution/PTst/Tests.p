@@ -162,8 +162,9 @@ test tcProbeKeyUnknown [main = TestHostCrash]:
 test tcProbeAbortCancels [main = TestOpenCrash]:
   assert ProbeAbortCancels in (union System, { TestOpenCrash });
 
-// Known defects (README.md, "Defects found").
-test tcProbeDefectNoPlane [main = TestHostCrash]:
+// A call the executor may have run is never answered as untouched, even when
+// the executor restarted and holds no plane (README.md, "Defects found").
+test tcDefectNoPlane [main = TestHostCrash]:
   assert RefusalMeansUntouched in (union System, { TestHostCrash });
 
 test tcProbeDefectLateRun [main = TestRuntimeRestartAckAtOnce]:

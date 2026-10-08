@@ -66,12 +66,17 @@ machine Host {
 
   // --- run ------------------------------------------------------------------
 
-  // host.admit_run. The plane is checked first and without touching the ledger,
-  // as the code does, then the ledger's own check of the token, then the row.
+  // host.admit_run. A scope with no plane in this VM still answers a key the
+  // ledger holds a row for (`answer_without_plane`); only a key with no row is
+  // refused for the missing plane. With a plane, the ledger's own check of the
+  // token comes first, then the row.
   fun admitRun(m: tMsg) {
-    var row: tRowRec;
     if (!placed) {
-      reply(m, K_ANSWER, ANS_NOPLANE, LOOK_MISSING, 0);
+      if (m.key in ledger) {
+        answerFromRow(m);
+      } else {
+        reply(m, K_ANSWER, ANS_NOPLANE, LOOK_MISSING, 0);
+      }
       return;
     }
     if (m.token != scopeToken) {
@@ -84,6 +89,12 @@ machine Host {
       startRun(m);
       return;
     }
+    answerFromRow(m);
+  }
+
+  // What the host does with a `Run` for a key the ledger already holds.
+  fun answerFromRow(m: tMsg) {
+    var row: tRowRec;
     row = ledger[m.key];
     if (row.phase == ROW_ADMITTED) {
       if (m.key in live) {

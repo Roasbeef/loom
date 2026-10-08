@@ -6519,6 +6519,12 @@ Invariants that break things when violated:
 - An escalation crosses as a remaining duration, never a deadline. The plane must
   be built on `AttachSpec.clock` so the executor's deadline and the owner link
   read one time base.
+- A `Run` for a scope with no plane in this VM (after an executor restart,
+  before the next attach) is answered from the ledger first: a key with a stored
+  outcome gets it, a key with an unknown or orphaned-admitted row gets `RunLost`,
+  and only a key with no row is refused with `NoPlane` or `PlaneBuilding`. The
+  refusal says nothing started, which is false for a call the restart cut off
+  (`answer_without_plane`; model: `RefusalMeansUntouched`).
 - A scope with no plane in this VM closes as `UnknownCleanup(0)`: without a
   plane there is no retirement witness. A failed plane build leaves the scope
   open for a retry attach at the same incarnation.
