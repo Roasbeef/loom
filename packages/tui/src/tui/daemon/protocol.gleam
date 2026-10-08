@@ -620,6 +620,34 @@ pub type Event {
     /// Bounded peer diagnostic, sanitized separately when displayed.
     message: String,
   )
+
+  /// A correlated refusal that says where the session lives instead
+  /// (protocol-change/078, phase 3): the daemon does not hold the session, and
+  /// either names the orchestrator that does or the ones it could not ask.
+  Redirected(
+    /// Present when the server recovered a valid correlation ID.
+    id: Option(Int),
+    /// Where the daemon says the session is.
+    redirect: Redirect,
+  )
+}
+
+/// What a daemon that does not hold a session says about who does.
+pub type Redirect {
+  /// A configured orchestrator holds the session (`not_owner`).
+  NotOwner(
+    /// The orchestrator's name in the daemon's `[orchestrators.<name>]` table.
+    orchestrator: String,
+    /// The control address its operator configured for it, when one is.
+    address: Option(String),
+  )
+
+  /// No orchestrator said it holds the session, and some could not be asked
+  /// (`owner_unreachable`).
+  OwnerUnreachable(
+    /// The names of the orchestrators that did not answer.
+    orchestrators: List(String),
+  )
 }
 
 /// Names a command without exposing its body or credential.
@@ -1080,13 +1108,48 @@ pub fn decode(text: String) -> Result(Event, String) {
       use id <- result.try(optional_id(value))
       use code <- result.try(text_at(body, "code", 64))
       use message <- result.map(text_at(body, "message", 2048))
-      Refused(id, code, message)
+
+      // A redirect whose members do not decode is an ordinary refusal with its
+      // code and words, never a failed frame: the client still learns that the
+      // daemon refused, and loses only where it pointed.
+      case redirect_at(code, body) {
+        Ok(redirect) -> Redirected(id, redirect)
+        Error(Nil) -> Refused(id, code, message)
+      }
     }
     event -> {
       use id <- result.try(positive_at(value, "reply_to"))
       use reply <- result.map(decode_reply(event, body))
       Answer(id, event, reply)
     }
+  }
+}
+
+// The members of the two redirect refusals, or `Error(Nil)` for any other code
+// and for a redirect that does not carry its members in the bounded form.
+fn redirect_at(code: String, body: json.JsonValue) -> Result(Redirect, Nil) {
+  case code {
+    "not_owner" -> {
+      use orchestrator <- result.try(
+        text_at(body, "orchestrator", 64) |> result.replace_error(Nil),
+      )
+      case field(body, "address") {
+        Error(_) -> Ok(NotOwner(orchestrator, None))
+        Ok(address) ->
+          bounded_text(address, 1024)
+          |> result.replace_error(Nil)
+          |> result.map(fn(address) { NotOwner(orchestrator, Some(address)) })
+      }
+    }
+    "owner_unreachable" ->
+      case field(body, "orchestrators") {
+        Ok(json.Array(names)) if names != [] ->
+          list.try_map(names, fn(name) { bounded_text(name, 64) })
+          |> result.replace_error(Nil)
+          |> result.map(OwnerUnreachable)
+        _ -> Error(Nil)
+      }
+    _ -> Error(Nil)
   }
 }
 

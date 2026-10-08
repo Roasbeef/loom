@@ -184,7 +184,7 @@ pub fn with_live_control(
 pub fn open(host: Host, session: String) -> Result(Target, String) {
   use selected <- result.try(
     daemon.request(host.control, protocol.GetSession(session), 5000)
-    |> result.map_error(failure)
+    |> result.map_error(failure_for(session, _))
     |> result.try(selected_row),
   )
   case selected.status {
@@ -682,6 +682,19 @@ fn await(host: Host, session, operation) {
 /// assert selection.failure(daemon.Busy) == "daemon control is busy"
 /// ```
 pub fn failure(reason: daemon.Failure) -> String {
+  failure_for("<session-id>", reason)
+}
+
+/// `failure` for a request that names `session`, so that a redirect to another
+/// orchestrator can print the launch line that reaches it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert selection.failure_for("0198c0de-0000-7000-8000-000000000001", daemon.Busy)
+///   == "daemon control is busy"
+/// ```
+pub fn failure_for(session: String, reason: daemon.Failure) -> String {
   case reason {
     daemon.Invalid(reason) -> reason
     daemon.HandshakeFailed -> "daemon authentication did not complete"
@@ -718,8 +731,48 @@ pub fn failure(reason: daemon.Failure) -> String {
       <> "; --pool must be a [pools.<name>] key of the daemon's configuration"
 
     daemon.Refused(code, message) -> code <> ": " <> message
+
+    // The daemon does not hold the session and says who does. It never
+    // forwards the terminal, and this terminal holds no credential for another
+    // daemon, so the words are the launch that reaches the owner, on the
+    // machine whose owner token it needs.
+    daemon.Redirected(redirect) -> redirect_words(session, redirect)
     daemon.UnknownOutcome(command) ->
       "unknown outcome for " <> command <> "; request was not retried"
+  }
+}
+
+// What the terminal tells the operator when the daemon points elsewhere.
+fn redirect_words(session: String, redirect: protocol.Redirect) -> String {
+  let launch = fn(address: String) {
+    "loom --addr "
+    <> address
+    <> " --session "
+    <> session
+    <> " --token-file <owner token file on that host>"
+  }
+  case redirect {
+    protocol.NotOwner(orchestrator, Some(address)) ->
+      "session "
+      <> session
+      <> " is owned by orchestrator "
+      <> orchestrator
+      <> "; connect to it with: "
+      <> launch(address)
+    protocol.NotOwner(orchestrator, None) ->
+      "session "
+      <> session
+      <> " is owned by orchestrator "
+      <> orchestrator
+      <> ", which has no address in this daemon's configuration; connect to it with: "
+      <> launch("<its control address>")
+    protocol.OwnerUnreachable(orchestrators) ->
+      "session "
+      <> session
+      <> " is not on this daemon, and the orchestrators that may own it did "
+      <> "not answer: "
+      <> string.join(orchestrators, ", ")
+      <> "; retry, or connect to one of them directly"
   }
 }
 
