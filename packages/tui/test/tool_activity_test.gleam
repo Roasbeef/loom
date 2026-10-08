@@ -9,6 +9,7 @@ import core/message
 import core/register
 import etui/backend
 import etui/geometry
+import etui/span
 import etui/widgets/textarea
 import gleam/dict
 import gleam/int
@@ -896,4 +897,57 @@ pub fn generic_failures_keep_bounded_multiline_diagnostics_test() {
       compact |> tui.update(backend.KeyPress("ctrl+g"), _) |> painted
     assert string.contains(expanded, "FINAL_DIAGNOSTIC")
   })
+}
+
+// A code-mode scalar is JSON-quoted by the shared projection into one long
+// fenced row. Exercise the real wire decoder, Ctrl-G transition and render
+// cache, rather than only handing an already-built span to the wrapper.
+pub fn expanded_million_character_code_result_reaches_the_frame_test() {
+  let value = string.repeat("λ", 1_000_000)
+  let details =
+    Some(
+      json.Object([
+        #("status", json.String("completed")),
+        #("value", json.String(value)),
+      ]),
+    )
+  let assert entry.MessageEntry(message: body, ..) as placed =
+    outcome(2, "huge", False, details)
+    as "the fixture is a result entry"
+  let assert message.ToolResultMessage(..) = body
+    as "the fixture is a tool result"
+  let result =
+    entry.MessageEntry(
+      ..placed,
+      message: message.ToolResultMessage(..body, tool_name: "code_mode"),
+    )
+  let #(compact, _) =
+    model()
+    |> received(call(
+      1,
+      "huge",
+      "code_mode",
+      json.Object([
+        #("program", json.String("pub fn main() { Nil }")),
+      ]),
+    ))
+    |> received(result)
+    |> painted
+  let #(expanded, visible) =
+    compact
+    |> tui.update(backend.KeyPress("ctrl+g"), _)
+    |> painted
+  assert expanded.shared.details_expanded
+  assert string.contains(visible, "λ")
+
+  // The viewport is bounded, but its cached projection must retain every
+  // source character. Lambda appears only in the synthetic result value.
+  let cached =
+    expanded.view.caches.rendered_rows
+    |> list.flat_map(fn(row: span.Line) { row.spans })
+    |> list.map(fn(part) { part.content })
+    |> string.concat
+  let source_bytes =
+    string.byte_size(cached) - string.byte_size(string.replace(cached, "λ", ""))
+  assert source_bytes == 2_000_000
 }
