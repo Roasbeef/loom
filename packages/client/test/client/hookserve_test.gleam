@@ -30,6 +30,7 @@ import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json
 import core/message.{type AgentMessage}
+import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -788,4 +789,149 @@ fn follow_up() -> AgentMessage {
     timestamp: 1_700_000_000_000,
     origin: None,
   )
+}
+
+// --- sources read on another machine -----------------------------------------
+
+fn load_gathered(
+  rig: Rig,
+  trust_root: Option(String),
+  workspace_files: List(#(String, hookserve.Contents)),
+) -> hookserve.Serving {
+  hookserve.load_from(
+    hookserve.gather(
+      hookserve.locations(Some(rig.home), rig.workspace),
+      workspace_files,
+    ),
+    trust_root,
+    hookwire.Wiring(
+      config: hookcompat.Config(
+        entries: [],
+        source: hookcompat.Source(label: "none", origin: hookcompat.LoomInline),
+      ),
+      session_id: "hookserve-fixture",
+      transcript_path: rig.workspace <> "/session.db",
+      workspace: rig.workspace,
+    ),
+    rig.runner,
+  )
+}
+
+fn bytes_of(text: String) -> hookserve.Contents {
+  hookserve.Bytes(bit_array.from_string(text))
+}
+
+/// The workspace's files arrive as bytes and are parsed and trusted exactly
+/// as files read from disk are: the same source gives the same answer
+/// whichever machine it was read on.
+pub fn a_source_sent_as_bytes_loads_as_the_same_source_read_from_disk_test() {
+  let rig = rig()
+  write(rig.workspace <> "/.claude", "settings.json", settings_with_hooks)
+  let from_disk = load(rig, Some(rig.trust_root))
+  let path = rig.workspace <> "/.claude/settings.json"
+
+  let sent =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(path, bytes_of(settings_with_hooks)),
+    ])
+
+  assert sent.skipped == from_disk.skipped
+  assert sent.notes == from_disk.notes
+  assert sent.wiring.config == from_disk.wiring.config
+}
+
+/// Trust is decided on the owner. A project source sent as bytes with no
+/// record asks first, in the words a source read here does, and the bytes
+/// being valid hooks changes nothing about that.
+pub fn a_project_source_sent_as_bytes_still_needs_a_record_test() {
+  let rig = rig()
+  let path = rig.workspace <> "/.claude/settings.json"
+
+  let serving =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(path, bytes_of(settings_with_hooks)),
+    ])
+
+  let assert [skipped] = serving.skipped as "the project source is the one skip"
+  assert skipped.path == path
+  assert string.contains(skipped.reason, "no trust record at")
+  assert !hookserve.has_matching(serving, hookcompat.PreToolUse, "Bash")
+}
+
+/// The operator's own file is not the workspace's to send. It is read on the
+/// owner whatever the workspace's files say, so a workspace cannot supply a
+/// user-level source.
+pub fn the_users_file_is_read_here_and_never_taken_from_the_workspace_test() {
+  let rig = rig()
+  write(rig.home <> "/.claude", "settings.json", settings_with_hooks)
+  let users = rig.home <> "/.claude/settings.json"
+
+  let serving =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(users, bytes_of("{\"hooks\":{}}")),
+    ])
+
+  assert serving.skipped == []
+  assert hookserve.has_matching(serving, hookcompat.PreToolUse, "Bash")
+}
+
+/// A path the workspace did not send is a file that is not there, which is
+/// no diagnostic.
+pub fn a_workspace_file_not_sent_is_absent_test() {
+  let rig = rig()
+  write(rig.workspace <> "/.claude", "settings.json", settings_with_hooks)
+
+  let serving = load_gathered(rig, Some(rig.trust_root), [])
+
+  assert serving.skipped == []
+  assert serving.wiring.config.entries == []
+}
+
+/// Bytes which are not UTF-8 are refused in the words a file read from disk
+/// is refused in.
+pub fn bytes_that_are_not_text_are_refused_like_a_file_that_is_not_text_test() {
+  let rig = rig()
+  let path = rig.workspace <> "/.claude/settings.json"
+  write(rig.workspace <> "/.claude", "settings.json", "")
+  let assert Ok(Nil) = simplifile.write_bits(path, <<255, 254, 253>>)
+    as "the fixture file must be writable"
+  let from_disk = load(rig, Some(rig.trust_root))
+
+  let sent =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(path, hookserve.Bytes(<<255, 254, 253>>)),
+    ])
+
+  let assert [skipped] = sent.skipped as "unreadable bytes are the one skip"
+  assert string.contains(skipped.reason, "the file could not be read")
+  assert sent.skipped == from_disk.skipped
+}
+
+/// A file the workspace could not read is carried with its reason, and
+/// refused with it.
+pub fn an_unreadable_file_is_refused_with_its_reason_test() {
+  let rig = rig()
+  let path = rig.workspace <> "/.claude/settings.json"
+
+  let serving =
+    load_gathered(rig, Some(rig.trust_root), [
+      #(path, hookserve.Unreadable("permission denied")),
+    ])
+
+  let assert [skipped] = serving.skipped
+    as "the unreadable file is the one skip"
+  assert skipped.reason == "the file could not be read: permission denied"
+}
+
+/// Reading a file from this machine distinguishes the three outcomes the
+/// loader acts on.
+pub fn reading_contents_from_disk_gives_missing_bytes_or_unreadable_test() {
+  let rig = rig()
+  write(rig.workspace, "a.json", "{}")
+  assert hookserve.read_contents(rig.workspace <> "/a.json")
+    == hookserve.Bytes(bit_array.from_string("{}"))
+  assert hookserve.read_contents(rig.workspace <> "/nope.json")
+    == hookserve.Missing
+  let assert hookserve.Unreadable(..) = hookserve.read_contents(rig.workspace)
+    as "a directory is not a readable file"
 }

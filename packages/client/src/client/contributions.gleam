@@ -79,6 +79,7 @@
 //// already paid for.
 
 import client/scheduleseam
+import client/tool_placement
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -498,7 +499,9 @@ pub fn owner_tools(
 ///
 pub fn compose(workspace: List(Tool), owner: OwnerTools) -> List(Tool) {
   let #(core, after_core) =
-    list.split_while(workspace, fn(each) { is_core_tool(each.name) })
+    list.split_while(workspace, fn(each) {
+      list.contains(tool_placement.core_names, each.name)
+    })
   let #(code, after_code) =
     list.split_while(after_core, fn(each) {
       each.name == codemode_tool.tool_name
@@ -506,10 +509,31 @@ pub fn compose(workspace: List(Tool), owner: OwnerTools) -> List(Tool) {
   list.flatten([core, owner.agent, code, owner.session, after_code])
 }
 
-// The five tools every host offers, which lead the registry. They are the
-// head of `workspace_tools`' list, and `compose` finds the cut by them.
-fn is_core_tool(name: String) -> Bool {
-  list.contains(["bash", "grep", "fs_read", "fs_write", "fs_edit"], name)
+/// The workspace's tools as the owner registers them: the same names,
+/// descriptions and schemas, in the order the workspace listed them, each
+/// with a `run` that refuses.
+///
+/// The owner never runs these. A call to one is routed to the workspace by
+/// its name (`tool_placement`), so what the registry needs of them is what
+/// the model is offered, what the prompt's tool index says and what the
+/// effect surface schedules by, and `Described` carries exactly that.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert contributions.described_tools([]) == []
+/// ```
+///
+pub fn described_tools(described: List(tool.Described)) -> List(Tool) {
+  list.map(described, fn(each) {
+    tool.from_described(each, run: fn(_ctx, _args) {
+      tool.failure(
+        "the tool `"
+        <> each.name
+        <> "` runs on the workspace side and cannot run on the session's owner",
+      )
+    })
+  })
 }
 
 /// Drops the named tools from every built-in contribution, leaving

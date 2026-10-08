@@ -110,7 +110,7 @@ never one per file access.
 Tools that act on the conversation rather than the checkout (`agent_*`,
 `history_search`, `remember`, `schedule_*`, `context`, `advise`, skills,
 peers) keep running on the orchestrator. Clearance stays on the orchestrator
-too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1700`,
+too. `wiring.clear` is pure over `tool.Declarations` (`wiring.gleam:1709`,
 `tools/tool.gleam:573-589`), so the orchestrator builds declarations for the
 workspace tools with the same registration code, fed by census facts instead
 of local probes, and clears every call before it is sent.
@@ -190,7 +190,7 @@ PR #819's parallel reimplementation lost.
 When a workspace host starts it returns what the orchestrator needs to build
 the prompt and the tool table: platform and enforcement level, the toolchain
 probe, available language servers, helper degradation, the shell, the Git
-program (`host_git.program`, `workspace_plane.gleam:511`, probes the host it runs on),
+program (`host_git.program`, `workspace_plane.gleam:515`, probes the host it runs on),
 the workspace root as an opaque string, the guidance files' text, the project
 hook files' bytes and the base policy summary. The orchestrator renders and
 pins the prompt from it, exactly as it pins guidance today, and checks the

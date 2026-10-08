@@ -315,20 +315,40 @@ pub fn admin_with_facts(
   workspace: String,
   base: policy.SandboxPolicy,
 ) -> Admin {
-  let store = opened.store
   let protected = base.protected
+  admin_over(opened, facts, fn(requested, mode) {
+    resolve_addition(workspace, protected, requested, mode)
+  })
+}
+
+/// Builds the operator door over a resolver for the half that needs the
+/// workspace's files.
+///
+/// `resolve` takes the requested path and the access mode and answers the
+/// canonical path to record. Locally it is `resolve_addition` over the
+/// session's workspace and protections; for a workspace on another node it
+/// asks that node. Everything else (the authenticated origin, the
+/// conditional commit, readback) needs the session's store and stays here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // directories.admin_over(opened, fn() { Ok(facts) }, plane.resolve_directory)
+/// ```
+@internal
+pub fn admin_over(
+  opened: session.Session,
+  facts: fn() -> Result(api.FactHandle, Nil),
+  resolve: fn(String, String) -> Result(String, String),
+) -> Admin {
+  let store = opened.store
 
   Admin(
     read: fn() { read_store(store) |> result.map(encode) },
     add: fn(value, author) {
       use requested <- result.try(tool.required_string(value, "path"))
       use mode <- result.try(tool.required_string(value, "access"))
-      use path <- result.try(resolve_addition(
-        workspace,
-        protected,
-        requested,
-        mode,
-      ))
+      use path <- result.try(resolve(requested, mode))
       use live <- result.try(
         facts() |> result.map_error(fn(_) { "session is unavailable" }),
       )

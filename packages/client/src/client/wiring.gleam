@@ -10,7 +10,7 @@
 ////
 //// ## Flow
 ////
-//// `build_effects` → `dispatch` → `prepare_dispatch` → `provider_request` → `generation_request`; `build_effects` → `run_tool` → `read_authority`, `run_workspace_tool` → `tool_context`
+//// `build_effects` → `dispatch` → `prepare_dispatch` → `provider_request` → `generation_request`; `build_effects` → `run_tool` → `read_authority`, `run_workspace_tool` → `tool_context`; `run_placed` → `run_tool_held`
 ////
 //// 1. `build_effects` assembles the `Effects` record a host hands to
 ////    `runtime/api.open`: clock, entropy, timers, a provider surface, a tool
@@ -27,7 +27,10 @@
 ////    filesystem, widens the base policy with them, and dispatches through
 ////    `tool_context`'s `Ctx`. Only `Authority` and the `ToolRun` pass between
 ////    the halves, so a workspace on another node can sit behind the second.
-//// 5. `clear`, `replay_still_safe` and `execution_mode` answer the machine's
+//// 5. `run_placed` is how a session which has a workspace half routes a call:
+////    by `tool_placement.placement`, a workspace-side tool reads its `Authority` here
+////    and runs on the plane, and every other call takes `run_tool` as before.
+////    `clear`, `replay_still_safe` and `execution_mode` answer the machine's
 ////    declaration questions from the projected table.
 //// 6. `compaction_hooks` wires admission and the compaction signals, using
 ////    the same model facts `strand_window` reports.
@@ -164,6 +167,7 @@ import client/grants
 import client/notes
 import client/permissions
 import client/tool_holder
+import client/tool_placement
 import client/vision
 import core/clock.{type Clock}
 import core/entry
@@ -1963,21 +1967,98 @@ pub fn run_tool_held(
 ) -> effects.ToolOutcome {
   case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
     Ok(config) -> run_tool(config, run)
-    Error(unavailable) -> {
-      let reason = case unavailable {
-        tool_holder.Gone -> "the session's tool configuration is gone"
-        tool_holder.TimedOut ->
-          "the session's tool configuration did not answer in time"
-      }
-      let #(now, _clock) = clock.read(clock)
-      completed(
-        tool.failure(
-          "the tool `" <> run.call.name <> "` did not run: " <> reason,
-        ),
+    Error(unavailable) ->
+      holder_unavailable(
+        "the session's tool configuration",
+        unavailable,
         run,
-        now,
+        clock,
       )
+  }
+}
+
+// The in-band failure for a held value which could not be fetched. The
+// runtime is owed a `ToolCompleted` for the call whatever happened, so the
+// model sees that the call failed and the strand carries on.
+fn holder_unavailable(
+  held: String,
+  unavailable: tool_holder.Unavailable,
+  run: effects.ToolRun,
+  clock: Clock,
+) -> effects.ToolOutcome {
+  let reason = case unavailable {
+    tool_holder.Gone -> held <> " is gone"
+    tool_holder.TimedOut -> held <> " did not answer in time"
+  }
+  let #(now, _clock) = clock.read(clock)
+  completed(
+    tool.failure("the tool `" <> run.call.name <> "` did not run: " <> reason),
+    run,
+    now,
+  )
+}
+
+/// The workspace half of a tool run as the owner holds it: a function from
+/// the call and its stored authority to its outcome.
+///
+/// On one machine it is `run_workspace_tool` over the workspace's own
+/// registry. On another it is a message to that machine.
+pub type WorkspaceRun =
+  fn(effects.ToolRun, Authority) -> effects.ToolOutcome
+
+/// Routes each tool call to the half of the session that runs it.
+///
+/// A name `tool_placement` puts on the workspace side reads its stored
+/// authority from `session` and runs through `workspace`, which is held in
+/// a `tool_holder` for the reason the configuration is: a `WorkspaceRun` for
+/// a local plane closes over the workspace's tool registry, and the effect
+/// surface is copied into every process that holds the runtime. Every other
+/// name, an owner-side built-in or an extension's tool, takes `owner`, which
+/// is the path every call took before the halves were separate.
+///
+/// A call to a workspace-side tool the operator deactivated reaches the
+/// plane, whose registry does not hold it, and settles in band as an
+/// unavailable tool. The routing does not decide what is registered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let run = wiring.run_placed(owner_run, workspace_holder, session, clock)
+/// // effects.Effects(..built, tools: effects.ToolSurface(..built.tools, run:))
+/// ```
+///
+pub fn run_placed(
+  owner: fn(effects.ToolRun) -> effects.ToolOutcome,
+  workspace: tool_holder.Holder(WorkspaceRun),
+  session: Session,
+  clock: Clock,
+) -> fn(effects.ToolRun) -> effects.ToolOutcome {
+  fn(run: effects.ToolRun) {
+    case tool_placement.placement(run.call.name) {
+      Ok(tool_placement.WorkspaceSide) ->
+        run_on_workspace(workspace, session, clock, run)
+      Ok(tool_placement.OwnerSide) | Error(Nil) -> owner(run)
     }
+  }
+}
+
+// A workspace-side call: fetch the plane's run, read the authority the
+// session stored for this call, and hand both to the plane. A read fault or
+// a malformed record refuses the call with the reason `run_tool` gives.
+fn run_on_workspace(
+  workspace: tool_holder.Holder(WorkspaceRun),
+  session: Session,
+  clock: Clock,
+  run: effects.ToolRun,
+) -> effects.ToolOutcome {
+  case tool_holder.fetch(workspace, within_ms: holder_deadline_ms) {
+    Error(unavailable) ->
+      holder_unavailable("the session's workspace", unavailable, run, clock)
+    Ok(on_workspace) ->
+      case read_authority(session, run) {
+        Ok(authority) -> on_workspace(run, authority)
+        Error(reason) -> finished(tool.failure(reason), run, clock)
+      }
   }
 }
 

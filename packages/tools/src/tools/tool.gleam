@@ -609,6 +609,44 @@ pub fn describe(tool: Tool) -> Described {
   )
 }
 
+/// A tool built from its description and a `run`, for a registry which
+/// offers a tool whose behavior is on another machine.
+///
+/// The owner of a session whose workspace is elsewhere still has to offer the
+/// workspace's tools to the model, and `Described` is what the workspace
+/// sends. The `run` is the owner's, and it is a refusal: a call is routed to
+/// the workspace by name before it reaches this registry's dispatch, so the
+/// refusal is what a routing mistake meets and not something a call should
+/// ever hit. `requirements` asks the broker for nothing, since this tool
+/// never reaches it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let stub = tool.from_described(described, run: fn(_ctx, _args) {
+///   tool.failure("runs on the workspace")
+/// })
+/// assert tool.describe(stub) == described
+/// ```
+///
+pub fn from_described(
+  described: Described,
+  run run: fn(Ctx, JsonValue) -> ToolOutcome,
+) -> Tool {
+  Tool(
+    name: described.name,
+    description: described.description,
+    prompt_snippet: described.prompt_snippet,
+    schema: described.schema,
+    replay: described.replay,
+    execution_mode: described.execution_mode,
+    requirements: fn(workspace) {
+      policy.SandboxPolicy(..read_requirements(workspace), readable_roots: [])
+    },
+    run:,
+  )
+}
+
 /// What one registration declares about re-running and scheduling a call,
 /// with the behaviour and the contract it hangs off left behind.
 ///

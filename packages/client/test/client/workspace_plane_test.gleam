@@ -9,10 +9,12 @@
 import broker/broker
 import broker/executor
 import client/escalate
+import client/hookserve
 import client/internal/instance_owner as custody
 import client/owned_assembly_test
 import client/owner_services
 import client/serve
+import client/tool_placement
 import client/wiring
 import client/workspace_plane
 import client/workspace_policy
@@ -20,6 +22,7 @@ import core/clock
 import core/ids
 import core/json
 import core/message
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
@@ -142,6 +145,31 @@ pub fn prepare_reads_the_machine_and_makes_its_directories_test() {
     as "the tool environment is built at prepare, not at start"
 }
 
+// The workspace's own hook settings arrive as bytes in the census, keyed by
+// path, so an owner on another machine can decide their trust without a copy
+// of the workspace. The operator's file is not among them.
+pub fn prepare_sends_the_workspaces_hook_files_as_bytes_test() {
+  let settings = owned_assembly_test.settings()
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(settings.workspace <> "/.claude")
+    as "the workspace's settings directory"
+  let assert Ok(Nil) =
+    simplifile.write(
+      settings.workspace <> "/.claude/settings.json",
+      "{\"hooks\":{}}",
+    )
+    as "a project settings file"
+  let census = prepared(settings).census
+  assert census.hook_files
+    == [
+      #(
+        settings.workspace <> "/.claude/settings.json",
+        hookserve.Bytes(bit_array.from_string("{\"hooks\":{}}")),
+      ),
+      #(settings.workspace <> "/.claude/settings.local.json", hookserve.Missing),
+    ]
+}
+
 pub fn prepare_refuses_a_base_the_sandbox_cannot_enforce_before_any_directory_test() {
   let settings = owned_assembly_test.settings()
   let broken =
@@ -224,8 +252,13 @@ pub fn the_decls_are_the_tools_in_registration_order_test() {
       "job_send",
       "working_directory",
     ]
-  assert list.map(local.tools, fn(each) { each.name })
-    == list.map(local.started.decls, fn(each) { each.name })
+  assert list.all(
+    list.map(local.started.decls, fn(each) { each.name }),
+    fn(name) {
+      tool_placement.placement(name) == Ok(tool_placement.WorkspaceSide)
+    },
+  )
+    as "everything the workspace offers is placed on the workspace"
   Nil
 }
 

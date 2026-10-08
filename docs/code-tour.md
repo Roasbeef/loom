@@ -732,7 +732,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:1865`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:2203`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:2154`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -743,7 +743,7 @@ runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 registry (`run_tool`, `client/wiring.gleam:1763`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
-`tool.dispatch` is total (`tools/tool.gleam:709`): an unknown name yields
+`tool.dispatch` is total (`tools/tool.gleam:747`): an unknown name yields
 an in-band error result rather than a crash, and so does every other
 failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a

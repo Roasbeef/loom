@@ -2543,7 +2543,7 @@ catalogue without opening runtimes. Explicit admission invokes
   (workspace root as an opaque string, toolchain result, effective language
   servers with roots resolved, installed-extension discovery, platform,
   shell, base policy, tool environment and its unset names, Git program,
-  warnings). `WorkspaceSpec` is plain data, including `owner_files` (the
+  the workspace's two hook settings files as bytes, warnings). `WorkspaceSpec` is plain data, including `owner_files` (the
   index, memory store and digest paths to mask, `None` when the owner is on
   another machine); `reading` is the one closure `prepare` takes, because
   `[tools] env` values resolve from the machine's own configuration.
@@ -2560,11 +2560,12 @@ catalogue without opening runtimes. Explicit admission invokes
   (workspace doors first, `CodeModeAttach.arms` last, so the peer router
   wraps the working-directory router as it did), the workspace's tools
   (`contributions.workspace_tools` then `directory_tools`, less the
-  operator's deactivations), and prepares the Git identity, whose warning
-  joins the census. `start` returns only the interface a remote workspace
+  operator's deactivations) into the registry `run` dispatches over, and
+  prepares the Git identity, whose warning joins the census. `decls` is that
+  registry described, in registration order. `start` returns only the interface a remote workspace
   matches, `Started{plane, children, decls}`; `start_local` returns `Local`,
   which adds the pool, executor, language-server plane, code-mode
-  configuration and the real tools that `serve` still needs. `Children` is
+  configuration that `serve` still needs. `Children` is
   three adders (`scratch`, `jobs`, `lsp_manager`) because `serve` splices
   each into its services tree at its established position; each holds only
   its child specification. `WorkspacePlane` is `run(ToolRun, Authority)` (the
@@ -2578,6 +2579,48 @@ catalogue without opening runtimes. Explicit admission invokes
   the router directly. `mixed_entropy` and `start_effect_plane` (the
   one-shot planes' entry, which `serve.start_effect_plane` delegates to)
   live here too.
+- `client/tool_placement.{Placement, core_names, workspace_names,
+  owner_names, placement}` — which half runs each built-in tool, as two
+  lists of names built from the tool modules' own name constants.
+  `placement(name)` is `Ok(WorkspaceSide)` for `bash`, `grep`, the file
+  tools, `code_mode`, the `job_*` tools and `working_directory`;
+  `Ok(OwnerSide)` for the agent family (with `todo`), `history_search`,
+  `remember`, `schedule_*`, `context_remaining`, `load_skill`, `peer_*` and
+  `advise`; and `Error(Nil)` for an extension's tool, which a local session
+  runs on the owner and a remote one will refuse. `tool_placement_test` builds
+  each half with every plane enabled and fails on a name built and not placed,
+  placed on the wrong side, on both sides, or listed and not built.
+- `wiring.{run_placed, WorkspaceRun}` — the routed tool surface. `serve`
+  replaces the `run` slot of the built `Effects` with `run_placed(owner_run,
+  run_holder, session, clock)`: a name `tool_placement` puts on the workspace
+  reads its stored `Authority` and runs through the plane's `run`; everything
+  else, owner-side built-ins and extension tools, takes the path every call
+  took before. The plane's `run` closes over the workspace's registry, so it
+  is held in a second `tool_holder` (started with the first by `start_holders`
+  and retired with it under `custody.ToolConfig`) for the reason the
+  configuration is: the effect surface is copied into every process that holds
+  the runtime. The owner's registry holds the workspace's tools only as
+  `contributions.described_tools(decls)`, `tool.Described` with a `run` that
+  refuses, built by `tool.from_described`; a routing mistake meets that
+  refusal, never a tool. `ToolSurface.recover` stays `None`.
+- `client/hookserve.{Contents, read_contents, gather, load_from}` — imported
+  hooks over sources read on another machine. `read_contents` is one file as
+  `Missing`, `Bytes` or `Unreadable(reason)`; `gather` pairs each located
+  source with its contents, reading the operator's file on the owner and
+  taking the workspace's from the census by path; `load_from` is `load` over
+  those pairs, so parsing, the trust check against the owner's record and the
+  merge are the same function whichever machine the bytes came from. `load`
+  is `load_from` over files read here.
+- `client/directories.{resolve_addition, admin_over}` — the half of an
+  operator's `add-dir` that needs the workspace's files, and the door built
+  over a resolver for it. `admin_with_facts` is `admin_over` with
+  `resolve_addition` over the session's workspace; `serve` passes the plane's
+  `resolve_directory`.
+- `client/system_prompt.{discover_user, discover_workspace, render_guidance}` —
+  `discover` split at the machine boundary. The operator's global `AGENTS.md`
+  is read on the owner; the workspace's `AGENTS.md` and `CLAUDE.md` arrive
+  from the plane's `prompt_facts` as text, and `serve.render_prompt` renders
+  the same document the single lookup did (a test pins the equality).
 - `client/contributions.{workspace_tools, directory_tools, OwnerTools,
   owner_tools, compose}` — `built_in` is now the workspace's tools (the five
   core tools, `code_mode`, the `job_*` tools) composed with the owner's

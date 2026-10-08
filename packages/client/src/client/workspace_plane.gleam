@@ -53,8 +53,8 @@
 ////    starts the effect plane, then the jobs, scratch and language-server
 ////    wiring.
 //// 3. `start_effect_plane_in` starts the helper pool and the executor
-////    service over it, then the broker, publishing each to custody in the
-////    order they are torn down in.
+////    service over it, then the broker, publishing each to custody before
+////    the next begins.
 //// 4. `code_mode_host` builds the code-mode configuration from the broker
 ////    and the workspace's doors, then applies the owner's arms last.
 //// 5. `workspace_tools_in` builds the workspace's tools over those doors and
@@ -76,6 +76,7 @@ import client/extension/installed
 import client/extension/record as extension_record
 import client/git_identity
 import client/gocache
+import client/hookserve
 import client/host_git
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
@@ -206,6 +207,12 @@ pub type Census {
     unset_env: List(String),
     /// The Git executable fixed calls name, resolved on this machine.
     git: String,
+    /// The workspace's own hook settings files, read where the workspace is
+    /// and sent as bytes: `.claude/settings.json` and
+    /// `.claude/settings.local.json`, keyed by path. The operator's own file
+    /// stays on the owner, and so does the decision whether to trust any of
+    /// them.
+    hook_files: List(#(String, hookserve.Contents)),
     /// What the build found that an operator should be told.
     warnings: List(Warning),
   )
@@ -369,9 +376,8 @@ pub type Started {
 /// in the owner's VM can give.
 ///
 /// The extra handles keep `serve.Instance`'s fields populated for the
-/// tests and teardown paths that read them, and let the owner build its
-/// registry from the real tools while that registry still dispatches
-/// workspace tools itself.
+/// tests and teardown paths that read them, and give the owner the
+/// code-mode configuration its extension tools launch satellites under.
 pub type Local {
   Local(
     /// The interface's view.
@@ -384,8 +390,6 @@ pub type Local {
     lsp: Option(LspPlane),
     /// The code-mode configuration, when a toolchain was found.
     code_mode_host: Option(codemode_wiring.Config),
-    /// The workspace's tools, with their behavior.
-    tools: List(tool.Tool),
   )
 }
 
@@ -509,12 +513,24 @@ pub fn prepare(
       env:,
       unset_env:,
       git: host_git.program(),
+      hook_files: hook_files_of(spec.workspace),
       warnings: lsp_warnings,
     ),
     reading:,
     places:,
     blob_root:,
   ))
+}
+
+// The workspace's hook settings files, as bytes. Located the way the owner
+// locates them, so the two cannot disagree about which files are the
+// workspace's: with no home there is no operator file, and what remains is
+// the project's two.
+fn hook_files_of(workspace: String) -> List(#(String, hookserve.Contents)) {
+  hookserve.locations(None, workspace)
+  |> list.map(fn(located) {
+    #(located.path, hookserve.read_contents(located.path))
+  })
 }
 
 // What the session base is composed from, read off the spec.
@@ -773,7 +789,6 @@ fn finish_local(
     executor: effect.executor,
     lsp: option.map(wired.lsp, fn(wiring) { wiring.plane }),
     code_mode_host: wired.host,
-    tools: wired.tools,
   ))
 }
 

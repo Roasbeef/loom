@@ -181,18 +181,25 @@ import weft/registry as address
 // existed. The runner context reuses the harness-side coordinates
 // the extension bus already clears under, so an imported hook's
 // process is attributed the same way a native hook satellite's is.
+//
+// The workspace's own settings files arrive in the plane's census, read
+// where the workspace is, and the operator's file is read here. Whether any
+// of them is trusted is decided here from the bytes, against the owner's
+// trust record, whichever machine the files were on. The hooks run through
+// the plane's broker under the census's policy and environment.
 fn with_imported_hooks(
   built: effects.Effects,
   opened: session.Session,
   settings: Settings,
   clock: Clock,
-  environment: List(#(String, String)),
-  base_policy: policy.SandboxPolicy,
-  broker_actor: broker.Broker,
+  plane: workspace_plane.WorkspacePlane,
   logger: Logger,
   entropy: fn() -> Int,
 ) -> effects.Effects {
-  let located = hookserve.locations(settings.home, settings.workspace)
+  let census = plane.census
+  let environment = census.env
+  let base_policy = census.base_policy
+  let located = hookserve.locations(settings.home, census.workspace)
   let trust_root = option.map(settings.home, fn(home) { home <> "/hooktrust" })
   let wiring =
     hookwire.Wiring(
@@ -202,24 +209,30 @@ fn with_imported_hooks(
       ),
       session_id: settings.session_id,
       transcript_path: settings.session_path,
-      workspace: settings.workspace,
+      workspace: census.workspace,
     )
   let coordinates =
     hook_coordinates(settings, base_policy, entropy(), clock, environment)
   let runner =
     hookrunner.Context(
-      broker: broker_actor,
+      broker: plane.broker,
       base_policy: base_policy,
       op_id: coordinates.op_id,
       step_id: "imported-hooks",
-      workspace: settings.workspace,
-      env: hook_environment(environment, settings.home, settings.workspace),
+      workspace: census.workspace,
+      env: hook_environment(environment, settings.home, census.workspace),
       demand: settings.demand,
       clock: clock,
       session_id: settings.session_id,
       transcript_path: settings.session_path,
     )
-  let serving = hookserve.load(located, trust_root, wiring, runner)
+  let serving =
+    hookserve.load_from(
+      hookserve.gather(located, census.hook_files),
+      trust_root,
+      wiring,
+      runner,
+    )
   list.each(serving.skipped, fn(skipped) {
     log.warn(logger, "hooks.source_skipped", [
       field.ident(key: "path", value: skipped.path),
@@ -2053,14 +2066,7 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
     #("the session tree", instance.runtime.tree.supervisor),
     #("the service supervisor", instance.services),
     #("the session storage", instance.storage_owner),
-    #("the helper pool", exec.pool_pid(instance.pool)),
-    ..list.append(
-      [#("the executor service", executor.pid(instance.executor))],
-      case broker.pid(instance.broker) {
-        Ok(pid) -> [#("the capability broker", pid)]
-        Error(Nil) -> []
-      },
-    )
+    ..instance.plane.fatal
   ]
 }
 
@@ -3440,14 +3446,7 @@ fn assemble_in(
         // so a captured runtime would be a value cycle.
         runtime: fn() { agency.borrow_runtime(agency_config) },
         settings: advisor_settings,
-        check: goal_check_wiring(
-          settings,
-          broker_actor,
-          base_policy,
-          environment,
-          clock,
-          entropy(),
-        ),
+        check: goal_check_wiring(settings, plane, clock, entropy()),
         clock:,
         logger:,
         name: advisor_name,
@@ -3487,7 +3486,7 @@ fn assemble_in(
         contributions.Contribution(
           contributions.BuiltIn,
           contributions.compose(
-            local.tools,
+            contributions.described_tools(local.started.decls),
             contributions.owner_tools(
               Some(agency_seam),
               history_seam,
@@ -3550,9 +3549,12 @@ fn assemble_in(
       entropy,
     )
   use git_start <- result.try(
-    session_git.prepare(opened, settings.session_id, settings.workspace, fn() {
-      worktree_diff.starting_revision(worktree_wiring)
-    }),
+    session_git.prepare(
+      opened,
+      settings.session_id,
+      plane.census.workspace,
+      fn() { worktree_diff.starting_revision(worktree_wiring) },
+    ),
   )
 
   // The one observation of the session's tree. The gateway runs it for an
@@ -3576,8 +3578,7 @@ fn assemble_in(
     system_prompt.assemble(pinned:, override: settings.system, render: fn() {
       render_prompt(
         settings,
-        base_policy,
-        pool,
+        plane,
         // The prompt is one string for every strand, so the advisor's
         // own tool is left out of the index the primary reads; the
         // advisor is told about it by its brief instead.
@@ -3647,13 +3648,39 @@ fn assemble_in(
   // nothing about when the lease is released or when any other part retires.
   // The holder starts linked to this builder and is unlinked once custody
   // has acknowledged it, the same hand-off the broker and executor use.
-  use holder <- result.try(tool_holder.start(wiring_config))
+  //
+  // The workspace's run is held the same way and for the same reason: for a
+  // local plane it closes over the workspace's tool registry, and the routed
+  // tool surface below is copied exactly as the record the registry hung off
+  // was. The two holders retire together, since both serve tools that run
+  // until the runtime has drained.
+  use holders <- result.try(start_holders(wiring_config, plane.run))
+  let #(holder, run_holder) = holders
   use Nil <- result.try(
-    retain(owner, custody.ToolConfig, fn() { tool_holder.stop(holder) }, fn() {
-      process.unlink(tool_holder.pid(holder))
-    }),
+    retain(
+      owner,
+      custody.ToolConfig,
+      fn() { stop_holders(holder, run_holder) },
+      fn() {
+        process.unlink(tool_holder.pid(holder))
+        process.unlink(tool_holder.pid(run_holder))
+      },
+    ),
   )
-  let built = wiring.build_effects_held(wiring_config, holder)
+
+  // A call is routed by the tool's name to the half that runs it. Owner-side
+  // tools and extensions take the path every call took before the halves were
+  // separate; a workspace-side tool reads its stored authority and runs on
+  // the plane. The record's other slots are untouched.
+  let held = wiring.build_effects_held(wiring_config, holder)
+  let built =
+    effects.Effects(
+      ..held,
+      tools: effects.ToolSurface(
+        ..held.tools,
+        run: wiring.run_placed(held.tools.run, run_holder, opened, clock),
+      ),
+    )
   let effects_record =
     effects.Effects(
       ..built,
@@ -3751,9 +3778,7 @@ fn assemble_in(
       opened,
       settings,
       clock,
-      environment,
-      base_policy,
-      broker_actor,
+      plane,
       logger,
       entropy,
     )
@@ -3874,14 +3899,14 @@ fn assemble_in(
   // record. The runtime and executor registry keep their intended owners.
   let async_heartbeat_ms = settings.jobs_policy.heartbeat_ms
   let hub_session_id = settings.session_id
-  let hub_workspace = settings.workspace
   let hub_catalog = settings.catalog
 
-  // The one thing the hub asks the workspace for, projected before the hub's
-  // child specification closes over it: the plane itself holds the
+  // The two things the hub asks the workspace for, projected before the
+  // hub's child specification closes over them: the plane itself holds the
   // workspace's tool registry, and a specification the supervisor keeps for
   // restarts must not.
   let live_jobs = plane.live_jobs
+  let resolve_directory = plane.resolve_directory
 
   // Directory mutation owns only the restartable writer capability. The hub
   // still receives Runtime for execution, but its admin supplier does not add
@@ -4012,11 +4037,10 @@ fn assemble_in(
       supervision.worker(fn() {
         hub.start(
           hub.default_options(hub_session_id, runtime)
-            |> hub.with_directories(directories.admin_with_facts(
+            |> hub.with_directories(directories.admin_over(
               opened,
               fn() { Ok(directory_facts) },
-              hub_workspace,
-              base_policy,
+              resolve_directory,
             ))
             |> hub.with_bus(event_bus)
             |> with_summary_demand(summary_route, summary_name)
@@ -4137,6 +4161,37 @@ fn assemble_in(
       None, distillpass.DistillsOnBoot, Ok(_distiller) -> Some(distill_name)
     },
   ))
+}
+
+// Starts the two holders a session's tool runs fetch from: the owner's
+// configuration and the workspace's run. A failure to start the second
+// retires the first, which is linked to the builder and would otherwise
+// outlive an assembly that never published it.
+fn start_holders(
+  config: wiring.Config,
+  workspace_run: wiring.WorkspaceRun,
+) -> Result(
+  #(tool_holder.Holder(wiring.Config), tool_holder.Holder(wiring.WorkspaceRun)),
+  String,
+) {
+  use holder <- result.try(tool_holder.start(config))
+  case tool_holder.start(workspace_run) {
+    Ok(run_holder) -> Ok(#(holder, run_holder))
+    Error(reason) -> {
+      let _retired = tool_holder.stop(holder)
+      Error(reason)
+    }
+  }
+}
+
+// Retires both holders, the workspace's run first. Success is the proof
+// custody needs that neither process remains.
+fn stop_holders(
+  holder: tool_holder.Holder(wiring.Config),
+  run_holder: tool_holder.Holder(wiring.WorkspaceRun),
+) -> Result(Nil, String) {
+  use Nil <- result.try(tool_holder.stop(run_holder))
+  tool_holder.stop(holder)
 }
 
 // Acknowledgement transfers startup custody before any resource can begin work.
@@ -4855,23 +4910,31 @@ fn with_history(
 // --- the system prompt -----------------------------------------------------
 
 // Renders the prompt for a session that has none pinned yet. Everything
-// expensive lives behind this thunk — the pack file, the session's
-// instruction files, and the helper spawn the degraded question needs —
-// so a resumed session pays for none of it.
+// expensive lives behind this thunk — the pack file, the instruction files,
+// and the helper spawn the degraded question needs — so a resumed session
+// pays for none of it.
 //
-// The operator's home comes off `Settings` rather than out of the process
-// environment, so the lookup of the global `AGENTS.md` is a pure function
-// of its arguments and a test can stand a server up that never reads the
-// machine's real home.
+// The instruction files come from two places, and the order is the one the
+// single lookup always produced. The operator's global `AGENTS.md` is read
+// here, on the owner, from `Settings` rather than the process environment, so
+// the lookup is a function of its arguments and a test can stand a server up
+// that never reads the machine's real home. The workspace's own files are the
+// workspace's to read: they arrive from the plane as text, with the helper's
+// health, the platform and the shell it learned on its own machine.
 fn render_prompt(
   settings: Settings,
-  base_policy: policy.SandboxPolicy,
-  pool: Pool,
+  plane: workspace_plane.WorkspacePlane,
   tools: List(String),
   available_tools: List(String),
 ) -> Result(system_prompt.Rendered, String) {
+  use facts <- result.try(plane.prompt_facts())
+  let census = plane.census
+  let #(standing, standing_notes) = system_prompt.discover_user(settings.home)
   let #(guidance, notes) =
-    system_prompt.guidance(workspace: settings.workspace, home: settings.home)
+    system_prompt.render_guidance(
+      list.append(option.values([standing]), facts.guidance),
+      list.append(standing_notes, facts.guidance_notes),
+    )
   use #(origin, source) <- result.try(
     system_prompt.pack_source(
       option.from_result(workspace_policy.env_text(
@@ -4883,14 +4946,17 @@ fn render_prompt(
     origin,
     source,
     system_prompt.Host(
-      workspace: settings.workspace,
-      platform: ffi_os.platform(),
-      shell: workspace_policy.shell_path,
+      workspace: census.workspace,
+      platform: census.platform,
+      shell: census.shell,
       tools:,
       available_tools:,
       demand: settings.demand,
-      degraded: workspace_policy.degraded(pool),
-      base_policy:,
+      degraded: case facts.helper {
+        workspace_plane.Degraded -> True
+        workspace_plane.Healthy -> False
+      },
+      base_policy: census.base_policy,
       guidance:,
     ),
   ))
@@ -4917,24 +4983,23 @@ fn render_prompt(
 // actor cannot be waiting on a process the sandbox has already killed.
 fn goal_check_wiring(
   settings: Settings,
-  broker_actor: Broker,
-  base_policy: policy.SandboxPolicy,
-  environment: List(#(String, String)),
+  plane: workspace_plane.WorkspacePlane,
   clock: Clock,
   seed: Int,
 ) -> goalcheck.Wiring {
   let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
+  let census = plane.census
 
   goalcheck.wiring(
     goalcheck.Runner(
       clear_call: tool.broker_runner(
-        broker: broker_actor,
+        broker: plane.broker,
         waiting: workspace_plane.jobs_clearance_ms,
       ),
-      base_policy:,
+      base_policy: census.base_policy,
       demand: settings.demand,
-      env: environment,
-      workspace: settings.workspace,
+      env: census.env,
+      workspace: census.workspace,
       clock:,
       op_id:,
       clearance_ms: workspace_plane.jobs_clearance_ms,

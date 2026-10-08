@@ -257,3 +257,70 @@ pub fn an_addition_refuses_a_missing_file_or_protected_path_test() {
   assert directories.resolve_addition(root, [root <> "/lib"], "lib", "write")
     == Error("directory could not be resolved or is protected")
 }
+
+/// The door over a resolver records what the resolver answers, which is the
+/// path on the workspace's machine, and not the path the operator typed.
+pub fn the_door_over_a_resolver_commits_the_resolvers_answer_test() {
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 643)).0
+  let harness = gateway_test.reserved_fixture(id)
+  let facts = api.fact_handle(harness.runtime)
+  let asked = process.new_subject()
+  let admin =
+    directories.admin_over(
+      harness.runtime.session,
+      fn() { Ok(facts) },
+      fn(requested, mode) {
+        process.send(asked, #(requested, mode))
+        Ok("/the/workspaces/canonical/lib")
+      },
+    )
+
+  let answer =
+    admin.add(
+      json.Object([
+        #("path", json.String("lib")),
+        #("access", json.String("read")),
+      ]),
+      None,
+    )
+
+  assert process.receive(asked, within: 0) == Ok(#("lib", "read"))
+  assert answer
+    == Ok(
+      json.Array([
+        json.Object([
+          #("path", json.String("/the/workspaces/canonical/lib")),
+          #("access", json.String("read")),
+        ]),
+      ]),
+    )
+  assert api.close(harness.runtime) == Ok(Nil)
+}
+
+/// A refusal from the workspace's machine is the operator's answer, word for
+/// word, and the session's facts are not touched.
+pub fn the_door_over_a_resolver_passes_its_refusal_through_untouched_test() {
+  let id = ids.mint_session(ids.generator(clock.fixed(1000), 644)).0
+  let harness = gateway_test.reserved_fixture(id)
+  let touched = process.new_subject()
+  let admin =
+    directories.admin_over(
+      harness.runtime.session,
+      fn() {
+        process.send(touched, Nil)
+        Error(Nil)
+      },
+      fn(_requested, _mode) { Error("that machine has no such directory") },
+    )
+
+  assert admin.add(
+      json.Object([
+        #("path", json.String("lib")),
+        #("access", json.String("read")),
+      ]),
+      None,
+    )
+    == Error("that machine has no such directory")
+  assert process.receive(touched, within: 0) == Error(Nil)
+  assert api.close(harness.runtime) == Ok(Nil)
+}
