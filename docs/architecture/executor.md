@@ -277,7 +277,7 @@ demonitoring the execution's guarantor, which also flushes any `DOWN` already
 queued, then calling `release`, then reclaiming the slot and token
 (`broker/broker.gleam:987`). A guarantor `DOWN` that reaches the broker with
 the monitor still in place calls `abandon` instead, through
-`handle_guarantor_down` (`broker/broker.gleam:969`). Because the demonitor is
+`handle_guarantor_down` (`broker/broker.gleam:1008`). Because the demonitor is
 the step that separates the two paths, the broker calls exactly one of them for
 any execution, never both and never `abandon` after a settlement. An earlier
 draft returned the helper from inside the relay, ahead of `settle`, and that
