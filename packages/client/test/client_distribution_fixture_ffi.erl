@@ -6,7 +6,7 @@
 %% a finite watchdog and must print a completion witness, and the fixture
 %% directory is deleted afterwards.
 -module(client_distribution_fixture_ffi).
--export([scenario/1, child/2]).
+-export([scenario/1, child/2, installed/4, free_port/0, certificate_facts/1]).
 -include_lib("public_key/include/public_key.hrl").
 
 -define(DIST, 'client@distribution').
@@ -194,6 +194,49 @@ remote(Root, Scenario, Asks, Hold) ->
              B, ConfigB, remote_host,
              #{ledger => bin(Ledger), asks => Asks, hold => Hold}).
 
+%% ---------------------------------------------------------- installed bundles
+
+%% Two nodes that `loom distribution install` set up from provisioned bundles:
+%% each tuple is the node's HOME, its loom.toml and its options file. The
+%% orchestrator connects to `PeerName`. In `accept` mode it must connect over
+%% the executor's fixed `Port`, exchange a message and stay hidden; in `refuse`
+%% mode the connection must fail. The configuration of each is read back from
+%% the installed loom.toml with the daemon's own parser, so the proof is of the
+%% files an operator would have.
+installed({HomeA, ConfigA, OptionsA}, {HomeB, ConfigB, OptionsB}, {PeerName, Port}, Mode) ->
+    try
+        {ok, _} = application:ensure_all_started(ssl),
+        {A, CA} = installed_node(HomeA, ConfigA, OptionsA),
+        {B, CB} = installed_node(HomeB, ConfigB, OptionsB),
+        case Mode of
+            accept ->
+                exchange(A, CA, connect,
+                         #{peer => PeerName, port => Port, expect_port => yes},
+                         B, CB, serve, #{});
+            refuse ->
+                exchange(A, CA, reject, #{peer => PeerName}, B, CB, wait, #{})
+        end,
+        {ok, nil}
+    catch Class:Reason:Stack ->
+        {error, unicode:characters_to_binary(
+            io_lib:format("~p:~p~n~p", [Class, Reason, Stack]))}
+    end.
+
+installed_node(Home, ConfigPath, OptionsPath) ->
+    {ok, Text} = file:read_file(ConfigPath),
+    {ok, {some, Config}} = ?DIST:parse(Text),
+    {#{home => Home, options => OptionsPath, installed => true}, Config}.
+
+%% The SHA-256 of a PEM certificate's DER and its DNS names, computed here from
+%% public_key directly so a test does not trust the code that minted them.
+certificate_facts(Pem) ->
+    [{'Certificate', Der, not_encrypted} | _] = public_key:pem_decode(Pem),
+    #'OTPCertificate'{tbsCertificate = Tbs} = public_key:pkix_decode_cert(Der, otp),
+    #'Extension'{extnValue = Names} = lists:keyfind(?'id-ce-subjectAltName',
+        #'Extension'.extnID, Tbs#'OTPTBSCertificate'.extensions),
+    {crypto:hash(sha256, Der),
+     [unicode:characters_to_binary(Dns) || {dNSName, Dns} <- Names]}.
+
 %% ---------------------------------------------------------------- provisioning
 
 root_cert(Label) ->
@@ -270,6 +313,9 @@ config(#{name := LocalName, files := Files}, _Peer, PinDer, Listen, PeerName) ->
         [{peer_pin, PeerName, Pin}], Files, Listen),
     Config.
 
+%% A node that `loom distribution install` set up already has the options file
+%% the installer generated, and replacing it here would hide an installer bug.
+write_options(#{installed := true, options := Path}, _Config) -> Path;
 write_options(#{options := Path}, Config) ->
     ok = file:write_file(Path, ?DIST:tls_options(Config)),
     ok = file:change_mode(Path, 8#600),
