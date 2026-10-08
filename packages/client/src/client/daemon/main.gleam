@@ -832,7 +832,8 @@ fn diagnose_domain_start(
 // A failed builder can retire before the control client reads its operation.
 // Record the classified cause here, while it still exists, rather than keeping
 // failed instances alive for diagnostics. The caller receives the same error;
-// only fixed labels and a validated session identity enter the log.
+// only fixed labels, a validated session identity and the path-free detail
+// that `start_class` returns enter the log.
 fn diagnose_start(
   outcome: Result(value, String),
   logger: Logger,
@@ -867,9 +868,11 @@ fn diagnose_start(
 /// A class alone is not something an operator can act on, so a class that has
 /// an actionable fact behind it also returns that fact as its own field. Only
 /// values proven free of a path or a credential may be returned this way; the
-/// reason string itself never is, which is why it is matched rather than
-/// logged. The lease expiry qualifies: it is a millisecond instant minted by
-/// the writer that died, and it is the entire answer to "when can I retry?".
+/// reason string itself is not, which is why it is matched rather than
+/// logged. An executor reason is the one exception, and only when it names no
+/// path (see `executor_detail`). The lease expiry qualifies: it is a
+/// millisecond instant minted by the writer that died, and it is the entire
+/// answer to "when can I retry?".
 ///
 /// ## Examples
 ///
@@ -919,10 +922,36 @@ pub fn start_class(
           [],
         )
 
+        // A remote open that could not reach or attach its executor. The reason
+        // is what separates a network failure from a pin, a capacity or an
+        // incarnation refusal, and it is the only thing an operator reading
+        // the log can act on.
+        "executor_unavailable: " <> detail -> #(
+          "executor_unavailable",
+          executor_detail(detail),
+        )
+
         _ -> #("assembly_failed", [])
       }
       #("runtime_assembly", class, detail)
     }
+  }
+}
+
+// The reason an executor could not hold a session, as a log field, or no field
+// when the text could name a path.
+//
+// Most of these reasons are fixed sentences from the open path. Two kinds are
+// not: a storage error, which `string.inspect` renders with the session's own
+// path, and a sentence the executor wrote, which can carry a path from its
+// disk. Every path contains a separator, so a reason with one is dropped
+// whole rather than scrubbed, and the class alone is logged as it was before.
+// Nothing here is built from a key, a cookie or a certificate. The length is
+// bounded because part of the text comes from another machine.
+fn executor_detail(detail: String) -> List(field.Field) {
+  case string.contains(detail, "/") || string.contains(detail, "\\") {
+    True -> []
+    False -> [field.text("reason", glance.clip(detail, 512))]
   }
 }
 

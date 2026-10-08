@@ -926,7 +926,11 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/daemon/main.start_class` classifies a start failure into a stage, a
   class, and the structured detail that class permits. Only values proven free
   of a path or a credential may be logged, which is why the reason string is
-  matched rather than recorded. `serve.storage_open_refusal` renders a held
+  matched rather than recorded. The one exception is an `executor_unavailable:`
+  reason: `executor_detail` logs it as `reason` (clipped to 512 bytes) unless it
+  contains a path separator, in which case the class alone is logged, because
+  a storage error and an executor's own sentence can name a path.
+  `serve.storage_open_refusal` renders a held
   writer lease with its expiry so the classifier can emit class `lease_held`
   with `lease_expires_at_ms` — after an unclean exit that expiry is the entire
   answer to when the session reopens. See

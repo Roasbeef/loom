@@ -369,6 +369,11 @@ A failed assembly is classified by `main.start_class` and logged by
 the raw reason, which can contain a path. For a held writer lease the log
 also carries `lease_expires_at_ms`, the time the session will next open;
 [sessions](sessions.md) ("Reopening after an unclean exit") explains why.
+For a remote open that could not place the session on its executor, the class
+is `executor_unavailable` and the log carries `reason`, the text after the
+`executor_unavailable:` prefix, clipped to 512 bytes. A reason that contains a
+path separator is omitted whole, because a storage error renders the session's
+own path and an executor's sentence can carry one from its disk.
 The registry remembers the failed operation, so `operations.get` answers
 `StartFailed` rather than `StaleOperation`.
 
