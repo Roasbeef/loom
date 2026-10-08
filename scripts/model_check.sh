@@ -27,6 +27,13 @@
 # check` exits non-zero exactly when it finds a bug, which is what both
 # readings rest on.
 #
+# A project whose mutate.py accepts `--check` also has its mutants run, after
+# its cases: each mutant applies one text replacement to the model, and the
+# gate requires the test case that mutant names to fail on the rule it names.
+# A mutant that survives means the model stopped depending on the rule the
+# mutation removes, which is the same reading as a TLA+ Mutant*.cfg. Another
+# project's mutate.py, which is run by hand, is left alone.
+#
 # The schedule counts are smaller than the README's 30,000 because this is
 # a gate run on every model change, not the recorded result. The default
 # of 1,000 schedules takes about six seconds a case. Every probe in the
@@ -162,5 +169,8 @@ for project in "$root"/protocol/models/*/*.pproj; do
 			;;
 		esac
 	done
+	if [ -f "$model/mutate.py" ] && grep -q -- '--check' "$model/mutate.py"; then
+		(cd "$model" && python3 mutate.py --check) || failed=1
+	fi
 done
 exit "$failed"
