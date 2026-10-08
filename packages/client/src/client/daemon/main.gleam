@@ -36,6 +36,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/directory/settings as directory_settings
 import client/distribution
 import client/executor_plane
 import client/executors
@@ -120,6 +121,11 @@ pub type Config {
     /// its own catalogue lacks, read from `[orchestrators.<name>]` at startup
     /// and never reread (protocol-change/078, phase 3).
     orchestrators: List(orchestrators.Orchestrator),
+    /// The `[directory]` table, read at startup and never reread: whether this
+    /// daemon is a member of the session directory's Khepri cluster and who the
+    /// members are (protocol-change/079). `None` leaves the daemon exactly as
+    /// it was before the directory existed.
+    directory: Option(directory_settings.Settings),
     /// The distribution membership `prepare_startup` started, or `None` when
     /// the configuration has no `[distribution]` table. It is how the daemon
     /// reaches the peers it asks, and a daemon without it asks nobody and
@@ -301,6 +307,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       [],
       [],
       None,
+      None,
     )
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
@@ -420,6 +427,7 @@ fn bind_address(value: String) -> Result(#(String, Int), String) {
 fn start_distribution(
   document: dict.Dict(String, tom.Toml),
   configuration: String,
+  cluster: distribution.Cluster,
 ) -> Result(Option(distribution.Membership), String) {
   use found <- result.try(
     distribution.from_document(document)
@@ -428,7 +436,7 @@ fn start_distribution(
   case found {
     None -> Ok(None)
     Some(settings) ->
-      distribution.start(settings, distribution.NotMember)
+      distribution.start(settings, cluster)
       |> result.map(Some)
       |> result.map_error(fn(fault) {
         configuration <> ": " <> distribution.describe(fault)
@@ -864,7 +872,26 @@ pub fn prepare_startup(
     orchestrators.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
-  use membership <- result.try(start_distribution(document, configuration))
+  use directory <- result.try(
+    directory_settings.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  case directory {
+    Some(found) ->
+      case directory_settings.even(found) {
+        True ->
+          log.warn(logger, "daemon.directory_even_members", [
+            field.count("members", list.length(found.members)),
+          ])
+        False -> Nil
+      }
+    None -> Nil
+  }
+  use membership <- result.try(start_distribution(
+    document,
+    configuration,
+    directory_settings.cluster(directory),
+  ))
   let config =
     Config(
       ..config,
@@ -874,6 +901,7 @@ pub fn prepare_startup(
       pools:,
       workspaces:,
       orchestrators:,
+      directory:,
       membership:,
     )
   root.start(

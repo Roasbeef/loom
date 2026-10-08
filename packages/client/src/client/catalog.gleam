@@ -162,6 +162,7 @@
 
 import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
 import client/daemon/limits as daemon_limits
+import client/directory/settings as directory_settings
 import client/distribution
 import client/executors
 import client/lsp/profile.{type LspServer}
@@ -458,14 +459,16 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // on without naming one. `workspaces` is `client/workspaces`': the checkouts
   // an executor serves, read the same way. `orchestrators` is
   // `client/orchestrators`': the other orchestrators this daemon asks which of
-  // them owns a session it has no record of.
+  // them owns a session it has no record of. `directory` is
+  // `client/directory/settings`': the members of the session directory's
+  // Khepri cluster, when this daemon is one of them.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
       "profiles", "peers", "retry", "distribution", "executors", "pools",
-      "workspaces", "orchestrators",
+      "workspaces", "orchestrators", "directory",
     ],
     "the top level",
   ))
@@ -476,6 +479,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   use Nil <- result.try(validate_pools(document))
   use Nil <- result.try(validate_workspaces(document))
   use Nil <- result.try(validate_orchestrators(document))
+  use Nil <- result.try(validate_directory(document))
   use model_tables <- result.try(
     table_entries(document, "models")
     |> result.replace_error("the catalogue needs a [models.<name>] table"),
@@ -545,6 +549,13 @@ fn validate_orchestrators(
   document: Dict(String, tom.Toml),
 ) -> Result(Nil, String) {
   orchestrators.from_document(document) |> result.replace(Nil)
+}
+
+// `[directory]` makes this daemon a member of the session directory's Khepri
+// cluster (protocol-change/079). Its members are pinned peers and every listed
+// orchestrator must be one, so it runs after both of those tables' checks.
+fn validate_directory(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
+  directory_settings.from_document(document) |> result.replace(Nil)
 }
 
 // tom renders a TOML parse failure as a structured value; the server
