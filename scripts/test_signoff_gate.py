@@ -12,6 +12,7 @@ arguments and its stdin.
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -27,6 +28,29 @@ python3 -c 'import json, os, sys; json.dump(dict(os.environ), open(sys.argv[1], 
 
 STUB_SSH = """#!/usr/bin/env bash
 python3 -c 'import json, sys; json.dump({"argv": sys.argv[2:], "stdin": sys.stdin.read()}, open(sys.argv[1], "w"))' "$STUB_RECORD" "$@"
+"""
+
+
+# The gate serialises runs with util-linux's flock, which macOS does not ship.
+# Where it is missing, the fixture puts this stand-in first on PATH. It takes
+# a real BSD lock on the descriptor it inherits, the open file the gate holds
+# as fd 9, so the gate's locking behaves as it does on Linux rather than being
+# stubbed out. Only the two forms the gate uses are read: `-n FD` and
+# `-w SECONDS FD`.
+STUB_FLOCK = """#!/usr/bin/env python3
+import fcntl, sys, time
+args = sys.argv[1:]
+wait = 0.0 if args[0] == "-n" else float(args[1])
+fd = int(args[-1])
+deadline = time.monotonic() + wait
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        sys.exit(0)
+    except BlockingIOError:
+        if time.monotonic() >= deadline:
+            sys.exit(1)
+        time.sleep(0.05)
 """
 
 
@@ -53,6 +77,13 @@ class Fixture(unittest.TestCase):
             STUB_RECORD=str(self.record),
         )
         (self.root / "home").mkdir()
+        if shutil.which("flock") is None:
+            bin_dir = self.root / "flock-bin"
+            bin_dir.mkdir()
+            stub = bin_dir / "flock"
+            stub.write_text(STUB_FLOCK)
+            stub.chmod(0o755)
+            self.env["PATH"] = f"{bin_dir}{os.pathsep}{self.env.get('PATH', '')}"
         for inherited in ("SSH_ORIGINAL_COMMAND", "GH_TOKEN", "SIGNOFF_PARALLEL", "LOOM_SIGNOFF_UNGATED"):
             self.env.pop(inherited, None)
 
@@ -178,6 +209,19 @@ class GateTest(Fixture):
         self.assertEqual(result.returncode, 2)
         self.assertIsNone(self.recorded())
 
+    def test_a_host_without_flock_is_refused_rather_than_spun(self):
+        # Without flock, `flock -n` failing would read as a held lock and the
+        # wait loop would retry it forever; the gate must say so and stop.
+        # Nothing the gate runs before its lock needs PATH, so an empty one
+        # is a host with no flock.
+        env = dict(self.env, PATH=str(self.root / "no-such-bin"))
+        result = subprocess.run([shutil.which("bash"), str(GATE), f"signoff {self.pushed} --dry-run"],
+                                env=env, capture_output=True, text=True,
+                                timeout=10, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("flock", result.stderr)
+        self.assertIsNone(self.recorded())
+
     def test_requests_outside_the_grammar_never_reach_the_driver(self):
         sha = self.pushed
         for request in [
@@ -266,7 +310,7 @@ build)
 	done
 	;;
 run)
-	logs=$(printf '%s\n' "$@" | sed -n 's/:\/logs$//p')
+	logs=$(printf '%s\\n' "$@" | sed -n 's|:/logs$||p')
 	if [ -n "${STUB_FAIL_LANE:-}" ]; then
 		if [ -n "${STUB_LANES_LINK:-}" ]; then
 			ln -s "$STUB_LANES_LINK" "$logs/lanes"
