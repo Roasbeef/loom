@@ -21,6 +21,7 @@
 //// delay goes where a real provider's would be — between chunks on the
 //// wire — rather than into the harness around it.
 
+import client/advisor
 import core/json
 import core/message
 import core/origin
@@ -711,7 +712,27 @@ fn tool_result(
 // turns. The label is presentation data; this fixture derives no authority from
 // it. A final SessionStart hook block is allowed because user settings append
 // one to the first provider turn; arbitrary extra user blocks remain refused.
+//
+// The advisor strand's first user message also begins with its standing brief,
+// which the harness prepends to every one of its requests (`advisor.brief`).
+// That one exact block is dropped before the rest is read, so a scripted
+// reviewer sees its feed as the latest prompt; any other leading text is still
+// refused.
 fn user_content(
+  blocks: List(json.JsonValue),
+) -> Result(json.JsonValue, String) {
+  case blocks {
+    [brief, ..rest] if rest != [] ->
+      case field(brief, "type"), field(brief, "text") {
+        json.String("text"), json.String(text) if text == advisor.brief ->
+          user_content(rest)
+        _, _ -> labelled_content(blocks)
+      }
+    _ -> labelled_content(blocks)
+  }
+}
+
+fn labelled_content(
   blocks: List(json.JsonValue),
 ) -> Result(json.JsonValue, String) {
   case blocks {
