@@ -7,6 +7,8 @@ import core/entry.{type Entry}
 import core/ids
 import core/register
 import core/tx.{InsertEntry, InsertUsage, SetRegister, Tx}
+import gleam/bit_array
+import gleam/crypto
 import gleam/dict
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -509,4 +511,187 @@ pub fn a_removed_registered_source_is_refused_before_the_open_test() {
   assert string.contains(reason, registered)
   assert string.contains(reason, "read-only")
   assert simplifile.is_file(registered) == Ok(False)
+}
+
+// --- export_closed (the cut a session move sends) --------------------------
+
+// A closed session file with one committed entry, and the entry's id.
+fn closed_session(name: String) -> #(String, ids.EntryId) {
+  let path = fresh_path(name)
+  let assert Ok(store) =
+    sqlite.open(
+      sqlite.config(path:, owner: "writer"),
+      clock.stepping(from: 10_000, by: 1),
+    )
+  let #(entry, _ctx) = fixtures.message_entry(fixtures.new_ctx(), None, "moved")
+  let assert Ok(_) =
+    storage.commit(store, Tx(writes: [InsertEntry(entry)], expected: []))
+  let assert Ok(Nil) = storage.close(store)
+  #(path, entry.id)
+}
+
+// The lease rows a database file holds, as owner and fence.
+fn lease_rows(path: String) -> List(#(String, Int)) {
+  let assert Ok(conn) = sqlight.open(path) as "the file opens for inspection"
+  let assert Ok(rows) =
+    sqlight.query(
+      "SELECT owner_id, fence FROM writer_lease",
+      on: conn,
+      with: [],
+      expecting: {
+        use owner <- decode.field(0, decode.string)
+        use fence <- decode.field(1, decode.int)
+        decode.success(#(owner, fence))
+      },
+    )
+  let assert Ok(Nil) = sqlight.close(conn)
+  rows
+}
+
+fn sha256_hex(path: String) -> String {
+  let assert Ok(bytes) = simplifile.read_bits(path)
+  crypto.hash(crypto.Sha256, bytes)
+  |> bit_array.base16_encode
+  |> string.lowercase
+}
+
+pub fn export_refuses_a_held_lease_and_leaves_nothing_behind_test() {
+  let path = fresh_path("export_held")
+  let copy = path <> ".move.op1"
+  let _ = simplifile.delete(copy)
+  let assert Ok(live) =
+    sqlite.open(
+      sqlite.config(path:, owner: "writer") |> sqlite.lease_ttl(60_000),
+      clock.fixed(at: 10_000),
+    )
+
+  // A live writer's unexpired lease refuses the export.
+  let assert Error(sqlite.RewriteLeaseHeld(owner: "writer", ..)) =
+    sqlite.export_closed(
+      path:,
+      to: copy,
+      owner: "move:op1",
+      clock: clock.fixed(at: 10_001),
+    )
+  assert simplifile.is_file(copy) == Ok(False)
+  assert lease_rows(path) == [#("writer", 1)]
+  let assert Ok(Nil) = storage.close(live)
+}
+
+pub fn export_copy_has_no_lease_and_the_original_keeps_the_claim_test() {
+  let #(path, entry_id) = closed_session("export_unleased")
+  let copy = path <> ".move.op1"
+  let assert Ok(_digest) =
+    sqlite.export_closed(
+      path:,
+      to: copy,
+      owner: "move:op1",
+      clock: clock.fixed(at: 100_000),
+    )
+
+  // The lease never travels: the copy opens for any writer at once, and
+  // what it holds is what the original held when it was cut.
+  assert lease_rows(copy) == []
+  assert lease_rows(path) == [#("move:op1", 1)]
+  let assert Ok(received) =
+    sqlite.open(
+      sqlite.config(path: copy, owner: "importer"),
+      clock.fixed(at: 100_001),
+    )
+  let assert Ok(found) = storage.get_entries(received, [entry_id])
+  assert dict.size(found) == 1
+  let assert Ok(Nil) = storage.close(received)
+
+  // The claim in the original keeps every other opener out while the copy
+  // is in flight.
+  let assert Error(sqlite.LeaseHeld(owner: "move:op1", ..)) =
+    sqlite.open(
+      sqlite.config(path:, owner: "intruder"),
+      clock.fixed(at: 100_002),
+    )
+}
+
+pub fn export_digest_is_the_hash_of_the_copy_and_is_stable_test() {
+  let #(path, _entry_id) = closed_session("export_digest")
+  let copy = path <> ".move.op1"
+  let assert Ok(first) =
+    sqlite.export_closed(
+      path:,
+      to: copy,
+      owner: "move:op1",
+      clock: clock.fixed(at: 100_000),
+    )
+  assert first == sha256_hex(copy)
+  assert string.length(first) == 64
+
+  // The same owner re-cuts the unchanged file over its own unexpired claim
+  // and gets the same bytes: nothing in the copy depends on the clock, the
+  // fence, or the earlier copy.
+  let assert Ok(second) =
+    sqlite.export_closed(
+      path:,
+      to: copy,
+      owner: "move:op1",
+      clock: clock.fixed(at: 100_500),
+    )
+  assert second == first
+  assert sha256_hex(copy) == first
+
+  // A different owner is refused while the claim is unexpired.
+  let assert Error(sqlite.RewriteLeaseHeld(owner: "move:op1", ..)) =
+    sqlite.export_closed(
+      path:,
+      to: path <> ".move.op2",
+      owner: "move:op2",
+      clock: clock.fixed(at: 100_600),
+    )
+}
+
+pub fn export_reaps_a_stale_partial_copy_and_recuts_test() {
+  let #(path, entry_id) = closed_session("export_stale")
+  let copy = path <> ".move.op1"
+
+  // What a crashed cut leaves: a truncated destination and a journal.
+  let assert Ok(Nil) = simplifile.write(copy, "SQLite format 3 truncated")
+  let assert Ok(Nil) = simplifile.write(copy <> "-journal", "stale journal")
+  let assert Ok(digest) =
+    sqlite.export_closed(
+      path:,
+      to: copy,
+      owner: "move:op1",
+      clock: clock.fixed(at: 100_000),
+    )
+  assert digest == sha256_hex(copy)
+  assert simplifile.is_file(copy <> "-journal") == Ok(False)
+  let assert Ok(received) =
+    sqlite.open(
+      sqlite.config(path: copy, owner: "importer"),
+      clock.fixed(at: 100_001),
+    )
+  let assert Ok(found) = storage.get_entries(received, [entry_id])
+  assert dict.size(found) == 1
+  let assert Ok(Nil) = storage.close(received)
+}
+
+pub fn export_requires_an_existing_file_and_a_distinct_destination_test() {
+  let path = fresh_path("export_absent")
+  let assert Error(sqlite.RewriteFailed(..)) =
+    sqlite.export_closed(
+      path:,
+      to: path <> ".move.op1",
+      owner: "move:op1",
+      clock: clock.fixed(at: 10_000),
+    )
+  assert simplifile.is_file(path) == Ok(False)
+
+  let #(path, _entry_id) = closed_session("export_same_file")
+  let assert Error(sqlite.RewriteFailed(..)) =
+    sqlite.export_closed(
+      path:,
+      to: path,
+      owner: "move:op1",
+      clock: clock.fixed(at: 10_000),
+    )
+  assert simplifile.is_file(path) == Ok(True)
+  assert lease_rows(path) == []
 }

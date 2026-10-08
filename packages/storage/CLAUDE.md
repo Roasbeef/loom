@@ -302,7 +302,14 @@ with these forks: they define the same modules.
   `rewrite_into` takes two transforms: an entry rewrite for `entries`
   payloads and a value rewrite for register payloads and usage-ledger
   details, because the audit contract covers every store a needle can
-  reach.
+  reach. `export_closed(path, to, owner, clock)` is the rewrite's first half
+  with no transform: it claims the lease under `owner` (the session-move
+  protocol uses `move:<op>`), retires the WAL, takes the `VACUUM INTO` copy,
+  clears the copy's `writer_lease` rows and returns the copy's SHA-256 as
+  hex. `rewrite_into` calls the same `cut_closed`, so the two cannot drift.
+  The claim stays held in the original after a successful export, and the
+  same owner may re-cut over its own unexpired claim; any other unexpired
+  holder is `RewriteLeaseHeld`.
 - `storage/internal/branch.Refine` — the shared incremental
   truncate/filter/cursor/limit pipeline, fed page by page by SQLite and
   whole by Memory.

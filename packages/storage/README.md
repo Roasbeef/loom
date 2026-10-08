@@ -347,6 +347,13 @@ swap with failures propagated rather than discarded. Every rewrite bumps a
 `generation` counter, which is how an external index learns its cursors
 are invalid.
 
+`sqlite.export_closed` shares the first half of that path. It claims the
+lease under a caller-chosen owner, retires the WAL, takes the `VACUUM INTO`
+copy at a destination, clears the copy's lease rows (with secure delete on,
+so the copy's bytes do not depend on the lease's fence or expiry), and
+returns the copy's SHA-256. A session move uses it to cut the file it sends
+to another orchestrator.
+
 ## Beside the session file
 
 ### Bounded snapshot reads
