@@ -217,6 +217,21 @@ pub fn peer_nodes(config: Config) -> List(String) {
   list.map(config.peers, fn(peer) { peer.node })
 }
 
+/// Checks one Erlang node name against the grammar `configure` applies to
+/// `node` and to every peer, so the provisioning commands refuse in a plan
+/// exactly what the daemon would refuse in the file they write. The error
+/// begins with `place`, the name of the key being checked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert distribution.check_node_name("plan.erlang_node", "loom@a.example")
+///   == Ok(Nil)
+/// ```
+pub fn check_node_name(place: String, name: String) -> Result(Nil, String) {
+  valid_name(place, name)
+}
+
 /// Renders the `ssl_dist_optfile` for a configuration. The text names the
 /// credential paths and the public pins only, so it holds no secret, but
 /// `start` still requires the file to be private and to equal this text.
