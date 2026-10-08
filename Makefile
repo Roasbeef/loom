@@ -140,7 +140,15 @@ profile-launcher-test: tui-shipment ## Check --profile argument and credential h
 
 .PHONY: tui-shipment
 tui-shipment: ## Package the native TUI: build/tui-erlang-shipment + bin/loom
-	@cd packages/tui && gleam export erlang-shipment
+	@python3 scripts/shipment.py tui
+	@$(MAKE) _package-tui-shipment
+
+# Only callers that just exported the TUI may use this staging recipe. Dist
+# consumes release-client's export after its prerequisites finish, so the slim
+# client and bundled client come from the same build without a second compile.
+.PHONY: _package-tui-shipment
+_package-tui-shipment:
+	@test -x packages/tui/build/erlang-shipment/entrypoint.sh
 	@mkdir -p bin build
 	@rm -f bin/loom-tui
 	@rm -rf build/tui-erlang-shipment
@@ -211,7 +219,7 @@ tui-shipment: ## Package the native TUI: build/tui-erlang-shipment + bin/loom
 # network, and it is a no-op once the seed builds offline.
 .PHONY: server-shipment
 server-shipment: codemode-seed ## Package the server: build/erlang-shipment + bin/loomd (needs erl to run)
-	@cd packages/client && gleam export erlang-shipment
+	@python3 scripts/shipment.py client
 	@mkdir -p bin build
 	@rm -f bin/loom-server
 	@rm -rf build/erlang-shipment
@@ -285,7 +293,8 @@ release-client-smoke: ## Boot build/release/loom-client with no erl on PATH
 	@scripts/release-client.sh --smoke
 
 .PHONY: dist
-dist: release release-smoke release-client release-client-smoke tui-shipment ## Package the server and both client tarballs
+dist: release release-smoke release-client release-client-smoke ## Package the server and both client tarballs
+	@$(MAKE) _package-tui-shipment
 	@scripts/dist.sh
 
 # Everything a person needs to type `loom` in a directory: the seed, the

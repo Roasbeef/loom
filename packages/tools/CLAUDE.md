@@ -26,20 +26,45 @@ Shared rename landing and anchored previews remain covered independently.
 
 ## Code-mode description and repair
 
-The code-mode introduction and tool-index snippet ask for immediate planned
-batching and compact returned evidence. The description retains the offered
-seams, concurrency contract, recipes, module index and generated public types.
-A `BuildRejected` result says compilation and execution never completed and
-asks for diagnostic repair, including warnings. Compiler diagnostics and the
+The code-mode introduction asks for any listable batch of reads, searches,
+`git`/`gh` queries or checks, including the first round of an investigation
+("judge between programs, not between commands"), and compact returned
+evidence. The description retains the offered seams, concurrency contract,
+recipes (workspace, orchestration, shell probe, `lsp_sql`), module index and
+generated public types. A `BuildRejected` result says compilation and execution
+never completed and asks for diagnostic repair; the warning rule is stated once,
+in the description. Compiler diagnostics and the
 structured failure fields remain intact; no automatic resubmission is added
-by this tool. The pipeline itself rebuilds once without unused imports
-(`codemode/unused_imports`); `Execution.edits` carries what it removed, and the
-result text and `details.edits` say so on success and on failure.
+by this tool. The pipeline itself rebuilds once after removing unused imports
+and underscoring unused function arguments, `use` bindings and `let` variables,
+all or nothing (`codemode/unused_repair`); `Execution.edits` carries what it
+changed, and the result text and `details.edits` say so on success and on failure.
+
+`sandbox_text` is the model-facing enforcement line, appended to every result,
+so it is compact: layers appear by name only (the text before the first `:` or
+`=`), skipped layers likewise, and `DEGRADED` stays whenever the report is
+degraded. Build and node stages that read the same by name are stated once
+(`sandbox: build and node enforced [...]; DEGRADED, skipped [...] (full report
+in details).`); otherwise each is rendered separately. A stage with no report is
+never merged and keeps its `made NO enforcement report ... not a claim that it
+was confined` wording. The full report, with parameters and skip reasons, is
+the `sandbox` field of the result details.
 
 A compile error whose diagnostics mention an admitted capability module, and a
 run whose call record shows a failed capability call, add one line naming the
 `fs_read cap://<module>` reads (`tools/codemode_pointer`, at most two modules,
 none when nothing applies). Vetting refusals never get the line.
+
+A program that ended in failure (`Errored`, or a run failure such as the
+deadline) also gets one line, `last failing command: ...`, from
+`Execution.last_failure` (`tools/proc_failure`): the most recent `proc.run`
+that exited non-zero or timed out, with the tail of its stderr. A completed
+program gets none. `details.last_failed_command` carries the same record
+whenever the host kept one. A compile error that says ``The module `M` does not
+have a `X` value`` adds up to three more lines (`codemode_pointer.suggestions`):
+a checked "`X` is in cap/git, not cap/proc" from the prelude surfaces, or an
+unchecked `<p>.<rest>` guess from `gleam/<p>`; nothing otherwise, and nothing
+for a module the program may not import.
 
 ## Saved program source
 
@@ -988,7 +1013,9 @@ See [protocol 045](../../protocol-change/045-code-mode-notes.md).
 
 `codemode_recipes` holds complete program strings included in the tool
 description only when the corresponding imports are offered. Client live tests
-execute those exact strings and compare them with docs/examples. The generated
+execute those exact strings and compare them with docs/examples; `shell_probes`
+(`docs/examples/shell_probes.gleam`) is the `cap/proc` recipe, shown when an
+offer admits every module it imports. The generated
 prelude advertises report JSON conversion and bounded strand.map.
 
 ## Virtual `fs_read` namespaces
@@ -1043,8 +1070,10 @@ See [protocol 057](../../protocol-change/057-typed-capability-results.md).
 
 ## Code-mode compiler guidance
 
-The `code_mode` description states that warnings are errors and gives the
-agent concrete import discipline: import only used modules and constructors,
-use qualified standard-library helpers, and repair every reported diagnostic
-before resubmitting. It keeps the compiler gate intact and encourages a small
-first program rather than a large unrelated rewrite after each failure.
+The `code_mode` description states that warnings fail the build, except that a
+build whose only diagnostics are unused imports, arguments or bindings is
+repaired by the harness and the edits are listed in the result. It tells the
+agent to use qualified standard-library helpers, to repair the named lines on a
+compile failure and keep the rest, and to fix and rerun a program that fails at
+runtime rather than move its remaining probes to other tools. It keeps the
+compiler gate intact.

@@ -222,8 +222,9 @@ pub fn a_type_error_comes_back_in_band_test_() -> EunitTest {
   })
 }
 
-/// A program whose only fault is an unused import is rebuilt once without
-/// it, by the real compiler in the real jail, and then runs.
+/// A program whose only faults are unused imports and an unused lambda
+/// argument is rebuilt once with them repaired, by the real compiler in the
+/// real jail, and then runs.
 pub fn an_unused_import_is_removed_and_the_program_runs_test_() -> EunitTest {
   jailed(fn() {
     case rig.prerequisites() {
@@ -641,6 +642,7 @@ fn run_unused_import(prerequisites: Prerequisites) -> Nil {
     <> "import gleam/list.{length, map}\n"
     <> "\n"
     <> "pub fn main() -> report.Outcome {\n"
+    <> "  let _ = list.map([\"x\"], fn(x) { \"y\" })\n"
     <> "  case length([\"ran\"]) {\n"
     <> "    1 -> report.text(\"ran\")\n"
     <> "    _ -> report.text(\"unexpected\")\n"
@@ -655,13 +657,14 @@ fn run_unused_import(prerequisites: Prerequisites) -> Nil {
   // What ran is the program without the unused module and the unused
   // member, and the artifact's address is over what was built from it.
   assert ran_source
-    == "import cap/report\nimport gleam/list.{length}\n\npub fn main() -> report.Outcome {\n  case length([\"ran\"]) {\n    1 -> report.text(\"ran\")\n    _ -> report.text(\"unexpected\")\n  }\n}\n"
+    == "import cap/report\nimport gleam/list.{length}\n\npub fn main() -> report.Outcome {\n  let _ = list.map([\"x\"], fn(_x) { \"y\" })\n  case length([\"ran\"]) {\n    1 -> report.text(\"ran\")\n    _ -> report.text(\"unexpected\")\n  }\n}\n"
   assert string.starts_with(artifact.manifest_hash, "sha256-")
   assert outcome == satellite.Completed(value: msgpack.StringValue("ran"))
   assert execution.edits
     == [
       "removed unused import gleam/int (line 2)",
       "removed unused import gleam/list.{map} (line 3)",
+      "renamed unused argument x to _x (line 6)",
     ]
   rig.stop(live)
 }

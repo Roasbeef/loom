@@ -310,3 +310,52 @@ pub fn a_program_that_built_the_first_time_has_no_edits_test() {
   let execution = codemode.execute(unused_int_source, config)
   assert execution.edits == []
 }
+
+// An unused lambda argument, as the compiler reported it for this program.
+const unused_arg_diagnostics =
+  "  Compiling loom_codemode_program
+warning: Unused function argument
+  ┌─ /b/src/loom_program.gleam:3:42
+  │
+3 │ pub fn main() { let _ = list.map([1], fn(e) { fs.read(\"x\") }) }
+  │                                          ^ This argument is never used
+
+Hint: You can ignore it with an underscore: `_e`.
+
+error: 1 warning generated.
+
+Your project was compiled with the `--warnings-as-errors` flag.
+Fix the warnings and try again."
+
+const unused_arg_source =
+  "import cap/fs
+import gleam/list
+pub fn main() { let _ = list.map([1], fn(e) { fs.read(\"x\") }) }
+"
+
+pub fn an_unused_argument_is_underscored_and_rebuilt_once_test() {
+  let seen = process.new_subject()
+  let builder =
+    scripted_builder(
+      [
+        Error(compile.BuildRejected(diagnostics: unused_arg_diagnostics)),
+        built("beef"),
+      ],
+      seen,
+    )
+  let config = exec_config(fresh_dir("unused-arg"), builder, reporting_peer())
+  let execution = codemode.execute(unused_arg_source, config)
+
+  // The second build compiled the program with the argument underscored,
+  // that program is what the outcome carries, and the edit is listed.
+  let rewritten =
+    "import cap/fs
+import gleam/list
+pub fn main() { let _ = list.map([1], fn(_e) { fs.read(\"x\") }) }
+"
+  let assert codemode.Ran(source:, artifact:, outcome: _) = execution.outcome
+  assert source == rewritten
+  assert artifact.manifest_hash == "beef"
+  assert drain(seen) == [unused_arg_source, rewritten]
+  assert execution.edits == ["renamed unused argument e to _e (line 3)"]
+}

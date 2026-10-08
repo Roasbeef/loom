@@ -35,6 +35,14 @@ main(_) ->
 modules(Dir, All) ->
     Files = filelib:wildcard(filename:join(Dir, "*.abstr")),
     Selected = [F || F <- Files, All orelse not is_test(F)],
+    case Selected of
+        [] ->
+            io:format(standard_error,
+                "no abstract-form modules in ~s; rebuild with Gleam 1.19 before profiling~n",
+                [Dir]),
+            halt(2);
+        [_ | _] -> ok
+    end,
     Rows = [{filename:basename(F, ".abstr"), cpu(forms(F))} || F <- Selected],
     Total = lists:sum([T || {_, T} <- Rows]),
     io:format("total_cpu_ms ~p modules ~p~n", [Total, length(Rows)]),

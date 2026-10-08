@@ -14,6 +14,10 @@ explicit authorization. Every claim below was verified on the code candidate
 a file rename it raced on Linux, and the commit after it changes only this file;
 no source file differs from `3318250e0`.
 
+The previous edition on `main` covered the compile and export work of
+[PR #917](https://github.com/Roasbeef/loom/pull/917); its measurements are in
+[the compile-time report](review/compile-hill-climb-2026-10-07.md).
+
 Read [the design note](design-notes/distributed-runtime.md) for the design,
 [protocol-change/078](../protocol-change/078-distributed-runtime.md) and its
 addenda for the wire and the rules, and [the setup guide](distributed-setup.md)

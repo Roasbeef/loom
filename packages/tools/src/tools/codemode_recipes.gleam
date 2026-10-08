@@ -39,3 +39,18 @@ pub fn orchestration() -> String {
 pub fn lsp_sql_skeleton() -> String {
   "import cap/lsp_sql\nimport cap/report\nimport gleam/option.{None, Some}\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  let file = \"auth/multi_authenticator.go\"\n  let plan =\n    lsp_sql.Plan(\"gopls\", \".\", [file], [\n      lsp_sql.Target(\"MultiAuthenticator.AcceptForScheme\", file, None),\n      lsp_sql.Target(\"AcceptForScheme\", file, Some(69)),\n    ])\n  case lsp_sql.collect(plan) {\n    Error(error) -> report.failure(lsp_sql.error_text(error))\n    Ok(observation) ->\n      case\n        lsp_sql.query(\n          observation,\n          \"SELECT t.symbol, count(r.target_id) FROM targets t \"\n            <> \"LEFT JOIN \\\"references\\\" r ON r.target_id = t.id GROUP BY t.id\",\n          [],\n          fn(row) {\n            case row {\n              [symbol, count] ->\n                Ok(lsp_sql.cell_text(symbol) <> \": \" <> lsp_sql.cell_text(count))\n              _ -> Error(\"expected two columns\")\n            }\n          },\n        )\n      {\n        Error(error) -> report.failure(lsp_sql.query_error_text(error))\n        Ok(answer) ->\n          report.value(report.string(string.join(answer.rows, \"\\n\")))\n      }\n  }\n}\n"
 }
+
+/// A complete shell-probe program: independent `proc.stdout` probes whose
+/// failures stay local to their own section, and one `gh --json` call decoded
+/// into typed rows with `json.parse` and filtered in the program. The same
+/// source is `docs/examples/shell_probes.gleam`, and the client live test
+/// compiles and runs this exact string.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Submit shell_probes() as code_mode's program with seam: "workspace".
+/// ```
+pub fn shell_probes() -> String {
+  "import cap/proc\nimport cap/report\nimport gleam/dynamic/decode\nimport gleam/int\nimport gleam/json\nimport gleam/list\nimport gleam/result\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  let log = proc.stdout(proc.command([\"git\", \"log\", \"-3\", \"--format=%h %s\"]))\n  report.text(\"log:\\n\" <> show(log) <> \"\\n\\nfix PRs:\\n\" <> show(fix_prs()))\n}\n\nfn fix_prs() -> Result(String, String) {\n  let pull = {\n    use number <- decode.field(\"number\", decode.int)\n    use title <- decode.field(\"title\", decode.string)\n    decode.success(#(number, title))\n  }\n  use body <- result.try(\n    proc.stdout(proc.command([\"gh\", \"pr\", \"list\", \"--json\", \"number,title\"])),\n  )\n  use pulls <- result.try(\n    json.parse(body, decode.list(pull))\n    |> result.map_error(fn(_) { \"unexpected gh JSON\" }),\n  )\n  pulls\n  |> list.filter(fn(pull) { string.contains(pull.1, \"fix\") })\n  |> list.map(fn(pull) { \"#\" <> int.to_string(pull.0) <> \" \" <> pull.1 })\n  |> string.join(\"\\n\")\n  |> Ok\n}\n\nfn show(probe: Result(String, String)) -> String {\n  case probe {\n    Ok(output) -> output\n    Error(reason) -> \"ERROR \" <> reason\n  }\n}\n"
+}

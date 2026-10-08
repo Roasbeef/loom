@@ -88,6 +88,60 @@ func TestSeatbeltEnforcesFilesystemAndNetworkOnDarwin(t *testing.T) {
 	}
 }
 
+// TestSeatbeltRunsAHelperReachedThroughASymlink names the helper by a
+// symbolic link that lives outside every granted region, as an install that
+// links loom-exec into a bin directory does. Stage 2 re-executes the helper
+// by that name, and the kernel reads the link itself on the way to its
+// target, so a profile that grants only the resolved file fails with
+// sandbox-exec's `execvp() ... Operation not permitted` before the payload
+// runs. The narrow LSP profile reads nothing but the system roots and the
+// project, which is where this was first seen.
+func TestSeatbeltRunsAHelperReachedThroughASymlink(t *testing.T) {
+	if _, err := os.Stat(SeatbeltExecutable); err != nil {
+		t.Skipf("%s unavailable: %v", SeatbeltExecutable, err)
+	}
+	root, err := os.MkdirTemp(SeatbeltScratchParent, "loom-seatbelt-link-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	writable := filepath.Join(root, "writable")
+	links := filepath.Join(root, "links")
+	for _, dir := range []string{writable, links} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Two hops, so an intermediate link is covered as well as the first.
+	middle := filepath.Join(links, "middle")
+	helper := filepath.Join(links, "loom-exec")
+	if err := os.Symlink(os.Args[0], middle); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("middle", helper); err != nil {
+		t.Fatal(err)
+	}
+
+	pol := policy.Policy{
+		WritableRoots: []string{writable},
+		Network:       policy.Network{Mode: policy.NetworkOff},
+		Scratch:       "tmpfs",
+	}
+	plan := SeatbeltPlanFor(pol, filepath.Join(root, "scratch"), helper)
+	created := filepath.Join(writable, "created")
+	argv := plan.Args([]string{helper, "-test.run=TestSeatbeltChildProcess"})
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = append(os.Environ(), "LOOM_SEATBELT_CHILD=write", "LOOM_SEATBELT_TARGET="+created)
+	cmd.Dir = "/"
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("helper reached through a symlink did not run: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(created); err != nil {
+		t.Fatalf("the payload did not run: %v", err)
+	}
+}
+
 func runSeatbeltChild(t *testing.T, plan SeatbeltPlan, mode, target string) {
 	t.Helper()
 	argv := plan.Args([]string{os.Args[0], "-test.run=TestSeatbeltChildProcess"})

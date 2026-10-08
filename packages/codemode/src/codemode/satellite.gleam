@@ -185,6 +185,7 @@ import gleam/result
 import gleam/string
 import simplifile
 import tools/call_record.{type CallLog, type Ledger}
+import tools/proc_failure.{type ProcFailure}
 import tools/tool.{type Collected}
 import weft
 import weft/state_machine as sm
@@ -234,8 +235,19 @@ pub type Outcome {
 /// and it rides on the result so a run that failed (a deadline, a dead
 /// satellite) still says which calls it had made. A run that never
 /// launched carries the empty log.
+///
+/// `last_failure` is the most recent `proc.run` that settled with a non-zero
+/// exit or a timeout, or `None` when there was none. It is host-observed like
+/// `calls`, and unlike `calls` it keeps the command and the tail of its
+/// stderr, so a program that reports only an exit status can still be
+/// explained (`tools/proc_failure`).
 pub type Run {
-  Run(outcome: Result(Outcome, RunError), node: Report, calls: CallLog)
+  Run(
+    outcome: Result(Outcome, RunError),
+    node: Report,
+    calls: CallLog,
+    last_failure: Option(ProcFailure),
+  )
 }
 
 /// Why an execution did not return an `Outcome`. Every variant is a value;
@@ -624,6 +636,11 @@ type State {
     // records nothing.
     ledger: Ledger,
     seqs: Dict(Int, Int),
+    // The command text of each in-flight `proc.run`, by frame id, and the one
+    // failure kept from those that have settled. A command is dropped when
+    // its call settles, so the host holds the in-flight set plus one record.
+    proc_commands: Dict(Int, String),
+    last_failure: Option(ProcFailure),
     result: Subject(Run),
   )
 }
@@ -697,6 +714,7 @@ fn never_launched(error: RunError) -> Run {
     outcome: Error(error),
     node: enforcement.Unreported("no node was launched"),
     calls: call_record.empty(),
+    last_failure: None,
   )
 }
 
@@ -798,6 +816,7 @@ fn await_result(
         ),
         // The host owned the record and never handed it back.
         calls: call_record.empty(),
+        last_failure: None,
       )
     }
   }
@@ -899,6 +918,8 @@ fn start_host(
         inflight: dict.new(),
         ledger: call_record.start(started),
         seqs: dict.new(),
+        proc_commands: dict.new(),
+        last_failure: None,
         result: result_subject,
       )
     actor.initialised(state)
@@ -1267,7 +1288,22 @@ fn dispatch_cap_call(
     admitted:,
     ledger:,
     seqs: dict.insert(state.seqs, id, seq),
+    proc_commands: remember_command(state.proc_commands, id, cap, args),
   )
+}
+
+// Only `proc.run` is explained, and only while it is in flight: the command
+// text is the one piece of argv the host reads, and `close_call` drops it.
+fn remember_command(
+  commands: Dict(Int, String),
+  id: Int,
+  cap: String,
+  args: MsgPackValue,
+) -> Dict(Int, String) {
+  case cap, proc_failure.command_text(args) {
+    "proc.run", Some(command) -> dict.insert(commands, id, command)
+    _, _ -> commands
+  }
 }
 
 // A call the host refused before dispatching it: it is on the record as
@@ -1307,6 +1343,8 @@ fn close_call(
     framing.CapErr(code:, ..) -> Some(code)
     framing.CapOk(..) -> None
   }
+  let #(proc_commands, last_failure) = settle_command(state, id, entry, outcome)
+  let state = State(..state, proc_commands:, last_failure:)
   case dict.get(state.seqs, id) {
     Error(Nil) -> State(..state, clock:)
     Ok(seq) ->
@@ -1316,6 +1354,26 @@ fn close_call(
         ledger: call_record.settle(state.ledger, seq, status, error, now),
         seqs: dict.delete(state.seqs, id),
       )
+  }
+}
+
+// Drops the call's command text and keeps a failure only when the call was
+// not cancelled and answered `CapOk` with a failed command. A later success
+// leaves the kept failure alone: it is still the cause worth showing.
+fn settle_command(
+  state: State,
+  id: Int,
+  entry: InFlight,
+  outcome: CapOutcome,
+) -> #(Dict(Int, String), Option(ProcFailure)) {
+  let commands = dict.delete(state.proc_commands, id)
+  case dict.get(state.proc_commands, id), entry.cancelled, outcome {
+    Ok(command), False, framing.CapOk(value:) ->
+      case proc_failure.from_reply(command, value) {
+        Some(failure) -> #(commands, Some(failure))
+        None -> #(commands, state.last_failure)
+      }
+    _, _, _ -> #(commands, state.last_failure)
   }
 }
 
@@ -1588,7 +1646,15 @@ fn terminate(
   let #(now, _clock) = clock.read(state.clock)
   let calls = call_record.finish(state.ledger, dict.values(state.seqs), now)
   let node = cleanup(state)
-  process.send(state.result, Run(outcome: outcome_result, node:, calls:))
+  process.send(
+    state.result,
+    Run(
+      outcome: outcome_result,
+      node:,
+      calls:,
+      last_failure: state.last_failure,
+    ),
+  )
   actor.stop()
 }
 

@@ -528,6 +528,13 @@ advertised strings verbatim and compare them with these files. Either
 mode can save workspace data into notes for the other to consume, or one
 program can combine reads and child work.
 
+A third recipe, [shell probes](../examples/shell_probes.gleam), is shown when
+an offer admits `cap/proc`, `cap/report` and the JSON and decoder modules it
+uses. It runs probes with `proc.stdout`, which returns the output text or one
+error string naming the command, its exit code and the tail of stderr, so
+independent probes keep their own failures instead of losing them to a
+`result.try` chain. It also decodes one `gh --json` call into typed rows.
+
 ### JSON in submitted programs
 
 The compiler seed already pins `gleam_json`, so ordinary code-mode
@@ -706,8 +713,10 @@ session.
 
 ### Choosing code mode from a direct tool
 
-The default prompt asks for code mode immediately on planned batches and on
-chains whose intermediate results need no agent judgment. The third extraction
+The default prompt asks for code mode on any batch of reads, searches,
+`git`/`gh` queries or checks the agent can already list, including the first
+round of an investigation; a direct tool is for the case where the next command
+cannot be written before the previous result is read. The third extraction
 probe is the fallback when an investigation grows into that shape. Programs
 filter internally and return relevant facts, paths and failures; an exhaustive
 claim still requires checking completeness and truncation.
@@ -722,8 +731,14 @@ contracts; capability hints appear once in the tool descriptions.
 
 The shorter introduction retains every recipe and generated type declaration.
 A rejected build retains its compiler diagnostics, states that the program did
-not run, and reminds the model that warnings fail compilation too. These words
-change selection and repair guidance; they add no execution or tracing path.
+not run. The description, not the result, states the warning rule once. These
+words change selection and repair guidance; they add no execution or tracing
+path.
+
+The enforcement line that ends every result is compact: layer names only, one
+statement when build and node read the same, `DEGRADED` kept, and a stage with
+no report named as unreported rather than merged. The full report stays in the
+`sandbox` field of the result details.
 
 ### What the description tells a model about the prelude
 
@@ -1018,26 +1033,34 @@ vetting's allowlist remains their only gate. And every module present
 remains loadable at run time by a hand-written `.beam`, which is the
 jail's problem, not the build's.
 
-The flag also fails a program whose only fault is an unused import, which
-used to cost a model round trip to delete a line the compiler had already
-named. So one failure shape is repaired in the pipeline: when a build is
-rejected and **every** diagnostic is an unused-import warning (`Unused
-imported module`, or `value`, `type` or `item` for a name inside an
-unqualified `{...}` list), `codemode.execute` removes exactly what the
-compiler named, vets the rewritten source again under the same policy,
-and builds once more in the same root. The rewrite is
-`codemode/unused_imports.rewrite`, a pure parser over the compiler's text
-(the pinned toolchain offers no machine-readable diagnostics) that refuses
-on anything else: another warning, including the transitive-dependency
-one, an error, a diagnostic it cannot parse, a summary that does not
-count every warning (the captured output is cut at a fixed size), or a
-location, underline or echoed line that disagrees with the source. There
-is never a second rewrite; the second build's result is final. What runs
-is what was vetted: the rewritten source is what the second build
-compiled, what its content address covers, and what `Ran.source` carries.
-`Execution.edits` lists the removals (`removed unused import gleam/int
-(line 3)`); the model reads them on success and on failure, and a failure
-adds that its diagnostic line numbers are for the rewritten program.
+The flag also fails a program whose only fault is an unused import,
+argument or binding, which used to cost a model round trip to fix
+something the compiler had already named. So one failure shape is repaired
+in the pipeline: when a build is rejected and **every** diagnostic is an
+unused warning (`Unused imported module`, or `value`, `type` or `item`
+for a name inside an unqualified `{...}` list; `Unused function argument`;
+`Unused variable`), `codemode.execute` repairs exactly what the compiler
+named, vets the rewritten source again under the same policy, and builds
+once more in the same root. Imports are removed. An unused argument or
+binding gets a `_` inserted before its name, at the underlined column and
+only when the `Hint:` line's `_name` matches the underlined text; the
+compiler files an unused `use` binding under the argument title, because
+`use` desugars to a callback, and a labelled parameter keeps its label.
+The rewrite is `codemode/unused_repair.rewrite`, a pure parser over the
+compiler's text (the pinned toolchain offers no machine-readable
+diagnostics) that refuses on anything else: another warning, including the
+transitive-dependency one, an error, a diagnostic it cannot parse, a
+summary that does not count every warning (the captured output is cut at a
+fixed size), or a location, underline, hint or echoed line that disagrees
+with the source. There is never a second rewrite; the second build's
+result is final. What runs is what was vetted: the rewritten source is what
+the second build compiled, what its content address covers, and what
+`Ran.source` carries. `Execution.edits` lists one note per edit (`removed
+unused import gleam/int (line 3)`, `renamed unused argument e to _e (line
+18)`); a `let` or `use` binding note adds that nothing reads it, so a
+value the program meant to return may be missing. The model reads the
+notes on success and on failure, and a failure adds that its diagnostic
+line numbers are for the rewritten program.
 
 Two behaviors of Gleam's resolver stand between a pinned manifest and a
 build that actually runs offline, and both look like accidents until you
@@ -1299,6 +1322,22 @@ check, ends the execution as `ChannelFaulted("duplicate cap_call id")`.
 Without that, a second call would overwrite the first one's in-flight entry
 and the wrong settlement would finalise the wrong record. An id whose call
 has settled, or was refused, can be reused.
+
+**The last failing command.** The record above never keeps argv or output.
+Separately, the host keeps at most one `tools/proc_failure.ProcFailure` per
+execution: the latest `proc.run` that settled `CapOk` with a non-zero exit or
+`timed_out`, as its command (argv joined, cut to at most 160 bytes) and the trimmed
+tail of its stderr (at most 400 bytes; the ellipsis counts inside both). The argv is held only while the call is in
+flight. A later success does not clear the record; a `CapErr`, a refusal and a
+cancelled call make none. It rides out in `satellite.Run.last_failure` and
+`Execution.last_failure`. `tools/codemode` prints one line,
+``last failing command: `git log` exited 128: fatal: ...``, only when the
+program ended in failure (`Errored` or a run failure), and adds
+`details.last_failed_command` whenever a record exists. This differs from the
+call record because the line goes into the model's own tool result, the model
+wrote the command, and its program could have returned the same stderr with
+`report.text`. No redaction runs over it, because the tree has no text
+redaction helper outside the memory path; the byte limits are the bound.
 
 **Foreground only.** `satellite.Run` and `codemode.Execution` carry the
 `CallLog`, and `tools/codemode.Execution` carries it to `ran_outcome` and

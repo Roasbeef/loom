@@ -1550,6 +1550,7 @@ fn narrowed_code_mode() -> codemode_tool.CodeMode {
             refusal: codemode_tool.NothingRefused,
             calls: call_record.empty(),
             edits: [],
+            last_failure: None,
           )
         False ->
           codemode_tool.Execution(
@@ -1574,6 +1575,7 @@ fn narrowed_code_mode() -> codemode_tool.CodeMode {
             ),
             calls: call_record.empty(),
             edits: [],
+            last_failure: None,
           )
       }
     },

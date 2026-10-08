@@ -113,7 +113,7 @@ ERTS_VSN="$(erl -noshell -eval 'io:format("~s",[erlang:system_info(version)]),ha
 
 # ------------------------------------------------------------ the build
 echo "==> exporting the client shipment"
-( cd packages/tui && gleam export erlang-shipment >/dev/null )
+python3 scripts/shipment.py tui >/dev/null
 rm -rf "$REL" "$WORK"
 mkdir -p "$WORK/libs"
 cp -R packages/tui/build/erlang-shipment/. "$WORK/libs/"
