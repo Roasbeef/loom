@@ -630,30 +630,72 @@ network.
 The files are in `docker/distributed/`. Each container mounts one of two things
 at `/bundle`. For a real deployment, that is the node's `.loombundle` from
 `loom distribution provision`. The entrypoint also accepts the directory that
-`scripts/distributed/mint-fixture.sh` writes, and the smoke test uses that. Compose
-itself was not run for this page.
+`scripts/distributed/mint-fixture.sh` writes, and the smoke test uses that.
 
-Build the image on an x86_64 Linux host. The repository `Dockerfile` is amd64
-only, and building it under emulation on an Apple Silicon Mac fails; see
-[the Docker guide](docker.md):
+This section needs a Linux x86_64 host with Docker and Compose 2.24 or later. The
+repository `Dockerfile` is amd64 only, and building it under emulation on an
+Apple Silicon Mac fails; see [the Docker guide](docker.md). Build the image on that
+host:
 
 ```sh
 make docker-image
 ```
 
-Provision with a plan that names the nodes `orchestrator@orchestrator.loom.internal`
-and `executor@executor.loom.internal`, and gives the executor a workspace rooted at
-`/work/project` (**Pending**):
+### Provision
+
+The host does not need a `loom` binary. The image has one, and `provision` is a
+local command that makes the bundles. Write a plan that names the two nodes as
+Compose addresses them, gives both the listener port that `compose.yaml` documents,
+and registers the executor's workspace at `/work/project`:
+
+```toml
+[[node]]
+name = "orchestrator"
+role = "orchestrator"
+erlang_node = "orchestrator@orchestrator.loom.internal"
+listen_port = 9100
+executors = ["executor"]
+
+[[node]]
+name = "executor"
+role = "executor"
+erlang_node = "executor@executor.loom.internal"
+listen_port = 9100
+
+[node.workspaces]
+project = "/work/project"
+```
+
+Save it as `plan.toml`, then run `provision` from the image, as your own user so
+that the bundles are yours:
 
 ```sh
-loom distribution provision plan.toml out
+docker run --rm --user $(id -u):$(id -g) -e HOME=/plan/home -v $PWD:/plan -w /plan --entrypoint loom loom-runtime:dev distribution provision plan.toml out
 ```
 
 ```sh
 cp out/orchestrator.loombundle out/executor.loombundle docker/distributed/
 ```
 
-Start both containers (**Pending**):
+### Give the orchestrator a model
+
+Only the orchestrator calls a model. Edit `docker/distributed/orchestrator.loom.toml`,
+which holds one model and the `main` role, to name the model you use. The
+[configuration reference](configuration.md#modelsname) lists the keys. Put the
+provider's key in `docker/distributed/orchestrator.env`, one line in the form that
+the model's `api_key_env` names:
+
+```sh
+echo 'ANTHROPIC_API_KEY=…' > docker/distributed/orchestrator.env
+```
+
+Compose passes that file to the orchestrator's environment when it exists, and
+`.gitignore` keeps it and the bundles out of version control. To use a catalogue
+kept elsewhere, set `ORCHESTRATOR_CONFIG` to its path. At start, the entrypoint
+copies the catalogue to `~/.loom/loom.toml` and the install appends the bundle's
+tables to it, so do not put `[distribution]` or `[executors.*]` tables in it.
+
+### Start
 
 ```sh
 docker compose -f docker/distributed/compose.yaml up -d
@@ -664,20 +706,32 @@ docker compose -f docker/distributed/compose.yaml ps
 ```
 
 Each container mounts its own bundle read-only. At start, its entrypoint copies
-the bundle into the container's home, runs `loomd distribution install`, and
-starts the daemon with `LOOM_DISTRIBUTION_OPTFILE` set. You do nothing else.
+the bundle into the container's home, runs `loomd distribution install`, creates
+each workspace root the installed configuration names, and starts the daemon with
+`LOOM_DISTRIBUTION_OPTFILE` set. Both containers show `healthy` within a few
+seconds.
 
-To put your code on the executor, copy it into the checkout volume, or point
-`EXECUTOR_CHECKOUT` at a host directory before `up`:
+### Put your project on the executor
+
+The executor's checkout is a named volume mounted at `/work`, and the entrypoint
+has already made `/work/project` in it, owned by uid 10000, the user the daemon
+runs as. Stream the project in as that user:
 
 ```sh
-docker compose -f docker/distributed/compose.yaml cp ./myproj executor:/work/project
+tar -C ./myproj -c . | docker compose -f docker/distributed/compose.yaml exec -T -u 10000 executor tar -x -C /work/project
 ```
+
+Do not use `docker compose cp` for this. It keeps the files' host owner, the daemon
+cannot create its `.blobs` directory beside them, and the session fails with
+`executor_unavailable` and `Eacces`. If you set `EXECUTOR_CHECKOUT` to a host
+directory instead of the volume, that directory must be writable by uid 10000.
+
+### Reach the orchestrator
 
 To reach the orchestrator from a client on the host, start the forwarder. It
 exists because the daemon only binds the container's loopback (see
 [the Docker guide](docker.md), "The bind restriction"), which a published port
-cannot reach:
+cannot reach. The first start pulls `alpine/socat`, so it needs internet access:
 
 ```sh
 docker compose -f docker/distributed/compose.yaml --profile client-port up -d
@@ -687,38 +741,70 @@ docker compose -f docker/distributed/compose.yaml --profile client-port up -d
 docker compose -f docker/distributed/compose.yaml cp orchestrator:/var/lib/loom/owner.token ./owner.token
 ```
 
-The client then connects to `127.0.0.1:7331` with that token. Set
-`LOOM_CLIENT_PORT` to publish a different host port.
+The forwarder publishes `127.0.0.1:7331`; set `LOOM_CLIENT_PORT` to publish a
+different host port. A client on the host speaks the control protocol there with
+that token, and `loom access` runs its control commands through it:
+
+```sh
+loom access --addr ws://127.0.0.1:7331/v2/control --token-file ./owner.token list
+```
+
+The terminal client cannot do the same. `loom --executor … --workspace …` finds
+the daemon through its state directory and has no remote address form, so run it
+inside the orchestrator container, as the daemon's user, with a terminal:
+
+```sh
+docker compose -f docker/distributed/compose.yaml exec -it -u 10000 -e HOME=/home/loom orchestrator loom --state-dir /var/lib/loom --config /home/loom/.loom/loom.toml --executor executor --workspace project
+```
+
+Section 7 shows its `loom --executor` command for two daemons on one machine;
+under Compose, this is that command. The same holds for the other client commands
+that take no `--addr`.
 
 ### Postures
 
 | Posture | How | What it gives | What it costs |
 |---|---|---|---|
-| Plain (default) | `compose.yaml` alone | Docker's boundary is the jail. The orchestrator is fine here, since it runs no model-written code. | Loom's own sandbox does not come up: `loom-exec --self-test` enforces 0 of 11 probes. A model's commands share the container with the daemon's state. |
-| Full isolation | Add `compose.isolated.yaml` | Loom's own bubblewrap, Landlock, seccomp and cgroup limits come up for the executor: 10 of 11 probes. | Removes pieces of Docker's confinement from the executor container (host cgroup namespace, `SYS_ADMIN`, no seccomp, no AppArmor, unmasked `/proc` and `/sys`). Needs a Linux host with cgroup v2. |
+| Plain (default) | `compose.yaml` alone | Docker's boundary is the jail. This is the right posture for the orchestrator, which runs no model-written code. | Loom's own sandbox does not come up: `loom-exec --self-test` enforces 0 of 11 probes and fails 9. **An executor in this posture cannot run commands.** |
+| Full isolation | Add `compose.isolated.yaml` | Loom's own bubblewrap, Landlock, seccomp and cgroup limits come up for the executor: 10 of 11 probes, and `bash` runs. | Removes pieces of Docker's confinement from the executor container (`SYS_ADMIN`, no seccomp, no AppArmor, unmasked `/proc` and `/sys`). Needs a Linux host with cgroup v2. |
 
-For an executor that runs model-written commands you want full isolation. Start it
-with both files:
+In the plain posture the executor's `fs_read`, `fs_write` and other file tools work,
+because the daemon does them itself, but every `bash` call fails: `bwrap` cannot
+create a namespace under Docker's default profile and exits 1, and without it
+the daemon refuses the command as degraded. Starting the executor with
+`--best-effort`, which accepts a degraded jail, does not change that, since the
+jail does not come up at all. Use the plain posture for an executor only to read
+and write files, never to run commands. To run commands, use full isolation:
 
 ```sh
 docker compose -f docker/distributed/compose.yaml -f docker/distributed/compose.isolated.yaml up -d
 ```
 
+The override gives the executor a private cgroup namespace, so `/sys/fs/cgroup`
+inside it is the container's own cgroup. The entrypoint carves the delegated base
+out of that, moves the daemon into it, and sets `LOOM_CGROUP_BASE`. Nothing is
+created in the host's cgroup tree and nothing is left behind after `down`. The
+entrypoint refuses to delegate if the container shares the host's cgroup
+namespace, so a changed override cannot make it move host processes.
+
+Run the self-test with the same migration step that the
+[Docker guide](docker.md) uses, because a process started by `docker compose exec`
+lives in the container's top cgroup, outside the delegated base:
+
 ```sh
-docker compose -f docker/distributed/compose.yaml exec executor loom-exec --self-test
+docker compose -f docker/distributed/compose.yaml exec executor sh -c 'echo $$ > /sys/fs/cgroup/loom/host/cgroup.procs; exec env LOOM_CGROUP_BASE=/sys/fs/cgroup/loom loom-exec --self-test'
 ```
 
-Expect 10 of 11 probes enforced, as in the measured table in
-[the Docker guide](docker.md). The compose override does the cgroup delegation
-from the entrypoint, which that guide did by hand; this has not been verified, so
-run the self-test and read its output before relying on it.
+Expect 10 of 11 probes enforced and the Erlang one skipped, as in the measured
+table in the Docker guide. Without the migration step, `exec executor loom-exec
+--self-test` reports 9 enforced and also skips the fork-bomb probe, because that
+process is outside the delegated base; the daemon's own commands are not affected.
 
 The smoke test (`make docker-distributed-smoke`) starts the pair with throwaway
 credentials from `mint-fixture.sh`, waits for both daemons to be ready, checks that
 each container lists its node in `epmd`, and tears down only what it started. It
 skips with a message when Docker is missing or the image cannot be built on the
-host. It has not been run against the real image on the machine this page was
-written on, which is an Apple Silicon Mac.
+host.
 
 ## 7. Create and use a remote session
 
