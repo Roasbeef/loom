@@ -25,6 +25,8 @@
 
 import client/daemon/domain as domain_service
 import client/daemon/manager
+import client/directory/ownership.{type Ownership}
+import client/directory/record
 import client/executors
 import client/internal/ffi_os
 import client/orchestrators
@@ -60,6 +62,7 @@ import storage/access
 import storage/catalogue
 import storage/domain
 import storage/storage
+import support/record_book
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator as host_rig
 import telemetry/log
@@ -144,6 +147,16 @@ fn daemon(
   listed: List(executors.Executor),
   peer: String,
 ) -> Daemon {
+  owned_daemon(directory, name, listed, peer, None)
+}
+
+fn owned_daemon(
+  directory: String,
+  name: String,
+  listed: List(executors.Executor),
+  peer: String,
+  ownership: option.Option(Ownership),
+) -> Daemon {
   let own = directory <> "/" <> name
   let assert Ok(Nil) = bootstrap.ensure_private_directory(own)
     as "the daemon's state root exists"
@@ -168,6 +181,7 @@ fn daemon(
     as "the registry starts"
   let context =
     session_importer.Context(
+      ownership:,
       registry:,
       state_root: own,
       sessions_directory: own <> "/sessions",
@@ -259,6 +273,26 @@ fn start(
   target_executors: List(executors.Executor),
   padding: Int,
 ) -> Rig {
+  start_owned(
+    label,
+    seed,
+    closing,
+    executor_closes,
+    target_executors,
+    padding,
+    None,
+  )
+}
+
+fn start_owned(
+  label: String,
+  seed: Int,
+  closing: Closing,
+  executor_closes: protocol.CloseOutcome,
+  target_executors: List(executors.Executor),
+  padding: Int,
+  target_ownership: option.Option(Ownership),
+) -> Rig {
   let assert Ok(here) = simplifile.current_directory()
     as "the working directory is known"
   let directory =
@@ -285,7 +319,14 @@ fn start(
       [executors.plain("box", "box@10.0.0.9")],
       "bravo",
     )
-  let target = daemon(directory, "bravo", target_executors, "alpha")
+  let target =
+    owned_daemon(
+      directory,
+      "bravo",
+      target_executors,
+      "alpha",
+      target_ownership,
+    )
   let #(id, _) =
     ids.mint_session(ids.generator(clock.fixed(1_700_000_000_000), seed))
   let session = ids.session_id_to_string(id)
@@ -385,6 +426,7 @@ fn environment(
   after: fn(session_move.Step) -> Nil,
 ) -> session_mover.Environment(String) {
   session_mover.Environment(
+    authority: session_mover.Rows,
     registry: rig.source.registry,
     orchestrators: [orchestrators.plain("bravo", node_name())],
     directory: session_directory.none()
@@ -955,6 +997,7 @@ pub fn a_receiver_lost_in_the_middle_of_the_copy_gets_the_whole_file_again_test(
 // exposes in the same words.
 fn importer_context(rig: Rig) -> session_importer.Context(String) {
   session_importer.Context(
+    ownership: None,
     registry: rig.target.registry,
     state_root: rig.target.directory,
     sessions_directory: rig.target.directory <> "/sessions",
@@ -1091,7 +1134,7 @@ pub fn a_receiver_that_cannot_be_reached_never_abandons_the_move_test() {
   // for, moving and stopped. The receiver might hold it.
   assert list.all([1, 2, 3], fn(_) {
     case session_mover.drive(env, move) {
-      Stalled(..) -> True
+      Stalled(..) | session_mover.Unquorate(..) -> True
       Finished | Aborted(..) -> False
     }
   })
@@ -1406,4 +1449,215 @@ pub fn a_restart_resumes_every_move_that_was_in_flight_test() {
 pub fn a_daemon_with_no_movers_lists_no_destination_test() {
   assert session_movers.idle().orchestrators == []
   session_movers.idle().begin(catalogue.Pending(session: "s", op: "op", to: "x"))
+}
+
+// --- on a directory member (protocol-change/079) -----------------------------
+
+// A rig whose two daemons decide by a shared record book: the source writes it
+// as "alpha" and the receiver as "bravo".
+fn recorded(label: String, seed: Int) -> #(Rig, record_book.Book) {
+  let book = record_book.new()
+  let rig =
+    start_owned(
+      label,
+      seed,
+      Recorded,
+      protocol.AllRetired,
+      [executors.plain("box", "box@10.0.0.9")],
+      0,
+      Some(record_book.ownership(book, record_book.bravo, record_book.alpha)),
+    )
+  #(rig, book)
+}
+
+fn by_record(
+  rig: Rig,
+  book: record_book.Book,
+  wire: Wire,
+) -> session_mover.Environment(String) {
+  session_mover.Environment(
+    ..environment(rig, wire, fn(_step) { Nil }),
+    authority: session_mover.Recorded(record_book.ownership(
+      book,
+      record_book.alpha,
+      record_book.bravo,
+    )),
+  )
+}
+
+fn serving(owner: String) -> option.Option(record.Record) {
+  Some(record.Record(owner:, state: record.Serving))
+}
+
+pub fn a_member_moves_by_the_record_test() {
+  let #(rig, book) = recorded("recorded-move", 60)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let move = begin(rig)
+  assert session_mover.drive(by_record(rig, book, rig.wire), move) == Finished
+  assert record_book.read(book, rig.session) == serving(record_book.bravo)
+  assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
+  assert custody(rig.target, rig.session)
+    == catalogue.Imported(op:, from: "alpha")
+  assert !file_exists(source_file(rig))
+  assert file_exists(target_file(rig))
+  finish(rig)
+}
+
+pub fn a_member_that_gives_up_after_the_activation_retires_test() {
+  let #(rig, book) = recorded("recorded-late-abandon", 61)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let move = begin(rig)
+
+  // The receiver activates, and its reply is lost.
+  let lossy =
+    Wire(..rig.wire, activate: fn(activation) {
+      let _answer = rig.wire.activate(activation)
+      Error(Nil)
+    })
+  let assert Stalled(_) = session_mover.drive(by_record(rig, book, lossy), move)
+    as "a lost reply is a stall"
+
+  // Giving the move up now cannot take the session back: the abandon expects
+  // the moving record, which the activation replaced, so the move retires.
+  assert session_mover.give_up(by_record(rig, book, rig.wire), move) == Finished
+  assert record_book.read(book, rig.session) == serving(record_book.bravo)
+  assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
+  assert !file_exists(source_file(rig))
+  finish(rig)
+}
+
+pub fn a_member_that_gives_up_before_the_activation_takes_the_session_back_test() {
+  let #(rig, book) = recorded("recorded-abandon", 62)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let move = begin(rig)
+
+  // The receiver never hears the activation.
+  let deaf = Wire(..rig.wire, activate: fn(_activation) { Error(Nil) })
+  let assert Stalled(_) = session_mover.drive(by_record(rig, book, deaf), move)
+    as "silence is a stall"
+  let assert Aborted(_) =
+    session_mover.give_up(by_record(rig, book, deaf), move)
+    as "a member may give up on silence"
+  assert record_book.read(book, rig.session) == serving(record_book.alpha)
+  assert custody(rig.source, rig.session) == catalogue.Resident
+  assert file_exists(source_file(rig))
+  finish(rig)
+}
+
+pub fn a_member_without_a_record_abandons_the_move_test() {
+  let #(rig, book) = recorded("recorded-unrecorded", 63)
+  let move = begin(rig)
+  let assert Aborted(_) =
+    session_mover.drive(by_record(rig, book, rig.wire), move)
+    as "a session the directory never recorded cannot move by it"
+  assert custody(rig.source, rig.session) == catalogue.Resident
+  assert record_book.read(book, rig.session) == None
+  finish(rig)
+}
+
+pub fn a_member_without_a_quorum_stalls_without_counting_it_test() {
+  let #(rig, book) = recorded("recorded-starved", 64)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  record_book.starve(book, record_book.Starved)
+  let move = begin(rig)
+  let assert session_mover.Unquorate(_) =
+    session_mover.drive(by_record(rig, book, rig.wire), move)
+    as "a write without a quorum is its own kind of stall"
+  assert custody(rig.source, rig.session) == catalogue.Moving(op:, to: "bravo")
+  finish(rig)
+}
+
+pub fn a_member_with_the_rows_authority_cannot_give_up_after_the_send_test() {
+  let rig =
+    start(
+      "rows-give-up",
+      65,
+      Recorded,
+      protocol.AllRetired,
+      [executors.plain("box", "box@10.0.0.9")],
+      0,
+    )
+  let move = begin(rig)
+  let assert Stalled(_) = session_mover.give_up(plain(rig), move)
+    as "only a directory member gives up on request"
+  assert custody(rig.source, rig.session) == catalogue.Moving(op:, to: "bravo")
+  finish(rig)
+}
+
+pub fn the_movers_give_up_a_move_stalled_past_the_limit_test() {
+  let #(rig, book) = recorded("movers-give-up", 66)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let deaf = Wire(..rig.wire, activate: fn(_activation) { Error(Nil) })
+  let assert Ok(control) =
+    session_movers.start_with(
+      by_record(rig, book, deaf),
+      50,
+      fn(_, _) { Error(Nil) },
+      0,
+      fn() { Nil },
+    )
+    as "the movers start"
+  let move = begin(rig)
+  control.begin(move)
+
+  // The first run stalls on the silent receiver, and the next tick finds the
+  // stall past a limit of zero and the receiver seeded, and gives the move up.
+  await_custody(rig, catalogue.Resident)
+  assert record_book.read(book, rig.session) == serving(record_book.alpha)
+  finish(rig)
+}
+
+pub fn an_owner_gives_a_move_up_through_the_movers_test() {
+  let #(rig, book) = recorded("movers-abandon", 67)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let deaf = Wire(..rig.wire, activate: fn(_activation) { Error(Nil) })
+  let assert Ok(control) =
+    session_movers.start_with(
+      by_record(rig, book, deaf),
+      200,
+      fn(_, _) { Error(Nil) },
+      session_movers.give_up_after_ms,
+      fn() { Nil },
+    )
+    as "the movers start"
+  let move = begin(rig)
+  control.begin(move)
+  let assert poll.Answered(Nil) =
+    poll.until(within: 20_000, every: 50, attempt: fn() {
+      case record_book.read(book, rig.session) {
+        Some(record.Record(state: record.Moving(..), ..)) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the intent is written"
+
+  // The stall waits for the next tick; the owner's request gives the move up
+  // once the mover is waiting.
+  let assert poll.Answered(Nil) =
+    poll.until(within: 20_000, every: 100, attempt: fn() {
+      control.abandon(rig.session)
+      case manager.custody(rig.source.registry, rig.session) {
+        Ok(catalogue.Resident) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the owner's request takes the session back"
+  finish(rig)
+}
+
+pub fn the_movers_sweep_marked_deletions_test() {
+  let #(rig, book) = recorded("movers-sweep", 68)
+  let swept = process.new_subject()
+  let assert Ok(_control) =
+    session_movers.start_with(
+      by_record(rig, book, rig.wire),
+      50,
+      fn(_, _) { Error(Nil) },
+      session_movers.give_up_after_ms,
+      fn() { process.send(swept, Nil) },
+    )
+    as "the movers start"
+  let assert Ok(Nil) = process.receive(swept, 5000)
+    as "a tick runs the deletion pass"
+  finish(rig)
 }

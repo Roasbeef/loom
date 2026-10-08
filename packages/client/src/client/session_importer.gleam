@@ -55,6 +55,8 @@
 //// failure and the sender asks again.
 
 import client/daemon/manager
+import client/directory/ownership.{type Ownership}
+import client/directory/store
 import client/executors.{type Executor}
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port
@@ -69,7 +71,7 @@ import core/ids
 import gleam/bit_array
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -81,6 +83,10 @@ import telemetry/log.{type Logger}
 /// What a receiver needs to take in a session.
 pub type Context(instance) {
   Context(
+    /// On a directory member, the owner record writes, through which the
+    /// activation's compare-and-set is made before the session is registered
+    /// (protocol-change/079); `None` where the catalogue rows decide.
+    ownership: Option(Ownership),
     /// The registry, which decides what this daemon serves.
     registry: manager.Manager(instance),
     /// The daemon's private root, below which copies wait in `incoming/`.
@@ -403,7 +409,47 @@ fn verified(
       True, Ok(_) -> Ok(Nil)
     },
   )
-  import_it(context, activation, source.name)
+  recorded(context, activation, source.name)
+}
+
+// On a directory member the activation is the record's compare-and-set, and it
+// is made before the session is registered and its file placed, because those
+// let this daemon serve the session (protocol-change/079). When the write finds
+// this daemon already owning the session, its own earlier write committed and
+// the import or the reply was lost, or the session has moved on since: the
+// import is finished if it can be, and the answer is yes. This daemon never
+// removes a session it owns. Any other owner, or no record, means the move
+// ended without this receiver, and only the incoming copy goes.
+fn recorded(
+  context: Context(instance),
+  activation: Activation,
+  source: String,
+) -> Result(Nil, Verdict) {
+  case context.ownership {
+    None -> import_it(context, activation, source)
+    Some(ownership) ->
+      case
+        ownership.activate(
+          activation.session,
+          activation.op,
+          activation.from_node,
+        )
+      {
+        Ok(Nil) -> import_it(context, activation, source)
+        Error(store.Mismatch(found: Some(found)))
+          if found.owner == ownership.node
+        ->
+          case import_it(context, activation, source) {
+            Ok(Nil) | Error(Refused(session_move.Conflict)) -> Ok(Nil)
+            Error(verdict) -> Error(verdict)
+          }
+        Error(store.Mismatch(..)) -> Error(Refused(session_move.MoveEnded))
+        Error(store.NoQuorum(reason:)) ->
+          Error(Failed(
+            "the directory could not record the activation: " <> reason,
+          ))
+      }
+  }
 }
 
 // The copy's scope cell, which must read a clean close at the claimed

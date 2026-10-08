@@ -36,6 +36,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/directory/deletion
 import client/directory/member
 import client/directory/ownership
 import client/directory/settings as directory_settings
@@ -601,6 +602,7 @@ pub fn start_orchestrator_port(
       ))
       let importer =
         session_importer.new(session_importer.Context(
+          ownership: session_directory_of(config, ready.registry).ownership,
           registry: ready.registry,
           state_root: ready.state_root,
           sessions_directory: ready.sessions_directory,
@@ -794,11 +796,23 @@ pub fn start_movers(
     }
     Some(membership) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
+      let directory = session_directory_of(config, ready.registry)
+      let #(authority, deletions) = case directory.ownership {
+        Some(ownership) -> #(session_mover.Recorded(ownership:), fn() {
+          deletion.finish_pending(
+            ready.registry,
+            ready.sessions_directory,
+            ownership,
+          )
+        })
+        None -> #(session_mover.Rows, fn() { Nil })
+      }
       let environment =
         session_mover.Environment(
+          authority:,
           registry: ready.registry,
           orchestrators: config.orchestrators,
-          directory: session_directory_of(config, ready.registry),
+          directory:,
           courier: session_directory.courier_over(membership),
           close: closer_of(config, membership),
           clock: clock.from_function(ffi_os.system_time_ms),
@@ -807,10 +821,12 @@ pub fn start_movers(
           after: crash_after_step(),
           logger:,
         )
-      use control <- result.try(session_movers.start(
+      use control <- result.try(session_movers.start_with(
         environment,
         session_movers.retry_ms,
         session_directory.over_distribution(membership),
+        session_movers.give_up_after_ms,
+        deletions,
       ))
       use resumed <- result.try(session_movers.resume(control, ready.registry))
       log.info(logger, "daemon.movers", [

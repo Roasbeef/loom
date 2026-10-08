@@ -135,6 +135,7 @@ fn moving_from(
       orchestrators: [laptop(), orchestrators.plain("desk", "desk@10.0.0.8")],
       begin: fn(move) { process.send(told, Began(move)) },
       holds: fn(_, _) { process.call(desk_says, 1000, Ask) },
+      abandon: fn(_) { Nil },
     )
   wire.fixture_moving(
     limits.defaults,

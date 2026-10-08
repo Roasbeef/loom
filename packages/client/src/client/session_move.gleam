@@ -248,6 +248,12 @@ pub type Refusal {
 
   /// This daemon does not accept sessions from other orchestrators.
   NotImporting
+
+  /// On a directory member (protocol-change/079): the owner record no longer
+  /// says the sender is moving the session to this receiver, and does not name
+  /// the receiver as owner, so the move ended without it. The source reads the
+  /// record before it does anything else.
+  MoveEnded
 }
 
 /// The receiver's answer to a chunk or an activation.
@@ -291,6 +297,8 @@ pub fn describe(refusal: Refusal) -> String {
     Conflict -> "this orchestrator already holds the session in another state"
     Malformed(reason:) -> "the request is malformed: " <> reason
     NotImporting -> "this orchestrator does not accept moved sessions"
+    MoveEnded ->
+      "the directory record shows the move ended without this orchestrator"
   }
 }
 

@@ -302,3 +302,45 @@ pub fn directory_status_on_a_daemon_that_is_not_a_member_is_not_found_test() {
     Nil
   })
 }
+
+fn abandon(socket, id, session, epoch) {
+  wire.send(
+    socket,
+    id,
+    "sessions.move",
+    json.Object([
+      #("session_id", json.String(session)),
+      #("epoch", json.String(epoch)),
+      #("abandon", json.Bool(True)),
+    ]),
+    within_ms: 2000,
+  )
+}
+
+pub fn abandoning_a_session_that_is_not_moving_is_a_conflict_test() {
+  use <- with_store
+  member_daemon(ownership.over_store(alpha), fn(ready, port, credential) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let id = saved_remote(socket, ready, "still")
+    assert code(abandon(socket, 3, id, ready.epoch)) == json.String("conflict")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_daemon_that_is_not_a_member_cannot_abandon_a_move_test() {
+  wire.fixture(fn(_, ready, port, credential) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    assert code(abandon(
+        socket,
+        1,
+        "0198c0de-0000-7000-8000-000000000009",
+        ready.epoch,
+      ))
+      == json.String("not_movable")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}

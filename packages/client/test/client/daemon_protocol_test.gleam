@@ -199,6 +199,22 @@ pub fn every_control_command_has_one_typed_decode_test() {
       protocol.GetOperation(id, "epoch:1", "epoch"),
     ),
     #("daemon.shutdown", [epoch], protocol.Shutdown("epoch")),
+    #(
+      "sessions.move",
+      [session, epoch, #("abandon", json.Bool(True))],
+      protocol.AbandonMove(id, "epoch"),
+    ),
+    #(
+      "sessions.move",
+      [
+        session,
+        epoch,
+        #("to", json.String("laptop")),
+        #("abandon", json.Bool(False)),
+      ],
+      protocol.MoveSession(id, "laptop", "epoch"),
+    ),
+    #("directory.status", [], protocol.DirectoryStatus),
   ]
   list.each(cases, fn(example) {
     assert protocol.decode(envelope(7, example.0, example.1))

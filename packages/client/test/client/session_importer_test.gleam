@@ -6,6 +6,7 @@
 
 import client/daemon/domain as domain_service
 import client/daemon/manager
+import client/directory/record
 import client/executors
 import client/internal/ffi_os
 import client/orchestrators
@@ -26,6 +27,7 @@ import session/session
 import simplifile
 import storage/catalogue
 import storage/sqlite
+import support/record_book
 import telemetry/log
 
 const op = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e"
@@ -82,6 +84,7 @@ fn rig(label: String, listed: List(executors.Executor)) -> Rig {
     store:,
     registry:,
     context: session_importer.Context(
+      ownership: None,
       registry:,
       state_root: directory,
       sessions_directory: directory <> "/sessions",
@@ -792,5 +795,137 @@ pub fn a_session_that_comes_back_is_taken_in_over_its_tombstone_test() {
   let assert Ok(view) = manager.get(rig.registry, copy.session)
   assert view.registration.name == "went away"
   assert simplifile.is_file(record.path) == Ok(True)
+  finish(rig)
+}
+
+// --- on a directory member (protocol-change/079) -----------------------------
+
+fn recorded(
+  rig: Rig,
+  book: record_book.Book,
+) -> session_importer.Context(String) {
+  session_importer.Context(
+    ..rig.context,
+    ownership: Some(record_book.ownership(
+      book,
+      record_book.bravo,
+      record_book.alpha,
+    )),
+  )
+}
+
+fn moving_to_bravo() -> record.Record {
+  record.Record(
+    owner: record_book.alpha,
+    state: record.Moving(op:, to: record_book.bravo),
+  )
+}
+
+pub fn a_member_activates_by_the_record_and_then_imports_test() {
+  let rig = rig("recorded", box())
+  let book = record_book.new()
+  let copy = cut(rig, 40, clean())
+  record_book.set(book, copy.session, Some(moving_to_bravo()))
+  assert send(rig, copy, op, 4096) == session_move.Accepted
+  let context = recorded(rig, book)
+  assert session_importer.activate(context, activation(copy, op))
+    == session_move.Accepted
+  assert record_book.read(book, copy.session)
+    == Some(record.Record(owner: record_book.bravo, state: record.Serving))
+  assert manager.custody(rig.registry, copy.session)
+    == Ok(catalogue.Imported(op:, from: "alpha"))
+
+  // A repeat answers from the row and changes nothing.
+  assert session_importer.activate(context, activation(copy, op))
+    == session_move.Accepted
+  finish(rig)
+}
+
+pub fn a_member_whose_record_already_names_it_finishes_the_import_test() {
+  let rig = rig("recorded-lost", box())
+  let book = record_book.new()
+  let copy = cut(rig, 41, clean())
+
+  // The receiver's write committed and its import was lost.
+  record_book.set(
+    book,
+    copy.session,
+    Some(record.Record(owner: record_book.bravo, state: record.Serving)),
+  )
+  assert send(rig, copy, op, 4096) == session_move.Accepted
+  assert session_importer.activate(recorded(rig, book), activation(copy, op))
+    == session_move.Accepted
+  assert manager.custody(rig.registry, copy.session)
+    == Ok(catalogue.Imported(op:, from: "alpha"))
+  finish(rig)
+}
+
+pub fn a_member_never_removes_a_session_it_owns_on_a_failed_write_test() {
+  let rig = rig("recorded-owned", box())
+  let book = record_book.new()
+  let copy = cut(rig, 42, clean())
+  assert send(rig, copy, op, 4096) == session_move.Accepted
+  record_book.set(book, copy.session, Some(moving_to_bravo()))
+  let context = recorded(rig, book)
+  assert session_importer.activate(context, activation(copy, op))
+    == session_move.Accepted
+
+  // The session moves on from here under another move, and a late repeat of
+  // the first activation arrives. The record names this daemon as moving it,
+  // so the write fails, and the session it owns stays registered.
+  record_book.set(
+    book,
+    copy.session,
+    Some(record.Record(
+      owner: record_book.bravo,
+      state: record.Moving(op: other_op, to: record_book.alpha),
+    )),
+  )
+  let assert Ok(_) =
+    catalogue.begin_move(rig.store, copy.session, op: other_op, to: "alpha")
+    as "the session moves on"
+  let _late = session_importer.activate(context, activation(copy, op))
+  let assert Ok(_) = manager.get(rig.registry, copy.session)
+    as "the session is still registered"
+  assert simplifile.is_file(
+      rig.directory <> "/sessions/" <> copy.session <> ".db",
+    )
+    == Ok(True)
+  finish(rig)
+}
+
+pub fn a_member_refuses_a_move_that_ended_without_it_test() {
+  let rig = rig("recorded-ended", box())
+  let book = record_book.new()
+  let copy = cut(rig, 43, clean())
+
+  // The source abandoned: the record names it serving again.
+  record_book.set(
+    book,
+    copy.session,
+    Some(record.Record(owner: record_book.alpha, state: record.Serving)),
+  )
+  assert send(rig, copy, op, 4096) == session_move.Accepted
+  assert session_importer.activate(recorded(rig, book), activation(copy, op))
+    == session_move.Refused(session_move.MoveEnded)
+  assert manager.get(rig.registry, copy.session)
+    == Error(manager.Catalogue(catalogue.Missing))
+  assert simplifile.is_file(waiting(rig, copy, op)) == Ok(False)
+  finish(rig)
+}
+
+pub fn a_member_without_a_quorum_cannot_decide_test() {
+  let rig = rig("recorded-starved", box())
+  let book = record_book.new()
+  let copy = cut(rig, 44, clean())
+  record_book.set(book, copy.session, Some(moving_to_bravo()))
+  record_book.starve(book, record_book.Starved)
+  assert send(rig, copy, op, 4096) == session_move.Accepted
+  let assert session_move.Failed(_) =
+    session_importer.activate(recorded(rig, book), activation(copy, op))
+    as "no quorum is a failure, which the source treats as silence"
+  assert manager.get(rig.registry, copy.session)
+    == Error(manager.Catalogue(catalogue.Missing))
+  assert simplifile.is_file(waiting(rig, copy, op)) == Ok(True)
   finish(rig)
 }
