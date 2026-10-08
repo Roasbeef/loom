@@ -166,6 +166,7 @@ import session/session
 import simplifile
 import storage/catalogue
 import storage/domain
+import storage/snapshot as storage_snapshot
 import storage/sqlite
 import storage/storage.{type StorageError}
 import telemetry/context
@@ -2261,6 +2262,8 @@ pub type Resident {
     children: List(#(String, Pid)),
     /// The tree and session a graceful drain reaches strands through.
     drain: api.Drain,
+    /// Immutable-record reads without retaining the runtime effect graph.
+    result_reader: storage_snapshot.Reader,
   )
 }
 
@@ -2279,6 +2282,7 @@ pub fn resident(instance: Instance) -> Resident {
     worktree: instance.worktree,
     children: instance_children(instance),
     drain: api.draining(instance.runtime),
+    result_reader: instance.runtime.session.snapshot_reader,
   )
 }
 

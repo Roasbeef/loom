@@ -84,6 +84,7 @@ import session_view/transcript_lines
 import session_view/turns
 import web_view/image
 import web_view/markdown_view
+import web_view/tool_result
 import web_view/view/diff
 import web_view/view/expansion
 import web_view/view/fold_row
@@ -961,7 +962,16 @@ fn item_element(
         step_words.memory(lines),
         list.map(full, fold_row.line_row(_, draw)),
       )
-    turns.Step(key:, standing:, words:, detail:, full:, images:, since:) -> {
+    turns.Step(
+      key:,
+      standing:,
+      words:,
+      detail:,
+      full:,
+      images:,
+      since:,
+      result_source:,
+    ) -> {
       let rows = case full {
         [] -> detail
         [_, ..] -> full
@@ -972,7 +982,13 @@ fn item_element(
         since,
         list.append(
           fold_row.step_body(standing, words, rows, draw),
-          pictures(session, transcript_image.ref(key), images),
+          list.append(
+            pictures(session, transcript_image.ref(key), images),
+            case result_source {
+              None -> []
+              Some(id) -> [tool_result.links(session, id)]
+            },
+          ),
         ),
       )
     }
@@ -1066,10 +1082,16 @@ fn block_element(
     [attribute.class("block")],
     list.append(
       rows,
-      pictures(
-        session,
-        transcript_image.ref(block.key),
-        transcript_image.of_block(block),
+      list.append(
+        pictures(
+          session,
+          transcript_image.ref(block.key),
+          transcript_image.of_block(block),
+        ),
+        case turns.block_result(block) {
+          None -> []
+          Some(id) -> [tool_result.links(session, id)]
+        },
       ),
     ),
   )

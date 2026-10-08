@@ -56,12 +56,15 @@
 ////    words them, leaving out a figure the records did not give.
 //// 8. `merge_commentary` joins reviews that stand next to each other, and
 ////    `attributed` sets each sender's role, from `authors`, on their messages.
-//// 9. `pictured` and `picture` are the separate readers over the finished pieces
+//// 9. `block_result` identifies an orphan result for explicit host access;
+////    a joined step keeps the same identity in its result_source field.
+//// 10. `pictured` and `picture` are the separate readers over the finished pieces
 ////    that find a row's images by name, so a host serves only an image the lane draws.
 ////    `abridged` and `abridges` are the same kind of reader for a message whose
 ////    row shows less than it said, so a host opens only a row the lane draws.
 
 import core/entry
+import core/ids
 import core/json
 import core/message
 import gleam/dict.{type Dict}
@@ -240,6 +243,9 @@ pub type Item {
     /// so a host can show how long it has run. `None` once it has settled and
     /// for a call whose record carries no time.
     since: Option(Int),
+    /// The immutable result entry, for an explicit host read. The identity
+    /// adds no second copy of the complete result to the projection.
+    result_source: Option(ids.EntryId),
   )
 }
 
@@ -666,6 +672,25 @@ pub fn picture(
   }
 }
 
+/// The immutable result behind an orphan result block, if it is one.
+/// Hosts use this identity for explicit result access without retaining more bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // turns.block_result(block)
+/// ```
+pub fn block_result(block: Block) -> Option(ids.EntryId) {
+  case block.source {
+    transcript_lines.FromEntry(entry.MessageEntry(
+      id:,
+      message: message.ToolResultMessage(..),
+      ..,
+    )) -> Some(id)
+    _ -> None
+  }
+}
+
 /// The row of a message block that shows less than the message said, with the
 /// whole of what it said.
 ///
@@ -852,7 +877,7 @@ type Classified {
 type Joined {
   Joined(
     asked: dict.Dict(String, message.ToolCall),
-    results: dict.Dict(String, message.AgentMessage),
+    results: dict.Dict(String, #(ids.EntryId, message.AgentMessage)),
   )
 }
 
@@ -875,11 +900,12 @@ fn joined(blocks: List(Block)) -> Joined {
         )
       transcript_lines.FromEntry(entry.MessageEntry(
         message: message.ToolResultMessage(tool_call_id:, ..) as outcome,
+        id:,
         ..,
       )) ->
         Joined(
           ..joined,
-          results: dict.insert(joined.results, tool_call_id, outcome),
+          results: dict.insert(joined.results, tool_call_id, #(id, outcome)),
         )
       _ -> joined
     }
@@ -1130,10 +1156,18 @@ fn entry_kind(
         })
         |> list.index_map(fn(call, index) {
           let key = block.key <> "/" <> int.to_string(index)
-          let outcome = dict.get(joined.results, call.id) |> option.from_result
+          let returned = dict.get(joined.results, call.id) |> option.from_result
+          let outcome = option.map(returned, fn(result) { result.1 })
+          let result_source = option.map(returned, fn(result) { result.0 })
           called(
             key,
-            tool_activity.Call(source, call, outcome, None, Some(value.ts)),
+            tool_activity.Call(
+              source,
+              call,
+              outcome,
+              result_source,
+              Some(value.ts),
+            ),
             strands,
             expansion,
           )
@@ -1514,6 +1548,7 @@ fn step(
     detail:,
     full:,
     images: transcript_image.of_outcome(call.outcome),
+    result_source: call.result_source,
     since: case standing {
       Pending -> call.asked
       Done | Failed -> None

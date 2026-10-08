@@ -5868,6 +5868,16 @@ and only for a page that holds the creation capability; `ui_socket.create_for`
 takes the chosen profile and maps `unknown_profile` to
 `creations.UnknownProfile`.
 
+## Explicit browser result reads
+
+Protocol change 079 adds keyed result-page and result-download GETs. Each request
+uses `server.page_grant` before and after its bounded read and resolves the entry
+through the authorized resident's `result_reader`. `serve.Resident` holds only
+that storage reader and its existing handles, never the runtime effect graph.
+`ui_result` reads one fragment per viewer page or a complete bounded byte tree
+under a shared five-second download deadline. No component callback or result
+ledger is registered in `ui_sessions`.
+
 ## Offline LSP readiness and diagnostics scope
 
 Automatic code-mode selection admits a workspace seed only after `seed.verify`

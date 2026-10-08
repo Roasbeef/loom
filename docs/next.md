@@ -1,65 +1,77 @@
 # Current handoff
 
-This edition records the October 8, 2026 code-mode and language-server
-readiness changes, integrated with main `16f886bd0` after PRs #925 and #926
-merged. The original validation used base `ae262a81374542b7cdbf63b3983a48c77c5a2e01`.
-The implementation is isolated in `.worktrees/codemode-lsp-readiness`; the
-original checkout's unrelated files remain untouched. The evidence and
-validation limits are in [the readiness report](review/codemode-lsp-readiness-2026-10-08.md).
+This edition records the October 8, 2026 browser result work on
+`fix/browser-tool-output`, originally based on `16c3c0ee5` and now integrated
+with PR #927's readiness head `71887e1b7` and main `16f886bd0`. Claims were checked against
+the implementation and the [browser report](review/browser-large-results-2026-10-08.md).
+The primary checkout's unrelated files were preserved; work remains isolated
+in `.worktrees/browser-tool-output`. The installed client and daemon were
+not replaced or restarted.
 
 ## Where the tree is
 
 | Work | Current evidence |
-|---|---|
-| Compile/export reuse | PR #917 merged into the base named above. Its implementation remains in `scripts/shipment.py`; the earlier compile report records matched timing evidence, not a new measurement here. |
-| Large TUI output | PR #925 merged as `fa4e45f8b`; its hosted CI and exact-head Linux signoff are green. |
-| Code-mode module availability | Seed verification refuses a missing admitted static cap/ext module; automatic selection can use a valid bundle instead of an incomplete workspace seed. |
-| Workspace language-server preparation | `make lsp-seed` prepares all workspace package closures explicitly, separate from satellite preparation and distribution. |
-| Git subprocess resolution | Language servers use the host-resolved Git directory ahead of the macOS shim, within existing filesystem grants. |
-| Diagnostics scope | Workspace publications are always partial (`Unsettled`); an explicit file retains the existing settlement behavior. |
-| Browser result access | Draft PR #928 implements paged viewing and complete downloads; its local affected gate passed and hosted validation is pending. |
+| --- | --- |
+| Terminal large-result wrapping | PR #925 merged as `fa4e45f8b`; hosted CI and exact-head Linux signoff are green. |
+| Code-mode/LSP readiness | PR #927 at `71887e1b7` is included here so both changes are tested together. Original head `d72948088` passed Linux signoff; fresh integrated-head CI/signoff are pending. |
+| Browser complete-result access | Stable immutable-record URLs offer 16 KB pages and complete JSON attachments. |
+| Browser local validation | Full affected gate returned exit 0 in 329 seconds; no undeclared skip. |
+| Independent browser review | No HIGH/MEDIUM finding; two LOW cleanup findings applied. |
 
-The previous edition's outstanding PR #917 CI/merge work is stale: #917 is in
-the current base. Its historical local fixture failures remain observations of
-those older runs, rather than the verdict for this change.
+The previous handoff's instruction to publish the terminal PR is obsolete.
+Its measured speed results remain in the [wrapping report](review/tui-large-result-wrap-2026-10-08.md).
+Compile/export reuse PR #917 and Link-form PR #926 are already merged. The
+Darwin-only declaration records two existing broker /proc prerequisites; no
+tests or assertions changed, and both tests ran successfully on Linux. Issue #924 implementation
+and its validation are recorded in PR #927's own branch and
+[report](https://github.com/Roasbeef/loom/pull/927).
 
 ## What to do next
 
-1. Finish PR #927's hosted CI and Linux signoff on its integrated head.
-   **Exit:** green required checks, with the actual
-   jailed recipe and language-server tests distinguished from full workspace
-   coverage. Original package gates and Linux signoff passed. The macOS
-   aggregate exposed two undeclared existing `/proc` prerequisites; the
-   Darwin-only census declaration corrects that metadata without altering
-   tests. Fresh validation is required after integration.
-2. Integrate PR #928 with the readiness head and finish its required gates.
-   **Exit:** its exact head is green before merging, as authorized.
-3. Finish the separate browser result-access verification. **Exit:** an initial
-   bounded preview, authenticated bounded pages and a complete download, with
-   Unicode boundaries, page isolation, expiry and credential revocation tested
-   through the real HTTP router, followed by review and required gates.
+1. Finish PR #927's integrated-head CI and Linux signoff, then merge it as
+   authorized. **Exit:** its exact published head is green.
+2. Finish PR #928's integrated-head CI and Linux signoff, then merge it as
+   authorized. **Exit:** its exact published head is green after #927 merges.
+3. Install a reviewed release when the owner requests it. **Exit:** verify
+   behavior in the resident client/daemon; disposable tests do not establish
+   that the installed processes changed.
 
 ## Rulings already made
 
-**Prepare the two dependency graphs explicitly.** The satellite seed does not
-prepare the workspace's package servers. The new target grants no server network
-access and is not added to every export or distribution command.
+**Keep complete terminal output.** Measured grapheme cursors consume each code
+row once. The terminal retains complete source and results; a small viewport
+does not justify discarding their text.
 
-**Represent partial coverage honestly.** One current package server cannot
-attest to an entire workspace. Protocol change 078 uses `Unsettled` for an
-unscoped diagnostics request, preserves error results, and keeps explicit-file
-settlement. A complete workspace sweep and a failed-server ledger are deferred.
+**Make browser access explicit.** The normal transcript stays bounded.
+Paging reads one storage fragment, and a download reads a complete bounded
+record under one deadline. Both use existing page/session authority; entry
+identity alone grants no additional read access. Protocol-change/079 records
+this decision. No component-side result ledger is required.
 
-**Keep the seed gate's claim narrow.** It proves admitted module presence and
-the existing pinned dependency-table/inventory checks. It does not fingerprint
-unchanged module names against the current source. Dynamic MCP facades are
-installed after the clone, rather than being required in the static seed.
+**Preserve matching immutable identity.** A narrative join carries the identity
+of the same result whose outcome it displays. An orphan result keeps its own
+source identity. These are regression-tested in the browser lane.
+
+**Separate proof scopes.** The preview bounds rendering and scanning, not all
+BEAM backing-binary retention. The real HTTP tests use an explicit fixture
+reader; the storage tests independently round-trip a real SQLite result.
+The installed session was not modified to produce either result. Original-head
+gates and signoff do not attest to a new integration head. Each merge must
+check its own current SHA.
 
 ## Deliberately open
 
-Browser result access has its own worktree and PR. PR #926's Link-form fix
-is included from main without editing its implementation. Provider cancellation
-confirmation failures are separate from the TUI wrapping problem. Nothing in
-this change installs a shipment or restarts a live daemon. Full workspace LSP
-coverage is not claimed. Native compilation caching and further export savings
-remain separate measured opportunities from the earlier compile iteration.
+Search in the viewer applies to one page, and byte windows can split JSON
+syntax or lines. The full attachment is the complete stored record. Output
+summarization, whole-result browser search and installed-process replacement
+are outside this PR. No new FFI, dependency, process machinery or sandbox
+privilege was introduced.
+
+## How to verify
+
+The [browser report](review/browser-large-results-2026-10-08.md) records commands,
+test counts, review scope and limits. Run `make gen-client` after changing
+browser source, then `make check-affected BASE=16c3c0ee5` and required Linux
+signoff on the pushed clean head. Judge every gate by its own exit code.
+Keep code-mode worktrees outside `/tmp` and follow [execution](execution.md)
+for the remaining verification rules.
