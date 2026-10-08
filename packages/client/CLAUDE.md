@@ -6186,6 +6186,55 @@ lets the model receive an error result.
   `bash` and code mode run under a profile that reads the whole host and never
   notice.
 
+`test/client/daemon_shipped_remote_tools_test.gleam` covers the rest of the
+phase 1 workspace plane on the same fixture, one pair per test, with the pair's
+arrangement in `test/support/remote_pair.gleam` (gating, the short `/var/tmp`
+directory, credentials, both configuration files, `open_registered`,
+`session_fact` and `session_socket`). `session_fact` reads a reserved fact from
+a copy of the orchestrator's session store, and `session_socket` is the owner's
+socket on the session for commands such as `goal_set` and `worktree_diff`. A
+host without `rg` or `git` prints a `SKIP shipped remote tools` line and passes.
+`provider_http` admits the advisor's standing brief (`advisor.brief`) as a
+leading block of the first user message, so a scripted reviewer can be fed.
+
+- `daemon_shipped_remote_search_and_cwd_test_`: `grep` finds a pattern in files
+  only the executor holds and honours its `globs`; `working_directory` selects a
+  subdirectory, the next `bash` reports the executor's path, a `bash` call's own
+  `cwd` leaves the selection alone, the orchestrator's store holds
+  `client/working_directory/main`, and after a stop and reopen a `bash` call
+  still starts there.
+- `daemon_shipped_remote_jobs_test_`: a `bash` call whose `timeout_ms` passes
+  becomes a background job, and ends when the test creates a file in the
+  checkout; the executor's completion notice wakes the idle session through the
+  owner port, and `job_poll` reads its exit status and output. A second job,
+  started with `mode: "background"`, appends to a file every fifth of a second;
+  `job_kill` stops it and the file stops growing. `live_jobs` lists both while
+  they run and none after, and the store holds a `job/<id>` record for each, in
+  the phase it ended in.
+- `daemon_shipped_remote_hooks_test_`: the checkout's `.claude/settings.json`
+  runs nothing until the orchestrator holds a trust record for the hash of the
+  bytes the executor sent (the test writes it with `hooktrust.trust`, as the
+  absent `loom hooks trust` will). Then a `SessionStart` hook runs once and its
+  output rides the first request, a `PreToolUse` hook runs on the executor
+  around a `bash` call with the call as stdin and the checkout as its working
+  directory, a `PostToolUse` hook replaces the output the model reads, and a
+  `PreToolUse` hook that exits 2 refuses an `fs_write` with its message as the
+  error result. A `PostToolUse` note added beside the output is a second content
+  block, which `provider_http` does not admit, so the hook rewrites instead.
+- `daemon_shipped_remote_goal_test_`: a goal's check runs in the executor's
+  checkout. One check passes on a file only the executor holds and prints the
+  executor's path; the other fails because the file it names exists only in the
+  orchestrator's launch directory. The board and the reviewer's feed (a second
+  scripted provider on the `advisor` role) carry each result.
+- `daemon_shipped_remote_git_and_guidance_test_`: the executor's `AGENTS.md` and
+  `CLAUDE.md` and the operator's global `AGENTS.md` reach every request's system
+  prompt, and same-named decoys in the orchestrator's launch directory, under the
+  registered name there and in its home reach none. A `git` call reports the
+  executor's branch and commit; the orchestrator's store holds that commit as
+  `session/git-start` and the root and branch in `client/peers/git-observation`;
+  the `worktree_diff` board lists a file the model added. The system prompt has
+  no Git state (`prompt/default`), local or remote.
+
 ## Naming a registered workspace (protocol 078)
 
 `sessions.create` takes an optional `executor`. `client/executors` decodes the
