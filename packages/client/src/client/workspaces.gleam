@@ -23,9 +23,9 @@
 ////
 //// `from_document` → `row` → `known_keys`
 ////
-//// 1. `from_document` reads the table and requires `[distribution]`, because
-////    an executor with no pinned peers has nobody to serve.
-//// 2. `row` validates one entry's name and its single key, `root`.
+//// 1. `from_document` reads the table and requires the distribution table,
+////    because an executor with no pinned peers has nobody to serve.
+//// 2. `row` validates one entry's name and its single key.
 //// 3. `find` resolves a name an orchestrator sent to its configured row.
 
 import client/distribution

@@ -47,12 +47,12 @@
 ////
 //// 1. `machine` reads this executor's own settings once, at daemon start.
 //// 2. `factory` closes over the machine and the configured workspaces.
-//// 3. `build` resolves the workspace name, makes the scope directory, and runs
-////    `prepare` and `start`.
+//// 3. `build` resolves the workspace name, makes the scope directory, and starts
+////    the workspace half.
 //// 4. `plane_over` reads the prompt facts once and wraps the started plane as the
-////    host's `Plane`, with the census as plain data.
+////    host's plane, with the census as plain data.
 //// 5. `retire` closes a scope: language servers, children, broker, then helpers,
-////    and reports `AllRetired` only on the helper witness.
+////    and reports a clean close only on the helper witness.
 
 import broker/broker
 import broker/exec.{type EnforcementDemand}
@@ -239,9 +239,9 @@ fn build(
 ) -> Result(host.Plane(remote_census.RemoteCensus), String) {
   use workspace <- result.try(
     workspaces.find(configured, spec.workspace)
-    |> result.replace_error(
-      "this executor serves no workspace named `" <> spec.workspace <> "`",
-    ),
+    |> result.map_error(fn(_missing) {
+      "this executor serves no workspace named `" <> spec.workspace <> "`"
+    }),
   )
   use root <- result.try(
     bootstrap.canonical_directory(workspace.root)
@@ -618,7 +618,7 @@ fn find_helper(flag: Option(String)) -> Result(String, String) {
 fn pool_size() -> Int {
   workspace_policy.env_text("LOOM_HELPER_POOL")
   |> result.try(int.parse)
-  |> result.unwrap(exec.default_pool_size())
+  |> result.lazy_unwrap(exec.default_pool_size)
   |> int.clamp(min: exec.min_pool_size, max: exec.max_pool_size)
 }
 

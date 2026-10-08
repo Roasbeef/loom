@@ -4,6 +4,21 @@
 //// and binds one v2 listener. Provider configuration and session resources are
 //// resolved only inside an explicitly admitted session builder. The root handle
 //// survives readiness failures so bounded shutdown can report uncertainty.
+////
+//// ## Flow
+////
+//// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
+//// `listen_serving` → `publish_endpoint` → `wait`
+////
+//// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
+////    `prepare_startup` reads the configuration once and prepares the root.
+//// 2. `run` starts the daemon's services in order. `start_executor` comes
+////    first, so a machine that serves workspaces answers peers before any
+////    client can connect.
+//// 3. `listen_serving` binds the listener, and `publish_endpoint` records the
+////    bound port for the reservation this VM holds.
+//// 4. `wait` blocks on the signal relay, the root and the executor host, and a
+////    loss of either of the last two ends the daemon.
 
 import argv
 import client/catalog
