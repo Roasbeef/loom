@@ -513,7 +513,8 @@ pub fn a_program_on_the_executor_reaches_the_owners_doors_test() {
           ),
           holds: fn(_caller, _tool) { Ok(Nil) },
         )
-      let rig = rig_over(Some(seed), services, shallow_scratch())
+      let scratch = shallow_scratch()
+      let rig = rig_over(Some(seed), services, scratch)
       let remote = attached(rig, 0).surface
 
       // A real compile in the executor's jail and a real satellite, whose two
@@ -536,7 +537,7 @@ pub fn a_program_on_the_executor_reaches_the_owners_doors_test() {
       assert process.receive(seen, 1000) == Ok("roster main")
       assert process.receive(seen, 1000) == Ok("note main proof")
       stop(rig)
-      let _removed = simplifile.delete_all([rig.checkout, rig.state])
+      let _removed = simplifile.delete_all([scratch])
       Nil
     }
   }
