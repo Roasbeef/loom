@@ -6705,7 +6705,9 @@ the session first opens and then never again.
   `chosen` is `manager.seed_executor`, a cast that runs `catalogue.seed_executor`
   in the registry's turn, which writes the `executor` column once, only for a
   registration with a pool and no executor.
-- The catalogue is at version 11: `Registration.pool` is part of the creation
+- The catalogue is at version 12 (v12 adds `catalogue_session_moves`, the
+  custody of a session moving between orchestrators, read with
+  `catalogue.custody`; nothing in the client reads it yet). `Registration.pool` is part of the creation
   request and `reserve_creation` compares it, and for a pooled request it does not
   compare the executor, which is the first open's choice (`named_same_executor`).
   `view_json` adds `executor` and `pool` members only when non-empty. The control

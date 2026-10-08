@@ -400,7 +400,7 @@ Three modules share one `storage/catalogue.Catalogue` connection:
   index paths a session reads from and writes to.
 
 The catalogue schema is versioned with `PRAGMA user_version`, currently
-4; versions 1 to 3 migrate on open, each applying every schema it lacks
+12; older versions migrate on open, each applying every schema it lacks
 in one transaction. `storage/sqlite_policy` holds the
 connection and journal settings that session files, the catalogue and
 the `events` search index share, plus the rule that refuses a path

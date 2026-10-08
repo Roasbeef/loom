@@ -5,7 +5,8 @@ spellings below are provisional until phase 1 lands; this document is updated
 to the implemented spellings before the change merges.
 **Affects**: the control command `sessions.create` and session records (one
 optional field each, and a second pair for pools, see the addendum), the
-catalogue schema (version 10, one column; version 11, one more),
+catalogue schema (version 10, one column; version 11, one more; version 12,
+one table for session movement),
 `loom.toml` (a `[distribution]` table and `[executors.*]` rows on an
 orchestrator, `[pools.*]` tables beside them, `[workspaces.*]` rows on an
 executor, and `[orchestrators.*]` rows for a deployment with two
@@ -430,6 +431,35 @@ when the response carries an address, the line to run on that machine
 (`loom --addr <address> --session <id> --token-file <the owner token on that
 host>`). The web home words them the same way, on the page of the session that was
 asked for. Neither client connects to the owner itself.
+
+### Addendum: session movement (catalogue storage)
+
+Phase 5 moves a session between orchestrators under the source's control. This
+addendum records the catalogue half, which has no wire surface yet. The control
+command, the `moving` and `moved` views and the host messages that drive it
+arrive with the mover and extend this document then.
+
+The catalogue is at version 12. The migration from version 11 adds one table,
+`catalogue_session_moves(session_id, op, peer, state)`, keyed by session and
+referencing `catalogue_sessions`. No row means the catalogue serves the session
+and has never moved it, so every existing session reads back as resident. A row
+is `moving` while this side hands the session to `peer`, `moved` once it has,
+and `imported` on the side that received it. `op` identifies one move end to
+end and `peer` is an `[orchestrators.<name>]` key.
+
+The transitions are compare-and-set on the row, in one immediate transaction
+each. The side that gives a session up runs `resident -> moving -> moved`, with
+`moving -> resident` for an abort before anything reached the receiver. The side
+that receives it runs `resident -> imported`. A repeat of the same op answers the
+stored state and writes nothing. Any other op, and any transition the stored
+state does not allow, is a conflict. `moved` has no outgoing transition, which is
+what keeps a stale mover or a late message from returning a session to a
+catalogue that handed it over. The read of a row that breaks the grammar fails
+and is never taken as resident. Deleting a `moving` or `moved` session is
+refused, because the row is the only record of who owns it.
+
+Nothing is added to the node vocabulary or the client protocol by this change,
+so no Part 1 interface moves.
 
 ## Impact
 

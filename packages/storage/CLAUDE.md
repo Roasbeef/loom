@@ -19,12 +19,13 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 11. Each later version has its own embedded
+- The catalogue is at `user_version` 12. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
   `catalogue_recent_folders_schema`, `catalogue_profiles_schema`,
-  `catalogue_executors_schema`, `catalogue_pools_schema`), and
+  `catalogue_executors_schema`, `catalogue_pools_schema`,
+  `catalogue_moves_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -71,6 +72,28 @@ with these forks: they define the same modules.
   registration. A pooled registration's workspace is a registered name, as an
   executor session's is, and `set_workspace_default` refuses it. `is_pool_name`
   shares the profile grammar.
+- `catalogue.Custody` says who serves a session, apart from `State` and
+  `Visibility`: `Resident` (no row), `Moving(op, to)`, `Moved(op, to)` and
+  `Imported(op, from)`. Version 12 adds `catalogue_session_moves(session_id,
+  op, peer, state)`, one row per session, with `state` one of `moving`, `moved`
+  and `imported`. `custody` reads it; `begin_move`, `finish_move`,
+  `abort_move` and `import_session` are compare-and-set transitions, each in
+  one immediate transaction, keyed by the move's `op`: source side `Resident ->
+  Moving -> Moved` with `Moving -> Resident` for an early abort, target side
+  `Resident -> Imported`. A repeat of the same op answers the stored custody
+  and writes nothing, and the revision moves only when a row changes. Any other
+  op, or a transition the stored state does not allow, is `Conflict`. `Moved`
+  has no outgoing transition, so an abort that arrives after the move finished
+  cannot undo it, and `delete` refuses a `Moving` or `Moved` session with
+  `Conflict` because the row is the only record of who owns it (an `Imported`
+  row leaves with its session). A stored row whose op or peer breaks its
+  grammar (`is_move_op`, `is_orchestrator_name`) fails the read with `Invalid`
+  and is never read as `Resident`. The table's foreign key to
+  `catalogue_sessions` means a registration cannot be removed while its row
+  stands.
+  `Visibility` was not given a `Moved` arm: archiving is the owner's choice and
+  independent of custody, and a `Visibility` variant would force every
+  existing archive match to decide what a moved session means.
 - `catalogue.Visibility` separates active and archived rows from initialization
   state. Schema version 3 adds `catalogue_session_archives`, migrated atomically
   from versions 1 and 2. `set_visibility` changes the overlay, clears an archived

@@ -31,6 +31,9 @@
 //// 8. `remember_folder`, `recent_folders` and `forget_folder` keep the short list
 ////    of folders the owner recently started a session in, which belongs to no
 ////    session and so outlives every one.
+//// 9. `custody` reads who serves a session, and `begin_move`, `finish_move`,
+////    `abort_move` and `import_session` are the compare-and-set transitions of
+////    a session moving between orchestrators.
 
 import core/ids
 import gleam/dynamic/decode
@@ -46,6 +49,7 @@ import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_executors_schema
 import storage/catalogue_logins_schema
+import storage/catalogue_moves_schema
 import storage/catalogue_names_schema
 import storage/catalogue_pools_schema
 import storage/catalogue_profiles_schema
@@ -135,7 +139,9 @@ pub type Error {
   /// Input metadata or a persisted record failed validation.
   Invalid(reason: String)
 
-  /// A unique key conflicts, or a default selects another workspace's session.
+  /// A unique key conflicts, a default selects another workspace's session, or
+  /// a move transition is not allowed from the session's custody (another
+  /// operation owns it, or it has already moved).
   Conflict
 
   /// No registration has this identity.
@@ -249,7 +255,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 11
+pub const current_version = 12
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -266,6 +272,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(9, catalogue_profiles_schema.schema),
     #(10, catalogue_executors_schema.schema),
     #(11, catalogue_pools_schema.schema),
+    #(12, catalogue_moves_schema.schema),
   ]
 }
 
@@ -934,13 +941,310 @@ pub fn set_visibility(
   })
 }
 
+/// Who serves a session. It is independent of `State` (whether the file was
+/// verified) and of `Visibility` (whether the owner hid the session): a
+/// session can be active and moving, or archived and imported. The state is a
+/// row in `catalogue_session_moves`, and no row means `Resident`.
+///
+/// The transitions are compare-and-set on the row, in one immediate
+/// transaction each, keyed by the move's `op`. On the side that gives a
+/// session up they run `Resident -> Moving -> Moved`, with `Moving ->
+/// Resident` for an early abort. On the side that receives it, `Resident ->
+/// Imported`. `Moved` has no outgoing transition, so a stale mover or a late
+/// message can never bring a session back to a catalogue that handed it over.
+pub type Custody {
+  /// No move row: this catalogue serves the session and has never moved it.
+  Resident
+
+  /// This catalogue is handing the session to the orchestrator `to`, under the
+  /// move `op`. The slot is stopped and the session is not admitted until the
+  /// move finishes or aborts.
+  Moving(op: String, to: String)
+
+  /// This catalogue handed the session to `to`. It is a tombstone: `open`,
+  /// `restore` and `delete` answer with the new owner and never run here.
+  Moved(op: String, to: String)
+
+  /// The orchestrator `from` handed the session to this catalogue under the
+  /// move `op`.
+  Imported(op: String, from: String)
+}
+
+/// The longest move operation identifier, in bytes. A UUID is 36.
+pub const move_op_limit = 64
+
+/// Whether text can identify a move: one to `move_op_limit` bytes drawn from
+/// ASCII letters, digits, `-` and `_`. The identifier is minted by the source
+/// and travels in file names and messages, so it can hold no separator, space
+/// or control.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_move_op("0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e")
+/// assert !catalogue.is_move_op("")
+/// assert !catalogue.is_move_op("a b")
+/// assert !catalogue.is_move_op("../b")
+/// ```
+pub fn is_move_op(text: String) -> Bool {
+  let size = string.byte_size(text)
+  size >= 1
+  && size <= move_op_limit
+  && list.all(string.to_utf_codepoints(text), fn(codepoint) {
+    let code = string.utf_codepoint_to_int(codepoint)
+    { code >= 0x30 && code <= 0x39 }
+    || { code >= 0x41 && code <= 0x5a }
+    || { code >= 0x61 && code <= 0x7a }
+    || code == 0x2d
+    || code == 0x5f
+  })
+}
+
+/// Whether text is an orchestrator name: the key of an `[orchestrators.<name>]`
+/// table in the configuration. It has the grammar of an executor name, so a
+/// peer is named alike in the configuration and in a stored move.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_orchestrator_name("laptop")
+/// assert !catalogue.is_orchestrator_name("Laptop")
+/// ```
+pub fn is_orchestrator_name(text: String) -> Bool {
+  is_profile_name(text)
+}
+
+/// Reads who serves a session, without opening its conversation file.
+///
+/// A stored row that does not decode (a state that is not one of the three, an
+/// op or a peer outside its grammar) fails the read with `Invalid`. It is never
+/// read as `Resident`, because that would let a damaged tombstone open a session
+/// the catalogue handed to another orchestrator.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.custody(store, session_id) == Ok(catalogue.Resident)
+/// ```
+pub fn custody(catalogue: Catalogue, id: String) -> Result(Custody, Error) {
+  use _record <- result.try(get(catalogue, id))
+  stored_custody(catalogue, id)
+}
+
+fn stored_custody(catalogue: Catalogue, id: String) -> Result(Custody, Error) {
+  use rows <- result.try(query(catalogue, sql.session_move(id)))
+  case rows {
+    [] -> Ok(Resident)
+    [row] -> decode_custody(row.op, row.peer, row.state)
+    [_, _, ..] -> Error(Invalid("duplicate move metadata"))
+  }
+}
+
+fn decode_custody(
+  op: String,
+  peer: String,
+  state: String,
+) -> Result(Custody, Error) {
+  case is_move_op(op) && is_orchestrator_name(peer) {
+    False -> Error(Invalid("invalid move metadata"))
+    True ->
+      case state {
+        "moving" -> Ok(Moving(op:, to: peer))
+        "moved" -> Ok(Moved(op:, to: peer))
+        "imported" -> Ok(Imported(op:, from: peer))
+        _ -> Error(Invalid("unknown move state"))
+      }
+  }
+}
+
+// A move names a well-formed operation and peer before any row is read, so a
+// malformed request is refused the same way whatever the stored custody is.
+fn validate_move(op: String, peer: String) -> Result(Nil, Error) {
+  case is_move_op(op) && is_orchestrator_name(peer) {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid move operation or peer"))
+  }
+}
+
+/// Records the intent to hand a session to the orchestrator `to`, under the
+/// move `op`: `Resident -> Moving`.
+///
+/// This is the write-ahead step of a move. The caller commits it in the same
+/// turn that stops the session's slot, before any file is cut or any message is
+/// sent, so a crash leaves a `Moving` row that a restart resumes and never a
+/// copy with no record of why it exists. A repeat of the same op and peer
+/// answers the stored custody (`Moving`, or `Moved` once it finished). A
+/// session that another op is moving, one that has moved, and one that was
+/// imported here are `Conflict`. A malformed op or peer is `Invalid`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.begin_move(store, session_id, op: "0192f3c1", to: "laptop")
+/// // == Ok(catalogue.Moving(op: "0192f3c1", to: "laptop"))
+/// ```
+pub fn begin_move(
+  catalogue: Catalogue,
+  id: String,
+  op op: String,
+  to to: String,
+) -> Result(Custody, Error) {
+  use Nil <- result.try(validate_move(op, to))
+  transaction(catalogue.connection, fn() {
+    use current <- result.try(custody(catalogue, id))
+    case current {
+      Resident -> {
+        use Nil <- result.try(insert_move(catalogue, id, op, to, "moving"))
+        Ok(Moving(op:, to:))
+      }
+      Moving(op: held, to: peer)
+        | Moved(op: held, to: peer)
+        if held == op && peer == to
+      -> Ok(current)
+      Moving(..) | Moved(..) | Imported(..) -> Error(Conflict)
+    }
+  })
+}
+
+/// Completes a move on the side that gave the session up:
+/// `Moving -> Moved`.
+///
+/// The caller does this only after the receiving orchestrator has confirmed it
+/// activated the session. `Moved` has no outgoing transition. A repeat of the
+/// same op answers the stored `Moved`. Any other op, a session that is not
+/// moving, and one that was imported here are `Conflict`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.finish_move(store, session_id, op: "0192f3c1")
+/// // == Ok(catalogue.Moved(op: "0192f3c1", to: "laptop"))
+/// ```
+pub fn finish_move(
+  catalogue: Catalogue,
+  id: String,
+  op op: String,
+) -> Result(Custody, Error) {
+  transaction(catalogue.connection, fn() {
+    use current <- result.try(custody(catalogue, id))
+    case current {
+      Moving(op: held, to: peer) if held == op -> {
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.finish_session_move(id, op),
+        ))
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.increment_catalogue_revision(),
+        ))
+        Ok(Moved(op:, to: peer))
+      }
+      Moved(op: held, ..) if held == op -> Ok(current)
+      Resident | Moving(..) | Moved(..) | Imported(..) -> Error(Conflict)
+    }
+  })
+}
+
+/// Abandons a move before anything reached the receiver: `Moving -> Resident`.
+///
+/// This is the only way back, and the caller uses it only while nothing exists
+/// on the receiving side. Once a copy has been sent the caller abandons only on
+/// the receiver's definite refusal, never because it is unreachable. A repeat on
+/// a session that is already resident answers `Resident`. A session moving under
+/// another op, one that has moved, and one that was imported here are
+/// `Conflict`, so an abort that arrives after the move finished cannot undo it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.abort_move(store, session_id, op: "0192f3c1")
+/// // == Ok(catalogue.Resident)
+/// ```
+pub fn abort_move(
+  catalogue: Catalogue,
+  id: String,
+  op op: String,
+) -> Result(Custody, Error) {
+  transaction(catalogue.connection, fn() {
+    use current <- result.try(custody(catalogue, id))
+    case current {
+      Resident -> Ok(Resident)
+      Moving(op: held, ..) if held == op -> {
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.abort_session_move(id, op),
+        ))
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.increment_catalogue_revision(),
+        ))
+        Ok(Resident)
+      }
+      Moving(..) | Moved(..) | Imported(..) -> Error(Conflict)
+    }
+  })
+}
+
+/// Records that the orchestrator `from` handed this catalogue a session under
+/// the move `op`: `Resident -> Imported`.
+///
+/// The session's registration must already exist (`reserve`), as a move imports
+/// the conversation file beside it. A repeat of the same op and source answers
+/// the stored `Imported`, which is what lets the receiver answer a lost
+/// activation reply a second time. A session that is moving or has moved, or one
+/// imported under another op or from another source, is `Conflict`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.import_session(store, session_id, op: "0192f3c1", from: "desk")
+/// // == Ok(catalogue.Imported(op: "0192f3c1", from: "desk"))
+/// ```
+pub fn import_session(
+  catalogue: Catalogue,
+  id: String,
+  op op: String,
+  from from: String,
+) -> Result(Custody, Error) {
+  use Nil <- result.try(validate_move(op, from))
+  transaction(catalogue.connection, fn() {
+    use current <- result.try(custody(catalogue, id))
+    case current {
+      Resident -> {
+        use Nil <- result.try(insert_move(catalogue, id, op, from, "imported"))
+        Ok(Imported(op:, from:))
+      }
+      Imported(op: held, from: source) if held == op && source == from ->
+        Ok(current)
+      Imported(..) | Moving(..) | Moved(..) -> Error(Conflict)
+    }
+  })
+}
+
+fn insert_move(
+  catalogue: Catalogue,
+  id: String,
+  op: String,
+  peer: String,
+  state: String,
+) -> Result(Nil, Error) {
+  use Nil <- result.try(statement(
+    catalogue,
+    sql.insert_session_move(id, op, peer, state),
+  ))
+  statement(catalogue, sql.increment_catalogue_revision())
+}
+
 /// Removes one registration and every catalogue row that refers to it.
 ///
 /// The registration, its memberships, its display name and subtitle, a workspace default
-/// naming it and its domain mapping are removed in one immediate transaction, so no reader can
+/// naming it, its domain mapping and the provenance of an import are removed in one immediate transaction, so no reader can
 /// observe a catalogue whose foreign keys point at a session that is half
 /// gone. The domain record itself survives: a domain owns distilled memory
 /// for a workspace and outlives any one conversation that fed it.
+///
+/// A session that is moving or has moved is `Conflict`: its move row is the only
+/// record of who owns it.
 ///
 /// This never touches the conversation database on disk. The caller unlinks
 /// the file after this returns, which is the safe order: a crash between the
@@ -955,6 +1259,17 @@ pub fn set_visibility(
 pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
   transaction(catalogue.connection, fn() {
     use record <- result.try(get(catalogue, id))
+
+    // A session in the middle of a move, or one that already moved, is not
+    // this catalogue's to delete: the row is the only record of who owns it,
+    // and the move's tombstone has no way out. An imported session's row is
+    // only provenance, so it leaves with the session.
+    use current <- result.try(stored_custody(catalogue, id))
+    use Nil <- result.try(case current {
+      Moving(..) | Moved(..) -> Error(Conflict)
+      Imported(..) -> statement(catalogue, sql.delete_session_move(id))
+      Resident -> Ok(Nil)
+    })
 
     // Dependants first: foreign keys are enabled on this connection, so the
     // registration row cannot leave while anything still references it.
