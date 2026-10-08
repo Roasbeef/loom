@@ -233,6 +233,11 @@ def export(name, fresh):
     fresh = fresh or any(os.environ.get(name) for name in
                          ['REBAR_CONFIG', 'REBAR_GLOBAL_CONFIG_DIR', 'ERL_LIBS',
                           'ERL_FLAGS', 'ERL_AFLAGS', 'ERL_ZFLAGS', 'ERL_COMPILER_OPTIONS'])
+    # Global configuration may install arbitrary hooks or native plugins. Keep
+    # those builds fresh rather than treating them as the reviewed Erlang recipes.
+    global_config = Path.home() / '.config/rebar3'
+    fresh = fresh or any((global_config / name).exists() for name in
+                         ['rebar.config', 'rebar.config.script'])
     with locked():
         if fresh:
             return subprocess.call(['gleam', 'export', 'erlang-shipment'], cwd=package)

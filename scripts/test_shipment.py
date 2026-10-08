@@ -116,6 +116,15 @@ class ShipmentTest(unittest.TestCase):
         shipment.export('tui', True)
         self.assertEqual(self.builds, 2)
 
+    def test_global_hooks_bypass_reuse(self):
+        shipment.export('tui', False)
+        config = self.root / '.config/rebar3'
+        config.mkdir(parents=True)
+        (config / 'rebar.config').write_text('external plugin settings')
+        with patch.object(shipment.Path, 'home', return_value=self.root):
+            shipment.export('tui', False)
+        self.assertEqual(self.builds, 2)
+
     def test_local_transitive_dependency_and_symlink_contents_invalidate(self):
         leaf = self.root / 'packages/leaf'
         (leaf / 'src/build').mkdir(parents=True)
