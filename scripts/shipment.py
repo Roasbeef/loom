@@ -2,8 +2,8 @@
 """Export current production shipments with verified local build reuse.
 
 Gleam still owns compilation, dependency ordering and shipment construction.
-An unchanged complete input set reuses its shipment; otherwise the official
-export runs cleanly, with a scoped rebar3 adapter reusing unchanged dependencies.
+An unchanged pure production closure can reuse its shipment; otherwise the
+official export runs cleanly, with a scoped rebar3 adapter reusing dependencies.
 Every input change therefore takes Gleam's clean-export path, including module
 removals. Caches are private to this checkout and never enter the release.
 """

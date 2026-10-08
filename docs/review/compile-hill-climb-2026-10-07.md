@@ -1,6 +1,6 @@
 # Compile-time investigation, October 7, 2026
 
-The distribution build fell from 92.476 to 74.457 seconds in one matched
+The initial iteration's distribution build fell from 92.476 to 74.457 seconds in one matched
 control/candidate pair, a reduction of 18.019 seconds (19.5%). Both runs
 completed with exit 0. This measures the complete distribution build and its
 smoke tests; it does not establish a median or an installed update duration.
@@ -138,9 +138,116 @@ The rebased launcher checks passed in the native rerun after a sandboxed
 fixture failure. Documentation checks returned exit 0 with zero errors and
 198 warnings after the new evidence was added.
 
-Optional ccache support would target SQLite's repeated C compile; reusable
+At the end of that iteration, optional ccache support would target SQLite's repeated C compile; reusable
 production exports could also avoid repeated Erlang dependency compilation,
 but require a freshness contract for changed and removed modules, dependencies
 and toolchains. The owner was asked to choose before introducing a dependency
-or cache pattern. Neither has been installed or implemented. Hosted CI and
-Linux signoff remain separate from these local observations.
+or cache pattern. Neither had been installed or implemented at that point. The owner subsequently
+approved the three further compile/export experiments recorded below.
+
+
+## Verified reuse iteration
+
+The owner approved dependency reuse, incremental exports and measured source
+optimizations. The retained implementation is `c25b61102`, with the global-hook
+freshness guard at `b4dbb0a4d` and exact Hex-source admission at `2159d30b0`, still based on main `7091d5a42`. No application
+source, manifest, compiler optimization or compression setting changed.
+
+`scripts/shipment.py` leaves Gleam responsible for clean compilation, dependency
+ordering and shipment construction. An unchanged TUI production closure can
+restore a content-verified shipment. Source changes, including removed modules,
+run the official clean exporter. Its scoped rebar3 adapter can restore the
+reviewed pure Erlang dependency versions: cowlib 2.20.0, gun 2.6.0, yamerl 0.10.0
+and hpack_erl 0.3.0. Each dependency key includes its transitive sources. Admission also requires
+the exact reviewed source fingerprint throughout the Erlang dependency closure;
+an edited recipe loses eligibility even if its version is unchanged.
+
+SQLite's native build and unknown builders remain fresh and disable whole
+shipment reuse, including on the server. The review identified that hashing CC
+and default headers did not cover esqlite's pc plugin, linker and optional
+system libraries. Excluding native reuse closed that finding and also removed
+an unnecessary C compiler requirement for exporting the pure TUI. Global rebar
+configuration and file-valued compiler overrides take the fresh path too.
+
+The cache lives under ignored `build/shipment-cache`, scoped to this checkout's
+absolute production paths. Keys cover actual source contents, the locked
+production closure, compiler and OTP bytes, environment and recipe. Output
+contents and file modes are verified before restoration. A writer lock covers
+cached and fresh invocations. Dependency misses are staged privately and become
+reusable only after the complete export succeeds and source/toolchain inputs
+still match. `LOOM_SHIPMENT_CACHE=0` or the driver's `--fresh` bypasses reuse.
+The release's development warning check, probes and smoke tests remain intact.
+
+### Measurements
+
+These native runs used the same pinned Gleam 1.19.0 and OTP 29 described above.
+The direct exports used `c25b61102`; the full distribution pair used
+`b4dbb0a4d`, `DIST_DEBUG=1`, `make -j1 dist`, identical source and environment,
+and sequential execution. The fresh distribution added only the cache-bypass
+variable, which is excluded from cache identities. Each row is one observation,
+not a median or a guarantee for other hosts.
+
+| Scope | Official fresh export | Reused inputs |
+|---|---:|---:|
+| Unchanged TUI export, wall time | 16.453 s | 0.676 s |
+| Server export, native build retained, wall time | 38.603 s | 26.394 s |
+| Complete distribution and smoke tests, wall time | 69.758 s | 41.034 s |
+
+The complete distribution reduction in this pair is 28.724 seconds (41.2%).
+The TUI's real temporary-module addition, body change and removal exports took
+5.410, 6.975 and 5.850 seconds with dependency reuse. The added and changed
+modules were executed in fresh Erlang VMs to assert values 1 and 2; the final
+shipment contained no BEAM for the deleted module.
+
+The empty-cache distribution seed also passed but took 170.581 seconds and is
+excluded from the matched fresh/reused pair. A process snapshot showed high
+filesystem-event activity on the host. That does not establish the entire
+cause of the outlier. Earlier sandboxed trials also encountered rebar download
+errors and are excluded from the native comparison.
+
+Raw logs are `dist-reuse-clean-{seed,fresh,warm}.log`, with own exit codes and
+wall times in `dist-reuse-clean-results.json`, under the same temporary evidence
+directory. Direct-export logs use `reuse-final-*`. An initial diagnostic asserted
+whole-server byte equality and failed only on the fresh native NIF; the next
+comparison explicitly identified that difference. All 794 server BEAM files,
+55 application metadata files and both entrypoints matched fresh output exactly.
+The esqlite NIF is freshly rebuilt in both paths and differed byte for byte;
+whole-server artifact reproducibility is not claimed.
+
+### Source experiment and validation
+
+On the current application source, abstract-form profiling measured 5,804 ms of
+client compiler CPU over 140 modules and 3,175 ms of TUI CPU over 92 modules.
+The largest modules were client gateway (631 ms) and TUI view_set (276 ms).
+A gateway ablation baseline was 611 ms; stubbing run_command removed 292 ms,
+apply_config 50 ms, captured_transfer 63 ms and begin_transfer 31 ms. Stubs are
+diagnostic and were never production code. Moving the admitted command table
+outside its authority callbacks measured 694 ms in the three-run module median,
+so the source experiment was discarded and the original file restored exactly.
+No source refactor demonstrated an end-to-end improvement worth retaining.
+
+All three clean distribution invocations returned exit 0, including both
+bundled release smoke tests, profiling-reader checks and archive validation.
+Every listed archive checksum was independently verified. All 477 TUI BEAM and
+application metadata files matched the staged slim and bundled clients. macOS
+again verified code-mode registration, with jailed offline toolchain execution
+explicitly unverified on this kernel.
+
+All 12 shipment freshness regressions pass, covering additions, changes,
+removals, transitive and symlink inputs, corruption, toolchain/flag changes,
+failed and mixed builds, staged dependency publication, fresh bypass and native
+or global-hook exclusion, including an edited transitive Hex recipe retaining
+its version. The independent review's two findings were verified
+against the code and closed; the reviewer rechecked the native/CC fixes.
+
+Full `make check` on `b4dbb0a4d` still returned exit 2 at the unchanged aggregate
+Python deadline (runner exit 124), before package gates. The signoff lane-log
+fixture was independently reproduced on this branch and pristine main, so the
+full local gate remains red. No tests were removed or deadlines weakened.
+Hosted checks observed at the earlier PR head `974a084ec` had a successful Linux
+gate and a failed macOS gate. Those are not CI results for the reuse commits;
+new-head CI and Linux signoff remain outstanding. No merge or installation was
+performed. After the exact-source admission guard, two real TUI exports returned
+exit 0 in 17.479 seconds to populate reuse and 0.679 seconds for the verified hit
+(`final-admission-tui-{seed,warm}.log`). Real client and TUI dependency inventories
+confirmed eligibility for the expected pure versions and exclusion of SQLite.
