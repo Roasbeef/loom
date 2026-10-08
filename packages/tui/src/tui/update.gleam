@@ -86,7 +86,7 @@ fn install(choices: options.Options, release: source.Release, stage, fetch) {
         host.getenv("LOOM_BUILD_VERSION") |> result.unwrap(""),
         release.manifest.version,
       )
-    options.Tag(_) | options.Commit(_) -> Ok(Nil)
+    options.Nightly | options.Tag(_) | options.Commit(_) -> Ok(Nil)
   })
   use prefix <- result.try(installation_prefix(choices.prefix))
   use client <- result.try(client_shape(choices.client, prefix))

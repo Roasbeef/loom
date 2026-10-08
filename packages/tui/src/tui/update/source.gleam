@@ -5,7 +5,9 @@
 import core/json
 import gleam/bit_array
 import gleam/bool
+import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap as host
@@ -83,6 +85,13 @@ pub fn resolve(
 }
 
 fn resolve_base(choices: options.Options, platform, stage, fetch) {
+  use <- bool.guard(
+    choices.selection == options.Nightly
+      && { choices.from != "" || choices.mirror != "" },
+    Error(
+      "--nightly selects GitHub main; it cannot use --from or --manifest-url",
+    ),
+  )
   case choices.from, choices.mirror {
     "", "" -> github_base(choices, stage, fetch)
     "", mirror -> {
@@ -125,6 +134,7 @@ fn github_base(choices: options.Options, stage, fetch) {
 
 fn resolve_selection(selection, stage, fetch) {
   case selection {
+    options.Nightly -> nightly(stage, fetch)
     options.Tag(tag) -> Ok(#(tag, ""))
     options.Latest -> {
       use document <- result.try(api("releases/latest", stage, fetch))
@@ -145,6 +155,119 @@ fn resolve_selection(selection, stage, fetch) {
       )
       Ok(#("commit-" <> commit, commit))
     }
+  }
+}
+
+// Release publication can lag main. Capture its head once and intersect its
+// ordered history with published immutable builds, so a branch advance cannot
+// change the history between pages. Neither draft releases nor side branches
+// can authorize an update.
+fn nightly(stage, fetch) {
+  use document <- result.try(api("commits/main", stage, fetch))
+  use head <- result.try(json_string(document, "sha"))
+  use <- bool.guard(
+    !manifest.hexadecimal(head, 40),
+    Error("GitHub main lacks a full source commit"),
+  )
+  use published <- result.try(published_commits(1, [], stage, fetch))
+  use <- bool.guard(
+    list.is_empty(published),
+    Error("no published nightly commit builds found"),
+  )
+  nightly_history(head, published, 1, stage, fetch)
+}
+
+// Keep the recent release window bounded even after years of daily builds.
+// Selection still requires a match in the captured main history; an empty
+// intersection is an error and never falls back to the stable channel.
+fn published_commits(page, accumulated, stage, fetch) {
+  use <- bool.guard(page > 10, Ok(accumulated))
+  use document <- result.try(api(
+    "releases?per_page=30&page=" <> int.to_string(page),
+    stage,
+    fetch,
+  ))
+  use releases <- result.try(json_array(document))
+  let commits =
+    list.append(
+      accumulated,
+      list.filter_map(releases, fn(release) {
+        case published_commit(release) {
+          Some(commit) -> Ok(commit)
+          None -> Error(Nil)
+        }
+      }),
+    )
+  case list.length(releases) < 30 {
+    True -> Ok(commits)
+    False -> published_commits(page + 1, commits, stage, fetch)
+  }
+}
+
+fn published_commit(document) {
+  case document {
+    json.Object(fields) -> {
+      case
+        list.key_find(fields, "draft"),
+        list.key_find(fields, "published_at")
+      {
+        Ok(json.Bool(False)), Ok(json.String(published)) if published != "" -> {
+          json_string(document, "tag_name")
+          |> result.map(fn(tag) {
+            let commit = string.drop_start(tag, 7)
+            case
+              string.starts_with(tag, "commit-")
+              && manifest.hexadecimal(commit, 40)
+            {
+              True -> Some(commit)
+              False -> None
+            }
+          })
+          |> result.unwrap(None)
+        }
+        _, _ -> None
+      }
+    }
+    _ -> None
+  }
+}
+
+fn nightly_history(head, published, page, stage, fetch) {
+  use <- bool.guard(
+    page > 10,
+    Error("nightly search exceeded 300 main commits"),
+  )
+  use document <- result.try(api(
+    "commits?sha=" <> head <> "&per_page=30&page=" <> int.to_string(page),
+    stage,
+    fetch,
+  ))
+  use history <- result.try(json_array(document))
+  use commits <- result.try(
+    list.try_map(history, fn(commit) {
+      use sha <- result.try(json_string(commit, "sha"))
+      use <- bool.guard(
+        !manifest.hexadecimal(sha, 40),
+        Error("invalid main history SHA"),
+      )
+      Ok(sha)
+    }),
+  )
+  case list.find(commits, fn(commit) { list.contains(published, commit) }) {
+    Ok(commit) -> Ok(#("commit-" <> commit, commit))
+    Error(_) -> {
+      case list.length(history) < 30 {
+        True -> Error("no published nightly build in recent main history")
+        False -> nightly_history(head, published, page + 1, stage, fetch)
+      }
+    }
+  }
+}
+
+fn json_array(document) {
+  case document {
+    json.Array(items) -> Ok(items)
+    _ -> Error("GitHub metadata is not an array")
   }
 }
 
@@ -195,7 +318,7 @@ fn bind(document: manifest.Manifest, platform, tag, commit, selection) {
     Error("release tag or commit differs from resolved selection"),
   )
   case selection {
-    options.Latest -> Ok(Nil)
+    options.Latest | options.Nightly -> Ok(Nil)
     options.Tag(tag) ->
       case document.tag == tag {
         True -> Ok(Nil)

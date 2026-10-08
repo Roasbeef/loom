@@ -2660,6 +2660,12 @@ request's input context. Reasoning remains a subset of output.
 post-install daemon lifecycle. `tui/update/options` represents intent with
 `Selection`, `Action` and `Signature`; `source` resolves the full commit and
 checks repository, platform and tag binding before any artifact is installed.
+`Selection.Nightly` captures main once, intersects its ordered recent history
+with published immutable commit builds, and binds the selected tag and full SHA
+to the manifest. Drafts, off-main builds and missing metadata cannot select a
+release. Both inventories are bounded to 300 entries; no match fails before
+publication. Nightly refuses local-directory and mirror overrides, while stable,
+explicit tag and explicit commit selection retain their existing behavior.
 A supplied local keyring is the signature authority. An absent signature is
 allowed in optional mode; an invalid present signature is always refused.
 

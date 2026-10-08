@@ -11,6 +11,9 @@ pub type Selection {
   /// GitHub's latest published stable release.
   Latest
 
+  /// The newest published commit build in the captured main history.
+  Nightly
+
   /// An exact published release tag.
   Tag(
     /// Exact basename-safe release tag.
@@ -111,6 +114,7 @@ fn parse_more(arguments, options: Options) {
       )
       parse_more(rest, Options(..options, client: client))
     }
+    ["--nightly", ..rest] -> select(rest, options, Nightly)
     ["--version", tag, ..rest] -> select(rest, options, Tag(tag))
     ["--commit", commit, ..rest] -> select(rest, options, Commit(commit))
     [value, ..rest] -> {
@@ -133,7 +137,7 @@ fn select(rest, options: Options, selection) {
     Error("select only one release tag or commit"),
   )
   use Nil <- result.try(case selection {
-    Latest -> Ok(Nil)
+    Latest | Nightly -> Ok(Nil)
     Tag(tag) ->
       case manifest.basename(tag) {
         True -> Ok(Nil)
@@ -165,6 +169,7 @@ pub fn usage() -> String {
   "Usage: loom update [TAG | COMMIT] [options]\n\n"
   <> "With no selection, uses the latest stable GitHub release.\n"
   <> "Commits require a published commit-<full-sha> release.\n\n"
+  <> "  --nightly              Select the newest published main commit build\n"
   <> "  --version TAG          Select an exact release tag\n"
   <> "  --commit SHA           Select a published source commit\n"
   <> "  --check                Verify metadata without installing\n"
