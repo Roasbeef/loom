@@ -8,6 +8,7 @@
 import broker/framing
 import broker/policy
 import client/peer_mail
+import client/peer_outbox
 import codemode/internal/args
 import codemode/satellite
 import core/json.{type JsonValue}
@@ -150,8 +151,23 @@ pub fn unlink_session(
 /// prompt to a running one (protocol-change/077).
 pub const not_running = "that session is not running; the owner has to open it"
 
+/// What the model is told when a send could not reach the recipient's owner.
+/// The message is recorded and will be delivered, so the model must not send
+/// it again under a new id.
+pub const queued_note =
+  "queued: the recipient's owner is not reachable. Delivery is retried about every 5 seconds for up to 1 hour. Do not send it again under a new message_id; sending it again with the same message_id returns the receipt once the message is admitted."
+
 /// Sends using a stable caller-chosen request identity. Reusing the identity
 /// for different content is refused by the recipient, even after a restart.
+///
+/// The message is recorded in the sender's outbox (`client/peer_outbox`)
+/// before the recipient is asked, and delivery is attempted once inline. A
+/// receipt is returned as it always was. A definitive refusal is returned as
+/// an error as it always was, and the row records it. When nobody answers for
+/// the recipient (`peer_mail.owner_unreachable`) the row stays pending, the
+/// outbox drainer (`client/peer_outbox_drain`) keeps attempting it, and the
+/// answer is `{"state": "queued", ...}`. A local recipient never answers
+/// that, so a send within one daemon is unchanged apart from the row.
 ///
 /// ## Examples
 ///
@@ -178,8 +194,133 @@ pub fn send(
       False -> Error("no operator-authorized outgoing link")
     },
   )
+
+  // The row is written before the recipient is asked, so a crash between the
+  // recipient's commit and our reply leaves a row to retry, and the retry
+  // gets the recipient's stored receipt back.
+  use claimed <- result.try(
+    wiring.own.call(peer_mail.OutboxClaim(
+      wiring.own.session,
+      strand,
+      session,
+      target,
+      id,
+      text,
+    )),
+  )
+  case field(claimed, "state") {
+    Ok(json.String("admitted")) -> field(claimed, "receipt")
+    _ ->
+      case record_attempt(wiring, strand, session, target, id, text) {
+        peer_outbox.Receipt(receipt:) -> Ok(receipt)
+        peer_outbox.Rejected(reason:) -> Error(reason)
+        peer_outbox.Unanswered -> Ok(queued(session, id))
+      }
+  }
+}
+
+/// Attempts one pending outbox row again and records the outcome. The outbox
+/// drainer calls this for each row the sender's Agency reports as due, through
+/// the same `Directory.resolve` seam `send` uses, so a recipient that has
+/// moved to another node is reached with no change here. A row that is not
+/// pending is already settled and is not attempted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peers.resend(wiring, row)
+/// ```
+pub fn resend(wiring: Wiring, row: peer_outbox.Row) -> peer_outbox.Outcome {
+  case row.state {
+    peer_outbox.Pending(text:) ->
+      record_attempt(
+        wiring,
+        row.strand,
+        row.session,
+        row.target_strand,
+        row.message_id,
+        text,
+      )
+    peer_outbox.Admitted(receipt:) -> peer_outbox.Receipt(receipt)
+    peer_outbox.Refused(reason:) -> peer_outbox.Rejected(reason)
+  }
+}
+
+/// The answer for a message that is recorded and not yet delivered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert peers.is_queued(peers.queued("s2", "m1"))
+/// ```
+pub fn queued(session: String, id: String) -> JsonValue {
+  json.Object([
+    #("state", json.String("queued")),
+    #("session", json.String(session)),
+    #("message_id", json.String(id)),
+    #("note", json.String(queued_note)),
+  ])
+}
+
+/// Whether a send's answer is the queued one rather than a receipt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !peers.is_queued(json.Null)
+/// ```
+pub fn is_queued(answer: JsonValue) -> Bool {
+  field(answer, "state") == Ok(json.String("queued"))
+}
+
+// One delivery attempt and its record. A failed record is not an error of the
+// send: the row stays pending, the drainer attempts it again, and the
+// recipient answers the repeat with the receipt it already stored.
+fn record_attempt(
+  wiring: Wiring,
+  strand: String,
+  session: String,
+  target: String,
+  id: String,
+  text: String,
+) -> peer_outbox.Outcome {
+  let outcome = attempt(wiring, strand, session, target, id, text)
+  let _recorded =
+    wiring.own.call(peer_mail.OutboxSettle(strand, session, id, outcome))
+  outcome
+}
+
+// Asks the recipient once. Only `peer_mail.owner_unreachable` means nobody
+// answered; every other error is the recipient's own refusal, or a refusal
+// made here, and retrying it unchanged cannot succeed.
+fn attempt(
+  wiring: Wiring,
+  strand: String,
+  session: String,
+  target: String,
+  id: String,
+  text: String,
+) -> peer_outbox.Outcome {
+  case deliver(wiring, strand, session, target, id, text) {
+    Ok(receipt) -> peer_outbox.Receipt(receipt)
+    Error(reason) ->
+      case reason == peer_mail.owner_unreachable {
+        True -> peer_outbox.Unanswered
+        False -> peer_outbox.Rejected(reason)
+      }
+  }
+}
+
+fn deliver(
+  wiring: Wiring,
+  strand: String,
+  session: String,
+  target: String,
+  id: String,
+  text: String,
+) -> Result(JsonValue, String) {
   use destination <- result.try(
-    resolve(wiring, session) |> result.replace_error(not_running),
+    resolve(wiring, session) |> result.map_error(not_running_unless_unreachable),
   )
   use Nil <- result.try(case destination.session == session {
     True -> Ok(Nil)
@@ -195,6 +336,16 @@ pub fn send(
     id,
     text,
   ))
+}
+
+// A directory that cannot reach the session's owner says so in
+// `peer_mail.owner_unreachable`. Any other failure to find the session means
+// it is not running, and the model is told that.
+fn not_running_unless_unreachable(reason: String) -> String {
+  case reason == peer_mail.owner_unreachable {
+    True -> reason
+    False -> not_running
+  }
 }
 
 /// Lists only explicitly linked sessions and exported strands. An unavailable
@@ -665,12 +816,26 @@ pub fn router(
         use body <- result.try(args.string(request.args, "text"))
         Ok(
           satellite.ServedHere(fn() {
-            wire_answer(send(wiring, strand, session, target, id, body))
+            send_answer(send(wiring, strand, session, target, id, body))
           }),
         )
       }
       _ -> fallback(request)
     }
+  }
+}
+
+// A program's `peer.send` is typed to return a receipt, so a queued message
+// reaches it as the denial `peer_queued` with the model-facing note, which the
+// program can tell apart from a refusal by its code.
+fn send_answer(answer: Result(JsonValue, String)) {
+  case answer {
+    Ok(value) ->
+      case is_queued(value) {
+        True -> framing.CapErr("peer_queued", queued_note)
+        False -> wire_answer(Ok(value))
+      }
+    Error(_) -> wire_answer(answer)
   }
 }
 
@@ -683,6 +848,12 @@ fn wire_answer(answer: Result(JsonValue, String)) {
 
 // Source identity comes from this host and its launching strand, not from the
 // program. An outgoing link is still required to reach a resident recipient.
+//
+// The sender's own outbox row is read first. It holds the receipt of a message
+// this session sent, including one that was delivered by the drainer long
+// after `peer_send` returned `queued`, and it answers while the recipient's
+// owner is unreachable. Any other state falls through to the recipient, which
+// remains the authority: it may hold a receipt whose reply was lost.
 fn sent_receipt(
   wiring: Wiring,
   strand: String,
@@ -700,10 +871,15 @@ fn sent_receipt(
       False -> Error("no operator-authorized outgoing link")
     },
   )
-  use destination <- result.try(resolve(wiring, session))
-  use Nil <- result.try(case destination.session == session {
-    True -> Ok(Nil)
-    False -> Error("peer directory identity mismatch")
-  })
-  destination.call(peer_mail.SentReceipt(wiring.own.session, strand, id))
+  case wiring.own.call(peer_mail.OutboxReceipt(strand, session, id)) {
+    Ok(json.Null) | Error(_) -> {
+      use destination <- result.try(resolve(wiring, session))
+      use Nil <- result.try(case destination.session == session {
+        True -> Ok(Nil)
+        False -> Error("peer directory identity mismatch")
+      })
+      destination.call(peer_mail.SentReceipt(wiring.own.session, strand, id))
+    }
+    Ok(receipt) -> Ok(receipt)
+  }
 }
