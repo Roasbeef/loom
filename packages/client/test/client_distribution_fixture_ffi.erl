@@ -145,6 +145,73 @@ run(<<"start_refusals">>, Root) ->
     expect_foreign_cookie(Root, A, B),
     ok;
 
+%% Loom boots the daemon VM without a node name, so the emulator launches no
+%% epmd, and a dynamic net_kernel:start/2 does not either. These runs
+%% give the child a private epmd port, so they hold on a machine with an epmd
+%% already running and on one without any.
+%%
+%% Nothing answers on the port, so start must launch epmd and register the
+%% node with it. The epmd it launched is stopped afterwards.
+run(<<"start_launches_epmd">>, Root) ->
+    {A, Config} = lone_node(Root, none),
+    private_epmd(fun(Port) ->
+        write_options(A, Config),
+        Child = open_vm(A, Config, epmd_registered, #{epmd_port => Port}, []),
+        try await_complete(Child, <<>>) after close_port(Child) end
+    end);
+
+%% Something that is not epmd holds the port and never answers, so no epmd can
+%% be had. Start must say so, naming the port, rather than blaming credentials,
+%% and must not hang on the silent listener.
+run(<<"epmd_unavailable">>, Root) ->
+    {A, Config} = lone_node(Root, none),
+    %% A wildcard listener, so that epmd cannot bind the port beside it.
+    {ok, Squatter} = gen_tcp:listen(0, []),
+    {ok, Port} = inet:port(Squatter),
+    try
+        write_options(A, Config),
+        Aux = #{epmd_port => Port,
+                expected => {error, {epmd_unavailable, Port}}},
+        Child = open_vm(A, Config, expect, Aux, []),
+        try await_complete(Child, <<>>) after close_port(Child) end
+    after
+        ok = gen_tcp:close(Squatter),
+        %% Nothing should have started, but if an epmd did slip in beside the
+        %% squatter, it is this run's and must not outlive it.
+        ok = stop_epmd(Port)
+    end,
+    ok;
+
+%% `-start_epmd false` says epmd is managed elsewhere, as in the tunnelled
+%% orchestrator recipe, so start must not launch one even though none answers.
+%% With nothing to register with, OTP then refuses to start, and nothing may
+%% answer on the port afterwards.
+run(<<"start_epmd_false">>, Root) ->
+    {A, Config} = lone_node(Root, none),
+    private_epmd(fun(Port) ->
+        write_options(A, Config),
+        Aux = #{epmd_port => Port, expected => {error, start_failed}},
+        Child = open_vm(A, Config, expect, Aux, ["-start_epmd", "false"]),
+        try await_complete(Child, <<>>) after close_port(Child) end,
+        {error, econnrefused} = gen_tcp:connect({127,0,0,1}, Port, [], 1000)
+    end);
+
+%% epmd answers but the distribution listen port is taken, so net_kernel
+%% cannot start. Start must report its own fault and leave the VM
+%% non-distributed.
+run(<<"start_failed">>, Root) ->
+    {ok, Taken} = gen_tcp:listen(0, []),
+    {ok, ListenPort} = inet:port(Taken),
+    try
+        {A, Config} = lone_node(Root, {some, ListenPort}),
+        private_epmd(fun(Port) ->
+            write_options(A, Config),
+            Aux = #{epmd_port => Port, expected => {error, start_failed}},
+            Child = open_vm(A, Config, expect, Aux, []),
+            try await_complete(Child, <<>>) after close_port(Child) end
+        end)
+    after gen_tcp:close(Taken) end;
+
 %% Remote tool calls over real TLS distribution (client/remote). The executor
 %% emulator runs the real host over a fake workspace plane, and the orchestrator
 %% emulator attaches a real surface and runs one call. The Gleam roles live in
@@ -327,6 +394,37 @@ free_port() ->
     ok = gen_tcp:close(Socket),
     Port.
 
+%% One provisioned node and a configuration that pins an unstarted peer.
+lone_node(Root, Listen) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
+    B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
+    {A, config(A, B, cert_of(B), Listen)}.
+
+%% Runs `Fun` with a loopback port on which no epmd answers, then stops the
+%% epmd that `Fun` caused to start there. Only that port is touched, never the
+%% machine's own epmd on 4369. The children are given
+%% ERL_EPMD_RELAXED_COMMAND_CHECK so the daemon they start accepts `-kill`
+%% while a child that has just halted is still registered.
+private_epmd(Fun) ->
+    Port = free_port(),
+    {error, econnrefused} = gen_tcp:connect({127,0,0,1}, Port, [], 1000),
+    try Fun(Port) after stop_epmd(Port) end,
+    ok.
+
+stop_epmd(Port) ->
+    Epmd = os:find_executable("epmd"),
+    _ = os:cmd(Epmd ++ " -port " ++ integer_to_list(Port) ++ " -kill"),
+    case gen_tcp:connect({127,0,0,1}, Port, [], 1000) of
+        {error, _} -> ok;
+        {ok, Socket} ->
+            gen_tcp:close(Socket),
+            timer:sleep(200),
+            {error, _} = gen_tcp:connect({127,0,0,1}, Port, [], 1000),
+            ok
+    end.
+
 %% ---------------------------------------------------------------- driving
 
 %% Boots B, waits until it is listening, runs A to completion, then lets B
@@ -406,7 +504,13 @@ open_vm(#{home := Home, options := Options}, Config, Role, Aux, Extra) ->
         ++ Extra ++ ["-noshell", "-eval", Eval],
     open_port({spawn_executable, os:find_executable("erl")},
         [binary, exit_status, stderr_to_stdout,
-         {env, [{"HOME", str(Home)}]}, {args, Args}]).
+         {env, [{"HOME", str(Home)} | epmd_environment(Aux)]}, {args, Args}]).
+
+%% A scenario that names an epmd port gets an epmd of its own there.
+epmd_environment(#{epmd_port := Port}) ->
+    [{"ERL_EPMD_PORT", integer_to_list(Port)},
+     {"ERL_EPMD_RELAXED_COMMAND_CHECK", "1"}];
+epmd_environment(_) -> [].
 
 await_ready(Port, Acc) ->
     receive
@@ -489,6 +593,9 @@ role(wait, Config, _Aux) ->
     ready_and_stop();
 role(raw_wait, _Config, #{local := Local}) ->
     ok = application:set_env(kernel, dist_auto_connect, never),
+    %% The same epmd launch the production start does; net_kernel alone would
+    %% fail to register on a machine with no epmd running.
+    ok = client_distribution_ffi:ensure_epmd(),
     {ok, _} = net_kernel:start(binary_to_atom(Local, utf8),
         #{name_domain => longnames, hidden => true}),
     ready_and_stop();
@@ -505,6 +612,11 @@ role(silent_send, Config, #{peer := PeerName}) ->
     {loom_dist_probe, PeerNode} ! {ping, self()},
     timer:sleep(1500),
     [] = nodes(connected);
+role(epmd_registered, Config, _Aux) ->
+    {ok, _} = ?DIST:start(Config),
+    [Short | _] = string:split(atom_to_list(node()), "@"),
+    {ok, Names} = erl_epmd:names({127,0,0,1}),
+    {Short, _} = lists:keyfind(Short, 1, Names);
 role(expect, Config, #{expected := Expected}) ->
     Expected = ?DIST:start(Config),
     false = erlang:is_alive();

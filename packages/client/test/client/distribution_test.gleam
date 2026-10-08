@@ -267,3 +267,44 @@ pub fn start_refuses_wrong_boots_and_credentials_test() {
       <> "credential files must each be refused with distribution off.",
   )
 }
+
+pub fn start_launches_epmd_when_none_answers_test() {
+  proves(
+    "start_launches_epmd",
+    "A VM booted without a node name starts no epmd itself, so start must "
+      <> "launch one and register the node with it.",
+  )
+}
+
+pub fn start_without_an_epmd_reports_the_port_not_credentials_test() {
+  proves(
+    "epmd_unavailable",
+    "When nothing answers on the epmd port and none can be started, start "
+      <> "must report EpmdUnavailable for that port and stay non-distributed.",
+  )
+  let message = distribution.describe(distribution.EpmdUnavailable(4369))
+  assert string.contains(message, "epmd")
+  assert string.contains(message, "4369")
+  assert string.contains(message, "ERL_EPMD_PORT")
+  assert string.contains(message, "ERL_EPMD_ADDRESS")
+  assert !string.contains(message, "credential")
+}
+
+pub fn a_listen_port_that_is_taken_is_a_start_failure_not_credentials_test() {
+  proves(
+    "start_failed",
+    "When epmd answers but the listen port is taken, start must report "
+      <> "StartFailed and stay non-distributed.",
+  )
+  let message = distribution.describe(distribution.StartFailed)
+  assert string.contains(message, "listen_port")
+  assert !string.contains(message, "credential")
+}
+
+pub fn start_epmd_false_is_honoured_test() {
+  proves(
+    "start_epmd_false",
+    "With -start_epmd false the operator manages epmd, so start must not "
+      <> "launch one when none answers.",
+  )
+}

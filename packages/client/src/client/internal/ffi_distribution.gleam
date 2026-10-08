@@ -38,7 +38,15 @@ pub type Failure {
   /// A credential was missing, oversized, or insufficiently private.
   InvalidCredentials
 
-  /// OTP could not start or connect.
+  /// No epmd answers on this port, and none could be started. The port is the
+  /// one this VM's epmd client uses, so the operator is told which to check.
+  EpmdUnavailable(port: Int)
+
+  /// An epmd answered but `net_kernel` would not start, for instance because
+  /// the listen port is taken or the node name is already registered.
+  StartFailed
+
+  /// OTP could not connect.
   Unavailable
 }
 
@@ -56,12 +64,15 @@ pub type Failure {
 @external(erlang, "client_distribution_ffi", "options")
 pub fn options(peers: List(#(String, BitArray)), files: files) -> String
 
-/// Checks the boot preconditions, reads the credentials and starts hidden
-/// TLS distribution under `dist_auto_connect = never`.
+/// Checks the boot preconditions, reads the credentials, makes sure an epmd
+/// answers, and starts hidden TLS distribution under
+/// `dist_auto_connect = never`.
 ///
 /// OTP `net_kernel:start/2`, `init:get_argument/1` and `ssl_dist_sup:consult/1`.
 /// A node cannot start distribution except through `net_kernel`, and the
-/// emulator's own boot arguments are readable only through `init`.
+/// emulator's own boot arguments are readable only through `init`. A dynamic
+/// `net_kernel:start/2` does not launch epmd the way `erl -name` does at boot,
+/// so the start launches the release's `epmd -daemon` when none answers.
 ///
 /// ## Examples
 ///

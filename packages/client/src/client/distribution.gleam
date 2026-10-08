@@ -132,7 +132,16 @@ pub type Fault {
   /// match this node.
   InvalidCredentials
 
-  /// OTP could not start distribution or complete a connection.
+  /// No epmd answers on `port` and none could be started. The port is the one
+  /// this VM's epmd client uses: 4369, or what `ERL_EPMD_PORT` set at boot.
+  EpmdUnavailable(port: Int)
+
+  /// An epmd answered but OTP would not start distribution, for instance
+  /// because the listen port is already taken or the node name is registered.
+  StartFailed
+
+  /// OTP could not complete a connection to a peer. A peer's refusal, a wrong
+  /// pin and an unreachable host all land here.
   Unavailable
 
   /// The observation deadline of a connection ended.
@@ -265,6 +274,14 @@ pub fn boot_arguments(options_path: String) -> List(String) {
 /// left untouched. A VM that passes is started once; a failed start stops the
 /// partial distribution and leaves the VM non-distributed.
 ///
+/// The VM was booted without a node name, so the emulator did not launch
+/// epmd. `start` checks that one answers on the port this VM uses and, if none
+/// does, starts the release's own `epmd -daemon`, as `erl -name` would have
+/// done at boot. Under `-start_epmd false` it does not, because the operator
+/// has said epmd is managed elsewhere. When no epmd can be had the fault is
+/// `EpmdUnavailable`, and when OTP refuses to start with an epmd present it is
+/// `StartFailed`; neither is reported as a credential problem.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -366,6 +383,18 @@ pub fn describe(failure: Fault) -> String {
       <> "(mode 0600 for the key and the cookie), or does not match this node: "
       <> "the certificate must carry the node name as its only DNS name with "
       <> "an at sign, and the cookie must be this VM's $HOME/.erlang.cookie"
+    EpmdUnavailable(port) ->
+      "no epmd answers on port "
+      <> int.to_string(port)
+      <> " and Loom could not start one; install epmd (it ships with Erlang "
+      <> "and with the Loom release) or start it yourself. epmd honours "
+      <> "ERL_EPMD_PORT and ERL_EPMD_ADDRESS from the environment of the "
+      <> "daemon, so set them there to move it or to bind it to an address"
+    StartFailed ->
+      "OTP could not start distribution although epmd answers; check that "
+      <> "[distribution].listen_port is free, that no other VM on this "
+      <> "machine runs the same node name, and that the node name's host "
+      <> "resolves here"
     Unavailable ->
       "OTP could not start distribution or reach the peer; check that epmd is "
       <> "reachable, the listen port is free, and the peer pins and "
@@ -415,6 +444,8 @@ fn fault(failure: ffi_distribution.Failure) -> Fault {
     ffi_distribution.ConflictingBootFlag -> UnsafeBoot(ConflictingBootFlag)
     ffi_distribution.OptionsMismatch -> UnsafeBoot(OptionsMismatch)
     ffi_distribution.InvalidCredentials -> InvalidCredentials
+    ffi_distribution.EpmdUnavailable(port) -> EpmdUnavailable(port)
+    ffi_distribution.StartFailed -> StartFailed
     ffi_distribution.Unavailable -> Unavailable
   }
 }

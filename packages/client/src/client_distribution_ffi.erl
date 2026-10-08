@@ -2,7 +2,8 @@
 %% client/internal/ffi_distribution.gleam. Neither gleam_erlang, gleam_otp nor
 %% weft can express any of these: the TLS verify callback runs inside the ssl
 %% handshake, net_kernel:start/2 and net_kernel:hidden_connect_node/1 are not
-%% wrapped, and the boot checks read the emulator's own argument vector.
+%% wrapped, the boot checks read the emulator's own argument vector, and the
+%% epmd launch has to run an OS executable before net_kernel:start/2.
 %%
 %% The one certificate callback keeps every PKIX failure and, for the leaf,
 %% additionally requires a configured SHA-256 pin together with the exact
@@ -10,7 +11,7 @@
 %% ever turned into an atom: peer names become atoms once, from the finite
 %% configuration, inside start/4.
 -module(client_distribution_ffi).
--export([options/2, start/4, peer/2, connect/1, verify/4]).
+-export([options/2, start/4, peer/2, connect/1, verify/4, ensure_epmd/0]).
 -include_lib("kernel/include/file.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
@@ -116,16 +117,151 @@ start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen) -
         ok = set_listen(Listen),
         LocalNode = binary_to_atom(Local, utf8),
         Nodes = [{Name, binary_to_atom(Name, utf8)} || {Name, _Pin} <- Peers],
-        {ok, _} = net_kernel:start(LocalNode,
-            #{name_domain => longnames, hidden => true}),
+        %% Credentials are good by now, so a failure from here on is the
+        %% environment's and gets its own error rather than a credential one.
+        ok = case ensure_epmd() of
+            ok -> ok;
+            error -> throw({epmd_unavailable, epmd_port()})
+        end,
+        ok = case start_net(LocalNode) of
+            ok -> ok;
+            error -> throw(start_failed)
+        end,
         CookieBytes = atom_to_binary(erlang:get_cookie(), utf8),
         ok = net_kernel:allow([Node || {_Name, Node} <- Nodes]),
         {ok, {membership, LocalNode, Nodes}}
     catch
-        _:_ ->
+        Class:Reason ->
             %% A partial boot never returns membership.
             _ = net_kernel:stop(),
-            {error, invalid_credentials}
+            {error, failure(Class, Reason)}
+    end.
+
+%% Only the two environment failures raised above keep their own name. Any
+%% other exception comes from reading or matching a credential.
+failure(throw, {epmd_unavailable, _} = Refusal) -> Refusal;
+failure(throw, start_failed) -> start_failed;
+failure(_, _) -> invalid_credentials.
+
+start_net(LocalNode) ->
+    try net_kernel:start(LocalNode, #{name_domain => longnames, hidden => true}) of
+        {ok, _} -> ok;
+        _ -> error
+    catch _:_ -> error
+    end.
+
+%% ------------------------------------------------------------------- epmd
+%%
+%% `erl -name` launches epmd before the emulator starts, so a node booted with
+%% a name always finds one. Loom boots the daemon VM without a name and calls
+%% net_kernel:start/2 later, and OTP does not launch epmd on that path: the
+%% node then fails to register with `econnrefused` on any machine where no
+%% other VM happened to start an epmd first. This function does what the
+%% boot-time `-name` path does. It is FFI because launching the executable in
+%% the release's erts directory needs `open_port` with `spawn_executable`, and
+%% asking epmd who is registered needs `erl_epmd:names/1`; gleam_erlang,
+%% gleam_otp and weft expose neither.
+
+-define(EPMD_DEFAULT_PORT, 4369).
+-define(EPMD_PROBE_MS, 500).
+-define(EPMD_WAIT_MS, 3000).
+
+%% Makes sure an epmd answers on the port this VM's epmd client uses, starting
+%% one if none does. `-start_epmd false` is the operator's statement that epmd
+%% is managed elsewhere, for instance reached through a tunnel, so it is
+%% honoured exactly as the emulator honours it at boot. ERL_EPMD_PORT and
+%% ERL_EPMD_ADDRESS are not read here: the emulator has turned the port into
+%% the `epmd_port` argument, and the epmd daemon reads both variables from the
+%% environment it inherits from this VM.
+ensure_epmd() ->
+    case init:get_argument(start_epmd) of
+        {ok, [["false"]]} -> ok;
+        _ ->
+            case epmd_answers() of
+                true -> ok;
+                false ->
+                    case launch_epmd() of
+                        ok ->
+                            await_epmd(erlang:monotonic_time(millisecond)
+                                       + ?EPMD_WAIT_MS);
+                        error -> error
+                    end
+            end
+    end.
+
+%% The port the emulator's epmd client uses, as erl_epmd computes it.
+epmd_port() ->
+    case init:get_argument(epmd_port) of
+        {ok, [[Port | _] | _]} -> list_to_integer(Port);
+        error -> ?EPMD_DEFAULT_PORT
+    end.
+
+%% Asks the loopback epmd for its names. epmd always listens on loopback, even
+%% under ERL_EPMD_ADDRESS, and the node registers there. The question runs in
+%% its own process under a deadline, because erl_epmd waits without a timeout
+%% and a port held by something that accepts and never answers must not hang
+%% daemon startup.
+epmd_answers() ->
+    Self = self(),
+    Ref = make_ref(),
+    {Pid, Monitor} = spawn_monitor(fun() ->
+        Self ! {Ref, erl_epmd:names({127,0,0,1})}
+    end),
+    receive
+        {Ref, {ok, _}} -> erlang:demonitor(Monitor, [flush]), true;
+        {Ref, _} -> erlang:demonitor(Monitor, [flush]), false;
+        {'DOWN', Monitor, process, Pid, _} -> false
+    after ?EPMD_PROBE_MS ->
+        exit(Pid, kill),
+        erlang:demonitor(Monitor, [flush]),
+        receive {Ref, _} -> ok after 0 -> ok end,
+        false
+    end.
+
+%% `epmd -daemon` forks and the parent exits at once, so the exit status says
+%% nothing about whether the daemon bound its port. await_epmd/1 is the check.
+%% The release's own epmd goes first, since a shipped release carries the epmd
+%% that matches its emulator, and the executable on PATH is the fallback for a
+%% VM run from a source install.
+launch_epmd() ->
+    case epmd_executable() of
+        false -> error;
+        Path ->
+            Args = ["-daemon" | epmd_port_arguments()],
+            Port = open_port({spawn_executable, Path},
+                             [{args, Args}, exit_status, use_stdio, hide]),
+            receive {Port, {exit_status, _}} -> ok after 5000 -> ok end,
+            try port_close(Port) catch error:badarg -> ok end,
+            flush_port(Port)
+    end.
+
+epmd_executable() ->
+    Bundled = filename:join([code:root_dir(),
+        "erts-" ++ erlang:system_info(version), "bin", "epmd"]),
+    case filelib:is_regular(Bundled) of
+        true -> Bundled;
+        false -> os:find_executable("epmd")
+    end.
+
+%% A port given as a VM argument rather than as ERL_EPMD_PORT would not reach
+%% the daemon through the environment, so it is passed on explicitly.
+epmd_port_arguments() ->
+    case init:get_argument(epmd_port) of
+        {ok, [[Port | _] | _]} -> ["-port", Port];
+        error -> []
+    end.
+
+flush_port(Port) ->
+    receive {Port, _} -> flush_port(Port) after 0 -> ok end.
+
+await_epmd(Deadline) ->
+    case epmd_answers() of
+        true -> ok;
+        false ->
+            case erlang:monotonic_time(millisecond) >= Deadline of
+                true -> error;
+                false -> timer:sleep(50), await_epmd(Deadline)
+            end
     end.
 
 set_listen({some, Port}) ->
