@@ -3,15 +3,19 @@
 # private network. docs/distributed-setup.md is the guide; this file is its
 # "Quick start C".
 #
-# To deploy:
+# To deploy (the commands are in the guide, section 6):
 #
 #   1. Build the image once:         make docker-image
 #   2. Provision the deployment:     loom distribution provision plan.toml out/
 #      The plan names two nodes, orchestrator@orchestrator.loom.internal and
 #      executor@executor.loom.internal, and gives the executor a workspace
-#      rooted at /work/project.
+#      rooted at /work/project. The image has a loom binary if the host has none.
 #   3. Put the two bundles here:     cp out/orchestrator.loombundle out/executor.loombundle docker/distributed/
-#   4. Start:                        docker compose -f docker/distributed/compose.yaml up -d
+#   4. Give the orchestrator a model: edit orchestrator.loom.toml and put the
+#      provider's key in orchestrator.env (see below).
+#   5. Start:                        docker compose -f docker/distributed/compose.yaml up -d
+#   6. Copy the project in as the daemon's uid, 10000:
+#        tar -C ./myproj -c . | docker compose -f docker/distributed/compose.yaml exec -T -u 10000 executor tar -x -C /work/project
 #
 # Each bundle holds that node's private key and the deployment cookie. Treat it
 # like a password file: copy it over a secure channel and keep it out of
@@ -33,7 +37,8 @@
 #
 # Postures (docs/docker.md). As written, both containers run in the plain
 # posture: Docker's boundary is the jail, and loom's own sandbox does not come
-# up. For real jailing on the executor, add the override file:
+# up, so an executor in this posture cannot run bash (file tools still work).
+# To run commands on the executor, add the override file for real jailing:
 #
 #   docker compose -f docker/distributed/compose.yaml \
 #                  -f docker/distributed/compose.isolated.yaml up -d
