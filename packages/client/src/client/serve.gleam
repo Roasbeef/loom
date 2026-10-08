@@ -102,6 +102,7 @@ import client/jobs
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
+import client/owner_codemode
 import client/owner_services
 import client/peer_mail
 import client/peers
@@ -2365,20 +2366,8 @@ fn code_mode_tool(
   async_name: address.Address(async_runs.Message),
   agency_config: agency.Config,
 ) -> codemode_tool.CodeMode {
-  let mode = async_codemode.seam(config, async_name, agency_config)
-  let with_peers = fn(offer: codemode_tool.SeamOffer) {
-    codemode_tool.SeamOffer(
-      ..offer,
-      serviced_caps: list.append(offer.serviced_caps, peers.serviced_caps),
-    )
-  }
-  codemode_tool.CodeMode(
-    ..mode,
-    seams: codemode_tool.Seams(
-      default: with_peers(mode.seams.default),
-      alternates: list.map(mode.seams.alternates, with_peers),
-    ),
-  )
+  async_codemode.seam(config, async_name, agency_config)
+  |> owner_codemode.advertising_peers
 }
 
 // One installed extension, registered: the tools it contributes to the
@@ -3471,14 +3460,28 @@ fn assemble_in(
   // record of plain functions. Locally each is the call it replaced: the
   // escalation seam, the bus observer, the Agency's holder and its tool-list
   // check. A local workspace never calls `capability`, since the owner's
-  // code-mode arms are composed straight into its router below.
+  // code-mode arms are composed straight into its router below. A workspace
+  // on an executor sends every owner-bound call here instead, and the
+  // answer is composed from this session's own doors: the Agency, the
+  // scheduling door and the peer mailbox it would have been given locally.
   let owner_api =
     owner_services.local(
       handle: agency.fact_supplier(agency_config),
       runtime: agency.runtime_supplier(agency_config),
       escalate: escalate.seam(escalate_config).refused,
       output: hub.tool_output_observer(event_bus, opened),
-      capability: owner_services.no_capability,
+      capability: case home {
+        Here(_) -> owner_services.no_capability
+        There(_) ->
+          owner_codemode.answering(
+            codemode_wiring.owner_serving(
+              settings.codemode_seams,
+              over: agency_seam,
+              schedules: schedule_door,
+            ),
+            peers: peer_wiring,
+          )
+      },
       holds: agency_seam.holds,
     )
 

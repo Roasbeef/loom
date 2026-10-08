@@ -10,6 +10,7 @@
 
 import broker/exec
 import client/catalog
+import client/codemode
 import client/executor_plane
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
@@ -26,8 +27,9 @@ import core/json
 import core/message
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -63,7 +65,7 @@ fn absolute(path: String) -> String {
   here <> "/" <> path
 }
 
-fn machine(state: String) -> executor_plane.Machine {
+fn machine(state: String, seed: Option(String)) -> executor_plane.Machine {
   executor_plane.Machine(
     state_root: state,
     helper_path: absolute("../sandbox/loom-exec"),
@@ -74,7 +76,7 @@ fn machine(state: String) -> executor_plane.Machine {
     deactivated_tools: [],
     lsp_servers: [],
     jobs_policy: jobs.default_policy,
-    codemode_seed: Some(state <> "/no-such-seed"),
+    codemode_seed: Some(option.unwrap(seed, state <> "/no-such-seed")),
     secrets: secret.env(),
     home: None,
     logger: log.discard(),
@@ -82,6 +84,12 @@ fn machine(state: String) -> executor_plane.Machine {
 }
 
 fn rig() -> Rig {
+  rig_with(None)
+}
+
+// A rig whose code-mode seed is `seed`, when there is one, and otherwise a
+// path that holds nothing, so that no `code_mode` tool is registered.
+fn rig_with(seed: Option(String)) -> Rig {
   let scratch = absolute(fixtures.scratch("executor-plane"))
   let checkout = scratch <> "/checkout"
   let state = scratch <> "/state"
@@ -94,7 +102,7 @@ fn rig() -> Rig {
   let assert Ok(state) = bootstrap.canonical_directory(state)
     as "the state root resolves"
   let factory =
-    executor_plane.factory(machine(state), [Workspace("proj", checkout)])
+    executor_plane.factory(machine(state, seed), [Workspace("proj", checkout)])
   let assert Ok(started) =
     host.start(host.Config(
       name: process.new_name("executor_plane_host"),
@@ -386,4 +394,45 @@ pub fn cleanups_run_in_shutdown_order_whatever_order_they_were_filed_test() {
       name
     })
   assert seen == ["servers", "children", "broker", "helpers", "namespace"]
+}
+
+// The prepared build seed beside the repository, when this host has a
+// toolchain to run it with. Code mode registers only where both exist.
+fn prepared_seed() -> Result(String, String) {
+  let assert Ok(here) = simplifile.current_directory()
+    as "the test runner has a working directory"
+  let seed = here <> "/../../build/codemode-seed"
+  case codemode.discover(seed) {
+    Ok(_toolchain) -> Ok(seed)
+    Error(reason) -> Error(reason)
+  }
+}
+
+pub fn a_plane_offers_code_mode_the_owner_bound_capabilities_test() {
+  case prepared_seed() {
+    Error(reason) ->
+      io.println_error(
+        "SKIP a_plane_offers_code_mode_the_owner_bound_capabilities: " <> reason,
+      )
+    Ok(seed) -> {
+      let rig = rig_with(Some(seed))
+      let census = attached(rig, 0).attached.census
+      let assert Ok(code_mode) =
+        list.find(census.tools, fn(described: tool.Described) {
+          described.name == "code_mode"
+        })
+        as "an executor with a toolchain registers code_mode"
+
+      // The executor has no Agency, notes door or mailbox of its own. What
+      // the model is told it may call there comes from the owner-bound
+      // configuration the factory applied, and the owner answers the calls.
+      list.each(
+        ["strand.spawn", "notes.put", "schedule.create", "peer.roster"],
+        fn(cap) {
+          assert string.contains(code_mode.description, cap)
+        },
+      )
+      stop(rig)
+    }
+  }
 }

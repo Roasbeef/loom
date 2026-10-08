@@ -65,6 +65,7 @@ import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/jobs
 import client/lsp/profile
+import client/owner_codemode
 import client/remote/host
 import client/remote/protocol
 import client/remote/remote_census.{RemoteCensus}
@@ -362,14 +363,17 @@ fn workspace_spec(
 }
 
 // What the owner contributes to a start, on an executor: the owner services
-// the host built for this scope, no owner-bound code-mode arms yet, and a
-// retain function that files each cleanup in the build process.
+// the host built for this scope, a code mode whose owner-bound capabilities
+// are sent back through them, and a retain function that files each cleanup in
+// the build process.
 fn attach_of(
   machine: Machine,
   spec: host.AttachSpec,
   namespace: registry.Registry,
   filed: Subject(Cleanup),
 ) -> workspace_plane.Attach {
+  let owner = spec.owner
+  let session = spec.session
   workspace_plane.Attach(
     logger: machine.logger,
     namespace:,
@@ -381,11 +385,13 @@ fn attach_of(
       transfer()
       Ok(Nil)
     },
-    owner: spec.owner,
-    session_label: fn() { Ok([#("session", spec.session)]) },
+    owner:,
+    session_label: fn() { Ok([#("session", session)]) },
     code_mode: workspace_plane.CodeModeAttach(
-      arms: fn(config) { config },
-      tool: codemode_wiring.seam,
+      arms: owner_codemode.over_owner(_, owner),
+      tool: fn(config) {
+        codemode_wiring.seam(config) |> owner_codemode.advertising_peers
+      },
     ),
   )
 }
