@@ -45,8 +45,8 @@ The terminal's whole update is `runtime.settle(step(runtime.message(event,
 model), runtime.receive(model)))` (`packages/tui/src/tui.gleam:1764`
 (`update`)). `step` takes `msg.Msg` (`tui/msg.gleam:59` (`Msg`)): an
 `Input(at, event)` it reduces through `apply_input` and `settle_update`
-(`packages/tui/src/tui.gleam:2262` (`apply_input`),
-`packages/tui/src/tui.gleam:2263` (`settle_update`)), or an `Arrived`
+(`packages/tui/src/tui.gleam:2328` (`apply_input`),
+`packages/tui/src/tui.gleam:2329` (`settle_update`)), or an `Arrived`
 that `admission.admit` only files (`tui/admission.gleam:68` (`admit`)).
 Every reducer reads and writes one record, `State(view)`
 (`tui/model.gleam:392` (`Model`)), whose `view` field already holds the
@@ -333,7 +333,7 @@ the shared step an `Acted`. The `JobReplied` arrival
 it is filed into does.
 
 `Stamp` loses `wall_ms`. The one reader is the session creation key
-(`tui/session_control.gleam:748` (`wall_ms`)), which stays in the
+(`tui/session_control.gleam:760` (`wall_ms`)), which stays in the
 terminal, and the terminal's stamp gains it back beside the shared one. The web shell sets `now_ms` and `transport_ms` to the same
 reading.
 
@@ -641,7 +641,7 @@ The worst cases in the code, and the cut for each:
    lookup's inspector (`LookupAnswered`) are facts the terminal applies
    after the update.
 
-7. **`settle_update`** (`packages/tui/src/tui.gleam:2263`
+7. **`settle_update`** (`packages/tui/src/tui.gleam:2329`
    (`settle_update`)) runs nine calls after every event. Three are
    shared and move into `step.update`'s own settle: `sync_context`,
    `sync_advisor_nudges`, `sync_goal`. Six are terminal and stay:
@@ -656,7 +656,7 @@ The worst cases in the code, and the cut for each:
    `apply_input` describes keeps its shape: the shared `update` applies
    its settle to a parameter, and the terminal's `settle_update` applies
    its remaining steps to `updated` as it does now
-   (`packages/tui/src/tui.gleam:2262` (`apply_input`)).
+   (`packages/tui/src/tui.gleam:2328` (`apply_input`)).
 
 8. **The tick** (`tui/tick.gleam:139` (`update_tick`)) is a fixed
    order of drains: replay, strip, activity, control, candidate,
@@ -2078,7 +2078,7 @@ them.
 
 4. **Compile time.** The step's settle chains are the two places the
    Erlang inliner has cost a minute before (the comment above
-   `packages/tui/src/tui.gleam:2262` (`apply_input`)). S3 creates a third
+   `packages/tui/src/tui.gleam:2328` (`apply_input`)). S3 creates a third
    chain, the shell's edges. *Recommendation:* every S3 landing measures
    `erlc +time` on the generated modules and keeps the parameter boundary
    in each of the three chains; the `beam-compile-review` skill has the
