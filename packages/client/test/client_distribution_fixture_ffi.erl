@@ -119,6 +119,70 @@ run(<<"no_automatic_connection">>, Root) ->
     ConfigB = config(B, A, cert_of(A), none),
     exchange(A, ConfigA, silent_send, #{peer => name_of(B)}, B, ConfigB, idle, #{});
 
+%% Two directory members (protocol-change/079). The connector reaches the
+%% other through the production connect path, as an attach would, and both
+%% ends must then list each other among their visible nodes, whichever side
+%% dialed: a hidden link between members is the case Ra cannot work over.
+run(<<"members_visible">>, Root) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
+    B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
+    Members = [name_of(A), name_of(B)],
+    ConfigA = config(A, B, cert_of(B), none),
+    ConfigB = config(B, A, cert_of(A), none),
+    exchange(A, ConfigA, member_connect, #{peer => name_of(B), members => Members},
+             B, ConfigB, member_serve, #{peer => name_of(A), members => Members});
+
+%% A member reaches one other member, and so does a third. `global` must not
+%% join the first and the third because both reach the middle one: with
+%% connect_all off, the only connections are the ones made on purpose.
+run(<<"members_not_transitive">>, Root) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "first", Ca, name("first"), same, Cookie),
+    B = provision(Root, "middle", Ca, name("middle"), same, Cookie),
+    C = provision(Root, "third", Ca, name("third"), same, Cookie),
+    Members = [name_of(A), name_of(B), name_of(C)],
+    ConfigA = config_all(A, [B, C], none),
+    ConfigB = config_all(B, [A, C], none),
+    ConfigC = config_all(C, [A, B], none),
+    write_options(A, ConfigA),
+    write_options(B, ConfigB),
+    write_options(C, ConfigC),
+    Isolated = ["-kernel", "connect_all", "false"],
+    PortB = open_vm(B, ConfigB, member_wait, #{members => Members}, Isolated),
+    try
+        await_ready(PortB, <<>>),
+        PortC = open_vm(C, ConfigC, member_reach,
+                        #{peer => name_of(B), members => Members}, Isolated),
+        try
+            await_ready(PortC, <<>>),
+            PortA = open_vm(A, ConfigA, member_alone,
+                            #{peer => name_of(B), other => name_of(C),
+                              members => Members}, Isolated),
+            try await_complete(PortA, <<>>) after close_port(PortA) end,
+            true = port_command(PortC, <<"stop\n">>),
+            await_complete(PortC, <<>>)
+        after close_port(PortC) end,
+        true = port_command(PortB, <<"stop\n">>),
+        await_complete(PortB, <<>>)
+    after close_port(PortB) end,
+    ok;
+
+%% A member VM booted without connect_all off is refused before it starts.
+run(<<"member_needs_connect_all_off">>, Root) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
+    B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
+    Config = config(A, B, cert_of(B), none),
+    write_options(A, Config),
+    Port = open_vm(A, Config, member_refused,
+                   #{members => [name_of(A), name_of(B)]}, []),
+    try await_complete(Port, <<>>) after close_port(Port) end,
+    ok;
+
 %% Boot-precondition and credential refusals, one emulator each.
 run(<<"start_refusals">>, Root) ->
     Ca = root_cert("fixture ca"),
@@ -370,6 +434,13 @@ str(Path) -> unicode:characters_to_list(Path).
 cert_of(#{cert := Der}) -> Der.
 name_of(#{name := Name}) -> Name.
 
+%% The configuration `Local` runs with, pinning every node in `Peers`.
+config_all(#{name := LocalName, files := Files}, Peers, Listen) ->
+    Pins = [{peer_pin, name_of(Peer), crypto:hash(sha256, cert_of(Peer))}
+            || Peer <- Peers],
+    {ok, Config} = ?DIST:configure(LocalName, Pins, Files, Listen),
+    Config.
+
 %% The configuration `Local` runs with, pinning `PinDer` for the peer `Peer`.
 config(Local, Peer, PinDer, Listen) ->
     config(Local, Peer, PinDer, Listen, name_of(Peer)).
@@ -432,20 +503,25 @@ stop_epmd(Port) ->
 exchange(A, ConfigA, RoleA, AuxA, B, ConfigB, RoleB, AuxB) ->
     write_options(A, ConfigA),
     write_options(B, ConfigB),
-    PortB = open_vm(B, ConfigB, RoleB, AuxB, []),
+    PortB = open_vm(B, ConfigB, RoleB, AuxB, isolation(AuxB)),
     try
         await_ready(PortB, <<>>),
-        PortA = open_vm(A, ConfigA, RoleA, AuxA, []),
+        PortA = open_vm(A, ConfigA, RoleA, AuxA, isolation(AuxA)),
         try
             await_complete(PortA, <<>>),
             case RoleB of
                 serve -> ok;
+                member_serve -> ok;
                 _ -> true = port_command(PortB, <<"stop\n">>)
             end,
             await_complete(PortB, <<>>)
         after close_port(PortA) end
     after close_port(PortB) end,
     ok.
+
+%% A directory member boots with connect_all off, as the launcher boots it.
+isolation(#{members := _}) -> ["-kernel", "connect_all", "false"];
+isolation(_) -> [].
 
 %% Runs `start` in a fresh emulator with these extra boot arguments and
 %% requires exactly `Expected`, with the VM left non-distributed.
@@ -558,8 +634,8 @@ child(Encoded, Role) ->
     end.
 
 role(connect, Config, #{peer := PeerName} = Aux) ->
-    {ok, Membership} = ?DIST:start(Config),
-    {error, {unsafe_boot, already_distributed}} = ?DIST:start(Config),
+    {ok, Membership} = ?DIST:start(Config, not_member),
+    {error, {unsafe_boot, already_distributed}} = ?DIST:start(Config, not_member),
     {error, invalid_configuration} =
         ?DIST:peer(Membership, <<"network_input@127.0.0.1">>),
     {ok, Peer} = ?DIST:peer(Membership, PeerName),
@@ -577,19 +653,64 @@ role(connect, Config, #{peer := PeerName} = Aux) ->
     end,
     {loom_dist_probe, PeerNode} ! {ping, self()},
     receive {pong, PeerNode} -> ok after 10000 -> error(no_pong) end;
+role(member_connect, Config, #{peer := PeerName, members := Members}) ->
+    {ok, Membership} = ?DIST:start(Config, {member, Members}),
+    {ok, Peer} = ?DIST:peer(Membership, PeerName),
+    PeerNode = ?DIST:node(Peer),
+    {ok, nil} = ?DIST:connect(Peer, 15000),
+    [PeerNode] = nodes(),
+    [] = nodes(hidden),
+    {ok, false} = application:get_env(kernel, connect_all),
+    {loom_dist_probe, PeerNode} ! {ping, self()},
+    receive {pong, PeerNode, Visible} -> [_] = Visible after 10000 -> error(no_pong) end;
+role(member_serve, Config, #{members := Members}) ->
+    {ok, _} = ?DIST:start(Config, {member, Members}),
+    true = register(loom_dist_probe, self()),
+    ready(),
+    receive
+        {ping, From} ->
+            %% The serving end did not dial; the link it was given must still
+            %% be visible here.
+            [_] = nodes(),
+            [] = nodes(hidden),
+            From ! {pong, node(), nodes()}
+    after 30000 -> error(no_ping) end;
+role(member_wait, Config, #{members := Members}) ->
+    {ok, _} = ?DIST:start(Config, {member, Members}),
+    ready_and_stop();
+role(member_reach, Config, #{peer := PeerName, members := Members}) ->
+    {ok, Membership} = ?DIST:start(Config, {member, Members}),
+    {ok, Peer} = ?DIST:peer(Membership, PeerName),
+    {ok, nil} = ?DIST:connect(Peer, 15000),
+    ready_and_stop();
+role(member_alone, Config, #{peer := PeerName, other := OtherName,
+                             members := Members}) ->
+    {ok, Membership} = ?DIST:start(Config, {member, Members}),
+    {ok, Peer} = ?DIST:peer(Membership, PeerName),
+    {ok, Other} = ?DIST:peer(Membership, OtherName),
+    {ok, nil} = ?DIST:connect(Peer, 15000),
+    timer:sleep(2000),
+    PeerNode = ?DIST:node(Peer),
+    OtherNode = ?DIST:node(Other),
+    [PeerNode] = nodes(),
+    false = lists:member(OtherNode, nodes(connected));
+role(member_refused, Config, #{members := Members}) ->
+    {error, {unsafe_boot, connect_all_enabled}} =
+        ?DIST:start(Config, {member, Members}),
+    false = erlang:is_alive();
 role(serve, Config, _Aux) ->
-    {ok, _} = ?DIST:start(Config),
+    {ok, _} = ?DIST:start(Config, not_member),
     true = register(loom_dist_probe, self()),
     ready(),
     receive {ping, From} -> From ! {pong, node()} after 30000 -> error(no_ping) end,
     [_] = nodes(hidden);
 role(reject, Config, #{peer := PeerName}) ->
-    {ok, Membership} = ?DIST:start(Config),
+    {ok, Membership} = ?DIST:start(Config, not_member),
     {ok, Peer} = ?DIST:peer(Membership, PeerName),
     {error, unavailable} = ?DIST:connect(Peer, 15000),
     [] = nodes(connected);
 role(wait, Config, _Aux) ->
-    {ok, _} = ?DIST:start(Config),
+    {ok, _} = ?DIST:start(Config, not_member),
     ready_and_stop();
 role(raw_wait, _Config, #{local := Local}) ->
     ok = application:set_env(kernel, dist_auto_connect, never),
@@ -600,48 +721,48 @@ role(raw_wait, _Config, #{local := Local}) ->
         #{name_domain => longnames, hidden => true}),
     ready_and_stop();
 role(idle, Config, _Aux) ->
-    {ok, _} = ?DIST:start(Config),
+    {ok, _} = ?DIST:start(Config, not_member),
     true = register(loom_dist_probe, self()),
     ready_and_stop(),
     receive {ping, _} -> error(unexpected_message) after 0 -> ok end,
     [] = nodes(connected);
 role(silent_send, Config, #{peer := PeerName}) ->
-    {ok, Membership} = ?DIST:start(Config),
+    {ok, Membership} = ?DIST:start(Config, not_member),
     {ok, Peer} = ?DIST:peer(Membership, PeerName),
     PeerNode = ?DIST:node(Peer),
     {loom_dist_probe, PeerNode} ! {ping, self()},
     timer:sleep(1500),
     [] = nodes(connected);
 role(epmd_registered, Config, _Aux) ->
-    {ok, _} = ?DIST:start(Config),
+    {ok, _} = ?DIST:start(Config, not_member),
     [Short | _] = string:split(atom_to_list(node()), "@"),
     {ok, Names} = erl_epmd:names({127,0,0,1}),
     {Short, _} = lists:keyfind(Short, 1, Names);
 role(expect, Config, #{expected := Expected}) ->
-    Expected = ?DIST:start(Config),
+    Expected = ?DIST:start(Config, not_member),
     false = erlang:is_alive();
 %% The executor of a remote tool call: the real host over a fake plane. It
 %% stays up until the parent says stop, then checks that the tool ran once.
 role(remote_host, Config, #{ledger := Ledger, asks := Asks, hold := Hold}) ->
-    {ok, _} = ?DIST:start(Config),
+    {ok, _} = ?DIST:start(Config, not_member),
     {ok, Handle} = support@remote_nodes:host(Ledger, Asks, Hold),
     ready_and_stop(),
     {ok, nil} = support@remote_nodes:verify_host(Handle);
 %% The executor of a real workspace: the production factory over a checkout.
 role(remote_workspace_host, Config, #{directory := Directory}) ->
-    {ok, _} = ?DIST:start(Config),
+    {ok, _} = ?DIST:start(Config, not_member),
     {ok, Handle} = support@remote_nodes:workspace_host(Directory),
     ready_and_stop(),
     {ok, nil} = support@remote_nodes:verify_workspace(Handle);
 %% The orchestrator of a real workspace: attach by name, write, read back.
 role(remote_workspace_orchestrator, Config, #{peer := PeerName}) ->
-    {ok, Membership} = ?DIST:start(Config),
+    {ok, Membership} = ?DIST:start(Config, not_member),
     {ok, Peer} = ?DIST:peer(Membership, PeerName),
     {ok, nil} = ?DIST:connect(Peer, 15000),
     {ok, nil} = support@remote_nodes:orchestrate_workspace(Peer);
 %% The orchestrator of a remote tool call: a real surface running one call.
 role(remote_orchestrator, Config, #{peer := PeerName, scenario := Scenario}) ->
-    {ok, Membership} = ?DIST:start(Config),
+    {ok, Membership} = ?DIST:start(Config, not_member),
     {ok, Peer} = ?DIST:peer(Membership, PeerName),
     {ok, nil} = ?DIST:connect(Peer, 15000),
     {ok, nil} = support@remote_nodes:orchestrate(Peer, Scenario).

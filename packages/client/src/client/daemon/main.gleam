@@ -431,7 +431,7 @@ fn start_distribution(
   case found {
     None -> Ok(None)
     Some(settings) ->
-      distribution.start(settings)
+      distribution.start(settings, distribution.NotMember)
       |> result.map(Some)
       |> result.map_error(fn(fault) {
         configuration <> ": " <> distribution.describe(fault)

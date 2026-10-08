@@ -23,6 +23,14 @@
 ////   to is dropped rather than dialed. The only connections are the ones
 ////   `connect` makes, and only to configured peers;
 //// - the node is hidden, and only configured peers are allowed to connect.
+////   The one exception is a node that is a member of the session directory's
+////   Khepri cluster (protocol-change/079): it is started visible, because Ra
+////   reads `nodes()` to decide where to send snapshots and heartbeats, and it
+////   must run with `connect_all` off so that `global` never connects it to a
+////   node because a peer is connected there. Its connections to other members
+////   are visible, and every other connection stays hidden. `connect` makes that
+////   choice for every caller, because a connection's visibility is fixed when
+////   it is made.
 ////
 //// Nothing here is reachable from code-mode satellites, language servers or
 //// MCP servers. They boot with `-proto_dist none` and never see the
@@ -92,9 +100,24 @@ pub opaque type Config {
 pub type Membership =
   ffi_distribution.Membership
 
-/// One configured peer, resolved to its node at boot.
+/// One configured peer, resolved to its node at boot, with how this node
+/// connects to it.
 pub opaque type Peer {
-  Peer(name: String, node: Node)
+  Peer(name: String, node: Node, link: ffi_distribution.Link)
+}
+
+/// Whether this node is a member of the session directory's Khepri cluster
+/// (protocol-change/079), and if so who the members are.
+pub type Cluster {
+  /// The node is not a member: it starts hidden and connects hidden.
+  NotMember
+
+  /// The node is a member: it starts visible and connects visibly to the
+  /// other members.
+  Member(
+    /// Every member's node name, this node's included.
+    members: List(String),
+  )
 }
 
 /// Which boot precondition failed. Each names the operator's remedy and none
@@ -118,6 +141,9 @@ pub type BootRefusal {
   /// The loaded options file is not private, or is not the one `tls_options`
   /// generates for this configuration.
   OptionsMismatch
+
+  /// The node is a directory member but its VM runs with `connect_all` on.
+  ConnectAllEnabled
 }
 
 /// Closed failures. None carries credential contents or OTP diagnostic text.
@@ -260,13 +286,24 @@ pub fn tls_options(config: Config) -> String {
 ///
 /// ```gleam
 /// distribution.boot_arguments("/etc/loom/dist.options")
-/// // -> ["-proto_dist", "inet_tls", "-ssl_dist_optfile", "/etc/loom/dist.options"]
+/// // -> ["-proto_dist", "inet_tls", "-ssl_dist_optfile", "/etc/loom/dist.options",
+/// //     "-kernel", "connect_all", "false"]
 /// ```
 pub fn boot_arguments(options_path: String) -> List(String) {
-  ["-proto_dist", "inet_tls", "-ssl_dist_optfile", options_path]
+  [
+    "-proto_dist",
+    "inet_tls",
+    "-ssl_dist_optfile",
+    options_path,
+    "-kernel",
+    "connect_all",
+    "false",
+  ]
 }
 
-/// Starts hidden TLS distribution on a VM booted with `boot_arguments`.
+/// Starts TLS distribution on a VM booted with `boot_arguments`: hidden for a
+/// `NotMember`, visible for a directory `Member`, whose VM must also run with
+/// `connect_all` off.
 ///
 /// The preconditions are checked before a credential is read or a listener
 /// opened. A VM that is already distributed, that was booted without the TLS
@@ -285,14 +322,19 @@ pub fn boot_arguments(options_path: String) -> List(String) {
 /// ## Examples
 ///
 /// ```gleam
-/// distribution.start(config) // -> Ok(membership) on a VM booted for it
+/// distribution.start(config, distribution.NotMember) // -> Ok(membership)
 /// ```
-pub fn start(config: Config) -> Result(Membership, Fault) {
+pub fn start(config: Config, cluster: Cluster) -> Result(Membership, Fault) {
+  let members = case cluster {
+    NotMember -> None
+    Member(members:) -> Some(members)
+  }
   ffi_distribution.start(
     config.local,
     pairs(config.peers),
     config.files,
     config.listen_port,
+    members,
   )
   |> result.map_error(fault)
 }
@@ -310,7 +352,7 @@ pub fn peer(membership: Membership, name: String) -> Result(Peer, Fault) {
   use node <- result.try(
     ffi_distribution.peer(membership, name) |> result.map_error(fault),
   )
-  Ok(Peer(name:, node:))
+  Ok(Peer(name:, node:, link: ffi_distribution.link(membership, node)))
 }
 
 /// The peer's node, for the slices that address it.
@@ -352,8 +394,9 @@ pub fn connect(peer: Peer, within_ms: Int) -> Result(Nil, Fault) {
     False -> Error(InvalidConfiguration)
     True -> {
       let target = peer.node
+      let link = peer.link
       let outcomes =
-        weft.new([fn() { ffi_distribution.connect(target) }])
+        weft.new([fn() { ffi_distribution.connect(target, link) }])
         |> weft.deadline(within_ms)
         |> weft.start
 
@@ -428,6 +471,10 @@ fn describe_boot(refusal: BootRefusal) -> String {
       "[distribution] is configured but the loaded options file is not "
       <> "private or was generated from a different configuration"
       <> remedy
+    ConnectAllEnabled ->
+      "[directory] makes this daemon a cluster member, which needs the VM "
+      <> "booted with -kernel connect_all false"
+      <> remedy
   }
 }
 
@@ -443,6 +490,7 @@ fn fault(failure: ffi_distribution.Failure) -> Fault {
     ffi_distribution.OptionsFileUnset -> UnsafeBoot(OptionsFileUnset)
     ffi_distribution.ConflictingBootFlag -> UnsafeBoot(ConflictingBootFlag)
     ffi_distribution.OptionsMismatch -> UnsafeBoot(OptionsMismatch)
+    ffi_distribution.ConnectAllEnabled -> UnsafeBoot(ConnectAllEnabled)
     ffi_distribution.InvalidCredentials -> InvalidCredentials
     ffi_distribution.EpmdUnavailable(port) -> EpmdUnavailable(port)
     ffi_distribution.StartFailed -> StartFailed
