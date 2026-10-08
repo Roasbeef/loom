@@ -363,8 +363,9 @@ fn started_id(seen: List(provider.ObservedRequest)) -> String {
     list.filter_map(seen, fn(request) {
       case request.latest {
         provider.SuccessfulToolResult("start-call", text) -> Ok(text)
-        provider.SuccessfulToolResult(..) | provider.UserPrompt(..) ->
-          Error(Nil)
+        provider.SuccessfulToolResult(..)
+        | provider.FailedToolResult(..)
+        | provider.UserPrompt(..) -> Error(Nil)
       }
     })
   let assert [announcement] = announcements

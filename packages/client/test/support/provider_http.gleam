@@ -142,6 +142,14 @@ pub type Expectation {
     /// Exact identity from the earlier tool invocation.
     call_id: String,
   )
+
+  /// A tool result the harness marked as an error, matched on the
+  /// provider-minted identity. It applies only under `AlsoFailed`
+  /// admission: a peer that admits only successes refuses the request.
+  AwaitFailedToolResult(
+    /// Exact identity from the earlier tool invocation.
+    call_id: String,
+  )
 }
 
 /// One streamed response, after the script step and the observed request
@@ -179,6 +187,29 @@ pub type Latest {
     /// Complete successful output, including literal whitespace.
     text: String,
   )
+
+  /// One tool result the harness marked as an error, with complete bounded
+  /// text. Only a peer started with `AlsoFailed` admission reports one.
+  FailedToolResult(
+    /// Exact provider-minted invocation identity.
+    call_id: String,
+    /// Complete error output, including literal whitespace.
+    text: String,
+  )
+}
+
+/// Which tool results the peer admits as the latest message of a request.
+///
+/// A fixture that scripts a tool the harness is expected to refuse or fail
+/// needs the model to see that error result and answer. Every other fixture
+/// keeps the stricter default, so an error result reaching a script that
+/// never expected one is still a refusal and not a silent pass.
+pub type Admission {
+  /// Only a result the harness marked successful. The default.
+  OnlySuccessful
+
+  /// A successful result, and one the harness marked as an error.
+  AlsoFailed
 }
 
 /// Validated request evidence; credentials and other headers are not retained.
@@ -231,7 +262,33 @@ pub fn with_server(
   script: List(Exchange),
   run: fn(String) -> a,
 ) -> #(a, Result(List(ObservedRequest), String)) {
+  with_server_for(script, OnlySuccessful, default_callback_ms, run)
+}
+
+/// How long `with_server` gives its callback, in milliseconds.
+const default_callback_ms = 120_000
+
+/// Runs as `with_server` does, with a stated admission and callback budget.
+///
+/// A fixture that boots two daemons inside the callback and then drives a
+/// compile and a language server cannot finish in the default 120 seconds, so
+/// it states the budget it needs. The script is still finite and every step
+/// still matches exactly; only the clock around the callback and the set of
+/// admitted tool results change.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // provider_http.with_server_for(script, provider_http.AlsoFailed, 300_000, drive)
+/// ```
+pub fn with_server_for(
+  script: List(Exchange),
+  admission: Admission,
+  within_ms: Int,
+  run: fn(String) -> a,
+) -> #(a, Result(List(ObservedRequest), String)) {
   assert list.length(script) <= 8 as "the provider script is finite and small"
+  assert within_ms > 0 as "the callback budget is a positive duration"
   assert list.all(script, fn(step) {
     case step {
       Exchange(prompt, answer) -> bounded(prompt) && bounded(answer)
@@ -266,7 +323,7 @@ pub fn with_server(
   // its URL, so an ephemeral-port guess can never select a different listener.
   let ports = process.new_subject()
   let assert Ok(listener) =
-    mist.new(fn(req) { serve(req, book.data) })
+    mist.new(fn(req) { serve(req, book.data, admission) })
     |> mist.bind("127.0.0.1")
     |> mist.port(0)
     |> mist.after_start(fn(port, _, _) { process.send(ports, port) })
@@ -277,7 +334,7 @@ pub fn with_server(
     as "the original listener publishes its selected port"
   let outcomes =
     weft.new([fn() { Ok(run("http://127.0.0.1:" <> int.to_string(port))) }])
-    |> weft.deadline(120_000)
+    |> weft.deadline(within_ms)
     |> weft.start
 
   // Both owners stay linked to this coordinator through the callback: its
@@ -426,12 +483,23 @@ fn matches(step: Exchange, latest: Latest) -> Bool {
 fn awaited(expect: Expectation, latest: Latest) -> Bool {
   case expect, latest {
     AwaitPrompt(text:), UserPrompt(prompt) -> prompt == text
-    AwaitPrompt(..), SuccessfulToolResult(..) -> False
+    AwaitPrompt(..), SuccessfulToolResult(..)
+    | AwaitPrompt(..), FailedToolResult(..)
+    -> False
     AwaitPromptPrefix(prefix:), UserPrompt(prompt) ->
       string.starts_with(prompt, prefix)
-    AwaitPromptPrefix(..), SuccessfulToolResult(..) -> False
+    AwaitPromptPrefix(..), SuccessfulToolResult(..)
+    | AwaitPromptPrefix(..), FailedToolResult(..)
+    -> False
     AwaitToolResult(call_id:), SuccessfulToolResult(id, _text) -> id == call_id
-    AwaitToolResult(..), UserPrompt(..) -> False
+    AwaitToolResult(..), UserPrompt(..)
+    | AwaitToolResult(..), FailedToolResult(..)
+    -> False
+    AwaitFailedToolResult(call_id:), FailedToolResult(id, _text) ->
+      id == call_id
+    AwaitFailedToolResult(..), UserPrompt(..)
+    | AwaitFailedToolResult(..), SuccessfulToolResult(..)
+    -> False
   }
 }
 
@@ -439,15 +507,17 @@ fn awaited_bounded(expect: Expectation) -> Bool {
   case expect {
     AwaitPrompt(text:) -> bounded(text)
     AwaitPromptPrefix(prefix:) -> prefix != "" && bounded(prefix)
-    AwaitToolResult(call_id:) -> call_id != "" && bounded(call_id)
+    AwaitToolResult(call_id:) | AwaitFailedToolResult(call_id:) ->
+      call_id != "" && bounded(call_id)
   }
 }
 
 fn serve(
   req: request.Request(mist.Connection),
   book: process.Subject(Message),
+  admission: Admission,
 ) -> response.Response(mist.ResponseData) {
-  let incoming = validate(req)
+  let incoming = validate(req, admission)
   case actor.call(book, 1000, Submit(incoming, _)) {
     Error(reason) ->
       response.new(case reason {
@@ -525,6 +595,7 @@ fn response_kind(scripted: Scripted) -> String {
 
 fn validate(
   req: request.Request(mist.Connection),
+  admission: Admission,
 ) -> Result(ObservedRequest, String) {
   use Nil <- result.try(case req.method, req.path {
     http.Post, "/v1/messages" -> Ok(Nil)
@@ -562,7 +633,8 @@ fn validate(
   )
   use latest <- result.try(
     case field(latest, "role"), field(latest, "content") {
-      json.String("user"), json.Array(content) -> latest_content(content)
+      json.String("user"), json.Array(content) ->
+        latest_content(content, admission)
       _, _ -> Error("latest message must contain user text")
     },
   )
@@ -582,11 +654,14 @@ fn is_object(value: json.JsonValue) -> Bool {
 
 // A result cannot carry attribution or another block. Cache-control metadata
 // on the ordinary outer block is orthogonal to its exact identity and content.
-fn latest_content(blocks: List(json.JsonValue)) -> Result(Latest, String) {
+fn latest_content(
+  blocks: List(json.JsonValue),
+  admission: Admission,
+) -> Result(Latest, String) {
   case blocks {
     [block] ->
       case field(block, "type") {
-        json.String("tool_result") -> tool_result(block)
+        json.String("tool_result") -> tool_result(block, admission)
         _ -> text_content(blocks)
       }
     _ -> text_content(blocks)
@@ -601,20 +676,28 @@ fn text_content(blocks: List(json.JsonValue)) -> Result(Latest, String) {
   }
 }
 
-fn tool_result(block: json.JsonValue) -> Result(Latest, String) {
+fn tool_result(
+  block: json.JsonValue,
+  admission: Admission,
+) -> Result(Latest, String) {
   case
     field(block, "tool_use_id"),
     field(block, "is_error"),
     field(block, "content")
   {
-    json.String(id), json.Bool(False), json.Array([content]) if id != "" ->
+    json.String(id), json.Bool(failed), json.Array([content])
+      if id != "" && { !failed || admission == AlsoFailed }
+    ->
       case field(content, "type"), field(content, "text") {
         json.String("text"), json.String(text) -> {
           use <- bool.guard(
             when: !bounded(id) || !bounded(text),
             return: Error("tool result exceeds fixture limit"),
           )
-          Ok(SuccessfulToolResult(id, text))
+          case failed {
+            True -> Ok(FailedToolResult(id, text))
+            False -> Ok(SuccessfulToolResult(id, text))
+          }
         }
         _, _ -> Error("tool result requires one exact text block")
       }
