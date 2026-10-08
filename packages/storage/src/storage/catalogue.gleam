@@ -48,6 +48,7 @@ import sqlight
 import storage/catalogue_archives_schema
 import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
+import storage/catalogue_deletions_schema
 import storage/catalogue_executors_schema
 import storage/catalogue_logins_schema
 import storage/catalogue_models_schema
@@ -264,7 +265,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 13
+pub const current_version = 14
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -283,6 +284,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(11, catalogue_executors_schema.schema),
     #(12, catalogue_pools_schema.schema),
     #(13, catalogue_moves_schema.schema),
+    #(14, catalogue_deletions_schema.schema),
   ]
 }
 
@@ -1236,6 +1238,77 @@ pub type Pending {
   Pending(session: String, op: String, to: String)
 }
 
+/// Whether a session's deletion has begun (protocol-change/079).
+pub type Deletion {
+  /// No deletion has begun.
+  NotDeleting
+
+  /// The session is marked for deletion: admission refuses it, and the mark
+  /// stays until the directory's record is gone or proves to be another
+  /// daemon's.
+  Deleting
+}
+
+/// Marks a session for deletion, in one immediate transaction. The registration
+/// must exist. Marking a marked session changes nothing.
+///
+/// A daemon that is a member of the session directory writes the mark in the
+/// registry turn that checks no slot is open, before it deletes the session's
+/// record, so a restart knows which deletions to finish and admission refuses
+/// the session meanwhile.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.mark_deleting(store, session_id) == Ok(Nil)
+/// ```
+pub fn mark_deleting(catalogue: Catalogue, id: String) -> Result(Nil, Error) {
+  transaction(catalogue.connection, fn() {
+    use _record <- result.try(get(catalogue, id))
+    statement(catalogue, sql.insert_session_deletion(id))
+  })
+}
+
+/// Removes a session's deletion mark, for a delete the directory refused.
+/// Removing an absent mark changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.unmark_deleting(store, session_id) == Ok(Nil)
+/// ```
+pub fn unmark_deleting(catalogue: Catalogue, id: String) -> Result(Nil, Error) {
+  statement(catalogue, sql.delete_session_deletion(id))
+}
+
+/// Whether a session is marked for deletion.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.deletion(store, session_id) == Ok(catalogue.NotDeleting)
+/// ```
+pub fn deletion(catalogue: Catalogue, id: String) -> Result(Deletion, Error) {
+  use rows <- result.try(query(catalogue, sql.session_deletion(id)))
+  case rows {
+    [] -> Ok(NotDeleting)
+    [_, ..] -> Ok(Deleting)
+  }
+}
+
+/// The sessions marked for deletion, in identity order, for a pass that
+/// finishes them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.deleting(store) == Ok([])
+/// ```
+pub fn deleting(catalogue: Catalogue) -> Result(List(String), Error) {
+  use rows <- result.map(query(catalogue, sql.deleting_sessions()))
+  list.map(rows, fn(row) { row.session_id })
+}
+
 /// Lists every move still in `Moving`, in session order, for a restart to
 /// resume. A row whose op or peer breaks its grammar fails the read, since
 /// skipping it would leave a session stopped and moving with nobody driving it.
@@ -1367,6 +1440,10 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
       Imported(..) -> statement(catalogue, sql.delete_session_move(id))
       Resident -> Ok(Nil)
     })
+
+    // A deletion mark (version 14) refers to the registration, and a delete
+    // that went through the directory's record leaves with its mark.
+    use Nil <- result.try(statement(catalogue, sql.delete_session_deletion(id)))
 
     // Dependants first: foreign keys are enabled on this connection, so the
     // registration row cannot leave while anything still references it.
