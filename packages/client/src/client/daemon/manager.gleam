@@ -139,6 +139,11 @@ pub type Error {
   /// tombstone that only records who owns the session now, and no open,
   /// restore or delete runs here.
   SessionMoved(to: String)
+
+  /// The session's deletion has begun through the session directory
+  /// (protocol-change/079): its deletion mark is written, and nothing opens it
+  /// while the mark stands.
+  SessionDeleting
 }
 
 /// Metadata plus the registry's current lifecycle observation.
@@ -652,6 +657,41 @@ type Message(instance) {
 
   /// The moves still in `Moving`, for a restart to resume.
   MovingSessions(Subject(Result(List(catalogue.Pending), Error)))
+
+  /// Reserves a creation's registration without opening it, so a directory
+  /// member can record the owner before the session can be served
+  /// (protocol-change/079).
+  Reserve(
+    Creation,
+    String,
+    ids.Generator,
+    domain.Scope,
+    String,
+    Subject(Result(catalogue.Registration, Error)),
+  )
+
+  /// The owner's request to begin deleting a session through the directory:
+  /// the caller, the epoch and the session. The mark is written in this turn.
+  BeginDelete(
+    access.Digest,
+    String,
+    String,
+    Subject(Result(catalogue.Registration, AdminError)),
+  )
+
+  /// Removes a deletion mark the directory refused.
+  Unmark(String, Subject(Result(Nil, Error)))
+
+  /// Finishes a marked deletion once the record is gone: the session and the
+  /// sessions directory.
+  FinishDelete(
+    String,
+    String,
+    Subject(Result(catalogue.Registration, AdminError)),
+  )
+
+  /// The sessions marked for deletion, for a pass that finishes them.
+  DeletingSessions(Subject(Result(List(String), Error)))
 
   WorkspaceDefault(String, Subject(Result(View, Error)))
   SetDefault(String, String, Subject(Result(View, Error)))
@@ -1723,6 +1763,111 @@ pub fn delete_session(
   |> result.unwrap(Error(AdminUnavailable))
 }
 
+/// Reserves a creation's registration without opening it
+/// (protocol-change/079). A repeat under the same request key returns the
+/// stored registration, as `create` does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.reserve(registry, creation, directory:, generator:, scope:, configuration:)
+/// ```
+@internal
+pub fn reserve(
+  manager: Manager(instance),
+  request: Creation,
+  directory directory: String,
+  generator generator: ids.Generator,
+  scope scope: domain.Scope,
+  configuration configuration: String,
+) -> Result(catalogue.Registration, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: Reserve(
+    request,
+    directory,
+    generator,
+    scope,
+    configuration,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Begins a delete through the directory: checks the owner, the epoch and that
+/// no slot is open, and writes the session's deletion mark in the same turn.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.begin_delete(registry, owner, epoch, session_id)
+/// ```
+@internal
+pub fn begin_delete(
+  manager: Manager(instance),
+  caller: access.Digest,
+  epoch: String,
+  id: String,
+) -> Result(catalogue.Registration, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: BeginDelete(
+    caller,
+    epoch,
+    id,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// Removes a deletion mark after the directory refused the delete.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.unmark_deleting(registry, session_id)
+/// ```
+@internal
+pub fn unmark_deleting(
+  manager: Manager(instance),
+  id: String,
+) -> Result(Nil, Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: Unmark(id, _))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Finishes a marked deletion once the directory record is gone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.finish_delete(registry, session_id, sessions_directory)
+/// ```
+@internal
+pub fn finish_delete(
+  manager: Manager(instance),
+  id: String,
+  sessions: String,
+) -> Result(catalogue.Registration, AdminError) {
+  call.try_call(manager.commands, waiting: 5000, sending: FinishDelete(
+    id,
+    sessions,
+    _,
+  ))
+  |> result.unwrap(Error(AdminUnavailable))
+}
+
+/// The sessions marked for deletion, in identity order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.deleting_sessions(registry) == Ok([])
+/// ```
+@internal
+pub fn deleting_sessions(
+  manager: Manager(instance),
+) -> Result(List(String), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: DeletingSessions)
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// Reads who serves a session without opening its conversation: this
 /// catalogue (`Resident`), another orchestrator it was handed to (`Moved`), or
 /// a move in either direction that has not finished.
@@ -2444,6 +2589,46 @@ fn handle(
       process.send(
         reply,
         catalogue.moving(book.catalogue) |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    Reserve(request, directory, generator, scope, configuration, reply) -> {
+      let outcome = case phase {
+        ShuttingDown -> Error(Unavailable)
+        Ready ->
+          reserve_creation(
+            book.catalogue,
+            request,
+            directory,
+            generator,
+            scope,
+            configuration,
+          )
+          |> result.map_error(Catalogue)
+      }
+      process.send(reply, outcome)
+      sm.keep(book)
+    }
+    BeginDelete(caller, epoch, id, reply) -> {
+      process.send(reply, begin_delete_now(phase, book, caller, epoch, id))
+      sm.keep(book)
+    }
+    Unmark(id, reply) -> {
+      process.send(
+        reply,
+        catalogue.unmark_deleting(book.catalogue, id)
+          |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    FinishDelete(id, sessions, reply) -> {
+      process.send(reply, finish_delete_now(phase, book, id, sessions))
+      sm.keep(book)
+    }
+    DeletingSessions(reply) -> {
+      process.send(
+        reply,
+        catalogue.deleting(book.catalogue) |> result.map_error(Catalogue),
       )
       sm.keep(book)
     }
@@ -3206,6 +3391,62 @@ fn place_received(incoming: Import) -> Result(Nil, AdminError) {
 // to open it. The unlink follows the commit for the same reason isolation
 // writes metadata first — a half-applied delete must leave files without a
 // registration, never a registration without files.
+// The first half of a delete through the directory (protocol-change/079). The
+// mark is written in the same turn that finds no slot open, and admission reads
+// it in the turn that reserves one, so nothing can open the session between
+// this turn and the record's deletion. The mark comes before the record is
+// touched because it stops this daemon serving the session.
+fn begin_delete_now(
+  phase,
+  book: Book(instance),
+  caller,
+  epoch,
+  id,
+) -> Result(catalogue.Registration, AdminError) {
+  use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+  use Nil <- result.try(case dict.has_key(book.slots, id) {
+    True -> Error(AdminBusy)
+    False -> Ok(Nil)
+  })
+  use Nil <- result.try(refuse_moved(book, id))
+  use record <- result.try(
+    catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
+  )
+  use Nil <- result.try(
+    catalogue.mark_deleting(book.catalogue, id)
+    |> result.map_error(AdminMetadata),
+  )
+  Ok(record)
+}
+
+// The second half: the record is gone, so the registration, its mark and its
+// file go. It needs the mark, which is the owner's authorized intent recorded
+// by the first half, so a restart can finish it without a caller.
+fn finish_delete_now(
+  phase,
+  book: Book(instance),
+  id,
+  sessions,
+) -> Result(catalogue.Registration, AdminError) {
+  use Nil <- result.try(case phase {
+    Ready -> Ok(Nil)
+    ShuttingDown -> Error(AdminUnavailable)
+  })
+  use marked <- result.try(
+    catalogue.deletion(book.catalogue, id) |> result.map_error(AdminMetadata),
+  )
+  use Nil <- result.try(case marked {
+    catalogue.Deleting -> Ok(Nil)
+    catalogue.NotDeleting ->
+      Error(AdminFailed("the session is not marked for deletion"))
+  })
+  use Nil <- result.try(case dict.has_key(book.slots, id) {
+    True -> Error(AdminBusy)
+    False -> Ok(Nil)
+  })
+  remove_registration(book, id, sessions)
+}
+
 fn delete_now(phase, book: Book(instance), caller, epoch, id, sessions) {
   use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
   use Nil <- result.try(case dict.has_key(book.slots, id) {
@@ -3213,7 +3454,14 @@ fn delete_now(phase, book: Book(instance), caller, epoch, id, sessions) {
     False -> Ok(Nil)
   })
   use Nil <- result.try(refuse_moved(book, id))
+  remove_registration(book, id, sessions)
+}
 
+fn remove_registration(
+  book: Book(instance),
+  id: String,
+  sessions: String,
+) -> Result(catalogue.Registration, AdminError) {
   // Containment is decided against the row still in the catalogue, before
   // the transaction removes it. A row naming a path outside the sessions
   // directory keeps both its registration and its files: refusing early is
@@ -3575,6 +3823,17 @@ fn prepare_slot(
       catalogue.Moving(op:, to:) -> Error(SessionMoving(op:, to:))
       catalogue.Moved(to:, ..) -> Error(SessionMoved(to:))
       catalogue.Resident | catalogue.Imported(..) -> Ok(Nil)
+    })
+
+    // A session whose deletion through the directory has begun is not served,
+    // read in this turn for the same reason as the custody row above.
+    use marked <- result.try(
+      catalogue.deletion(book.catalogue, record.id)
+      |> result.map_error(Catalogue),
+    )
+    use Nil <- result.try(case marked {
+      catalogue.Deleting -> Error(SessionDeleting)
+      catalogue.NotDeleting -> Ok(Nil)
     })
     domain.for_session(book.catalogue, record.id) |> result.map_error(Catalogue)
   }

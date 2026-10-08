@@ -60,7 +60,8 @@ pub fn routed(
         case sessions.lookup(session) {
           Ok(session_directory.Elsewhere(orchestrator: owner)) ->
             Ok(sessions.reach(owner, session))
-          Error(session_directory.Unreachable(..)) ->
+          Error(session_directory.Unreachable(..))
+          | Error(session_directory.Unavailable(..)) ->
             Error(peer_mail.Unreachable)
           Ok(session_directory.Here) | Error(session_directory.Unknown) ->
             Error(refusal)

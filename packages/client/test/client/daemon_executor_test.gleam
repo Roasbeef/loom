@@ -43,6 +43,7 @@ fn config(
       [],
       None,
       None,
+      None,
     ),
     state_root: state,
     session_defaults: arguments,

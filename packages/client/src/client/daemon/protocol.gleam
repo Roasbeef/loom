@@ -261,6 +261,10 @@ pub type Command {
 
   /// Requests owner-authorized daemon drain.
   Shutdown(epoch: String)
+
+  /// Reports this daemon's view of the session directory's Khepri cluster
+  /// (protocol-change/079). Owner-only.
+  DirectoryStatus
 }
 
 /// What an invitation or rotation gives the member, as the request chose it.
@@ -630,6 +634,7 @@ fn decode_fields(
       GetOperation(id, operation, epoch)
     }
     "daemon.shutdown" -> result.map(text_field(fields, "epoch", 256), Shutdown)
+    "directory.status" -> Ok(DirectoryStatus)
     _unknown -> Error("unsupported control command")
   }
 }

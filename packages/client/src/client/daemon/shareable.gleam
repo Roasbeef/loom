@@ -184,7 +184,8 @@ fn unreadable(error: manager.Error) -> Refusal {
     | manager.StartFailed(_)
     | manager.Preparation(_)
     | manager.SessionMoving(..)
-    | manager.SessionMoved(..) -> Unavailable
+    | manager.SessionMoved(..)
+    | manager.SessionDeleting -> Unavailable
   }
 }
 

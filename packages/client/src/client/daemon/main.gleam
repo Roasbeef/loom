@@ -37,7 +37,9 @@ import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/directory/member
+import client/directory/ownership
 import client/directory/settings as directory_settings
+import client/directory/store
 import client/distribution
 import client/executor_plane
 import client/executors
@@ -127,6 +129,9 @@ pub type Config {
     /// members are (protocol-change/079). `None` leaves the daemon exactly as
     /// it was before the directory existed.
     directory: Option(directory_settings.Settings),
+    /// The running member actor, set by `run` once `start_directory` has
+    /// started it; `None` on a daemon that is not a member, and before then.
+    member: Option(member.Member),
     /// The distribution membership `prepare_startup` started, or `None` when
     /// the configuration has no `[distribution]` table. It is how the daemon
     /// reaches the peers it asks, and a daemon without it asks nobody and
@@ -307,6 +312,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       [],
       [],
       [],
+      None,
       None,
       None,
     )
@@ -692,26 +698,59 @@ pub fn catalogue_holds(
 
 // The directory the control socket asks when its own catalogue misses. With no
 // distribution there is nobody to ask and the directory answers `Unknown`.
+//
+// A directory member reads its copy of the owner record instead of asking its
+// peers, and on an orchestrator (a daemon that places sessions on executors)
+// it also carries the record writes; an executor member builds none, which is
+// how it is held to never writing (protocol-change/079).
 fn session_directory_of(
   config: Config,
   registry: manager.Manager(instance),
 ) -> session_directory.Directory {
   case config.membership {
     None -> session_directory.none()
-    Some(membership) ->
-      session_directory.peers(
-        config.orchestrators,
-        catalogue_holds(registry),
-        session_directory.over_distribution(membership),
-      )
-      |> session_directory.with_reach(remote_peer.over_distribution(membership))
-      |> session_directory.activating(session_directory.activation_over(
-        membership,
-      ))
-      |> session_directory.settling(session_directory.settle_over(
-        membership,
-        config.orchestrators,
-      ))
+    Some(membership) -> {
+      let local = atom.to_string(node.name(node.self()))
+      let base = case config.directory {
+        Some(_) ->
+          session_directory.khepri(config.orchestrators, local, store.read)
+        None ->
+          session_directory.peers(
+            config.orchestrators,
+            catalogue_holds(registry),
+            session_directory.over_distribution(membership),
+          )
+      }
+      let connected =
+        base
+        |> session_directory.with_reach(remote_peer.over_distribution(
+          membership,
+        ))
+        |> session_directory.activating(session_directory.activation_over(
+          membership,
+        ))
+        |> session_directory.settling(session_directory.settle_over(
+          membership,
+          config.orchestrators,
+        ))
+      case config.directory, config.member {
+        Some(_), Some(handle) ->
+          session_directory.as_member(
+            connected,
+            ownership_of(config, local),
+            fn() { member.status(handle) },
+          )
+        _, _ -> connected
+      }
+    }
+  }
+}
+
+// The record writes, for a member that places sessions on executors.
+fn ownership_of(config: Config, local: String) -> Option(ownership.Ownership) {
+  case config.executors, config.pools {
+    [], [] -> None
+    _, _ -> Some(ownership.over_store(local))
   }
 }
 
@@ -1359,7 +1398,8 @@ fn run(
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
   case
     {
-      use _member <- result.try(start_directory(config, logger))
+      use member <- result.try(start_directory(config, logger))
+      let config = Config(..config, member:)
       use executor <- result.try(start_executor(config, logger))
       use Nil <- result.try(
         start_orchestrator_port(

@@ -3,6 +3,8 @@
 //// phase 3). The policy is pure, and the fan-out around it is bounded by a
 //// deadline.
 
+import client/directory/record
+import client/directory/store
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port.{NotOwned, Owned}
 import client/session_directory.{Elsewhere, Here, Unknown, Unreachable}
@@ -306,4 +308,43 @@ pub fn a_directory_activates_nothing_until_it_is_given_the_question_test() {
 
   // Giving a directory its question changes nothing about what it looks up.
   assert asking.lookup(id) == Error(Unknown)
+}
+
+// --- the directory backing (protocol-change/079) ------------------------------
+
+fn reading(
+  answer: Result(option.Option(record.Record), store.Unavailable),
+) -> session_directory.Directory {
+  session_directory.khepri([beta()], "alpha@10.0.0.1", fn(_session) { answer })
+}
+
+pub fn a_member_with_no_record_answers_unknown_test() {
+  assert reading(Ok(option.None)).lookup(id) == Error(Unknown)
+}
+
+pub fn a_record_naming_this_member_is_here_test() {
+  let mine = record.Record(owner: "alpha@10.0.0.1", state: record.Serving)
+  assert reading(Ok(Some(mine))).lookup(id) == Ok(Here)
+}
+
+pub fn a_record_naming_a_listed_peer_is_that_row_test() {
+  let theirs = record.Record(owner: "beta@10.0.0.2", state: record.Serving)
+  assert reading(Ok(Some(theirs))).lookup(id) == Ok(Elsewhere(beta()))
+}
+
+pub fn a_record_naming_an_unlisted_node_is_named_by_the_node_test() {
+  let stranger = record.Record(owner: "zeta@10.0.0.9", state: record.Serving)
+  assert reading(Ok(Some(stranger))).lookup(id)
+    == Ok(
+      Elsewhere(orchestrators.Orchestrator(
+        name: "zeta@10.0.0.9",
+        node: "zeta@10.0.0.9",
+        address: option.None,
+      )),
+    )
+}
+
+pub fn a_store_that_cannot_be_read_is_unavailable_test() {
+  assert reading(Error(store.Unavailable("not joined"))).lookup(id)
+    == Error(session_directory.Unavailable("not joined"))
 }

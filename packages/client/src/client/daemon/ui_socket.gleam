@@ -1403,7 +1403,8 @@ fn authentication_failure(error: manager.Error) -> Failure {
     | manager.StartFailed(_)
     | manager.Preparation(_)
     | manager.SessionMoving(..)
-    | manager.SessionMoved(..) -> Unreadable
+    | manager.SessionMoved(..)
+    | manager.SessionDeleting -> Unreadable
   }
 }
 
@@ -2717,7 +2718,8 @@ fn startup_reason(
         | Error(manager.StaleOperation)
         | Error(manager.Preparation(_))
         | Error(manager.SessionMoving(..))
-        | Error(manager.SessionMoved(..)) -> None
+        | Error(manager.SessionMoved(..))
+        | Error(manager.SessionDeleting) -> None
       }
     manager.Reserved
     | manager.Saved
@@ -3990,7 +3992,8 @@ fn stop_for(
         | manager.StartFailed(_)
         | manager.Preparation(_)
         | manager.SessionMoving(..)
-        | manager.SessionMoved(..) -> actions.Unavailable
+        | manager.SessionMoved(..)
+        | manager.SessionDeleting -> actions.Unavailable
       }
     }),
   )

@@ -46,6 +46,19 @@
 //// machine that did not answer. Only when every peer answered that it does not
 //// hold the session is it `Unknown`.
 ////
+//// ## The directory backing (protocol-change/079)
+////
+//// A daemon that is a member of the session directory's Khepri cluster asks
+//// no peer at all. `khepri` reads this member's own copy of the session's
+//// owner record: no record is `Unknown`, a record naming this node is `Here`,
+//// one naming another node is `Elsewhere` with this daemon's row for that
+//// node, or a row carrying only the node name when it lists none, and a store
+//// that is not running or has not joined is `Unavailable`. The copy can lag
+//// the leader, which is acceptable for a redirect: a client sent to the
+//// previous owner is redirected again there. Such a directory also carries
+//// the `Ownership` writes on an orchestrator, and its `standing` reports the
+//// member's view of the cluster for `directory.status`.
+////
 //// ## What this does not do
 ////
 //// No daemon registers a session anywhere: identities are UUIDv7, creation is
@@ -55,6 +68,10 @@
 //// client, which would need that client to hold a credential for a second
 //// daemon (`docs/client-protocol.md`, `not_owner`).
 
+import client/directory/member
+import client/directory/ownership
+import client/directory/record.{type Record}
+import client/directory/store
 import client/distribution.{type Membership}
 import client/orchestrators.{type Orchestrator}
 import client/peer_mail
@@ -112,6 +129,26 @@ pub type Miss {
     /// order.
     orchestrators: List(String),
   )
+
+  /// The directory store on this member is not running or has not joined, so
+  /// its copy of the record cannot be read (protocol-change/079).
+  Unavailable(
+    /// What went wrong, for the refusal's message.
+    reason: String,
+  )
+}
+
+/// Whether this daemon is a member of the session directory's Khepri cluster
+/// (protocol-change/079).
+pub type Standing {
+  /// The daemon is not a member; `directory.status` is refused.
+  NotMember
+
+  /// The daemon is a member, and this is how it reports what it knows.
+  Member(
+    /// The member's view of the cluster, asked when `directory.status` is.
+    status: fn() -> member.Status,
+  )
 }
 
 /// The session directory.
@@ -135,6 +172,11 @@ pub type Directory {
     /// may be only a first handshake still under way. A directory that
     /// connects to nobody does nothing.
     settle: fn() -> Nil,
+    /// The writes to the directory's owner records, on an orchestrator that is
+    /// a directory member; `None` everywhere else (protocol-change/079).
+    ownership: Option(ownership.Ownership),
+    /// Whether this daemon is a directory member.
+    standing: Standing,
   )
 }
 
@@ -174,6 +216,8 @@ pub fn none() -> Directory {
     reach: cannot_reach,
     activate: fn(_, _) { Error(Nil) },
     settle: fn() { Nil },
+    ownership: None,
+    standing: NotMember,
   )
 }
 
@@ -218,8 +262,8 @@ pub fn activating(
   Directory(..directory, activate:)
 }
 
-/// The directory with its `settle` replaced. A directory built by `peers`
-/// settles nothing until it is given the connections to wait for.
+/// The directory with its `settle` replaced. A directory built by `peers` or
+/// `khepri` settles nothing until it is given the connections to wait for.
 ///
 /// ## Examples
 ///
@@ -299,7 +343,66 @@ pub fn peers(
         reach: cannot_reach,
         activate: fn(_orchestrator, _activation) { Error(Nil) },
         settle: fn() { Nil },
+        ownership: None,
+        standing: NotMember,
       )
+  }
+}
+
+/// The directory of a member daemon (protocol-change/079): lookups read this
+/// member's copy of the owner record. `local` is this daemon's node name, and
+/// `listed` its configured orchestrators, through which an owner's node is
+/// named to a client.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_directory.khepri(config.orchestrators, local, store.read)
+/// ```
+pub fn khepri(
+  listed: List(Orchestrator),
+  local: String,
+  read: fn(String) -> Result(Option(Record), store.Unavailable),
+) -> Directory {
+  Directory(
+    lookup: fn(session) {
+      case read(session) {
+        Ok(None) -> Error(Unknown)
+        Ok(Some(found)) if found.owner == local -> Ok(Here)
+        Ok(Some(found)) -> Ok(Elsewhere(by_node_or_named(listed, found.owner)))
+        Error(store.Unavailable(reason:)) -> Error(Unavailable(reason))
+      }
+    },
+    reach: cannot_reach,
+    activate: fn(_orchestrator, _activation) { Error(Nil) },
+    settle: fn() { Nil },
+    ownership: None,
+    standing: NotMember,
+  )
+}
+
+/// The directory with its writes and its standing set, for a member daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_directory.as_member(directory, Some(ownership), fn() { member.status(handle) })
+/// ```
+pub fn as_member(
+  directory: Directory,
+  ownership: Option(ownership.Ownership),
+  status: fn() -> member.Status,
+) -> Directory {
+  Directory(..directory, ownership:, standing: Member(status:))
+}
+
+// The configured orchestrator a node answers to, or a row carrying the node as
+// its name when this daemon lists none: the refusal still says where the
+// session is, without an address.
+fn by_node_or_named(listed: List(Orchestrator), node: String) -> Orchestrator {
+  case orchestrators.by_node(listed, node) {
+    Ok(found) -> found
+    Error(Nil) -> orchestrators.Orchestrator(name: node, node:, address: None)
   }
 }
 
