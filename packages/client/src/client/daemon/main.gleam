@@ -649,7 +649,21 @@ pub fn start_movers(
   logger: Logger,
 ) -> Result(session_movers.Control, String) {
   case config.membership {
-    None -> Ok(session_movers.idle())
+    None -> {
+      // Without distribution there is nobody to hand a session to, but a move
+      // begun under a configuration that had it is still in the catalogue. It
+      // cannot be resumed, and the operator is told so rather than left to find
+      // a session that refuses to open.
+      use ready <- result.map(root.ready(daemon, within: 20_000))
+      case manager.moving_sessions(ready.registry) {
+        Ok([_, ..] as stuck) ->
+          log.warn(logger, "daemon.moves_cannot_resume", [
+            field.count("moves", list.length(stuck)),
+          ])
+        Ok([]) | Error(_) -> Nil
+      }
+      session_movers.idle()
+    }
     Some(membership) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
       let environment =
