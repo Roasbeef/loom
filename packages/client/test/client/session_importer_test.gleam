@@ -55,6 +55,9 @@ fn rig(label: String, listed: List(executors.Executor)) -> Rig {
     <> label
     <> "-"
     <> int.to_string(ffi_os.unique_positive_integer())
+  // The counter restarts with every emulator, so a name can repeat across runs
+  // and must not find the last run's files in it.
+  let _removed = simplifile.delete_all([directory])
   let assert Ok(Nil) = bootstrap.ensure_private_directory(directory)
     as "the receiver's state root exists"
   let assert Ok(Nil) = simplifile.create_directory_all(directory <> "/sessions")

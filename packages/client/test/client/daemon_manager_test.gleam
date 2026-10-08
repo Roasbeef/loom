@@ -2232,6 +2232,7 @@ fn scratch(label: String) -> String {
     <> label
     <> "-"
     <> int.to_string(ffi_os.unique_positive_integer())
+  let _removed = simplifile.delete_all([directory])
   let assert Ok(Nil) = simplifile.create_directory_all(directory)
     as "scratch directory exists"
   directory
