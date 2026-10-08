@@ -62,7 +62,16 @@ leaf SHA-256 pin and an exact node-name SAN in both directions, and no
 automatic connection. A connected executor has the full privileges of an
 Erlang peer, so compromising its VM compromises the orchestrators it talks to;
 this is the trust decision issue #697's Rule 1 originally forbade and the
-owner later accepted. Code-mode satellites, MCP servers, language servers and
+owner later accepted. The TLS check does not tie a connection to the node name it
+claims. The verify function (`client_distribution_ffi.erl`, `verify/4`) accepts a
+peer certificate whose SHA-256 matches some configured pin and whose single
+node-name SAN is that same pin's own node name. It does not compare that name
+with the node name in the distribution handshake, so among pinned peers no
+per-node identity is established at the distribution layer. A pinned node that
+connects can present itself as another pinned node, which stays inside the
+envelope above, where every pinned peer already holds the privileges of an Erlang
+node. Nothing in the design may assume that a message came from the node it names
+on the strength of the connection alone. Code-mode satellites, MCP servers, language servers and
 every jailed payload stay outside distribution: satellites boot with
 `-proto_dist none` exactly as on main, and no credential, cookie or option
 file is ever mounted into a jail.
