@@ -8,16 +8,21 @@
 //// it adds over a local call is a story for every way the network can fail
 //// between the send and the answer.
 ////
-//// ## Attach first, every runtime incarnation
+//// ## Attach first, once per session open
 ////
 //// `attach` mints a fresh random token and sends it with the incarnation. The
-//// host makes that token the scope's only valid one. A runtime that restarts
-//// without its VM restarting leaves behind effect processes whose `Run`
-//// messages may still be in flight, and Erlang orders messages only per sender
-//// pair, so a new runtime cannot assume its own messages arrive after the dead
-//// one's. The token is what makes order irrelevant: the host compares it by
-//// value when it admits a call, so a dead runtime's late `Run` is refused
-//// whatever the network did. Recovery follows attach, never the reverse.
+//// host makes that token the scope's only valid one. A session open attaches
+//// once, before its first call, and every strand and every runtime restart
+//// inside that open shares the one surface and its token (see
+//// `client/remote/workspace`). Attaching again would rotate the token and make
+//// the host refuse another strand's live `Run`.
+////
+//// The token fences an earlier open. An orchestrator that crashed, or an open
+//// that was closed, may leave `Run` messages in flight, and Erlang orders
+//// messages only per sender pair, so a later open cannot assume its own
+//// messages arrive after the dead one's. The host compares the token by value
+//// when it admits a call, so a dead open's late `Run` is refused whatever the
+//// network did. Recovery follows attach, never the reverse.
 ////
 //// ## Lost connections are repaired by sending again
 ////
@@ -80,7 +85,7 @@ pub type Config(census) {
     session: String,
     /// The workspace, as the executor names it.
     workspace: String,
-    /// The incarnation this runtime attaches under.
+    /// The scope incarnation this open attaches under.
     incarnation: Int,
     /// The session's owner port, which the executor calls back and which
     /// reconciles acknowledgements.
@@ -171,10 +176,10 @@ pub fn strong_token() -> BitArray {
   ffi_crypto.strong_random_bytes(32)
 }
 
-/// Attaches this runtime incarnation to its scope on the executor.
+/// Attaches this session open to its scope on the executor.
 ///
 /// A fresh token replaces whatever the scope held, which fences every request a
-/// previous runtime of this session may still have in flight. On success the
+/// previous open of this session may still have in flight. On success the
 /// owner port is told which host it is reconciling against and which calls the
 /// executor reported unacknowledged.
 ///
@@ -277,7 +282,7 @@ pub fn run(surface: Surface(census), run: ToolRun) -> ToolOutcome {
 
 /// Asks the executor what became of a call whose effect process is gone.
 ///
-/// It assumes `attach` already ran for this runtime incarnation. A call that is
+/// It assumes `attach` already ran for this session open. A call that is
 /// safe to replay is looked up, and a missing row means the planner may run it
 /// again under the same key. Any other call is looked up with a fence, which
 /// is what makes a missing row mean the call never reached the executor and now

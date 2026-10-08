@@ -203,10 +203,10 @@ pub type Lookup {
 /// `census` is the type of the workspace plane's startup census, which only the
 /// two ends of an integration need to agree on.
 pub type HostMessage(census) {
-  /// Sent by every runtime incarnation before its first run or recovery.
+  /// Sent once by each session open, before its first run or recovery.
   /// `version` is the sender's `protocol.version`. It starts or adopts the
   /// scope at `incarnation` and makes `token` its only
-  /// valid attach token, which is the fence against a dead runtime's in-flight
+  /// valid attach token, which is the fence against an earlier open's in-flight
   /// `Run`. `owner_port` is where the scope's workspace calls back.
   Attach(
     version: Int,
