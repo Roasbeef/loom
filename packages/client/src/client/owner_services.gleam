@@ -41,9 +41,21 @@
 //// store door, so it is fenced where it is built rather than where it is
 //// used. `client/working_directory/` holds a strand's remembered cwd and
 //// `job/` holds the background-job records. Every other key, reserved or
-//// not, is refused with `NotServed`. A remote implementation therefore
-//// gives a compromised executor no more than it needs to run these two
-//// features, and the refusal is the same on both placements.
+//// not, is refused with `NotServed`, and the refusal is the same on both
+//// placements.
+////
+//// ## What the fence does not do
+////
+//// The fence is scope hygiene. It keeps the workspace's code from reading or
+//// writing session state it has no use for, and it keeps a bug there from
+//// doing so by accident. It is not a security boundary against the node on
+//// the other side. An executor is a trusted Erlang peer: it holds the
+//// distribution cookie and a pinned certificate, and the owner port takes the
+//// strand from the message. `notify`, `wake` and `capability` therefore act
+//// on any strand of the session the executor names, and nothing in this
+//// record stops an executor that has been compromised from doing so. The
+//// protection against a hostile executor is the trust the operator places in
+//// the machine (`docs/design-notes/distributed-runtime.md`), not this record.
 
 import broker/framing.{type CapOutcome}
 import client/escalate
