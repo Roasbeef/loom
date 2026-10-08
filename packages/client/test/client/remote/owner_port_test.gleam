@@ -9,8 +9,10 @@ import client/remote/owner_port
 import client/remote/protocol.{type Key}
 import core/clock
 import core/json
+import gleam/dynamic
 import gleam/erlang/process
 import gleam/option.{None}
+import support/internal/ffi_proc
 import support/remote_fixtures as fixtures
 
 fn key(n: Int) -> Key {
@@ -224,4 +226,50 @@ pub fn the_timer_lists_again_and_acknowledges_what_settled_since_test() {
   // A lost acknowledgement is found again once the result is staged.
   fixtures.mark(settled, key(7))
   assert fixtures.eventually(fn() { fixtures.marked(acked) != [] })
+}
+
+// The executor's requester is a process on another node, so its pid is remote.
+// A request from one must be served, or ended by the loss of its connection,
+// without taking the port down: the port is the session's only channel for
+// the executor's callbacks.
+pub fn a_requester_on_another_node_does_not_take_the_port_down_test() {
+  let services =
+    owner_services.OwnerServices(
+      ..fixtures.quiet_services(),
+      escalate: fn(_refused) {
+        process.sleep(30_000)
+        escalate.Settle
+      },
+    )
+  let inbox = owner_port.inbox(port_over(services, fn(_key) { False }, 60_000))
+  let assert Ok(port) = process.subject_owner(inbox)
+  let requester = ffi_proc.remote_pid()
+  let reply = process.unsafely_create_subject(requester, dynamic.string("r"))
+  process.send(inbox, protocol.FactGet("job/1", reply))
+  let run = fixtures.tool_run("call_1", 0)
+  process.send(
+    inbox,
+    protocol.Escalate(
+      escalate.Refused(
+        operation: run.operation,
+        strand: "main",
+        step_id: run.step_id,
+        source_index: 0,
+        call_id: "call_1",
+        tool: "bash",
+        denial: fixtures.denial(),
+        arguments: run.arguments,
+        deadline_ms: 0,
+      ),
+      60_000,
+      process.unsafely_create_subject(requester, dynamic.string("e")),
+    ),
+  )
+
+  // The scope that serves a request crashes into the port within microseconds
+  // if it cannot watch its requester, so a port still serving after a pause
+  // has watched it.
+  process.sleep(300)
+  assert process.is_alive(port)
+  assert process.call(inbox, 2000, protocol.FactGet("job/1", _)) == Ok(None)
 }

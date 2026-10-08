@@ -242,22 +242,55 @@ fn serve(config: Config, message: OwnerMessage) -> Nil {
 // Computes one reply in a run that dies with the requester. The run's scope is
 // linked to the port, so a port that exits takes its requests with it, and the
 // requester's own death or disconnection cancels it through a monitor.
+//
+// The requester is a process on the executor's node, so it is a remote pid, and
+// `weft.cancel_when_exits` cannot take one: it checks the pid with
+// `erlang:is_process_alive/1`, which raises `badarg` for a pid of another node,
+// and the scope crashes into the port and the session with it. The watch is
+// therefore ours. A monitor does reach another node, and reports `noconnection`
+// when the link to it is lost, so a watcher process monitors both ends and fires
+// the run's cancel signal when either goes down.
 fn answer(reply: Subject(reply), compute: fn() -> reply) -> Nil {
   case process.subject_owner(reply) {
     Ok(requester) -> {
-      let _witness =
+      let stop = weft.cancel_signal()
+      let run =
         weft.new([
           fn() {
             process.send(reply, compute())
             Ok(Nil)
           },
         ])
-        |> weft.cancel_when_exits(requester)
+        |> weft.cancel_with(stop)
         |> weft.start_witnessed
-      Nil
+      cancel_when_down(stop, requester, weft.witness_pid(run))
     }
     Error(Nil) -> Nil
   }
+}
+
+// Fires `stop` once the requester or the run is gone. Watching the run as well
+// is what ends the watcher, and the signal process with it, when the request
+// finishes while its requester is still alive. A pid that is already down when
+// the monitor is placed reports at once, so no ordering of the three processes
+// leaves the watcher waiting.
+fn cancel_when_down(
+  stop: weft.Cancel,
+  requester: process.Pid,
+  run: process.Pid,
+) -> Nil {
+  let _watcher =
+    process.spawn_unlinked(fn() {
+      let down =
+        process.new_selector()
+        |> process.select_specific_monitor(process.monitor(requester), fn(_) {
+          Nil
+        })
+        |> process.select_specific_monitor(process.monitor(run), fn(_) { Nil })
+      process.selector_receive_forever(down)
+      weft.cancel(stop)
+    })
+  Nil
 }
 
 // --- reconciling ----------------------------------------------------------------

@@ -2,6 +2,8 @@
 //// program and waiting for it. The terminal end-to-end needs to build the
 //// TUI binary and to drive `tmux`, and neither has a pure alternative.
 
+import gleam/erlang/process
+
 /// The absolute path of a program on `PATH`, or `Error(Nil)` when the
 /// host does not have it. Feature detection for the terminal harness:
 /// a missing `tmux` or `go` is a skip, not a failure.
@@ -22,3 +24,10 @@ pub fn run(
   args: List(String),
   in directory: String,
 ) -> Result(#(Int, String), String)
+
+/// A pid of a node this VM is not connected to, for the code paths that must
+/// cope with a requester on another machine. It is never alive from here:
+/// a monitor on it reports `noconnection` at once, and asking whether it is
+/// alive raises, as it does for the pid of any live peer.
+@external(erlang, "client_test_ffi", "remote_pid")
+pub fn remote_pid() -> process.Pid
