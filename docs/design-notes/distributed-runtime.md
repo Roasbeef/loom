@@ -320,29 +320,40 @@ work. The ledger carries a byte budget; terminal rows the orchestrator has not
 acked count against it, and admission refuses when the next call's maximum
 result would not fit.
 
-### Runtime restarts and the attach token
+### Runtime restarts, the attach token and the key fence
 
-A session's runtime can restart without its VM restarting (the session tree
-is rest-for-one), and the effect processes of the dead runtime are killed. A
-`Run` one of them sent may still be in flight. Erlang orders messages only per
-sender pair, and the dead effect process and the new runtime are different
-senders, so the new runtime cannot assume its own messages arrive after the
+A strand driver or a whole session runtime can restart without its VM
+restarting, and the effect processes of the dead driver are killed. A `Run`
+one of them sent may still be in flight. Erlang orders messages only per
+sender pair, and the dead effect process and the new driver are different
+senders, so the new driver cannot assume its own messages arrive after the
 old one's.
 
-So every runtime incarnation attaches afresh. `Attach` carries a fresh random
-token, and the host stores it as the scope's only valid token. Every `Run`
-carries the token of the runtime that sent it, and admission compares it for
-equality with the stored one in the same transaction that inserts the row. A
-`Run` from the dead runtime, arriving after the new attach, is refused by
-content, whatever order the network delivered it in. Recovery then runs in a
-fixed order: attach, then query each orphaned call key.
+The fence that settles this is per call key, not per session. Recovery of an
+orphaned call whose replay policy is not `ReplaySafe` sends `QueryOrFence`,
+which in one ledger transaction either returns the row that exists or, when
+there is none, inserts a terminal "did not start" row. If the stale `Run`
+arrives first, the fence finds it admitted and recovery waits for its
+outcome. If the fence arrives first, the stale `Run` finds the key taken and
+never starts. Either order gives one truthful answer. A `ReplaySafe` call
+needs no fence: recovery answers not-started, the planner replays it under
+the same key, and admission deduplicates the replay against any stale `Run`.
+
+The attach token covers the coarser case, a whole orchestrator session open.
+Each time the orchestrator assembles a session it attaches with a fresh random
+token, and admission compares the request's token for equality with the
+stored one in the same transaction that inserts the row. Anything a previous
+open of the session (an earlier VM, or the source of a move) still sends is
+refused by content. Restarts inside one open keep the token, so live strands
+are not disturbed when one of them restarts.
 
 | Ledger answer | Recovery |
 |---|---|
 | `terminal` | Stage the stored outcome. Nothing re-runs. |
-| `admitted` | The run is still live; keep querying until it settles. |
+| `admitted` | The run is still live; wait for its outcome. |
 | `unknown` | Stage "the outcome is unknown", exactly as today. |
-| no row | The call never reached the executor and, after the attach, never can. A `ReplaySafe` call takes the planner's existing replay arm (`machine/planner.gleam:2020-2037`); any other call is staged as "the call did not start". |
+| no row, `ReplaySafe` | The planner's existing replay arm re-runs it under the same key. |
+| no row, otherwise | `QueryOrFence` writes "did not start", which is staged. |
 
 Recovery is an effect like `run`, not a function the driver calls inline:
 the driver must not block, and `KeyWait` only waits on something in its live
@@ -356,8 +367,12 @@ unchanged.
 ### Partitions, aborts and lost replies
 
 The orchestrator's effect process waits on the host's reply and monitors the
-executor node. On a disconnect it reconnects and queries the call key, and
-keeps doing so until the executor answers or the user aborts; it has no
+executor node. On a disconnect it reconnects and re-sends the same `Run`,
+which admission treats idempotently by key (a live call gains a waiter, a
+finished call returns its stored outcome), and keeps doing so until the
+executor answers or the user aborts. A distribution connection that drops
+loses its undelivered messages rather than delivering them later, so the
+re-send cannot start a second run; it has no
 timer of its own, because the call's deadline lives on the executor. The
 session shows the executor as unavailable meanwhile.
 

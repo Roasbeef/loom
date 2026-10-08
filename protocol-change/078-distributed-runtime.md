@@ -136,9 +136,11 @@ Orchestrator to executor:
 
 | Message | Meaning |
 |---|---|
-| `Attach(session, workspace, incarnation, token, owner_port, reply)` | Sent by every runtime incarnation. Start or adopt the scope at this incarnation and make `token` its only valid attach token. Replies with the census and the scope's unacked terminal keys, or a refusal. |
+| `Attach(session, workspace, incarnation, token, owner_port, reply)` | Sent each time the orchestrator opens the session. Start or adopt the scope at this incarnation and make `token` its only valid attach token. Replies with the census and the scope's unacked terminal keys, or a refusal. |
 | `Run(key, incarnation, token, run, authority, reply)` | Run one tool call. Idempotent by `key`. Admitted only if `incarnation` and `token` equal the scope's. The host monitors the sender: a DOWN other than `noconnection` cancels the run. |
 | `Query(key, reply)` | Return the ledger state and outcome for `key`, in any scope state or incarnation. |
+| `QueryOrFence(key, reply)` | Like `Query`, but when no row exists, atomically insert a terminal "did not start" row so a stale `Run` for that key can never start. Used to recover an orphaned call that is not replay-safe. |
+| `ListUnacked(session, reply)` | List the scope's terminal and unknown keys without attaching, for the orchestrator's acknowledgement reconciler. |
 | `Ack(key)` | The orchestrator has durably staged this outcome. |
 | `Close(session, workspace, incarnation, reply)` | Close the scope and report `all_retired` or `unknown(count)`. |
 
