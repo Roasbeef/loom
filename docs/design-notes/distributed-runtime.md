@@ -130,7 +130,7 @@ orchestrator:
    shape: get, compare-and-set, and a prefix listing the jobs actor uses at
    boot (`client/jobs.gleam:2772`). Only those reserved prefixes are served.
 3. **Notices.** A finished background job tells its strand through the
-   owner's `notify` function (`client/jobs.gleam:2921`), which locally is
+   owner's `notify` function (`client/jobs.gleam:2964`), which locally is
    `notice.deliver` (`client/notice.gleam:162-174`) and writes to the
    conversation; the executor sends the notice text and the orchestrator
    delivers it.

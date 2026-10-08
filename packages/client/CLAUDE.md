@@ -6127,18 +6127,22 @@ when it is non-empty, so a local record is byte-identical.
 
 Every use of `Registration.workspace` that a registered session reaches is
 guarded by the shape of the text (a name never starts with `/`) or by the
-executor itself: `serve.resolve_managed` refuses first with
-`executors.unavailable_reason` and so `resolve` never canonicalizes the name;
+executor itself: `serve.resolve_managed` resolves a registration with
+`RegisteredWorkspace`, so `resolve` neither canonicalizes the name nor looks for a
+helper or Go caches for it;
 `ui_project.locate` returns `None` for a workspace that is not an absolute path;
 `ui_socket.known_workspace` only matches local sessions, so a home page can never
 re-create into a name; `catalogue.set_workspace_default` refuses a registered
 session; the domain record holds the name under a session-only domain, which
-`storage/domain.validate` alone allows. Creating such a session still starts its
-opening (create initializes), the build fails at `resolve_managed`, and
-`operations.get` reports `start_failed` with the `executor_unavailable: ...`
-reason; the registration stays `reserved`, so `sessions.open` answers
-`not_initialized`. `test/client/daemon_registered_test.gleam` covers the wire,
-and `executors_test` the table.
+`storage/domain.validate` alone allows. Creating such a session starts its
+opening (create initializes) and the daemon assembles it with
+`serve.assemble_registered` (see "Assembling a registered session" below). A
+daemon that cannot reach the executor (no `[distribution]`, an unconfigured name,
+a refused handshake or attach) fails the build, and `operations.get` reports
+`start_failed` with an `executor_unavailable: ...` reason; the registration stays
+`reserved`, so `sessions.open` answers `not_initialized` and the creation key
+retries. `test/client/daemon_registered_test.gleam` covers the wire, and
+`executors_test` the table.
 
 ## Remote tool calls (protocol 078)
 
@@ -6148,8 +6152,9 @@ closed message vocabulary between them
 (`docs/design-notes/distributed-runtime.md` section 6, `protocol-change/078`).
 It is generic over the workspace plane, so nothing here depends on how `serve`
 assembles one; an integration supplies a `host.PlaneFactory` on the executor and
-composes `surface.Functions` into a `ToolSurface` on the orchestrator. Nothing
-calls it from production yet.
+composes `surface.Functions` into a `ToolSurface` on the orchestrator. The
+orchestrator side is assembled by `remote/workspace` and `serve` (next section);
+the executor side is the other half of the same work.
 
 - `remote/protocol` is plain data only: `Key`, `HostMessage(census)` (`Attach`,
   `Run`, `Query`, `ListUnacked`, `Ack`, `Close`), `OwnerMessage` (one
@@ -6185,10 +6190,13 @@ calls it from production yet.
 
 Invariants that break things when violated:
 
-- Every runtime incarnation calls `surface.attach` before its first `run` or
-  `recover`. The fresh token is the only fence against a dead runtime's
-  in-flight `Run`; Erlang orders messages per sender pair only. `recover`
-  assumes the attach ran, because "no row" means "never started" only after it.
+- Every session open calls `surface.attach` once, before its first `run` or
+  `recover`, and shares that one surface across every strand and every strand
+  or runtime restart inside the open. The fresh token is the only fence against
+  a dead open's in-flight `Run`; Erlang orders messages per sender pair only. A
+  second attach inside one open rotates the token and gets another strand's
+  live `Run` refused as `StaleToken`. `recover` assumes the attach ran, because
+  "no row" means "never started" only after it.
 - A `Run` is idempotent by call key and the host never starts a second run for a
   key. The surface relies on this to re-send after a reconnect; do not re-send
   `Run` anywhere else.
@@ -6221,3 +6229,95 @@ one tool run. Making the host ignore the attach token fails the stale-token
 tests, making `noconnection` cancel fails `only_noconnection_leaves_a_call_running`
 and both outage scenarios, and making the surface skip the re-send fails both
 outage scenarios.
+
+## Assembling a registered session (protocol 078)
+
+`remote/workspace` is the orchestrator's workspace half. `workspace.attach`
+turns an executor's attach reply into the `workspace_plane.WorkspacePlane` that
+`serve.assemble_in` already reads, so the conversation half is assembled by the
+same code for both placements and only the `Home` (`Here(prepared)` or
+`There(reach)`) and the `Half` it yields differ. In order, an open: connects the
+peer (`Reach.connect`, failure keeps the `executor_unavailable:` prefix); reads
+`remote/scope` and chooses the incarnation; starts one `owner_port` over the same
+`OwnerServices` a local session builds; attaches once; records the attach in the
+scope cell; builds the plane. `serve.assemble_registered` is the entry point,
+`daemon/main` keeps the `distribution.Membership` and calls `workspace.reach`
+for a registration with an `executor`, and `Instance.pool` and `Instance.executor`
+are `None` for such a session (`test/support/local_workspace` unwraps them for
+local fixtures).
+
+- **Tools.** The registry takes `contributions.described_tools(census.tools)`
+  where a local session takes its plane's `decls`, so the order, the pinned
+  prompt index and the active list match a local session's. `wiring.run_placed`
+  routes by `tool_placement`, unchanged; `plane.run` for a registered session
+  ignores the authority `run_placed` read, because the surface reads its own
+  with `wiring.read_authority` at the send. `ToolSurface.recover` is
+  `Hands.recover`: a workspace tool asks the executor's ledger, an owner tool is
+  judged by its replay policy as it is in a local session (safe is offered for
+  replay, anything else is unknown). Clearance stays local.
+- **Non-tool callers.** Imported hooks, the goal check and Git observation use
+  `plane.broker`, a `broker.over(census.broker, clock)` handle, and
+  `Half.call_clock`, this machine's clock shifted by `executor_now_ms` minus the
+  local reading at receipt (`workspace.rebased`). A `CallSpec` deadline is
+  absolute and the executor's broker compares it with its own clock, so every
+  caller that builds a deadline must read `call_clock`, not `clock`.
+  `with_imported_hooks`, `goal_check_wiring` and `worktree_wiring` take it.
+- **Prompt.** `render_prompt` is unchanged: the user's guidance is read here, the
+  workspace's arrives in `census.prompt`, and the platform, shell and policy
+  facts come from `census.census`.
+- **Scope record.** `remote/scope` keeps `{incarnation, closed}` in the reserved
+  cell `client/remote/scope`. No cell attaches at 1, a clean close at the stored
+  incarnation plus one, anything else at the stored one. It is written straight
+  to the store (the way `session_git` writes), so only while no runtime owns it:
+  after the attach and before the runtime opens, and by the close below. A
+  `StaleIncarnation` from the executor fails the open naming both numbers; it is
+  never retried.
+- **Close.** `custody.Workspace` (after `Services`, before `Mcp`) runs
+  `plane.close`: ask the executor to close the scope, record what it reports,
+  stop the owner port. An unanswered or refused close records nothing and still
+  succeeds, since the scope is then open on the executor and the next open
+  rebinds it; failing custody over an unreachable machine would only hold the
+  reservation. `plane.fatal` is empty, so a partition is not a fatal root.
+  `close_instance` stops the broker and helpers only for a local workspace.
+- **Settled.** The port's reconciler acknowledges a key when `workspace.settled`
+  says this session no longer holds the call pending: the operation's state is
+  gone, or its `Tools` batch for that step no longer lists the call as planned or
+  running. A staged, interrupted or aborted call is therefore settled; a call
+  still running is not.
+- **Jobs.** `plane.live_jobs` reads the `job/*` cells from the session's store
+  and builds the board with `jobs.live_board_of`.
+- **Refused or omitted.** Extension tools (`tool_placement` answers `Error(Nil)`,
+  so none are registered, with one notice per extension installed on the
+  executor), operator directory additions (`resolve_directory` refuses), MCP
+  servers and background code mode. Owner-bound code-mode capabilities answer
+  `unsupported_cap` (`OwnerServices.capability` is `no_capability`, as locally).
+
+What `assemble_in` does not do for a registered workspace, and which is why
+nothing touches the registered name: `workspace_plane.prepare` is skipped (it
+discovers the toolchain, composes the base, creates the workspace's blob, tool
+home, tmp and scratch directories); `start_local` is replaced by the attach (the
+helper pool, executor, broker, jobs, scratch, LSP and code-mode host live on the
+executor); `code_mode_mcp` is replaced by a skipped-MCP notice; extension
+discovery and registration are skipped; `resolve` skips `find_helper` and
+`gocache.locate`. The rest reads only the orchestrator's own files (session,
+index, memory, home, skills), the census, or the executor through the broker
+handle. Owner tools still run `wiring.run_tool` here; with no directory
+additions and no filesystem grants for them, `revalidate` has nothing to stat.
+
+Invariants:
+
+- One `Surface` per session open. Do not attach per strand or per driver restart.
+- The hook wrappers (`hookserve.wire`, `extension/hooks.wire`) must carry
+  `tools.recover` forward; they run after the surface is composed.
+- Anything that puts an absolute deadline in a `CallSpec` for the executor's
+  broker reads `Half.call_clock`.
+- Never write the scope cell while a runtime owns the store.
+
+Tests: `remote/workspace_test` and `remote/scope_test` (real host and ledger, fake
+plane via `support/remote_orchestrator`) cover each incarnation shape, token
+rotation with recovery, the settled rule, the clock and jobs;
+`remote_assembly_test` assembles a whole registered session under custody and
+drives a scripted model through a workspace tool and an owner tool.
+Routing a workspace tool to the owner path fails `a_workspace_call_runs_on_the_executor_...`,
+attaching at the stored incarnation after a clean close fails the reopen tests, and
+dropping the clock offset fails `the_non_tool_clock_reads_the_executors_timebase_test`.
