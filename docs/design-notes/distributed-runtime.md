@@ -609,10 +609,17 @@ function (`executor/remote/distribution.gleam` and its 185-line Erlang FFI),
 the strict deployment TOML reader cut down to nodes, pins, credential paths
 and workspace rows, the typed workspace selection in `core/workspace`, the
 operator launch script and setup guide, and the two-node test fixture. The
-formal models that describe properties this design still has are adapted: the
-TLA+ ownership, directory, ingress and channel specs for phases 3 to 5, and the
-P remote-execution model rewritten against the ledger states above. The launch
-channel model and the Lean admission bridge go with the code they described.
+formal models were rewritten for this design rather than adapted. Two are
+gated by `make model-check`: a TLA+ model of one session move
+(`protocol/models/session-move`), which covers who owns a session across the
+six steps and both orchestrators' crashes, and a P model of remote tool
+execution against the executor ledger (`protocol/models/remote-execution`),
+which covers the attach token, re-sends, recovery fences and acknowledgements.
+PR #819's ownership and ingress specs are subsumed by the move model, and its
+directory and channel specs describe state this design does not have: the
+session directory is a lookup over each catalogue, with no store of its own.
+The launch channel model and the Lean admission bridge go with the code they
+described.
 
 Not carried: the four executor journals, the generation registry and scope
 plan, the credited BEAM endpoint, the owner custody database and custodian,

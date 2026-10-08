@@ -879,8 +879,9 @@ names the command.
 - New Erlang FFI: the TLS distribution verify function and boot checks
   (about 185 lines), the only thing `gleam_erlang` cannot express. It lives in
   an `internal/ffi_*` module with the reason recorded.
-- Formal models: the TLA+ directory and handoff specs and a P model of the
-  ledger states, gated by `make model-check`.
+- Formal models: a TLA+ model of a session move and a P model of remote
+  execution against the ledger, both gated by `make model-check`. There is no
+  directory model, because the directory holds no state of its own.
 
 Local sessions see no behavior change. A daemon without `[distribution]`
 never starts `net_kernel`, and its sessions never consult the ledger.
