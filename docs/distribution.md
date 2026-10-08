@@ -327,6 +327,29 @@ The client ships in two shapes, and `make dist` produces both:
   provides Erlang as a dependency wants; `INSTALL_CLIENT=slim make
   install` installs it.
 
+`make dist` stages the slim client from the same current shipment that
+`release-client` uses for the bundled client. Gleam 1.19's shipment export
+clears its production build before compiling, so exporting again would rebuild
+the complete TUI dependency closure.
+
+The shipment targets and release scripts use `scripts/shipment.py`. Its private
+`build/shipment-cache` verifies source and production dependency contents,
+compiler/OTP bytes, environment and output digests before restoring an unchanged
+TUI shipment. A changed or removed module takes the official clean export path,
+with reuse limited to the exact source contents of the reviewed pure Erlang
+dependency versions, including their transitive build inputs. SQLite and
+unknown builders always compile afresh and prevent whole-shipment reuse, so the
+server retains its native build. Dependency cache misses are published only after
+a successful export whose inputs still match. No cache state is shipped.
+
+Use `LOOM_SHIPMENT_CACHE=0 make dist` (or `make tui-shipment`) for a completely
+fresh export, or `python3 scripts/shipment.py tui --fresh` for the export alone.
+Global rebar configuration and file-valued Erlang/rebar overrides also force
+fresh compilation. Reuse is local
+to the same checkout and production paths; it does not share BEAM files across
+server and TUI roots. The release warning check, probes and smoke tests still run
+when an export is reused.
+
 Either way the server tarball is a separate download and remains
 self-contained.
 

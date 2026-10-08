@@ -1,87 +1,118 @@
 # Current handoff
 
-This edition covers the context-inventory CPU optimization and configured
-terminal profiling on `perf/context-profile-config`, isolated under
-`.worktrees/perf-context-profile-20261006`. The original checkout and its
-unrelated files remain untouched. The branch rebases without conflicts onto
-`3ffb0bf522e037dcf8f973e64e3ab5e12c254ced` (#911, signoff log access), with
-the context control unchanged. The branch started after merged
-[PR #903](https://github.com/Roasbeef/loom/pull/903); its previous handoff's
-pending-publication and merge claims are now obsolete. No Darwin skip waiver
-was approved or added by this work.
+This edition records the October 7, 2026 compile/export iteration on
+`perf/compile-hill-climb`, checked against implementation `2159d30b0` and
+base main `7091d5a42`. Rewrite it after the next body of work. Every current
+claim below is tied to the tree or the validation recorded in
+[the compile-time report](review/compile-hill-climb-2026-10-07.md).
 
-Read [the context CPU report](review/beam-context-cpu-2026-10-06.md) for the
-live attribution, matched fixtures and measurement limits. The previous
-[snapshot report](review/beam-transfer-cpu-2026-10-06.md) and
-[render report](review/beam-render-2026-10-06.md) retain their historical results.
-GitHub carries the final exact-head publication verdict; a local component
-pass cannot certify an untested later commit.
+Work is isolated in `.worktrees/compile-hill-climb` and published through
+[PR #917](https://github.com/Roasbeef/loom/pull/917). The original checkout's
+unrelated files were preserved. Earlier profiling work remains in the
+[context report](review/beam-context-cpu-2026-10-06.md),
+[transfer report](review/beam-transfer-cpu-2026-10-06.md),
+[render report](review/beam-render-2026-10-06.md) and
+[October 5 report](review/beam-cpu-2026-10-05.md). Their unrelated project
+milestones were not refreshed in this compile-time task.
 
 ## Where the tree is
 
-| Body of work | Verified state |
-| --- | --- |
-| Context inventory | A leaf memo depends on items and omitted count. Usage, headings and action handlers remain outside it. All 868 web-view tests pass. |
-| Work reduction | Four alternating fresh OTP 29 VMs repeat the same reductions/allocation counts: stable inventory redraw reductions fall 98.89% to 98.92%, allocated words 97.97% to 97.99%. Changing inventory on every draw has no meaningful gain. |
-| Regression controls | Main's context module fails the zero-work redraw assertion after passing the warm positive assertion. Initial HTML differs only by an invisible 20-byte memo marker. Forty concurrent regressions leave trace-session ownership unchanged. |
-| Client profiling | Existing `[daemon] profile = true` applies to long-lived terminal clients. Both shipments carry the approved existing `tom` parser. Explicit `--profile` takes precedence. |
-| Launch validation | Real parser and launcher regressions cover true, false, wrong type, malformed TOML, quoted keys, precedence and exit-only commands. A bundled synthetic demo client accepts Pickglass attachment from config alone and removes its credential directory on exit. |
-| Startup cost | Ten fresh bundled-reader runs take a median 140.44 ms, ranging from 136.99 to 152.21 ms. Files that cannot name the key avoid the reader VM. No sampler or tracer starts merely because a client is named. |
-| Terminal gate | All 1,242 TUI tests pass. The bundled runtime builds and boots without host Erlang on PATH; its existing smoke now also checks reader true/false behavior. |
-| Independent review | The fresh reader found and verified a test counter-boundary gap and the short-lived UI command classification. Both are corrected. The final client slice and independent escalated launcher regressions pass with no outstanding finding. |
-| Full affected gate | Static checks and server preparation pass; the first Mac full lane returns 124 at the unchanged 20-second aggregate Python deadline in upstream signoff fixtures on a host without `flock`. Its skip census passes. Final rebased and remote gates belong in the PR. |
-| Installation | No application was installed, updated, restarted or hotpatched. Installed CPU/RSS savings remain unmeasured. |
+| Work | Current evidence |
+|---|---|
+| Duplicate TUI export | Distribution stages both clients from one current export. |
+| Dependency reuse | Reviewed pure Erlang versions reuse verified outputs in each production root. |
+| Incremental exports | Unchanged TUI restores its verified shipment; changed/removed source uses Gleam's clean export. |
+| Source optimization | Gateway and TUI boundary experiments showed no retained win; application source is unchanged. |
+| Validation | Distribution smokes and checksums pass; 12 new regressions pass; full local gate remains red. |
 
-The observed live daemon and terminal ran installed revision
-`3644b079059570cf7cc3c7fe98add693bb6adbcc`, before #903. Their untraced
-10.10-second workload interval used 114.5% and 36.6% CPU respectively. Pickglass
-identified context-label normalization in the daemon. The terminal was unnamed;
-native samples show GC and text work without resolving application JIT callers.
-The synthetic demo proves the new launcher's attachability, not attribution of
-that earlier user workload.
+The previous edition said no persistent cache existed and the owner choice was
+pending. That is now false: the owner approved all three experiments.
+`scripts/shipment.py` implements the retained reuse strategy. The development
+warning check, release probes, profiling reader and smoke tests still run.
+Gleam 1.19 continues to own compilation and production shipment assembly.
 
-## Rulings already made
+At `b4dbb0a4d`, one matched full distribution pair took 69.758 seconds with
+fresh exports and 41.034 seconds with reuse, a 41.2% reduction. Both returned
+exit 0, and all archive checksums were verified. All 477 TUI BEAM/application
+files matched both staged clients. These are single observations on macOS
+arm64 with pinned Gleam 1.19.0 and OTP 29, not medians or other-host guarantees.
+The empty-cache seed was a 170.581-second outlier and is recorded separately.
 
-**Context ownership.** Keep the memo at the leaf. Project items and omitted
-count before creating the callback; capture no board, handlers or transport.
-Lustre drops nested cache entries on an outer hit, so nested memo machinery
-would change the ownership argument. The tests count construction and cache
-processing together, including the first redraw.
+Direct exports on `c25b61102` measured TUI 16.453 seconds fresh versus 0.676
+seconds unchanged, and server 38.603 versus 26.394 seconds with dependency
+reuse. Real added/changed TUI modules executed with their new values; the
+removed module's BEAM disappeared. All 794 server BEAM files, 55 application
+files and both entrypoints matched fresh output. The newly rebuilt native NIF
+differed; whole-server reproducibility is not claimed.
 
-**Profiling configuration.** Reuse `[daemon] profile`; introduce no new schema.
-The terminal reads only the typed profiling key before VM startup; the daemon
-retains whole-catalogue validation. The existing parser preserves Unicode
-escapes in keys literally, and the client matches that conservative behavior.
-Help, version, `ui`/`--ui` link commands and other exit-only commands bypass
-profiling setup. Cookies remain owner-only, exit-cleaned and loopback-bound.
-A cookie holder has full access to the profiled VM.
-
-**Measurement boundaries.** Reductions, allocation, retained heap, process
-capacity, RSS and physical footprint are different measures. A matched source
-fixture proves removed work; cumulative allocation and an old-build live cut
-prove neither installed savings nor leak closure. No forced GC or conversation
-state walk was used. [Issue #454](https://github.com/Roasbeef/loom/issues/454)
-remains for coordinated installed memory measurements.
-
-**Signoff ownership.** [Execution](execution.md) owns the gate. Publish the
-exact commit and request the restricted Gilgamesh signoff. Its installed driver
-posts the verdict; never hand-post a status or substitute an old head's result.
-A red signoff can be inspected through its restricted `logs <sha> [lane]`
-request. Hosted CI, local gates, review and signoff remain separate evidence.
+The abstract-form profiler rejects missing or empty input with exit 2. The
+initial zero-module observation was invalid and remains explicitly corrected
+in the report. The newest module profiles show distributed cost, with no
+single pathological module. A gateway helper extraction measured 694 ms of
+compiler CPU against a 611 ms baseline and was restored exactly.
 
 ## What to do next
 
-1. Finish this PR's current-head review, hosted CI and restricted Linux signoff.
-   Exit: record each verdict and any concrete platform limitation in the PR.
-   The user requested a reviewable PR; this new PR has no merge authorization.
-2. Follow [updating](updating.md) for a separately authorized installation.
-   Exit: verify installed revisions and compare the same active, idle and
-   released workload before and after. Config-driven profiling applies on the
-   next launch of the updated client.
-3. Profile a named client during a matched active fast-reasoning workload.
-   Exit: bounded caller evidence identifies reachable remaining CPU work.
-   SQLite bursts and control-heavy serialization remain outside this change.
+1. Finish hosted CI and Linux signoff for the published reuse head of **PR #917**.
+   **Exit:** required checks pass on that exact head, with actual jailed offline
+   bundled-toolchain validation distinguished from registration alone.
+2. Resolve the existing local signoff-fixture limitation separately if the
+   complete macOS gate is needed. **Exit:** the lane-log assertion and aggregate
+   Python runner pass without removing tests or weakening their deadlines.
+3. Revisit native compilation or source refactoring only with a new measured
+   hypothesis. **Exit:** a matched build/export improvement with unchanged
+   behavior and the affected package gates. Optional ccache is unimplemented.
 
-Working-directory and LSP intent remains in
-[protocol-change/068](../protocol-change/068-working-directories-and-lsp-scope.md).
-Other issue and branch states were not audited by this performance pass.
+Full `make check` at `b4dbb0a4d` returned exit 2 at the unchanged aggregate
+20-second Python deadline (runner 124), before package gates. The focused
+`test_a_red_run_brings_back_why` fixture returned exit 1 on both this branch
+and pristine main. All 12 shipment tests passed independently. The exact-source admission guard
+at `2159d30b0` was checked against both real downloaded dependency closures. This is not a
+complete green local gate. Hosted status last inspected at old head `974a084ec`
+had a successful Linux gate and a failed macOS gate; it says nothing about CI
+for the newly published reuse commits.
+
+## Rulings already made
+
+Each of these is settled. Re-open one only with new evidence, and record the
+reopening where the ruling lives.
+
+**Reuse verified declared inputs.** [Distribution](distribution.md) describes
+the private cache and fresh bypass. Cache keys cover actual source contents,
+the locked production closure, compiler/OTP bytes, environment and recipe.
+Cached output digests are checked. Successful complete exports publish staged
+dependency misses only after source/toolchain revalidation. The writer lock
+also covers fresh invocations.
+
+**Keep native and arbitrary hooks fresh.** SQLite and unknown builders disable
+whole-shipment reuse and never enter the dependency reuse plan. Global rebar
+configuration and file-valued compiler flags force the official fresh path.
+Known pure versions require their exact reviewed source fingerprints throughout
+the Erlang dependency closure, and are scoped to each checkout and production root; no
+cross-root BEAM sharing, native cache, compiler flag change or extra dependency
+was introduced. The independent review's native-input and C-prerequisite
+findings were closed and the fixes rechecked.
+
+## Deliberately open
+
+Native SQLite compile time, further generated-code optimization and archive
+compression remain measured opportunities rather than implemented changes.
+The larger-buffer compression experiment showed too little improvement to
+retain. None of these is unfinished work somebody forgot.
+
+No merge, installation or resident-process restart has occurred. macOS smokes
+prove bundled startup and code-mode registration; this kernel cannot prove
+jailed offline execution with the bundled compiler.
+
+## How to verify
+
+Use `python3 -m unittest discover -s scripts -p test_shipment.py -v`,
+`make doc-check`, and the full `make check`. Compare `DIST_DEBUG=1 make -j1 dist`
+with `DIST_DEBUG=1 LOOM_SHIPMENT_CACHE=0 make -j1 dist` from a clean committed
+tree and warmed reuse state. Both include release smokes and archive checks.
+
+**Judge each gate by its own exit code.** **Archive creation requires a clean
+committed tree.** **Run measurements sequentially with the same pinned tools
+and rebuild scope.** Record cold-cache seeds, warm hits, native compilation and
+whole-build noise separately. See [execution](execution.md) for the remaining
+worktree, process-group and signoff hazards.
