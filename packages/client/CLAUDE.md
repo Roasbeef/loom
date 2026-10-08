@@ -3176,7 +3176,10 @@ catalogue without opening runtimes. Explicit admission invokes
   cannot show an order. `helper_ladder` is `--helper`, the tree this
   server shipped in, `PATH`, `./bin`; `seed_ladder` is `--codemode-seed`,
   the workspace's own seed, the bundled one, and a named path for the
-  refusal to point at when nothing answers.
+  refusal to point at when nothing answers. The workspace rung is
+  `serve.usable_seed`, which admits a snapshot only after `seed.verify`
+  accepts it; a local daemon and an executor (`executor_plane.seed_of`) both
+  use it.
 - `client/workspace_policy.{shell_path, base_policy, degraded, helper_probe_ms}` —
   the host facts the system prompt and the jail must agree on: the shell
   jailed commands run under, the *default* session base policy, and the

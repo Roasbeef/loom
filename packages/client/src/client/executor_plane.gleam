@@ -680,13 +680,14 @@ fn gocache_of(machine: Machine, root: String) -> Option(gocache.GoCaches) {
   )
 }
 
-// The code-mode seed: an explicit flag, else the checkout's own, else the one
-// bundled with this release.
+// The code-mode seed: an explicit flag, else the checkout's own when it
+// verifies (the same rung a local daemon takes), else the one bundled with
+// this release.
 fn seed_of(machine: Machine, root: String) -> String {
   let in_workspace = root <> "/" <> serve.default_seed_directory
   serve.seed_ladder(
     machine.codemode_seed,
-    in_workspace: fn() { install.existing_directory(in_workspace) },
+    in_workspace: fn() { serve.usable_seed(in_workspace) },
     bundled: install.bundled_seed,
     otherwise: in_workspace,
   )

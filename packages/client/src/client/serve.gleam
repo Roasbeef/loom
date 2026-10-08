@@ -5690,10 +5690,21 @@ fn seed_root(flag: Option(String), workspace: String) -> String {
   )
 }
 
-// An existing workspace snapshot outranks the release only when it contains
-// the capabilities this host admits. Explicit flags still reach discovery
-// unchanged, where an invalid operator selection receives its own refusal.
-fn usable_seed(root: String) -> Result(String, Nil) {
+/// An existing workspace snapshot outranks the release only when it contains
+/// the capabilities this host admits. Explicit flags still reach discovery
+/// unchanged, where an invalid operator selection receives its own refusal.
+///
+/// The in-workspace rung of `seed_ladder` uses this on a local daemon and on
+/// an executor, so a checkout with a half-built seed falls through to the
+/// bundled one on both.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.usable_seed("/no/such/seed") == Error(Nil)
+/// ```
+///
+pub fn usable_seed(root: String) -> Result(String, Nil) {
   use Nil <- result.try(
     seed.verify(root, compile.default_dependencies())
     |> result.replace_error(Nil),
