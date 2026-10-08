@@ -69,11 +69,13 @@ optfile="$HOME/.loom/distribution.options"
 
 if [ -f "$HOME/node.loombundle" ]; then
 	# Unpacks the certificates, the cookie at $HOME/.erlang.cookie and the
-	# role tables, and writes the options file. Not yet verified against the
-	# shipped command: the path of the options file is assumed to be the one
-	# docs/configuration.md uses.
+	# role tables, and writes the options file next to the certificates, which
+	# is not where `loomd distribution options` puts it. This is the install's
+	# default directory, so a plan that sets its own bundle_dir needs this line
+	# changed with it.
 	loomd distribution install "$HOME/node.loombundle"
 	rm -f "$HOME/node.loombundle"
+	optfile="$HOME/.loom/distribution/dist.options"
 else
 	loomd distribution options "$config" "$optfile"
 fi
