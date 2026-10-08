@@ -73,3 +73,12 @@ UPDATE call SET state = 'unknown', outcome_bytes = 0 WHERE state = 'admitted';
 SELECT op, step, source_index, state FROM call
 WHERE session = ? AND state IN ('terminal', 'unknown')
 ORDER BY op, step, source_index;
+
+-- name: InsertLedgerRelease :exec
+INSERT INTO scope_release(session, workspace, incarnation, was, released_at_ms)
+VALUES (?, ?, ?, ?, ?);
+
+-- name: LedgerReleases :many
+SELECT workspace, incarnation, was, released_at_ms FROM scope_release
+WHERE session = ?
+ORDER BY id;

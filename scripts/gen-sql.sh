@@ -35,7 +35,9 @@
 #                        sql/exec_ledger.sql is the executor ledger's own
 #                        database schema (protocol-change/078); its queries
 #                        share sql.gleam and it embeds as
-#                        exec_ledger_schema.gleam.
+#                        exec_ledger_schema.gleam. sql/exec_ledger_releases.sql
+#                        is its second version, the operator release record,
+#                        embedded as exec_ledger_releases_schema.gleam.
 #
 # Known parrot 2.3.0 constraints (discovered by the WP-K pilot; keep in
 # mind when editing the .sql files):
@@ -74,6 +76,7 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_moves.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
     sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger_releases.sql
   fi
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
 }
@@ -122,4 +125,7 @@ gleam format packages/storage/src/storage/catalogue_moves_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger.sql \
   packages/storage/src/storage/exec_ledger_schema.gleam
 gleam format packages/storage/src/storage/exec_ledger_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger_releases.sql \
+  packages/storage/src/storage/exec_ledger_releases_schema.gleam
+gleam format packages/storage/src/storage/exec_ledger_releases_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"
