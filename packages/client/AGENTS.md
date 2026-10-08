@@ -6911,7 +6911,9 @@ the protocol-change/078 addendum on moving a session have the protocol.
   `moving_sessions` and `custody` are the mover's reads and compare-and-sets, and
   `import_session` registers, records the import and renames the copy into place
   in one turn, finishing the rename for a repeat and removing a late duplicate
-  instead of putting it over the placed file.
+  instead of putting it over the placed file. It reads whether the import already
+  committed before it checks for an open slot, and `AdminBusy` refuses a first
+  import only.
 - `remote/orchestrator_port` gains `Import`, `ImportStatus` and `Activate` beside
   `Owns`, and `Ownership` gains `Moved(to)`. The daemon supplies an `Importer` of
   three functions, so the port knows neither the catalogue nor the filesystem. A
@@ -6928,11 +6930,16 @@ the protocol-change/078 addendum on moving a session have the protocol.
 - `session_importer` is the receiving end. `take` writes pieces to a `.part` file
   that becomes the copy only when the last piece lands; a piece that does not
   start where the file stands is `OutOfOrder` and the sender begins again.
-  `activate` checks the sender's node against `[orchestrators.<name>]`, asks the
-  registry first (a repeat of the same move is answered without looking at the
-  copy), then the digest, then the scope cell read from a scratch copy (opening a
-  session file rewrites it), then the executor row, and only then hands the registry
-  the import. A copy refused for a reason a resend cannot cure is removed.
+  `activate` asks the registry first, and a repeat of the same move is answered
+  `Accepted` without looking at the copy or at who asks, using the origin the row
+  recorded (an operator who renamed the sender's `[orchestrators]` row meanwhile
+  changes nothing). Only then does it check the sender's node against
+  `[orchestrators.<name>]`, then the digest, then the scope cell read from a
+  scratch copy (opening a session file rewrites it), then the executor row, and
+  only then hands the registry the import. A copy refused for a reason a resend
+  cannot cure is removed. `stage` returns `Result(Stage, Nil)`: a registry read that
+  fails is `Error(Nil)` and the port sends no reply, because `Absent` would make
+  the source send the file again to a receiver that may hold the session.
 - `session_mover` is the source's driver. `drive` takes the steps in order and every
   run starts from what is on disk: it reads the row, asks the receiver how far the
   move has got, and does what remains. A move finishes, is abandoned only on an
@@ -6940,7 +6947,8 @@ the protocol-change/078 addendum on moving a session have the protocol.
   refused the close, a corrupt or oversized file, a receiver's `Refused` and
   nothing else; silence is `Stall`, because an unreachable receiver may have
   activated the session. A digest the receiver refuses, or a copy it no longer has,
-  sends the whole file once more. Each step is bounded by a weft deadline of its
+  sends the whole file once more. A send that finds the receiver's stage
+  `Activated` goes straight to the retirement. Each step is bounded by a weft deadline of its
   own (`Budget`), and an expiry is a stall. `Environment.after` is told after each
   step; a daemon passes the crash knob and a test passes a recorder.
 - `session_movers` is the daemon's actor, started beside the orchestrator port and
@@ -6967,6 +6975,11 @@ once at startup, is not a configuration key, and is not an operator setting.
 
 Invariants that break things when violated:
 
+- Once the receiver has committed `imported` under an operation, every `Activate`
+  for it is answered `Accepted`, whether or not a slot is open, the sender is still
+  listed, or the copy is still there. The source abandons on any refusal other than
+  a bad digest or a missing copy, so a refusal after the commit leaves two owners.
+  `Move.tla` models it as `RefuseUncommitted`, with `MutantRefuse` as its check.
 - The intent is committed in the registry turn that cancels the slot, and admission
   reads the custody row in the turn that reserves a slot. Moving the read out of
   that turn lets a runtime open a file whose copy is being cut.

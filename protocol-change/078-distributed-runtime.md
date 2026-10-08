@@ -584,6 +584,18 @@ A `Refused` verdict means the receiver looked and said no. `Failed` and silence
 mean it could not decide. The distinction is what lets a mover decide whether to
 give up.
 
+One rule makes that distinction safe: once the receiver has committed `imported`
+under an operation, every `Activate` for that operation is answered `Accepted`,
+whatever else is true. A session already opened on the receiver, a sender renamed
+or removed from `[orchestrators]` since, and a copy that is gone do not change the
+answer, because the source abandons on a refusal and a refusal after the commit
+would leave the session owned by both. The receiver reads the catalogue before it
+resolves the sender, and the open-slot check applies to a first import only. The
+status question has the same discipline: a catalogue that cannot be read gives no
+answer, so the port sends nothing, and the source treats silence as a stall.
+`Absent` is sent only when the catalogue was read and holds no such import. The
+source, for its part, retires on a stage of `Activated` without activating again.
+
 #### When a move stops
 
 A move ends in one of three ways. It finishes, with the source's row `moved`. It is
@@ -624,7 +636,9 @@ The formal model `protocol/models/session-move/Move.tla` checks the six steps wi
 a crash possible between any two. Its mutations show what each rule buys: without
 the write-ahead intent a crash lets two orchestrators serve the session, abort
 after the send does the same, and retiring without having seen the receiver's row
-leaves a session no one has. The P model of the remote execution against the ledger
+leaves a session no one has, and a receiver that refuses an activation after its
+row is `imported` does the same as an early abort (`RefuseActivate`, mutated by
+`RefuseUncommitted`). The P model of the remote execution against the ledger
 is phase 6 acceptance work.
 
 Not built: a designated node or table that decides ownership, an owner column on
