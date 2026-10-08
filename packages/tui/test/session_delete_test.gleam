@@ -27,6 +27,7 @@ fn row(id: String) -> protocol.Session {
     0,
     protocol.Saved,
     option.None,
+    option.None,
   )
 }
 

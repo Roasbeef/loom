@@ -195,6 +195,7 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
         host,
         session,
         selected.workspace,
+        selected.executor,
         selected.name,
         None,
         selected.status,
@@ -244,6 +245,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     host,
     selected.session_id,
     selected.workspace,
+    selected.executor,
     selected.name,
     None,
     status,
@@ -258,7 +260,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
 /// ## Examples
 ///
 /// ```gleam
-/// // selection.create_named(host, key, project.path, workspace.session_name(project), config, "")
+/// // selection.create_named(host, key, project.path, workspace.session_name(project), config, "", "")
 /// ```
 pub fn create_named(
   host: Host,
@@ -267,11 +269,19 @@ pub fn create_named(
   name: String,
   configuration: String,
   profile: String,
+  executor: String,
 ) -> Result(Target, String) {
   use reply <- result.try(
     daemon.request(
       host.control,
-      protocol.CreateSession(key, workspace, name, configuration, profile),
+      protocol.CreateSession(
+        key,
+        workspace,
+        name,
+        configuration,
+        profile,
+        executor,
+      ),
       10_000,
     )
     |> result.map_error(failure),
@@ -282,6 +292,7 @@ pub fn create_named(
         host,
         row.session_id,
         row.workspace,
+        row.executor,
         row.name,
         Some(key),
         row.status,
@@ -527,7 +538,19 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
   }
 }
 
-fn target(host: Host, session, workspace, name, creation_key, status) {
+// A session on an executor has a registered name where a local one has a path.
+// The name is never probed for a repository: `discover_from` would read it
+// relative to the terminal's own working directory and could show a branch of
+// an unrelated local folder that happens to share the name.
+fn target(
+  host: Host,
+  session,
+  workspace,
+  executor: Option(String),
+  name,
+  creation_key,
+  status,
+) {
   use incarnation <- result.try(case status {
     protocol.Resident(incarnation) -> Ok(incarnation)
     protocol.Opening(operation) -> await(host, session, operation)
@@ -549,7 +572,11 @@ fn target(host: Host, session, workspace, name, creation_key, status) {
     uri.to_string(address),
     host.token,
     snapshot.Expected(session, epoch, incarnation),
-    workspace.Context(..workspace.discover_from(workspace), path: workspace),
+    case executor {
+      Some(_) -> workspace.Context(path: workspace, branch: None)
+      None ->
+        workspace.Context(..workspace.discover_from(workspace), path: workspace)
+    },
     name,
     creation_key,
   ))
@@ -664,9 +691,24 @@ pub fn failure(reason: daemon.Failure) -> String {
     // startup reason after its owner has retired. A creation refused because
     // its configuration cannot load is the same cause one step earlier, before
     // any session was reserved, so it is worded the same way.
+    //
+    // A session on an executor can fail before it has a workspace: the daemon
+    // is not configured for distribution, the executor is not a pinned peer, or
+    // it refused the attach. The daemon leads that reason with
+    // `executor_unavailable:`, which is the cause rather than a detail, so it is
+    // moved into the sentence and the daemon's reason follows it.
+    daemon.Refused("start_failed", "executor_unavailable:" <> reason) ->
+      "session startup failed (executor_unavailable):" <> reason
     daemon.Refused("start_failed", message)
     | daemon.Refused("unusable_configuration", message) ->
       "session startup failed: " <> message
+
+    // The daemon's refusal does not repeat the name it was sent, so the words
+    // of the launch flag complete the sentence.
+    daemon.Refused("executor_unknown", message) ->
+      "executor_unknown: "
+      <> message
+      <> "; --executor must be an [executors.<name>] key of the daemon's configuration"
 
     daemon.Refused(code, message) -> code <> ": " <> message
     daemon.UnknownOutcome(command) ->

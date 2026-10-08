@@ -599,6 +599,9 @@ Gleam forbids import cycles and none of the `tui/` modules may import
   replies from the slots the runtime admitted them into. `create_session`
   starts a `job.Configure` job when the terminal has local launch options,
   and `drain_configuration` continues the creation with its answer.
+- `tui/placement`: where a new session's workspace lives (`OnThisHost` or
+  `OnExecutor(executor, workspace)`, protocol 078), the shape rules that refuse a
+  typo before a round trip, and `label`, the `executor:name` text listings use.
 - `tui/projection`: `refresh_render_cache`, `refresh_diff_cache` and the
   record row cache.
 - `tui/live_tail`: the rows of a streaming answer, rebuilt each frame from
@@ -3156,3 +3159,55 @@ that valueless flag for BEAM profiling before the application starts, so a bare
 `--profile` is still an unknown local option here (`tui.launch_options` is the
 test seam). A value beginning with `-` is refused so a forgotten name does not
 consume the next flag.
+
+## Executor launch flag (protocol 078)
+
+`loom --executor <name> --workspace <registered name>` creates new sessions in a
+workspace registered on that `[executors.<name>]` of the daemon's configuration.
+`tui.parse_local_launch` reads the two flags before `parse_local_options` sees
+the words, for two reasons. `--workspace` with an executor is a name and not a
+directory, and `bootstrap.Options.workspace` is canonicalized by the launcher,
+so the name lives only in `bootstrap.Options.placement`
+(`tui/placement.Placement`: `OnThisHost` or `OnExecutor(executor, workspace)`),
+a type that cannot hold an executor without a workspace. And `loom ui` and
+`loom sessions` take the shared local options but have no session to create, so
+they keep refusing `--executor` as an unknown local option. `--executor` is
+refused with `--session` (it says where a new session goes and `--session` opens
+one that exists), without a value, twice, with a flag-shaped value, with a name
+that is not an executor name, and with a `--workspace` that is empty, holds a
+`/` or a NUL, or is longer than 128 bytes. `placement` repeats the daemon's
+shapes because this package cannot import `storage`; the daemon judges the same
+text again, so the copy can only make this client stricter or looser than the
+daemon, never unsafe. A remote launch (`--addr`) ignores the flag as it ignores
+`--workspace`.
+
+Like the profile, the placement applies to every creation the terminal makes:
+the picker's `n` (`session_control.create_session_configured`) sends
+`sessions.create` with `workspace` set to the registered name and `executor`
+set, through `job.CreateSession.executor` and `selection.create_named`. The
+protocol encoder (`protocol.CreateSession.executor`) sends the field only when it
+is not empty, so a local creation is the request it always was. The session's
+display name is the registered name. The footer shows the name as the launch
+gave it: `interactive` builds the context directly and `selection.target` skips
+`workspace.discover_from` for a session with an executor, which would read the
+name relative to the terminal's working directory and could show the branch of an
+unrelated local folder.
+
+`protocol.Session.executor` is the optional `executor` member of a session row
+(`Some` only for a remote session; absent, empty, over-long and non-string read
+as `None`, as the subtitle does). Listings show it. The picker groups by
+`session_selector.Place`, `Directory(path)` or `Registered(executor, workspace)`,
+because two executors may each register `app` and neither is a directory called
+`app`; a registered group's heading says `on <executor>` where a directory's says
+its path, and the details pane draws `EXECUTOR` and `WORKSPACE` rows. `loom
+sessions list` shows `executor:name` in its WORKSPACE column, in the styled table
+and in the plain, script-read format (`placement.label`), and a local row is
+byte-identical to before.
+
+`selection.failure` words the two refusals a remote creation can meet:
+`executor_unknown` (the daemon's configuration has no such executor, with the
+flag's own words appended because the refusal does not repeat the name) and a
+`start_failed` whose reason leads with `executor_unavailable:`, shown as `session
+startup failed (executor_unavailable): <reason>`. Tests are
+`executor_launch_test` (flag parsing, the request, the creation job, listings,
+grouping, the failure words) and `daemon_protocol_test` (the optional member).

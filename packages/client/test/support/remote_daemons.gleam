@@ -75,6 +75,7 @@ import support/shipped_server
 import support/tui_driver
 import tui/bootstrap
 import tui/daemon/bootstrap as daemon_bootstrap
+import tui/placement
 import weft/poll
 
 // A reply from a shipped daemon waits behind its own admission budgets, as in
@@ -550,6 +551,7 @@ pub fn start(layout: Layout) -> Running {
         layout.paths.root,
         layout.config,
         "",
+        placement.OnThisHost,
       ),
       process.self(),
       60_000,

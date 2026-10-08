@@ -132,6 +132,7 @@ import tui/model.{
 import tui/msg
 import tui/note_panel
 import tui/pacing
+import tui/placement
 import tui/projection
 import tui/queue_editor
 import tui/recording
@@ -793,9 +794,13 @@ fn interactive(launch: Launch, record: String) -> Nil {
           ..base,
           view: base.view
             |> view_set.local_options(Some(options))
-            |> view_set.workspace(case options.workspace {
-              "" -> base.view.workspace
-              path -> workspace.discover_from(path)
+            |> view_set.workspace(case options.placement, options.workspace {
+              // A registered name is no directory here, so it is never probed
+              // for a repository: the footer shows the name as given.
+              placement.OnExecutor(workspace: name, ..), _ ->
+                workspace.Context(path: name, branch: None)
+              placement.OnThisHost, "" -> base.view.workspace
+              placement.OnThisHost, path -> workspace.discover_from(path)
             }),
         )
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
@@ -1112,10 +1117,64 @@ fn parse_terminal_launch(arguments: List(String)) -> Launch {
       }
     Ok(_), Error(_) -> Invalid(launch_usage())
     Error(_), selection ->
-      case parse_local_options(arguments, default_bootstrap_options()) {
-        Ok(options) -> Local(options, result.unwrap(selection, ""))
+      case parse_local_launch(arguments, result.unwrap(selection, "")) {
+        Ok(local) -> local
         Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
       }
+  }
+}
+
+// A local terminal launch: the shared local options, and the placement that
+// `--executor` and `--workspace` name together. `--executor` is read here and
+// not by `parse_local_options`, so `loom ui` and `loom sessions`, which have no
+// session to create, refuse it as the unknown option it is for them. With an
+// executor the `--workspace` value is a registered name and not a directory, so
+// it is taken out of the words before the options parser can store it as one:
+// the launcher canonicalizes `Options.workspace`, and a name must never reach
+// that.
+fn parse_local_launch(
+  arguments: List(String),
+  selected: String,
+) -> Result(Launch, String) {
+  use #(executor, rest) <- result.try(take_value(arguments, "--executor"))
+  use #(registered, rest) <- result.try(case executor {
+    Some(_) -> take_value(rest, "--workspace")
+    None -> Ok(#(None, rest))
+  })
+  use Nil <- result.try(case executor, selected {
+    Some(_), "" | None, _ -> Ok(Nil)
+    Some(_), _ ->
+      Error(
+        "--executor names where a new session is created; --session opens an existing one",
+      )
+  })
+  use chosen <- result.try(placement.new(executor, registered))
+  use options <- result.map(parse_local_options(
+    rest,
+    default_bootstrap_options(),
+  ))
+  Local(bootstrap.Options(..options, placement: chosen), selected)
+}
+
+// Removes one `flag value` pair from the words and answers the value, or none
+// when the flag is absent. A flag given twice, or last with no value, or whose
+// value looks like the next flag, is refused rather than guessed at.
+fn take_value(
+  arguments: List(String),
+  flag: String,
+) -> Result(#(Option(String), List(String)), String) {
+  case list.count(arguments, fn(word) { word == flag }) {
+    0 -> Ok(#(None, arguments))
+    1 ->
+      case session_control.flag_value(arguments, flag) {
+        Ok(value) ->
+          case string.starts_with(value, "-") {
+            True -> Error(flag <> " needs a value, got " <> value)
+            False -> Ok(#(Some(value), without_flag(arguments, flag)))
+          }
+        Error(Nil) -> Error("missing value for " <> flag)
+      }
+    _ -> Error(flag <> " was given more than once")
   }
 }
 
@@ -1629,7 +1688,7 @@ fn registration_line(row: control_protocol.Session) -> String {
   <> "  "
   <> session_table.state(row.status).0
   <> "  "
-  <> row.workspace
+  <> placement.label(row.executor, row.workspace)
   <> "  "
   <> text_hygiene.single_line(row.name)
 }
@@ -1660,7 +1719,7 @@ fn asked(session_id: String) -> Result(Nil, String) {
 }
 
 fn default_bootstrap_options() -> bootstrap.Options {
-  bootstrap.Options("", "", "", "", "", "")
+  bootstrap.Options("", "", "", "", "", "", placement.OnThisHost)
 }
 
 fn parse_local_options(
@@ -1758,6 +1817,8 @@ fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session <id>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>] "
   <> "[--model-profile <name>]\n"
+  <> "       loom --executor <name> --workspace <registered name> "
+  <> "[--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
   <> "  version            Print version, build commit and platform.\n"
@@ -1777,6 +1838,10 @@ fn launch_usage() -> String {
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --model-profile names a [profiles.<name>] table of that file whose\n"
   <> "       roles a newly created session uses; a resumed session keeps its own\n"
+  <> "  --executor creates new sessions in a workspace registered on that\n"
+  <> "       [executors.<name>] of the daemon's configuration; --workspace is\n"
+  <> "       then the registered name, not a path, and is never resolved on this\n"
+  <> "       machine. It cannot be combined with --session\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]\n"

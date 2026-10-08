@@ -647,7 +647,15 @@ fn resolve(
           daemon_selection.open(host, session)
         }
       })
-    job.CreateSession(control:, key:, workspace:, name:, config:, profile:) ->
+    job.CreateSession(
+      control:,
+      key:,
+      workspace:,
+      name:,
+      config:,
+      profile:,
+      executor:,
+    ) ->
       with_control(running, control, fn(host) {
         fn() {
           use host <- daemon_selection.with_live_control(host)
@@ -658,6 +666,7 @@ fn resolve(
             name,
             config,
             profile,
+            executor,
           )
         }
       })

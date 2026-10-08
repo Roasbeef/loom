@@ -212,6 +212,10 @@ pub type Command {
     /// The model profile to create the session under, or empty for the
     /// configuration's default roles (protocol-change/076).
     profile: String,
+    /// The executor `workspace` is registered on, or empty when `workspace` is
+    /// a path on the daemon's host (protocol-change/078). With an executor the
+    /// workspace is a registered name, which the daemon keeps exactly as sent.
+    executor: String,
   )
 
   /// Explicitly starts the selected session in this connection's epoch.
@@ -448,6 +452,12 @@ pub type Session {
     /// session no prompt has reached; a present value that is not a bounded
     /// string reads as absent, since a display aid must not fail a listing.
     subtitle: Option(String),
+    /// The executor the session's workspace is registered on
+    /// (protocol-change/078), present only for a remote session, whose
+    /// `workspace` is then a registered name and not a path. A local session's
+    /// frame has no such member, and so does an older daemon's. A present value
+    /// that is not a bounded string reads as absent, as the subtitle does.
+    executor: Option(String),
   )
 }
 
@@ -773,7 +783,7 @@ fn command_fields(command: Command, epoch: Epoch) {
       use other <- result.map(text_fields([#("workspace", workspace, 4096)]))
       list.append(fields, other)
     }
-    CreateSession(key, workspace, name, configuration, profile) -> {
+    CreateSession(key, workspace, name, configuration, profile, executor) -> {
       use fields <- result.try(
         text_fields([
           #("request_key", key, 256),
@@ -791,13 +801,20 @@ fn command_fields(command: Command, epoch: Epoch) {
 
       // An empty profile is the default roles and is not sent, so a daemon
       // that predates profiles receives exactly the request it always did.
-      use profile <- result.map(case profile {
+      use profile <- result.try(case profile {
         "" -> Ok([])
         name -> text_fields([#("profile", name, 64)])
       })
+
+      // The executor is absent for a workspace on the daemon's host, for the
+      // same reason, and present only beside a registered workspace name.
+      use executor <- result.map(case executor {
+        "" -> Ok([])
+        name -> text_fields([#("executor", name, 64)])
+      })
       [
         #("configuration", json.String(configuration)),
-        ..list.append(fields, profile)
+        ..list.append(fields, list.append(profile, executor))
       ]
     }
     OpenSession(id)
@@ -1156,7 +1173,22 @@ fn session(body: json.JsonValue) {
   use created <- result.try(number_at(body, "created_at"))
   use status <- result.try(field(body, "status"))
   use status <- result.map(lifecycle(status))
-  Session(id, workspace, name, created, status, subtitle_of(body))
+  Session(
+    id,
+    workspace,
+    name,
+    created,
+    status,
+    subtitle_of(body),
+    executor_of(body),
+  )
+}
+
+// The optional executor of a remote session. Like the subtitle it is a display
+// aid, so a member that is absent, empty, too long or not a string reads as
+// none and does not fail the row. `text_at` already refuses the empty string.
+fn executor_of(body: json.JsonValue) -> Option(String) {
+  text_at(body, "executor", 64) |> option.from_result
 }
 
 // The optional subtitle. Every way of not being a nonblank string of at most 60

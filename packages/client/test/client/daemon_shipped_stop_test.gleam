@@ -29,6 +29,7 @@ import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
 import tui/daemon/selection
+import tui/placement
 import tui/workspace
 import weft
 import weft/actor
@@ -135,7 +136,15 @@ fn exercise(
   configuration(b_config, b_url)
   let assert Ok(connected) =
     bootstrap.resolve_daemon(
-      bootstrap.Options(workspace, "", server, paths.root, a_config, ""),
+      bootstrap.Options(
+        workspace,
+        "",
+        server,
+        paths.root,
+        a_config,
+        "",
+        placement.OnThisHost,
+      ),
       process.self(),
       40_000,
     )
@@ -155,6 +164,7 @@ fn exercise(
       workspace.session_name(workspace.Context(workspace, None)),
       a_config,
       "",
+      "",
     )
     as "A starts through ordinary durable creation"
   let assert Ok(b) =
@@ -164,6 +174,7 @@ fn exercise(
       directory <> "/b",
       workspace.session_name(workspace.Context(directory <> "/b", None)),
       b_config,
+      "",
       "",
     )
     as "B has an independent configured workspace"
