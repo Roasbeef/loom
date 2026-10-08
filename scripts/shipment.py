@@ -29,19 +29,19 @@ CACHE = ROOT / 'build/shipment-cache'
 RECIPE = Path(__file__).resolve()
 
 # These locked releases build Erlang only, with no native compiler or plugins.
-# A new dependency/version remains fresh until its build recipe is reviewed.
+# Changed source or a new version remains fresh until its build recipe is reviewed.
 ERLANG_ONLY = {
-    'cowlib': '2.20.0',
-    'gun': '2.6.0',
-    'hpack_erl': '0.3.0',
-    'yamerl': '0.10.0',
+    'cowlib': ('2.20.0', 'cad48499e6874ec4a58eb82672d5c5709ba88e4b8d1c01a1ad508ccc1501136f'),
+    'gun': ('2.6.0', '42f88868748036060d902c0c8f51b6f3df8277463f30d3d66fe6a25541b2f74f'),
+    'hpack_erl': ('0.3.0', '6446b2f320457a091acc3afb094a1e36b99bd9750e2939199f5ebd39e06f32bf'),
+    'yamerl': ('0.10.0', '575bb19683bd43593cad09a6dbb258134945f73b7f4a539573a1b3343822c5b3'),
 }
 
 
 def reusable(item):
     entry = item['entry']
     return (entry['source'] == 'hex'
-            and ERLANG_ONLY.get(entry['name']) == entry['version'])
+            and ERLANG_ONLY.get(entry['name']) == (entry['version'], digest(item['tree'])))
 
 
 def digest(value):
@@ -260,9 +260,14 @@ def export(name, fresh):
             item = selected[package_name]
             return [item, [closure(dep) for dep in item['entry']['requirements']]]
 
+        def reusable_closure(package_name):
+            item = selected[package_name]
+            return reusable(item) and all(reusable_closure(dep)
+                                          for dep in item['entry']['requirements'])
+
         dependencies = {}
         for dependency, item in selected.items():
-            if 'rebar3' in item['entry']['build_tools'] and reusable(item):
+            if 'rebar3' in item['entry']['build_tools'] and reusable_closure(dependency):
                 app = item['entry'].get('otp_app', dependency)
                 cwd = package / 'build/prod/erlang' / app
                 dependencies[str(cwd.resolve())] = closure(dependency)

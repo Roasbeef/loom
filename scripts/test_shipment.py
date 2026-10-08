@@ -142,6 +142,30 @@ class ShipmentTest(unittest.TestCase):
         shipment.export('tui', False)
         self.assertEqual(self.builds, 3)
 
+    def test_edited_hex_recipe_loses_reuse_eligibility(self):
+        dependency = self.package / 'build/packages/cowlib'
+        dependency.mkdir(parents=True)
+        recipe = dependency / 'rebar.config'
+        recipe.write_text('reviewed Erlang-only recipe')
+        (self.package / 'gleam.toml').write_text('name="tui"\n[dependencies]\ngun="2.6.0"\n')
+        (self.package / 'manifest.toml').write_text('packages=[{name="cowlib",version="2.20.0",source="hex",requirements=[],build_tools=["rebar3"]},{name="gun",version="2.6.0",source="hex",requirements=["cowlib"],build_tools=["rebar3"]}]\n')
+        dependent = self.package / 'build/packages/gun'
+        dependent.mkdir()
+        (dependent / 'rebar.config').write_text('depends on cowlib')
+        reviewed = shipment.digest(shipment.tree(dependency, follow_links=True))
+        dependent_reviewed = shipment.digest(shipment.tree(dependent, follow_links=True))
+        with patch.dict(shipment.ERLANG_ONLY, {'cowlib': ('2.20.0', reviewed),
+                                             'gun': ('2.6.0', dependent_reviewed)}):
+            shipment.export('tui', False)
+            shipment.export('tui', False)
+            self.assertEqual(self.builds, 1)
+            recipe.write_text('new native compiler hook, same version')
+            shipment.export('tui', False)
+            shipment.export('tui', False)
+            self.assertEqual(self.builds, 3)
+            plan = json.loads((self.cache / 'tui-context.json').read_text())
+            self.assertEqual(plan['dependencies'], {})
+
     def test_native_builder_never_reuses_whole_export(self):
         native = self.package / 'build/packages/esqlite_loom'
         native.mkdir(parents=True)
