@@ -64,7 +64,6 @@ import host/build_identity
 import host/endpoint
 import mist
 import simplifile
-import storage/exec_ledger
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
@@ -467,7 +466,7 @@ pub fn start_executor(
         executor_host.start(executor_host.Config(
           name: address.default(),
           ledger_path: config.state_root <> "/exec-ledger.db",
-          limits: exec_ledger.default_limits(),
+          limits: executor_plane.scope_limits(),
           max_result_bytes: executor_host.default_max_result_bytes,
           clock: clock.from_function(ffi_os.system_time_ms),
           factory: executor_plane.factory(machine, configured),

@@ -555,3 +555,17 @@ fn shallow_scratch() -> String {
     as "the shallow scratch directory is created"
   directory
 }
+
+pub fn the_scope_limit_is_the_default_unless_a_positive_integer_is_set_test() {
+  assert executor_plane.scope_limits_from(Error(Nil)).max_unclean_scopes == 16
+  assert executor_plane.scope_limits_from(Ok("2")).max_unclean_scopes == 2
+  assert executor_plane.scope_limits_from(Ok("1")).max_unclean_scopes == 1
+  assert executor_plane.scope_limits_from(Ok("64")).max_unclean_scopes == 64
+
+  // A setting that cannot be a limit leaves the default, as an unparseable
+  // helper pool size does.
+  assert executor_plane.scope_limits_from(Ok("0")).max_unclean_scopes == 16
+  assert executor_plane.scope_limits_from(Ok("-3")).max_unclean_scopes == 16
+  assert executor_plane.scope_limits_from(Ok("many")).max_unclean_scopes == 16
+  assert executor_plane.scope_limits_from(Ok("")).max_unclean_scopes == 16
+}

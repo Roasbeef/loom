@@ -83,6 +83,7 @@ import gleam/string
 import host/bootstrap
 import provider/secret
 import simplifile
+import storage/exec_ledger
 import telemetry/field
 import telemetry/log.{type Logger}
 import weft/registry
@@ -617,6 +618,42 @@ fn find_helper(flag: Option(String)) -> Result(String, String) {
       |> result.map_error(fn(_nil) {
         "the helper binary does not exist: " <> path
       })
+  }
+}
+
+/// The ledger limits this executor runs under: the defaults, with the number of
+/// scopes that are not cleanly closed taken from `LOOM_EXECUTOR_MAX_SCOPES`
+/// when it is set to a positive integer.
+///
+/// An executor at its limit refuses a further session's attach with
+/// `CapacityExhausted`, which is what an orchestrator's pool moves past, so an
+/// operator who wants a small machine to take fewer sessions than the default
+/// of sixteen lowers it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert executor_plane.scope_limits().max_unclean_scopes >= 1
+/// ```
+pub fn scope_limits() -> exec_ledger.Limits {
+  scope_limits_from(workspace_policy.env_text("LOOM_EXECUTOR_MAX_SCOPES"))
+}
+
+/// `scope_limits` over a setting already read. A value that is not a positive
+/// integer is ignored, as `LOOM_HELPER_POOL` ignores one that does not parse.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert executor_plane.scope_limits_from(Ok("2")).max_unclean_scopes == 2
+/// assert executor_plane.scope_limits_from(Ok("0")).max_unclean_scopes == 16
+/// ```
+pub fn scope_limits_from(setting: Result(String, Nil)) -> exec_ledger.Limits {
+  let defaults = exec_ledger.default_limits()
+  case result.try(setting, int.parse) {
+    Ok(limit) if limit >= 1 ->
+      exec_ledger.Limits(..defaults, max_unclean_scopes: limit)
+    _ -> defaults
   }
 }
 
