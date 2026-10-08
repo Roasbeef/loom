@@ -62,6 +62,10 @@ pub type Bundle {
     executors: List(ExecutorRow),
     /// An executor's `[workspaces.<name>]` rows.
     workspaces: List(Workspace),
+    /// The Erlang node names of the session directory's members, this node's
+    /// included, when this node is one of them (protocol-change/079); empty
+    /// otherwise.
+    directory: List(String),
     /// PEM of the deployment's CA certificate.
     ca: String,
     /// PEM of this node's certificate.
@@ -96,6 +100,14 @@ pub fn encode(bundle: Bundle) -> String {
         #("peers", json.array(bundle.peers, peer_json)),
         #("executors", json.array(bundle.executors, executor_json)),
         #("workspaces", json.array(bundle.workspaces, workspace_json)),
+      ],
+      // A bundle for a node outside any directory carries no `directory` key,
+      // so it is byte for byte what an older provisioner wrote.
+      case bundle.directory {
+        [] -> []
+        members -> [#("directory", json.array(members, json.string))]
+      },
+      [
         #("ca", json.string(bundle.ca)),
         #("certificate", json.string(bundle.certificate)),
         #("key", json.string(bundle.key)),
@@ -197,10 +209,22 @@ pub fn config_tables(bundle: Bundle, files: CredentialFiles) -> List(Table) {
           <> "\n",
       )
     })
+  let directory = case bundle.directory {
+    [] -> []
+    members -> [
+      Table(
+        ["directory"],
+        "[directory]\nmembers = ["
+          <> string.join(list.map(members, toml_string), ", ")
+          <> "]\n",
+      ),
+    ]
+  }
   list.flatten([
     [Table(["distribution"], string.concat([head, ..peers]))],
     rows,
     workspaces,
+    directory,
   ])
 }
 
@@ -300,7 +324,8 @@ fn workspace_json(workspace: Workspace) -> json.Json {
 
 const keys = [
   "format", "name", "role", "erlang_node", "host", "listen_port", "bundle_dir",
-  "peers", "executors", "workspaces", "ca", "certificate", "key", "cookie",
+  "peers", "executors", "workspaces", "directory", "ca", "certificate", "key",
+  "cookie",
 ]
 
 fn known_keys(present: List(String)) -> Result(Nil, String) {
@@ -332,6 +357,7 @@ type Raw {
     peers: List(#(String, String)),
     executors: List(#(String, String)),
     workspaces: List(#(String, String)),
+    directory: List(String),
     ca: String,
     certificate: String,
     key: String,
@@ -378,6 +404,11 @@ fn raw_decoder() -> decode.Decoder(Raw) {
     [],
     decode.list(pair_decoder("name", "root")),
   )
+  use directory <- decode.optional_field(
+    "directory",
+    [],
+    decode.list(decode.string),
+  )
   use ca <- decode.field("ca", decode.string)
   use certificate <- decode.field("certificate", decode.string)
   use key <- decode.field("key", decode.string)
@@ -393,6 +424,7 @@ fn raw_decoder() -> decode.Decoder(Raw) {
     peers:,
     executors:,
     workspaces:,
+    directory:,
     ca:,
     certificate:,
     key:,
@@ -443,6 +475,7 @@ fn validate(raw: Raw) -> Result(Bundle, String) {
   )
   use Nil <- result.try(valid_peers(bundle))
   use Nil <- result.try(valid_role_tables(bundle))
+  use Nil <- result.try(valid_directory(bundle))
   use Nil <- result.try(valid_cookie(bundle.cookie))
   use Nil <- result.try(valid_credentials(bundle))
   Ok(bundle)
@@ -476,6 +509,7 @@ fn assemble(raw: Raw) -> Result(Bundle, String) {
     workspaces: list.map(raw.workspaces, fn(pair) {
       distribution_plan.Workspace(name: pair.0, root: pair.1)
     }),
+    directory: raw.directory,
     ca: raw.ca,
     certificate: raw.certificate,
     key: raw.key,
@@ -497,6 +531,40 @@ fn node_of(bundle: Bundle) -> distribution_plan.Node {
     executors: list.map(bundle.executors, fn(row) { row.name }),
     workspaces: bundle.workspaces,
   )
+}
+
+// A bundle's directory is the `[directory] members` it will write, so it must
+// pass the daemon's own rules: this node among them, every other one a peer,
+// three to seven names, each once.
+fn valid_directory(bundle: Bundle) -> Result(Nil, String) {
+  case bundle.directory {
+    [] -> Ok(Nil)
+    members -> {
+      let peers = list.map(bundle.peers, fn(peer) { peer.node })
+      let count = list.length(members)
+      use Nil <- result.try(case count >= 3 && count <= 7 {
+        True -> Ok(Nil)
+        False -> Error("bundle directory must list between 3 and 7 nodes")
+      })
+      use Nil <- result.try(case list.unique(members) == members {
+        True -> Ok(Nil)
+        False -> Error("bundle directory lists a node twice")
+      })
+      use Nil <- result.try(case list.contains(members, bundle.erlang_node) {
+        True -> Ok(Nil)
+        False -> Error("bundle directory does not list this node")
+      })
+      list.try_each(members, fn(member) {
+        case member == bundle.erlang_node || list.contains(peers, member) {
+          True -> Ok(Nil)
+          False ->
+            Error(
+              "bundle directory names " <> member <> ", which is not a peer",
+            )
+        }
+      })
+    }
+  }
 }
 
 // The daemon's own validator judges the node name, the peers and their pins

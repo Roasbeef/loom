@@ -9,6 +9,7 @@
 import client
 import client/catalog
 import client/daemon/distribution_cli
+import client/directory/settings as directory_settings
 import client/distribution
 import client/distribution_bundle
 import client/distribution_install.{Options}
@@ -972,4 +973,72 @@ pub fn the_unmutated_pair_still_connects_after_the_options_are_regenerated_test(
   let assert Ok(_) = distribution_cli.run(["options", config, options_file])
   let assert Ok(Nil) = run_installed(orchestrator, executor, peer, Accept)
   discard(base)
+}
+
+// --- the directory (protocol-change/079) --------------------------------------
+
+fn directory_plan(base: String) -> String {
+  "directory = [\"laptop\", \"desk\", \"devbox\"]\n\n" <> plan_toml(base)
+}
+
+pub fn directory_members_peer_with_each_other_test() {
+  let assert Ok(plan) = distribution_plan.parse(directory_plan("/b"), TomlPlan)
+  let peers = fn(name) {
+    let assert Ok(node) = list.find(plan.nodes, fn(n) { n.name == name })
+    list.map(distribution_plan.peers(plan, node), fn(peer) { peer.name })
+  }
+
+  // devbox and desk do not use each other, but both are members, so they peer.
+  assert peers("devbox") == ["laptop", "desk"]
+  assert peers("desk") == ["laptop", "devbox", "buildbox"]
+  assert peers("buildbox") == ["laptop", "desk"]
+}
+
+pub fn a_member_bundle_writes_a_directory_table_the_daemon_accepts_test() {
+  let assert Ok(plan) = distribution_plan.parse(directory_plan("/b"), TomlPlan)
+  let assert Ok(deployment) = distribution_provision.provision(plan)
+  let files =
+    distribution.CredentialFiles(
+      ca: "/c/ca.pem",
+      certificate: "/c/cert.pem",
+      key: "/c/key.pem",
+      cookie: "/c/.erlang.cookie",
+    )
+  let members = [
+    "loom@laptop.example", "loom@desk.example", "loom@devbox.example",
+  ]
+  let devbox = bundle_named(deployment, "devbox")
+  assert devbox.directory == members
+  let text = distribution_bundle.config_text(devbox, files)
+  assert string.contains(text, "[directory]\nmembers = [")
+  let assert Ok(Some(found)) = directory_settings.parse(text)
+    as "the daemon's own reader accepts the written table"
+  assert found.members == members
+
+  // A node outside the directory carries no table and no bundle key.
+  let buildbox = bundle_named(deployment, "buildbox")
+  assert buildbox.directory == []
+  assert !string.contains(
+    distribution_bundle.config_text(buildbox, files),
+    "[directory]",
+  )
+  assert !string.contains(distribution_bundle.encode(buildbox), "directory")
+  assert distribution_bundle.decode(distribution_bundle.encode(devbox))
+    == Ok(devbox)
+}
+
+pub fn a_directory_that_breaks_a_rule_is_refused_test() {
+  let base = plan_toml("/b")
+  refused_plan(
+    "directory = [\"laptop\", \"desk\"]\n" <> base,
+    "between 3 and 7",
+  )
+  refused_plan(
+    "directory = [\"laptop\", \"desk\", \"desk\"]\n" <> base,
+    "lists a node twice",
+  )
+  refused_plan(
+    "directory = [\"laptop\", \"desk\", \"nobody\"]\n" <> base,
+    "\"nobody\", which is not a node",
+  )
 }
