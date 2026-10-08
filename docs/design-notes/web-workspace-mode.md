@@ -86,17 +86,17 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:310`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:2103`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:2184`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
 switching to another session (`ticket_for` (`ui_socket.gleam:1483`)). The
 exchange redeems it once (`redeem` (`ui_sessions.gleam:737`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
-order: `loopback_host` (`ui_http.gleam:203`), then `navigation_allowed`
-(`ui_http.gleam:202`) for a page, `origin_matches` (`ui_http.gleam:385`) for
+order: `loopback_host` (`ui_http.gleam:225`), then `navigation_allowed`
+(`ui_http.gleam:202`) for a page, `origin_matches` (`ui_http.gleam:407`) for
 the socket, then the cookie under the key. The cookie's `Path` is the key's
-(`set_cookie` (`ui_http.gleam:487`)), so it reaches no other page and no other
+(`set_cookie` (`ui_http.gleam:509`)), so it reaches no other page and no other
 loopback port. A UI session lives eight hours (`session_ms`
 (`ui_sessions.gleam:79`)); a chain of switches ends with the page it began
 from (`mint_before` (`ui_sessions.gleam:572`)).
@@ -309,7 +309,7 @@ anyone who sees the cookie knows it, and the row's digest is the digest of
 it. The first edition of this note said a login presented as a bearer is
 refused because the daemon would hash the whole token; that was true and
 beside the point, because the daemon hashes any presented string
-(`credential` (`client/daemon/server.gleam:743`)), and `Authorization:
+(`credential` (`client/daemon/server.gleam:767`)), and `Authorization:
 Bearer <id>` would have hashed to the row and authenticated as the
 principal with no ceiling, no expiry, no key and no nonce: for the owner's
 login, owner authority on the control socket. The review of 2026-10-04
@@ -730,7 +730,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:2121`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:2202`) makes;
 3. `open` (`client/daemon/manager.gleam:1155`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
