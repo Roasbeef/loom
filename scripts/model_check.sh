@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# model_check.sh — check every protocol model: the TLA+ session-move model
+# model_check.sh — check every protocol model: the TLA+ session-move models
 # with TLC, then every P project.
 #
 # Usage: scripts/model_check.sh
 #   (MODEL_SCHEDULES, MODEL_PROBE_SCHEDULES, TLA2TOOLS, TLA_JAVA)
 #
-# The TLA+ model, protocol/models/session-move, runs first. TLC must pass
-# the clean configuration, Move.cfg, and must report a violation of the
-# invariant each Mutant*.cfg names on its `\* expect-violation:` line. A
-# mutation that no longer fails means the model stopped depending on the
-# rule the mutation removes. TLC needs tla2tools.jar ($TLA2TOOLS, or
-# ~/tools/tla2tools.jar) and a Java 11 or later ($TLA_JAVA, java on PATH,
-# or a Homebrew openjdk). Without both, this script prints a SKIP line,
-# which the skip census refuses in CI, and moves on to the P projects.
+# The TLA+ models, protocol/models/session-move, run first. There are two
+# specifications: Move.tla, the move where catalogue rows decide, and
+# KhepriMove.tla, the moves where the directory's owner record decides
+# (protocol-change/079). For each, TLC must pass the clean configuration
+# (Move.cfg, KhepriMove.cfg) and must report a violation of the invariant
+# each mutant configuration (Mutant*.cfg, KhepriMutant*.cfg) names on its
+# `\* expect-violation:` line. A mutation that no longer fails means the
+# model stopped depending on the rule the mutation removes. TLC needs
+# tla2tools.jar ($TLA2TOOLS, or ~/tools/tla2tools.jar) and a Java 11 or
+# later ($TLA_JAVA, java on PATH, or a Homebrew openjdk). Without both, this
+# script prints a SKIP line, which the skip census refuses in CI, and moves
+# on to the P projects.
 #
 # Each directory under protocol/models with a .pproj is a P project. Its
 # README says how it is run; this script runs the same commands for every
@@ -73,14 +77,15 @@ find_java() {
 	return 1
 }
 
-# run_tla runs TLC on one configuration, leaving its output in the log file.
-# TLC exits 0 for a pass and 12 for an invariant violation.
+# run_tla runs TLC on one configuration of one specification, leaving its
+# output in the log file. TLC exits 0 for a pass and 12 for an invariant
+# violation.
 run_tla() {
-	local java="$1" jar="$2" cfg="$3" metadir="$4" log="$5"
+	local java="$1" jar="$2" spec="$3" cfg="$4" metadir="$5" log="$6"
 	rm -rf "$metadir"
 	mkdir -p "$metadir"
 	"$java" -Xmx1g -cp "$jar" tlc2.TLC -workers 1 -metadir "$metadir" \
-		-config "$tla/$cfg.cfg" "$tla/Move.tla" >"$log" 2>&1
+		-config "$tla/$cfg.cfg" "$tla/$spec.tla" >"$log" 2>&1
 }
 
 # tla_counts prints "N states, M distinct, depth D" from a TLC log.
@@ -108,26 +113,32 @@ check_tla() {
 	out="$root/build/tla"
 	mkdir -p "$out"
 
-	log="$out/Move.log"
-	if run_tla "$java" "$jar" Move "$out/Move.states" "$log"; then
-		echo "   ok   Move ($(tla_counts "$log"))"
-	else
-		echo "   FAIL Move: see $log"
-		failed=1
-	fi
-
-	for cfg in "$tla"/Mutant*.cfg; do
-		name="$(basename "$cfg" .cfg)"
-		expected="$(sed -n 's/^\\\* expect-violation: *//p' "$cfg")"
-		log="$out/$name.log"
-		code=0
-		run_tla "$java" "$jar" "$name" "$out/$name.states" "$log" || code=$?
-		if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
-			echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+	# A specification's mutant configurations are named for it: Mutant*.cfg
+	# for Move, which came first, and KhepriMutant*.cfg for KhepriMove.
+	local spec prefix
+	for spec in Move KhepriMove; do
+		prefix="${spec%Move}"
+		log="$out/$spec.log"
+		if run_tla "$java" "$jar" "$spec" "$spec" "$out/$spec.states" "$log"; then
+			echo "   ok   $spec ($(tla_counts "$log"))"
 		else
-			echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
+			echo "   FAIL $spec: see $log"
 			failed=1
 		fi
+
+		for cfg in "$tla/${prefix}Mutant"*.cfg; do
+			name="$(basename "$cfg" .cfg)"
+			expected="$(sed -n 's/^\\\* expect-violation: *//p' "$cfg")"
+			log="$out/$name.log"
+			code=0
+			run_tla "$java" "$jar" "$spec" "$name" "$out/$name.states" "$log" || code=$?
+			if [ "$code" -eq 12 ] && grep -q "Invariant $expected is violated" "$log"; then
+				echo "   ok   $name (violates $expected: $(tla_counts "$log"))"
+			else
+				echo "   FAIL $name: TLC exited $code, expected a violation of $expected, see $log"
+				failed=1
+			fi
+		done
 	done
 }
 
