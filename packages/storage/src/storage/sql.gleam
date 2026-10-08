@@ -1664,6 +1664,50 @@ pub fn ledger_unacked_keys_decoder() -> decode.Decoder(LedgerUnackedKeys) {
   decode.success(LedgerUnackedKeys(op:, step:, source_index:, state:))
 }
 
+pub fn insert_ledger_release(
+  session session: String,
+  workspace workspace: String,
+  incarnation incarnation: Int,
+  was was: String,
+  released_at_ms released_at_ms: Int,
+) {
+  let sql =
+    "INSERT INTO scope_release(session, workspace, incarnation, was, released_at_ms)
+VALUES (?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+    dev.ParamInt(incarnation),
+    dev.ParamString(was),
+    dev.ParamInt(released_at_ms),
+  ])
+}
+
+pub type LedgerReleases {
+  LedgerReleases(
+    workspace: String,
+    incarnation: Int,
+    was: String,
+    released_at_ms: Int,
+  )
+}
+
+pub fn ledger_releases(session session: String) {
+  let sql =
+    "SELECT workspace, incarnation, was, released_at_ms FROM scope_release
+WHERE session = ?
+ORDER BY id"
+  #(sql, [dev.ParamString(session)], ledger_releases_decoder())
+}
+
+pub fn ledger_releases_decoder() -> decode.Decoder(LedgerReleases) {
+  use workspace <- decode.field(0, decode.string)
+  use incarnation <- decode.field(1, decode.int)
+  use was <- decode.field(2, decode.string)
+  use released_at_ms <- decode.field(3, decode.int)
+  decode.success(LedgerReleases(workspace:, incarnation:, was:, released_at_ms:))
+}
+
 pub type HistorySourceHeader {
   HistorySourceHeader(metadata_bytes: Int, next_seq: Option(Int))
 }
