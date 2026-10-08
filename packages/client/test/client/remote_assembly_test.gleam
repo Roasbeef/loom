@@ -153,7 +153,11 @@ fn settings() -> serve.Settings {
   )
 }
 
-fn opened(settings: serve.Settings, id: ids.SessionId, reach: workspace.Reach) {
+fn opened(
+  settings: serve.Settings,
+  id: ids.SessionId,
+  placement: workspace.Placement,
+) {
   let results = process.new_subject()
   let assert Ok(prepared) =
     host.prepare(
@@ -164,7 +168,7 @@ fn opened(settings: serve.Settings, id: ids.SessionId, reach: workspace.Reach) {
           log.discard(),
           owner,
           None,
-          reach,
+          placement,
         )
       },
       fatal: serve.instance_children,
@@ -178,8 +182,8 @@ fn opened(settings: serve.Settings, id: ids.SessionId, reach: workspace.Reach) {
   #(prepared, results)
 }
 
-fn assembled(settings, id, reach) {
-  let #(prepared, results) = opened(settings, id, reach)
+fn assembled(settings, id, placement) {
+  let #(prepared, results) = opened(settings, id, placement)
   let assert Ok(Ok(instance)) = process.receive(results, 10_000)
     as "the registered session assembles"
   #(prepared, instance)
@@ -213,7 +217,7 @@ pub fn a_registered_session_opens_without_touching_its_name_here_test() {
   let #(probe, executor) = standard_executor()
 
   let #(prepared, instance) =
-    assembled(settings, identity(1), rig.reach(executor))
+    assembled(settings, identity(1), rig.placement(executor))
 
   // Nothing was made, probed or canonicalized for the registered name, and no
   // helper pool exists on this machine.
@@ -224,7 +228,8 @@ pub fn a_registered_session_opens_without_touching_its_name_here_test() {
   assert instance.plane.census.workspace == rig.executor_root
   assert instance.plane.fatal == []
   assert list.length(fixtures.builds(probe)) == 1
-  assert scope.read(instance.runtime.session) == Ok(Some(scope.Scope(1, None)))
+  assert scope.read(instance.runtime.session)
+    == Ok(Some(scope.Scope(1, None, Some(rig.executor_name))))
 
   assert host.close(prepared, within_ms: 10_000) == custody.Closed
   rig.stop(executor)
@@ -239,7 +244,7 @@ pub fn the_baseline_git_observation_runs_on_the_executors_broker_test() {
   let #(_probe, executor, attempts) = observed_executor()
 
   let #(prepared, _instance) =
-    assembled(settings, identity(6), rig.reach(executor))
+    assembled(settings, identity(6), rig.placement(executor))
 
   assert fixtures.marked(attempts) != []
   assert host.close(prepared, within_ms: 10_000) == custody.Closed
@@ -251,7 +256,7 @@ pub fn the_prompt_is_built_from_the_census_in_its_order_test() {
   let #(_probe, executor) = standard_executor()
 
   let #(prepared, instance) =
-    assembled(settings, identity(2), rig.reach(executor))
+    assembled(settings, identity(2), rig.placement(executor))
   let text = instance.prompt.text
 
   // The operator's guidance is read here and the workspace's arrives in the
@@ -283,7 +288,7 @@ pub fn a_workspace_call_runs_on_the_executor_and_an_owner_call_runs_here_test() 
   let settings = settings()
   let #(probe, executor) = standard_executor()
   let #(prepared, instance) =
-    assembled(settings, identity(3), rig.reach(executor))
+    assembled(settings, identity(3), rig.placement(executor))
 
   let assert Ok(op) = api.prompt(instance.runtime, [user("read it")])
   let assert Ok(_) = api.await_result(instance.runtime, op, within_ms: 60_000)
@@ -306,7 +311,7 @@ pub fn closing_records_the_outcome_and_the_next_open_attaches_higher_test() {
   let settings = settings()
   let #(probe, executor) = standard_executor()
   let #(prepared, _instance) =
-    assembled(settings, identity(4), rig.reach(executor))
+    assembled(settings, identity(4), rig.placement(executor))
 
   assert host.close(prepared, within_ms: 10_000) == custody.Closed
 
@@ -320,13 +325,16 @@ pub fn closing_records_the_outcome_and_the_next_open_attaches_higher_test() {
       clock: clock.fixed(at: 1),
     )
   assert scope.read(reopened)
-    == Ok(Some(scope.Scope(1, Some(protocol.AllRetired))))
+    == Ok(
+      Some(scope.Scope(1, Some(protocol.AllRetired), Some(rig.executor_name))),
+    )
   assert retire() == Ok(Nil)
 
   // The session opens again: the executor reopens its scope one higher.
   let #(second, instance) =
-    assembled(settings, identity(4), rig.reach(executor))
-  assert scope.read(instance.runtime.session) == Ok(Some(scope.Scope(2, None)))
+    assembled(settings, identity(4), rig.placement(executor))
+  assert scope.read(instance.runtime.session)
+    == Ok(Some(scope.Scope(2, None, Some(rig.executor_name))))
   assert list.length(fixtures.builds(probe)) == 2
   assert host.close(second, within_ms: 10_000) == custody.Closed
   rig.stop(executor)
@@ -336,9 +344,17 @@ pub fn an_unreachable_executor_fails_the_open_with_its_prefix_test() {
   let settings = settings()
   let #(_probe, executor) = standard_executor()
   let down =
-    workspace.Reach(..rig.reach(executor), connect: fn() {
-      Error("the peer refused the handshake")
-    })
+    rig.placement_of(
+      [
+        rig.candidate_over(
+          rig.executor_name,
+          workspace.Reach(..rig.reach(executor), connect: fn() {
+            Error("the peer refused the handshake")
+          }),
+        ),
+      ],
+      fn(_name) { Nil },
+    )
 
   let #(prepared, results) = opened(settings, identity(5), down)
   let assert Ok(Error(reason)) = process.receive(results, 10_000)

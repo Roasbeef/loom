@@ -9,6 +9,7 @@
 import broker/broker
 import broker/exec
 import broker/token
+import client/executors
 import client/remote/address
 import client/remote/host
 import client/remote/protocol
@@ -19,8 +20,10 @@ import client/workspace_plane
 import client/workspace_policy
 import core/clock
 import core/json
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{Some}
+import gleam/result
 import runtime/effects
 import storage/exec_ledger
 import support/remote_fixtures as fixtures
@@ -153,16 +156,41 @@ pub fn start(factory: host.PlaneFactory(RemoteCensus)) -> Executor {
   start_at(path, factory)
 }
 
+/// Starts a host that admits at most `scopes` scopes that are not cleanly
+/// closed, over a fresh ledger.
+pub fn start_limited(
+  factory: host.PlaneFactory(RemoteCensus),
+  scopes scopes: Int,
+) -> Executor {
+  let path = fixtures.scratch("orchestrator") <> "/ledger.db"
+  start_with(
+    path,
+    factory,
+    exec_ledger.Limits(
+      ..exec_ledger.default_limits(),
+      max_unclean_scopes: scopes,
+    ),
+  )
+}
+
 /// Starts a host over the ledger at `path`.
 pub fn start_at(
   path: String,
   factory: host.PlaneFactory(RemoteCensus),
 ) -> Executor {
+  start_with(path, factory, exec_ledger.default_limits())
+}
+
+fn start_with(
+  path: String,
+  factory: host.PlaneFactory(RemoteCensus),
+  limits: exec_ledger.Limits,
+) -> Executor {
   let assert Ok(started) =
     host.start(host.Config(
       name: process.new_name("orchestrator_test_host"),
       ledger_path: path,
-      limits: exec_ledger.default_limits(),
+      limits:,
       max_result_bytes: 65_536,
       clock: clock.fixed(at: 1000),
       factory:,
@@ -197,14 +225,73 @@ pub fn quiet() {
   fixtures.quiet_services()
 }
 
+/// The executor name a single-executor placement of this family uses.
+pub const executor_name = "box"
+
+/// A candidate named `name` that declares nothing and is reached over `reach`.
+pub fn candidate_over(
+  name: String,
+  reach: workspace.Reach,
+) -> workspace.Candidate {
+  workspace.Candidate(
+    executor: executors.plain(name, name <> "@127.0.0.1"),
+    reach:,
+  )
+}
+
+/// A candidate named `name` for a running executor, declaring nothing.
+pub fn candidate(name: String, executor: Executor) -> workspace.Candidate {
+  candidate_over(name, reach(executor))
+}
+
+/// The same candidate with a declaration of the executor's machine.
+pub fn declaring(
+  found: workspace.Candidate,
+  declaration: fn(executors.Executor) -> executors.Executor,
+) -> workspace.Candidate {
+  workspace.Candidate(..found, executor: declaration(found.executor))
+}
+
+/// A placement over `candidates`: the first open tries them in order, a record
+/// naming one finds it by name, and `chosen` is told the name an attach chose.
+pub fn placement_of(
+  candidates: List(workspace.Candidate),
+  chosen: fn(String) -> Nil,
+) -> workspace.Placement {
+  workspace.Placement(
+    first: fn() { Ok(candidates) },
+    named: fn(name) {
+      list.find(candidates, fn(each) { each.executor.name == name })
+      |> result.replace_error(
+        "executor_unavailable: no executor named " <> name,
+      )
+    },
+    chosen:,
+  )
+}
+
+/// A placement whose one candidate is `executor`, named `executor_name`.
+pub fn placement(executor: Executor) -> workspace.Placement {
+  placement_of([candidate(executor_name, executor)], fn(_name) { Nil })
+}
+
 /// A registered-session configuration over `executor` for the given store.
 pub fn registered(
   executor: Executor,
   opened,
   local: clock.Clock,
 ) -> workspace.Registered {
+  registered_in(placement(executor), opened, local)
+}
+
+/// A registered-session configuration over any placement.
+pub fn registered_in(
+  placement: workspace.Placement,
+  opened,
+  local: clock.Clock,
+) -> workspace.Registered {
   workspace.Registered(
-    reach: reach(executor),
+    placement:,
     session: "registered-session",
     workspace: "registered-name",
     opened:,
@@ -212,4 +299,73 @@ pub fn registered(
     clock: local,
     reconcile_every_ms: 60_000,
   )
+}
+
+/// A host-shaped proxy in front of `real` that stands for a link breaking right
+/// after an attach was delivered. It forwards the first attach to the real
+/// host with a reply address nobody reads and then exits, so the real host
+/// creates the scope and answers into the void, while the orchestrator sees its
+/// executor go away without a word. Anything that arrives before the attach
+/// passes through unchanged.
+///
+/// The returned `Executor` is the proxy's: build a candidate over it. Pair it
+/// with `one_connection`, so the orchestrator cannot repair the link.
+pub fn lossy_link(real: Executor) -> Executor {
+  let name = process.new_name("orchestrator_test_lossy")
+  let ready = process.new_subject()
+  let pid =
+    process.spawn_unlinked(fn() {
+      let assert Ok(Nil) = process.register(process.self(), name)
+        as "the proxy registers its name"
+      process.send(ready, Nil)
+      lose_first_attach(real, process.named_subject(name))
+    })
+  let assert Ok(Nil) = process.receive(ready, 5000) as "the proxy starts"
+  Executor(pid:, address: address.Address(node: real.address.node, name:))
+}
+
+fn lose_first_attach(
+  real: Executor,
+  inbox: Subject(protocol.HostMessage(RemoteCensus)),
+) -> Nil {
+  case process.receive_forever(inbox) {
+    protocol.Attach(
+      version:,
+      session:,
+      workspace:,
+      incarnation:,
+      token:,
+      owner_port:,
+      reply: _,
+    ) ->
+      address.deliver(
+        real.address,
+        protocol.Attach(
+          version:,
+          session:,
+          workspace:,
+          incarnation:,
+          token:,
+          owner_port:,
+          reply: process.new_subject(),
+        ),
+      )
+    message -> {
+      address.deliver(real.address, message)
+      lose_first_attach(real, inbox)
+    }
+  }
+}
+
+/// A `connect` that succeeds once and fails after that, for an orchestrator
+/// whose first connection works and whose repairs do not.
+pub fn one_connection() -> fn() -> Result(Nil, String) {
+  let connections = process.new_subject()
+  process.send(connections, Nil)
+  fn() {
+    case process.receive(connections, 0) {
+      Ok(Nil) -> Ok(Nil)
+      Error(Nil) -> Error("the link is down")
+    }
+  }
 }

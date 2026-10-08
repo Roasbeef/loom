@@ -39,6 +39,7 @@ fn config(
       peer_defaults.off,
       [],
       [],
+      [],
     ),
     state_root: state,
     session_defaults: arguments,

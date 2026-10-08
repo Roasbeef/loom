@@ -404,6 +404,9 @@ type Message(instance) {
   /// is no reply: the sender is a hub that must not wait on the registry.
   SeedSubtitle(String, String)
 
+  /// Records the executor a pooled session's first attach chose, once.
+  SeedExecutor(String, String)
+
   /// A folder a session was just created in, to be remembered. There is no
   /// reply: the creation has already succeeded and a failed write only means
   /// the folder is not offered again.
@@ -1100,6 +1103,31 @@ pub fn seed_subtitle(
   prompt: String,
 ) -> Nil {
   process.send(manager.commands, SeedSubtitle(id, prompt))
+}
+
+/// Records which executor a pooled session's first attach chose, without
+/// waiting.
+///
+/// The session's own assembly calls this once, after the first attach that
+/// succeeded, and the write runs in the registry's turn, which serializes it
+/// with every other catalogue change. The catalogue keeps the first executor it
+/// is given and ignores a session that named its executor or no pool
+/// (`catalogue.seed_executor`). The session's own store already names the
+/// executor, and that record decides every later open, so a failed write leaves
+/// a listing without the executor and changes nothing else; it is not reported.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.seed_executor(registry, session_id, "build-box")
+/// ```
+@internal
+pub fn seed_executor(
+  manager: Manager(instance),
+  id: String,
+  executor: String,
+) -> Nil {
+  process.send(manager.commands, SeedExecutor(id, executor))
 }
 
 /// Remembers a folder a session was just created in, without waiting
@@ -2037,6 +2065,10 @@ fn handle(
     }
     SeedSubtitle(id, prompt) -> {
       let _written = catalogue.seed_subtitle(book.catalogue, id, prompt)
+      sm.keep(book)
+    }
+    SeedExecutor(id, executor) -> {
+      let _written = catalogue.seed_executor(book.catalogue, id, executor)
       sm.keep(book)
     }
     RememberFolder(workspace) -> {

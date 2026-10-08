@@ -2898,16 +2898,16 @@ pub fn assemble_in_domain(
 /// Assembles one reserved session whose workspace is registered on an executor.
 ///
 /// The conversation half is built here exactly as `assemble_in_domain` builds
-/// it. The workspace half is the executor's, reached through `reach`: the
-/// registered name in `settings.workspace` is carried to the executor and
-/// never opened, created or canonicalized on this machine. A connection or
-/// attach that fails fails the assembly with a reason beginning
+/// it. The workspace half is the executor's, chosen and reached through
+/// `placement`: the registered name in `settings.workspace` is carried to the
+/// executor and never opened, created or canonicalized on this machine. A
+/// connection or attach that fails fails the assembly with a reason beginning
 /// `executor_unavailable:`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // serve.assemble_registered(settings, id, logger, owner, services, reach)
+/// // serve.assemble_registered(settings, id, logger, owner, services, placement)
 /// ```
 @internal
 pub fn assemble_registered(
@@ -2916,9 +2916,16 @@ pub fn assemble_registered(
   logger: Logger,
   owner: custody.Owner,
   services: Option(domain_service.Services),
-  reach: remote_workspace.Reach,
+  placement: remote_workspace.Placement,
 ) -> Result(Instance, String) {
-  assemble_owned_with(settings, reserved, logger, owner, services, Some(reach))
+  assemble_owned_with(
+    settings,
+    reserved,
+    logger,
+    owner,
+    services,
+    Some(placement),
+  )
 }
 
 fn assemble_owned_with(
@@ -3068,7 +3075,7 @@ pub fn storage_open_refusal(error: session.OpenError) -> String {
 // Where the workspace half of the session in this assembly is, once chosen.
 type Home {
   Here(prepared: workspace_plane.Prepared)
-  There(reach: remote_workspace.Reach)
+  There(placement: remote_workspace.Placement)
 }
 
 // What the rest of the assembly reads of the workspace half, whichever machine
@@ -3184,7 +3191,7 @@ fn assemble_in(
   namespace: address.Registry,
   ownership: Option(#(custody.Owner, ids.SessionId)),
   services: Option(domain_service.Services),
-  registered: Option(remote_workspace.Reach),
+  registered: Option(remote_workspace.Placement),
 ) -> Result(Instance, String) {
   let owner = option.map(ownership, fn(pair) { pair.0 })
   let builder = process.self()
@@ -3216,7 +3223,7 @@ fn assemble_in(
   // its own toolchain when the scope attaches. Nothing in this branch names
   // the registered workspace on this machine's disk.
   use home <- result.try(case registered {
-    Some(reach) -> Ok(There(reach))
+    Some(placement) -> Ok(There(placement))
     None ->
       workspace_plane.prepare(
         workspace_spec(
@@ -3515,10 +3522,10 @@ fn assemble_in(
         ),
       )
       |> result.map(here(prepared, clock, _))
-    There(reach) ->
+    There(placement) ->
       there(
         remote_workspace.Registered(
-          reach:,
+          placement:,
           session: settings.session_id,
           workspace: settings.workspace,
           opened:,

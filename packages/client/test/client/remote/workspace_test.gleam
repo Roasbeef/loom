@@ -57,7 +57,8 @@ pub fn an_attach_records_the_open_and_builds_the_plane_from_the_census_test() {
   let hands = attached(executor, opened)
 
   assert hands.incarnation == 1
-  assert scope.read(opened) == Ok(Some(scope.Scope(1, None)))
+  assert scope.read(opened)
+    == Ok(Some(scope.Scope(1, None, Some(rig.executor_name))))
   assert hands.tools == rig.standard_tools()
   assert hands.plane.census.workspace == rig.executor_root
   assert hands.plane.fatal == []
@@ -112,11 +113,14 @@ pub fn a_clean_close_is_recorded_and_the_next_open_attaches_one_higher_test() {
   first.plane.close()
 
   assert scope.read(opened)
-    == Ok(Some(scope.Scope(1, Some(protocol.AllRetired))))
+    == Ok(
+      Some(scope.Scope(1, Some(protocol.AllRetired), Some(rig.executor_name))),
+    )
   assert fixtures.closes(probe) == 1
   let second = attached(executor, opened)
   assert second.incarnation == 2
-  assert scope.read(opened) == Ok(Some(scope.Scope(2, None)))
+  assert scope.read(opened)
+    == Ok(Some(scope.Scope(2, None, Some(rig.executor_name))))
   rig.stop(executor)
 }
 
@@ -142,7 +146,13 @@ pub fn a_close_with_unknown_cleanup_gets_no_successor_test() {
   first.plane.close()
 
   assert scope.read(opened)
-    == Ok(Some(scope.Scope(1, Some(protocol.UnknownCleanup(2)))))
+    == Ok(
+      Some(scope.Scope(
+        1,
+        Some(protocol.UnknownCleanup(2)),
+        Some(rig.executor_name),
+      )),
+    )
   let assert Error(reason) =
     workspace.attach(rig.registered(executor, opened, clock.fixed(at: 1000)))
   assert string.starts_with(reason, "executor_unavailable: ")
@@ -159,7 +169,8 @@ pub fn a_record_out_of_step_with_the_executor_fails_naming_both_numbers_test() {
 
   // The record claims the scope was reopened five times; the executor's
   // ledger says it was closed at incarnation one.
-  let assert Ok(Nil) = scope.write(opened, scope.Scope(5, None))
+  let assert Ok(Nil) =
+    scope.write(opened, scope.Scope(5, None, Some(rig.executor_name)))
   let assert Error(reason) =
     workspace.attach(rig.registered(executor, opened, clock.fixed(at: 1000)))
 
@@ -174,11 +185,20 @@ pub fn an_unreachable_executor_fails_before_anything_is_recorded_test() {
   let executor = standard(probe, protocol.AllRetired)
   let opened = store()
   let down =
-    workspace.Registered(
-      ..rig.registered(executor, opened, clock.fixed(at: 1000)),
-      reach: workspace.Reach(..rig.reach(executor), connect: fn() {
-        Error("the handshake was refused")
-      }),
+    rig.registered_in(
+      rig.placement_of(
+        [
+          rig.candidate_over(
+            rig.executor_name,
+            workspace.Reach(..rig.reach(executor), connect: fn() {
+              Error("the handshake was refused")
+            }),
+          ),
+        ],
+        fn(_name) { Nil },
+      ),
+      opened,
+      clock.fixed(at: 1000),
     )
 
   assert workspace.attach(down)

@@ -12,20 +12,51 @@
 //// `attach` runs once per session open, in this order, and each step is
 //// there because the next one needs it.
 ////
-//// 1. The peer is connected, so a dead executor fails the open before any
-////    state is touched. The failure keeps the `executor_unavailable:` prefix
-////    an operator already greps for.
-//// 2. The incarnation is chosen from the scope record in the session's own
-////    store (`client/remote/scope`).
-//// 3. The owner port starts over the same `OwnerServices` a local session
+//// 1. The candidates are chosen from the scope record in the session's own
+////    store (`client/remote/scope`). A record that names an executor makes it
+////    the only candidate, ever. With no record, a session on one executor has
+////    that executor, and a session in a pool has the pool's executors in the
+////    order the configuration lists them.
+//// 2. The candidate's peer is connected, so a dead executor fails before any
+////    state is touched. The failure keeps the `executor_unavailable:` prefix an
+////    operator already greps for.
+//// 3. The record is written, naming the executor and the incarnation chosen
+////    from it (`scope.attach_at`). It is written before the attach is sent, so
+////    an attach whose reply is lost leaves the orchestrator knowing which
+////    machine may hold the scope. The next open goes back to that machine, and
+////    the ledger's rebind makes the retry converge.
+//// 4. The owner port starts over the same `OwnerServices` a local session
 ////    builds, because the executor's workspace calls back through it.
-//// 4. The surface attaches with a fresh token. Every strand and every runtime
+//// 5. The surface attaches with a fresh token. Every strand and every runtime
 ////    restart inside this open shares that one surface and token. A second
 ////    attach would rotate the token and make the executor refuse another
 ////    strand's live `Run`, so nothing below this module attaches again;
 ////    orphaned calls are settled through the executor's per-key fence.
-//// 5. The attach is recorded in the scope record, and the plane is built from
-////    the census the attach returned.
+//// 6. The census the attach returned is compared with what the operator
+////    declared for the executor. A contradiction closes the scope, which frees
+////    its slot, and fails the open naming both values.
+//// 7. The plane is built from the census, and the placement is told which
+////    executor holds the session so the catalogue can show it. This happens
+////    after every successful attach, because an earlier open whose reply was
+////    lost may have named the executor in the record without the catalogue
+////    hearing of it.
+////
+//// ## When another executor is tried
+////
+//// Only the first open of a session ever has more than one candidate, and it
+//// goes to the next candidate in two cases, both of which prove no scope exists
+//// anywhere: the connection to a candidate failed before the attach was sent,
+//// or the executor answered that it already holds its limit of scopes. The
+//// ledger refuses for capacity inside the attach transaction and before any
+//// plane is built, so the checkout was never touched. The record is removed
+//// again after such a refusal, so the next open starts from the same candidates.
+////
+//// Everything else fails the open and leaves the record naming its executor:
+//// an attach that got no answer may have created the scope, a refusal for
+//// another reason came from a machine that has or had the session, and a scope
+//// that was created but whose plane failed to build is the session's. A
+//// capacity refusal on a later open is the same failure, not a reason to move,
+//// because the session's checkout exists only on the executor the record names.
 ////
 //// ## Two clocks
 ////
@@ -53,12 +84,14 @@ import client/executors
 import client/jobs
 import client/jobstate
 import client/owner_services.{type OwnerServices}
+import client/pools
 import client/remote/address.{type Address}
 import client/remote/owner_port
 import client/remote/protocol.{type Key}
 import client/remote/remote_census.{type RemoteCensus}
-import client/remote/scope
+import client/remote/scope.{type Scope}
 import client/remote/surface
+import client/system_prompt
 import client/tool_placement
 import client/wiring
 import client/workspace_plane.{type WorkspacePlane}
@@ -92,11 +125,43 @@ pub type Reach {
   )
 }
 
+/// One executor an open may attach to: its configured row, which carries what
+/// the operator declared about the machine, and how to reach it.
+pub type Candidate {
+  Candidate(
+    /// The `[executors.<name>]` row.
+    executor: executors.Executor,
+    /// How to reach it.
+    reach: Reach,
+  )
+}
+
+/// Where a session's workspace may be placed, as an open asks about it.
+///
+/// Three questions, each a function so that the configuration, the membership
+/// and the catalogue stay on the daemon's side of this module.
+pub type Placement {
+  Placement(
+    /// The candidates for a session that has no scope record yet, in the order
+    /// they are tried, or why there are none. It is asked only when the record
+    /// is absent, so a session that already has an executor never consults a
+    /// pool that has since changed.
+    first: fn() -> Result(List(Candidate), String),
+    /// The candidate for a configured executor by name, for a scope record that
+    /// names one. The executor need not still be in the pool.
+    named: fn(String) -> Result(Candidate, String),
+    /// Told the name of the executor that holds the session after each attach
+    /// that succeeded. The daemon writes it into the catalogue, which keeps the
+    /// first one it is given.
+    chosen: fn(String) -> Nil,
+  )
+}
+
 /// What an open needs to assemble the workspace half.
 pub type Registered {
   Registered(
-    /// The executor.
-    reach: Reach,
+    /// Where the workspace may be placed.
+    placement: Placement,
     /// The orchestrator's session id, which keys the executor's ledger.
     session: String,
     /// The workspace's registered name. It is carried to the executor and
@@ -142,7 +207,17 @@ pub type Hands {
 // before it answers.
 const close_within_ms = 60_000
 
-/// Connects to the executor, attaches the session's scope and builds the
+// Why one candidate did not hold the session.
+type Attempt {
+  // The candidate provably created no scope, and the open may try the next one.
+  // `reason` says why, with no executor prefix.
+  Declined(executor: String, reason: String)
+
+  // The open fails with this reason, already worded for the operator.
+  Failed(reason: String)
+}
+
+/// Chooses an executor, attaches the session's scope to it and builds the
 /// workspace half from the census.
 ///
 /// ## Examples
@@ -151,13 +226,84 @@ const close_within_ms = 60_000
 /// // let assert Ok(hands) = workspace.attach(registered)
 /// ```
 pub fn attach(registered: Registered) -> Result(Hands, String) {
-  let reach = registered.reach
+  use stored <- result.try(scope.read(registered.opened))
+  use candidates <- result.try(case scope.executor_of(stored) {
+    Some(name) ->
+      registered.placement.named(name) |> result.map(fn(found) { [found] })
+    None -> registered.placement.first()
+  })
+  try_in_order(registered, stored, candidates, [])
+}
+
+// Tries each candidate in the order given. Only a first open can have a
+// candidate left over, because a record that names an executor is the only
+// candidate there is.
+fn try_in_order(
+  registered: Registered,
+  stored: Option(Scope),
+  candidates: List(Candidate),
+  declined: List(Attempt),
+) -> Result(Hands, String) {
+  case candidates {
+    [] -> Error(none_accepted(list.reverse(declined)))
+    [candidate, ..rest] ->
+      case attach_to(registered, stored, candidate) {
+        Ok(hands) -> Ok(hands)
+        Error(Failed(reason)) -> Error(reason)
+        Error(Declined(..) as attempt) ->
+          try_in_order(registered, stored, rest, [attempt, ..declined])
+      }
+  }
+}
+
+// The reason an open ends when every candidate declined. One candidate keeps
+// its own reason, which is the message a session on a named executor has always
+// had.
+fn none_accepted(declined: List(Attempt)) -> String {
+  case declined {
+    [Declined(reason:, ..)] -> unavailable(reason)
+    [] -> unavailable("no executor is available for this session")
+    many ->
+      unavailable(
+        "no executor accepted the session: "
+        <> string.join(
+          list.map(many, fn(attempt) {
+            case attempt {
+              Declined(executor:, reason:) -> executor <> ": " <> reason
+              Failed(reason:) -> reason
+            }
+          }),
+          "; ",
+        ),
+      )
+  }
+}
+
+fn attach_to(
+  registered: Registered,
+  stored: Option(Scope),
+  candidate: Candidate,
+) -> Result(Hands, Attempt) {
+  let reach = candidate.reach
+  let name = candidate.executor.name
+  let first_open = option.is_none(stored)
+
+  // A connection that fails has not sent the attach, so this candidate holds
+  // nothing for the session. If it was the only candidate, as it is whenever
+  // the record names an executor, the open ends with this reason.
   use Nil <- result.try(
     reach.connect()
-    |> result.map_error(fn(reason) { unavailable(reason) }),
+    |> result.map_error(fn(reason) { Declined(name, reason) }),
   )
-  use stored <- result.try(scope.read(registered.opened))
+
+  // The record names the executor before the attach can reach it. If the reply
+  // to the attach is lost, the next open finds this record and goes back to the
+  // same machine.
   let incarnation = scope.attach_at(stored)
+  use Nil <- result.try(
+    scope.write(registered.opened, scope.Scope(incarnation, None, Some(name)))
+    |> result.map_error(fn(reason) { Failed(unavailable(reason)) }),
+  )
   use port <- result.try(
     owner_port.start(owner_port.Config(
       services: registered.owner,
@@ -165,7 +311,7 @@ pub fn attach(registered: Registered) -> Result(Hands, String) {
       settled: fn(key) { settled(registered.opened, key) },
       reconcile_every_ms: registered.reconcile_every_ms,
     ))
-    |> result.map_error(unavailable),
+    |> result.map_error(fn(reason) { Failed(unavailable(reason)) }),
   )
   let attached =
     surface.attach(surface.Config(
@@ -182,31 +328,72 @@ pub fn attach(registered: Registered) -> Result(Hands, String) {
     ))
   let received = clock.read(registered.clock).0
   case attached {
+    // The executor refused for capacity inside the attach transaction, before it
+    // built a plane, so on a first open it holds nothing for this session and
+    // the record that named it is withdrawn.
+    Error(protocol.CapacityExhausted(..) as refusal) if first_open -> {
+      owner_port.stop(port)
+      case scope.clear(registered.opened) {
+        Ok(Nil) -> Error(Declined(name, protocol.describe(refusal)))
+        Error(reason) -> Error(Failed(unavailable(reason)))
+      }
+    }
     Error(refusal) -> {
       owner_port.stop(port)
-      Error(refused(refusal, incarnation))
+      Error(Failed(refused(refusal, incarnation)))
     }
-    Ok(surface.Attachment(surface: attached, attached: reply)) ->
-      case scope.write(registered.opened, scope.Scope(incarnation, None)) {
-        Error(reason) -> {
+    Ok(surface.Attachment(surface: joined, attached: reply)) ->
+      case executors.contradiction(candidate.executor, observed(reply.census)) {
+        Error(contradiction) -> {
+          // The scope exists and is idle. Closing it returns its slot to the
+          // executor at once and records a clean close, so fixing the
+          // declaration and opening again reattaches at the next incarnation.
+          close_scope(registered, candidate, incarnation)
           owner_port.stop(port)
-          Error(unavailable(reason))
+          Error(Failed(unavailable(contradiction)))
         }
-        Ok(Nil) ->
+        Ok(Nil) -> {
+          // Told after every attach that succeeded, not only the first open's.
+          // An earlier open whose reply was lost left the record naming this
+          // executor without the catalogue ever hearing of it, and the
+          // catalogue keeps only the first executor it is given.
+          registered.placement.chosen(name)
           Ok(build(
             registered,
+            candidate,
             port,
             incarnation,
-            surface.functions(attached),
+            surface.functions(joined),
             reply.census,
             received,
           ))
+        }
       }
   }
 }
 
+// The three facts a declaration makes claims about, read from a census.
+fn observed(remote: RemoteCensus) -> executors.Observed {
+  let census = remote.census
+  executors.Observed(
+    platform: system_prompt.platform(census.platform),
+    enforcement: case remote.prompt.helper {
+      workspace_plane.Healthy -> executors.Enforced
+      workspace_plane.Degraded -> executors.Degraded
+    },
+    toolchains: list.append(
+      case census.toolchain {
+        Ok(_found) -> ["codemode"]
+        Error(_reason) -> []
+      },
+      list.map(census.lsp_servers, fn(server) { server.name }),
+    ),
+  )
+}
+
 fn build(
   registered: Registered,
+  candidate: Candidate,
   port: owner_port.Port,
   incarnation: Int,
   functions: surface.Functions,
@@ -240,7 +427,7 @@ fn build(
       // not a fault of the session and nothing here is a fatal root.
       fatal: [],
       close: fn() {
-        close_scope(registered, incarnation)
+        close_scope(registered, candidate, incarnation)
         owner_port.stop(port)
       },
     ),
@@ -292,6 +479,23 @@ pub fn reach(
   configured: List(executors.Executor),
   name: String,
 ) -> Result(Reach, String) {
+  candidate(membership, configured, name)
+  |> result.map(fn(found) { found.reach })
+}
+
+/// The candidate for an `[executors.<name>]`: its row and the way to reach it.
+/// It fails as `reach` does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.candidate(Some(membership), configured, "build-box")
+/// ```
+pub fn candidate(
+  membership: Option(distribution.Membership),
+  configured: List(executors.Executor),
+  name: String,
+) -> Result(Candidate, String) {
   use membership <- result.try(option.to_result(
     membership,
     unavailable("this daemon was not started with [distribution]"),
@@ -306,17 +510,91 @@ pub fn reach(
     distribution.peer(membership, executor.node)
     |> result.map_error(fn(fault) { unavailable(distribution.describe(fault)) }),
   )
-  Ok(Reach(
-    address: address.Address(
-      node: distribution.node(peer),
-      name: address.default(),
+  Ok(Candidate(
+    executor:,
+    reach: Reach(
+      address: address.Address(
+        node: distribution.node(peer),
+        name: address.default(),
+      ),
+      connect: fn() {
+        distribution.connect(peer, connect_within_ms)
+        |> result.map_error(distribution.describe)
+      },
+      attach_within_ms: attach_within_ms,
     ),
-    connect: fn() {
-      distribution.connect(peer, connect_within_ms)
-      |> result.map_error(distribution.describe)
-    },
-    attach_within_ms: attach_within_ms,
   ))
+}
+
+/// The placement of a session registered on one named executor. The name is
+/// its only candidate, and `chosen` is told it after the first attach.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.fixed(Some(membership), configured, "build-box", fn(_name) { Nil })
+/// ```
+pub fn fixed(
+  membership: Option(distribution.Membership),
+  configured: List(executors.Executor),
+  name: String,
+  chosen: fn(String) -> Nil,
+) -> Placement {
+  Placement(
+    first: fn() {
+      candidate(membership, configured, name)
+      |> result.map(fn(found) { [found] })
+    },
+    named: fn(each) { candidate(membership, configured, each) },
+    chosen:,
+  )
+}
+
+/// The placement of a session created in a pool: the pool's executors that
+/// satisfy its requirements, in the order the configuration lists them, with
+/// the executors that cannot be reached left to the open to skip.
+///
+/// A pool that is not configured, or that no executor satisfies, is a reason
+/// the first open fails; a session that already has a scope record never asks.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.pooled(Some(membership), configured, pools, "linux", record_choice)
+/// ```
+pub fn pooled(
+  membership: Option(distribution.Membership),
+  configured: List(executors.Executor),
+  available: List(pools.Pool),
+  pool: String,
+  chosen: fn(String) -> Nil,
+) -> Placement {
+  Placement(
+    first: fn() {
+      use found <- result.try(
+        pools.find(available, pool)
+        |> result.map_error(fn(_missing) {
+          unavailable("no pool named " <> pool <> " is configured")
+        }),
+      )
+      case pools.candidates(found, configured) {
+        [] ->
+          Error(unavailable(
+            "no executor of pool "
+            <> pool
+            <> " satisfies its requirements ("
+            <> pools.requirements(found)
+            <> ")",
+          ))
+        admitted ->
+          list.try_map(admitted, fn(executor) {
+            candidate(membership, configured, executor.name)
+          })
+      }
+    },
+    named: fn(each) { candidate(membership, configured, each) },
+    chosen:,
+  )
 }
 
 const connect_within_ms = 10_000
@@ -438,11 +716,18 @@ fn live_jobs(
 
 // Asks the executor to close the scope and records what it reports. An answer
 // that is a refusal, or no answer, records nothing.
-fn close_scope(registered: Registered, incarnation: Int) -> Nil {
-  case ask_close(registered, incarnation, 2) {
+fn close_scope(
+  registered: Registered,
+  candidate: Candidate,
+  incarnation: Int,
+) -> Nil {
+  case ask_close(registered, candidate.reach, incarnation, 2) {
     Ok(closed) -> {
       let _written =
-        scope.write(registered.opened, scope.Scope(incarnation, Some(closed)))
+        scope.write(
+          registered.opened,
+          scope.Scope(incarnation, Some(closed), Some(candidate.executor.name)),
+        )
       Nil
     }
     Error(Nil) -> Nil
@@ -451,10 +736,10 @@ fn close_scope(registered: Registered, incarnation: Int) -> Nil {
 
 fn ask_close(
   registered: Registered,
+  reach: Reach,
   incarnation: Int,
   attempts: Int,
 ) -> Result(protocol.CloseOutcome, Nil) {
-  let reach = registered.reach
   let reply = process.new_subject()
   let watch = address.watch(reach.address)
   address.deliver(
@@ -480,7 +765,7 @@ fn ask_close(
     // already landed answers with a refusal, which records nothing.
     Ok(Error(Nil)) ->
       case attempts > 1, reach.connect() {
-        True, Ok(Nil) -> ask_close(registered, incarnation, attempts - 1)
+        True, Ok(Nil) -> ask_close(registered, reach, incarnation, attempts - 1)
         _, _ -> Error(Nil)
       }
     Error(Nil) -> Error(Nil)

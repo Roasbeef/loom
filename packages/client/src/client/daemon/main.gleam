@@ -40,6 +40,7 @@ import client/internal/ffi_os
 import client/peer_defaults
 import client/peer_mail
 import client/peers
+import client/pools
 import client/remote/address
 import client/remote/host as executor_host
 import client/remote/workspace
@@ -93,6 +94,9 @@ pub type Config {
     /// The executors sessions may be placed on, read from `[executors.<name>]`
     /// at startup and never reread (protocol-change/078).
     executors: List(executors.Executor),
+    /// The groups of those executors a session may be created in, read from
+    /// `[pools.<name>]` at startup and never reread (protocol-change/078).
+    pools: List(pools.Pool),
     /// The checkouts this machine serves to orchestrators, read from
     /// `[workspaces.<name>]` at startup and never reread (protocol-change/078).
     /// A daemon with none starts no executor host.
@@ -268,6 +272,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       [],
       ViewOff,
       peer_defaults.off,
+      [],
       [],
       [],
     )
@@ -557,6 +562,10 @@ pub fn prepare_startup(
     executors.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+  use pools <- result.try(
+    pools.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   use workspaces <- result.try(
     workspaces.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -566,7 +575,8 @@ pub fn prepare_startup(
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
   use membership <- result.try(start_distribution(document, configuration))
-  let config = Config(..config, view:, peer_policy:, executors:, workspaces:)
+  let config =
+    Config(..config, view:, peer_policy:, executors:, pools:, workspaces:)
   root.start(
     root.Config(
       config.state_root,
@@ -619,11 +629,17 @@ pub fn prepare_startup(
             }),
           )
 
-        // A workspace registered on an executor is assembled with the
-        // executor's host in reach, and a daemon that cannot reach it says so
-        // in the reason the opening operation reports.
-        case registration.executor {
-          "" ->
+        // A workspace registered on an executor, or in a pool of them, is
+        // assembled with the executor's host in reach, and a daemon that cannot
+        // reach one says so in the reason the opening operation reports. The
+        // session records the executor an open chose in its own store, and the
+        // catalogue is told once so that a listing can show it.
+        let session_id = registration.id
+        let chosen = fn(executor) {
+          manager.seed_executor(directory, session_id, executor)
+        }
+        case registration.executor, registration.pool {
+          "", "" ->
             serve.assemble_in_domain(
               settings,
               identity,
@@ -631,18 +647,30 @@ pub fn prepare_startup(
               owner,
               services,
             )
-          name ->
-            workspace.reach(membership, config.executors, name)
-            |> result.try(fn(reach) {
-              serve.assemble_registered(
-                settings,
-                identity,
-                logger,
-                owner,
-                Some(services),
-                reach,
-              )
-            })
+          name, "" ->
+            serve.assemble_registered(
+              settings,
+              identity,
+              logger,
+              owner,
+              Some(services),
+              workspace.fixed(membership, config.executors, name, chosen),
+            )
+          _, pool ->
+            serve.assemble_registered(
+              settings,
+              identity,
+              logger,
+              owner,
+              Some(services),
+              workspace.pooled(
+                membership,
+                config.executors,
+                config.pools,
+                pool,
+                chosen,
+              ),
+            )
         }
         |> diagnose_start(logger, identity, RuntimeAssembly)
         |> result.map(serve.resident)
