@@ -278,9 +278,9 @@ fn question(
 }
 
 // The sessions the form offers: the running ones the focused strand does not
-// already send into on the strand the form targets by default. Offering a
-// linked session would only be refused as a duplicate or, for a default link,
-// would create a grant beside one that already admits the same mail. A page
+// already send to, in any of its strands. Offering a linked session would only
+// be refused as a duplicate or, for a default link, would create a grant beside
+// one that already admits the same mail. A page
 // that has not read its board offers them all.
 fn linkable(
   board: option.Option(peer_links.Board),
@@ -289,9 +289,7 @@ fn linkable(
   case board {
     None -> sessions
     Some(board) ->
-      list.filter(sessions, fn(entry) {
-        !peer_links.sends_into(board, entry.0, peer_links.default_target)
-      })
+      list.filter(sessions, fn(entry) { !peer_links.sends_to(board, entry.0) })
   }
 }
 
