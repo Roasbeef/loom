@@ -14,6 +14,7 @@ not replaced or restarted.
 | --- | --- |
 | Terminal large-result wrapping | PR #925 merged as `fa4e45f8b`; hosted CI and exact-head Linux signoff are green. |
 | Code-mode/LSP readiness | PR #927 at `71887e1b7` is included here so both changes are tested together. Original head `d72948088` passed Linux signoff; fresh integrated-head CI/signoff are pending. |
+| `fs_edit` empty hunks | PR #919 advertises `minItems: 1` on the hunk array; the decoder already refused empty edits. Package gates, the affected gate and an independent review passed on the PR branch before this rebase. |
 | Browser complete-result access | Stable immutable-record URLs offer 16 KB pages and complete JSON attachments. |
 | Browser local validation | Full affected gate returned exit 0 in 329 seconds; no undeclared skip. |
 | Independent browser review | No HIGH/MEDIUM finding; two LOW cleanup findings applied. |
