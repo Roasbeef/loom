@@ -336,8 +336,13 @@ pub type Error {
 /// The most scopes an executor admits that are not cleanly closed.
 pub const max_unclean_scopes = 16
 
-/// The default byte budget: 256 MiB of reservations and unacknowledged outcomes.
-pub const default_max_ledger_bytes = 268_435_456
+/// The default byte budget: 512 MiB of reservations and unacknowledged outcomes.
+///
+/// The host reserves 16 MiB per call (twice the largest file `fs_read` returns,
+/// for base64 and JSON headroom), so sixteen live calls hold 256 MiB. The other
+/// half is room for settled results the orchestrator has not yet acknowledged,
+/// which count at their real size.
+pub const default_max_ledger_bytes = 536_870_912
 
 // The tool name a fence row carries. No tool ran, so the column holds a label
 // that no registered tool can be mistaken for.
