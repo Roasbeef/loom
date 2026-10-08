@@ -65,7 +65,10 @@ pub fn valid_table_parses_test() {
 
 pub fn boot_arguments_are_the_tls_flags_test() {
   assert distribution.boot_arguments("/o/opts")
-    == ["-proto_dist", "inet_tls", "-ssl_dist_optfile", "/o/opts"]
+    == [
+      "-proto_dist", "inet_tls", "-ssl_dist_optfile", "/o/opts", "-kernel",
+      "connect_all", "false",
+    ]
   assert distribution.launcher_variable == "LOOM_DISTRIBUTION_OPTFILE"
 }
 
@@ -166,7 +169,8 @@ pub fn the_catalogue_parser_refuses_a_bad_table_too_test() {
 pub fn a_vm_without_the_boot_flags_is_refused_untouched_test() {
   let assert Ok(Some(config)) =
     distribution.parse(document("", peer("executor@10.0.0.2", pin)))
-  let assert Error(distribution.UnsafeBoot(_)) = distribution.start(config)
+  let assert Error(distribution.UnsafeBoot(_)) =
+    distribution.start(config, distribution.NotMember)
     as "A VM booted without the TLS flags must not start distribution."
 
   // The operator is told how to boot it, not only that it was refused.
@@ -306,5 +310,28 @@ pub fn start_epmd_false_is_honoured_test() {
     "start_epmd_false",
     "With -start_epmd false the operator manages epmd, so start must not "
       <> "launch one when none answers.",
+  )
+}
+
+pub fn directory_members_connect_visibly_from_either_end_test() {
+  proves(
+    "members_visible",
+    "Two directory members connected through the production connect path "
+      <> "must both list each other among their visible nodes.",
+  )
+}
+
+pub fn directory_members_do_not_connect_transitively_test() {
+  proves(
+    "members_not_transitive",
+    "With connect_all off, a member that reaches a second must not be joined "
+      <> "to a third that reaches the same second.",
+  )
+}
+
+pub fn a_member_with_connect_all_on_is_refused_test() {
+  proves(
+    "member_needs_connect_all_off",
+    "A directory member's VM booted with connect_all on must be refused.",
   )
 }

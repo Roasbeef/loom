@@ -9,14 +9,23 @@
 %% additionally requires a configured SHA-256 pin together with the exact
 %% full-node DNS name in the subject alternative names. No network input is
 %% ever turned into an atom: peer names become atoms once, from the finite
-%% configuration, inside start/4.
+%% configuration, inside start/5.
+%%
+%% A node that is a member of the session directory's Khepri cluster
+%% (protocol-change/079) is started visible, because Ra reads `nodes()` to
+%% decide where to send snapshots and heartbeats, and every connection it makes
+%% to another member is made with net_kernel:connect_node/1, because a
+%% connection made with hidden_connect_node/1 stays hidden even between two
+%% visible nodes. Every other connection, and every connection of a node that
+%% is not a member, stays hidden exactly as before.
 -module(client_distribution_ffi).
--export([options/2, start/4, peer/2, connect/1, verify/4, ensure_epmd/0]).
+-export([options/2, start/5, peer/2, link/2, connect/2, verify/4,
+         ensure_epmd/0]).
 -include_lib("kernel/include/file.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
 %% The ssl_dist_optfile text for a configuration. The same term is rebuilt in
-%% start/4 and compared with what the emulator actually loaded, so the file
+%% start/5 and compared with what the emulator actually loaded, so the file
 %% cannot drift from the configuration the daemon validated.
 options(Peers, Files) ->
     unicode:characters_to_binary(io_lib:format("~p.~n", [tls_options(Peers, Files)])).
@@ -56,13 +65,13 @@ exact_node_san(#'OTPCertificate'{tbsCertificate = Tbs}, Name) ->
 
 %% Boot preconditions come first and name what failed, because the operator
 %% has to act on it. Only then are credentials read and distribution started.
-start(Local, Peers, Files, Listen) ->
-    case boot_refusal(Peers, Files) of
-        none -> start_checked(Local, Peers, Files, Listen);
+start(Local, Peers, Files, Listen, Members) ->
+    case boot_refusal(Peers, Files, Members) of
+        none -> start_checked(Local, Peers, Files, Listen, Members);
         Refusal -> {error, Refusal}
     end.
 
-boot_refusal(Peers, Files) ->
+boot_refusal(Peers, Files, Members) ->
     Checks = [
         {already_distributed, fun() -> not erlang:is_alive() end},
         {unsupported_otp, fun() ->
@@ -77,7 +86,13 @@ boot_refusal(Peers, Files) ->
         {conflicting_boot_flag, fun() ->
             lists:all(fun(Flag) -> init:get_argument(Flag) =:= error end,
                       [ssl_dist_opt, name, sname, setcookie, nocookie]) end},
-        {options_mismatch, fun() -> options_match(Peers, Files) end}],
+        {options_mismatch, fun() -> options_match(Peers, Files) end},
+        %% A visible member with connect_all on would let `global` connect it
+        %% to every node a peer is connected to. The application environment
+        %% is read, not the argument vector, so a sys.config setting counts.
+        {connect_all_enabled, fun() ->
+            Members =:= none orelse
+                application:get_env(kernel, connect_all) =:= {ok, false} end}],
     case [Reason || {Reason, Holds} <- Checks, not Holds()] of
         [First | _] -> First;
         [] -> none
@@ -93,7 +108,8 @@ options_match(Peers, Files) ->
     catch _:_ -> false
     end.
 
-start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen) ->
+start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen,
+              Members) ->
     try
         %% Finite reads and private modes are checked before the listener starts.
         _ = bounded_file(Ca, 262144, public),
@@ -123,13 +139,13 @@ start_checked(Local, Peers, {credential_files, Ca, Cert, Key, Cookie}, Listen) -
             ok -> ok;
             error -> throw({epmd_unavailable, epmd_port()})
         end,
-        ok = case start_net(LocalNode) of
+        ok = case start_net(LocalNode, Members =:= none) of
             ok -> ok;
             error -> throw(start_failed)
         end,
         CookieBytes = atom_to_binary(erlang:get_cookie(), utf8),
         ok = net_kernel:allow([Node || {_Name, Node} <- Nodes]),
-        {ok, {membership, LocalNode, Nodes}}
+        {ok, {membership, LocalNode, Nodes, member_nodes(Nodes, Members)}}
     catch
         Class:Reason ->
             %% A partial boot never returns membership.
@@ -143,8 +159,15 @@ failure(throw, {epmd_unavailable, _} = Refusal) -> Refusal;
 failure(throw, start_failed) -> start_failed;
 failure(_, _) -> invalid_credentials.
 
-start_net(LocalNode) ->
-    try net_kernel:start(LocalNode, #{name_domain => longnames, hidden => true}) of
+%% The peers that are directory members, as the atoms made for them above. A
+%% member name that is not a configured peer makes no atom and is dropped; the
+%% configuration reader has already refused such a name.
+member_nodes(_Nodes, none) -> [];
+member_nodes(Nodes, {some, Names}) ->
+    [Node || {Name, Node} <- Nodes, lists:member(Name, Names)].
+
+start_net(LocalNode, Hidden) ->
+    try net_kernel:start(LocalNode, #{name_domain => longnames, hidden => Hidden}) of
         {ok, _} -> ok;
         _ -> error
     catch _:_ -> error
@@ -278,7 +301,7 @@ bounded_file(Path, Maximum, Privacy) ->
     true = byte_size(Bytes) > 0 andalso byte_size(Bytes) =< Maximum,
     Bytes.
 
-peer({membership, Local, Nodes}, Name) ->
+peer({membership, Local, Nodes, _Members}, Name) ->
     case erlang:node() =:= Local andalso erlang:is_alive() of
         true ->
             case lists:keyfind(Name, 1, Nodes) of
@@ -288,8 +311,16 @@ peer({membership, Local, Nodes}, Name) ->
         false -> {error, unavailable}
     end.
 
-connect(Node) ->
-    case net_kernel:hidden_connect_node(Node) of
-        true -> {ok, nil};
-        _ -> {error, unavailable}
+%% How this node connects to a peer: visibly when both are directory members,
+%% hidden otherwise. The list of members is empty on a node that is not one.
+link({membership, _Local, _Nodes, Members}, Node) ->
+    case lists:member(Node, Members) of
+        true -> visible;
+        false -> hidden
     end.
+
+connect(Node, visible) -> connected(net_kernel:connect_node(Node));
+connect(Node, hidden) -> connected(net_kernel:hidden_connect_node(Node)).
+
+connected(true) -> {ok, nil};
+connected(_) -> {error, unavailable}.

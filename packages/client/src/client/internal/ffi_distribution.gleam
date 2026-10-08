@@ -35,6 +35,10 @@ pub type Failure {
   /// The loaded options file is not private or differs from the configuration.
   OptionsMismatch
 
+  /// A directory member's VM runs with `connect_all` on, which would let
+  /// `global` connect it to every node a peer is connected to.
+  ConnectAllEnabled
+
   /// A credential was missing, oversized, or insufficiently private.
   InvalidCredentials
 
@@ -48,6 +52,15 @@ pub type Failure {
 
   /// OTP could not connect.
   Unavailable
+}
+
+/// How this node connects to one peer.
+pub type Link {
+  /// A visible connection, made between two directory members.
+  Visible
+
+  /// A hidden connection, made in every other case.
+  Hidden
 }
 
 /// Renders the fixed TLS options as the text of an `ssl_dist_optfile`.
@@ -65,8 +78,9 @@ pub type Failure {
 pub fn options(peers: List(#(String, BitArray)), files: files) -> String
 
 /// Checks the boot preconditions, reads the credentials, makes sure an epmd
-/// answers, and starts hidden TLS distribution under
-/// `dist_auto_connect = never`.
+/// answers, and starts TLS distribution under `dist_auto_connect = never`:
+/// hidden, or visible when `members` names the directory's members
+/// (protocol-change/079), in which case `connect_all` must be off.
 ///
 /// OTP `net_kernel:start/2`, `init:get_argument/1` and `ssl_dist_sup:consult/1`.
 /// A node cannot start distribution except through `net_kernel`, and the
@@ -77,7 +91,7 @@ pub fn options(peers: List(#(String, BitArray)), files: files) -> String
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_distribution.start(local, peers, files, option.None) // -> Ok(membership)
+/// ffi_distribution.start(local, peers, files, option.None, option.None)
 /// ```
 @external(erlang, "client_distribution_ffi", "start")
 pub fn start(
@@ -85,6 +99,7 @@ pub fn start(
   peers: List(#(String, BitArray)),
   files: files,
   listen_port: Option(Int),
+  members: Option(List(String)),
 ) -> Result(Membership, Failure)
 
 /// Resolves one configured peer name to the node made for it at boot.
@@ -100,15 +115,31 @@ pub fn start(
 @external(erlang, "client_distribution_ffi", "peer")
 pub fn peer(membership: Membership, name: String) -> Result(Node, Failure)
 
-/// Connects explicitly, as a hidden connection.
+/// How this node connects to a configured peer: `Visible` when both are
+/// directory members, `Hidden` otherwise.
 ///
-/// OTP `net_kernel:hidden_connect_node/1`; `gleam_erlang` exposes no
-/// connection operation and `connect_node/1` would make a visible one.
+/// A list lookup over the members made at boot; it lives beside `start`
+/// because only the membership term knows which atoms were made for members.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// ffi_distribution.connect(node) // -> Ok(Nil)
+/// ffi_distribution.link(membership, node) // -> Hidden
+/// ```
+@external(erlang, "client_distribution_ffi", "link")
+pub fn link(membership: Membership, node: Node) -> Link
+
+/// Connects explicitly, visibly or hidden as the link says.
+///
+/// OTP `net_kernel:connect_node/1` and `net_kernel:hidden_connect_node/1`;
+/// `gleam_erlang` exposes no connection operation. A connection's visibility
+/// is fixed when it is made, so the choice is made here, on the one path every
+/// caller uses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ffi_distribution.connect(node, Hidden) // -> Ok(Nil)
 /// ```
 @external(erlang, "client_distribution_ffi", "connect")
-pub fn connect(node: Node) -> Result(Nil, Failure)
+pub fn connect(node: Node, link: Link) -> Result(Nil, Failure)
