@@ -237,7 +237,7 @@ server-shipment: codemode-seed ## Package the server: build/erlang-shipment + bi
 		'# booted with these flags before any Gleam runs, so the operator names the' \
 		'# options file `loomd distribution options` wrote. Unset, nothing changes.' \
 		'if [ -n "$${LOOM_DISTRIBUTION_OPTFILE:-}" ]; then' \
-		'  ERL_FLAGS="$${ERL_FLAGS:+$$ERL_FLAGS }-proto_dist inet_tls -ssl_dist_optfile \"$$LOOM_DISTRIBUTION_OPTFILE\""' \
+		'  ERL_FLAGS="$${ERL_FLAGS:+$$ERL_FLAGS }-proto_dist inet_tls -ssl_dist_optfile \"$$LOOM_DISTRIBUTION_OPTFILE\" -kernel connect_all false"' \
 		'  export ERL_FLAGS' \
 		'fi' \
 		'exec "$$(dirname "$$0")/../build/erlang-shipment/entrypoint.sh" run "$$@"' \
