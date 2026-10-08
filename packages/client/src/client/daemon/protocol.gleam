@@ -229,6 +229,11 @@ pub type Command {
     /// is a path on this host. When it is present `workspace` is a registered
     /// workspace name and the scope is session-only (protocol-change/078).
     executor: Option(String),
+    /// The pool of executors `workspace` is registered on, or `None`. It is
+    /// exclusive with `executor`: the daemon picks the executor when the
+    /// session first opens. When it is present `workspace` is a registered
+    /// workspace name and the scope is session-only (protocol-change/078).
+    pool: Option(String),
     domain_scope: domain.Scope,
   )
 
@@ -558,11 +563,18 @@ fn decode_fields(
     "sessions.create" -> {
       use key <- result.try(text_field(fields, "request_key", 256))
       use executor <- result.try(executor_field(fields))
-      use workspace <- result.try(created_workspace(fields, executor))
+      use pool <- result.try(pool_field(fields))
+      use Nil <- result.try(case executor, pool {
+        Some(_), Some(_) ->
+          Error("executor and pool are exclusive: name at most one")
+        _, _ -> Ok(Nil)
+      })
+      let placed = option.or(executor, pool)
+      use workspace <- result.try(created_workspace(fields, placed))
       use name <- result.try(text_field(fields, "name", 256))
       use configuration <- result.try(configuration_field(fields))
       use profile <- result.try(profile_field(fields))
-      use scope <- result.map(domain_scope(fields, executor))
+      use scope <- result.map(domain_scope(fields, placed))
       CreateSession(
         key,
         workspace,
@@ -570,6 +582,7 @@ fn decode_fields(
         configuration,
         profile,
         executor,
+        pool,
         scope,
       )
     }
@@ -599,18 +612,21 @@ fn decode_fields(
   }
 }
 
-// The scope of a creation. A session on an executor can only be session-only:
-// the workspace aggregate is keyed by a path on this host, and a registered
-// name is not one, so the default for such a creation is the scope that exists
-// and asking for the other is refused rather than quietly changed.
-fn domain_scope(fields, executor: Option(String)) {
-  case list.key_find(fields, "domain_scope"), executor {
+// The scope of a creation. A session on an executor or in a pool can only be
+// session-only: the workspace aggregate is keyed by a path on this host, and a
+// registered name is not one, so the default for such a creation is the scope
+// that exists and asking for the other is refused rather than quietly changed.
+// `placed` is the executor or the pool the creation names.
+fn domain_scope(fields, placed: Option(String)) {
+  case list.key_find(fields, "domain_scope"), placed {
     Error(Nil), None | Ok(json.String("workspace_private")), None ->
       Ok(domain.WorkspacePrivate)
     Error(Nil), Some(_) -> Ok(domain.SessionOnly)
     Ok(json.String("session_only")), _ -> Ok(domain.SessionOnly)
     Ok(json.String("workspace_private")), Some(_) ->
-      Error("domain_scope must be session_only for a session on an executor")
+      Error(
+        "domain_scope must be session_only for a session on an executor or in a pool",
+      )
     Ok(_), _ -> Error("expected workspace_private or session_only domain_scope")
   }
 }
@@ -842,15 +858,35 @@ fn executor_field(
   }
 }
 
-// The workspace of a creation. Without an executor it is a path, as it always
-// was. With one it is the name of a workspace registered there, which is held
-// to its own grammar and to no filesystem rule: the name is never canonicalized
-// on this host, so nothing about it is checked against a disk.
+const pool_words =
+  "pool must be a name of lowercase letters, numbers, _ and -, starting with a letter"
+
+// The optional pool of a creation, read as the executor is: an absent field is
+// no pool, and a field that is present must be a pool name, so a malformed one
+// is refused as a bad request and never read as a creation with no pool.
+fn pool_field(
+  fields: List(#(String, JsonValue)),
+) -> Result(Option(String), String) {
+  case list.key_find(fields, "pool") {
+    Error(Nil) -> Ok(None)
+    Ok(json.String(name)) ->
+      case catalogue.is_pool_name(name) {
+        True -> Ok(Some(name))
+        False -> Error(pool_words)
+      }
+    Ok(_other) -> Error(pool_words)
+  }
+}
+
+// The workspace of a creation. Without an executor or a pool it is a path, as
+// it always was. With either it is the name of a workspace registered there,
+// which is held to its own grammar and to no filesystem rule: the name is never
+// canonicalized on this host, so nothing about it is checked against a disk.
 fn created_workspace(
   fields: List(#(String, JsonValue)),
-  executor: Option(String),
+  placed: Option(String),
 ) -> Result(String, String) {
-  case executor {
+  case placed {
     None -> text_field(fields, "workspace", 4096)
     Some(_) -> {
       use name <- result.try(required(fields, "workspace"))

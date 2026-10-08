@@ -13,6 +13,7 @@ import client/executors
 import client/gateway_test
 import client/peer_mail
 import client/peers
+import client/pools
 import core/clock
 import core/ids
 import core/json
@@ -68,8 +69,8 @@ fn fixture_with_peers(connection_limits: limits.Limits, peer_endpoint, run) {
 
 /// The wire fixture with a session builder of the test's choosing, for a test
 /// that needs the registry to reach the real resolver. The daemon is
-/// configured with one executor, `build-box`, whose node is a placeholder:
-/// nothing here connects to it.
+/// configured with one executor, `build-box`, whose node is a placeholder, and
+/// one pool of it, `builders`: nothing here connects to either.
 ///
 /// ## Examples
 ///
@@ -109,6 +110,15 @@ pub fn fixture_building(
       daemon:,
       domain_configuration: "",
       executors: [executors.plain("build-box", "executor@10.0.0.2")],
+      pools: [
+        pools.Pool(
+          name: "builders",
+          executors: ["build-box"],
+          platform: None,
+          enforcement: None,
+          toolchains: [],
+        ),
+      ],
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -1784,6 +1794,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           daemon:,
           domain_configuration: "",
           executors: [],
+          pools: [],
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)

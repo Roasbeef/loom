@@ -873,6 +873,7 @@ pub fn listen_serving(
       peer_endpoint:,
       domain_configuration:,
       executors: config.executors,
+      pools: config.pools,
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

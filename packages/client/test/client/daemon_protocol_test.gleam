@@ -56,6 +56,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         "",
         None,
         None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -177,6 +178,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         "/workspace",
         "name",
         "/config",
+        None,
         None,
         None,
         domain.WorkspacePrivate,
@@ -572,6 +574,7 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
         "",
         Some("deepseek"),
         None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -622,6 +625,7 @@ pub fn creation_executor_is_optional_and_makes_the_workspace_a_name_test() {
         "",
         None,
         Some("build-box"),
+        None,
         domain.SessionOnly,
       ),
     ))
@@ -678,6 +682,70 @@ pub fn creation_executor_is_optional_and_makes_the_workspace_a_name_test() {
     fn(extra) {
       let assert Error(_) = create(extra)
         as "a malformed executor or registered name is a bad request"
+    },
+  )
+}
+
+pub fn creation_pool_is_optional_exclusive_with_an_executor_and_makes_the_workspace_a_name_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+  let create = fn(extra) {
+    protocol.decode(envelope(1, "sessions.create", list.append(extra, fields)))
+  }
+
+  // A pool makes the workspace a registered name, kept as sent, and the domain
+  // defaults to the session-only scope. No executor is named.
+  assert create([
+      #("pool", json.String("builders")),
+      #("workspace", json.String("loom checkout")),
+    ])
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "loom checkout",
+        "name",
+        "",
+        None,
+        None,
+        Some("builders"),
+        domain.SessionOnly,
+      ),
+    ))
+
+  // Without either the workspace is a path and nothing is pooled.
+  let assert Ok(protocol.Request(
+    _,
+    protocol.CreateSession(pool: None, executor: None, ..),
+  )) = create([#("workspace", json.String("/work"))])
+
+  // A pool is a name's grammar, and a pool never comes with an executor.
+  list.each(
+    [
+      [#("pool", json.String("Not A Name")), #("workspace", json.String("w"))],
+      [#("pool", json.String("")), #("workspace", json.String("w"))],
+      [#("pool", json.Int(1)), #("workspace", json.String("w"))],
+      [#("pool", json.Null), #("workspace", json.String("w"))],
+      [#("pool", json.String("x")), #("workspace", json.String("a/b"))],
+      [#("pool", json.String("x")), #("workspace", json.String("/abs"))],
+      [#("pool", json.String("x"))],
+      [
+        #("pool", json.String("x")),
+        #("workspace", json.String("w")),
+        #("domain_scope", json.String("workspace_private")),
+      ],
+      [
+        #("pool", json.String("x")),
+        #("executor", json.String("y")),
+        #("workspace", json.String("w")),
+      ],
+    ],
+    fn(extra) {
+      let assert Error(_) = create(extra)
+        as "a malformed pool, or a pool beside an executor, is a bad request"
     },
   )
 }

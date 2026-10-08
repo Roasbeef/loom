@@ -157,6 +157,169 @@ pub fn a_registered_creation_keeps_its_name_and_never_reads_the_disk_test() {
   })
 }
 
+// A creation in the `builders` pool, with any of its fields replaced by
+// `extra`: the pool takes the place of the executor.
+fn pooled_creation(
+  key: String,
+  extra: List(#(String, json.JsonValue)),
+) -> json.JsonValue {
+  let pool = case list.any(extra, fn(each) { each.0 == "pool" }) {
+    True -> extra
+    False -> [#("pool", json.String("builders")), ..extra]
+  }
+  registered_creation(key, pool) |> without("executor", pool)
+}
+
+// The creation with `key` removed unless `extra` sets it.
+fn without(
+  creation: json.JsonValue,
+  key: String,
+  extra: List(#(String, json.JsonValue)),
+) -> json.JsonValue {
+  let assert json.Object(fields) = creation
+  case list.any(extra, fn(each) { each.0 == key }) {
+    True -> creation
+    False -> json.Object(list.filter(fields, fn(each) { each.0 != key }))
+  }
+}
+
+pub fn a_pooled_creation_has_a_pool_and_no_executor_until_one_is_chosen_test() {
+  wire.fixture(fn(_, ready, port, credential) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let created =
+      wire.send(
+        socket,
+        1,
+        "sessions.create",
+        pooled_creation("pooled", []),
+        within_ms: 1000,
+      )
+    assert field(created, "event") == json.String("sessions.create")
+    let body = field(created, "body")
+    let assert json.String(id) = field(body, "session_id")
+      as "creation exposes its identity"
+
+    // The workspace is a name kept as sent, the pool is named and no executor
+    // is, because the pool picks one when the session first opens.
+    assert field(body, "workspace") == json.String(registered_name)
+    assert field(body, "pool") == json.String("builders")
+    let assert json.Object(fields) = body
+    assert list.key_find(fields, "executor") == Error(Nil)
+    let assert Ok(saved) = manager.get(ready.registry, id)
+    assert saved.registration.pool == "builders"
+    assert saved.registration.executor == ""
+    assert simplifile.is_directory(registered_name) == Ok(False)
+
+    // A pooled session is session-only, as a registered one is.
+    let assert Ok(selected) = manager.session_domain(ready.registry, id)
+    assert selected.scope == domain.SessionOnly
+
+    // The first attach's choice reaches the listing and the read, and a retry
+    // of the creation is still the same session.
+    manager.seed_executor(ready.registry, id, "build-box")
+    let assert poll.Answered(chosen) =
+      poll.until(within: 2000, every: 1, attempt: fn() {
+        case manager.get(ready.registry, id) {
+          Ok(view) if view.registration.executor == "build-box" ->
+            poll.Done(view)
+          _ -> poll.Retry
+        }
+      })
+      as "the registry records the chosen executor"
+    assert chosen.registration.pool == "builders"
+    let read =
+      wire.send(
+        socket,
+        2,
+        "sessions.get",
+        json.Object([#("session_id", json.String(id))]),
+        within_ms: 1000,
+      )
+    assert field(field(read, "body"), "executor") == json.String("build-box")
+    assert field(field(read, "body"), "pool") == json.String("builders")
+    let retried =
+      wire.send(
+        socket,
+        3,
+        "sessions.create",
+        pooled_creation("pooled", []),
+        within_ms: 1000,
+      )
+    assert field(field(retried, "body"), "session_id") == json.String(id)
+
+    // The same key naming that executor is a different request.
+    let named =
+      wire.send(
+        socket,
+        4,
+        "sessions.create",
+        registered_creation("pooled", []),
+        within_ms: 1000,
+      )
+    assert code_of(named) == json.String("conflict")
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_pool_the_configuration_lacks_is_refused_and_stores_nothing_test() {
+  wire.fixture(fn(_, ready, port, credential) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let refused =
+      wire.send(
+        socket,
+        1,
+        "sessions.create",
+        pooled_creation("unknown-pool", [#("pool", json.String("elsewhere"))]),
+        within_ms: 1000,
+      )
+    assert code_of(refused) == json.String("pool_unknown")
+    assert field(field(refused, "body"), "message")
+      == json.String("no pool with that name is configured on this daemon")
+    assert page(ready) == Ok([])
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_creation_names_an_executor_or_a_pool_and_never_both_test() {
+  wire.fixture(fn(_, ready, port, credential) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+    let cases = [
+      // Both, however well formed.
+      registered_creation("both", [#("pool", json.String("builders"))]),
+      // A pool is a name, even an empty one or another type.
+      pooled_creation("bad-1", [#("pool", json.String("Not A Name"))]),
+      pooled_creation("bad-2", [#("pool", json.String(""))]),
+      pooled_creation("bad-3", [#("pool", json.Int(1))]),
+      pooled_creation("bad-4", [#("pool", json.Null)]),
+      // A pooled workspace is a registered name, never a path or a private
+      // domain.
+      pooled_creation("bad-5", [#("workspace", json.String("a/b"))]),
+      pooled_creation("bad-6", [
+        #("domain_scope", json.String("workspace_private")),
+      ]),
+    ]
+    list.index_map(cases, fn(creation, index) {
+      let refused =
+        wire.send(
+          socket,
+          index + 1,
+          "sessions.create",
+          creation,
+          within_ms: 1000,
+        )
+      assert code_of(refused) == json.String("bad_request")
+    })
+    assert page(ready) == Ok([])
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
 pub fn a_local_record_has_no_executor_member_test() {
   wire.fixture(fn(_, ready, port, credential) {
     let #(socket, _) = wire.connect(port, credential, "/v2/control")

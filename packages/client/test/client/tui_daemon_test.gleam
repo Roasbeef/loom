@@ -374,6 +374,7 @@ pub fn tui_daemon_encoders_agree_with_server_decoder_test() {
         "/config",
         None,
         None,
+        None,
         domain.WorkspacePrivate,
       ),
     ),

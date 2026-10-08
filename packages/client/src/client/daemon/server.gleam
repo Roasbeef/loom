@@ -55,6 +55,7 @@ import client/daemon/upgrade_log
 import client/executors
 import client/peer_mail
 import client/peers
+import client/pools
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -95,6 +96,10 @@ pub type Config(instance) {
     /// creation that names an executor outside this list is refused before
     /// anything is reserved (protocol-change/078).
     executors: List(executors.Executor),
+    /// The `[pools.<name>]` the owner configured, read once at startup. A
+    /// creation that names a pool outside this list is refused before anything
+    /// is reserved (protocol-change/078).
+    pools: List(pools.Pool),
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -2264,7 +2269,7 @@ fn dispatch(
       })
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
     }
-    protocol.CreateSession(_, _, _, configuration, profile, _, _) ->
+    protocol.CreateSession(_, _, _, configuration, profile, _, _, _) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(fn(code) {
         creation_refusal(config, configuration, profile, code)
@@ -2287,16 +2292,21 @@ pub const unknown_profile_code = "unknown_profile"
 /// the daemon's configuration does not define (protocol-change/078).
 pub const executor_unknown_code = "executor_unknown"
 
+/// The code `create_session` answers when a creation names a pool that the
+/// daemon's configuration does not define (protocol-change/078).
+pub const pool_unknown_code = "pool_unknown"
+
 /// The code `create_session` answers when a creation names a profile and the
 /// configuration it would load cannot be read or parsed. The profile was never
 /// looked up, so `unknown_profile` would blame the name for the file.
 pub const unusable_configuration_code = "unusable_configuration"
 
 // A refused creation's code and message. An unknown profile, an unusable
-// configuration and an unknown executor are the refusals that say more than
-// "request refused": the owner who mistyped a name needs the names that exist,
-// the owner whose file does not parse needs the key it names, and the owner
-// who named an executor needs to know it is the configuration that lacks it.
+// configuration, an unknown executor and an unknown pool are the refusals that
+// say more than "request refused": the owner who mistyped a name needs the
+// names that exist, the owner whose file does not parse needs the key it names,
+// and the owner who named an executor or a pool needs to know it is the
+// configuration that lacks it.
 // The caller is the owner because `create_session` checks that first. The
 // message is worded again here, from the same check, rather than carried out
 // of `create_session`, so that function's error stays the single code the
@@ -2328,6 +2338,11 @@ fn creation_refusal(
     "executor_unknown", _ -> #(
       code,
       "no executor with that name is configured on this daemon",
+    )
+
+    "pool_unknown", _ -> #(
+      code,
+      "no pool with that name is configured on this daemon",
     )
 
     _, _ -> control_refusal(code)
@@ -2773,6 +2788,7 @@ fn dispatch_class(
       configuration,
       profile,
       executor,
+      pool,
       scope,
     ) ->
       create_session(
@@ -2787,7 +2803,7 @@ fn dispatch_class(
           configuration,
           profile,
           option.unwrap(executor, ""),
-          "",
+          option.unwrap(pool, ""),
         ),
         scope,
       )
@@ -2881,16 +2897,24 @@ pub fn create_session(
   // A local workspace is a path on this host and is canonicalized here. A
   // registered one is a name that only the executor can resolve, so it is kept
   // exactly as sent and is never statted, canonicalized or created on this
-  // host: the executor must be configured, and nothing more is asked of it.
-  use workspace <- result.try(case request.executor {
-    "" ->
+  // host: the executor or the pool must be configured, and nothing more is asked
+  // of it. A creation names one of the two, never both: a pool picks the
+  // executor when the session first opens.
+  use workspace <- result.try(case request.executor, request.pool {
+    "", "" ->
       bootstrap.canonical_directory(request.workspace)
       |> result.replace_error("invalid_workspace")
-    executor ->
+    executor, "" ->
       case executors.find(config.executors, executor) {
         Ok(_) -> Ok(request.workspace)
         Error(Nil) -> Error(executor_unknown_code)
       }
+    "", pool ->
+      case pools.find(config.pools, pool) {
+        Ok(_) -> Ok(request.workspace)
+        Error(Nil) -> Error(pool_unknown_code)
+      }
+    _, _ -> Error("bad_request")
   })
   use configuration <- result.try(
     case request.configuration {
@@ -2936,9 +2960,9 @@ pub fn create_session(
   // the catalogue holds, so the home can offer it again after every session in
   // it is gone (protocol-change/074). A creation that failed leaves no trace.
   // A registered name is no folder on this host, so it is never offered.
-  case request.executor {
-    "" -> manager.remember_folder(registry, workspace)
-    _ -> Nil
+  case request.executor, request.pool {
+    "", "" -> manager.remember_folder(registry, workspace)
+    _, _ -> Nil
   }
   created
 }
@@ -3078,7 +3102,7 @@ fn owner_view(
           #("created_at", json.Int(view.registration.created_at)),
           #("status", status_json(view.status)),
           #("domain_scope", json.String(scope_text(selected.scope))),
-          ..executor_field(view.registration.executor)
+          ..placement_fields(view.registration)
         ]),
       )
     }
@@ -3268,18 +3292,29 @@ pub fn view_json(view: manager.View) -> JsonValue {
     #("status", status_json(view.status)),
     ..list.append(
       subtitle_field(view.registration.subtitle),
-      executor_field(view.registration.executor),
+      placement_fields(view.registration),
     )
   ])
 }
 
-// The optional `executor` of `protocol-change/078`. A local session omits the
-// field, so its frame is byte-for-byte what a daemon without executors sent,
-// and a client that does not know the field reads the rest as before.
-fn executor_field(executor: String) -> List(#(String, JsonValue)) {
-  case executor {
+// The optional `executor` and `pool` of `protocol-change/078`. A local session
+// omits both fields, so its frame is byte-for-byte what a daemon without
+// executors sent, and a client that does not know them reads the rest as before.
+// A session in a pool has no executor until its first open chooses one, so it
+// carries the pool alone until then.
+fn placement_fields(
+  registration: catalogue.Registration,
+) -> List(#(String, JsonValue)) {
+  list.append(
+    named("executor", registration.executor),
+    named("pool", registration.pool),
+  )
+}
+
+fn named(key: String, name: String) -> List(#(String, JsonValue)) {
+  case name {
     "" -> []
-    name -> [#("executor", json.String(name))]
+    present -> [#(key, json.String(present))]
   }
 }
 

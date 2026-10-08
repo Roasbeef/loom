@@ -4,9 +4,11 @@
 spellings below are provisional until phase 1 lands; this document is updated
 to the implemented spellings before the change merges.
 **Affects**: the control command `sessions.create` and session records (one
-optional field each), the catalogue schema (version 10, one column),
+optional field each, and a second pair for pools, see the addendum), the
+catalogue schema (version 10, one column; version 11, one more),
 `loom.toml` (a `[distribution]` table and `[executors.*]` rows on an
-orchestrator, `[workspaces.*]` rows on an executor), `effects.ToolSurface`
+orchestrator, `[pools.*]` tables beside them, `[workspaces.*]` rows on an
+executor), `effects.ToolSurface`
 (one slot), and two new formats that are not Part 1 interfaces: the closed
 message vocabulary between orchestrator and executor nodes, and the
 executor's execution ledger. The helper wire (Part 1.4) is unchanged.
@@ -238,6 +240,94 @@ executor admits at most 16 scopes that are not `closed` with
 `all_retired`, and a byte budget bounds unacked outcomes. Reopen requires
 `closed` with `all_retired` and increments `incarnation`.
 
+### Addendum: executor pools
+
+A session can be created in a pool of executors instead of on a named one, and
+the orchestrator picks the executor when the session first opens. This is
+phase 2 of the design note.
+
+#### Wire and catalogue
+
+`sessions.create` gains an optional `pool` string, which has the grammar of an
+executor name and is exclusive with `executor`: a request that carries both is
+`bad_request`. With a `pool`, `workspace` is a registered workspace name exactly
+as it is with an `executor`, and the domain scope defaults to `session_only` and
+refuses `workspace_private`, for the same reason. One refusal code is added,
+`pool_unknown`, for a pool this orchestrator has not configured. A session record
+gains an optional `pool` member. A session in a pool has no `executor` member
+until its first open chooses one; from then on the record carries both.
+
+The catalogue is at version 11. `Registration` gains `pool: String`, empty for a
+session created without one, and the migration from version 10 adds the column
+with an empty default. The pool is part of the immutable creation request, so a
+retry compares it. The executor of a pooled session is the first open's choice
+and not part of the request, so a retry compares the pool only, and a retry after
+the choice still finds its reservation. The executor column is written once, by
+`seed_executor`, and only for a registration that has a pool and no executor.
+
+#### Configuration
+
+`[pools.<name>]` lists `executors`, which must each be a configured
+`[executors.<name>]`, in the order they are tried. An `[executors.<name>]` row
+may also declare `platform`, `enforcement` and `toolchains`, and a pool may
+require the same three. The declarations are what the operator says the machine
+provides. They are not discovered, and nothing is added to the node vocabulary to
+ask. A pool's candidates are the listed executors whose declarations satisfy its
+requirements, in the listed order, computed from configuration alone. An executor
+that declared nothing cannot satisfy a requirement. After a successful attach the
+census is compared with the declaration; a contradiction closes the scope, which
+returns its slot, and fails the open with a reason that names the declared and the
+reported value. The environment variable `LOOM_EXECUTOR_MAX_SCOPES` lowers the
+number of scopes an executor admits from the ledger's default of 16.
+
+#### Placement
+
+The orchestrator's scope record (`client/remote/scope`) gains the executor that
+holds the scope, and the record is written after the connection succeeds and
+before the `Attach` is sent. That makes an attach whose reply was lost
+recoverable: the next open finds the record, goes to the same executor, and the
+ledger's rebind makes the retry converge. A record that names an executor is the
+only candidate its session ever has, so a reopen never chooses again, and a record
+from before this addendum, which names none, takes the executor of the
+registration.
+
+A first open, which has no record, tries the candidates in order and goes to the
+next one only while no executor can hold a scope for the session. That is the rule
+in ledger terms: the connection to a candidate failed before the attach was sent,
+or the candidate answered `CapacityExhausted`. The ledger checks capacity inside
+the attach transaction, before it inserts the scope and before the host builds a
+plane, so the refusal proves that nothing was created and the checkout was not
+touched. The record is withdrawn after such a refusal, so the next open chooses
+from the whole pool again. These are the only two cases. An attach that got no
+answer may have created the scope, so it is retried against the same executor and
+never against the next. A scope that was created but whose plane failed to build
+is the session's, and the open fails with the record naming it. A
+`CapacityExhausted` on a later open is `executor_unavailable:` and never a reason
+to move, because the checkout exists only where the record says. This does not
+conflict with "no fallback to a different mutable checkout": the rule forbids a
+second checkout for a session that already has a scope, and the first open of a
+session has none.
+
+The balance is order and not load. Sixteen scopes per executor and a few
+executors do not need a least-loaded choice; spreading sessions later means
+rotating where the candidate list starts, which adds no message.
+
+#### What it costs
+
+An open into a pool whose first executors are unreachable is slow, because it
+connects to each candidate in turn. A declaration can be wrong, and a wrong one is
+found when a session attaches and not before: the first open into a pool whose
+first executor mis-declared fails once and names the mismatch, and the record
+then binds the session to that executor until the file is fixed. And the choice is
+never revisited, so a session cannot move to a machine with more room; moving a
+session is the controlled movement of phase 5.
+
+#### First-party clients
+
+The terminal takes `loom --pool <name> --workspace <registered name>`, exclusive
+with `--executor`, and sends `sessions.create` with `pool`. It words `pool_unknown`
+as it words `executor_unknown`. The web home does not offer pools yet.
+
 ## Impact
 
 - `client`: the workspace plane is split out of `serve.assemble_in`; new
@@ -246,7 +336,7 @@ executor admits at most 16 scopes that are not `closed` with
 - `runtime` and `machine`: one `ToolSurface` slot and one recovered tool
   observation. The machine stays pure.
 - `broker`: a public constructor for a `Broker` over a remote subject.
-- `storage`: catalogue version 10; the ledger's generated SQL.
+- `storage`: catalogue versions 10 and 11; the ledger's generated SQL.
 - New Erlang FFI: the TLS distribution verify function and boot checks
   (about 185 lines), the only thing `gleam_erlang` cannot express. It lives in
   an `internal/ffi_*` module with the reason recorded.

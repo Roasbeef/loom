@@ -518,6 +518,7 @@ Each session record:
 | `status` | object | required | Lifecycle status, described below. |
 | `subtitle` | string | optional | The first line of the first prompt a person sent the session, at most 60 characters, derived once by the daemon and never changed ([protocol-change/067](../protocol-change/067-session-subtitle.md)). Omitted when the session has none. A client that does not know the member ignores it; a client that does treats a value that is not a nonblank string of at most 60 characters as absent. |
 | `executor` | string | optional | The executor the session's `workspace` is registered on ([protocol-change/078](../protocol-change/078-distributed-runtime.md)). Present only for a session created with an `executor`, so the record of a local session is unchanged. When it is present `workspace` is a name and not a path on the daemon's host. A client that does not know the member ignores it. |
+| `pool` | string | optional | The executor pool the session was created in ([protocol-change/078](../protocol-change/078-distributed-runtime.md), the addendum on pools). Present only for a session created with a `pool`. Such a session has no `executor` member until its first open chooses one, and carries both afterwards. A client that does not know the member ignores it. |
 
 Source: (`client/daemon/server.gleam:829-837`).
 
@@ -605,6 +606,7 @@ Owner-only. Reserves a durable identity and initializes the session.
 | `configuration` | string | required | Configuration file path, at most 4096 bytes. Canonicalized by the server. |
 | `domain_scope` | string | optional | `workspace_private` (the default) or `session_only`. With an `executor` the default is `session_only` and `workspace_private` is refused as malformed, because the workspace aggregate is keyed by a path on the daemon's host. |
 | `executor` | string | optional | The executor the workspace is registered on: an `[executors.<name>]` key of the daemon's configuration, in the grammar of a profile name. Absent means `workspace` is a path on the daemon's host and the command is exactly what it was. A present value that is not an executor name, including the empty string, is refused as malformed. The daemon stores the name with the session. See [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
+| `pool` | string | optional | A pool of executors the workspace may be registered on: a `[pools.<name>]` key of the daemon's configuration, in the same grammar. Exclusive with `executor`: a request with both, or with a present value that is not a pool name, is refused as malformed. With a `pool` the workspace is a registered name, the domain scope defaults to `session_only`, and the daemon picks the executor when the session first opens. See the addendum on pools in [protocol-change/078](../protocol-change/078-distributed-runtime.md). |
 | `profile` | string | optional | A model profile of the session's configuration (`[profiles.<name>.roles]`): a lowercase letter, then lowercase letters, numbers, `_` or `-`, at most 32 characters. Absent means the configuration's default roles. A present value that is not a profile name, including the empty string, is refused as malformed. The server stores the name with the session and resolves it again at every open. See [protocol-change/076](../protocol-change/076-config-profiles.md). |
 
 Source: (`client/daemon/protocol.gleam:227-234`) and
@@ -626,14 +628,16 @@ a refusal whose `message` names the profiles that do exist
 cannot be read or parsed, whose `message` is the daemon's startup wording
 (for an unknown top-level key, ``unknown key `x` in the top level (allowed: ...)``);
 `executor_unknown` when `executor` names no `[executors.<name>]` of the
-daemon's configuration, before anything is reserved; `conflict` when
-the key was reused with different metadata, a different `profile` or
-`executor` included; `unavailable`.
+daemon's configuration, and `pool_unknown` when `pool` names no
+`[pools.<name>]`, each before anything is reserved; `conflict` when
+the key was reused with different metadata, a different `profile`,
+`executor` or `pool` included; `unavailable`.
 Source: (`client/daemon/server.gleam:657-664`).
 
 `loom --executor <name> --workspace <registered name>` is the terminal's way to
 send `executor`, and the web home's "New session on an executor" form is the
-browser's; neither adds a member to this command.
+browser's; neither adds a member to this command. `loom --pool <name>
+--workspace <registered name>` sends `pool` the same way.
 
 The server assigns the database path beneath its own private session
 directory. A client MUST NOT expect its `name` to appear in any path.
@@ -3318,6 +3322,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `invalid_workspace` | `sessions.create` could not canonicalize the workspace path. | Fix the path. |
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |
 | `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
+| `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
 | `executor_unavailable` | Not a code of its own yet: the leading word of the `message` of a `start_failed` for a session registered on an executor. The daemon has no remote workspace assembly yet, so creating or retrying such a session starts an opening whose operation fails with `executor_unavailable: remote workspace assembly is not available yet`. Nothing is created on the daemon's host for the workspace name. | Treat the session as not openable for now. A later release attaches the registered workspace through the same operation. |
 
 Sources: (`client/daemon/protocol.gleam:124-160`),

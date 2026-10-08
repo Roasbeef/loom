@@ -2937,7 +2937,8 @@ fn reserve_creation(
         && record.name == request.name
         && record.configuration == request.configuration
         && record.profile == request.profile
-        && record.executor == request.executor
+        && record.pool == request.pool
+        && named_same_executor(record, request)
       {
         True -> {
           use selected <- result.try(domain.for_session(store, record.id))
@@ -2977,6 +2978,17 @@ fn reserve_creation(
     }
     Error(error) -> Error(error)
   }
+}
+
+// Whether a stored registration names the executor the request does. A request
+// in a pool names none, and the stored one holds whichever executor the pool's
+// first attach chose, so for a pooled request the executor is not part of what
+// a retry has to repeat.
+fn named_same_executor(
+  record: catalogue.Registration,
+  request: Creation,
+) -> Bool {
+  request.pool != "" || record.executor == request.executor
 }
 
 fn select_creation_domain(

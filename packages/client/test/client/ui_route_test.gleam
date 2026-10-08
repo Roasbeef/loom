@@ -205,6 +205,7 @@ fn fixture_lasting(
       daemon:,
       domain_configuration: "",
       executors: [],
+      pools: [],
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(server.Ui(

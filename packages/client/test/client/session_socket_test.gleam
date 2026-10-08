@@ -132,6 +132,7 @@ fn fixture_with(
       fn(_) { None },
       "",
       [],
+      [],
       fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),
