@@ -228,3 +228,124 @@ there.
    `directory/khepri`, ADR-019): opt-in by a `[directory]` table, with Khepri deciding
    moves and every session on a member recorded. Failover and executor movement remain
    out of scope.
+
+## The session directory in Khepri (`directory/khepri`)
+
+This section covers `directory/khepri`, built on top of the tree this handoff
+describes: the session directory in Khepri (protocol-change/079). Everything
+above still describes the distributed runtime it builds on. What the branch adds is a deployment option, a `[directory]`
+table, under which the orchestrators and executors form one Khepri cluster that
+holds the single authoritative record of which orchestrator owns each remote
+session, and every change of owner is one compare-and-set on that record. Local
+sessions are recorded too, as lookup hints.
+
+The branch is **not pushed and has no PR**. An independent implementation review
+was done; its confirmed findings and the owner's ruling on local sessions were
+fixed in a second pass (ADR-019's addendum lists them). The coordinator
+publishes the branch.
+
+Read [the session directory](architecture/directory.md) for the design,
+[ADR-019](adr/019-khepri-for-session-ownership.md) for the choice of Khepri and
+what the spikes measured, [protocol-change/079](../protocol-change/079-khepri-session-ownership.md)
+for the interfaces, [the plan](design-notes/khepri-ownership.md) for how the work
+was ordered, and the section "The session directory" in
+[the setup guide](distributed-setup.md) for running it. `packages/client/CLAUDE.md`
+has a section, "The session directory in Khepri".
+
+### Where the tree is
+
+| Part | What exists |
+| --- | --- |
+| Dependency | `khepri == 0.19.3` in `packages/client`, which pins Ra 3.2.0, horus, aten, gen_batch_server and seshat; `packages/conformance/manifest.toml` updated by hand. One FFI module, `client/internal/ffi_khepri` over `client_khepri_ffi.erl`. |
+| Distribution | Members start visible with `-kernel connect_all false` (the launchers pass it with the TLS flags; a member VM without it is refused). Member-to-member connects use `net_kernel:connect_node/1`; everything else stays hidden. A daemon without `[directory]` is unchanged. |
+| Configuration and provisioning | `[directory] members` (3 to 7, every orchestrator a member). A plan's top-level `directory` list makes members peer with each other and writes the table into their bundles. |
+| The cluster | `client/directory/member` keeps the links and joins a member with no joined store as a Ra `promotable` non-voter after removing its stale identity; Ra promotes it once caught up. The join is sequenced in `client/directory/store` over `weft/poll`, one FFI primitive per Ra call. `loomd directory bootstrap` creates the cluster once and refuses where it would make a second; the Ra system's own files are not a store, and each refusal names its remedy. `directory.status` reports the member's view. |
+| The record | `{loom_owner, 1, Owner, serving \| {moving, Op, To}}` per remote session, and `{loom_owner, 1, Owner, local}` per local session. Remote creation reserves, writes the record, then opens; deletion marks (catalogue v13 `catalogue_session_deletions`), deletes the record conditionally, then the registration. A local session's record is written after it exists by the movers' upkeep (`migrate.cover_local`, at boot and after each local creation, again until a pass succeeds) and removed best-effort on delete. Lookups read the local copy. Opening makes no Khepri call. |
+| Moves | `session_mover` under `Recorded` authority: the row first, then the intent CAS, close, cut, send, the receiver's activation CAS before its import, and retirement on the receiver's answer and a consistent read. Abandon is a CAS that fails once the receiver activated; a give-up that finds the receiver owning the session asks it again rather than retiring. A silent receiver is given up after 30 minutes of stalls with a quorum (receiver's migration marker and this daemon's seed required; `Deferred` stalls are not counted); the owner can abandon with `sessions.move` `abandon: true`. No inbound hold on members. |
+| Migration | Each orchestrator seeds the store from its catalogue once, then writes `[loom, migrated, <node>]`. |
+| Model | `protocol/models/session-move/KhepriMove.tla`: two moves (there and back), content versions, crashes, a lost majority, late activations, receiver steps fair only while the source asks, eight mutants (one temporal), gated by `make model-check` beside `Move.tla`. |
+
+#### Evidence
+
+All rows are for `645502fe1` on a Mac (Darwin, macOS 15.5), each gate's own exit
+code captured directly. The machine was shared and heavily loaded (load average
+20 to 27) during this run.
+
+| Gate | Result |
+| --- | --- |
+| `make check-gleam` (format, warning-free build, every package's tests, lint) | exit 0 on the second run, 1044 s; client 3685 tests. The first run, under the same load, exited 2 with four timing failures: two `session_mover_test` cases that check the moved file is set aside right after the row says `moved` (the rename follows the row, a race the shipped test already waits out), `tui_e2e_test` and `daemon_soak_test`'s latency budget. Each module passed when run alone (`session_mover_test` three times out of three). |
+| `make doc-check`, `make prelude-check` | exit 0, exit 0 |
+| `make model-check` | exit 0, 387 s. `Move`: four mutants. `KhepriMove`: 240,385 states, 61,686 distinct; `MoveSettles`, `MoverEnds` and `OwnerCanServe` hold; eight mutants each violate their property. Both P models pass. |
+| `make server-shipment`, `make sandbox`, `bin/loom-exec` installed | exit 0, exit 0, exit 0 |
+| `daemon_shipped_remote_move_test` (4 tests: clean and crash, rows and members) | exit 0, 0 SKIP, 226 s |
+| `daemon_shipped_directory_test` (2 tests; the member one with a local session redirected and mailed) | exit 0, 0 SKIP |
+| `daemon_shipped_directory_quorum_test` (quorum loss, disk-lost rejoin) | exit 0, 0 SKIP |
+| `daemon_shipped_peer_mail_test` (2 tests, one with members) | exit 0, 0 SKIP |
+| `daemon_shipped_remote_test` | exit 0, 0 SKIP |
+| Linux | not run on this branch |
+
+### Rulings already made
+
+These are the owner's rulings of 2026-10-08 on the review of the first design.
+
+**Visible distribution for members only.** `connect_all false`,
+`dist_auto_connect never` and the pinned allow list stay. Every member-to-member
+connect goes through `distribution.connect`. A deployment without `[directory]` is
+hidden as before.
+
+**Khepri decides, rows stay.** The record is the authority. The catalogue's move
+rows and the deletion mark are local write-ahead memory: a local change that stops
+serving precedes the record write and is reverted if it fails; one that grants
+serving follows a committed write. Opening a session makes no Khepri call. `Owns` fan-out, `owner_unreachable` and the inbound
+hold are retired on members.
+
+**A stalled move is abandoned by the record.** After 30 minutes of stalls while the
+store has a quorum, never without a quorum, never while the receiver's migration
+marker is absent. An operator can abandon by hand.
+
+**A member that lost its disk rejoins as a non-voter.** Bootstrap is an explicit
+command that refuses when a local store exists or a configured member runs one.
+Odd member counts are recommended.
+
+**Local sessions are recorded** (owner ruling after the implementation review).
+Every session on a member has a record; a local session's is a lookup hint in a
+state of its own (`local`) that no move can use, written best-effort and never
+gating a creation. A stale one names the right owner, who answers `not_found`.
+
+**Formal model.** `KhepriMove.tla` sits beside `Move.tla`; both are gated. Its
+`KhepriMutantImportOverMoving` shows that the receiver must refuse a session its
+own row still holds before it writes the record, which the importer does.
+
+### Known limits and follow-ups
+
+- A local session created in the last few seconds, or while the cluster had no
+  majority, is `not_found` on another member until its record lands. A delete
+  from the web page does not remove a local session's record; the stale record
+  names the right owner.
+- A member's copy can lack a record during its join or after a long outage, and
+  answers `not_found` meanwhile (review finding 5, transient, not changed).
+- No terminal or web surface for `directory.status` or for abandoning a move;
+  both are control commands only.
+- No membership removal command (`ra:remove_member/3` behind a `loomd directory
+  forget`), and no check of the record at open, which failover will need.
+- No shipped test moves a just-imported session onward at once; the in-VM mover
+  tests and the model cover it.
+- The shipped quorum-loss test cannot show a remote session opening without a
+  quorum, because the executor such a session needs is one of the members it
+  stops; `directory/daemon_record_test` shows it in the VM.
+- One unexplained failure of `loomd directory bootstrap` in a shipped fixture,
+  in the first run of `daemon_shipped_directory_quorum_test`; it did not recur in
+  the runs since. `remote_duo.start_members` now prints the command's output when
+  it fails.
+- Everything in the previous edition's list for the distributed runtime still
+  stands (executor restart re-attach, the web delete hold, the TUI's `moving` and
+  `moved` rendering, and the rest).
+
+### What to do next for the directory
+
+1. Independent review of `directory/khepri`, then publish it (push and PR) with
+   the owner's authorization, and run the gated signoff and hosted CI on the head.
+2. Run the shipped member tests and `make model-check` on Linux.
+3. Failover: a lease or liveness rule, the takeover CAS, a check of the record at
+   open, an ownership epoch at the executor's attach, and the conversation file
+   available to the new owner.
