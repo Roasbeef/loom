@@ -49,7 +49,7 @@ fn phrases(enforcement: pack.Enforcement) -> String {
 
 pub fn shipped_pack_decodes_test() {
   let assert Ok(decoded) = pack.decode(default.source)
-  assert decoded.version == "loom-default-15"
+  assert decoded.version == "loom-default-16"
 }
 
 pub fn shipped_pack_has_no_problems_test() {
@@ -71,11 +71,26 @@ pub fn code_mode_guidance_matches_the_full_default_surface_test() {
   assert !string.contains(text, "workspace for files/processes")
 }
 
-// Planned batching comes before the third-probe fallback, and unfamiliar
-// capability APIs are learned before a compiler round trip is spent.
-pub fn code_mode_guidance_starts_planned_batches_immediately_test() {
+// Any listable batch goes to code mode, including the first round of an
+// investigation; the third-probe fallback and the API read-first rule remain.
+pub fn code_mode_guidance_starts_listable_batches_in_code_mode_test() {
   let text = phrases(pack.FullyEnforced)
-  assert string.contains(text, "use it immediately for a planned batch")
+  assert string.contains(text, "use it for any batch of related reads")
+  assert string.contains(text, "including the first round of an investigation")
+  assert string.contains(
+    text,
+    "judge between programs, not between commands; use a direct tool only when "
+      <> "the next command cannot be written until you have read the previous result",
+  )
+  assert string.contains(
+    text,
+    "keep independent probes independent, so one failure does not discard the others",
+  )
+  assert string.contains(
+    text,
+    "fix it and run it again rather than moving its remaining probes to `bash`",
+  )
+  assert !string.contains(text, "use it immediately")
   assert string.contains(text, "cap/task.parallel_map")
   assert string.contains(text, "bounded concurrency")
   assert string.contains(
@@ -86,8 +101,17 @@ pub fn code_mode_guidance_starts_planned_batches_immediately_test() {
   assert string.contains(text, "check completeness and truncation")
   assert string.contains(text, "third into code mode")
   assert string.contains(text, "for unfamiliar apis before writing a program")
-  assert string.contains(text, "compilation warnings fail the build too")
-  assert string.contains(text, "stateful operations against external systems")
+  // The tool description owns the warning rule, so the prompt never repeats it.
+  assert !string.contains(text, "compilation warnings")
+  assert string.contains(
+    text,
+    "use `bash` for workspace toolchains (builds, tests, formatters) and for "
+      <> "mutations against external systems",
+  )
+  assert string.contains(
+    text,
+    "read-only `git` and `gh` queries belong in code mode, especially `--json` output",
+  )
 }
 
 // Reusing source must still collect fresh evidence under current authority.
