@@ -80,9 +80,13 @@ esac
         result, _, outputs = self.run_step(name)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('tag=commit-' + SHA, outputs)
-        result, _, outputs = self.run_step(name, TAGS='commit-' + SHA)
+        result, _, outputs = self.run_step(name, TAGS='commit-' + SHA + '\tfalse')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('exists=true', outputs)
+        result, _, outputs = self.run_step(name, TAGS='commit-' + SHA + '\ttrue')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('unpublished draft', result.stderr)
+        self.assertNotIn('exists=true', outputs)
         for failure in ({'ACTUAL': 'b' * 40}, {'OFF_MAIN': '1'}, {'API_FAILURE': '1'},
                         {'SOURCE_COMMIT': 'main'}, {'TAG_ABSENT': '0', 'TAG_ACTUAL': 'b' * 40}):
             with self.subTest(failure=failure):

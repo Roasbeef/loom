@@ -57,8 +57,12 @@ jobs:
             if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
               [ "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$SOURCE_COMMIT" ]
             fi
-            tags=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name')
-            if printf '%s\n' "$tags" | grep -Fx "$RELEASE_TAG" > /dev/null; then
+            releases=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[] | [.tag_name, .draft] | @tsv')
+            if printf '%s\n' "$releases" | grep -Fx "$RELEASE_TAG"$'\ttrue' > /dev/null; then
+              echo "nightly: $RELEASE_TAG is an unpublished draft; inspect the interrupted publication before retrying" >&2
+              exit 1
+            fi
+            if printf '%s\n' "$releases" | grep -Fx "$RELEASE_TAG"$'\tfalse' > /dev/null; then
               echo "exists=true" >> "$GITHUB_OUTPUT"
             fi
           else
