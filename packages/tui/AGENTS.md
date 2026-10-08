@@ -840,11 +840,16 @@ boundaries and the split's measurements under Invariants.
   or write terminal escape sequences. An
   `Invalid` launch writes its reason to stderr
   and exits nonzero instead of entering the alternate screen.
-  `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand: `main`
+  `loom ext …` is a passthrough to `loomd`'s own `ext` subcommand, and so is
+  `loom distribution …` (`dist` for short, normalised to `distribution`, with
+  the provisioning commands implemented in `client/daemon/distribution_cli`;
+  `tui.server_arguments` is the tested seam that says what the server is
+  handed, and `scripts/cli_help_test.sh` runs the built binaries with a stand-in
+  server): `main`
   answers it before it builds a model, so nothing draws a frame and no
   terminal state is installed on the way past. Its three help forms are
   local instead: the client-only shipment can print extension usage without
-  locating `loomd`. The private copy is compared with `loomd ext --help` by
+  locating `loomd`. The private copies (`extension_usage`, `distribution_usage`) are compared with `loomd ext --help` and `loomd distribution --help` by
   the shipped acceptance, preserving the shared text without an inverted
   package dependency. The daemon is located by
   `tui/bootstrap.server_executable`, the same ladder an implicit local

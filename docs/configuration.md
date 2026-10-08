@@ -484,8 +484,9 @@ node name or a pin.
 | `sha256` | string | required | 64 hexadecimal characters | SHA-256 of the DER of the peer's leaf certificate, for example `openssl x509 -in peer.pem -outform DER \| openssl dgst -sha256`. |
 
 The VM has to be booted for distribution before any Gleam code runs, so starting
-the daemon takes two steps. First write the options file from the same
-configuration:
+the daemon takes two steps. (`loom distribution install` does both for a
+provisioned node; see [Provisioning a deployment](#provisioning-a-deployment).)
+First write the options file from the same configuration:
 
 ```sh
 loomd distribution options ~/.loom/loom.toml ~/.loom/distribution.options
@@ -591,6 +592,104 @@ directory, in `scopes/<session>`, and removed when the session's scope closes.
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `root` | string | required | an absolute path with no `..` segment, naming an existing directory | The checkout served under this name. The daemon refuses to start when it is not a directory. |
+
+## Provisioning a deployment
+
+The tables above are what a node reads. Writing them for every machine by hand,
+with a matching certificate, pin and cookie, is what `loom distribution` does
+for you. It is a subcommand of `loom` that is forwarded to `loomd` the way
+`loom ext` is, it is also `loomd distribution`, and `dist` is short for
+`distribution` in both (`loom dist install node.loombundle`). It needs no
+openssl and no script: the certificates are minted by the Erlang runtime the
+daemon already runs on.
+
+The flow has three steps. Provision once, on any machine. Copy each bundle to its
+machine. Install it there.
+
+```sh
+loom distribution init plan.toml            # write an example plan
+loom distribution provision plan.toml out   # mint everything, write out/
+scp out/devbox.loombundle devbox:           # a secure channel; see below
+ssh devbox loom distribution install devbox.loombundle
+```
+
+`provision` writes `out/<node>.loombundle` (mode 0600) for each node and
+`out/system.json`. A bundle holds the node's private key and the deployment's
+cookie, so copy it only over a channel you trust, and delete it after installing.
+`system.json` holds no private material: each node's role, Erlang node name,
+host, port, certificate pin, peers, executors and workspaces. `loom distribution
+show out` prints it as a table. `provision` refuses a directory that already
+holds files unless you pass `--force`. It discards the certificate authority's key
+when it finishes, so adding a node, renewing a certificate or revoking one means
+provisioning again and reinstalling every bundle with `--force`. Certificates are
+valid for five years and the authority for ten; certificate rotation is later
+work.
+
+`install BUNDLE [--home DIR] [--config PATH] [--force]` runs on the node's machine
+and does everything the daemon needs before it starts:
+
+- It validates the bundle: well formed, a role that carries only its own tables,
+  a certificate that chains to the CA and is not expired, a key that belongs to the
+  certificate, the node name as the certificate's only DNS name with an `@`, and a
+  cookie the daemon accepts.
+- It writes `ca.pem`, `cert.pem`, `key.pem` (mode 0600) and `dist.options` into a
+  private directory: the plan's `bundle_dir`, or `<home>/.loom/distribution`.
+- It writes the cookie to `<home>/.erlang.cookie`, where `home` is `--home` or
+  `$HOME`. A different cookie already there is refused, because Erlang reads that
+  one file for every distributed node you start; `--force` replaces it.
+- It merges `[distribution]`, its `[[distribution.peers]]` rows and the role tables
+  (`[executors.<name>]` on an orchestrator, `[workspaces.<name>]` on an executor)
+  into `--config`, which defaults to `<home>/.loom/loom.toml`. Every other table
+  and comment stays as it was. A table that already exists with different values is
+  refused; `--force` replaces exactly the tables the bundle owns.
+- It prints the command that starts the daemon, with `LOOM_DISTRIBUTION_OPTFILE`
+  set.
+
+Nothing is written unless every destination is acceptable, and installing the same
+bundle twice changes nothing the second time. No command prints a key, a cookie or
+a certificate.
+
+### The plan
+
+A plan is a TOML or JSON file, chosen by its extension, and both spellings mean the
+same thing. The JSON form has the same keys, with a top-level `node` array.
+
+```toml
+[[node]]
+name = "laptop"                              # bundle name
+role = "orchestrator"
+erlang_node = "loom@laptop.example"
+host = "laptop.example"
+listen_port = 4370
+bundle_dir = "/Users/me/.loom/distribution"
+executors = ["devbox"]
+
+[[node]]
+name = "devbox"
+role = "executor"
+erlang_node = "loom@devbox.example"
+host = "devbox.example"
+listen_port = 4370
+bundle_dir = "/home/me/.loom/distribution"
+[node.workspaces]
+repo = "/home/me/src/loom"
+```
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `name` | string | required | lowercase letter, then lowercase letters, digits, `_` or `-`, at most 32; unique | The bundle's name, and for an executor its `[executors.<name>]` key on every orchestrator that uses it. |
+| `role` | string | required | `orchestrator`, `executor` | What the daemon does. |
+| `erlang_node` | string | required | the `distribution.node` form; unique | The Erlang node name, which becomes the certificate's exact node name. |
+| `host` | string | host of `erlang_node` | DNS name or address | Also a name in the certificate, for the TLS host name check. |
+| `listen_port` | integer | any free port | 1 to 65535 | The fixed distribution port. Two nodes on one host need different ports. |
+| `bundle_dir` | string | `<home>/.loom/distribution` | absolute path | Where that machine's credential files go. |
+| `executors` | list of strings | none | names of executor nodes | Orchestrators only. The executors this node uses. |
+| `workspaces` | table of name = root | none | name of 1 to 128 bytes with no `/`, absolute root | Executors only. The workspaces it registers. |
+
+Every orchestrator peers with the executors it uses and with every other
+orchestrator, and each executor peers with the orchestrators that use it, always in
+both directions. An executor that no orchestrator uses, and an orchestrator with no
+peer, are errors. Unknown keys are refused.
 
 ## What this file does not configure
 

@@ -6263,6 +6263,81 @@ first request is matched by `AwaitPromptPrefix(strand_framing.brief_head("main")
   executor, and no daemon can be made to hold a reply back without a hook in
   production code.
 
+### Provisioning a deployment (issue #697)
+
+`loom distribution` (also `loomd distribution`, and `dist` for either) takes an
+operator from nothing to a trusted deployment with no openssl and no script.
+`loom` forwards the verb to `loomd` the way it forwards `ext`
+(`packages/tui/CLAUDE.md`); the implementation is here, in five modules that
+each own one step:
+
+- `client/distribution_plan` reads the plan (`[[node]]` tables, in TOML or JSON
+  by file extension) into a neutral `Tree`, decodes it once, and validates it:
+  unique executor-grammar node names and Erlang names, roles closed, `executors`
+  only on orchestrators and naming executors, `workspaces` only on executors
+  under `catalogue.is_workspace_name` with absolute roots, every executor used
+  and every orchestrator peered. `peers` derives the edges: an orchestrator
+  peers with the executors it uses and with the other orchestrators, an executor
+  with the orchestrators that use it, always symmetrically.
+- `client/distribution_provision` mints one authority, one certificate per node
+  and one shared cookie, builds a `Bundle` per node and the secret-free
+  `System` (`system.json`), and writes `<node>.loombundle` (mode 0600) and
+  `system.json` into a 0700 directory it refuses to reuse without `--force`. The
+  CA key is dropped when `provision` returns. `render` is `show`.
+- `client/distribution_bundle` is the single-file bundle: JSON, marker
+  `loom-distribution-bundle/1`, the node's role, peers with pins, role tables
+  and the CA, certificate, key and cookie inline. `decode` is the install gate:
+  strict keys, the plan's own `check_node`, the daemon's own `configure` for the
+  node and peers, the cookie rule, and `ffi_pki.inspect` (readable PEM, chain to
+  the CA and validity, key matches certificate, exactly the node name as the
+  only `@` DNS name, the host present). `config_tables` renders the `loom.toml`
+  tables the bundle owns.
+- `client/distribution_install` is `install BUNDLE [--home] [--config]
+  [--force]`. It decides every destination (create, unchanged, replace or
+  refuse) before it writes anything, merges the owned tables into `loom.toml` at
+  the text level (append what is missing, skip what is equal, refuse or with
+  `--force` remove the bundle's own sections and append), reads the merged text
+  back through `distribution.from_document` and `executors.from_document`, and
+  generates the options file from the merged `[distribution]`. A different
+  existing cookie at `$HOME/.erlang.cookie` is refused unless `--force`, since
+  Erlang reads one cookie for every node the user starts. Rerunning with the
+  same bundle changes nothing.
+- `daemon/distribution_cli` dispatches `init`, `provision`, `show`, `install`
+  and `options`. `run` returns the text to print; `main` prints and halts. No
+  command prints a key, cookie or certificate.
+
+The only new foreign code is `src/client_pki_ffi.erl` behind
+`client/internal/ffi_pki`: five operations (`authority`, `issue`, `pin`,
+`inspect`, `random_bytes`) over OTP `public_key` and `crypto`, because no Gleam
+library generates or signs X.509. Keys are ECDSA P-256, signatures
+ecdsa-with-SHA256, the authority lasts 3650 days and node certificates 1825 days.
+Renewal, adding a node without reissuing the others, and revocation are certificate
+rotation, which is later work: today a changed deployment is provisioned again and
+every bundle is reinstalled with `--force`.
+
+Invariants:
+
+- A bundle holds the key and the cookie. It is written 0600 through
+  `bootstrap.atomic_write_private`, and no command or error message may contain
+  `Bundle.key`, `Bundle.cookie` or any PEM. The tests assert this for the
+  summary, `system.json`, `show` and `install` output.
+- `install` writes nothing when any destination is refused. A new destination,
+  or a new refusal, goes into the plan phase before `ensure_private_directory`.
+- The text merge touches only `[distribution]` (with its peer rows),
+  `[executors.<name>]` and `[workspaces.<name>]` sections the bundle names. The
+  read-back in `accepted` is what proves a section was replaced; keep it.
+- A plan or bundle rule is the daemon's rule by construction (`check_node_name`,
+  `configure`, `is_executor_name`, `is_workspace_name`), never a copy.
+
+`test/client/distribution_provision_test.gleam` covers the plan in both
+spellings, each refusal, provisioning modes and `system.json`, the pins and the
+exact certificate names (recomputed in `client_distribution_fixture_ffi` with
+`public_key` directly), install into scratch homes, idempotence, the cookie,
+conflicting-table and credential refusals, tampered bundles, the commands, the
+`dist` alias, and two real emulators booted from files `install` wrote: they
+connect with pins checked on the executor's fixed port, and changing one peer pin
+in the orchestrator's installed `loom.toml` makes the connection refuse.
+
 ## Naming a registered workspace (protocol 078)
 
 `sessions.create` takes an optional `executor`. `client/executors` decodes the
