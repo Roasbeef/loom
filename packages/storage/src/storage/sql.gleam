@@ -1129,6 +1129,47 @@ pub fn moving_sessions_decoder() -> decode.Decoder(MovingSessions) {
   decode.success(MovingSessions(session_id:, op:, peer:))
 }
 
+pub type SessionDeletion {
+  SessionDeletion(session_id: String)
+}
+
+pub fn session_deletion(session_id session_id: String) {
+  let sql =
+    "SELECT session_id FROM catalogue_session_deletions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_deletion_decoder())
+}
+
+pub fn session_deletion_decoder() -> decode.Decoder(SessionDeletion) {
+  use session_id <- decode.field(0, decode.string)
+  decode.success(SessionDeletion(session_id:))
+}
+
+pub fn insert_session_deletion(session_id session_id: String) {
+  let sql =
+    "INSERT OR IGNORE INTO catalogue_session_deletions (session_id) VALUES (?)"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub fn delete_session_deletion(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_deletions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub type DeletingSessions {
+  DeletingSessions(session_id: String)
+}
+
+pub fn deleting_sessions() {
+  let sql =
+    "SELECT session_id FROM catalogue_session_deletions ORDER BY session_id"
+  #(sql, [], deleting_sessions_decoder())
+}
+
+pub fn deleting_sessions_decoder() -> decode.Decoder(DeletingSessions) {
+  use session_id <- decode.field(0, decode.string)
+  decode.success(DeletingSessions(session_id:))
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
