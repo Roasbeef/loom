@@ -9,7 +9,11 @@ targets=("${@:-${packages[@]}}")
 
 if [ $# -eq 0 ]; then
   # Exercise deadlines and visible skip reporting before trusting package gates.
-  python3 scripts/with_timeout.py 20 -- \
+  # The deadline catches a hang, such as a gate script spinning on a missing
+  # program, rather than budgeting speed: the suite spawns git, bash and
+  # python processes by the hundred, which takes about 15 s on Linux and
+  # about 40 s on macOS, so 120 s leaves room on both.
+  python3 scripts/with_timeout.py 120 -- \
     python3 -m unittest discover -s scripts -p 'test_*.py'
   # Release integration tests compile the native client and open private TLS
   # and signing fixtures, so they have the same budget as a package test run.
