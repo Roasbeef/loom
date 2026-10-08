@@ -327,6 +327,13 @@ The client ships in two shapes, and `make dist` produces both:
   provides Erlang as a dependency wants; `INSTALL_CLIENT=slim make
   install` installs it.
 
+`make dist` stages the slim client from the fresh shipment that
+`release-client` exported for the bundled client. Gleam 1.19's shipment
+export deletes its production build directory before compiling, so exporting
+again would rebuild the complete TUI dependency closure. Both client archives
+therefore consume one export within the distribution run. Standalone
+`make tui-shipment` still performs its own fresh export.
+
 Either way the server tarball is a separate download and remains
 self-contained.
 
