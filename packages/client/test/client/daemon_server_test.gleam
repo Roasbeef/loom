@@ -1082,6 +1082,11 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_or_saved_tes
             process.send(delivered, #(session, source, target, id, text))
             Ok(json.Object([#("message_id", json.String(id))]))
           }
+
+          // The sender's outbox is the Agency's; this stub only has to accept
+          // the rows `peers.send` records around the delivery it observes.
+          peer_mail.OutboxClaim(..) | peer_mail.OutboxSettle(..) ->
+            Ok(json.Null)
           _ -> Error("unexpected peer command")
         }
       }),
@@ -1240,7 +1245,11 @@ pub fn peer_cli_routes_inspect_link_send_and_partial_unlink_test() {
           | peer_mail.History(..)
           | peer_mail.Received(..)
           | peer_mail.ReceivedGet(..)
-          | peer_mail.SentReceipt(..) -> Ok(json.Null)
+          | peer_mail.SentReceipt(..)
+          | peer_mail.OutboxClaim(..)
+          | peer_mail.OutboxSettle(..)
+          | peer_mail.OutboxDue
+          | peer_mail.OutboxReceipt(..) -> Ok(json.Null)
         }
       }),
     )

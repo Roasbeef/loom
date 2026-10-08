@@ -16,6 +16,13 @@
 //// explicit unlink records a denial that ends it for that direction until the
 //// owner grants the pair again.
 ////
+//// The sending session's own endpoint answers four more commands
+//// (`OutboxClaim`, `OutboxSettle`, `OutboxDue`, `OutboxReceipt`). They keep
+//// one durable row per outgoing message so that a message to an unreachable
+//// owner is still owed after a restart; `client/peer_outbox` has the rules and
+//// `client/peers.send` the flow. Running them here puts them in the same
+//// serialized actor as every other write to the session's peer facts.
+////
 //// ## Flow
 ////
 //// `handle` → `handle_with` → `deliver` → `implicit_wake`
@@ -31,6 +38,8 @@
 //// 5. `overview` summarizes the whole session for the owner's picker.
 
 import client/internal/message_inspection
+import client/internal/peer_outbox_store
+import client/peer_outbox
 import core/clock
 import core/entry
 import core/glance
@@ -188,6 +197,37 @@ pub type Command {
   /// (`protocol-change/050`). It reads and never writes, and its answer is
   /// bounded to `overview_row_bytes` whatever the session holds.
   Overview
+
+  /// Records an outgoing message in the sender's outbox before its first
+  /// delivery attempt (`client/peer_outbox`). The answer says whether the
+  /// caller should attempt delivery (`pending`) or already holds a receipt
+  /// (`admitted`). Sent only to the sender's own endpoint.
+  OutboxClaim(
+    source_session: String,
+    strand: String,
+    session: String,
+    target_strand: String,
+    message_id: String,
+    text: String,
+  )
+
+  /// Records what a delivery attempt found. Sent only to the sender's own
+  /// endpoint, by `peers.send` and by the outbox drainer.
+  OutboxSettle(
+    strand: String,
+    session: String,
+    message_id: String,
+    outcome: peer_outbox.Outcome,
+  )
+
+  /// Lists the outbox rows that still need an attempt, after refusing the ones
+  /// that have waited too long. Sent only to the sender's own endpoint, by the
+  /// drainer.
+  OutboxDue
+
+  /// Reads the receipt the outbox holds for an admitted message, or null.
+  /// Sent only to the sender's own endpoint.
+  OutboxReceipt(strand: String, session: String, message_id: String)
 }
 
 /// A small endpoint; its closure captures an address, never a runtime graph.
@@ -199,6 +239,18 @@ pub type Endpoint {
     call: fn(Command) -> Result(JsonValue, String),
   )
 }
+
+/// The refusal an endpoint answers with when nobody answered for the
+/// recipient: the node that owns the session cannot be reached, so the message
+/// is neither admitted nor refused. A local endpoint never produces it. The
+/// sender's outbox treats exactly this text as "try again later" and every
+/// other error as the recipient's definitive answer.
+///
+/// It is an error text rather than a variant of `Endpoint.call`'s result so
+/// that a recipient endpoint stays `fn(Command) -> Result(JsonValue, String)`
+/// on every host, and a remote endpoint reports an unreachable owner through
+/// the channel it already has.
+pub const owner_unreachable = "owner unreachable"
 
 /// The defaults of a host that links nothing implicitly: every embedded
 /// session, and a daemon whose configuration has no `[peers]` table.
@@ -393,12 +445,23 @@ pub fn handle_with(
         denial_for(own_session(runtime), source, session, target),
       )
     }
-    Unlink(source, session, target) ->
-      delete_denying(
+    Unlink(source, session, target) -> {
+      use removed <- result.try(delete_denying(
         runtime,
         link_prefix <> digest(link_value(source, session, target)),
         denial_for(own_session(runtime), source, session, target),
-      )
+      ))
+
+      // A message queued for a link the owner has just removed must not be
+      // delivered later, when the recipient might be reachable again.
+      use Nil <- result.try(peer_outbox_store.forget_pending(
+        runtime,
+        source,
+        session,
+        target,
+      ))
+      Ok(removed)
+    }
     Links(source) -> {
       use links <- result.try(outgoing_links(runtime, source))
       use implicit <- result.try(implicit_links(
@@ -448,6 +511,24 @@ pub fn handle_with(
     Roster(source_session, source_strand) ->
       roster(runtime, defaults, source_session, source_strand)
     Overview -> overview(runtime)
+    OutboxClaim(source, strand, session, target, id, body) -> {
+      let #(now, _) = clock.read(clock)
+      peer_outbox_store.claim(
+        runtime,
+        source,
+        peer_outbox.pending(strand, session, target, id, body, now),
+      )
+    }
+    OutboxSettle(strand, session, id, outcome) ->
+      peer_outbox_store.settle(runtime, strand, session, id, outcome)
+      |> result.replace(json.Null)
+    OutboxDue -> {
+      let #(now, _) = clock.read(clock)
+      peer_outbox_store.due(runtime, now, owner_unreachable)
+      |> result.map(fn(rows) { json.Array(list.map(rows, peer_outbox.encode)) })
+    }
+    OutboxReceipt(strand, session, id) ->
+      peer_outbox_store.receipt(runtime, strand, session, id)
   }
 }
 
