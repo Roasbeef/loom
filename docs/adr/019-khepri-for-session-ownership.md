@@ -1,6 +1,6 @@
 # ADR-019: Khepri holds session ownership, and its members are the orchestrators and the executors
 
-**Status**: proposed · **Date**: 2026-10-08 · **Supersedes**: the phase 5 ruling
+**Status**: proposed, revised after review · **Date**: 2026-10-08 · **Supersedes**: the phase 5 ruling
 that two catalogue rows are the move authority (protocol-change/078, the
 addendum on moving a session) · **Spec ref**: protocol-change/079 ·
 **Issue**: #697
@@ -89,6 +89,26 @@ writes, but three things failed:
   distribution that dial did not produce a connection, so quorum did not
   return until something else connected the nodes.
 
+**A disk-lost member can rejoin as a non-voter.** Khepri's own
+`khepri_cluster:join/3` adds a member as a voter. Ra 3.2.0 also accepts a member
+added as `promotable`, a non-voter that Ra promotes once its log has caught up
+with the leader's. With a three-member visible cluster, one member was stopped,
+its data directory deleted, and 5000 writes made past a snapshot. The member then
+started its own Ra server without calling an election, asked the cluster to
+remove its old identity (`ra:remove_member/3`, which committed), and asked to be
+added back as `promotable` with a fresh UId (`ra:add_member/3`; the first attempt
+answered `cluster_change_not_permitted` while the removal settled, and the retry
+50 ms later succeeded). It appeared with match index 0 as `promotable`, was
+promoted to a voter 21 ms later, read the value of all 5000 writes, and a write
+issued on it committed in 254 ms. The first two members joined the bootstrap
+member the same way and were promoted in 21 ms each.
+
+**`prevent_overlapping_partitions` does nothing once `connect_all` is false.**
+Three visible members with `connect_all false` were fully connected, and one
+member then disconnected another. With `prevent_overlapping_partitions` left at
+its default (`true`) and with it set to `false`, the third member kept both of
+its connections and the two that were cut stayed connected to it.
+
 **Ra works over visible connections with automatic connection still off.** The
 same run with the members started with `hidden => false`, booted with `-kernel
 connect_all false`, and with `dist_auto_connect` still `never` and the same
@@ -145,14 +165,32 @@ versions.
 **The cluster's members talk over visible distribution connections.** This is
 the one change to the distribution posture, and the spike made it necessary
 rather than chosen. A daemon that is a directory member starts distribution
-with `hidden => false`. Its boot arguments add `-kernel connect_all false`, so
-`global` never connects to a node because a peer knows it, and `-kernel
-prevent_overlapping_partitions false`, so `global` never disconnects one member
-from another because a third lost sight of it. `dist_auto_connect` stays
-`never`, the pins and the `net_kernel:allow/1` list are unchanged, and a daemon
-that is not a member stays hidden. The spike measured `connect_all false` but did
-not set `prevent_overlapping_partitions`; the first implementation slice
-measures it before the flag is relied on. The cost is listed below.
+with `hidden => false`, and its boot arguments add `-kernel connect_all false`,
+so `global` never connects to a node because a peer knows it.
+`dist_auto_connect` stays `never`, the pins and the `net_kernel:allow/1` list are
+unchanged, and a daemon that is not a member stays hidden.
+`prevent_overlapping_partitions` is left alone, because the spike measured no
+effect from it with `connect_all` false.
+
+A connection's visibility is fixed when it is made, and a connection made with
+`net_kernel:hidden_connect_node/1` is hidden even between two visible nodes. So
+every connection Loom makes from one member to another goes through
+`distribution.connect`, which uses `net_kernel:connect_node/1` when both ends are
+members and `hidden_connect_node/1` otherwise.
+
+**A disk-lost member rejoins as a non-voter.** Every join goes through Ra's
+`promotable` membership, after removing the member's old identity, and Ra
+promotes the member only once it has caught up. Khepri's `join/3` is not used,
+because it adds a voter. The join is written against Ra's public API in the FFI
+shim, and it mirrors the Ra server configuration Khepri builds for itself,
+which ties the shim to Khepri's internals at the pinned version.
+
+**Khepri decides; the catalogue rows stay as local memory.** Every change of
+ownership is one compare-and-set on the session's record. The catalogue's move
+rows, and a new deletion mark, stay as each daemon's local write-ahead memory,
+written in the registry turns that already order them against admission, so
+that a local change that stops serving precedes the record write and one that
+grants serving follows it. Protocol-change/079 has the rule.
 
 **The Erlang dependency is reached through one FFI module.** Khepri's functions
 return Erlang shapes (`ok`, `{ok, Value}`, `{error, Reason}` with nested
@@ -182,11 +220,19 @@ so lint R6 is unaffected.
 - **Executors as non-voting members.** Ra supports non-voters, and they would
   keep the store off machines that hold checkouts. The owner ruled the other
   way, because two orchestrators alone have no majority once either is down.
-- **Recording only sessions on an executor.** A local session can never move,
-  so its ownership never changes. Leaving it out of the store would keep the
-  phase 3 fan-out alive for it, and two lookup mechanisms are more to maintain
-  than one record per session. Protocol-change/079 records local sessions and
-  lets them open without a quorum.
+- **Recording local sessions.** A local session can never move or fail over, so
+  its record would serve only to redirect a client that asked the wrong
+  orchestrator. Recording it would make creating a local session depend on a
+  quorum. Local sessions have no record, and a lookup that misses answers
+  `not_found`.
+- **Deleting the catalogue move rows.** The first draft did this, and the review
+  showed it reopened two races: a client open between stopping the slot and
+  writing the intent, and a receiver deleting a session it owned after a failed
+  write because it had no memory of the import.
+- **Checking the record when a session opens.** It makes every open depend on a
+  quorum. While the only daemon that can take ownership from an orchestrator is
+  that orchestrator, the local row is enough; the failover change adds the check.
+- **Khepri's own `join/3`.** It adds the joining member as a voter at once.
 - **Automatic bootstrap of the cluster by the first configured member.** A
   member that loses its disk and is first in the list would start a second,
   empty cluster. Bootstrap is an explicit operator command run once
@@ -201,10 +247,17 @@ so lint R6 is unaffected.
   `packages/conformance/manifest.toml` both change, and the second must be
   updated by hand in the same commit, because CI's Gleam does not heal a
   downstream manifest.
-- **A quorum for the writes that change ownership.** Creating a session,
-  opening a session on an executor, beginning, finishing or abandoning a move,
-  and deleting a session each need a majority of members. Lookups, archive,
-  restore, local sessions and every running session do not.
+- **A quorum for the writes that change ownership.** Creating or deleting a
+  session on an executor and each record write of a move need a majority of
+  members. Opening any session, lookups, archive, restore, local sessions and
+  every running session do not.
+- **Two behaviours.** A deployment without `[directory]` keeps the phase 3 and
+  phase 5 code exactly as it is, so both paths are maintained until the old one
+  is retired.
+- **A shim that knows Khepri's internals.** The non-voter join builds the Ra
+  server configuration Khepri would build, and restarts the server through
+  `khepri:start/2` afterwards so Khepri records the store. A Khepri upgrade must
+  re-check it.
 - **Visible distribution between members.** `nodes()` lists the other members.
   `pg` scopes with the same name on two members exchange their membership;
   Loom's event bus publishes to local members only, so delivery does not change,
@@ -219,7 +272,7 @@ so lint R6 is unaffected.
   member can become the leader and the leader must reach every follower.
 - **Disk and memory on every member**: a Ra write-ahead log, segments and
   snapshots under the daemon's state root, and the whole tree in memory. One
-  record per session is a few hundred bytes.
+  record per session is under a hundred bytes.
 - **A pre-1.0 library.** Khepri's API has changed between minor versions. Because
   of the exact pin, an upgrade happens only on purpose, and because every call goes
   through one FFI module, an upgrade's code changes stay in that module and its
@@ -280,3 +333,25 @@ configuration `unreleased_command_footprint_threshold => 65536` and
 `snapshot_time_interval => 0`. With Khepri's defaults, 5000 small writes took no
 snapshot at all, because Khepri requests one only after 20 MiB of unreleased
 commands.
+
+### The second spike: non-voter rejoin and `prevent_overlapping_partitions`
+
+The same project gained two controller entry points, run as
+`CTL=control_nv run.sh visible` and `CTL=control_pop KSPIKE_POP=default|false
+run.sh visible`. Both used a Ra system started by the driver
+(`ra_system:start/1` with Ra's default configuration, a name, and the member's
+data directory) instead of letting Khepri start one, so that a server could be
+started without an election.
+
+| Step | Result |
+|---|---|
+| Bootstrap member: `khepri:start(System, Config)` | `{ok, kspike_store}` |
+| Second and third member: start server (`promotable`), `ra:remove_member`, `ra:add_member(#{membership => promotable})` | added; promoted to voter after 21 ms; `khepri:start` then restarted each server |
+| Member stopped, directory deleted, 5000 writes, snapshot at index 4757 | |
+| Restarted member: remove old identity | `{ok, _, Leader}` |
+| Add as `promotable`, fresh UId | `cluster_change_not_permitted`, then ok after one 50 ms retry; listed as `promotable` with match index 0 |
+| Promotion | voter after 21 ms |
+| Read on the rejoined member | `{ok, 5000}` |
+| Write on the rejoined member | ok in 254 ms |
+| `connect_all false`, one member disconnects another, `prevent_overlapping_partitions` default (`true`) | the third member keeps both connections |
+| The same with `prevent_overlapping_partitions false` | the same |
