@@ -1,9 +1,8 @@
 # protocol-change/079: Khepri holds session ownership
 
-**Status**: PROPOSED 2026-10-08, revised the same day after an independent
-review and the owner's rulings on it. Spellings are provisional until the
-implementation lands; this document is updated to the implemented spellings
-before the change merges.
+**Status**: ACCEPTED 2026-10-08 on the owner's rulings, after an independent
+review of the first draft; implemented. The spellings below are the
+implemented ones.
 **Affects**, for a deployment with a `[directory]` table only:
 `client/session_directory.Directory` and its `Miss` type, a new write interface
 beside it, the `loom_orchestrator` port (`Owns` is no longer asked, and the
@@ -142,32 +141,40 @@ replica:
 | owner is another node | `Ok(Elsewhere(orchestrator))`, the configured row for that node or a row carrying only the node name |
 | the store is not running or not joined | `Error(Unavailable)` |
 
-`Miss` gains `Unavailable`; `Unreachable` remains for non-member daemons, whose
-lookup is the phase 3 fan-out. `Directory.reach` and `Directory.activate` are
-unchanged. A new record of functions, `Ownership`, holds the writes and a
-consistent read (`khepri:fence/2` then a local read):
+`Miss` gains `Unavailable(reason)`; `Unreachable` remains for non-member
+daemons, whose lookup is the phase 3 fan-out. `Directory.reach` and
+`Directory.activate` are unchanged. `Directory` gains two fields that a
+non-member leaves empty: `ownership`, the writes, and `standing`, which on a
+member gives `directory.status` its answer. The writes are a record of
+functions in `client/directory/ownership`, each bound to this daemon's node,
+with a consistent read (`khepri:fence/2` then a local read):
 
 ```gleam
 pub type Ownership {
   Ownership(
     node: String,
     read: fn(String) -> Result(Option(Record), Unavailable),
+    read_consistent: fn(String) -> Result(Option(Record), Unavailable),
     create: fn(String) -> Result(Nil, WriteRefusal),
     begin_move: fn(String, String, String) -> Result(Nil, WriteRefusal),
     activate: fn(String, String, String) -> Result(Nil, WriteRefusal),
     abandon: fn(String, String, String) -> Result(Nil, WriteRefusal),
     release: fn(String) -> Result(Nil, WriteRefusal),
     migrated: fn(String) -> Result(Bool, Unavailable),
+    mark_migrated: fn() -> Result(Nil, WriteRefusal),
+    seed_moving: fn(String, String, String) -> Result(Nil, WriteRefusal),
   )
 }
 
 pub type WriteRefusal {
-  NoQuorum
+  NoQuorum(reason: String)
   Mismatch(found: Option(Record))
 }
 ```
 
-The executor role builds no `Ownership`.
+`create` and `begin_move` answer a record that already holds what they would
+write as committed, so a retry after a lost reply succeeds. The executor role
+builds no `Ownership`: a daemon with no `[executors]` and no `[pools]` has none.
 
 ### Creation
 
@@ -186,14 +193,21 @@ as in phase 5, and replies. The mover then:
 1. waits for `[loom, migrated, <self>]`;
 2. writes the intent CAS; a record already `{self, {moving, Op, To}}` counts as
    written; an absent record reverts the row (`abort_move`) and abandons; a
-   record naming another owner is a conflict and stalls;
+   record naming another owner means the receiver's activation committed and
+   its reply was lost, so the move goes on and the receiver is asked again;
 3. closes, cuts and sends as in phase 5;
 4. asks the receiver to activate;
-5. retires when the receiver answered `Accepted` or `Refused(move_ended)` and a
-   consistent read shows another owner: `finish_move`, then the file work.
+5. retires when the receiver answered `Accepted` or `Refused(move_ended)`, or an
+   abandon found the record changed, and a consistent read shows another
+   owner: `finish_move`, then the file work. A consistent read naming this
+   daemon as `serving` reverts the row instead, since its own abandon
+   committed.
 
 The receiver's activation: a custody row `imported(Op, From)` answers `Accepted`
-at once; otherwise it verifies the copy as in phase 5, writes the activation CAS,
+at once; a row that holds the session in any other state, `moving` included, is
+refused `conflict` before anything is written (the model's
+`KhepriMutantImportOverMoving` shows this order is required); otherwise it
+verifies the copy as in phase 5, writes the activation CAS,
 and only after it commits runs `manager.import_session`. On `Mismatch(found)`,
 an owner equal to the receiver runs the import (a catalogue conflict there means
 the session has moved on, and is answered `Accepted`); any other owner or no
@@ -205,8 +219,14 @@ whose owner is another node sends the mover to retirement instead. The source
 abandons on the phase 5 causes, after thirty minutes of stalls during which the
 store had a quorum and the receiver's migration marker existed, and on the
 owner's request: `sessions.move` with `abandon: true` (owner-only, `epoch`
-required, the session must have a `moving` row) asks the movers to abandon now
-and replies `{session_id, op, state: "abandoning"}`.
+required) asks the movers to abandon now and replies `{session_id, op, state:
+"abandoning"}`. A session with no `moving` row is refused `conflict`, and a
+daemon that is not a member refuses `not_movable`, because without the record a
+move cannot be abandoned on silence. The abandon itself runs in the mover, so
+its outcome is read from `sessions.get` afterwards.
+
+A move stalled for want of a quorum is reported as unquorate and does not count
+toward the thirty minutes.
 
 `inbound_settled` and its `not_movable` and `busy` refusals are not applied on a
 member daemon.
@@ -234,15 +254,26 @@ non-member peer. `Activate`'s `Refused` gains `MoveEnded`. Nothing else changes.
 
 ### Control protocol
 
-- **`no_quorum`**: a refusal of `sessions.create` (remote sessions),
-  `sessions.delete` (remote sessions) and `sessions.move` with `abandon: true`.
-  Its message says whether the store is not joined or did not commit.
+- **`no_quorum`**: a refusal of `sessions.create` and `sessions.delete` for
+  remote sessions, and of `sessions.get` and `sessions.open` on a miss when the
+  member's store is not running. Its message carries the store's reason.
 - **`not_owner`** keeps its body, from the record.
 - **`owner_unreachable`** is not sent by a member daemon.
 - **`sessions.move`** gains `abandon` (boolean, optional).
-- **`directory.status`** (owner-only, no arguments) answers `{members, voters,
-  ra_members, leader, joined, applied_index}`; a non-member daemon refuses it
-  `not_found`.
+- **`directory.status`** (owner-only, no arguments) answers:
+
+  ```json
+  {"members": ["alpha@10.0.0.1", "bravo@10.0.0.4", "exec@10.0.0.2"],
+   "joined": true,
+   "ra_members": [{"node": "alpha@10.0.0.1", "voter": true}, ...],
+   "applied_index": 12,
+   "leader": "bravo@10.0.0.4"}
+  ```
+
+  `members` is the configured list, `ra_members` the membership in force with
+  each member's vote, and `leader` is absent when none is known. When the store
+  cannot be asked, `ra_members` is empty and an `unavailable` member carries the
+  reason. A non-member daemon refuses it `not_found`.
 
 ### Configuration
 
@@ -298,8 +329,10 @@ absent, it seeds one record per remote registration:
 | `moved(Op, To)` | nothing |
 
 A record that already names this daemon is a repeat. Any other existing record
-is a conflict, logged as `directory.migration_conflict`, and the session's moves
-and deletion stall until an operator resolves it. Then the marker is written.
+is a conflict, logged as `directory.migration_conflict` and left standing: a
+delete of the session is refused, and a move of it finds the record naming
+another owner and retires it. Then the marker is written. The movers' periodic
+pass runs the seeding, so a store without a quorum delays it and nothing else.
 
 ## What it costs
 
@@ -310,8 +343,9 @@ and deletion stall until an operator resolves it. Then the marker is written.
 - Six Hex packages, about 2 MB of BEAM files, and a Ra log on every member.
 - Two behaviours to maintain, with and without `[directory]`, until the phase 5
   path is retired.
-- `Move.tla` is replaced by a model of the record and the rows (plan in
-  [the design note](../docs/design-notes/khepri-ownership.md)).
+- A second TLA+ model, `protocol/models/session-move/KhepriMove.tla`, beside
+  `Move.tla`, which stays the model of a deployment without `[directory]`. Both
+  are gated by `make model-check`.
 
 Not built: automatic failover, a check of the record at open, ownership leases,
 moving a session between executors, membership removal commands, and a merged

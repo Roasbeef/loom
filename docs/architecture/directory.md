@@ -16,9 +16,13 @@ executor holds its checkout) and for how a tool call crosses between them.
 chosen and what the spikes measured, and
 [protocol-change/079](../../protocol-change/079-khepri-session-ownership.md)
 specifies the interfaces. [The plan](../design-notes/khepri-ownership.md)
-orders the implementation and the formal model.
+ordered the implementation, and
+[`protocol/models/session-move`](../../protocol/models/session-move/README.md)
+holds the formal model, `KhepriMove.tla`.
 
-**Status: proposed.** Where this page describes code as it stands, it says so.
+**Status: implemented.** The code named here is on `main` once
+protocol-change/079 lands; the shipped tests that run it are listed at the
+end.
 
 ## Two kinds of deployment
 
@@ -64,7 +68,22 @@ The store is named `loom_directory`, and it holds one record per remote session
   `To` under the move `Op`, and has stopped serving it.
 
 Every write names the exact value it expects to replace, so a write never
-depends on a read that came before it.
+depends on a read that came before it. These are all the transitions a record
+makes:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Serving: create (the creator)
+    Serving --> Moving: begin a move (the owner)
+    Moving --> Serving: activate (the receiver becomes owner)
+    Moving --> Serving: abandon (the owner keeps it)
+    Serving --> [*]: delete (the owner)
+    state "{Owner, serving}" as Serving
+    state "{Owner, {moving, Op, To}}" as Moving
+```
+
+The two arrows out of `Moving` expect the same value, so exactly one of them
+commits.
 
 Local sessions, whose checkout is a directory on the orchestrator, have no
 record. A local session can never move, so its owner never changes, and the only
@@ -124,16 +143,15 @@ can be down. Three, five or seven members is recommended; an even count adds a
 member without letting the cluster survive one more failure, and the daemon
 warns about it.
 
-```text
-             alpha (orchestrator)  <------->  bravo (orchestrator)
-                       ^                          ^
-                       |                          |
-                       +-------> exec <-----------+
-                              (executor)
-
-   every arrow: pinned TLS distribution, visible on both ends;
-   any member may be the Raft leader
+```mermaid
+flowchart LR
+    alpha["alpha<br/>orchestrator"] <-->|"pinned TLS, visible"| bravo["bravo<br/>orchestrator"]
+    alpha <-->|"pinned TLS, visible"| exec["exec<br/>executor"]
+    bravo <-->|"pinned TLS, visible"| exec
 ```
+
+Every link is a pinned TLS distribution connection, visible on both ends, and
+any of the three may be the Raft leader.
 
 Raft's leader sends every write to every follower, and any member can become
 the leader. So every member must be able to connect to every other member, and
@@ -168,9 +186,10 @@ whatever reason, the link between two members is visible.
 
 **Who connects, and when.**
 
-1. **The link keeper.** Each member runs one process that, every two seconds,
-   connects to each configured member missing from `nodes()`, and backs off from
-   one that does not answer. Once a cut network returns, both ends reconnect
+1. **The link keeper.** Each member runs one process
+   (`client/directory/member`) that, every two seconds, connects to each
+   configured member missing from `nodes()`, and backs off, doubling up to
+   thirty seconds, from one that does not answer. Once a cut network returns, both ends reconnect
    within a few seconds.
 2. **Ra itself.** When a Ra server starts, it connects to the members it does
    not see. The spike measured a restarted member reconnecting this way and
@@ -226,7 +245,7 @@ real one.
 
 The control command `directory.status` reports the configured members, Ra's
 members and which of them are voters, the leader, this member's applied index,
-and whether its store is joined. When the configured list and Ra's list differ,
+and whether its store is joined (protocol-change/079 has the reply). When the configured list and Ra's list differ,
 Ra's is the one in force: membership lives in Raft's log, and `members` only
 tells a daemon whom to join and whom to keep connected.
 
@@ -303,14 +322,42 @@ A move keeps the six steps of phase 5. The file handling is unchanged.
 | 5 Activate | `moving` until the receiver's write, then `serving` with the receiver as owner | `moving`; the receiver's row becomes `imported` after its write | the receiver's write with or without its `imported` row | the source asking again; the receiver finishes its import when the record already names it |
 | 6 Retire | the receiver owns it | `moved`, after a consistent read shows another owner | `moved` with the file not yet set aside | the mover at boot |
 
+The sequence below is one move with nothing going wrong. The receiver's write
+comes before its import, and the source's retirement comes after a consistent
+read.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as client
+    participant A as alpha (source)
+    participant K as Khepri cluster
+    participant E as executor
+    participant B as bravo (receiver)
+    C->>A: sessions.move {to: bravo}
+    A->>A: row moving(op), slot stopped (one registry turn)
+    A-->>C: {op, state: moving}
+    A->>K: CAS {alpha, serving} to {alpha, {moving, op, bravo}}
+    A->>E: close the scope
+    A->>A: cut the copy
+    A->>B: send the pieces
+    A->>B: activate
+    B->>K: CAS {alpha, {moving, op, bravo}} to {bravo, serving}
+    B->>B: register, row imported(op), place the file (one registry turn)
+    B-->>A: Accepted
+    A->>K: consistent read: owner is bravo
+    A->>A: row moved(op), file set aside
+```
+
 **Intend.** `sessions.move` writes the `moving` row and stops the slot in one
-registry turn, as phase 5 does, and returns. The mover then writes the record
-from `serving` to `moving`. If the record holds anything other than this
-daemon's `serving` or the same `moving`, the mover does not go on. A missing
-record means the session was never recorded (it was created before the daemon
-migrated, and migration did not reach it), so the mover reverts the row and the
-move is abandoned. A record naming another owner is a conflict an operator
-resolves.
+registry turn, as phase 5 does, and returns. The mover waits until this
+daemon's migration marker exists, then writes the record from `serving` to
+`moving`. A record already `moving` under the same operation is a repeat and
+the mover goes on. A missing record means the session was never recorded (it
+was created before the daemon migrated, and migration did not reach it), so the
+mover reverts the row and the move is abandoned. A record that already names
+another owner means the receiver's activation committed and its reply was lost,
+and the mover goes straight to the retirement.
 
 **Activate.** The receiver checks the copy (the sender's node, the digest, the
 scope cell's clean close, the executor row). Then it writes the record from the
@@ -329,8 +376,8 @@ store. When the record write fails, the receiver reads what the record holds:
   treats as silence.
 
 **Retire.** The source retires only after the receiver answered `Accepted` or
-`move_ended`, and only when a consistent read shows the record names another
-owner. It then writes `moved`, sets its file aside, and releases its lease and
+`move_ended`, or its own abandon found the record changed, and only when a
+consistent read shows the record names another owner. It then writes `moved`, sets its file aside, and releases its lease and
 its cut copy. A consistent read that names the source itself means the move was
 abandoned, and the file stays where it is.
 
@@ -441,9 +488,12 @@ catalogue's remote sessions into the store, one record per registration:
 
 A record that already names this daemon means the copy is being repeated, and it
 succeeds. A record that names another daemon for a resident or imported session
-is a conflict: the existing record stands, the daemon logs
-`directory.migration_conflict`, and the session cannot move or be deleted here
-until an operator resolves it. A restored backup is the case that produces one.
+is a conflict: the existing record stands and the daemon logs
+`directory.migration_conflict`. A restored backup is the case that produces one.
+Until an operator resolves it, the daemon still opens the session (opening reads
+no record), refuses to delete it (the delete expects this daemon as owner), and
+a move of it finds the record naming another owner and retires it, setting the
+file aside where an operator can recover it.
 When every registration is copied, the daemon writes `[loom, migrated, <node>]`.
 Until then its movers do not act on the store, so no move decides anything from
 a record that is merely missing.
@@ -479,8 +529,26 @@ needs five more pieces:
 | `client/internal/ffi_khepri.gleam` and `client_khepri_ffi.erl` | The only calls into Khepri and Ra, with every return normalized to a `Result` |
 | `client/directory/record` | The record, its total decoder and its encoder |
 | `client/directory/store` | Starting, bootstrapping and joining the store; the deadline-bounded reads and writes |
-| `client/directory/links` | The link keeper |
+| `client/directory/member` | The link keeper and the join, and the member's status |
 | `client/directory/settings` | The `[directory]` table |
-| `client/session_directory` | `Directory`, and `Ownership`, the writes |
-| `client/session_mover`, `client/session_importer` | The move, with the record deciding and the rows remembering |
+| `client/directory/ownership` | `Ownership`, the writes, each bound to this node |
+| `client/directory/deletion` | Finishing a remote delete under its `deleting` mark |
 | `client/directory/migrate` | Copying catalogue rows into the store once |
+| `client/daemon/directory_cli` | `loomd directory bootstrap` |
+| `client/session_directory` | `Directory`: the lookup, and on a member the writes and the status |
+| `client/session_mover`, `client/session_movers`, `client/session_importer` | The move, with the record deciding and the rows remembering; the give-up and the periodic pass |
+| `storage/catalogue` | The `catalogue_session_deletions` table (catalogue version 13) |
+
+## The tests that run it
+
+| Test | What it proves |
+|---|---|
+| `client/directory/store_test`, `record_test`, `ownership_test` | The store's calls, the record's total decoder, and every compare-and-set's success and refusal, on a one-member store in the test VM |
+| `client/directory/daemon_record_test` | Creation, deletion, `directory.status` and abandon over the control socket of a member, and that opening needs no store |
+| `client/directory/migrate_test` | The migration table, conflicts left standing, the marker written last |
+| `client/session_mover_test`, `client/session_importer_test` | Moves under `Recorded` authority, the give-up, and the receiver's compare-and-set |
+| `client/distribution_test` (`members_visible`, `members_not_transitive`, `member_needs_connect_all_off`, `directory_rejoin`) | Visible member links, no transitive connections, the boot refusal, and a member that lost its disk rejoining as a non-voter |
+| `client/daemon_shipped_remote_move_test` (`members` variants) | One clean move and a source halted after each of the six steps, among three shipped members |
+| `client/daemon_shipped_directory_test`, `client/daemon_shipped_peer_mail_test` (member variants) | Redirects and peer mail from each member's own copy, with an owner down |
+| `client/daemon_shipped_directory_quorum_test` | A member alone without a majority, and a member that lost its disk, against the shipped daemon |
+| `protocol/models/session-move/KhepriMove.tla` | The move and a move back under crashes, lost majorities and late activations, with seven mutants |
