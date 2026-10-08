@@ -950,8 +950,16 @@ pub fn set_visibility(
 /// transaction each, keyed by the move's `op`. On the side that gives a
 /// session up they run `Resident -> Moving -> Moved`, with `Moving ->
 /// Resident` for an early abort. On the side that receives it, `Resident ->
-/// Imported`. `Moved` has no outgoing transition, so a stale mover or a late
-/// message can never bring a session back to a catalogue that handed it over.
+/// Imported`.
+///
+/// Two further transitions let a session travel more than once, and each needs
+/// a new `op`. An imported session can move onward (`Imported -> Moving`),
+/// because the catalogue that received it is its owner. A session that moved
+/// away can come back (`Moved -> Imported`), because the catalogue that handed
+/// it over keeps its registration. A move under the `op` that wrote a `Moved`
+/// row cannot undo it, so a stale mover or a late message of that move can
+/// never bring a session back to a catalogue that handed it over. Only a move
+/// that began after it can.
 pub type Custody {
   /// No move row: this catalogue serves the session and has never moved it.
   Resident
@@ -1074,8 +1082,10 @@ fn validate_move(op: String, peer: String) -> Result(Nil, Error) {
 /// sent, so a crash leaves a `Moving` row that a restart resumes and never a
 /// copy with no record of why it exists. A repeat of the same op and peer
 /// answers the stored custody (`Moving`, or `Moved` once it finished). A
-/// session that another op is moving, one that has moved, and one that was
-/// imported here are `Conflict`. A malformed op or peer is `Invalid`.
+/// session that another op is moving and one that has moved are `Conflict`.
+/// A session that was imported here is the owner's to move onward, so it goes
+/// `Imported -> Moving` and the import row is replaced. A malformed op or peer
+/// is `Invalid`.
 ///
 /// ## Examples
 ///
@@ -1097,11 +1107,16 @@ pub fn begin_move(
         use Nil <- result.try(insert_move(catalogue, id, op, to, "moving"))
         Ok(Moving(op:, to:))
       }
+      Imported(..) -> {
+        use Nil <- result.try(statement(catalogue, sql.delete_session_move(id)))
+        use Nil <- result.try(insert_move(catalogue, id, op, to, "moving"))
+        Ok(Moving(op:, to:))
+      }
       Moving(op: held, to: peer)
         | Moved(op: held, to: peer)
         if held == op && peer == to
       -> Ok(current)
-      Moving(..) | Moved(..) | Imported(..) -> Error(Conflict)
+      Moving(..) | Moved(..) -> Error(Conflict)
     }
   })
 }
@@ -1185,14 +1200,42 @@ pub fn abort_move(
   })
 }
 
+/// A move that has begun and not finished: the session, the move's `op` and the
+/// orchestrator it is going to.
+pub type Pending {
+  Pending(session: String, op: String, to: String)
+}
+
+/// Lists every move still in `Moving`, in session order, for a restart to
+/// resume. A row whose op or peer breaks its grammar fails the read, since
+/// skipping it would leave a session stopped and moving with nobody driving it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.moving(store)
+/// // == Ok([catalogue.Pending(session: id, op: "0192f3c1", to: "laptop")])
+/// ```
+pub fn moving(catalogue: Catalogue) -> Result(List(Pending), Error) {
+  use rows <- result.try(query(catalogue, sql.moving_sessions()))
+  list.try_map(rows, fn(row) {
+    case is_move_op(row.op) && is_orchestrator_name(row.peer) {
+      True -> Ok(Pending(session: row.session_id, op: row.op, to: row.peer))
+      False -> Error(Invalid("invalid move metadata"))
+    }
+  })
+}
+
 /// Records that the orchestrator `from` handed this catalogue a session under
 /// the move `op`: `Resident -> Imported`.
 ///
 /// The session's registration must already exist (`reserve`), as a move imports
 /// the conversation file beside it. A repeat of the same op and source answers
 /// the stored `Imported`, which is what lets the receiver answer a lost
-/// activation reply a second time. A session that is moving or has moved, or one
-/// imported under another op or from another source, is `Conflict`.
+/// activation reply a second time. A session that has moved away comes back
+/// under a new op: `Moved -> Imported` replaces the tombstone, and a session
+/// that moved under this same `op` stays `Moved`. A session that is moving, or
+/// one imported under another op or from another source, is `Conflict`.
 ///
 /// ## Examples
 ///
@@ -1216,6 +1259,11 @@ pub fn import_session(
       }
       Imported(op: held, from: source) if held == op && source == from ->
         Ok(current)
+      Moved(op: held, ..) if held != op -> {
+        use Nil <- result.try(statement(catalogue, sql.delete_session_move(id)))
+        use Nil <- result.try(insert_move(catalogue, id, op, from, "imported"))
+        Ok(Imported(op:, from:))
+      }
       Imported(..) | Moving(..) | Moved(..) -> Error(Conflict)
     }
   })

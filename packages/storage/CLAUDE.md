@@ -80,13 +80,20 @@ with these forks: they define the same modules.
   `abort_move` and `import_session` are compare-and-set transitions, each in
   one immediate transaction, keyed by the move's `op`: source side `Resident ->
   Moving -> Moved` with `Moving -> Resident` for an early abort, target side
-  `Resident -> Imported`. A repeat of the same op answers the stored custody
+  `Resident -> Imported`. Two transitions let a session travel more than once,
+  and each needs a new op: `begin_move` on an `Imported` session replaces the
+  import row with `Moving` (a session moves onward from the catalogue that
+  received it), and `import_session` on a `Moved` session whose tombstone has a
+  different op replaces it with `Imported` (a session comes back to the
+  catalogue that handed it over, whose registration was kept). Both replace the
+  row in one transaction. A repeat of the same op answers the stored custody
   and writes nothing, and the revision moves only when a row changes. Any other
-  op, or a transition the stored state does not allow, is `Conflict`. `Moved`
-  has no outgoing transition, so an abort that arrives after the move finished
-  cannot undo it, and `delete` refuses a `Moving` or `Moved` session with
-  `Conflict` because the row is the only record of who owns it (an `Imported`
-  row leaves with its session). A stored row whose op or peer breaks its
+  op, or a transition the stored state does not allow, is `Conflict`. A `Moved`
+  row cannot be undone by the op that wrote it, so an abort or an import of
+  that move arriving late changes nothing, and `delete` refuses a `Moving` or
+  `Moved` session with `Conflict` because the row is the only record of who
+  owns it (an `Imported` row leaves with its session). `moving` lists the moves
+  still in `Moving`, which a restart resumes. A stored row whose op or peer breaks its
   grammar (`is_move_op`, `is_orchestrator_name`) fails the read with `Invalid`
   and is never read as `Resident`. The table's foreign key to
   `catalogue_sessions` means a registration cannot be removed while its row
@@ -332,7 +339,10 @@ with these forks: they define the same modules.
   hex. `rewrite_into` calls the same `cut_closed`, so the two cannot drift.
   The claim stays held in the original after a successful export, and the
   same owner may re-cut over its own unexpired claim; any other unexpired
-  holder is `RewriteLeaseHeld`.
+  holder is `RewriteLeaseHeld`. `release_export(path, owner)` deletes the claim
+  of that owner from the original, so an aborted move gives the session back at
+  once and a finished one frees the file before it is set aside; another
+  owner's claim is left alone.
 - `storage/internal/branch.Refine` — the shared incremental
   truncate/filter/cursor/limit pipeline, fed page by page by SQLite and
   whole by Memory.

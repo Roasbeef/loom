@@ -132,3 +132,7 @@ WHERE session_id = ? AND op = ? AND state = 'moving';
 
 -- name: DeleteSessionMove :exec
 DELETE FROM catalogue_session_moves WHERE session_id = ?;
+
+-- name: MovingSessions :many
+SELECT session_id, op, peer FROM catalogue_session_moves
+WHERE state = 'moving' ORDER BY session_id;

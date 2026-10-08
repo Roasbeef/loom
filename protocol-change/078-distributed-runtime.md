@@ -450,11 +450,14 @@ end and `peer` is an `[orchestrators.<name>]` key.
 The transitions are compare-and-set on the row, in one immediate transaction
 each. The side that gives a session up runs `resident -> moving -> moved`, with
 `moving -> resident` for an abort before anything reached the receiver. The side
-that receives it runs `resident -> imported`. A repeat of the same op answers the
-stored state and writes nothing. Any other op, and any transition the stored
-state does not allow, is a conflict. `moved` has no outgoing transition, which is
-what keeps a stale mover or a late message from returning a session to a
-catalogue that handed it over. The read of a row that breaks the grammar fails
+that receives it runs `resident -> imported`. A session can travel more than
+once, so two further transitions each take a new op: an `imported` session goes
+`imported -> moving` to move onward, and a `moved` session goes `moved ->
+imported` to come back, each replacing the row in one transaction. A repeat of
+the same op answers the stored state and writes nothing. Any other op, and any
+transition the stored state does not allow, is a conflict. The op that wrote a
+`moved` row cannot undo it, which is what keeps a stale mover or a late message
+from returning a session to a catalogue that handed it over. The read of a row that breaks the grammar fails
 and is never taken as resident. Deleting a `moving` or `moved` session is
 refused, because the row is the only record of who owns it.
 

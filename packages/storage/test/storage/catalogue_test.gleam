@@ -168,6 +168,7 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.finish_session_move("", "").0,
     sql.abort_session_move("", "").0,
     sql.delete_session_move("").0,
+    sql.moving_sessions().0,
   ]
   assert normalize_queries(source)
     == normalize_queries(string.join(generated, "\n"))
@@ -1601,7 +1602,7 @@ pub fn an_early_abort_returns_the_session_and_only_the_owning_op_may_abort_test(
   assert catalogue.close(store) == Ok(Nil)
 }
 
-pub fn the_target_side_imports_once_and_never_moves_on_test() {
+pub fn the_target_side_imports_once_and_a_repeat_changes_nothing_test() {
   let path = fresh_path("move-import")
   let assert Ok(store) = catalogue.open(path) as "catalogue opens"
   let record = registration(63)
@@ -1617,15 +1618,13 @@ pub fn the_target_side_imports_once_and_never_moves_on_test() {
   assert revision_of(store) == start + 1
 
   // A repeat answers the stored custody, so a lost activation reply can be
-  // answered again. Another op or another source is a conflict, and none of
-  // the source-side transitions applies to an imported session.
+  // answered again. Another op or another source is a conflict, and neither
+  // finishing nor aborting applies to an imported session.
   assert catalogue.import_session(store, record.id, op: op_one, from: "desk")
     == Ok(imported)
   assert catalogue.import_session(store, record.id, op: op_two, from: "desk")
     == Error(catalogue.Conflict)
   assert catalogue.import_session(store, record.id, op: op_one, from: "other")
-    == Error(catalogue.Conflict)
-  assert catalogue.begin_move(store, record.id, op: op_two, to: "laptop")
     == Error(catalogue.Conflict)
   assert catalogue.finish_move(store, record.id, op: op_one)
     == Error(catalogue.Conflict)
@@ -1639,6 +1638,122 @@ pub fn the_target_side_imports_once_and_never_moves_on_test() {
   assert catalogue.delete(store, record.id) == Ok(record)
   assert catalogue.reserve(store, record) == Ok(record)
   assert catalogue.custody(store, record.id) == Ok(catalogue.Resident)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn an_imported_session_moves_onward_under_a_new_op_test() {
+  let path = fresh_path("move-onward")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(69)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(_) =
+    catalogue.import_session(store, record.id, op: op_one, from: "desk")
+  let start = revision_of(store)
+
+  // The catalogue that received the session owns it, so it may give it up
+  // again. The import row is replaced by the move row in one transaction, and
+  // the new move follows the same rules as any other.
+  let moving = catalogue.Moving(op: op_two, to: "laptop")
+  assert catalogue.begin_move(store, record.id, op: op_two, to: "laptop")
+    == Ok(moving)
+  assert revision_of(store) == start + 1
+  assert catalogue.custody(store, record.id) == Ok(moving)
+  assert catalogue.begin_move(store, record.id, op: op_two, to: "laptop")
+    == Ok(moving)
+  assert catalogue.begin_move(store, record.id, op: op_one, to: "laptop")
+    == Error(catalogue.Conflict)
+  assert catalogue.import_session(store, record.id, op: op_one, from: "desk")
+    == Error(catalogue.Conflict)
+  let moved = catalogue.Moved(op: op_two, to: "laptop")
+  assert catalogue.finish_move(store, record.id, op: op_two) == Ok(moved)
+  assert catalogue.custody(store, record.id) == Ok(moved)
+
+  // The import row was replaced and not kept beside the move, so aborting an
+  // onward move leaves the session resident here, with no memory of the import.
+  assert catalogue.close(store) == Ok(Nil)
+  let again = fresh_path("move-onward-abort")
+  let assert Ok(other) = catalogue.open(again) as "catalogue opens"
+  let kept = registration(70)
+  assert catalogue.reserve(other, kept) == Ok(kept)
+  let assert Ok(_) =
+    catalogue.import_session(other, kept.id, op: op_one, from: "desk")
+  let assert Ok(_) =
+    catalogue.begin_move(other, kept.id, op: op_two, to: "laptop")
+  assert catalogue.abort_move(other, kept.id, op: op_two)
+    == Ok(catalogue.Resident)
+  assert catalogue.custody(other, kept.id) == Ok(catalogue.Resident)
+  assert catalogue.close(other) == Ok(Nil)
+}
+
+pub fn a_moved_session_comes_back_under_a_new_op_and_never_under_its_own_test() {
+  let path = fresh_path("move-back")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record = registration(71)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(_) =
+    catalogue.begin_move(store, record.id, op: op_one, to: "laptop")
+  let assert Ok(moved) = catalogue.finish_move(store, record.id, op: op_one)
+  let start = revision_of(store)
+
+  // The move that wrote the tombstone cannot undo it, from either side of the
+  // wire, so a late message of that move changes nothing.
+  assert catalogue.import_session(store, record.id, op: op_one, from: "laptop")
+    == Error(catalogue.Conflict)
+  assert catalogue.custody(store, record.id) == Ok(moved)
+  assert revision_of(store) == start
+
+  // A move that began later can: the session returns to this catalogue, whose
+  // registration was kept, and the tombstone becomes provenance.
+  let imported = catalogue.Imported(op: op_two, from: "laptop")
+  assert catalogue.import_session(store, record.id, op: op_two, from: "laptop")
+    == Ok(imported)
+  assert revision_of(store) == start + 1
+  assert catalogue.custody(store, record.id) == Ok(imported)
+
+  // The first move is now history. Its finish is refused, and the repeat of
+  // the second import still answers.
+  assert catalogue.finish_move(store, record.id, op: op_one)
+    == Error(catalogue.Conflict)
+  assert catalogue.import_session(store, record.id, op: op_two, from: "laptop")
+    == Ok(imported)
+  assert revision_of(store) == start + 1
+  assert catalogue.close(store) == Ok(Nil)
+
+  // And it survives a restart.
+  let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
+  assert catalogue.custody(reopened, record.id) == Ok(imported)
+  assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn moves_still_in_flight_are_listed_in_session_order_test() {
+  let path = fresh_path("move-listing")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  assert catalogue.moving(store) == Ok([])
+  let first = registration(72)
+  let second = registration(73)
+  let third = registration(74)
+  assert catalogue.reserve(store, third) == Ok(third)
+  assert catalogue.reserve(store, first) == Ok(first)
+  assert catalogue.reserve(store, second) == Ok(second)
+  let assert Ok(_) =
+    catalogue.begin_move(store, third.id, op: op_one, to: "laptop")
+  let assert Ok(_) =
+    catalogue.begin_move(store, first.id, op: op_two, to: "desk")
+  let assert Ok(_) =
+    catalogue.begin_move(store, second.id, op: op_one, to: "laptop")
+  let assert Ok(_) = catalogue.finish_move(store, second.id, op: op_one)
+
+  // Only a move that has not finished is listed: a tombstone needs no one to
+  // drive it. The order is by session identity, whatever order they began in.
+  let pending = [
+    catalogue.Pending(session: first.id, op: op_two, to: "desk"),
+    catalogue.Pending(session: third.id, op: op_one, to: "laptop"),
+  ]
+  assert catalogue.moving(store)
+    == Ok(list.sort(pending, fn(a, b) { string.compare(a.session, b.session) }))
+  let assert Ok(_) = catalogue.abort_move(store, first.id, op: op_two)
+  assert catalogue.moving(store)
+    == Ok([catalogue.Pending(session: third.id, op: op_one, to: "laptop")])
   assert catalogue.close(store) == Ok(Nil)
 }
 
