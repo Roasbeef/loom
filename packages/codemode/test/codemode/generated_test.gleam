@@ -209,7 +209,7 @@ fn prepare_seed(seed_root: String) -> Nil {
   let assert Ok(Nil) =
     seed.prepare(
       root: seed_root,
-      vendored: [],
+      vendored: seed.default_vendored(),
       dependencies: compile.default_dependencies(),
     )
     as "the seed layout must be writable"

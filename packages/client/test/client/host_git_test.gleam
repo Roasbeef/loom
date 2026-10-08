@@ -46,6 +46,19 @@ pub fn a_missing_git_stays_missing_test() {
   assert process.receive(asked, 0) == Error(Nil)
 }
 
+pub fn subprocess_lookup_uses_the_resolved_git_directory_test() {
+  assert host_git.tool_path("/usr/bin:/bin", toolchain_git)
+    == "/Applications/Xcode.app/Contents/Developer/usr/bin:/usr/bin:/bin"
+  assert host_git.tool_path(
+      "/opt/homebrew/bin:/usr/bin",
+      "/opt/homebrew/bin/git",
+    )
+    == "/opt/homebrew/bin:/usr/bin"
+  assert host_git.tool_path("/usr/bin:/bin", "git") == "/usr/bin:/bin"
+  assert host_git.tool_path("/usr/bin:/bin", host_git.xcode_shim)
+    == "/usr/bin:/bin"
+}
+
 fn probes(
   platform: host_git.Platform,
   found: Result(String, String),
