@@ -10,11 +10,35 @@ This guide covers updates, source installation, restart, rollback and cleanup;
 
 ```sh
 loom update                         # Latest stable GitHub release.
+loom update --nightly                # Newest published main commit build.
 loom update --check                 # Verify metadata without installing.
 loom update --version v0.3.0        # Select a published tag.
 loom update --commit FULL_COMMIT    # Require a published commit build.
 loom update --install-only          # Leave daemon lifecycle to the operator.
 ```
+
+`--nightly` captures GitHub's `main` head and selects the first commit in its
+recent history with a published `commit-<full-sha>` release. A newer unpublished
+head, draft or failed build leaves the previous published build selectable.
+The search examines up to 300 recent releases and 300 main-history commits;
+no match or an API failure stops before installation. It never compiles source
+or falls back to a stable release. `--nightly --check` only resolves and verifies
+metadata. Nightly selection is exclusive with a tag or commit and cannot use
+`--from` or `--manifest-url`; other installation, signature and restart options
+work as usual. An explicit nightly selection may move backwards in package
+version, just like an explicit tag or commit.
+
+The `Publish nightly` workflow captures main daily at 08:23 UTC and can be run
+manually from main. It reuses the native release builders, requires matching
+artifacts from both Linux builders and both macOS builders, and publishes an
+immutable commit-addressed prerelease after release smokes and manifest binding.
+An already-published release is left intact. A leftover draft from an
+interrupted publication fails explicitly for operator inspection; retries never
+replace its assets. Version-tag builds still create
+reviewable drafts, and nightlies never become GitHub's latest stable release.
+The current publishing builders produce Linux x86_64 and macOS arm64 assets;
+other updater platforms fail with a missing-platform manifest until their
+native builders are added.
 
 Commit selection resolves the full source SHA and looks for a GitHub release
 named `commit-<full-sha>`. It does not compile an unpublished commit. A short
