@@ -117,6 +117,7 @@ fn rig_over(
     as "the checkout resolves"
   let assert Ok(state) = bootstrap.canonical_directory(state)
     as "the state root resolves"
+  establish(state)
   let factory =
     executor_plane.factory(machine(state, seed), [Workspace("proj", checkout)])
   let assert Ok(started) =
@@ -138,6 +139,21 @@ fn rig_over(
     ))
     as "the owner port starts"
   Rig(host_pid: started.pid, address: started.data, checkout:, state:, port:)
+}
+
+// The entries a daemon has created in its state root before it builds any
+// session's policy. The jail masks them, and under full enforcement it cannot
+// mask a path which does not exist, so a rig which stands in for a daemon
+// creates them as a daemon would.
+fn establish(state: String) -> Nil {
+  list.each(["owner.token", "catalogue.db", "daemon.lock"], fn(name) {
+    let assert Ok(Nil) = simplifile.write(state <> "/" <> name, "")
+      as "a state root entry is created"
+    Nil
+  })
+  let assert Ok(Nil) = simplifile.create_directory_all(state <> "/sessions")
+    as "the sessions directory is created"
+  Nil
 }
 
 fn stop(rig: Rig) -> Nil {
