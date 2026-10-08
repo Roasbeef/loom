@@ -161,7 +161,24 @@ run(<<"remote_run">>, Root) ->
 run(<<"remote_short_outage">>, Root) ->
     remote(Root, <<"short_outage">>, <<"nothing">>, 800);
 run(<<"remote_long_outage">>, Root) ->
-    remote(Root, <<"long_outage">>, <<"nothing">>, 800).
+    remote(Root, <<"long_outage">>, <<"nothing">>, 800);
+%% The executor runs the production plane factory over a temporary checkout, and
+%% the orchestrator attaches to it by name, writes a file and reads it back
+%% through the real tools. The checkout path it learns is the executor's own,
+%% carried in the census as an opaque string.
+run(<<"remote_workspace">>, Root) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
+    B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
+    Work = filename:join(Root, "executor-work"),
+    ok = file:make_dir(Work),
+    ConfigA = config(A, B, cert_of(B), none),
+    ConfigB = config(B, A, cert_of(A), none),
+    exchange(A, ConfigA, remote_workspace_orchestrator,
+             #{peer => name_of(B)},
+             B, ConfigB, remote_workspace_host,
+             #{directory => bin(Work)}).
 
 remote(Root, Scenario, Asks, Hold) ->
     Ca = root_cert("fixture ca"),
@@ -452,6 +469,18 @@ role(remote_host, Config, #{ledger := Ledger, asks := Asks, hold := Hold}) ->
     {ok, Handle} = support@remote_nodes:host(Ledger, Asks, Hold),
     ready_and_stop(),
     {ok, nil} = support@remote_nodes:verify_host(Handle);
+%% The executor of a real workspace: the production factory over a checkout.
+role(remote_workspace_host, Config, #{directory := Directory}) ->
+    {ok, _} = ?DIST:start(Config),
+    {ok, Handle} = support@remote_nodes:workspace_host(Directory),
+    ready_and_stop(),
+    {ok, nil} = support@remote_nodes:verify_workspace(Handle);
+%% The orchestrator of a real workspace: attach by name, write, read back.
+role(remote_workspace_orchestrator, Config, #{peer := PeerName}) ->
+    {ok, Membership} = ?DIST:start(Config),
+    {ok, Peer} = ?DIST:peer(Membership, PeerName),
+    {ok, nil} = ?DIST:connect(Peer, 15000),
+    {ok, nil} = support@remote_nodes:orchestrate_workspace(Peer);
 %% The orchestrator of a remote tool call: a real surface running one call.
 role(remote_orchestrator, Config, #{peer := PeerName, scenario := Scenario}) ->
     {ok, Membership} = ?DIST:start(Config),

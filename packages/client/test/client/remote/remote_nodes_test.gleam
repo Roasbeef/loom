@@ -23,6 +23,15 @@ pub fn a_remote_call_runs_once_and_round_trips_an_owner_callback_test() {
   )
 }
 
+pub fn a_real_workspace_serves_file_tools_to_another_node_test() {
+  proves(
+    "remote_workspace",
+    "The production plane factory must serve a workspace by name: a file "
+      <> "written through the surface from another node must land in the "
+      <> "executor's checkout, and the census must decode on the far node.",
+  )
+}
+
 pub fn a_connection_lost_while_the_tool_runs_does_not_run_it_twice_test() {
   proves(
     "remote_short_outage",

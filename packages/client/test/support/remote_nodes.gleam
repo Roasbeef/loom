@@ -15,24 +15,38 @@
 //// and the re-sent `Run` is answered from the stored row. Both must produce the
 //// outcome exactly once and run the tool exactly once.
 
+import broker/exec
+import client/catalog
 import client/distribution
 import client/escalate
+import client/executor_plane
+import client/internal/ffi_os
 import client/internal/ffi_remote
+import client/jobs
 import client/owner_services
 import client/remote/address
 import client/remote/host
 import client/remote/owner_port
 import client/remote/protocol
+import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
+import client/workspaces.{Workspace}
 import core/clock
+import core/json
+import core/message
 import gleam/erlang/node.{type Node}
 import gleam/erlang/process.{type Name}
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import host/bootstrap
+import provider/secret
 import runtime/effects
+import simplifile
 import storage/exec_ledger
 import support/remote_fixtures as fixtures
+import telemetry/log
 
 /// What the executor role keeps until it is asked to verify.
 pub type HostHandle {
@@ -206,5 +220,164 @@ fn exactly_once(peer: distribution.Peer, target: Node) -> Result(Nil, String) {
     ["call_1"] -> Ok(Nil)
     other ->
       Error("the executor ran " <> string.inspect(other) <> ", not call_1 once")
+  }
+}
+
+// --- a real workspace across two nodes -------------------------------------
+
+/// What the executor role of a real workspace keeps until it verifies.
+pub type WorkspaceHandle {
+  WorkspaceHandle(checkout: String)
+}
+
+/// The executor role of a real workspace: the production factory over a
+/// checkout under `directory`, served by the real host under its fixed name.
+pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
+  let checkout = directory <> "/checkout"
+  let state = directory <> "/state"
+  use Nil <- result.try(
+    simplifile.create_directory_all(checkout)
+    |> result.map_error(string.inspect),
+  )
+  use Nil <- result.try(bootstrap.ensure_private_directory(state))
+  use helper <- result.try(helper_path())
+  let machine =
+    executor_plane.Machine(
+      state_root: state,
+      helper_path: helper,
+      helper_pool_size: 4,
+      demand: exec.BestEffort,
+      workspace: catalog.default_workspace(),
+      tools: catalog.default_tools(),
+      deactivated_tools: [],
+      lsp_servers: [],
+      jobs_policy: jobs.default_policy,
+      codemode_seed: Some(state <> "/no-such-seed"),
+      secrets: secret.env(),
+      home: None,
+      logger: log.discard(),
+    )
+  let config =
+    host.Config(
+      name: address.default(),
+      ledger_path: state <> "/exec-ledger.db",
+      limits: exec_ledger.default_limits(),
+      max_result_bytes: host.default_max_result_bytes,
+      clock: clock.from_function(ffi_os.system_time_ms),
+      factory: executor_plane.factory(machine, [Workspace("proj", checkout)]),
+    )
+  use _started <- result.try(
+    host.start(config) |> result.map_error(string.inspect),
+  )
+  Ok(WorkspaceHandle(checkout:))
+}
+
+// The shipped helper beside the packages, by the path the test runner's
+// working directory gives it.
+fn helper_path() -> Result(String, String) {
+  use here <- result.try(
+    simplifile.current_directory() |> result.map_error(string.inspect),
+  )
+  Ok(here <> "/../sandbox/loom-exec")
+}
+
+/// The executor role's last word: the orchestrator's file is in the checkout.
+pub fn verify_workspace(handle: WorkspaceHandle) -> Result(Nil, String) {
+  case simplifile.read(handle.checkout <> "/from-orchestrator.txt") {
+    Ok("written over tls\n") -> Ok(Nil)
+    other -> Error("the executor's checkout holds " <> string.inspect(other))
+  }
+}
+
+/// The orchestrator role of a real workspace: it attaches by name, learns the
+/// executor's checkout from the census, writes a file there and reads it back.
+pub fn orchestrate_workspace(peer: distribution.Peer) -> Result(Nil, String) {
+  let target = distribution.node(peer)
+  use port <- result.try(
+    owner_port.start(owner_port.Config(
+      services: fixtures.quiet_services(),
+      clock: clock.fixed(at: 1000),
+      settled: fn(_key) { False },
+      reconcile_every_ms: 60_000,
+    )),
+  )
+  use attachment <- result.try(
+    surface.attach(surface.Config(
+      address: address.Address(node: target, name: address.default()),
+      session: "s1",
+      workspace: "proj",
+      incarnation: 0,
+      port:,
+      read_authority: fn(_run) { Ok(fixtures.authority()) },
+      reconnect: fn() { reconnect_to(peer) },
+      remote_tools: ["fs_write", "fs_read"],
+      attach_within_ms: 60_000,
+      mint_token: surface.strong_token,
+    ))
+    |> result.map_error(protocol.describe),
+  )
+  let census: RemoteCensus = attachment.attached.census
+  let path = census.census.workspace <> "/from-orchestrator.txt"
+  let written =
+    surface.run(
+      attachment.surface,
+      call(
+        "fs_write",
+        [
+          #("path", json.String(path)),
+          #("content", json.String("written over tls\n")),
+        ],
+        0,
+      ),
+    )
+  use Nil <- result.try(completed(written))
+  let read =
+    surface.run(
+      attachment.surface,
+      call("fs_read", [#("path", json.String(path))], 1),
+    )
+  use Nil <- result.try(completed(read))
+  contains(text_of(read), "written over tls")
+}
+
+fn call(
+  name: String,
+  arguments: List(#(String, json.JsonValue)),
+  n: Int,
+) -> effects.ToolRun {
+  let base = fixtures.tool_run("call_" <> string.inspect(n), n)
+  let arguments = json.Object(arguments)
+  effects.ToolRun(
+    ..base,
+    call: message.ToolCall(..base.call, name:, arguments:),
+    arguments:,
+  )
+}
+
+fn completed(outcome: effects.ToolOutcome) -> Result(Nil, String) {
+  case outcome {
+    effects.ToolCompleted(..) -> Ok(Nil)
+    effects.ToolFailed(reason:) -> Error("the tool failed: " <> reason)
+  }
+}
+
+fn text_of(outcome: effects.ToolOutcome) -> String {
+  case outcome {
+    effects.ToolCompleted(result: message.ToolResultMessage(content:, ..), ..) ->
+      list.filter_map(content, fn(part) {
+        case part {
+          message.ToolResultText(text:, ..) -> Ok(text)
+          message.ToolResultImage(..) -> Error(Nil)
+        }
+      })
+      |> string.join("\n")
+    effects.ToolCompleted(..) | effects.ToolFailed(..) -> ""
+  }
+}
+
+fn contains(text: String, fragment: String) -> Result(Nil, String) {
+  case string.contains(text, fragment) {
+    True -> Ok(Nil)
+    False -> Error("the read returned " <> string.inspect(text))
   }
 }
