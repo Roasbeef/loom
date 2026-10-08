@@ -61,6 +61,23 @@
 //// whether or not a row exists. A tombstone would guard a resend the protocol
 //// does not make, at the price of a row that never frees.
 ////
+//// ## Releasing a scope
+////
+//// The rule above has an exit that only an operator can take. A scope that
+//// closed with unknown cleanup refuses every attach, and so does one left
+//// `closing` when the executor's VM ended between `begin_close` and
+//// `finish_close`. Both hold one of the `max_unclean_scopes` slots until
+//// someone decides the children are gone. After an executor restart this is the
+//// ordinary outcome for any session that closes: the new VM has no plane for
+//// the scope, so its close finds no witness and records `UnknownCleanup(0)`.
+//// `release` is that decision. It moves a `closing` or unknown-cleanup scope to
+//// `Closed(AllRetired)`, so the next attach reopens it one incarnation higher,
+//// and it writes a `scope_release` row in the same transaction that says what
+//// the scope was. It refuses an `open` scope, whose session may be running, and
+//// a scope that is already cleanly closed, where there is nothing to release.
+//// `release` does not look for children: the operator is the witness, and the
+//// record is how a later reader learns that the evidence was a person.
+////
 //// ## The key fence
 ////
 //// A runtime that restarts inside one VM leaves effect processes behind whose
@@ -92,10 +109,16 @@
 //// check that guards a write runs inside the `BEGIN IMMEDIATE` transaction that
 //// performs it.
 ////
+//// Nothing in this module enforces the rule. `open` takes no lock, and a second
+//// opener's recovery would turn the first one's live runs `unknown`. The
+//// executor daemon holds the state directory's endpoint reservation for the
+//// life of its VM, and `loomd executor release`, the only other opener, takes
+//// the same reservation before it calls `open`, so the two cannot overlap.
+////
 //// ## Flow
 ////
 //// `open` → `attach` → `admit` → `finish` → `query` → `query_or_fence` → `ack` →
-//// `begin_close` → `finish_close`
+//// `begin_close` → `finish_close` → `release`
 ////
 //// 1. `open` validates or creates the schema, sets full synchronous durability,
 ////    and records every run the previous VM had in flight as lost.
@@ -108,7 +131,8 @@
 ////    the same way but records "did not start" when there is no row, and `ack`
 ////    deletes a settled row once the orchestrator has staged it.
 //// 6. `begin_close` is the fence that stops new admissions, and `finish_close`
-////    records how the cleanup ended.
+////    records how the cleanup ended. `release` is the operator's way out of a
+////    scope no close will ever finish.
 
 import gleam/bit_array
 import gleam/bool
@@ -121,6 +145,7 @@ import gleam/result
 import gleam/string
 import parrot/dev
 import sqlight
+import storage/exec_ledger_releases_schema
 import storage/exec_ledger_schema
 import storage/sql
 import storage/sqlite_policy
@@ -273,6 +298,34 @@ pub type Unacked {
   )
 }
 
+/// What `release` changed: the scope it closed and what the scope was.
+pub type Released {
+  Released(
+    /// The workspace the scope belongs to.
+    workspace: String,
+    /// The incarnation the scope was at. The next attach reopens at one more.
+    incarnation: Int,
+    /// The state before the release: `Closing`, or
+    /// `Closed(UnknownCleanup(count))`.
+    was: ScopeState,
+  )
+}
+
+/// One row of the release record, as `releases` lists it.
+pub type Release {
+  Release(
+    /// The workspace the released scope belonged to.
+    workspace: String,
+    /// The incarnation the scope was at when it was released.
+    incarnation: Int,
+    /// The state the scope was in.
+    was: ScopeState,
+    /// The executor's wall clock when the operator released it, in Unix
+    /// milliseconds.
+    released_at_ms: Int,
+  )
+}
+
 /// Every way a ledger call can fail, with the refusals named for the rule that
 /// produced them.
 pub type Error {
@@ -307,6 +360,10 @@ pub type Error {
 
   /// The scope closed with unknown cleanup and has no automatic successor.
   UncleanClose(count: Int)
+
+  /// `release` found a scope that is open or already cleanly closed, so there is
+  /// nothing for an operator to release.
+  NotReleasable(state: ScopeState)
 
   /// The executor already holds `limit` scopes that are not cleanly closed.
   CapacityExhausted(limit: Int)
@@ -352,7 +409,7 @@ const fence_tool = "(fence)"
 // ledger from opening, and recovering rows in, some other SQLite file.
 const application_id = 1_279_607_884
 
-const schema_version = 1
+const schema_version = 2
 
 /// The limits the design note fixes: sixteen unclean scopes, and the default
 /// byte budget.
@@ -805,6 +862,81 @@ pub fn scope(ledger: Ledger, session: String) -> Result(Option(Scope), Error) {
   find_scope(ledger.connection, session)
 }
 
+/// Releases a scope that no close will finish: `Closing`, or `Closed` with
+/// `UnknownCleanup`. It becomes `Closed(AllRetired)`, so the next attach reopens
+/// it at one incarnation higher, and a `scope_release` row records what it was
+/// and when. Both writes commit together.
+///
+/// The caller is the operator's command, which holds the executor's endpoint
+/// reservation (see "One opener" above). An `Open` scope and a scope already
+/// `Closed(AllRetired)` are refused with `NotReleasable`, and a session with no
+/// scope with `NoSuchScope`. `released_at_ms` is the executor's wall clock.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.release(ledger, "s", 1_700_000_000_000)
+/// ```
+pub fn release(
+  ledger: Ledger,
+  session: String,
+  released_at_ms: Int,
+) -> Result(Released, Error) {
+  let connection = ledger.connection
+  transaction(connection, fn() {
+    use found <- result.try(find_scope(connection, session))
+    use scope <- result.try(option.to_result(found, NoSuchScope))
+    use was <- result.try(release_text(scope.state))
+    use closed <- result.try(close_outcome_text(AllRetired))
+    use Nil <- result.try(statement(
+      connection,
+      sql.finish_ledger_scope_close(
+        close_outcome: Some(closed),
+        session:,
+        workspace: scope.workspace,
+      ),
+    ))
+    use Nil <- result.try(statement(
+      connection,
+      sql.insert_ledger_release(
+        session:,
+        workspace: scope.workspace,
+        incarnation: scope.incarnation,
+        was:,
+        released_at_ms:,
+      ),
+    ))
+    Ok(Released(
+      workspace: scope.workspace,
+      incarnation: scope.incarnation,
+      was: scope.state,
+    ))
+  })
+}
+
+/// Lists the session's releases, oldest first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.releases(ledger, "s")
+/// ```
+pub fn releases(
+  ledger: Ledger,
+  session: String,
+) -> Result(List(Release), Error) {
+  use found <- result.try(rows(ledger.connection, sql.ledger_releases(session)))
+  list.try_map(found, fn(row) {
+    use was <- result.try(parse_release_text(row.was))
+    Ok(Release(
+      workspace: row.workspace,
+      incarnation: row.incarnation,
+      was:,
+      released_at_ms: row.released_at_ms,
+    ))
+  })
+}
+
 // The schema is checked inside the transaction that may create it, so two opens
 // of a fresh file cannot both decide it is empty. Journal configuration follows
 // validation, so an unrelated file is refused before any persistent tuning can
@@ -836,7 +968,11 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
     use found <- result.try(number(connection, "PRAGMA application_id"))
     use version <- result.try(number(connection, "PRAGMA user_version"))
     case found, version {
-      id, 1 if id == application_id -> Ok(Nil)
+      id, 2 if id == application_id -> Ok(Nil)
+
+      // A version 1 file has every table but the release record. Adding it is
+      // the whole migration, and an older build refuses the result.
+      id, 1 if id == application_id -> migrate_to_releases(connection)
       0, 0 -> {
         use tables <- result.try(number(connection, "PRAGMA schema_version"))
         case tables {
@@ -851,6 +987,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 
 fn create_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use Nil <- result.try(execute(connection, exec_ledger_schema.schema))
+  use Nil <- result.try(execute(connection, exec_ledger_releases_schema.schema))
   execute(
     connection,
     "PRAGMA application_id = "
@@ -858,6 +995,11 @@ fn create_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
       <> "; PRAGMA user_version = "
       <> int.to_string(schema_version),
   )
+}
+
+fn migrate_to_releases(connection: sqlight.Connection) -> Result(Nil, Error) {
+  use Nil <- result.try(execute(connection, exec_ledger_releases_schema.schema))
+  execute(connection, "PRAGMA user_version = " <> int.to_string(schema_version))
 }
 
 fn create_scope(
@@ -1085,6 +1227,28 @@ fn close_outcome_text(outcome: CloseOutcome) -> Result(String, Error) {
     AllRetired -> Ok("all_retired")
     UnknownCleanup(count) if count >= 0 -> Ok("unknown:" <> int.to_string(count))
     UnknownCleanup(_) -> Error(Invalid("unknown cleanup count is negative"))
+  }
+}
+
+// The text a release row keeps for the state the scope was in. Only the two
+// states `release` accepts have one.
+fn release_text(state: ScopeState) -> Result(String, Error) {
+  case state {
+    Closing -> Ok("closing")
+    Closed(UnknownCleanup(count)) -> Ok("unknown:" <> int.to_string(count))
+    Open | Closed(AllRetired) -> Error(NotReleasable(state))
+  }
+}
+
+fn parse_release_text(text: String) -> Result(ScopeState, Error) {
+  case text {
+    "closing" -> Ok(Closing)
+    "unknown:" <> count ->
+      case int.parse(count) {
+        Ok(parsed) if parsed >= 0 -> Ok(Closed(UnknownCleanup(parsed)))
+        Ok(_) | Error(Nil) -> Error(MalformedRow("release cleanup count"))
+      }
+    _ -> Error(MalformedRow("release state"))
   }
 }
 

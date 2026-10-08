@@ -17,6 +17,7 @@ import storage/exec_ledger.{
   Existing, Fenced, Found, Fresh, Key, Limits, Missing, Open, Rebound, Reopened,
   Standing, Terminal, Unknown, UnknownCleanup,
 }
+import storage/exec_ledger_releases_schema
 import storage/exec_ledger_schema
 import support/fixtures
 
@@ -98,6 +99,15 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(schema) = simplifile.read("sql/exec_ledger.sql")
     as "the ledger schema is checked in"
   assert exec_ledger_schema.schema == schema
+  let assert Ok(releases) = simplifile.read("sql/exec_ledger_releases.sql")
+    as "the release schema is checked in"
+  assert exec_ledger_releases_schema.schema == releases
+}
+
+pub fn a_new_ledger_is_stamped_with_the_current_version_test() {
+  let file = path("version")
+  let _ledger = open_at(file)
+  assert count(file, "PRAGMA user_version") == 2
 }
 
 pub fn admit_finish_query_ack_round_trip_test() {
@@ -638,7 +648,7 @@ pub fn a_file_that_is_not_a_ledger_is_refused_test() {
   let versioned = path("future")
   let first = open_at(versioned)
   let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
-  tamper(versioned, "PRAGMA user_version = 2;")
+  tamper(versioned, "PRAGMA user_version = 3;")
   assert result_is_unsupported(exec_ledger.open(versioned))
 }
 
@@ -1042,4 +1052,137 @@ fn gather(
       gather(from, remaining - 1, [entry, ..seen])
     }
   }
+}
+
+// --- release ---------------------------------------------------------------
+
+pub fn releasing_a_closing_scope_closes_it_and_the_next_attach_reopens_test() {
+  let ledger = open_at(path("release-closing"))
+  attached(ledger)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.attach(ledger, "s", "/work", 1, token(2), limits())
+    == Error(exec_ledger.ScopeClosing)
+
+  assert exec_ledger.release(ledger, "s", 5000)
+    == Ok(exec_ledger.Released(
+      workspace: "/work",
+      incarnation: 0,
+      was: exec_ledger.Closing,
+    ))
+
+  assert exec_ledger.attach(ledger, "s", "/work", 1, token(2), limits())
+    == Ok(exec_ledger.Attached(how: Reopened, terminal: [], unknown: []))
+  assert exec_ledger.releases(ledger, "s")
+    == Ok([
+      exec_ledger.Release(
+        workspace: "/work",
+        incarnation: 0,
+        was: exec_ledger.Closing,
+        released_at_ms: 5000,
+      ),
+    ])
+}
+
+pub fn releasing_an_unknown_cleanup_frees_its_slot_and_the_session_test() {
+  let ledger = open_at(path("release-unknown"))
+  let one_slot = Limits(..limits(), max_unclean_scopes: 1)
+  let assert Ok(_) =
+    exec_ledger.attach(ledger, "s", "/work", 0, token(1), one_slot)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, UnknownCleanup(0))
+    == Ok(Nil)
+
+  // The scope holds the only slot and refuses its own session.
+  assert exec_ledger.attach(ledger, "other", "/work", 0, token(2), one_slot)
+    == Error(exec_ledger.CapacityExhausted(1))
+  assert exec_ledger.attach(ledger, "s", "/work", 1, token(2), one_slot)
+    == Error(exec_ledger.UncleanClose(0))
+
+  assert exec_ledger.release(ledger, "s", 7000)
+    == Ok(exec_ledger.Released(
+      workspace: "/work",
+      incarnation: 0,
+      was: Closed(UnknownCleanup(0)),
+    ))
+
+  // The slot is free again, and the session reopens one incarnation higher.
+  assert exec_ledger.attach(ledger, "other", "/work", 0, token(3), one_slot)
+    == Ok(exec_ledger.Attached(how: Created, terminal: [], unknown: []))
+  assert exec_ledger.scope(ledger, "s")
+    == Ok(
+      Some(exec_ledger.Scope(
+        session: "s",
+        workspace: "/work",
+        incarnation: 0,
+        state: Closed(AllRetired),
+        token: token(1),
+      )),
+    )
+  assert exec_ledger.releases(ledger, "s")
+    == Ok([
+      exec_ledger.Release(
+        workspace: "/work",
+        incarnation: 0,
+        was: Closed(UnknownCleanup(0)),
+        released_at_ms: 7000,
+      ),
+    ])
+}
+
+pub fn a_scope_that_is_not_stuck_is_not_released_test() {
+  let ledger = open_at(path("release-refused"))
+  attached(ledger)
+
+  // An open scope may belong to a running session.
+  assert exec_ledger.release(ledger, "s", 1)
+    == Error(exec_ledger.NotReleasable(Open))
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, AllRetired)
+    == Ok(Nil)
+
+  // A cleanly closed scope has nothing to release.
+  assert exec_ledger.release(ledger, "s", 2)
+    == Error(exec_ledger.NotReleasable(Closed(AllRetired)))
+  assert exec_ledger.release(ledger, "missing", 3)
+    == Error(exec_ledger.NoSuchScope)
+
+  // Every refusal left the record empty.
+  assert exec_ledger.releases(ledger, "s") == Ok([])
+}
+
+pub fn a_release_is_one_transaction_test() {
+  let file = path("release-atomic")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+
+  // A record that cannot be written takes the state change back with it.
+  tamper(file, "DROP TABLE scope_release;")
+  let assert Error(exec_ledger.Database(_)) =
+    exec_ledger.release(ledger, "s", 9)
+    as "the missing table fails the release"
+  let assert Ok(Some(scope)) = exec_ledger.scope(ledger, "s")
+    as "the scope still reads"
+  assert scope.state == Closing
+}
+
+pub fn a_version_one_ledger_gains_the_release_record_on_open_test() {
+  let file = path("release-migrate")
+  let first = open_at(file)
+  attached(first)
+  assert exec_ledger.begin_close(first, "s", "/work", 0) == Ok(Nil)
+  let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
+
+  // What an executor wrote before the release record existed.
+  tamper(file, "DROP TABLE scope_release; PRAGMA user_version = 1;")
+  let migrated = open_at(file)
+
+  assert exec_ledger.releases(migrated, "s") == Ok([])
+  assert exec_ledger.release(migrated, "s", 11)
+    == Ok(exec_ledger.Released(
+      workspace: "/work",
+      incarnation: 0,
+      was: exec_ledger.Closing,
+    ))
+  assert count(file, "PRAGMA user_version") == 2
 }

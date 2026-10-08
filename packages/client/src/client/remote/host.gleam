@@ -1409,6 +1409,8 @@ fn refusal_of(error: exec_ledger.Error) -> Refusal {
     exec_ledger.ScopeNotClosing(state: _) ->
       protocol.Invalid("the scope is not closing")
     exec_ledger.UncleanClose(count:) -> protocol.UncleanClose(count)
+    exec_ledger.NotReleasable(state: _) ->
+      protocol.Invalid("the scope is not releasable")
     exec_ledger.CapacityExhausted(limit:) -> protocol.CapacityExhausted(limit)
     exec_ledger.BudgetExhausted(limit:) -> protocol.BudgetExhausted(limit)
     exec_ledger.NoSuchCall -> protocol.Invalid("the executor has no such call")
