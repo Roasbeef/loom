@@ -13,10 +13,10 @@
 ////
 //// A `scope` is one session's attachment to this executor. It has an
 //// `incarnation`, which rises only when a cleanly closed scope reopens, and an
-//// `attach_token`, which every runtime incarnation of the session replaces when
-//// it attaches. Admission compares both with the request in the same
-//// transaction that inserts the call row, so a request from a dead runtime or a
-//// closed incarnation is refused by content, whatever order the network
+//// `attach_token`, which the orchestrator replaces each time it opens the
+//// session and attaches. Admission compares both with the request in the same
+//// transaction that inserts the call row, so a request from an earlier open or
+//// a closed incarnation is refused by content, whatever order the network
 //// delivered it in. A session has at most one scope here: the key is
 //// `(session, workspace)`, but `attach` refuses a second workspace for a
 //// session that already has one, which is what lets a call key (which carries
