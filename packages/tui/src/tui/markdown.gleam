@@ -37,6 +37,8 @@
 //// 5. Rendering leaves long rows whole; `wrap_lines` reflows them with
 ////    `wrap_line`, which classifies each row (`row_kind`) as code, fixed or
 ////    flowing, and `rewrap` resumes the previous row when a live answer grows.
+////    `wrap_code_row` segments spans once with `cell_spans`; `code_rows` carries
+////    their remaining graphemes across rows without rescanning the suffix.
 //// 6. `diff` is the sibling entry for patches, with numbered rows from
 ////    `numbered_diff_row`.
 
@@ -56,6 +58,13 @@ import session_view/code_tokens.{
 import session_view/markdown as tree
 import session_view/text_hygiene
 import tui/theme
+
+// A span is segmented and measured once before hard wrapping. Continuations
+// retain the unconsumed list tail, so a huge row never rebuilds or remeasures
+// the entire suffix for each screen row.
+type CellSpan {
+  CellSpan(template: span.Span, graphemes: List(String), cells: Int)
+}
 
 type InlinePart {
   Styled(span.Span)
@@ -622,13 +631,13 @@ fn wrap_code_row(line: span.Line, width: Int) -> List(span.Line) {
   case budget <= 0 {
     // At very narrow widths the gutter would hide every source cell. Drop
     // the whole prefix rather than clipping a line number into a false one.
-    True -> code_rows(source, [], width, [])
-    False -> code_rows(source, prefix, budget, [])
+    True -> code_rows(cell_spans(source), [], width, [])
+    False -> code_rows(cell_spans(source), prefix, budget, [])
   }
 }
 
 fn code_rows(
-  source: List(span.Span),
+  source: List(CellSpan),
   prefix: List(span.Span),
   budget: Int,
   complete: List(span.Line),
@@ -1289,18 +1298,31 @@ fn spans_width(spans: List(span.Span)) -> Int {
 }
 
 fn clamp_spans(spans: List(span.Span), width: Int) -> List(span.Span) {
-  let #(head, _) = take_span_cells(spans, width, [])
+  let #(head, _) = take_span_cells(cell_spans(spans), width, [])
   head
 }
 
-// Splitting on cell boundaries rather than on words is what preserves a code
-// row's indentation; the caller supplies the budget already reduced by
-// whatever gutter it intends to repeat.
+// Each original span pays for segmentation and width once. The template keeps
+// its style, while completed rows materialize only the graphemes they consume.
+fn cell_spans(spans: List(span.Span)) -> List(CellSpan) {
+  list.map(spans, fn(value) {
+    let graphemes = string.to_graphemes(value.content)
+    let cells =
+      list.fold(graphemes, 0, fn(total, grapheme) {
+        total + text.grapheme_cell_width(grapheme)
+      })
+    CellSpan(span.Span(..value, content: ""), graphemes, cells)
+  })
+}
+
+// Splitting on cell boundaries rather than on words preserves indentation.
+// The returned cursor shares its unconsumed tail with the original list;
+// neither segmentation nor whole-suffix concatenation occurs on continuation.
 fn take_span_cells(
-  spans: List(span.Span),
+  spans: List(CellSpan),
   budget: Int,
   taken: List(span.Span),
-) -> #(List(span.Span), List(span.Span)) {
+) -> #(List(span.Span), List(CellSpan)) {
   case spans {
     [] -> #(list.reverse(taken), [])
     [first, ..rest] -> take_span_cell(first, rest, budget, taken)
@@ -1308,50 +1330,50 @@ fn take_span_cells(
 }
 
 fn take_span_cell(
-  first: span.Span,
-  rest: List(span.Span),
+  first: CellSpan,
+  rest: List(CellSpan),
   budget: Int,
   taken: List(span.Span),
-) -> #(List(span.Span), List(span.Span)) {
-  let width = text.cell_width(first.content)
-  case width <= budget {
-    True -> take_span_cells(rest, budget - width, [first, ..taken])
+) -> #(List(span.Span), List(CellSpan)) {
+  case first.cells <= budget {
+    True -> {
+      let whole =
+        span.Span(..first.template, content: string.concat(first.graphemes))
+      take_span_cells(rest, budget - first.cells, [whole, ..taken])
+    }
     False -> {
-      let #(head, tail) = split_content(first.content, budget)
-      #(list.reverse([span.Span(..first, content: head), ..taken]), [
-        span.Span(..first, content: tail),
+      let #(head, tail, remaining) = case budget <= 0 {
+        True -> #("", first.graphemes, budget)
+        False -> take_graphemes(first.graphemes, budget, [])
+      }
+      let consumed = budget - remaining
+      let continuation =
+        CellSpan(..first, graphemes: tail, cells: first.cells - consumed)
+      #(list.reverse([span.Span(..first.template, content: head), ..taken]), [
+        continuation,
         ..rest
       ])
     }
   }
 }
 
-fn split_content(content: String, budget: Int) -> #(String, String) {
-  case budget <= 0 {
-    True -> #("", content)
-    False -> take_graphemes(string.to_graphemes(content), budget, [])
-  }
-}
-
-// A positive budget always consumes at least one grapheme. Without that a
-// column one cell wide facing a two-cell glyph would hand the caller an empty
-// row and the same remainder, and the wrapping loop would never terminate.
+// A positive budget always consumes at least one grapheme, including a wide
+// glyph in a one-cell column. Returning the unused budget lets the cursor
+// subtract the consumed width without walking the remaining input again.
 fn take_graphemes(
   graphemes: List(String),
   budget: Int,
   taken: List(String),
-) -> #(String, String) {
+) -> #(String, List(String), Int) {
   case graphemes {
-    [] -> #(joined(taken), "")
-    [first, ..rest] ->
-      case text.grapheme_cell_width(first) <= budget || taken == [] {
-        True ->
-          take_graphemes(rest, budget - text.grapheme_cell_width(first), [
-            first,
-            ..taken
-          ])
-        False -> #(joined(taken), string.concat(graphemes))
+    [] -> #(joined(taken), [], budget)
+    [first, ..rest] -> {
+      let cells = text.grapheme_cell_width(first)
+      case cells <= budget || taken == [] {
+        True -> take_graphemes(rest, budget - cells, [first, ..taken])
+        False -> #(joined(taken), graphemes, budget)
       }
+    }
   }
 }
 
