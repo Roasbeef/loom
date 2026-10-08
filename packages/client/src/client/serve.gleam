@@ -3692,7 +3692,7 @@ fn assemble_in(
         // so a captured runtime would be a value cycle.
         runtime: fn() { agency.borrow_runtime(agency_config) },
         settings: advisor_settings,
-        check: goal_check_wiring(settings, plane, call_clock, entropy()),
+        check: goal_check_wiring(settings, plane, clock, call_clock, entropy()),
         clock:,
         logger:,
         name: advisor_name,
@@ -5266,13 +5266,21 @@ fn render_prompt(
 // The wall is `client/goalloop`'s constant, and the same number reaches the
 // process's own limit and the durable `Checking` deadline, so a restarted
 // actor cannot be waiting on a process the sandbox has already killed.
+//
+// Two clocks come in because they answer different questions. The operation
+// id is minted on the session's clock, like every other id this session mints,
+// so ids made on one machine order by one timebase. The runner's clock is the
+// one `call_clock` names: it builds the absolute deadline a check puts in a
+// `CallSpec`, which the broker compares with its own clock, and for a
+// workspace on an executor that is the executor's.
 fn goal_check_wiring(
   settings: Settings,
   plane: workspace_plane.WorkspacePlane,
-  clock: Clock,
+  session_clock: Clock,
+  call_clock: Clock,
   seed: Int,
 ) -> goalcheck.Wiring {
-  let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
+  let #(op_id, _generator) = ids.mint_op(ids.generator(session_clock, seed:))
   let census = plane.census
 
   goalcheck.wiring(
@@ -5285,7 +5293,7 @@ fn goal_check_wiring(
       demand: settings.demand,
       env: census.env,
       workspace: census.workspace,
-      clock:,
+      clock: call_clock,
       op_id:,
       clearance_ms: workspace_plane.jobs_clearance_ms,
     ),
