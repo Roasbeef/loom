@@ -2512,12 +2512,39 @@ catalogue without opening runtimes. Explicit admission invokes
   where each code-mode capability name is answered when the workspace is not
   in the owner's VM, built from the routers' `serviced_caps` constants.
   `cap_placement_test` fails on a name in neither group or in both.
-  `codemode.owner_arms` reads the owner-bound doors (Agency, notes,
-  schedules, MCP) off a `Config` once, `owner_calls` composes `strand.*` and
-  `notes.*` from them for the local router, and `codemode.owner_capability`
-  composes the same arms to answer an `OwnerCapCall` from plain data.
-  `peer.*` is still composed by `serve.with_code_mode_peers` and is not yet
-  part of `owner_capability`.
+  `codemode.OwnerSide` is the four doors the owner's arms read (surface with
+  its Agency, notes, schedules, MCP), `codemode.owner_side` reads them off a
+  `Config` and `codemode.owner_serving` builds them from a seam setting, an
+  Agency and a scheduling door with no `Config` at all, which is what an
+  orchestrator of a remote workspace has. `owner_arms` reads the arms for one
+  seam, `owner_calls` composes `strand.*` and `notes.*` from them for the local
+  router, and `owner_answering` composes the same arms to answer an
+  `OwnerCapCall` from plain data (`owner_capability(config)` is it over the
+  Config's own side). It refuses a seam the surface does not serve, and its
+  `beyond` argument wraps the whole chain outermost for arms a `Config` does not
+  carry. `peer.*` is one: a local session composes it through
+  `serve.with_code_mode_peers`, and the owner of a remote one through
+  `owner_codemode.answering`.
+- `client/owner_codemode.{over_owner, advertising_peers, answering}` — code
+  mode when the workspace and its owner are on different nodes, both ends in
+  one module. `over_owner(config, owner)` is the executor's `CodeModeAttach.arms`:
+  it serves the shipped default of both seams over a stand-in Agency (every
+  operation `AgencyUnavailable` except `holds`, which asks the owner), and puts
+  one router outside the execution's that sends each name
+  `cap_placement.placement` gives the owner as an `OwnerCapCall` through
+  `OwnerServices.capability`, inside the `ServedHere` worker so the capability
+  host keeps reading its channel. A dead port or dropped link answers
+  `owner_unavailable` at once. `answering(side, peers:)` is the orchestrator's
+  end, built in `serve` for a registered workspace from the session's own
+  Agency, scheduling door and peer wiring. `advertising_peers` appends
+  `peer.*` to every seam a tool offers, for `serve.code_mode_tool` and the
+  executor. Not offered on an executor: MCP façades, background code mode and
+  workflow steps (the owner names the refusal). An operator's narrower
+  `--codemode-seams` choice is enforced by the owner, since the executor is
+  not told it.
+  `owner_codemode_test` drives the capability router through a real owner port
+  and link, and `daemon_shipped_remote_caps_test` runs the route across two
+  daemons.
 - `client/workspace_policy.{Basis, session_base, session_toolchain,
   base_policy_for, base_policy_fault, go_cache_fault, protecting_*,
   admitting_*, widening_*, allowing_*, under_tools_config, merging_mounts,
@@ -6391,8 +6418,11 @@ local fixtures).
 - **Refused or omitted.** Extension tools (`tool_placement` answers `Error(Nil)`,
   so none are registered, with one notice per extension installed on the
   executor), operator directory additions (`resolve_directory` refuses), MCP
-  servers and background code mode. Owner-bound code-mode capabilities answer
-  `unsupported_cap` (`OwnerServices.capability` is `no_capability`, as locally).
+  servers and background code mode. Owner-bound code-mode capabilities
+  (`strand.*`, `notes.*`, `schedule.*`, `peer.*`) are answered:
+  `OwnerServices.capability` is `owner_codemode.answering` over the session's
+  own Agency, scheduling door and peer wiring, where a local session keeps
+  `no_capability` because it never calls it.
 
 What `assemble_in` does not do for a registered workspace, and which is why
 nothing touches the registered name: `workspace_plane.prepare` is skipped (it
@@ -6443,8 +6473,10 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   against the rows, canonicalizes the root, creates `<state>/scopes/<session>`
   fresh (the helpers' scratch lives there; the session name is validated before
   it names a path), and calls `workspace_plane.prepare` then `start` with the
-  `OwnerServices` from the `AttachSpec`, no owner code-mode arms and
-  `codemode_wiring.seam` as the `code_mode` tool. The census it returns is
+  `OwnerServices` from the `AttachSpec`, `owner_codemode.over_owner` as the
+  owner's code-mode arms and `codemode_wiring.seam` with
+  `owner_codemode.advertising_peers` as the `code_mode` tool. The census it
+  returns is
   `RemoteCensus` (plain data plus the broker's subject; the prompt facts are read
   once, at attach). `workspace_plane` itself is unchanged.
 - The plane's cleanups cannot go to custody, because the factory runs in a
@@ -6464,7 +6496,8 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
 Tests: `executor_plane_test` runs the factory over a temp checkout with the
 shipped helper (write then read, `bash`, close then reopen, an unknown
 workspace, the census walk for function values and its `term_to_binary` round
-trip, an 8 MiB read, and `retire` with injected cleanups). `daemon_executor_test`
+trip, an 8 MiB read, the `code_mode` description listing the owner-bound
+capabilities where a seed exists, and `retire` with injected cleanups). `daemon_executor_test`
 covers the boot decision. `remote_nodes_test`'s `remote_workspace` scenario
 serves a real workspace to a second node. Making `retire` ignore the helper
 witness fails `a_scope_with_no_helper_cleanup_has_no_witness_test`; building the
