@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:348-187`).
+Source: `handle` (`client/daemon/server.gleam:359-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -401,7 +401,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:1767`).
+`hello_view` (`client/daemon/server.gleam:1778`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -441,6 +441,10 @@ next admitted operation clears the old failure memo.
 Credential, membership and epoch checks precede that read; other failures
 never quote the request or a private path.
 Source: (`client/daemon/server.gleam:1039`).
+
+The two redirect refusals, `not_owner` and `owner_unreachable`, carry a fixed
+sentence in `message` and also the members section 3.5 names (`orchestrator` and
+`address`, or `orchestrators`). A client ignores a member it does not know.
 
 ### 3.3 `status`
 
@@ -538,7 +542,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:2756`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:2837`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -564,7 +568,23 @@ field, `domain_scope`, whose value is `workspace_private` or
 Source: (`client/daemon/server.gleam:759-790`).
 
 Errors: `forbidden` when the credential has no membership,
-`not_found`, `unavailable`.
+`not_found`, `unavailable`, and for the owner principal `not_owner` and
+`owner_unreachable`.
+
+On a daemon whose configuration has `[orchestrators.<name>]` tables (a deployment
+with more than one orchestrator, protocol-change/078), an owner who names a
+session this daemon's catalogue does not hold is answered by what the other
+orchestrators say. `not_owner` means one of them holds it. The error body carries,
+beside `code` and `message`, `orchestrator` (the name of the owner in this
+daemon's `[orchestrators.<name>]` table) and, when the operator configured one,
+`address`, the control address to give `loom --addr`. `owner_unreachable` means no
+orchestrator said it holds the session and some could not be asked. Its error
+body carries `orchestrators`, an array of the names that did not answer. A session
+every orchestrator answered it does not hold is `not_found`, and a member
+principal is always answered `not_found` for a session this daemon does not
+hold. A client treats `not_owner` as a statement of where the session is: this
+daemon does not forward the client, and the client needs a credential for the
+owner to use it. `owner_unreachable` can be retried.
 
 ### 3.6 `sessions.default` and `sessions.set_default`
 
@@ -661,7 +681,9 @@ operation id. Source: (`client/daemon/server.gleam:675-682`).
 
 Requires operator authority or better on the target session.
 Errors: `stale_epoch`, `forbidden`, `not_found`, `capacity`,
-`unavailable`.
+`unavailable`, and for the owner principal `not_owner` and `owner_unreachable`
+under the conditions of section 3.5. The epoch is checked first, so a stale
+epoch is never turned into a redirect.
 
 A client MUST wait for `status.state` to become `resident` before
 attempting the session upgrade. `operations.get` is how it polls.
@@ -949,7 +971,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2086-1130`).
+`control_use` (`client/daemon/server.gleam:2097-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -3323,6 +3345,8 @@ Sources: (`client/protocol.gleam:512-540`),
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |
 | `executor_unknown` | `sessions.create` named an `executor` that the daemon's `[executors.<name>]` tables do not define. | Fix the name, or have the owner add the executor and restart the daemon. |
 | `pool_unknown` | `sessions.create` named a `pool` that the daemon's `[pools.<name>]` tables do not define. | Fix the name, or have the owner add the pool and restart the daemon. |
+| `not_owner` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, and an orchestrator in its `[orchestrators.<name>]` tables does. The body also carries `orchestrator` and, when configured, `address`. | Connect to the named orchestrator with a credential for it, using `address` when present. Do not retry here. |
+| `owner_unreachable` | `sessions.get` or `sessions.open` by the owner principal named a session this daemon's catalogue does not hold, no orchestrator said it holds it, and some could not be asked. The body also carries `orchestrators`, the names that did not answer. | Retry later, or connect to one of the named orchestrators directly. |
 | `executor_unavailable` | Not a code of its own yet: the leading word of the `message` of a `start_failed` for a session registered on an executor. The daemon has no remote workspace assembly yet, so creating or retrying such a session starts an opening whose operation fails with `executor_unavailable: remote workspace assembly is not available yet`. Nothing is created on the daemon's host for the workspace name. | Treat the session as not openable for now. A later release attaches the registered workspace through the same operation. |
 
 Sources: (`client/daemon/protocol.gleam:124-160`),

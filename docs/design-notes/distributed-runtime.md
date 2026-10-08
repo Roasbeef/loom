@@ -439,7 +439,7 @@ call that was `admitted` into `unknown`, as for any executor restart.
 **The 16 MiB per-call reservation inside the 512 MiB budget.** Admission
 reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
 file `fs_read` returns (`client/remote/host.gleam:202`). The daemon passes it as
-`max_result_bytes` (`client/daemon/main.gleam:466`) and the host hands it to
+`max_result_bytes` (`client/daemon/main.gleam:487`) and the host hands it to
 `exec_ledger.admit` (`client/remote/host.gleam:734`). The ledger's byte budget
 is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:345`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
@@ -510,12 +510,24 @@ work before the previous one runs.
    naming both values. The protocol-change/078 addendum has the wire, the
    catalogue and the placement rules; `docs/distributed-setup.md` has the
    operator's side.
-3. **Two orchestrators.** A session directory on a designated orchestrator,
-   backed by SQLite, with conditional transitions keyed by an operation id so
-   a committed transition whose reply was lost can be reconciled. Clients may
-   connect to any orchestrator and are redirected to the owner. `pg` carries
-   only presence and fanout hints. The directory sits behind an interface
-   shaped for Khepri, which replaces it later for availability.
+3. **Two orchestrators.** Each orchestrator keeps its own catalogue, which
+   stays the source of truth for the sessions it owns, and a session is created
+   on, and owned by, the orchestrator the client is connected to. A client may
+   connect to either. A daemon asked about a session its catalogue lacks asks
+   the orchestrators in its `[orchestrators.<name>]` table, each a pinned peer,
+   which of them holds it, over the distribution connection and under a short
+   deadline. The answer is a redirect: `sessions.get` and `sessions.open`
+   refuse with `not_owner`, naming the owner and the address the asking
+   daemon's operator configured for it, or with `owner_unreachable` when a peer
+   could not be asked. Only the owner principal is redirected, and nothing
+   follows the redirect for the client, which would need a credential for a
+   second daemon. The lookup is behind a `Directory` interface of one
+   operation, shaped so that an authoritative store replaces its backing in
+   phase 5 and adds the write half there. There is no merged session list, no
+   registration step, no address advertised by the owner and no new
+   constructor on the executor host's vocabulary. The protocol-change/078
+   addendum on two orchestrators has the wire, the configuration and the
+   rules.
 4. **Cross-node messaging.** Peer mail already deduplicates on the recipient
    by message id (`peer_mail` admission); we add a directory-aware endpoint and
    a durable sender outbox. Event catch-up is already by commit sequence.

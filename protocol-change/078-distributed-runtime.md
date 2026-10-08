@@ -8,7 +8,9 @@ optional field each, and a second pair for pools, see the addendum), the
 catalogue schema (version 10, one column; version 11, one more),
 `loom.toml` (a `[distribution]` table and `[executors.*]` rows on an
 orchestrator, `[pools.*]` tables beside them, `[workspaces.*]` rows on an
-executor), `effects.ToolSurface`
+executor, and `[orchestrators.*]` rows for a deployment with two
+orchestrators), two refusal codes of `sessions.get` and `sessions.open`
+(see the second addendum), `effects.ToolSurface`
 (one slot), and two new formats that are not Part 1 interfaces: the closed
 message vocabulary between orchestrator and executor nodes, and the
 executor's execution ledger. The helper wire (Part 1.4) is unchanged.
@@ -327,6 +329,107 @@ session is the controlled movement of phase 5.
 The terminal takes `loom --pool <name> --workspace <registered name>`, exclusive
 with `--executor`, and sends `sessions.create` with `pool`. It words `pool_unknown`
 as it words `executor_unknown`. The web home does not offer pools yet.
+
+### Addendum: two orchestrators
+
+A deployment may run two orchestrators, each with its own catalogue, and a
+client may connect to either. This is phase 3 of the design note. The
+catalogue of each orchestrator stays the source of truth for the sessions it
+owns. A session is created on, and owned by, the orchestrator the client is
+connected to, and nothing registers it anywhere else: identities are UUIDv7, so
+no two orchestrators mint the same one. The only new behavior is what an
+orchestrator does when a client names a session its own catalogue lacks.
+
+#### Wire
+
+`sessions.get` and `sessions.open` gain two refusal codes, both sent only to the
+owner principal and only after the daemon's own catalogue has no such session.
+`not_owner` means a configured orchestrator holds the session. Its error body
+carries `orchestrator`, the name of that orchestrator in the daemon's
+`[orchestrators.<name>]` table, and `address` when that row configures one.
+`owner_unreachable` means no orchestrator said it holds the session and at least
+one could not be asked. Its body carries `orchestrators`, the names of those that
+did not answer, in configuration order. A session that every orchestrator
+answered it does not hold is `not_found`, as it was before, and so is every
+miss for a member principal, because a member's standing on a session is the
+owning daemon's to judge and the daemon asked cannot vouch for it. The other
+commands that name a session keep their answers. Both bodies keep the `code` and
+`message` members every control refusal has, and a client that does not know the
+new members ignores them.
+
+The session socket has no `not_owner`. A client reaches `/v2/sessions/<id>/ws`
+only after `sessions.get` or `sessions.open` on the control endpoint, where the
+redirect already happened, and the upgrade for a session the daemon does not hold
+remains the HTTP 409 it is today.
+
+No orchestrator advertises an address. A daemon binds loopback only and has no
+routable address of its own; whatever reaches it (a tunnel, a proxy,
+`--ui-origin`) is the operator's knowledge. So the address a client is told is
+held by the daemon that tells it, in its own `[orchestrators.<name>]` row, and is
+optional.
+
+Nothing follows a redirect. Neither first-party client holds a credential for a
+second daemon: the terminal reaches the local daemon through its own token files
+and a remote one with `--addr` and a token, and a web page is bound to one
+daemon by a ticket and cookie signed under that daemon's key. A redirect is
+therefore a statement of where the session is, and the client prints the launch
+line for it.
+
+#### Configuration
+
+`[orchestrators.<name>]` has `node`, which must be one of the
+`[[distribution.peers]]` nodes as an executor's must, and an optional `address`,
+a control address of the form `loom --addr` takes (`wss` to any host, or `ws` to
+a loopback host, with the path `/v2/control` and no credentials, query or
+fragment). Two names may not share a node, and the table requires `[distribution]`.
+The table says whom this daemon asks, nothing more: a daemon that has
+`[distribution]` answers a peer's question whether or not it lists that peer.
+
+#### The question
+
+The question travels over the pinned distribution connection to a new registered
+name, `loom_orchestrator`, with its own closed message type. It is not a
+constructor of the executor host's `HostMessage`, which every executor would
+otherwise answer. One process per daemon answers `Owns(session)` with `Owned` or
+`NotOwned` from the catalogue, counting a `reserved` registration and an archived
+one as held. A catalogue that cannot answer produces no reply, so the asker's
+deadline reports it as unreachable and a failed read is never taken for a
+negative. Peer mail delivery, in phase 4, is a second constructor of the same
+type.
+
+A daemon with at least one `[orchestrators.<name>]` row asks them all at once on
+a miss, each by connecting to the pinned peer if it is not connected and sending
+the question, under one two-second deadline. No connection is made at startup,
+none is retried, and nothing is cached. The result is decided by one rule: the
+first orchestrator in configuration order that answers `Owned` is the owner,
+whatever the others did; otherwise a missing answer makes the result
+`owner_unreachable`; otherwise it is not found.
+
+The lookup sits behind a `Directory` interface whose only operation is
+`lookup(session) -> Here | Elsewhere(orchestrator) | Unknown | Unreachable`, shaped
+so that the authoritative store of phase 5 replaces its backing and adds a write
+half beside it. A caller asks the directory and never reasons that a record in its
+own catalogue settles ownership.
+
+#### What it costs
+
+A client must know which orchestrator to reconnect to, and for a session it names
+by id the daemon says so but does not carry it there. The list a client shows is
+the list of the orchestrator it is connected to: there is no merged
+`sessions.list`, because nothing in phase 3 needs one and a merged list is what
+would invite selecting a row owned elsewhere and following it. A lookup on a miss
+costs a connection attempt to each peer that is down, up to the deadline. The two
+orchestrators can disagree only if both hold the same identity, which a restored
+backup can cause; the first in configuration order is reported. Failover and
+movement of a session between orchestrators are still deferred to phase 5.
+
+#### First-party clients
+
+The terminal words both codes. For `not_owner` it prints the owner's name and,
+when the response carries an address, the line to run on that machine
+(`loom --addr <address> --session <id> --token-file <the owner token on that
+host>`). The web home words them the same way, on the page of the session that was
+asked for. Neither client connects to the owner itself.
 
 ## Impact
 
