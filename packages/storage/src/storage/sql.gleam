@@ -1708,6 +1708,61 @@ pub fn ledger_releases_decoder() -> decode.Decoder(LedgerReleases) {
   decode.success(LedgerReleases(workspace:, incarnation:, was:, released_at_ms:))
 }
 
+pub fn insert_ledger_ack(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "INSERT OR IGNORE INTO call_ack(session, op, step, source_index, incarnation)
+SELECT call.session, call.op, call.step, call.source_index, call.incarnation
+FROM call
+WHERE call.session = ? AND call.op = ? AND call.step = ?
+  AND call.source_index = ? AND call.state IN ('terminal', 'unknown')"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+  ])
+}
+
+pub type LedgerAck {
+  LedgerAck(incarnation: Int)
+}
+
+pub fn ledger_ack(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "SELECT incarnation FROM call_ack
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?"
+  #(
+    sql,
+    [
+      dev.ParamString(session),
+      dev.ParamString(op),
+      dev.ParamString(step),
+      dev.ParamInt(source_index),
+    ],
+    ledger_ack_decoder(),
+  )
+}
+
+pub fn ledger_ack_decoder() -> decode.Decoder(LedgerAck) {
+  use incarnation <- decode.field(0, decode.int)
+  decode.success(LedgerAck(incarnation:))
+}
+
+pub fn delete_ledger_acks(session session: String) {
+  let sql = "DELETE FROM call_ack WHERE session = ?"
+  #(sql, [dev.ParamString(session)])
+}
+
 pub type HistorySourceHeader {
   HistorySourceHeader(metadata_bytes: Int, next_seq: Option(Int))
 }
