@@ -417,6 +417,41 @@ pub fn a_verified_copy_becomes_the_session_and_a_repeat_answers_again_test() {
   finish(rig)
 }
 
+pub fn a_repeat_is_accepted_while_the_session_runs_here_and_leaves_its_file_alone_test() {
+  let rig = rig("running", box())
+  let copy = cut(rig, 41, clean())
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+  let request = activation(copy, op)
+  assert session_importer.activate(rig.context, request)
+    == session_move.Accepted
+
+  // The reply was lost, and the owner opened the session here meanwhile. The
+  // session has run on the placed file since, which the new bytes stand for.
+  let assert Ok(manager.Opening(_operation)) =
+    manager.open(rig.registry, copy.session)
+  let placed = rig.directory <> "/sessions/" <> copy.session <> ".db"
+  let ran = <<"the session ran on this file">>
+  let assert Ok(Nil) = simplifile.write_bits(placed, ran)
+
+  // The sender retries, and a late duplicate of the copy is waiting beside it.
+  // Both are answered yes: a refusal would send the session back to the source
+  // while it runs here. The placed file is not replaced, and the duplicate is
+  // removed.
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+  assert simplifile.is_file(waiting(rig, copy, op)) == Ok(True)
+  assert session_importer.activate(rig.context, request)
+    == session_move.Accepted
+  assert simplifile.read_bits(placed) == Ok(ran)
+  assert simplifile.is_file(waiting(rig, copy, op)) == Ok(False)
+
+  // Any number of retries are answered the same, and the row is unchanged.
+  assert session_importer.activate(rig.context, request)
+    == session_move.Accepted
+  assert manager.custody(rig.registry, copy.session)
+    == Ok(catalogue.Imported(op:, from: "alpha"))
+  finish(rig)
+}
+
 pub fn a_repeat_of_a_committed_move_is_accepted_whatever_the_sender_is_called_now_test() {
   let rig = rig("renamed", box())
   let copy = cut(rig, 40, clean())

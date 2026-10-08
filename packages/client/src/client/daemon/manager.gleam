@@ -3088,18 +3088,25 @@ fn import_now(
     ShuttingDown -> Error(AdminUnavailable)
   })
   let id = incoming.registration.id
-  use Nil <- result.try(case dict.has_key(book.slots, id) {
-    True -> Error(AdminBusy)
-    False -> Ok(Nil)
-  })
 
-  // Whether this import already committed is read before it is applied, since
+  // Whether this import already committed is read before anything else, since
   // the answer to a repeat is the same row. A repeat must not put a copy over a
   // file that is in place: whatever waits is a late duplicate, and the session
   // may have run on the placed file since.
   let repeat =
     catalogue.custody(book.catalogue, id)
     == Ok(catalogue.Imported(op: incoming.op, from: incoming.from))
+
+  // An open slot refuses a first import, which would replace the file under a
+  // running session. It cannot refuse a repeat. Once the commit exists the
+  // sender must be told yes however often it asks, because it treats a refusal
+  // as final and takes the session back, and the owner may well have opened the
+  // session here after the first reply was lost. A repeat touches no file that
+  // is in place, so a running session is safe from it.
+  use Nil <- result.try(case repeat, dict.has_key(book.slots, id) {
+    False, True -> Error(AdminBusy)
+    True, _ | False, False -> Ok(Nil)
+  })
   use custody <- result.try(
     domain.import_session(
       book.catalogue,

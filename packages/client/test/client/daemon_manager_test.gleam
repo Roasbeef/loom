@@ -2301,7 +2301,18 @@ pub fn an_import_registers_records_and_places_the_file_in_one_turn_test() {
   // under a new op once it is stopped.
   let assert Ok(manager.Opening(operation)) = manager.open(registry, id)
   await_status(registry, id, manager.Resident(operation))
-  assert manager.import_session(registry, request) == Error(manager.AdminBusy)
+
+  // A repeat of the committed import is answered the row while the session
+  // runs, and a late duplicate beside it is removed. A refusal here would be a
+  // refusal after the commit, which the source takes as final. An import under
+  // another operation would replace the file under a running session, and the
+  // open slot refuses it.
+  let assert Ok(Nil) = simplifile.write(received, "a late duplicate")
+  assert manager.import_session(registry, request) == Ok(imported_row)
+  assert simplifile.read(request.registration.path) == Ok("the session file")
+  assert simplifile.is_file(received) == Ok(False)
+  assert manager.import_session(registry, manager.Import(..request, op: op_b))
+    == Error(manager.AdminBusy)
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
   let _removed = simplifile.delete_all([directory])

@@ -773,6 +773,57 @@ pub fn a_lost_activation_reply_is_answered_again_and_the_receiver_holds_one_file
   finish(rig)
 }
 
+pub fn a_retry_after_the_session_opened_on_the_receiver_still_finishes_the_move_test() {
+  let rig =
+    start(
+      "lost-reply-opened",
+      23,
+      Recorded,
+      protocol.AllRetired,
+      receiver_knows_box(),
+      0,
+    )
+  let move = begin(rig)
+  let drop = times(1)
+  let lossy =
+    Wire(..rig.wire, activate: fn(activation) {
+      let answer = rig.wire.activate(activation)
+      case drop() {
+        True -> Error(Nil)
+        False -> answer
+      }
+    })
+
+  // The receiver committed and placed the session, and the reply was lost.
+  let assert Stalled(_reason) =
+    session_mover.drive(environment(rig, lossy, fn(_) { Nil }), move)
+  assert custody(rig.target, rig.session)
+    == catalogue.Imported(op:, from: "alpha")
+
+  // The owner opens the session on the receiver, which is the point of the move.
+  let assert Ok(manager.Opening(_operation)) =
+    manager.open(rig.target.registry, rig.session)
+
+  // The retry's first question to the receiver is not answered, which is the
+  // partition not yet healed, so the source cannot learn that the session has
+  // arrived and carries the move through the close, the cut and the send again.
+  // The receiver already holds the session and the session is running there. It
+  // answers the activation yes, and the source finishes; a refusal would put
+  // the session back on the source while it runs on both.
+  let silent = times(1)
+  let retry =
+    Wire(..rig.wire, stage: fn(session, op) {
+      case silent() {
+        True -> Error(Nil)
+        False -> rig.wire.stage(session, op)
+      }
+    })
+  assert session_mover.drive(environment(rig, retry, fn(_) { Nil }), move)
+    == Finished
+  assert_moved(rig)
+  finish(rig)
+}
+
 pub fn a_receiver_lost_in_the_middle_of_the_copy_gets_the_whole_file_again_test() {
   let rig =
     start(
