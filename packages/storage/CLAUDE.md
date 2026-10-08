@@ -145,6 +145,12 @@ with these forks: they define the same modules.
   memory/index paths separately from session admission. `reserve_session`
   atomically reserves identity and its mapping; `isolate` replaces a private
   mapping with a fresh session-only record without opening or copying files.
+  `import_session` takes in a session another orchestrator handed over: for a
+  session never seen here it reserves the registration, binds its session-only
+  mapping, confirms it and records the `Imported` custody in one transaction,
+  so no confirmed registration exists without the row that explains it; for a
+  session returning to the catalogue that gave it up it keeps the registration
+  and mapping and changes only the row.
   `sources` pages only saved registrations and validates their mapped workspace.
   Existing domain references and repeated isolation retain their original paths.
   The catalogue also reserves `digest_beside(memory_path)` and checks memory,

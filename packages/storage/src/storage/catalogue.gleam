@@ -401,19 +401,38 @@ pub fn confirm(
   id: String,
 ) -> Result(Registration, Error) {
   transaction(catalogue.connection, fn() {
-    use record <- result.try(get(catalogue, id))
-    case record.state {
-      Saved -> Ok(record)
-      Reserved -> {
-        use Nil <- result.try(statement(catalogue, sql.confirm_registration(id)))
-        use Nil <- result.try(statement(
-          catalogue,
-          sql.increment_catalogue_revision(),
-        ))
-        Ok(Registration(..record, state: Saved))
-      }
-    }
+    confirm_in_transaction(catalogue, id)
   })
+}
+
+/// Confirms a registration inside the caller's existing immediate transaction.
+///
+/// `domain.import_session` uses this seam so a session handed over by another
+/// orchestrator is registered, confirmed and recorded as imported together. It
+/// must never be called outside an enclosing catalogue transaction.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.atomic(store, fn() { catalogue.confirm_in_transaction(store, id) })
+/// ```
+@internal
+pub fn confirm_in_transaction(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Registration, Error) {
+  use record <- result.try(get(catalogue, id))
+  case record.state {
+    Saved -> Ok(record)
+    Reserved -> {
+      use Nil <- result.try(statement(catalogue, sql.confirm_registration(id)))
+      use Nil <- result.try(statement(
+        catalogue,
+        sql.increment_catalogue_revision(),
+      ))
+      Ok(Registration(..record, state: Saved))
+    }
+  }
 }
 
 /// Looks up metadata without opening the referenced database.
@@ -1249,24 +1268,43 @@ pub fn import_session(
   op op: String,
   from from: String,
 ) -> Result(Custody, Error) {
-  use Nil <- result.try(validate_move(op, from))
   transaction(catalogue.connection, fn() {
-    use current <- result.try(custody(catalogue, id))
-    case current {
-      Resident -> {
-        use Nil <- result.try(insert_move(catalogue, id, op, from, "imported"))
-        Ok(Imported(op:, from:))
-      }
-      Imported(op: held, from: source) if held == op && source == from ->
-        Ok(current)
-      Moved(op: held, ..) if held != op -> {
-        use Nil <- result.try(statement(catalogue, sql.delete_session_move(id)))
-        use Nil <- result.try(insert_move(catalogue, id, op, from, "imported"))
-        Ok(Imported(op:, from:))
-      }
-      Imported(..) | Moving(..) | Moved(..) -> Error(Conflict)
-    }
+    import_in_transaction(catalogue, id, op:, from:)
   })
+}
+
+/// `import_session` inside the caller's existing immediate transaction.
+///
+/// It must never be called outside an enclosing catalogue transaction.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.atomic(store, fn() { catalogue.import_in_transaction(store, id, op:, from:) })
+/// ```
+@internal
+pub fn import_in_transaction(
+  catalogue: Catalogue,
+  id: String,
+  op op: String,
+  from from: String,
+) -> Result(Custody, Error) {
+  use Nil <- result.try(validate_move(op, from))
+  use current <- result.try(custody(catalogue, id))
+  case current {
+    Resident -> {
+      use Nil <- result.try(insert_move(catalogue, id, op, from, "imported"))
+      Ok(Imported(op:, from:))
+    }
+    Imported(op: held, from: source) if held == op && source == from ->
+      Ok(current)
+    Moved(op: held, ..) if held != op -> {
+      use Nil <- result.try(statement(catalogue, sql.delete_session_move(id)))
+      use Nil <- result.try(insert_move(catalogue, id, op, from, "imported"))
+      Ok(Imported(op:, from:))
+    }
+    Imported(..) | Moving(..) | Moved(..) -> Error(Conflict)
+  }
 }
 
 fn insert_move(
