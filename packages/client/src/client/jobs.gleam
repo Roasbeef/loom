@@ -2504,19 +2504,62 @@ fn live_board(
 ) -> JsonValue {
   let #(total, rows) =
     dict.fold(records, #(0, []), fn(acc, _id, held) {
-      case
-        held.record.owner == strand && !jobstate.is_terminal(held.record.state)
-      {
-        False -> acc
-        True -> {
-          let rows = case acc.0 < max_jobs_per_strand {
-            True -> [live_row(held.record, now), ..acc.1]
-            False -> acc.1
-          }
-          #(acc.0 + 1, rows)
-        }
-      }
+      live_step(acc, held.record, strand, now)
     })
+  board_of(strand, now, total, rows)
+}
+
+/// The live board of a strand over job records read from the session's store.
+///
+/// A session whose jobs actor runs on an executor has no actor in the
+/// orchestrator's VM to ask, but every record that actor writes is also a
+/// `job/<id>` cell in the orchestrator's store. This is the board built from
+/// those records, with the shape and the four-row bound of the actor's own.
+/// `now` should be read from the clock the records were stamped on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // jobs.live_board_of(records, "main", now)
+/// ```
+pub fn live_board_of(
+  records: List(JobRecord),
+  strand: String,
+  now: Int,
+) -> JsonValue {
+  let #(total, rows) =
+    list.fold(records, #(0, []), fn(acc, record) {
+      live_step(acc, record, strand, now)
+    })
+  board_of(strand, now, total, rows)
+}
+
+// One record's contribution: a live job of the strand counts, and becomes a
+// row only while the bound has room.
+fn live_step(
+  acc: #(Int, List(JsonValue)),
+  record: JobRecord,
+  strand: String,
+  now: Int,
+) -> #(Int, List(JsonValue)) {
+  case record.owner == strand && !jobstate.is_terminal(record.state) {
+    False -> acc
+    True -> {
+      let rows = case acc.0 < max_jobs_per_strand {
+        True -> [live_row(record, now), ..acc.1]
+        False -> acc.1
+      }
+      #(acc.0 + 1, rows)
+    }
+  }
+}
+
+fn board_of(
+  strand: String,
+  now: Int,
+  total: Int,
+  rows: List(JsonValue),
+) -> JsonValue {
   json.Object([
     #("strand", json.String(strand)),
     #("observed_at_ms", json.Int(now)),

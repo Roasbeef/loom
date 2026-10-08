@@ -79,11 +79,12 @@ pub opaque type Port {
 pub const default_reconcile_every_ms = 60_000
 
 // What the port's process receives: an executor's request, a runtime attaching
-// and handing over its host link, or the reconciler's timer.
+// and handing over its host link, the reconciler's timer, or the order to end.
 type Event {
   FromExecutor(message: OwnerMessage)
   Bind(link: HostLink, unacked: Unacked)
   Tick
+  Stop
 }
 
 type State {
@@ -133,6 +134,19 @@ pub fn inbox(port: Port) -> Subject(OwnerMessage) {
 /// ```
 pub fn bind(port: Port, link: HostLink, unacked: Unacked) -> Nil {
   process.send(port.control, Bind(link:, unacked:))
+}
+
+/// Ends the port. Its requests in flight end with it, because their runs are
+/// linked to the port, and the executor's callbacks that were waiting on them
+/// settle through the host's monitor of the port.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_port.stop(port)
+/// ```
+pub fn stop(port: Port) -> Nil {
+  process.send(port.control, Stop)
 }
 
 /// Runs one reconciliation now instead of waiting for the timer.
@@ -185,6 +199,7 @@ fn handle_event(state: State, event: Event) -> actor.Next(State, Event) {
       actor.continue(State(..state, link: Some(link)))
     }
     Tick -> actor.continue(tick(state))
+    Stop -> actor.stop()
   }
 }
 
