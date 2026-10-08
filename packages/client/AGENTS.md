@@ -6279,11 +6279,12 @@ Invariants that break things when violated:
   unlinks the host and `wait` halts on its monitor.
 - `ffi_remote.send` to an unregistered name on the local node raises, so same-VM
   tests must keep the host up; across nodes the send is dropped instead.
-- The owner port's requester is a pid on the executor's node. `weft.cancel_when_exits`
-  checks its pid with `erlang:is_process_alive/1`, which raises `badarg` for a
-  remote pid, so `owner_port.answer` cancels its run through a signal and a
-  monitor-only watcher instead; do not "simplify" it back. The test builds an
-  unconnected node's pid with `client_test_ffi:remote_pid/0`.
+- The owner port's requester is a pid on the executor's node, and
+  `owner_port.answer` hands it to `weft.cancel_when_exits`. That needs weft
+  >= 0.4.6, which watches a remote pid by monitor alone; 0.4.5 raised `badarg`
+  from `erlang:is_process_alive/1` and took the session down on the first
+  executor callback. The test builds an unconnected node's pid with
+  `client_test_ffi:remote_pid/0`.
 
 Tests: `remote/{codec,host,owner_port,surface}_test` run one VM against a real
 ledger and a fake plane (`support/remote_fixtures`, which counts how many times
