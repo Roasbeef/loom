@@ -901,7 +901,7 @@ pub fn a_receiver_lost_in_the_middle_of_the_copy_gets_the_whole_file_again_test(
 
   // The receiver holds a partial copy and no complete one.
   assert session_importer.stage(importer_context(rig), rig.session, op)
-    == session_move.Absent
+    == Ok(session_move.Absent)
   assert manager.custody(rig.target.registry, rig.session)
     != Ok(catalogue.Imported(op:, from: "alpha"))
 

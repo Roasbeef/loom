@@ -103,7 +103,8 @@ pub type Message {
     reply: Subject(Verdict),
   )
 
-  /// How far the move `op` of this session has got on this orchestrator.
+  /// How far the move `op` of this session has got on this orchestrator. No
+  /// reply is sent when the importer cannot tell.
   ImportStatus(
     /// The canonical session identity.
     session: String,
@@ -152,7 +153,9 @@ pub type Importer {
     /// Writes one piece of a copy.
     chunk: fn(Chunk) -> Verdict,
     /// How far the move `op` of the session has got, given the session and `op`.
-    stage: fn(String, String) -> Stage,
+    /// An importer that cannot tell, because its catalogue did not answer,
+    /// returns `Error(Nil)` and the port sends nothing, as it does for `Owns`.
+    stage: fn(String, String) -> Result(Stage, Nil),
     /// Makes the copy into the session.
     activate: fn(Activation) -> Verdict,
   )
@@ -165,12 +168,12 @@ pub type Importer {
 /// ## Examples
 ///
 /// ```gleam
-/// assert orchestrator_port.declining().stage("s", "op") == session_move.Absent
+/// assert orchestrator_port.declining().stage("s", "op") == Ok(session_move.Absent)
 /// ```
 pub fn declining() -> Importer {
   Importer(
     chunk: fn(_chunk) { session_move.Refused(session_move.NotImporting) },
-    stage: fn(_session, _op) { session_move.Absent },
+    stage: fn(_session, _op) { Ok(session_move.Absent) },
     activate: fn(_activation) {
       session_move.Refused(session_move.NotImporting)
     },
@@ -324,7 +327,10 @@ fn answer(
     // order they were sent.
     Import(chunk:, reply:) -> process.send(reply, importer.chunk(chunk))
     ImportStatus(session:, op:, reply:) ->
-      process.send(reply, importer.stage(session, op))
+      case importer.stage(session, op) {
+        Ok(stage) -> process.send(reply, stage)
+        Error(Nil) -> Nil
+      }
 
     // An activation hashes and opens a whole file. It runs apart from the
     // port, so a lookup is not kept waiting behind it.

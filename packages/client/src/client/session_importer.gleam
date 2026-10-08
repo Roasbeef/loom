@@ -206,25 +206,37 @@ fn file_failure(path: String) -> fn(simplifile.FileError) -> Verdict {
 /// waiting is `Received`, because an activation that crashed between its commit
 /// and the rename is finished by the sender asking again.
 ///
+/// A catalogue that cannot be read gives no answer at all, which the port sends
+/// as silence. `Absent` would tell the sender that nothing is here, and it
+/// would send the whole file again to a receiver that may already hold the
+/// session.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// // session_importer.stage(context, session, op)
 /// ```
-pub fn stage(context: Context(instance), session: String, op: String) -> Stage {
+pub fn stage(
+  context: Context(instance),
+  session: String,
+  op: String,
+) -> Result(Stage, Nil) {
   let whole = session_move.incoming_path(context.state_root, session, op)
   let waiting = simplifile.is_file(whole) == Ok(True)
   case manager.custody(context.registry, session) {
     Ok(catalogue.Imported(op: held, ..)) if held == op ->
       case waiting {
-        True -> session_move.Received
-        False -> session_move.Activated
+        True -> Ok(session_move.Received)
+        False -> Ok(session_move.Activated)
       }
-    Ok(_) | Error(_) ->
+
+    // A session the catalogue has no row for is the ordinary first arrival.
+    Ok(_) | Error(manager.Catalogue(catalogue.Missing)) ->
       case waiting {
-        True -> session_move.Received
-        False -> session_move.Absent
+        True -> Ok(session_move.Received)
+        False -> Ok(session_move.Absent)
       }
+    Error(_) -> Error(Nil)
   }
 }
 

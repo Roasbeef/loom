@@ -117,7 +117,10 @@ fn importing(
       },
       stage: fn(session, op) {
         process.send(seen, "stage " <> session <> " " <> op)
-        session_move.Received
+        case session {
+          "unreadable" -> Error(Nil)
+          _ -> Ok(session_move.Received)
+        }
       },
       activate:,
     )
@@ -156,6 +159,22 @@ pub fn the_stage_comes_from_the_importer_and_names_the_move_test() {
   assert orchestrator_port.ask_stage(port, "s1", "op1", 1000)
     == Ok(session_move.Received)
   assert process.receive(seen, 0) == Ok("stage s1 op1")
+}
+
+pub fn a_stage_the_importer_cannot_read_is_silence_and_the_port_serves_on_test() {
+  let seen = process.new_subject()
+  let port = importing(seen, fn(_) { session_move.Accepted })
+
+  // No reply at all. An `Absent` here would tell the sender that nothing is
+  // held, and it would send the whole file again to a receiver that may already
+  // hold the session.
+  assert orchestrator_port.ask_stage(port, "unreadable", "op1", 100)
+    == Error(Nil)
+  assert process.receive(seen, 0) == Ok("stage unreadable op1")
+
+  // The failed question did not stop the port.
+  assert orchestrator_port.ask_stage(port, "s1", "op1", 1000)
+    == Ok(session_move.Received)
 }
 
 pub fn an_activation_is_answered_and_a_lookup_is_not_kept_waiting_behind_it_test() {

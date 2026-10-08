@@ -244,7 +244,7 @@ pub fn pieces_make_a_complete_copy_only_when_the_last_one_lands_test() {
     == session_move.Accepted
   assert simplifile.is_file(waiting(rig, copy, op)) == Ok(False)
   assert session_importer.stage(rig.context, copy.session, op)
-    == session_move.Absent
+    == Ok(session_move.Absent)
 
   // The last piece completes it, byte for byte.
   assert session_importer.take(
@@ -254,7 +254,7 @@ pub fn pieces_make_a_complete_copy_only_when_the_last_one_lands_test() {
     == session_move.Accepted
   assert simplifile.read_bits(waiting(rig, copy, op)) == Ok(copy.bytes)
   assert session_importer.stage(rig.context, copy.session, op)
-    == session_move.Received
+    == Ok(session_move.Received)
   finish(rig)
 }
 
@@ -297,6 +297,29 @@ pub fn a_piece_that_does_not_start_where_the_file_stands_is_refused_test() {
     )
     == session_move.Accepted
   finish(rig)
+}
+
+pub fn a_registry_that_cannot_be_read_gives_no_stage_test() {
+  let rig = rig("silent-stage", box())
+  let copy = cut(rig, 42, clean())
+  assert send(rig, copy, op, 65_536) == session_move.Accepted
+  assert session_importer.stage(rig.context, copy.session, op)
+    == Ok(session_move.Received)
+
+  // The registry is gone, so the row cannot be read. The copy is on disk, but a
+  // stage built from the disk alone could say `Absent` for a session that has
+  // already been taken in, and the sender would send the file again.
+  let watch = process.monitor(manager.pid(rig.registry))
+  manager.shutdown(rig.registry)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(2000)
+    as "the registry retires within the test deadline"
+  assert session_importer.stage(rig.context, copy.session, op) == Error(Nil)
+  let _closed = catalogue.close(rig.store)
+  let _removed = simplifile.delete_all([rig.directory])
+  Nil
 }
 
 pub fn a_restart_at_zero_replaces_what_was_received_test() {
@@ -408,7 +431,7 @@ pub fn a_verified_copy_becomes_the_session_and_a_repeat_answers_again_test() {
     == Ok(catalogue.Imported(op:, from: "alpha"))
   assert simplifile.is_file(waiting(rig, copy, op)) == Ok(False)
   assert session_importer.stage(rig.context, copy.session, op)
-    == session_move.Activated
+    == Ok(session_move.Activated)
 
   // The reply may have been lost. Asking again, with no copy left to check,
   // answers the same.
