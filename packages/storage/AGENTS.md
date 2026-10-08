@@ -667,13 +667,15 @@ with these forks: they define the same modules.
   nothing fails `a_fence_with_no_row_inserts_a_terminal_row_and_blocks_admission_test`.
   The default ledger budget is 512 MiB: sixteen live calls reserve 16 MiB each,
   and the rest is room for unacknowledged results.
-- **An `ack` deletes; there is no acknowledged state.** It is safe because
-  the orchestrator queries only orphaned calls (an acked call's result is
-  already staged in its store) and sends each `Run` exactly once (after a
-  disconnect it queries and never resends). `ack` deletes only `terminal` and
-  `unknown` rows, so a misdirected ack cannot discard a live run's reservation.
-  An attach reply lists a session's unacknowledged `terminal` and `unknown`
-  keys so a lost ack cannot leak a row forever.
+- **An `ack` deletes; there is no acknowledged state.** The orchestrator does
+  re-send a `Run` after a reconnect or a runtime restart, and the row is what
+  makes that safe, so a row may go only when no `Run` for its key can come
+  again. The orchestrator acks a key only when `workspace.settled` says the
+  operation no longer lists the call as planned or effect-pending, after which
+  it sends no `Run` for the key and none is in flight. `ack` deletes only
+  `terminal` and `unknown` rows, so a misdirected ack cannot discard a live
+  run's reservation. An attach reply lists a session's unacknowledged `terminal`
+  and `unknown` keys so a lost ack cannot leak a row forever.
 - **`exec_ledger.open` is restart recovery, so one opener per VM.** It turns
   every `admitted` row into `unknown` and nothing turns one back; a second
   `open` while runs are in flight would mark them lost. The node-level actor is

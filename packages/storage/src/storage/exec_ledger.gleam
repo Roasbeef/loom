@@ -51,15 +51,20 @@
 //// ## Why an acknowledgement deletes the row
 ////
 //// There is no acknowledged state. After the orchestrator durably stages a
-//// result it sends `ack`, and `ack` deletes the row. The orchestrator only ever
-//// queries calls that are orphaned, which means it holds no staged result for
-//// them, and a call it acknowledged has its result staged in its own store, so
-//// it is never orphaned again. The orchestrator also sends each `Run` exactly
-//// once: after a disconnect it queries the call key and never resends. So once
-//// a row is gone no later message can arrive for that key and be mistaken for a
-//// fresh call, and a stale runtime's late `Run` is stopped by the attach token
-//// whether or not a row exists. A tombstone would guard a resend the protocol
-//// does not make, at the price of a row that never frees.
+//// result it sends `ack`, and `ack` deletes the row. The orchestrator does
+//// re-send a `Run` for a call after a reconnect or a runtime restart, and the
+//// row is what makes that safe, so a row may go only when no `Run` for its key
+//// can arrive again. The orchestrator acknowledges a key only when its
+//// operation state no longer lists the call as planned or effect-pending
+//// (`workspace.settled`), which is after the effect returned and its outcome
+//// was staged. The planner sends a `Run`, and recovery asks about a call, only
+//// while the call is planned or pending, and one `Run` is outstanding at a time
+//// for a call (a message lost with a dropped connection is never delivered
+//// later). Once a key is acknowledged, then, nothing for it is sent or in
+//// flight. A stale runtime's late `Run` is stopped by the attach token whether
+//// or not a row exists. A tombstone would guard a `Run` for a settled key,
+//// which the orchestrator does not send, at the price of a row that never
+//// frees.
 ////
 //// ## Releasing a scope
 ////
