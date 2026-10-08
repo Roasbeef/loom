@@ -401,6 +401,58 @@ Background jobs belong to the scope, not to the call that started them, so
 they keep running across an orchestrator disconnect under their existing
 bounded policy, and close waits for their retirement.
 
+### Three fixed limits of the current code
+
+These are what the code does today, recorded so that a change to one is a
+decision and not a surprise.
+
+**The protocol version tag.** Every `Attach` carries the sender's
+`protocol.version`, an integer that is 1 today (`pub const version`,
+`client/remote/protocol.gleam:61`; the field is `Attach.version`,
+`client/remote/protocol.gleam:212`, and the surface fills it in,
+`client/remote/surface.gleam:200`). The host compares it with its own for
+equality and for nothing else (`version == protocol.version`,
+`client/remote/host.gleam:400`). A different value gets
+`Error(VersionMismatch(supported))` carrying the host's own version, and the
+host creates no scope and changes no state
+(`client/remote/host.gleam:414`). The orchestrator's open then stops the
+session's owner port and fails with `executor_unavailable: the executor speaks
+protocol version N and this orchestrator does not`
+(`client/remote/workspace.gleam:186`; the wording is
+`client/remote/protocol.gleam:380`). There is no negotiation and no accepted
+range. `Run`, `Query` and the other messages carry no version of their own,
+because each session open begins with an `Attach`. The constant's doc comment
+(`client/remote/protocol.gleam:56`) says to change it whenever a constructor or
+field of `HostMessage`, `OwnerMessage` or a reply changes.
+
+**The executor host's death halts the executor daemon.** The daemon starts the
+host, unlinks it and monitors it (`start_executor`,
+`client/daemon/main.gleam:474`). Any end of the host, whatever the reason, is
+`ExecutorGone`, which logs `daemon.executor_lost` and halts the VM with status 1
+(`client/daemon/main.gleam:1061`). The host is never restarted on its own. The
+workspace planes it builds are not in its link set, so a host restarted alone
+would leave their helper pools and jobs actors running and then build a second
+set beside them on the next attach (`client/daemon/main.gleam:431`). Ending the
+VM retires the first set with it, and on the next boot the ledger turns every
+call that was `admitted` into `unknown`, as for any executor restart.
+
+**The 16 MiB per-call reservation inside the 512 MiB budget.** Admission
+reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
+file `fs_read` returns (`client/remote/host.gleam:202`). The daemon passes it as
+`max_result_bytes` (`client/daemon/main.gleam:466`) and the host hands it to
+`exec_ledger.admit` (`client/remote/host.gleam:734`). The ledger's byte budget
+is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:345`), and
+`require_budget` refuses a call when the bytes held by `admitted` and
+`terminal` rows plus the new reservation would pass it
+(`storage/exec_ledger.gleam:978`). The refusal is `BudgetExhausted`, and its
+sentence is "the executor's ledger is full at N bytes of unacknowledged
+results" (`client/remote/protocol.gleam:375`). `finish` shrinks the reservation
+to the outcome's real size, and `ack` releases it. Sixteen live calls therefore
+hold 256 MiB, and the other 256 MiB is room for results the orchestrator has
+not yet acknowledged. An outcome larger than its reservation is stored as a
+failure naming both sizes (`commit_outcome`,
+`client/remote/host.gleam:954`).
+
 ## 7. Code mode, LSP and jobs
 
 All three run entirely on the executor, which is why the cut sits above them.
