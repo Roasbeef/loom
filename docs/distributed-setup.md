@@ -443,9 +443,14 @@ Stop each daemon with Ctrl-C in its terminal when you are done.
 
 ## 5. Quick start B: a laptop and a Linux box
 
-The orchestrator dials the executor. Nothing dials the orchestrator over
-distribution. So the executor's machine must accept inbound connections on two
-TCP ports, and the orchestrator's machine needs only outbound access.
+The orchestrator dials the executor, and the executor never dials the
+orchestrator. So the executor's machine must accept inbound connections on two
+TCP ports, and an orchestrator with no peer orchestrators needs only outbound
+access. In a deployment with two orchestrators (section 7), each orchestrator
+also dials the other, to find a session, deliver peer mail or move a session,
+so each orchestrator's machine must accept `epmd` and its own distribution
+listener from the other. Set that orchestrator's `listen_port` to open one known
+port.
 
 | Port | What | Notes |
 |---|---|---|

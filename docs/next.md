@@ -12,7 +12,11 @@ explicit authorization. Every claim below was verified on the code candidate
 `3318250e0` (`3318250e0b32fd9f470c611d7e2022935f73f8e9`, 195 commits over
 `7091d5a42`). The next commit, `88a70dd34`, changes one shipped test to wait for
 a file rename it raced on Linux, and the commit after it changes only this file;
-no source file differs from `3318250e0`.
+no source file differs from `3318250e0`. After that, `7628912ba` changes
+`client/distribution` so the daemon starts `epmd` when none answers, and
+`6c945a8c2` documents it (see "Rulings already made"). The gated signoff is
+green on `6c945a8c2`, and `main` was then merged into the branch as
+`3a541c1d4`.
 
 The previous edition on `main` covered the compile and export work of
 [PR #917](https://github.com/Roasbeef/loom/pull/917); its measurements are in
@@ -54,6 +58,7 @@ Linux: the box described below.
 | `make model-check` | Linux | not run: the box has no Java, TLA+ jar or P tool |
 | Cross-host, both directions (Mac brains with box hands, and the reverse): file, `bash`, `fs_read` and `git` in the remote checkout and absent locally; stop then `Closed(AllRetired)`; reopen at incarnation 2; tunnel cut during a 75 s call, which ran once and was delivered after recovery | Mac and Linux | passed on `193dbd8db`. The remote execution path has changed since (clock stamp, ledger v3), and the cross-host run was not repeated on `3318250e0` |
 | Shipped SIGKILL restart and partition drills (`daemon_shipped_remote_test`) | Mac | in the shipped row above |
+| Gated signoff (`make signoff-remote`), fresh Linux container | Linux | green on `6c945a8c2`. An earlier run in a fresh container, with no `epmd` running, found the missing `epmd` start that `7628912ba` fixes |
 
 ## Rulings already made
 
@@ -79,6 +84,15 @@ answer abandons a move; silence stalls. This difference was flagged to the owner
 gone gets no automatic successor. `loomd executor release` (daemon stopped) records the
 override in the ledger's `scope_release` table, and the next open reopens at the next
 incarnation.
+
+**The daemon starts `epmd`.** The daemon VM boots without a node name and starts
+distribution with `net_kernel:start/2`, and that dynamic start never launches
+`epmd`, unlike `erl -name` at boot. On a machine where nothing had started one,
+the node failed to register. `distribution.start` now asks the loopback `epmd`
+first and, when none answers, runs the release's `epmd -daemon` (or the one on
+`PATH`) and waits up to three seconds; `-start_epmd false` turns this off. The
+signoff caught the defect in a fresh container (`7628912ba`, documented in
+`6c945a8c2`).
 
 **Formal models.** `make model-check` runs TLC on `session-move` and P on
 `terminal-attachment` and `remote-execution`, with probes and mutants. No directory

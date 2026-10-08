@@ -201,20 +201,26 @@ Executor to orchestrator, to the session's owner port:
 
 | Message | Meaning |
 |---|---|
-| `Escalate(refused, reply)` | Ask for an approval decision. |
-| `FactGet(key, reply)`, `FactSwap(key, expected, new, reply)`, `FactList(prefix, reply)` | Read, compare-and-set or list a reserved owner fact (`client/working_directory/*`, `job/*`). |
-| `Notify(strand, text, reply)` | Deliver a background job's completion notice to its strand. |
-| `Tail(...)` | A live output hint; may be dropped. |
-| `OwnerCapability(request, reply)` | A satellite's owner-bound capability call. |
+| `Escalate(refused, remaining_ms, reply)` | Ask for an approval decision. `remaining_ms` is how long the call may still wait; the owner port rebuilds the deadline on its own clock. |
+| `FactGet(key, reply)`, `FactPut(key, value, expected, reply)`, `FactPutBlind(key, value, reply)`, `FactDelete(key, reply)`, `FactList(prefix, reply)` | Read, compare-and-set, write without a comparison, delete or list a reserved owner fact (`client/working_directory/*`, `job/*`). |
+| `Notify(strand, work, text, reply)` | Deliver a background job's completion notice to its strand. |
+| `StrandActivity(strand, reply)` | Ask whether a strand has an open run. |
+| `Wake(strand, text, reply)` | Wake an idle strand, for the idle heartbeat. |
+| `Holds(caller, tool, reply)` | Ask whether a strand's active tool list holds a tool. |
+| `Tail(run, tail)` | A live output hint, sent as a cast; may be dropped. |
+| `Capability(call, reply)` | A satellite's owner-bound capability call. |
 
 The host monitors the owner port. A DOWN while a callback is outstanding
 settles that callback with an in-band failure, so the call reaches
 `terminal` instead of waiting on a reply nobody will send.
 
-The remote broker handle uses `broker.Msg` unchanged, except that a
-`CallSpec`'s absolute deadline is sent as the remaining duration and rebased
-on the executor's clock, and the workspace path in the spec comes from the
-census as an opaque string.
+The remote broker handle uses `broker.Msg` unchanged. A `CallSpec`'s absolute
+deadline is sent as it is, and the executor's broker compares it with its own
+clock, so the orchestrator builds it on `Half.call_clock`: its own clock
+shifted by `Attached.executor_now_ms` minus the local reading when the reply
+arrived (`workspace.rebased`). Only an escalation crosses as a remaining
+duration. The workspace path in the spec comes from the census as an opaque
+string.
 
 A remote session refuses extension tools and operator-added directories in
 this change; both read orchestrator-side state that has no executor

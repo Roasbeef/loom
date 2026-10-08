@@ -97,7 +97,7 @@ executor never opens the conversation store.
 
 Every tool effect already leaves the runtime through one function slot,
 `effects.ToolSurface.run: fn(ToolRun) -> ToolOutcome`
-(`packages/runtime/src/runtime/effects.gleam:296`). The strand driver spawns
+(`packages/runtime/src/runtime/effects.gleam:327`). The strand driver spawns
 an effect process that calls it, after the call's intent and effective
 arguments are already durable (`planner.dispatch_tool`, committed through
 `commit_then`). `ToolRun` and `ToolOutcome` are plain data: operation id,
@@ -169,10 +169,13 @@ through a `broker.Broker`, which is a `Subject(Msg)` plus a clock. For a
 remote session the orchestrator holds a broker handle built from the
 executor's broker subject, so `clear_call`, `cancel` and `abort` work as
 today and output streams back to the caller's subject. Two details keep it
-honest. A `CallSpec` built on the orchestrator carries an absolute deadline
-on the orchestrator's clock (`broker/budget.gleam:32-40`), so the remote
-handle sends the remaining duration and the executor rebases it on its own
-clock. And these callers put the workspace path into the spec
+honest. A `CallSpec` carries an absolute deadline, its budget's `deadline_ms`
+(`broker/budget.gleam:32-40`), and the executor's broker compares it with the
+executor's own clock. The remote handle sends that absolute deadline
+unchanged, so the callers build it on `Half.call_clock`: the orchestrator's
+clock shifted by the executor's clock reading in the `Attached` reply minus the
+local reading when the reply arrived (`workspace.rebased`). Only an escalation crosses as a remaining duration. And
+these callers put the workspace path into the spec
 (`client/hookrunner.gleam:298`, `CLAUDE_PROJECT_DIR` at :319); for a remote
 session that path comes from the census as an opaque string the orchestrator
 carries and never interprets. Beyond that, `broker` needs one public
@@ -286,9 +289,13 @@ orchestrator's planner already uses. The host commits `admitted` before the
 tool starts and `terminal` with the encoded `ToolOutcome` before replying.
 A second request with the same key never starts a second run: it waits on the
 live run or returns the stored outcome. When the executor VM restarts, every
-`admitted` row becomes `unknown`; nothing is relaunched. After the orchestrator
-durably stages a result it sends `ack`, which retires the row (an `unknown`
-row too, so executor restarts do not leak them): the outcome and its reserved
+`admitted` row becomes `unknown`; nothing is relaunched. Acknowledgements come
+from the owner port's reconciler, not from the code that stages a result:
+`surface.ack` has no caller. The reconciler runs when a runtime attaches and
+then every 60 seconds, and it sends `ack` for each unacknowledged key that
+`workspace.settled` accepts, that is, a call the session no longer holds
+pending. An `ack` retires the row (an `unknown` row too, so executor restarts
+do not leak them): the outcome and its reserved
 bytes go, and a small tombstone keeps the key taken until the scope's
 incarnation changes. The tombstone is what lets a key admitted once in an
 incarnation never start again in it. Without it, a `Run` from a runtime that
@@ -297,8 +304,9 @@ acknowledgement, would find no row and a current token and start a call the
 model was told never ran. Tombstones are dropped when the scope reopens at a
 new incarnation, closes with every child retired, or is released. A lost `ack`
 would otherwise leak a row forever (the call is no longer orphaned, so nobody queries it), so
-every `Attach` reply lists the scope's unacked terminal and unknown keys and
-the orchestrator acks the ones its store already holds.
+every `Attach` reply lists the scope's unacked terminal and unknown keys, the
+reconciler asks again with `ListUnacked` on each later pass, and it acks the
+ones its store already holds.
 
 System work (hooks, goal checks, Git observation, LSP observations) keeps
 main's semantics: it is not durable and never replayed, and the next event
