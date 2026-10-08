@@ -167,8 +167,20 @@ All messages between nodes are values of closed custom types holding only
 strings, integers, bit arrays, lists, the existing plain-data runtime types
 (`ToolRun`, `ToolOutcome`, `AgentMessage`, `escalate.Refused` and `Decision`)
 and `Subject`s. No function, port, reference to node-local storage or atom
-built from a peer's input crosses. Every receiver decodes with total
-decoders and bounds each message's size.
+built from a peer's input crosses. Values read back from storage, the ledger's
+stored outcomes among them, are decoded with total decoders.
+
+The messages between the nodes are a different case. The two nodes are pinned,
+mutually trusted peers, so a message is a typed Erlang term that the receiver
+matches directly. It is not decoded from untrusted bytes and its size is not
+bounded by a decoder. The only guard on its shape is `version` on `Attach`, and it
+helps only while the `Attach` tuple still has the same fields. A peer built from a
+different vocabulary whose message does not match is not refused: the receiver
+fails to match it, which crashes the executor host and halts the executor daemon
+(`ExecutorGone`). That is an availability fault under a mismatched build, not a
+loss of isolation, because a pinned peer already has the full privileges of an
+Erlang node. Both ends are therefore upgraded together, and the version is bumped
+for every change of a constructor or field.
 
 Orchestrator to executor:
 
