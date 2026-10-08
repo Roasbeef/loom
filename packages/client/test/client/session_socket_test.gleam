@@ -14,6 +14,7 @@ import client/daemon_server_test as wire
 import client/gateway
 import client/gateway_test
 import client/internal/ffi_os
+import client/session_directory
 import core/clock
 import core/codec
 import core/entry
@@ -133,6 +134,7 @@ fn fixture_with(
       "",
       [],
       [],
+      session_directory.none(),
       fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),

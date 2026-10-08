@@ -14,6 +14,7 @@ import client/gateway_test
 import client/peer_mail
 import client/peers
 import client/pools
+import client/session_directory
 import core/clock
 import core/ids
 import core/json
@@ -84,6 +85,32 @@ pub fn fixture_building(
   build,
   run,
 ) {
+  fixture_directing(
+    connection_limits,
+    peer_endpoint,
+    build,
+    session_directory.none(),
+    run,
+  )
+}
+
+/// `fixture_building` with the session directory the daemon asks about a
+/// session its own catalogue lacks, for a test of the redirect codes. The
+/// default is `session_directory.none()`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_directing(limits.defaults, fn(_) { None }, build, stub, run)
+/// ```
+@internal
+pub fn fixture_directing(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  asked: session_directory.Directory,
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -119,6 +146,7 @@ pub fn fixture_building(
           toolchains: [],
         ),
       ],
+      directory: asked,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -1795,6 +1823,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           domain_configuration: "",
           executors: [],
           pools: [],
+          directory: session_directory.none(),
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)

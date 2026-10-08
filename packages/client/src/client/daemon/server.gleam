@@ -53,9 +53,11 @@ import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/executors
+import client/orchestrators
 import client/peer_mail
 import client/peers
 import client/pools
+import client/session_directory
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -100,6 +102,10 @@ pub type Config(instance) {
     /// creation that names a pool outside this list is refused before anything
     /// is reserved (protocol-change/078).
     pools: List(pools.Pool),
+    /// The other orchestrators a session this daemon does not hold may live on
+    /// (protocol-change/078, phase 3). It is asked only after the daemon's own
+    /// catalogue missed, and only for the owner principal.
+    directory: session_directory.Directory,
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -2091,11 +2097,11 @@ fn control(
             control_use(request.command),
             within: 1000,
           )
-          |> result.replace_error(#("unavailable", "request refused")),
+          |> result.replace_error(control_refusal("unavailable")),
         )
         use principal <- result.try(
           manager.authenticate(current.registry, digest)
-          |> result.replace_error(#("unauthorized", "request refused")),
+          |> result.replace_error(control_refusal("unauthorized")),
         )
         dispatch(config, state, digest, principal, request.id, request.command)
       }
@@ -2142,8 +2148,8 @@ fn control(
           }
           #(protocol.event(Some(request.id), event, body), after)
         }
-        Error(#(code, message)) -> #(
-          refusal(protocol.Fault(Some(request.id), code, message)),
+        Error(Refused(code:, message:, detail:)) -> #(
+          refusal_with(protocol.Fault(Some(request.id), code, message), detail),
           KeepServing,
         )
       }
@@ -2192,12 +2198,20 @@ fn control_use(command: protocol.Command) {
 }
 
 fn refusal(fault: protocol.Fault) {
+  refusal_with(fault, [])
+}
+
+// A refusal frame with more members than the code and the words. The two
+// redirect codes of protocol-change/078 name where the session lives, and every
+// other refusal passes an empty list.
+fn refusal_with(fault: protocol.Fault, detail: List(#(String, JsonValue))) {
   protocol.event(
     fault.reply_to,
     "error",
     json.Object([
       #("code", json.String(fault.code)),
       #("message", json.String(fault.message)),
+      ..detail
     ]),
   )
 }
@@ -2251,7 +2265,7 @@ fn dispatch(
   principal: access.Principal,
   reply_to: Int,
   command: protocol.Command,
-) -> Result(#(String, JsonValue), #(String, String)) {
+) -> Result(#(String, JsonValue), Refused) {
   case command {
     protocol.GetOperation(id, operation, supplied) -> {
       use Nil <- result.try(
@@ -2263,7 +2277,7 @@ fn dispatch(
       manager.operation(state.registry, id, operation)
       |> result.map_error(fn(error) {
         case error {
-          manager.StartFailed(reason) -> #("start_failed", reason)
+          manager.StartFailed(reason) -> Refused("start_failed", reason, [])
           other -> control_refusal(error_code(other))
         }
       })
@@ -2274,14 +2288,81 @@ fn dispatch(
       |> result.map_error(fn(code) {
         creation_refusal(config, configuration, profile, code)
       })
+
+    // A session this daemon's catalogue does not hold may be one that another
+    // orchestrator owns. The miss comes out of the authorization step as
+    // `not_found`, and for the owner principal that is the one place the
+    // directory is asked (protocol-change/078, phase 3).
+    protocol.GetSession(id) | protocol.OpenSession(id, _) ->
+      dispatch_class(config, state, digest, principal, reply_to, command)
+      |> result.map_error(control_refusal)
+      |> result.map_error(redirected(config, principal, id, _))
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
   }
 }
 
-fn control_refusal(code: String) -> #(String, String) {
-  #(code, "request refused")
+// A refusal as the control socket sends it: the code and its words, and any
+// members beyond them. Only the two redirect codes carry members.
+type Refused {
+  Refused(code: String, message: String, detail: List(#(String, JsonValue)))
+}
+
+fn control_refusal(code: String) -> Refused {
+  Refused(code, "request refused", [])
+}
+
+/// The code `sessions.get` and `sessions.open` answer when the session is not in
+/// this daemon's catalogue but another configured orchestrator holds it
+/// (protocol-change/078, phase 3).
+pub const not_owner_code = "not_owner"
+
+/// The code `sessions.get` and `sessions.open` answer when the session is not in
+/// this daemon's catalogue, no orchestrator said it holds it, and some could not
+/// be asked (protocol-change/078, phase 3).
+pub const owner_unreachable_code = "owner_unreachable"
+
+// The refusal for a session this daemon does not hold. Only the owner principal
+// is redirected: a member's standing on the session is the owning daemon's to
+// judge, and this one cannot vouch for it. A miss that no orchestrator explains
+// stays `not_found`, and so does a directory that says the session is here after
+// all, which can only be a creation that landed between the two reads and which
+// the client's retry finds.
+fn redirected(
+  config: Config(instance),
+  principal: access.Principal,
+  id: String,
+  refused: Refused,
+) -> Refused {
+  case refused.code, principal.kind {
+    "not_found", access.OwnerPrincipal ->
+      case config.directory.lookup(id) {
+        Ok(session_directory.Elsewhere(owner)) -> not_owner(owner)
+        Error(session_directory.Unreachable(names)) -> owner_unreachable(names)
+        Ok(session_directory.Here) | Error(session_directory.Unknown) -> refused
+      }
+    _, _ -> refused
+  }
+}
+
+fn not_owner(owner: orchestrators.Orchestrator) -> Refused {
+  let address = case owner.address {
+    Some(address) -> [#("address", json.String(address))]
+    None -> []
+  }
+  Refused(not_owner_code, "this session is owned by another orchestrator", [
+    #("orchestrator", json.String(owner.name)),
+    ..address
+  ])
+}
+
+fn owner_unreachable(names: List(String)) -> Refused {
+  Refused(
+    owner_unreachable_code,
+    "the orchestrator that owns this session could not be reached",
+    [#("orchestrators", json.Array(list.map(names, json.String)))],
+  )
 }
 
 /// The code `create_session` answers when the profile a creation names is not
@@ -2316,7 +2397,7 @@ fn creation_refusal(
   configuration: String,
   profile: Option(String),
   code: String,
-) -> #(String, String) {
+) -> Refused {
   case code, profile {
     "unknown_profile", Some(name) | "unusable_configuration", Some(name) -> {
       let canonical = case configuration {
@@ -2332,18 +2413,18 @@ fn creation_refusal(
         Error(refusal) -> profiles.refusal_message(refusal)
         Ok(Nil) -> "request refused"
       }
-      #(code, words)
+      Refused(code, words, [])
     }
 
-    "executor_unknown", _ -> #(
-      code,
-      "no executor with that name is configured on this daemon",
-    )
+    "executor_unknown", _ ->
+      Refused(
+        code,
+        "no executor with that name is configured on this daemon",
+        [],
+      )
 
-    "pool_unknown", _ -> #(
-      code,
-      "no pool with that name is configured on this daemon",
-    )
+    "pool_unknown", _ ->
+      Refused(code, "no pool with that name is configured on this daemon", [])
 
     _, _ -> control_refusal(code)
   }

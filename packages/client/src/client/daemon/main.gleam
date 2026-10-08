@@ -8,13 +8,15 @@
 //// ## Flow
 ////
 //// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
-//// `listen_serving` → `publish_endpoint` → `wait`
+//// `start_orchestrator_port` → `listen_serving` → `publish_endpoint` → `wait`
 ////
 //// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
 ////    `prepare_startup` reads the configuration once and prepares the root.
 //// 2. `run` starts the daemon's services in order. `start_executor` comes
 ////    first, so a machine that serves workspaces answers peers before any
-////    client can connect.
+////    client can connect, and `start_orchestrator_port` follows it, so a
+////    daemon with distribution answers a peer's question about which sessions
+////    it holds.
 //// 3. `listen_serving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
@@ -37,14 +39,17 @@ import client/executor_plane
 import client/executors
 import client/host
 import client/internal/ffi_os
+import client/orchestrators
 import client/peer_defaults
 import client/peer_mail
 import client/peers
 import client/pools
 import client/remote/address
 import client/remote/host as executor_host
+import client/remote/orchestrator_port
 import client/remote/workspace
 import client/serve
+import client/session_directory
 import client/workspaces
 import core/clock
 import core/glance
@@ -64,6 +69,7 @@ import host/build_identity
 import host/endpoint
 import mist
 import simplifile
+import storage/catalogue
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
@@ -100,6 +106,15 @@ pub type Config {
     /// `[workspaces.<name>]` at startup and never reread (protocol-change/078).
     /// A daemon with none starts no executor host.
     workspaces: List(workspaces.Workspace),
+    /// The other orchestrators this daemon asks which of them owns a session
+    /// its own catalogue lacks, read from `[orchestrators.<name>]` at startup
+    /// and never reread (protocol-change/078, phase 3).
+    orchestrators: List(orchestrators.Orchestrator),
+    /// The distribution membership `prepare_startup` started, or `None` when
+    /// the configuration has no `[distribution]` table. It is how the daemon
+    /// reaches the peers it asks, and a daemon without it asks nobody and
+    /// answers nobody.
+    membership: Option(distribution.Membership),
   )
 }
 
@@ -274,6 +289,8 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       [],
       [],
       [],
+      [],
+      None,
     )
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
@@ -484,6 +501,92 @@ pub fn start_executor(
   }
 }
 
+/// Starts the orchestrator port when the configuration has a `[distribution]`
+/// table, and registers nothing otherwise.
+///
+/// The port answers a peer orchestrator's question about whether this daemon's
+/// catalogue holds a session. It runs whether or not this daemon lists any
+/// `[orchestrators.<name>]` of its own, since an orchestrator can be asked by a
+/// peer that lists it without listing that peer back. It is linked to the
+/// process that starts the daemon's services, so an abnormal exit of the port
+/// ends the daemon the way the executor host's does: a daemon that silently
+/// stopped answering would make every peer report it unreachable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger) == Ok(Nil)
+/// ```
+@internal
+pub fn start_orchestrator_port(
+  config: Config,
+  daemon: root.Root(instance),
+  logger: Logger,
+) -> Result(Nil, String) {
+  case config.membership {
+    None -> Ok(Nil)
+    Some(_) -> {
+      use ready <- result.try(root.ready(daemon, within: 20_000))
+      use _started <- result.try(
+        orchestrator_port.start(
+          orchestrator_port.default(),
+          catalogue_holds(ready.registry),
+        )
+        |> result.map_error(fn(error) {
+          "the orchestrator port did not start: " <> string.inspect(error)
+        }),
+      )
+      log.info(logger, "daemon.orchestrator_port", [
+        field.count("orchestrators", list.length(config.orchestrators)),
+      ])
+      Ok(Nil)
+    }
+  }
+}
+
+/// Whether this daemon's catalogue holds a session, in any state and any
+/// visibility: `Owned` for a `reserved` or `saved` registration, archived or
+/// not, `NotOwned` when the catalogue has no such identity, and `Error(Nil)`
+/// when the registry could not answer. A `reserved` row counts because a
+/// creation retried under its original key has to land on the orchestrator that
+/// reserved it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.catalogue_holds(ready.registry)("0198c0de-0000-7000-8000-000000000001")
+/// ```
+@internal
+pub fn catalogue_holds(
+  registry: manager.Manager(instance),
+) -> fn(String) -> Result(orchestrator_port.Ownership, Nil) {
+  fn(id) {
+    case manager.get(registry, id) {
+      Ok(_) -> Ok(orchestrator_port.Owned)
+      Error(manager.Catalogue(catalogue.Missing)) ->
+        Ok(orchestrator_port.NotOwned)
+      Error(_) -> Error(Nil)
+    }
+  }
+}
+
+// The directory the control socket asks when its own catalogue misses. With no
+// distribution there is nobody to ask and the directory answers `Unknown`.
+fn session_directory_of(
+  config: Config,
+  registry: manager.Manager(instance),
+) -> session_directory.Directory {
+  case config.membership {
+    None -> session_directory.none()
+    Some(membership) ->
+      session_directory.peers(
+        config.orchestrators,
+        catalogue_holds(registry),
+        session_directory.over_distribution(membership),
+      )
+  }
+}
+
 /// Prepares the root before acquiring any daemon file or session resource.
 /// The caller retains the returned handle through listen or shutdown failures.
 ///
@@ -573,9 +676,22 @@ pub fn prepare_startup(
     existing_roots(workspaces)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+  use orchestrators <- result.try(
+    orchestrators.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
   use membership <- result.try(start_distribution(document, configuration))
   let config =
-    Config(..config, view:, peer_policy:, executors:, pools:, workspaces:)
+    Config(
+      ..config,
+      view:,
+      peer_policy:,
+      executors:,
+      pools:,
+      workspaces:,
+      orchestrators:,
+      membership:,
+    )
   root.start(
     root.Config(
       config.state_root,
@@ -874,6 +990,7 @@ pub fn listen_serving(
       domain_configuration:,
       executors: config.executors,
       pools: config.pools,
+      directory: session_directory_of(config, ready.registry),
       generator: fn() {
         ids.generator(
           clock.from_function(ffi_os.system_time_ms),
@@ -927,30 +1044,27 @@ fn run(
   let signals = process.new_subject()
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
   case
-    start_executor(config, logger)
-    |> result.try(fn(executor) {
-      web_view(config, daemon)
-      |> result.try(fn(ui) {
-        listen_serving(
-          config,
-          daemon,
-          fn(request, attachment) {
-            session_socket.upgrade(
-              daemon,
-              request,
-              attachment,
-              attachment.instance.gateway,
-            )
-          },
-          fn(resident: serve.Resident) { Some(resident.peer) },
-          ui,
-        )
-      })
-      |> result.try(fn(serving) {
-        publish_endpoint(config, serving, paths, fence)
-        |> result.replace(#(serving, executor))
-      })
-    })
+    {
+      use executor <- result.try(start_executor(config, logger))
+      use Nil <- result.try(start_orchestrator_port(config, daemon, logger))
+      use ui <- result.try(web_view(config, daemon))
+      use serving <- result.try(listen_serving(
+        config,
+        daemon,
+        fn(request, attachment) {
+          session_socket.upgrade(
+            daemon,
+            request,
+            attachment,
+            attachment.instance.gateway,
+          )
+        },
+        fn(resident: serve.Resident) { Some(resident.peer) },
+        ui,
+      ))
+      publish_endpoint(config, serving, paths, fence)
+      |> result.replace(#(serving, executor))
+    }
   {
     Error(reason) -> {
       log.error(logger, "daemon.start_failed", [field.text("reason", reason)])

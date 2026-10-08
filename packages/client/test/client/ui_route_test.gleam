@@ -28,6 +28,7 @@ import client/daemon_claim_test
 import client/daemon_server_test
 import client/gateway
 import client/peers
+import client/session_directory
 import core/clock
 import core/ids
 import core/json
@@ -206,6 +207,7 @@ fn fixture_lasting(
       domain_configuration: "",
       executors: [],
       pools: [],
+      directory: session_directory.none(),
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(server.Ui(
