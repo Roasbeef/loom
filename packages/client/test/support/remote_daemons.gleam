@@ -27,7 +27,9 @@
 ////    fixture can retire it after a failed assertion; `write_options` runs
 ////    `loomd distribution options`; `start` launches the daemon through a
 ////    wrapper that sets `LOOM_DISTRIBUTION_OPTFILE` inside an isolated home;
-////    `retire` ends it by the process identity it recorded.
+////    `start_with` does the same with extra daemon flags, such as the build
+////    seed an executor's code mode needs; `retire` ends it by the process
+////    identity it recorded.
 //// 4. **Observation.** Nothing in a daemon's VM says from outside whether it
 ////    is connected. `run_probe` boots a throwaway emulator
 ////    (`support/remote_probe`) that the daemons list as a peer, and reads back
@@ -554,6 +556,65 @@ pub fn start(layout: Layout) -> Running {
         placement.OnThisHost,
       ),
       process.self(),
+      60_000,
+    )
+  let connected = case started {
+    Ok(connected) -> connected
+    Error(reason) ->
+      panic as {
+        layout.label
+        <> " did not start: "
+        <> reason
+        <> "\ndaemon log:\n"
+        <> log_tail(layout)
+      }
+  }
+  let assert Ok(address) = endpoint.address(connected.record)
+    as "the daemon published its address"
+  let assert endpoint.Ready(port:, ..) = connected.record
+    as "the daemon published its port"
+  let assert Ok(secret) = simplifile.read(connected.paths.token)
+    as "the fixture owner reads its private credential"
+  Running(layout:, connected:, port:, address:, owner: string.trim(secret))
+}
+
+/// Starts the daemon as `start` does, with `arguments` added to the flags the
+/// launcher gives it.
+///
+/// A fixture uses this for the flags a real operator would pass to one daemon.
+/// `--codemode-seed <dir>` names the build seed code mode compiles against. A
+/// daemon finds its seed from that flag first, then from a `build/codemode-seed`
+/// under the workspace, then from the one a release ships beside the launcher;
+/// a fixture daemon has neither of the last two, because its checkout is a
+/// directory the fixture made and the shipment under `bin/` is a development
+/// one. An executor takes the same flags a local daemon does
+/// (`executor_plane.machine`), so passing them here is how the fixture hands the
+/// executor the repository's seed or a relaxed enforcement demand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let running = remote_daemons.start_with(layout, ["--codemode-seed", seed])
+/// ```
+pub fn start_with(layout: Layout, arguments: List(String)) -> Running {
+  let launcher = distribution_launcher(layout)
+  let started =
+    daemon_bootstrap.resolve(
+      layout.paths,
+      process.self(),
+      fn() {
+        Ok(daemon_bootstrap.Launch(
+          launcher,
+          list.append(
+            bootstrap.daemon_launch_arguments(
+              layout.paths.root,
+              launcher,
+              layout.config,
+            ),
+            arguments,
+          ),
+        ))
+      },
       60_000,
     )
   let connected = case started {
@@ -1256,6 +1317,32 @@ pub fn result_text(
     })
   let assert Ok(text) = found
     as { "the model received a successful result for " <> call_id }
+  text
+}
+
+/// The text of the tool result the harness marked as an error for `call_id`.
+///
+/// Only a provider started with `provider.AlsoFailed` admits such a request,
+/// so a fixture that expects a failure says so when it starts the provider.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.failed_result_text(requests, "broken-call")
+/// ```
+pub fn failed_result_text(
+  requests: List(provider.ObservedRequest),
+  call_id: String,
+) -> String {
+  let found =
+    list.find_map(requests, fn(request) {
+      case request.latest {
+        provider.FailedToolResult(id, text) if id == call_id -> Ok(text)
+        _ -> Error(Nil)
+      }
+    })
+  let assert Ok(text) = found
+    as { "the model received an error result for " <> call_id }
   text
 }
 
