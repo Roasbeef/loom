@@ -130,3 +130,106 @@ pub fn an_import_path_is_not_found_inside_a_longer_one_test() {
     )
     == ["cap/lsp_sql"]
 }
+
+// --- unknown module values --------------------------------------------------
+
+const allowed = ["cap/proc", "cap/git", "gleam/int", "gleam/string"]
+
+const surfaces = [
+  #(
+    "cap/proc",
+    "### cap/proc\npub fn run(Command) -> Result(Output, ProcError)\n",
+  ),
+  #(
+    "cap/git",
+    "### cap/git\npub fn current_branch() -> Result(String, GitError)\n",
+  ),
+]
+
+fn missing(module: String, value: String) -> String {
+  "error: Unknown module value\n   ┌─ src/loom_program.gleam:28:17\n"
+  <> "   │\n28 │         <> proc.thing(out.exit_code)\n   │ ^^^\n\n"
+  <> "The module `"
+  <> module
+  <> "` does not have a `"
+  <> value
+  <> "` value.\n"
+}
+
+pub fn a_function_of_another_module_is_named_flatly_test() {
+  assert codemode_pointer.suggestions(
+      missing("cap/proc", "current_branch"),
+      surfaces,
+      allowed,
+    )
+    == ["`current_branch` is in cap/git, not cap/proc"]
+}
+
+pub fn a_standard_library_guess_is_marked_unchecked_test() {
+  assert codemode_pointer.suggestions(
+      missing("cap/proc", "int_to_string"),
+      surfaces,
+      allowed,
+    )
+    == ["`int_to_string`: maybe `int.to_string` from gleam/int (unchecked)"]
+}
+
+pub fn a_checked_owner_wins_over_a_guess_test() {
+  let with_int = [
+    #("gleam/int", "pub fn int_to_string(Int) -> String"),
+    ..surfaces
+  ]
+  assert codemode_pointer.suggestions(
+      missing("cap/proc", "int_to_string"),
+      with_int,
+      allowed,
+    )
+    == ["`int_to_string` is in gleam/int, not cap/proc"]
+}
+
+pub fn a_name_with_no_candidate_gets_no_line_test() {
+  assert codemode_pointer.suggestions(
+      missing("cap/proc", "frobnicate"),
+      surfaces,
+      allowed,
+    )
+    == []
+  assert codemode_pointer.suggestions(
+      missing("cap/proc", "float_to_string"),
+      surfaces,
+      allowed,
+    )
+    == []
+}
+
+pub fn a_module_the_program_may_not_import_gets_no_line_test() {
+  assert codemode_pointer.suggestions(
+      missing("cap/runtime", "current_branch"),
+      surfaces,
+      allowed,
+    )
+    == []
+}
+
+pub fn at_most_three_suggestions_are_made_in_order_test() {
+  let diagnostics =
+    missing("cap/proc", "int_to_string")
+    <> missing("cap/proc", "current_branch")
+    <> missing("cap/proc", "string_length")
+    <> missing("cap/proc", "string_trim")
+  assert codemode_pointer.suggestions(diagnostics, surfaces, allowed)
+    == [
+      "`int_to_string`: maybe `int.to_string` from gleam/int (unchecked)",
+      "`current_branch` is in cap/git, not cap/proc",
+      "`string_length`: maybe `string.length` from gleam/string (unchecked)",
+    ]
+}
+
+pub fn other_diagnostics_get_no_line_test() {
+  assert codemode_pointer.suggestions(
+      "error: Type mismatch\nExpected Int, got String",
+      surfaces,
+      allowed,
+    )
+    == []
+}

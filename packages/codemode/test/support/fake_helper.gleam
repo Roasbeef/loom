@@ -36,6 +36,9 @@ pub type Behavior {
   /// partly provide: one layer applied, one `skip:`ped, and the helper's
   /// own `degraded` bool (which tracks only bwrap) left false.
   PartialJail
+  /// Echo and exit 0, except an argv whose first word is `command`, which
+  /// writes `stderr` and exits `code`.
+  FailingOn(command: String, code: Int, stderr: String)
 }
 
 /// A `Gated` helper's announcement of a started execution, carrying the
@@ -156,6 +159,11 @@ fn exec_start(state: FakeState, id: Int, argv: List(String)) -> FakeState {
   case state.behavior {
     EchoNow -> echo_exit(state, id, argv)
     PartialJail -> partial_exit(state, id, argv)
+    FailingOn(command:, code:, stderr:) ->
+      case argv {
+        [first, ..] if first == command -> failing_exit(state, id, code, stderr)
+        _ -> echo_exit(state, id, argv)
+      }
     HoldForCancel -> FakeState(..state, running: Some(#(id, argv)))
     Gated(control:) -> {
       process.send(control, Started(id:, argv:, release: state.inbox))
@@ -210,6 +218,51 @@ fn echo_exit(state: FakeState, id: Int, argv: List(String)) -> FakeState {
       framing.Frame(
         id:,
         body: exit_body(code: 0, signal: 0, stdout_bytes: size),
+      ),
+    )
+  FakeState(..state, running: None)
+}
+
+// A non-zero exit after `stderr` has been written.
+fn failing_exit(
+  state: FakeState,
+  id: Int,
+  code: Int,
+  stderr: String,
+) -> FakeState {
+  let data = bit_array.from_string(stderr)
+  let size = bit_array.byte_size(data)
+  let state =
+    reply(
+      state,
+      framing.Frame(
+        id:,
+        body: framing.ExecOut(
+          stream: framing.Stderr,
+          data:,
+          bytes: size,
+          truncated: False,
+        ),
+      ),
+    )
+  let state =
+    reply(
+      state,
+      framing.Frame(
+        id:,
+        body: framing.ExecExit(
+          code:,
+          signal: 0,
+          stdout_bytes: 0,
+          stderr_bytes: size,
+          stdout_truncated: False,
+          stderr_truncated: False,
+          enforcement: ["bwrap"],
+          degraded: False,
+          wall_ms: 1,
+          timed_out: False,
+          cancelled: False,
+        ),
       ),
     )
   FakeState(..state, running: None)

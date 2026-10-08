@@ -106,6 +106,7 @@ import tools/directory_access
 import tools/fs
 import tools/permissions
 import tools/prelude
+import tools/proc_failure.{type ProcFailure}
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
 // Source selection is decided before authority or I/O. A loaded file then
@@ -449,10 +450,15 @@ pub type Execution {
     calls: CallLog,
     /// What the harness changed in the submitted program before it ran,
     /// one line per change, such as `removed unused import gleam/int (line
-    /// 3)`. Empty when the program ran as submitted. The model reads these
-    /// lines on success and on failure, and a diagnostic's line numbers
-    /// then refer to the program after the changes.
+    /// 3)` or an unused argument renamed with a leading underscore. Empty
+    /// when the program ran as submitted. The model reads these lines on
+    /// success and on failure, and a diagnostic's line numbers then refer
+    /// to the program after the changes.
     edits: List(String),
+    /// The program's most recent `proc.run` that exited non-zero or timed
+    /// out, with the tail of its stderr (`tools/proc_failure`). Only a
+    /// program that ended in failure shows it to the model.
+    last_failure: Option(ProcFailure),
   )
 }
 
@@ -747,8 +753,10 @@ fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
 ///
 pub fn description(mode: CodeMode) -> String {
   "Run a Gleam program in a jailed satellite; only its returned result "
-  <> "enters the conversation. Use it immediately for planned batches or "
-  <> "dependent steps whose intermediate results need no judgment. "
+  <> "enters the conversation. Use it for any batch of reads, searches, "
+  <> "git/gh queries or checks you can list now, including the first round "
+  <> "of an investigation: one program runs every probe and returns every "
+  <> "result. Judge between programs, not between commands. "
   <> "Write `pub fn main() -> report.Outcome`, returning `report.text(...)` "
   <> "or `report.value(...)`. Filter internally; return relevant facts, "
   <> "paths and failures. Supply exactly one of `program` (inline source) "
@@ -759,16 +767,15 @@ pub fn description(mode: CodeMode) -> String {
   <> seams_text(mode.seams)
   <> async_text(mode.background, mode.seams)
   <> recipes_text(mode.seams)
-  <> " Refusals and compile errors include diagnostics for repair; "
-  <> "warnings fail compilation too."
-  <> " Compilation treats warnings as errors. Import only modules and "
-  <> "constructors actually used: for example, import gleam/option.{Some} "
-  <> "when you call Some, without importing unused None. Use qualified "
-  <> "stdlib functions (string.contains, list.length); import their modules "
-  <> "rather than writing replacement helpers. Remove unused imports, "
-  <> "bindings and private functions. On failure, read all diagnostics and "
-  <> "repair the named lines before resubmitting; keep the working program "
-  <> "small instead of rewriting unrelated parts. "
+  <> " Compile errors and refusals include diagnostics. Warnings fail the "
+  <> "build, except that when the only diagnostics are unused imports, "
+  <> "arguments or bindings the harness removes or underscores them, builds "
+  <> "once more, and lists each edit in the result; an underscored `let` or "
+  <> "`use` binding usually means the program forgot to use a value. Use "
+  <> "qualified stdlib functions (string.contains, int.to_string) rather than "
+  <> "writing replacement helpers. On a compile failure, repair the named "
+  <> "lines and keep the rest. If a program fails at runtime, fix it and run "
+  <> "it again; do not move its remaining probes to other tools. "
   <> signatures_text(mode.seams)
 }
 
@@ -1780,10 +1787,15 @@ fn compile_outcome(
     BuildRejected(diagnostics:) -> #(
       "build_rejected",
       "the program did not compile and did not run. Fix the diagnostics "
-        <> "below; warnings also fail the build:\n"
+        <> "below:\n"
         <> diagnostics
         <> pointer_suffix(codemode_pointer.compile_modules(
         diagnostics,
+        offer.allowed_imports,
+      ))
+        <> suggestion_suffix(codemode_pointer.suggestions(
+        diagnostics,
+        prelude.surfaces,
         offer.allowed_imports,
       )),
     )
@@ -1825,6 +1837,11 @@ fn pointer_suffix(modules: List(String)) -> String {
   }
 }
 
+// One line per suggestion, each after the text it belongs to.
+fn suggestion_suffix(lines: List(String)) -> String {
+  list.map(lines, fn(line) { "\n" <> line }) |> string.concat
+}
+
 fn compile_detail(failure: CompileFailure) -> String {
   case failure {
     BuildRejected(diagnostics:) -> diagnostics
@@ -1859,7 +1876,11 @@ fn run_failed_outcome(
     )
   }
   tool.failure(
-    body <> edits_suffix(execution) <> "\n" <> sandbox_text(execution),
+    body
+    <> edits_suffix(execution)
+    <> failure_line(execution)
+    <> "\n"
+    <> sandbox_text(execution),
   )
   |> tool.with_details(
     json.Object(list.append(
@@ -1870,9 +1891,29 @@ fn run_failed_outcome(
         #("sandbox", enforcement_json(execution.enforcement)),
         #("calls", call_record.to_json(execution.calls)),
       ],
-      edits_fields(execution),
+      list.append(edits_fields(execution), last_failure_fields(execution)),
     )),
   )
+}
+
+// The last failed command as a line of its own, or nothing. Callers use it
+// only when the program ended in failure: a program that completed handled
+// its failed commands itself, so the line would read as a fault it did not
+// have.
+fn failure_line(execution: Execution) -> String {
+  case execution.last_failure {
+    Some(failure) -> "\n" <> proc_failure.line(failure)
+    None -> ""
+  }
+}
+
+// The `last_failed_command` detail for clients, present whenever the host
+// kept a record, whether or not the model is shown the line.
+fn last_failure_fields(execution: Execution) -> List(#(String, JsonValue)) {
+  case execution.last_failure {
+    Some(failure) -> [#("last_failed_command", proc_failure.to_json(failure))]
+    None -> []
+  }
 }
 
 fn run_failure_detail(failure: RunFailure) -> String {
@@ -1926,6 +1967,7 @@ fn ran_outcome(
           #("calls", call_record.to_json(execution.calls)),
         ],
         edits_fields(execution),
+        last_failure_fields(execution),
       ]),
     )
 
@@ -1939,10 +1981,15 @@ fn ran_outcome(
         offer.allowed_imports,
       ))
   }
+  let last_command = case is_error {
+    False -> ""
+    True -> failure_line(execution)
+  }
   let text =
     body
     <> edits_suffix(execution)
     <> pointer
+    <> last_command
     <> "\n"
     <> sandbox_text(execution)
   case is_error {
@@ -1962,6 +2009,11 @@ fn ran_outcome(
 /// applied ones, and a degraded stage says so outright. A tool result must
 /// never imply a jail that was not applied.
 ///
+/// The line is compact because every result repeats it: layers appear by
+/// name only, and two stages that read the same are stated once. The full
+/// report, with parameters and skip reasons, is the `sandbox` field of the
+/// result details.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1969,11 +2021,37 @@ fn ran_outcome(
 /// ```
 ///
 pub fn sandbox_text(execution: Execution) -> String {
-  "sandbox: "
-  <> stage_text(build_stage, execution.enforcement.build)
-  <> "; "
-  <> stage_text(satellite_stage, execution.enforcement.node)
-  <> "."
+  let build = execution.enforcement.build
+  let node = execution.enforcement.node
+  let build_line = enforced_summary(build, "; ")
+  let node_line = enforced_summary(node, "; ")
+  case build, node {
+    // Stages that read the same once reduced to layer names are stated once.
+    // Their parameters and skip reasons may differ; the details field keeps
+    // both reports in full. A stage with no report is never merged.
+    Enforced(..), Enforced(..) if build_line == node_line ->
+      "sandbox: build and node " <> build_line <> " (full report in details)."
+
+    _, _ ->
+      "sandbox: "
+      <> stage_text(build_stage, build)
+      <> "; "
+      <> stage_text(satellite_stage, node)
+      <> " (full report in details)."
+  }
+}
+
+// `enforced [layers]` plus the degraded and skipped tail, or empty text for a
+// stage that made no report. `separator` joins the tail to the layer list.
+fn enforced_summary(report: Report, separator: String) -> String {
+  case report {
+    Unreported(..) -> ""
+    Enforced(applied:, ..) ->
+      "enforced ["
+      <> layer_names(applied)
+      <> "]"
+      <> compact_tail(separator, report)
+  }
 }
 
 /// The stage label for the hermetic build.
@@ -1989,20 +2067,50 @@ fn stage_text(stage: String, report: Report) -> String {
       <> " made NO enforcement report ("
       <> reason
       <> "), which is not a claim that it was confined"
-    Enforced(applied:, skipped:, degraded:) ->
-      stage
-      <> " enforced ["
-      <> string.join(applied, ", ")
-      <> "]"
-      <> case skipped {
-        [] -> ""
-        missing -> ", SKIPPED [" <> string.join(missing, ", ") <> "]"
-      }
-      <> case degraded {
-        True -> " (DEGRADED: the kernel did not provide every demanded layer)"
-        False -> ""
-      }
+    Enforced(..) -> stage <> " " <> enforced_summary(report, ", ")
   }
+}
+
+// What follows the applied layers: `DEGRADED` whenever the kernel did not
+// provide every demanded layer, and the skipped layers by name. A skipped
+// layer is never folded into the applied list, so a reader cannot take it for
+// one that held. The reasons stay in the details field.
+fn compact_tail(separator: String, report: Report) -> String {
+  case report {
+    Unreported(..) -> ""
+    Enforced(skipped:, degraded:, ..) -> {
+      let skipped_text = case skipped {
+        [] -> []
+        missing -> ["skipped [" <> layer_names(missing) <> "]"]
+      }
+      let parts = case degraded {
+        True -> ["DEGRADED", ..skipped_text]
+        False -> skipped_text
+      }
+      case parts {
+        [] -> ""
+        _ -> separator <> string.join(parts, ", ")
+      }
+    }
+  }
+}
+
+// A layer entry is its name followed by parameters or a reason, such as
+// `seatbelt-fs:rw=4,mask=18` or `rlimit-processes: current uid already has
+// 1009 processes`. The name is the text before the first `:` or `=`.
+fn layer_names(entries: List(String)) -> String {
+  entries
+  |> list.map(fn(entry) {
+    let name = case string.split_once(entry, ":") {
+      Ok(#(head, _)) -> head
+      Error(Nil) -> entry
+    }
+    case string.split_once(name, "=") {
+      Ok(#(head, _)) -> string.trim(head)
+      Error(Nil) -> string.trim(name)
+    }
+  })
+  |> string.join(", ")
 }
 
 fn enforcement_json(reports: Enforcement) -> JsonValue {
@@ -2183,7 +2291,27 @@ fn recipes_text(seams: Seams) -> String {
     })
 
   // One copy however many seams admit the modules it imports.
-  seam_recipes <> lsp_sql_recipe(offers)
+  seam_recipes <> shell_probe_recipe(offers) <> lsp_sql_recipe(offers)
+}
+
+// The shell-probe program, when any offer admits every module it imports. It
+// is the most common real use of code mode, so it is shown once as a whole
+// program that keeps independent probes independent.
+fn shell_probe_recipe(offers: List(SeamOffer)) -> String {
+  let needed = [
+    "cap/proc", "cap/report", "gleam/dynamic/decode", "gleam/int", "gleam/json",
+    "gleam/list", "gleam/result", "gleam/string",
+  ]
+  let admits = fn(offer: SeamOffer) {
+    list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
+  }
+  case list.any(offers, admits) {
+    False -> ""
+    True ->
+      "\nShell probe recipe: independent probes keep their own errors; decode `--json` output into typed rows.\n```gleam\n"
+      <> codemode_recipes.shell_probes()
+      <> "```\n"
+  }
 }
 
 // The `lsp_sql` skeleton, when any offer admits every module it imports.

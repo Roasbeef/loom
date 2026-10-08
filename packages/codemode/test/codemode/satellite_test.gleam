@@ -34,6 +34,7 @@ import simplifile
 import support/fake_helper
 import support/satellite_peer.{type PeerCtx}
 import tools/call_record
+import tools/proc_failure
 
 const t = 1_700_000_000_000
 
@@ -997,6 +998,155 @@ pub fn overlapping_calls_overlap_in_time_test() {
   assert second.start_ms < first.start_ms + first.duration_ms
   assert first.duration_ms > second.duration_ms
   assert ran.calls.elapsed_ms >= first.start_ms + first.duration_ms
+}
+
+// --- the last failing command ----------------------------------------------
+//
+// The host keeps one record of the latest `proc.run` that exited non-zero.
+// The fake helper fails any argv that starts with `bad`.
+
+fn failing_helper() -> fn() -> Result(exec.Helper, exec.CheckoutError) {
+  fn() {
+    Ok(
+      fake_helper.start_helper(fake_helper.FailingOn(
+        command: "bad",
+        code: 128,
+        stderr: "fatal: ambiguous argument '%h %s'\n",
+      )),
+    )
+  }
+}
+
+fn run_failing(name: String, script: fn(PeerCtx) -> Nil) -> satellite.Run {
+  run_calls(name, start_broker(failing_helper()), config("x"), roomy(), script)
+}
+
+pub fn a_failed_command_is_kept_with_its_stderr_test() {
+  let ran =
+    run_failing("fail-kept", fn(ctx) {
+      satellite_peer.send_proc_run(ctx, ctx.token, 1, [
+        "bad", "log", "--format", "%h %s",
+      ])
+      let _reply = satellite_peer.collect_results(ctx, 1, 3000)
+      satellite_peer.send_outcome(ctx, msgpack.NilValue)
+    })
+  let assert Some(failure) = ran.last_failure
+  assert failure.command == "bad log --format %h %s"
+  assert failure.exit_code == 128
+  assert failure.ending == proc_failure.Exited
+  assert failure.stderr_tail == "fatal: ambiguous argument '%h %s'"
+}
+
+pub fn a_later_success_does_not_clear_the_failure_test() {
+  let ran =
+    run_failing("fail-sticky", fn(ctx) {
+      satellite_peer.send_proc_run(ctx, ctx.token, 1, ["bad"])
+      let _first = satellite_peer.collect_results(ctx, 1, 3000)
+      satellite_peer.send_proc_run(ctx, ctx.token, 2, ["good"])
+      let _second = satellite_peer.collect_results(ctx, 1, 3000)
+      satellite_peer.send_outcome(ctx, msgpack.NilValue)
+    })
+  let assert Some(failure) = ran.last_failure
+  assert failure.command == "bad"
+}
+
+pub fn only_the_latest_failure_is_kept_test() {
+  let ran =
+    run_failing("fail-latest", fn(ctx) {
+      satellite_peer.send_proc_run(ctx, ctx.token, 1, ["bad", "one"])
+      let _first = satellite_peer.collect_results(ctx, 1, 3000)
+      satellite_peer.send_proc_run(ctx, ctx.token, 2, ["bad", "two"])
+      let _second = satellite_peer.collect_results(ctx, 1, 3000)
+      satellite_peer.send_outcome(ctx, msgpack.NilValue)
+    })
+  let assert Some(failure) = ran.last_failure
+  assert failure.command == "bad two"
+}
+
+pub fn a_successful_command_leaves_no_record_test() {
+  let ran =
+    run_failing("fail-none", fn(ctx) {
+      satellite_peer.send_proc_run(ctx, ctx.token, 1, ["good"])
+      let _first = satellite_peer.collect_results(ctx, 1, 3000)
+      satellite_peer.send_outcome(ctx, msgpack.NilValue)
+    })
+  assert ran.last_failure == None
+}
+
+pub fn a_policy_refusal_of_proc_run_leaves_no_record_test() {
+  // The router asks `proc.run` for more than the session base grants, and
+  // the broker refuses it. The call never ran, so it is not a failed command
+  // (the ceiling route has a test of its own).
+  let cfg =
+    satellite.SatelliteConfig(..config("x"), router: widening_proc_router)
+  let ran =
+    run_calls(
+      "fail-policy",
+      start_broker(failing_helper()),
+      cfg,
+      roomy(),
+      fn(ctx) {
+        satellite_peer.send_proc_run(ctx, ctx.token, 1, ["bad"])
+        let refused = satellite_peer.collect_results(ctx, 1, 3000)
+        assert list.any(refused, fn(r) { is_code(r.1, "policy") })
+        satellite_peer.send_outcome(ctx, msgpack.NilValue)
+      },
+    )
+  assert ran.last_failure == None
+}
+
+// The default `proc.run` plan, widened to full network and set to refuse
+// rather than narrow.
+fn widening_proc_router(
+  request: satellite.CapRequest,
+) -> Result(satellite.CapPlan, satellite.CapDenial) {
+  case satellite.default_router(request) {
+    Ok(satellite.ClearedCall(spec:, render:)) if request.cap == "proc.run" ->
+      Ok(satellite.ClearedCall(
+        spec: broker.CallSpec(
+          ..spec,
+          requirements: policy.SandboxPolicy(
+            ..request.base_policy,
+            network: policy.NetworkFull,
+          ),
+          response: broker.RefuseNarrowed,
+        ),
+        render:,
+      ))
+    other -> other
+  }
+}
+
+pub fn a_ceiling_refusal_of_proc_run_leaves_no_record_test() {
+  let cfg =
+    satellite.SatelliteConfig(..config("x"), ceilings: [
+      satellite.CapCeiling(cap: "proc.run", admissions: 0, code: "proc_ceiling"),
+    ])
+  let ran =
+    run_calls(
+      "fail-ceiling",
+      start_broker(failing_helper()),
+      cfg,
+      roomy(),
+      fn(ctx) {
+        satellite_peer.send_proc_run(ctx, ctx.token, 1, ["bad"])
+        let _refused = satellite_peer.collect_results(ctx, 1, 3000)
+        satellite_peer.send_outcome(ctx, msgpack.NilValue)
+      },
+    )
+  assert ran.last_failure == None
+}
+
+pub fn a_cancelled_command_leaves_no_record_test() {
+  let ran =
+    run_calls(
+      "fail-cancel",
+      start_broker(holding()),
+      config("x"),
+      roomy(),
+      cancel_peer,
+    )
+  assert ran.last_failure == None
 }
 
 pub fn a_call_refused_by_a_ceiling_is_recorded_as_failed_test() {

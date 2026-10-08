@@ -232,7 +232,14 @@ cannot hide the capability error. This does not grant the program a new effect.
 - `cap/proc.Command` — opaque, built through `command`/`in_dir`/`with_env`/
   `with_stdin`/`with_timeout`, so a non-empty argv holds by construction.
   `proc.run` is the one capability the harness's `default_router` services
-  today.
+  today. `proc.stdout` and `proc.stdout_accepting(command, exit_codes)` reduce
+  a run to its stdout or one error string naming the command (argv cut to at
+  most 160 bytes), the exit code and the end of stderr (at most 400 bytes);
+  the ellipsis counts inside both limits, and `tools/proc_failure` keeps its
+  own copy of the cut; a timeout is always
+  an error. They are the reduction every hand-written `run` helper kept
+  getting wrong by dropping stderr. `stdout_from` is the pure decision behind
+  them, `@internal` so tests reach it without a channel.
 - `cap/task.Failure(e)` — `Returned(index, error)` / `Crashed(index,
   reason)`. The result type of every combinator, and the reason a killed
   branch is distinguishable from a branch that returned an error.

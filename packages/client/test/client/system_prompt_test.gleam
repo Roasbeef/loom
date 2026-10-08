@@ -213,7 +213,7 @@ pub fn the_shipped_prompt_is_complete_test() {
   // Nothing to warn about: the shipped pack carries every canonical
   // section and every fragment, and spells every placeholder right.
   assert rendered.warnings == []
-  assert rendered.version == "loom-default-15"
+  assert rendered.version == "loom-default-16"
   assert rendered.digest == pack.fingerprint(default.source)
   // The rendered pack must contain substantive content as well as metadata.
   assert byte_size(rendered.text) > 1000

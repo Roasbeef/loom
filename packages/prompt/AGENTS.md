@@ -2,13 +2,17 @@
 
 ## Code-mode guidance
 
-The shipped `loom-default-15` pack asks for immediate code mode on planned
-batches and chains whose intermediate results need no agent judgment. The
-third extraction probe remains the fallback for investigations that grew into
-a batch. Bounded `cap/task.parallel_map` guidance is conditional on the selected
-seam, and completeness, truncation, `cap://` discovery and warning-free
-compilation remain explicit. Stateful external mutations retain an agent
-judgment step between calls. Tested reusable programs belong in real workspace
+The shipped `loom-default-16` pack asks for code mode on any batch of reads,
+searches, `git`/`gh` queries or checks the agent can already list, including
+the first round of an investigation: it judges between programs, not between
+commands. Independent probes stay independent, and a runtime failure is fixed
+and rerun rather than moved to `bash`. The third extraction probe remains the
+fallback for investigations that grew into a batch. Bounded
+`cap/task.parallel_map` guidance is conditional on the selected seam, and
+completeness, truncation and `cap://` discovery remain explicit; the warning
+rule lives in the `code_mode` tool description only. `bash` keeps toolchains
+and external mutations, and read-only `git`/`gh` queries go to code mode.
+External mutations retain an agent judgment step between calls. Tested reusable programs belong in real workspace
 files with purpose and input notes. `program_path` reuses that source under
 current permissions; every new invocation reloads it and collects fresh LSP
 facts. SQL observations remain local to one invocation, and saved source carries

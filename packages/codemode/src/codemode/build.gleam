@@ -56,9 +56,10 @@
 //// diagnostics, which is precisely what the model reads and fixes, and the
 //// type checker is already doing double duty as the tool-argument
 //// validator here. One failure is not left to the model: when every
-//// diagnostic is an unused-import warning, `codemode.execute` removes
-//// those imports and builds once more (`codemode/unused_imports`), so this
-//// builder never learns of it and the flag is unchanged.
+//// diagnostic is an unused import, argument or variable warning,
+//// `codemode.execute` repairs them and builds once more
+//// (`codemode/unused_repair`), so this builder never learns of it and the
+//// flag is unchanged.
 ////
 //// # `PATH` and `TMPDIR` are required
 ////
