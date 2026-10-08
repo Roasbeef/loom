@@ -3,6 +3,7 @@ package jail
 import (
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -257,7 +258,7 @@ func SeatbeltPlanFor(pol policy.Policy, scratchPath, helper string) SeatbeltPlan
 		regions = append(regions, pol.Scratch)
 	}
 	if helper != "" {
-		regions = append(regions, helper)
+		regions = append(regions, seatbeltHelperSpellings(helper)...)
 	}
 	for i, path := range seatbeltAncestorMetadata(regions) {
 		key := fmt.Sprintf("ANCESTOR_%d", i)
@@ -355,9 +356,43 @@ func readableSeatbeltRoots(pol policy.Policy, writable []string, helper string) 
 	// Where the helper was installed is the helper's knowledge, not the
 	// sender's, so it is not a policy path.
 	if helper != "" {
-		roots = append(roots, normalizeSeatbeltPath(helper))
+		roots = append(roots, seatbeltHelperSpellings(helper)...)
 	}
 	return uniqueSorted(roots)
+}
+
+// seatbeltHelperSpellings is every path the kernel reads to execute the
+// helper by the name it was given: that name, each symbolic link it passes
+// through, and the file at the end. Stage 2 re-executes the helper by its
+// given name, and a link to it may live anywhere, an install's bin
+// directory or a test's home, so granting only the resolved file leaves the
+// link unreadable and execvp fails inside the profile. Each link is spelled
+// with its directory resolved and its own name kept, because the profile
+// matches resolved directories but a link must be named as a link. The
+// grant widens by exactly those link files, which hold nothing but a path.
+func seatbeltHelperSpellings(helper string) []string {
+	out := []string{normalizeSeatbeltPath(helper)}
+	path := filepath.Clean(helper)
+
+	// A link chain longer than the kernel's own limit could not be
+	// executed anyway, so the walk stops there rather than loop.
+	for hop := 0; hop < 40; hop++ {
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			break
+		}
+		out = append(out, filepath.Join(
+			normalizeSeatbeltPath(filepath.Dir(path)), filepath.Base(path)))
+		target, err := os.Readlink(path)
+		if err != nil {
+			break
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = filepath.Clean(target)
+	}
+	return out
 }
 
 // seatbeltMount is one explicit mount reduced to what the profile needs:
