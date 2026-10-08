@@ -10,7 +10,7 @@
 //// order, the configuration tables as an operator writes them, the home each
 //// VM reads its cookie from, and the process that outlives the test.
 ////
-//// The module has six parts, in the order a fixture uses them.
+//// The module has seven parts, in the order a fixture uses them.
 ////
 //// 1. **Credentials.** `mint_authority` and `issue` call `openssl` to make a
 ////    certificate authority and one leaf per node, with the exact node name as
@@ -44,6 +44,11 @@
 //// 6. **What the executor kept.** `crash` ends a daemon with `SIGKILL`, and
 ////    `executor_scope` reads the executor's ledger from a copy, to see how it
 ////    closed a scope.
+//// 7. **The session directory.** `directory_table` renders the `[directory]`
+////    table of a Khepri member (protocol-change/079), `bootstrap_directory`
+////    runs `loomd directory bootstrap` through the daemon's own launcher, and
+////    `await_directory` polls `directory.status` until a member has joined a
+////    cluster with every voter.
 ////
 //// Everything a fixture creates lives under a directory the caller chose,
 //// below `build/`. Nothing is written to `/tmp`, which Loom's jail replaces.
@@ -1919,4 +1924,124 @@ pub fn await_moved(
       await_moved(control, first_id + 1, session, polls - 1)
     }
   }
+}
+
+// --- the session directory ---------------------------------------------------
+
+/// The `[directory]` table of a daemon that is a member of the session
+/// directory's Khepri cluster (protocol-change/079). Every member's
+/// configuration names the same members.
+///
+/// ## Examples
+///
+/// ```gleam
+/// remote_daemons.directory_table(["a@127.0.0.1", "b@127.0.0.1"])
+/// // -> "[directory]\nmembers = [\"a@127.0.0.1\", \"b@127.0.0.1\"]\n"
+/// ```
+pub fn directory_table(members: List(String)) -> String {
+  let names =
+    list.map(members, fn(member) { "\"" <> member <> "\"" })
+    |> string.join(", ")
+  "[directory]\nmembers = [" <> names <> "]\n"
+}
+
+/// Runs `loomd directory bootstrap` for a stopped daemon, through the same
+/// launcher and distribution options its daemon uses, and returns the exit
+/// status with what the command printed. A fixture asserts on both, since the
+/// refusals are part of what a test proves.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(0, _) = remote_daemons.bootstrap_directory(executor)
+/// ```
+pub fn bootstrap_directory(layout: Layout) -> #(Int, String) {
+  let assert Ok(ran) =
+    ffi_proc.run(
+      distribution_launcher(layout),
+      [
+        "directory",
+        "bootstrap",
+        "--state-dir",
+        layout.paths.root,
+        "--config",
+        layout.config,
+      ],
+      in: layout.directory,
+    )
+    as "the shipped directory command runs"
+  ran
+}
+
+/// One `directory.status` reply's body.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let status = remote_daemons.directory_status(control, 90)
+/// ```
+pub fn directory_status(control: Control, id: Int) -> JsonValue {
+  let reply = command(control, id, "directory.status", json.Object([]))
+  assert field(reply, "event") == json.String("directory.status")
+  field(reply, "body")
+}
+
+/// Polls `directory.status` until the daemon has joined the cluster, sees a
+/// leader and counts at least `voters` voting members, and returns that body.
+/// A member that joined after losing its disk is a non-voter until it has
+/// caught up, so waiting for the full count is what says the cluster has
+/// healed. Every poll
+/// is a new request, numbered from `first_id`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.await_directory(control, 90, 3)
+/// ```
+pub fn await_directory(
+  control: Control,
+  first_id: Int,
+  voters: Int,
+) -> JsonValue {
+  directory_settles(control, first_id, voters, 480)
+}
+
+// One poll of `await_directory`, a quarter of a second apart.
+fn directory_settles(
+  control: Control,
+  id: Int,
+  voters: Int,
+  remaining: Int,
+) -> JsonValue {
+  assert remaining > 0 as "the member joins a cluster with every voter"
+  let status = directory_status(control, id)
+  case joined(status) && voting(status) >= voters && has_leader(status) {
+    True -> status
+    False -> {
+      process.sleep(250)
+      directory_settles(control, id + 1, voters, remaining - 1)
+    }
+  }
+}
+
+// Whether a status body says the member has joined.
+fn joined(status: JsonValue) -> Bool {
+  field(status, "joined") == json.Bool(True)
+}
+
+// How many of the cluster's members a status body lists as voters.
+fn voting(status: JsonValue) -> Int {
+  case field(status, "ra_members") {
+    json.Array(members) ->
+      list.count(members, fn(member) {
+        field(member, "voter") == json.Bool(True)
+      })
+    _ -> 0
+  }
+}
+
+// Whether a status body names a leader.
+fn has_leader(status: JsonValue) -> Bool {
+  let assert json.Object(fields) = status as "a status body is an object"
+  list.key_find(fields, "leader") != Error(Nil)
 }

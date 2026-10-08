@@ -37,6 +37,19 @@
 ////   it at incarnation two and a tool runs there, `alpha` answers `not_owner`,
 ////   and the executor holds one scope for it.
 ////
+//// `daemon_shipped_remote_move_members_test_` and
+//// `daemon_shipped_remote_move_members_crash_test_`, the same two with the
+//// session directory's Khepri cluster (protocol-change/079).
+////
+//// - The three daemons are its members. The cluster is created on the executor
+////   with `loomd directory bootstrap` before it starts, and every daemon is
+////   waited for until it has joined with three voters, after each start.
+//// - The owner record decides the move: `alpha` records the move before it
+////   closes the scope, `bravo` takes the record before it registers the
+////   session, and `alpha` retires only once a consistent read names `bravo`.
+////   The assertions are the ones above, so the record changes nothing a client
+////   or the executor sees, and a source halted after any step still finishes.
+////
 //// ## Running it
 ////
 //// ```sh
@@ -99,7 +112,7 @@ const move_polls = 240
 ///
 /// `bash scripts/test.sh client --match 'client@daemon_shipped_remote_move_test:'`.
 pub fn daemon_shipped_remote_move_test_() -> EunitTest {
-  shipped(60, 540_000, one_clean_move)
+  shipped(60, 540_000, CatalogueRows, one_clean_move)
 }
 
 /// The source halted after each of the six steps and started again.
@@ -108,10 +121,37 @@ pub fn daemon_shipped_remote_move_test_() -> EunitTest {
 ///
 /// `bash scripts/test.sh client --match 'client@daemon_shipped_remote_move_test:'`.
 pub fn daemon_shipped_remote_move_crash_test_() -> EunitTest {
-  shipped(150, 1_380_000, every_step_lost)
+  shipped(150, 1_380_000, CatalogueRows, every_step_lost)
+}
+
+/// One clean move between members of the session directory.
+///
+/// ## Examples
+///
+/// `bash scripts/test.sh client --match 'client@daemon_shipped_remote_move_test:'`.
+pub fn daemon_shipped_remote_move_members_test_() -> EunitTest {
+  shipped(60, 540_000, DirectoryMembers, one_clean_move)
+}
+
+/// The source halted after each step, between members of the session
+/// directory.
+///
+/// ## Examples
+///
+/// `bash scripts/test.sh client --match 'client@daemon_shipped_remote_move_test:'`.
+pub fn daemon_shipped_remote_move_members_crash_test_() -> EunitTest {
+  shipped(170, 1_560_000, DirectoryMembers, every_step_lost)
 }
 
 // --- the fixture -----------------------------------------------------------------
+
+// Which of the two authorities over who owns a session the trio runs: each
+// orchestrator's catalogue rows, or the session directory's owner records with
+// the three daemons as its members.
+type Records {
+  CatalogueRows
+  DirectoryMembers
+}
 
 type Trio {
   Trio(
@@ -120,6 +160,7 @@ type Trio {
     target: Layout,
     executor: Layout,
     checkout: String,
+    records: Records,
   )
 }
 
@@ -136,7 +177,12 @@ type Keys {
 // timeout is `seconds`, which the runner scales by ten, and the body's own
 // deadline is `body_ms`, so a hung body fails with a message and not at the
 // runner's limit.
-fn shipped(seconds: Int, body_ms: Int, body: fn(Trio) -> Nil) -> EunitTest {
+fn shipped(
+  seconds: Int,
+  body_ms: Int,
+  records: Records,
+  body: fn(Trio) -> Nil,
+) -> EunitTest {
   Timeout(seconds, fn() {
     case native.getenv("LOOM_BOOTSTRAP_E2E_SERVER") {
       Error(Nil) ->
@@ -146,13 +192,13 @@ fn shipped(seconds: Int, body_ms: Int, body: fn(Trio) -> Nil) -> EunitTest {
       Ok(server) ->
         case enforcement.probe(server, skip_label) {
           enforcement.EnforcementAbsent -> Nil
-          enforcement.EnforcementLive -> fixture(body_ms, body)
+          enforcement.EnforcementLive -> fixture(body_ms, records, body)
         }
     }
   })
 }
 
-fn fixture(body_ms: Int, body: fn(Trio) -> Nil) -> Nil {
+fn fixture(body_ms: Int, records: Records, body: fn(Trio) -> Nil) -> Nil {
   let directory =
     "/var/tmp/loom-mv-"
     <> string.lowercase(bit_array.base16_encode(token.production_entropy()(4)))
@@ -167,6 +213,7 @@ fn fixture(body_ms: Int, body: fn(Trio) -> Nil) -> Nil {
       target: remote_daemons.layout(directory, "bravo"),
       executor: remote_daemons.layout(directory, "executor"),
       checkout: directory <> "/executor-checkout",
+      records:,
     )
   io.println_error(skip_label <> " fixture: " <> directory)
   let outcomes =
@@ -236,6 +283,17 @@ fn configure(prepared: Trio, keys: Keys, url: String) -> Nil {
   let table = fn(identity, peers) {
     remote_daemons.distribution_table(identity, keys.authority, peers)
   }
+
+  // Members name the same three nodes; a trio on catalogue rows has no table.
+  let members = case prepared.records {
+    CatalogueRows -> ""
+    DirectoryMembers ->
+      remote_daemons.directory_table([
+        keys.source.node,
+        keys.target.node,
+        keys.executor.node,
+      ])
+  }
   let trust = fn(identity: remote_daemons.Identity) {
     Trust(identity.node, identity.pin)
   }
@@ -251,6 +309,7 @@ fn configure(prepared: Trio, keys: Keys, url: String) -> Nil {
         remote_daemons.model_table("http://127.0.0.1:9"),
         table(keys.executor, [trust(keys.source), trust(keys.target)]),
         remote_daemons.workspace_table(workspace_name, prepared.checkout),
+        members,
       ],
       "\n",
     ),
@@ -263,6 +322,7 @@ fn configure(prepared: Trio, keys: Keys, url: String) -> Nil {
         table(keys.source, [trust(keys.target), trust(keys.executor)]),
         remote_daemons.executor_table(executor_name, keys.executor.node),
         remote_daemons.orchestrator_table(target_name, keys.target.node, None),
+        members,
       ],
       "\n",
     ),
@@ -279,10 +339,46 @@ fn configure(prepared: Trio, keys: Keys, url: String) -> Nil {
           keys.source.node,
           Some("wss://alpha.example.test:8443/v2/control"),
         ),
+        members,
       ],
       "\n",
     ),
   )
+}
+
+// Starts the executor, first creating the directory cluster on it when the
+// trio runs one. The executor is started once per fixture and outlives the
+// orchestrators, so it is the member that bootstraps.
+fn start_executor(prepared: Trio) -> Running {
+  case prepared.records {
+    CatalogueRows -> Nil
+    DirectoryMembers -> {
+      let #(status, output) =
+        remote_daemons.bootstrap_directory(prepared.executor)
+      assert status == 0 as { "the directory bootstrap succeeds: " <> output }
+      Nil
+    }
+  }
+  remote_daemons.start(prepared.executor)
+}
+
+// Waits, when the trio runs the directory, until a daemon just started has
+// joined it and counts at least `voters` voting members. An orchestrator
+// creates and moves sessions only through its own member of the cluster, so a
+// test that went ahead before it joined would be testing the join.
+fn joined(prepared: Trio, running: Running, voters: Int) -> Running {
+  case prepared.records {
+    CatalogueRows -> running
+    DirectoryMembers -> {
+      let _status =
+        remote_daemons.await_directory(
+          remote_daemons.open_control(running),
+          9000,
+          voters,
+        )
+      running
+    }
+  }
 }
 
 fn make_checkout(prepared: Trio) -> Nil {
@@ -520,9 +616,13 @@ fn one_clean_move(prepared: Trio) -> Nil {
       configure(prepared, keys, url)
 
       // The executor starts first so the daemons which dial it find it up.
-      let _executor = remote_daemons.start(prepared.executor)
+      let executor = start_executor(prepared)
       let source = remote_daemons.start(prepared.source)
       let target = remote_daemons.start(prepared.target)
+      list.each([executor, source, target], fn(running) {
+        let _joined = joined(prepared, running, 3)
+        Nil
+      })
       let control = remote_daemons.open_control(source)
       let session = begun(prepared, source, control, label)
 
@@ -570,12 +670,14 @@ fn every_step_lost(prepared: Trio) -> Nil {
   // executor outlives them all, which is what a deployment looks like: the
   // orchestrators come and go around the machine that holds the scopes.
   configure(prepared, keys, "http://127.0.0.1:9")
-  let _executor = remote_daemons.start(prepared.executor)
+  let _executor = start_executor(prepared)
   list.index_map(steps, fn(step, index) {
     let #(Nil, report) =
       provider.with_server(script(step), fn(url) {
         configure(prepared, keys, url)
-        let target = remote_daemons.start(prepared.target)
+        // The first target joins beside the executor alone, so two voters is
+        // all there can be yet; the source makes three.
+        let target = joined(prepared, remote_daemons.start(prepared.target), 2)
         let target_control = remote_daemons.open_control(target)
         lost_after(prepared, target, target_control, step, index * 5000)
         daemon.close(target.connected.control)
@@ -603,9 +705,13 @@ fn lost_after(
 ) -> Nil {
   io.println_error(skip_label <> ": halting the source after " <> step)
   let halting =
-    remote_daemons.start_with_environment(prepared.source, [], [
-      #("LOOM_MOVE_CRASH_AFTER", step),
-    ])
+    joined(
+      prepared,
+      remote_daemons.start_with_environment(prepared.source, [], [
+        #("LOOM_MOVE_CRASH_AFTER", step),
+      ]),
+      3,
+    )
   let control = remote_daemons.open_control(halting)
   let session = begun(prepared, halting, control, step)
 
@@ -619,7 +725,7 @@ fn lost_after(
   // Nothing was lost: the session has one owner, and it is the source, which
   // is gone. The target has not been handed anything it could serve yet, except
   // for the steps after the activation.
-  let restarted = remote_daemons.start(prepared.source)
+  let restarted = joined(prepared, remote_daemons.start(prepared.source), 3)
   let restarted_control = remote_daemons.open_control(restarted)
   gave_up(restarted, restarted_control, session)
   took(target, session)
