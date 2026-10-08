@@ -363,6 +363,28 @@ pub fn executor_table(name: String, node: String) -> String {
   "[executors." <> name <> "]\nnode = \"" <> node <> "\"\n"
 }
 
+/// The `[orchestrators.<name>]` table of an orchestrator: the other
+/// orchestrator it asks about sessions its own catalogue lacks, and the control
+/// address a client is told for it when it has one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// remote_daemons.orchestrator_table("beta", "beta@127.0.0.1", None)
+/// // -> "[orchestrators.beta]\nnode = \"beta@127.0.0.1\"\n"
+/// ```
+pub fn orchestrator_table(
+  name: String,
+  node: String,
+  address: Option(String),
+) -> String {
+  let advertised = case address {
+    Some(address) -> "address = \"" <> address <> "\"\n"
+    None -> ""
+  }
+  "[orchestrators." <> name <> "]\nnode = \"" <> node <> "\"\n" <> advertised
+}
+
 /// The `[workspaces.<name>]` table of an executor: `name` is the directory
 /// `root` on that machine.
 ///
@@ -1083,6 +1105,42 @@ pub fn create_and_settle(
   let body = field(created, "body")
   let assert json.String(session) = field(body, "session_id")
     as "the registered session was created"
+  let assert json.String(operation) = field(field(body, "status"), "operation")
+    as "creation starts one opening operation"
+  #(session, await_operation(control, id + 1, session, operation))
+}
+
+/// `sessions.create` for a workspace that is a directory on the daemon's own
+/// host, waiting for its opening to settle. Returns the session identity and
+/// the reply that settled it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(session, settled) = remote_daemons.create_local_and_settle(control, 1, "key", dir)
+/// ```
+pub fn create_local_and_settle(
+  control: Control,
+  id: Int,
+  key: String,
+  workspace: String,
+) -> #(String, JsonValue) {
+  let created =
+    command(
+      control,
+      id,
+      "sessions.create",
+      json.Object([
+        #("request_key", json.String(key)),
+        #("workspace", json.String(workspace)),
+        #("name", json.String("local " <> key)),
+        #("configuration", json.String("")),
+      ]),
+    )
+  assert field(created, "event") == json.String("sessions.create")
+  let body = field(created, "body")
+  let assert json.String(session) = field(body, "session_id")
+    as "the local session was created"
   let assert json.String(operation) = field(field(body, "status"), "operation")
     as "creation starts one opening operation"
   #(session, await_operation(control, id + 1, session, operation))
