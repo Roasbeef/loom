@@ -38,6 +38,9 @@
 #   ORCHESTRATOR_BUNDLE   path of the orchestrator bundle (default ./orchestrator.loombundle)
 #   EXECUTOR_BUNDLE       path of the executor bundle (default ./executor.loombundle)
 #   EXECUTOR_CHECKOUT     a host directory or named volume mounted at /work on the executor
+#                         (default: a named volume, which the entrypoint fills with
+#                         an empty workspace root owned by the daemon's uid, 10000;
+#                         a host directory must already be writable by that uid)
 #   LOOM_CLIENT_PORT      host loopback port for the client (default 7331)
 
 name: loom-distributed

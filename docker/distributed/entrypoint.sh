@@ -20,7 +20,9 @@
 #
 # Either way the daemon starts through the release launcher with
 # LOOM_DISTRIBUTION_OPTFILE set, which is what boots the VM on TLS
-# distribution (docs/configuration.md, "[distribution]").
+# distribution (docs/configuration.md, "[distribution]"). Every workspace root
+# the installed configuration names is created if it is missing, so an
+# executor starts before any project has been copied into it.
 #
 # LOOM_CGROUP_DELEGATE=1 (compose.isolated.yaml) additionally carves out the
 # cgroup v2 base the full-isolation posture needs (docs/docker.md). That step
@@ -81,6 +83,25 @@ else
 fi
 
 export LOOM_DISTRIBUTION_OPTFILE="$optfile"
+
+# The daemon refuses to start when a workspace root is not a directory, and
+# the project is normally copied in after the container is up. Creating each
+# missing root here lets the executor start first. The directory belongs to
+# the daemon's uid, which is the owner a project streamed in afterwards has to
+# have for the daemon to write its .blobs directory inside it. Only the
+# [workspaces.NAME] tables of the installed configuration are read.
+awk '
+	/^\[workspaces\./ { in_workspace = 1; next }
+	/^\[/ { in_workspace = 0 }
+	in_workspace && /^root *= *"/ {
+		sub(/^root *= *"/, "")
+		sub(/"[ \t]*$/, "")
+		print
+	}
+' "$config" | xargs -r -d '\n' mkdir -p || {
+	echo "entrypoint: cannot create a workspace root; if /work is a host directory, make it writable by uid $uid" >&2
+	exit 73
+}
 
 # The daemon binds loopback only (docs/docker.md, "The bind restriction").
 # Peers reach this node through distribution, not through this port.

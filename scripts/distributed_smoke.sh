@@ -53,7 +53,6 @@ dc() {
 	LOOM_IMAGE="$image" \
 		ORCHESTRATOR_BUNDLE="$fixture/orchestrator" \
 		EXECUTOR_BUNDLE="$fixture/executor" \
-		EXECUTOR_CHECKOUT="$fixture/checkout" \
 		LOOM_CLIENT_PORT=0 \
 		docker compose -p "$project" -f "$compose_file" "$@"
 }
@@ -76,7 +75,6 @@ ORCH_LISTEN_PORT=$port EXEC_LISTEN_PORT=$port \
 	orchestrator@orchestrator.loom.internal /home/loom \
 	executor@executor.loom.internal /home/loom \
 	proj /work/project
-mkdir -p "$fixture/checkout"
 
 echo "== starting $project"
 dc up -d
