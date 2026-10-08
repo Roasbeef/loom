@@ -8,7 +8,9 @@
 
 import client/remote/address.{type Address}
 import client/remote/host
-import client/remote/protocol.{type Key, type Refusal, type RunAnswer}
+import client/remote/protocol.{
+  type HostMessage, type Key, type Refusal, type RunAnswer,
+}
 import gleam/bit_array
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
@@ -19,7 +21,12 @@ import support/remote_fixtures as fixtures
 import tools/fs
 
 type Rig {
-  Rig(address: Address(String), pid: Pid, probe: fixtures.Probe, path: String)
+  Rig(
+    address: Address(HostMessage(String)),
+    pid: Pid,
+    probe: fixtures.Probe,
+    path: String,
+  )
 }
 
 fn token(n: Int) -> BitArray {

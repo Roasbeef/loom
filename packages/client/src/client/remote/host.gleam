@@ -291,7 +291,9 @@ type State(census) {
 /// // let assert Ok(started) = host.start(config)
 /// // address.deliver(started.data, protocol.Ack(key))
 /// ```
-pub fn start(config: Config(census)) -> actor.StartResult(Address(census)) {
+pub fn start(
+  config: Config(census),
+) -> actor.StartResult(Address(HostMessage(census))) {
   builder(config) |> actor.start
 }
 
@@ -341,7 +343,7 @@ fn builder(config: Config(census)) {
 fn initialise(
   config: Config(census),
 ) -> Result(
-  actor.Initialised(State(census), Event(census), Address(census)),
+  actor.Initialised(State(census), Event(census), Address(HostMessage(census))),
   String,
 ) {
   use Nil <- result.try(

@@ -80,7 +80,7 @@ import weft/poll
 pub type Config(census) {
   Config(
     /// The executor's host.
-    address: Address(census),
+    address: Address(HostMessage(census)),
     /// The orchestrator session.
     session: String,
     /// The workspace, as the executor names it.

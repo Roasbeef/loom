@@ -147,7 +147,10 @@ pub fn factory(
 
 /// A running executor: the host's pid and its address.
 pub type Executor {
-  Executor(pid: process.Pid, address: address.Address(RemoteCensus))
+  Executor(
+    pid: process.Pid,
+    address: address.Address(protocol.HostMessage(RemoteCensus)),
+  )
 }
 
 /// Starts a host over a fresh ledger in a private directory.

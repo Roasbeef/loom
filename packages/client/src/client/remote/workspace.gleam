@@ -87,7 +87,7 @@ import client/owner_services.{type OwnerServices}
 import client/pools
 import client/remote/address.{type Address}
 import client/remote/owner_port
-import client/remote/protocol.{type Key}
+import client/remote/protocol.{type HostMessage, type Key}
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/scope.{type Scope}
 import client/remote/surface
@@ -115,7 +115,7 @@ import tools/tool
 pub type Reach {
   Reach(
     /// The executor's host.
-    address: Address(RemoteCensus),
+    address: Address(HostMessage(RemoteCensus)),
     /// Makes the connection to the executor, or says why it cannot. It is
     /// called before the attach and again whenever the surface repairs a
     /// dropped connection.

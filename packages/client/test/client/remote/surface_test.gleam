@@ -26,7 +26,7 @@ import support/remote_fixtures as fixtures
 type Rig {
   Rig(
     host_pid: process.Pid,
-    address: address.Address(String),
+    address: address.Address(protocol.HostMessage(String)),
     probe: fixtures.Probe,
     port: owner_port.Port,
     path: String,

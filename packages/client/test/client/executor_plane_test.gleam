@@ -55,7 +55,7 @@ fn wire_round_trip(term: a) -> a
 type Rig {
   Rig(
     host_pid: process.Pid,
-    address: address.Address(RemoteCensus),
+    address: address.Address(protocol.HostMessage(RemoteCensus)),
     checkout: String,
     state: String,
     port: owner_port.Port,
