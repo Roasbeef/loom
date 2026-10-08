@@ -58,6 +58,7 @@ import client/peer_mail
 import client/peers
 import client/pools
 import client/session_directory
+import client/session_movers
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -106,6 +107,10 @@ pub type Config(instance) {
     /// (protocol-change/078, phase 3). It is asked only after the daemon's own
     /// catalogue missed, and only for the owner principal.
     directory: session_directory.Directory,
+    /// How an owner starts handing a session to another orchestrator, and the
+    /// orchestrators it may name (protocol-change/078, phase 5).
+    /// `session_movers.idle()` when there are none.
+    movers: session_movers.Control,
     /// Fresh entropy-seeded generator for explicit creation.
     generator: fn() -> ids.Generator,
     /// A v2-only conversation adapter, responsible for transferring its permit.
@@ -2148,6 +2153,7 @@ fn control(
             | protocol.CreateSession(..)
             | protocol.OpenSession(..)
             | protocol.StopSession(..)
+            | protocol.MoveSession(..)
             | protocol.DeleteSession(..) -> KeepServing
           }
           #(protocol.event(Some(request.id), event, body), after)
@@ -2196,6 +2202,7 @@ fn control_use(command: protocol.Command) {
     | protocol.CreateSession(..)
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
+    | protocol.MoveSession(..)
     | protocol.DeleteSession(..)
     | protocol.Shutdown(_) -> root.ControlMutation
   }
@@ -2296,11 +2303,22 @@ fn dispatch(
     // A session this daemon's catalogue does not hold may be one that another
     // orchestrator owns. The miss comes out of the authorization step as
     // `not_found`, and for the owner principal that is the one place the
-    // directory is asked (protocol-change/078, phase 3).
+    // directory is asked (protocol-change/078, phase 3). A session this
+    // daemon handed away is held here as a tombstone, and `open` on it says
+    // where it went and, while it is on its way, that it is moving (phase 5).
     protocol.GetSession(id) | protocol.OpenSession(id, _) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
       |> result.map_error(redirected(config, principal, id, _))
+      |> result.map_error(in_flight(state, id, _))
+
+    // Restoring and deleting a session that moved away name the new owner from
+    // the tombstone, and ask no one: the directory is not consulted for a
+    // session this daemon never held.
+    protocol.RestoreSession(id, _) | protocol.DeleteSession(id, _) ->
+      dispatch_class(config, state, digest, principal, reply_to, command)
+      |> result.map_error(control_refusal)
+      |> result.map_error(tombstoned(config, principal, id, _))
     _ ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(control_refusal)
@@ -2346,7 +2364,59 @@ fn redirected(
         Error(session_directory.Unreachable(names)) -> owner_unreachable(names)
         Ok(session_directory.Here) | Error(session_directory.Unknown) -> refused
       }
+    code, access.OwnerPrincipal if code == not_owner_code ->
+      tombstoned(config, principal, id, refused)
     _, _ -> refused
+  }
+}
+
+// The refusal for a session this daemon handed to another orchestrator. Only the
+// owner is told where it went, as for any redirect, and the answer comes from
+// the daemon's own tombstone: the directory answers a session it holds a
+// tombstone for without asking a peer. Anything else is left as it was.
+fn tombstoned(
+  config: Config(instance),
+  principal: access.Principal,
+  id: String,
+  refused: Refused,
+) -> Refused {
+  case refused.code, principal.kind {
+    code, access.OwnerPrincipal if code == not_owner_code ->
+      case config.directory.lookup(id) {
+        Ok(session_directory.Elsewhere(owner)) -> not_owner(owner)
+        Ok(session_directory.Here) | Error(_) -> refused
+      }
+    _, _ -> refused
+  }
+}
+
+/// The code `sessions.open` answers while the session is being handed to
+/// another orchestrator (protocol-change/078, phase 5). It names the
+/// orchestrator the session is going to and the move.
+pub const moving_code = "moving"
+
+// A session whose move is in flight cannot be opened, and the refusal says where
+// it is going and which move it is, so a client can wait and then ask again.
+fn in_flight(
+  state: root.Ready(instance),
+  id: String,
+  refused: Refused,
+) -> Refused {
+  case refused.code {
+    code if code == moving_code ->
+      case manager.custody(state.registry, id) {
+        Ok(catalogue.Moving(op:, to:)) ->
+          Refused(
+            moving_code,
+            "this session is being moved to another orchestrator",
+            [
+              #("orchestrator", json.String(to)),
+              #("op", json.String(op)),
+            ],
+          )
+        Ok(_) | Error(_) -> refused
+      }
+    _ -> refused
   }
 }
 
@@ -2368,6 +2438,11 @@ fn owner_unreachable(names: List(String)) -> Refused {
     [#("orchestrators", json.Array(list.map(names, json.String)))],
   )
 }
+
+/// The code `sessions.move` answers when the destination is not one of the
+/// `[orchestrators.<name>]` the daemon's configuration defines (protocol-change/078,
+/// phase 5).
+pub const orchestrator_unknown_code = "orchestrator_unknown"
 
 /// The code `create_session` answers when the profile a creation names is not
 /// one its configuration defines.
@@ -2851,7 +2926,7 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.try(fn(view) {
         use body <- result.map(owner_view(state, principal, view))
-        #("sessions.get", body)
+        #("sessions.get", with_custody(state, id, body))
       })
     }
     protocol.WorkspaceDefault(workspace) -> {
@@ -2907,6 +2982,47 @@ fn dispatch_class(
       manager.stop_session(state.registry, id)
       |> result.map_error(error_code)
       |> result.map(fn(status) { #("sessions.stop", status_json(status)) })
+    }
+    protocol.MoveSession(id, to, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use _destination <- result.try(
+        orchestrators.find(config.movers.orchestrators, to)
+        |> result.replace_error(orchestrator_unknown_code),
+      )
+
+      // Each asker mints an operation of its own, and the registry keeps the
+      // first: a second request toward the same orchestrator answers the stored
+      // one, so two owners asking at once start one move.
+      let #(minted, _) = ids.mint_op(config.generator())
+      use custody <- result.try(
+        manager.begin_move(
+          state.registry,
+          digest,
+          supplied,
+          id,
+          to:,
+          op: ids.op_id_to_string(minted),
+        )
+        |> result.map_error(admin_error_code),
+      )
+      case custody {
+        catalogue.Moving(op:, to: heading) -> {
+          config.movers.begin(catalogue.Pending(session: id, op:, to: heading))
+          Ok(#(
+            "sessions.move",
+            json.Object([
+              #("session_id", json.String(id)),
+              #("op", json.String(op)),
+              #("to", json.String(heading)),
+              #("state", json.String("moving")),
+            ]),
+          ))
+        }
+        catalogue.Moved(to: owner, ..) ->
+          Error(admin_error_code(manager.AdminMoved(to: owner)))
+        catalogue.Resident | catalogue.Imported(..) -> Error("unavailable")
+      }
     }
     protocol.DeleteSession(id, supplied) -> {
       // Owner, epoch and the busy check are all re-decided inside the
@@ -3172,6 +3288,39 @@ fn admin_error_code(error) {
     manager.AdminNotMovable(..) -> "not_movable"
     manager.AdminFailed(..) -> "unavailable"
     manager.AdminMetadata(error) -> error_code(manager.Catalogue(error))
+  }
+}
+
+// The move a session is in, if any, as members of its view
+// (protocol-change/078, phase 5). A session that is not moving and has not moved
+// carries neither, so its view is byte for byte what a daemon without moves
+// sends. `moving` names the move and where it goes, and `moved` names where the
+// session went; a session that is moving is also still stopped and `saved`.
+fn with_custody(
+  state: root.Ready(instance),
+  id: String,
+  body: JsonValue,
+) -> JsonValue {
+  case manager.custody(state.registry, id), body {
+    Ok(catalogue.Moving(op:, to:)), json.Object(fields) ->
+      json.Object(
+        list.append(fields, [
+          #(
+            "moving",
+            json.Object([
+              #("op", json.String(op)),
+              #("to", json.String(to)),
+            ]),
+          ),
+        ]),
+      )
+    Ok(catalogue.Moved(to:, ..)), json.Object(fields) ->
+      json.Object(
+        list.append(fields, [
+          #("moved", json.Object([#("to", json.String(to))])),
+        ]),
+      )
+    _, _ -> body
   }
 }
 

@@ -15,6 +15,7 @@ import client/peer_mail
 import client/peers
 import client/pools
 import client/session_directory
+import client/session_movers
 import core/clock
 import core/ids
 import core/json
@@ -111,6 +112,34 @@ pub fn fixture_directing(
   asked: session_directory.Directory,
   run,
 ) {
+  fixture_moving(
+    connection_limits,
+    peer_endpoint,
+    build,
+    asked,
+    session_movers.idle(),
+    run,
+  )
+}
+
+/// `fixture_directing` with the control the daemon's owner commands use to hand
+/// a session to another orchestrator, for a test of `sessions.move`. The default
+/// is `session_movers.idle()`, which lists no destination.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fixture_moving(limits.defaults, fn(_) { None }, build, stub, movers, run)
+/// ```
+@internal
+pub fn fixture_moving(
+  connection_limits: limits.Limits,
+  peer_endpoint,
+  build,
+  asked: session_directory.Directory,
+  movers: session_movers.Control,
+  run,
+) {
   let directory =
     "build/test_db/daemon-wire-"
     <> bit_array.base16_encode(token.production_entropy()(8))
@@ -147,6 +176,7 @@ pub fn fixture_directing(
         ),
       ],
       directory: asked,
+      movers:,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)
@@ -1833,6 +1863,7 @@ pub fn a_homes_activity_read_is_a_state_word_for_each_held_answer_test() {
           executors: [],
           pools: [],
           directory: session_directory.none(),
+          movers: session_movers.idle(),
           generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
           session_upgrade: fn(_, _) {
             response.new(501)

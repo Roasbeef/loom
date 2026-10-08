@@ -187,6 +187,11 @@ pub fn every_control_command_has_one_typed_decode_test() {
     #("sessions.open", [session, epoch], protocol.OpenSession(id, "epoch")),
     #("sessions.stop", [session, epoch], protocol.StopSession(id, "epoch")),
     #(
+      "sessions.move",
+      [session, epoch, #("to", json.String("laptop"))],
+      protocol.MoveSession(id, "laptop", "epoch"),
+    ),
+    #(
       "operations.get",
       [session, epoch, #("operation", json.String("epoch:1"))],
       protocol.GetOperation(id, "epoch:1", "epoch"),
@@ -197,6 +202,44 @@ pub fn every_control_command_has_one_typed_decode_test() {
     assert protocol.decode(envelope(7, example.0, example.1))
       == Ok(protocol.Request(7, example.2))
   })
+}
+
+pub fn a_move_names_its_destination_as_an_orchestrator_does_test() {
+  let named = fn(to) {
+    protocol.decode(
+      envelope(1, "sessions.move", [
+        #("session_id", json.String(session_id())),
+        #("epoch", json.String("epoch")),
+        #("to", json.String(to)),
+      ]),
+    )
+  }
+  assert result.is_ok(named("laptop"))
+  assert result.is_ok(named("build-box_2"))
+
+  // A name outside the grammar of an `[orchestrators.<name>]` key is refused
+  // before any registry is asked, and so are a missing destination and a
+  // missing epoch.
+  assert result.is_error(named("Laptop"))
+  assert result.is_error(named(""))
+  assert result.is_error(named("../laptop"))
+  assert result.is_error(named(string.repeat("a", 65)))
+  assert result.is_error(
+    protocol.decode(
+      envelope(1, "sessions.move", [
+        #("session_id", json.String(session_id())),
+        #("epoch", json.String("epoch")),
+      ]),
+    ),
+  )
+  assert result.is_error(
+    protocol.decode(
+      envelope(1, "sessions.move", [
+        #("session_id", json.String(session_id())),
+        #("to", json.String("laptop")),
+      ]),
+    ),
+  )
 }
 
 pub fn admin_codec_refuses_owner_roles_and_unbounded_recovery_ids_test() {
