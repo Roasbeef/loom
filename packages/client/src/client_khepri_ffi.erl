@@ -16,7 +16,8 @@
 -module(client_khepri_ffi).
 -export([start_system/1, stop_system/0, boot/1, join/2, forget_local/0,
          read/2, consistent/3, create/3, swap/4, delete_if/3, put/3,
-         membership/1, applied_index/0]).
+         membership/1, applied_index/0, snapshot_index/0,
+         store_running_on/2]).
 -include_lib("khepri/include/khepri.hrl").
 
 -define(SYSTEM, loom_directory_ra).
@@ -233,6 +234,24 @@ membership(TimeoutMs) ->
 voter_of(#{voter_status := #{membership := voter}}) -> voter;
 voter_of(#{voter_status := _}) -> non_voter;
 voter_of(_) -> voter.
+
+%% The log index of this member's latest snapshot, or 0 when it has none or
+%% is not running.
+snapshot_index() ->
+    case safe(fun() -> ra:member_overview({?STORE, node()}) end) of
+        {ok, #{log := #{snapshot_index := Index}}, _} when is_integer(Index) ->
+            Index;
+        _ -> 0
+    end.
+
+%% Whether a store answers on Node: its Ra server for the directory store
+%% replies to a membership question within the timeout. Bootstrap asks every
+%% configured member, so that a second bootstrap never starts a second cluster.
+store_running_on(Node, TimeoutMs) ->
+    case safe(fun() -> ra:members({?STORE, Node}, TimeoutMs) end) of
+        {ok, _, _} -> true;
+        _ -> false
+    end.
 
 %% The last log index this member has applied, or 0 when it is not running.
 applied_index() ->

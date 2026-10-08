@@ -223,6 +223,33 @@ pub fn membership() -> Result(Membership, Unavailable) {
   })
 }
 
+/// The log index of this member's latest snapshot, or 0 when it has none or
+/// the store is not running.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.snapshot_index() // -> 4757
+/// ```
+pub fn snapshot_index() -> Int {
+  ffi_khepri.snapshot_index()
+}
+
+/// Whether the directory store answers on another node, within two seconds.
+/// A node that is down, unreachable or not running a store all say `False`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // store.running_on(peer_node) // -> True
+/// ```
+pub fn running_on(node: Node) -> Bool {
+  bounded(read_ms + 1000, Ok(False), fn() {
+    Ok(ffi_khepri.store_running_on(node, read_ms))
+  })
+  == Ok(True)
+}
+
 /// The last log index this member has applied, or 0 when the store is not
 /// running.
 ///

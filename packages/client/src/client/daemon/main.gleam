@@ -36,6 +36,7 @@ import client/daemon/ui_assets
 import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
+import client/directory/member
 import client/directory/settings as directory_settings
 import client/distribution
 import client/executor_plane
@@ -517,6 +518,48 @@ pub fn start_executor(
       Ok(Some(process.monitor(started.pid)))
     }
   }
+}
+
+/// Starts this daemon's membership in the session directory's Khepri cluster
+/// when the configuration has a `[directory]` table (protocol-change/079), and
+/// nothing otherwise. A store marked joined is started before this returns; one
+/// that has not joined is joined in the background, and until then every store
+/// call is refused as no quorum. The actor is linked to the process that starts
+/// the daemon's services, as the orchestrator port is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_directory(Config(..config, directory: None), logger) == Ok(None)
+/// ```
+@internal
+pub fn start_directory(
+  config: Config,
+  logger: Logger,
+) -> Result(Option(member.Member), String) {
+  case config.directory, config.membership {
+    Some(settings), Some(membership) ->
+      member.start(member.Config(
+        directory: directory_path(config.state_root),
+        members: settings.members,
+        local: atom.to_string(node.name(node.self())),
+        membership:,
+        logger:,
+      ))
+      |> result.map(Some)
+    _, _ -> Ok(None)
+  }
+}
+
+/// Where a member keeps its directory store.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert main.directory_path("/s") == "/s/directory"
+/// ```
+pub fn directory_path(state_root: String) -> String {
+  state_root <> "/directory"
 }
 
 /// Starts the orchestrator port when the configuration has a `[distribution]`
@@ -1316,6 +1359,7 @@ fn run(
   host.relay_sigterm(signals, ffi_os.wait_for_sigterm)
   case
     {
+      use _member <- result.try(start_directory(config, logger))
       use executor <- result.try(start_executor(config, logger))
       use Nil <- result.try(
         start_orchestrator_port(
