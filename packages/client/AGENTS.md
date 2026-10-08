@@ -6091,6 +6091,19 @@ not connect; and the boot and credential refusals leave the VM non-distributed.
 Removing the pin comparison, the name comparison, the PKIX failure or
 `dist_auto_connect = never` from the callback fails exactly its own scenario.
 
+`test/client/daemon_shipped_remote_test.gleam` is the shipped-daemon end to end
+(issue #697, gated on `LOOM_BOOTSTRAP_E2E_SERVER` like the other shipped
+fixtures). `test/support/remote_daemons.gleam` mints a CA and per-node leaves
+with `openssl`, writes each node's cookie at that node's isolated `$HOME`,
+renders the `loom.toml` files and `loomd distribution options`, and starts an
+orchestrator, an executor and a second orchestrator with a decoy pin through a
+wrapper that sets `LOOM_DISTRIBUTION_OPTFILE`. A daemon dials nobody yet, so
+`test/support/remote_probe.gleam` runs as a throwaway emulator that each daemon
+lists as a peer and reports connections and `erpc` dials back. The module also
+holds the scripted registered-session turn and the file assertions the follow-up
+slice calls once the orchestrator can open a registered session; the executor's
+`[workspaces]` row is behind `WorkspaceRows`, off until that key exists.
+
 ## Naming a registered workspace (protocol 078)
 
 `sessions.create` takes an optional `executor`. `client/executors` decodes the
