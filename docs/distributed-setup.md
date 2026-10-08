@@ -398,6 +398,32 @@ the system chose. Any other Erlang node on the machine is listed too.
 If you are running a release without Erlang installed, `epmd` is in the release
 at `erts-<version>/bin/epmd`.
 
+You do not have to start `epmd` yourself (**Pending**). The daemon boots its VM
+without a node name, so the emulator does not launch `epmd` the way `erl -name`
+does. Instead, when a daemon with `[distribution]` starts distribution, it asks
+for an `epmd` on the loopback address and, if none answers, runs the release's own
+`erts-<version>/bin/epmd -daemon` (or the `epmd` on `PATH` when the release does
+not carry one) and waits up to three seconds for it to answer. A machine that has
+never run Erlang therefore works. The `epmd` it starts is an ordinary daemon: it
+keeps running after the Loom daemon stops, and later daemons on the machine share
+it, as with any other Erlang node.
+
+`epmd` reads two environment variables, and the daemon passes its own environment
+on to the `epmd` it starts. `ERL_EPMD_PORT` moves it off port 4369, and
+`ERL_EPMD_ADDRESS` limits it to a comma-separated list of interfaces plus
+loopback. Set them in the environment of the command that starts `loomd`, in the
+same place for every daemon and tool on that machine, or the daemon and `epmd`
+will disagree about the port:
+
+```sh
+ERL_EPMD_PORT=14369 ERL_EPMD_ADDRESS=10.0.0.5 LOOM_DISTRIBUTION_OPTFILE=$HOME/.loom/distribution/dist.options loomd --config $HOME/.loom/loom.toml
+```
+
+`epmd -names` and any other `epmd` command need the same `ERL_EPMD_PORT` to find
+that instance. If you manage `epmd` yourself (a system service, or a forwarded
+port as in section 5), start the daemon with `-start_epmd false` in `ERL_FLAGS`
+and it will not launch one.
+
 To see the TLS handshake itself, connect to the executor's port with the
 orchestrator's certificate. Use the port `epmd -names` printed for the executor,
 which is its `listen_port`:
@@ -540,8 +566,9 @@ listen_port = 9201
 ```
 
 The orchestrator on the box must not start its own `epmd` or open a listener: the
-box's `epmd` already holds port 4369, and the orchestrator only dials. It also
-must look peers up at the forwarded port. Both are set in the environment of the
+box's `epmd` already holds port 4369, and the orchestrator only dials. `-start_epmd
+false` is what stops the daemon from launching one (section 4 says when it
+otherwise would). The orchestrator also must look peers up at the forwarded port. Both are set in the environment of the
 process that starts `loomd`, in front of the command install printed:
 
 ```sh
@@ -1057,6 +1084,22 @@ accepted.
 **`... options file is not private or was generated from a different
 configuration`.** Rerun `loomd distribution options` after editing
 `[distribution]`, or install the bundle again.
+
+**The daemon exits with `no epmd answers on port N and Loom could not start
+one`** (**Pending**). Nothing answered `epmd`'s question on loopback port `N`, and
+the daemon could neither find an `epmd` executable (the release's
+`erts-<version>/bin/epmd`, then `PATH`) nor get one to answer within three seconds.
+`N` is 4369 unless `ERL_EPMD_PORT` was set. Check that an `epmd` exists, that
+nothing else holds port `N` (a process that accepts connections and never answers
+produces this message), and that `ERL_EPMD_PORT` and `ERL_EPMD_ADDRESS` are set the
+same way for the daemon and for the `epmd` you started yourself, if any. Earlier
+builds reported this case as a credential problem.
+
+**The daemon exits with `OTP could not start distribution although epmd
+answers`** (**Pending**). `epmd` is up but OTP refused to start the node. The usual
+causes are a `listen_port` that another process already holds, a node name that
+another VM on the machine has registered, and a node name whose host does not
+resolve on this machine. `epmd -names` lists the names that are registered.
 
 **The daemon exits with a message about credentials.** One of the four files is
 missing, too large, or too open; the key and the cookie must be mode 0600; the

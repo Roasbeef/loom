@@ -484,6 +484,16 @@ node name or a pin.
 | `node` | string | required | `name@host`, same form as `distribution.node` | The peer's full node name. |
 | `sha256` | string | required | 64 hexadecimal characters | SHA-256 of the DER of the peer's leaf certificate, for example `openssl x509 -in peer.pem -outform DER \| openssl dgst -sha256`. |
 
+Peers find each other through `epmd`, the Erlang name service. The VM is booted
+without a node name, so the emulator does not launch one; the daemon checks for an
+`epmd` on loopback when it starts distribution and starts the release's own
+`epmd -daemon` if none answers. It honours `-start_epmd false` in `ERL_FLAGS`, for
+an `epmd` you manage or forward yourself. `epmd` takes its port from
+`ERL_EPMD_PORT` and its bind addresses from `ERL_EPMD_ADDRESS`, both read from the
+daemon's environment. When no `epmd` can be had the daemon exits naming the port,
+and it does not report a credential problem. See
+[distributed-setup](distributed-setup.md#check-that-both-are-tls-nodes).
+
 The VM has to be booted for distribution before any Gleam code runs, so starting
 the daemon takes two steps. (`loom distribution install` does both for a
 provisioned node; see [Provisioning a deployment](#provisioning-a-deployment).)

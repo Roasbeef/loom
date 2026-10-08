@@ -6110,8 +6110,8 @@ operator.
 
 `client/internal/ffi_distribution` and `src/client_distribution_ffi.erl` are
 the only foreign code: the ssl `verify_fun`, `net_kernel:start/2` and
-`hidden_connect_node/1`, and the checks of the emulator's own boot arguments.
-None of it is expressible in `gleam_erlang`, `gleam_otp` or `weft`. The verify
+`hidden_connect_node/1`, the checks of the emulator's own boot arguments, and
+the launch of `epmd`. None of it is expressible in `gleam_erlang`, `gleam_otp` or `weft`. The verify
 callback keeps every PKIX failure, and for the leaf it requires the SHA-256 pin
 and the exact node name (the certificate's only DNS name containing an `@`) of
 one configured peer, in both directions. Network input never makes an atom:
@@ -6133,6 +6133,19 @@ Invariants that break things when violated:
   environment is built from an allowlist, so `ERL_FLAGS` is not inherited.
 - A failed `start` stops the partial distribution (`net_kernel:stop/0`) and
   returns no `Membership`.
+- An epmd must answer before `net_kernel:start/2`. The daemon VM is booted
+  without `-name`, and unlike `erl -name` at boot, a dynamic `net_kernel:start/2`
+  never launches epmd, so on a machine with no epmd running the node fails to
+  register (`econnrefused`, then `nodistribution`). `ensure_epmd` in the FFI asks
+  loopback (under a deadline, since `erl_epmd:names/1` has none) and, when
+  nothing answers, runs `epmd -daemon` from `code:root_dir()/erts-<version>/bin`
+  or `PATH`, then polls up to three seconds. It does nothing under
+  `-start_epmd false`, which the tunnelled-orchestrator recipe sets. The port is
+  the VM's `epmd_port` argument (from `ERL_EPMD_PORT`); `ERL_EPMD_ADDRESS`
+  reaches the daemon through the inherited environment. Failures are
+  `EpmdUnavailable(port)` and `StartFailed`, never `InvalidCredentials`: that
+  fault now means only a credential read or match failed. The fixture's
+  `raw_wait` calls `ensure_epmd` too, so it works with no epmd.
 
 The daemon calls `start` from `daemon/main.prepare_startup` before the
 catalogue is opened and refuses to start with `describe`'s sentence, so a VM
@@ -6150,6 +6163,11 @@ and exchanges a message; a wrong leaf pin (either side), a pin that matches but
 carries another node name, a pin that matches but was issued by an untrusted
 CA, and a cookie mismatch are each refused; a send to an unconnected peer does
 not connect; and the boot and credential refusals leave the VM non-distributed.
+Four scenarios give the child a private `ERL_EPMD_PORT` and so hold with or
+without a machine epmd: start launches an epmd that registers the node and
+stops it afterwards, a port held by a listener that never answers gives
+`EpmdUnavailable` without hanging, a taken `listen_port` gives `StartFailed`,
+and `-start_epmd false` launches nothing.
 Removing the pin comparison, the name comparison, the PKIX failure or
 `dist_auto_connect = never` from the callback fails exactly its own scenario.
 
