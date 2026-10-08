@@ -2801,7 +2801,7 @@ catalogue without opening runtimes. Explicit admission invokes
   not hygiene: snippets from that index are read back into *future*
   sessions' contexts, so an index a model can write is a channel from one
   execution's output into a later execution's input. `protected` bars
-  writes and leaves reads alone, which is exactly the asymmetry wanted.
+  writes; since ADR-019 it bars native reads as well, matching the jail's mask.
   `assemble` composes it before `base_policy_fault` validates, so the
   addition is checked by the same gate every other path is.
 - `client/serve.protecting_memory(SandboxPolicy, String, String)` — the
@@ -2897,7 +2897,10 @@ catalogue without opening runtimes. Explicit admission invokes
   flag select between them. There is no language-specific admission list
   and session assembly does not infer read grants from package manifests.
   Writes remain scoped to the workspace, linked Git metadata, and explicit
-  writable mounts. HOME and TMPDIR remain under the workspace, so build
+  writable mounts. Native reads (`fs_read`, code mode's `fs.*` and
+  `search.*`) are judged by the same policy value: `codemode.workspace_seam_*`
+  and `search_seam_*` take the session base policy and widen it with the
+  request's additions (ADR-019). HOME and TMPDIR remain under the workspace, so build
   caches do not require host-home writes. A configured mount overlapping
   a protected path refuses assembly. Protocol-change/020's addendum records
   why the minimal view is now an explicit restriction.
