@@ -136,3 +136,15 @@ DELETE FROM catalogue_session_moves WHERE session_id = ?;
 -- name: MovingSessions :many
 SELECT session_id, op, peer FROM catalogue_session_moves
 WHERE state = 'moving' ORDER BY session_id;
+
+-- name: SessionDeletion :many
+SELECT session_id FROM catalogue_session_deletions WHERE session_id = ?;
+
+-- name: InsertSessionDeletion :exec
+INSERT OR IGNORE INTO catalogue_session_deletions (session_id) VALUES (?);
+
+-- name: DeleteSessionDeletion :exec
+DELETE FROM catalogue_session_deletions WHERE session_id = ?;
+
+-- name: DeletingSessions :many
+SELECT session_id FROM catalogue_session_deletions ORDER BY session_id;
