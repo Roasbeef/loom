@@ -551,6 +551,11 @@ pub fn start_orchestrator_port(
 /// creation retried under its original key has to land on the orchestrator that
 /// reserved it.
 ///
+/// A session this catalogue handed to another orchestrator is `Moved` and names
+/// it. The registration is still here, but only as the tombstone that records
+/// whom the session went to, so the answer says so and not `Owned`: a peer that
+/// asked whether this daemon holds the session is told where it went.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -562,7 +567,14 @@ pub fn catalogue_holds(
 ) -> fn(String) -> Result(orchestrator_port.Ownership, Nil) {
   fn(id) {
     case manager.get(registry, id) {
-      Ok(_) -> Ok(orchestrator_port.Owned)
+      Ok(_) ->
+        case manager.custody(registry, id) {
+          Ok(catalogue.Moved(to:, ..)) -> Ok(orchestrator_port.Moved(to:))
+          Ok(catalogue.Resident)
+          | Ok(catalogue.Moving(..))
+          | Ok(catalogue.Imported(..)) -> Ok(orchestrator_port.Owned)
+          Error(_) -> Error(Nil)
+        }
       Error(manager.Catalogue(catalogue.Missing)) ->
         Ok(orchestrator_port.NotOwned)
       Error(_) -> Error(Nil)

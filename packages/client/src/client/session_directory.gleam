@@ -16,10 +16,17 @@
 //// answered) or `Unreachable` (somebody could not be asked, and nobody else
 //// holds it). A caller consults `lookup` before it acts on a session and never
 //// reasons "I found it in my own catalogue, so it is mine". That rule is what
-//// lets the backing change underneath callers. Phase 5 replaces the backing with
-//// an authoritative store whose answer is not a function of this catalogue, and
-//// adds a write half (`activate`) as a second field; callers of `lookup` do not
-//// change.
+//// lets the backing change underneath callers.
+////
+//// Phase 5 adds the write half as a second field, `Directory.activate`, which
+//// asks the orchestrator a session is moving to to make its copy into the
+//// session. The authority for a move is not a third store: it is the pair of
+//// catalogue rows, the source's `moving` and `moved` and the receiver's
+//// `imported`, ordered by the write-ahead intent, and `activate` is the one
+//// message that takes the receiver's row. A session that moved away leaves a
+//// tombstone, and the catalogue that holds it answers `lookup` from the
+//// tombstone alone, with no question to any peer: `Elsewhere` the orchestrator
+//// the session went to.
 ////
 //// ## The phase 3 backing
 ////
@@ -51,8 +58,12 @@
 import client/distribution.{type Membership}
 import client/orchestrators.{type Orchestrator}
 import client/remote/address
-import client/remote/orchestrator_port.{type Ownership, NotOwned, Owned}
+import client/remote/orchestrator_port.{type Ownership, Moved, NotOwned, Owned}
+import client/session_move.{
+  type Activation, type Chunk, type Stage, type Verdict,
+}
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import weft
 
@@ -99,6 +110,26 @@ pub type Directory {
   Directory(
     /// Which orchestrator owns the session with this canonical identity.
     lookup: fn(String) -> Result(Owner, Miss),
+    /// Asks an orchestrator to activate a session from the copy it holds, and
+    /// answers its verdict, or `Error(Nil)` when it could not be asked or did not
+    /// answer in time. The answer `Accepted` is the compare-and-set on the
+    /// receiver's catalogue: after it, the receiver owns the session.
+    activate: fn(Orchestrator, Activation) -> Result(Verdict, Nil),
+  )
+}
+
+/// The rest of what a source says to a receiver, beside `Directory.activate`:
+/// the pieces of a copy and the question of how far a move has got. They are
+/// apart from the directory because only the mover sends them, and the
+/// directory is read by every command that names a session.
+pub type Courier {
+  Courier(
+    /// Sends one piece to an orchestrator and answers its verdict, or
+    /// `Error(Nil)` for silence.
+    send: fn(Orchestrator, Chunk) -> Result(Verdict, Nil),
+    /// Asks an orchestrator how far the move `op` of a session has got, given
+    /// the session and the `op`, or `Error(Nil)` for silence.
+    stage: fn(Orchestrator, String, String) -> Result(Stage, Nil),
   )
 }
 
@@ -118,7 +149,24 @@ pub type Reply =
 ///   == Error(session_directory.Unknown)
 /// ```
 pub fn none() -> Directory {
-  Directory(lookup: fn(_session) { Error(Unknown) })
+  Directory(lookup: fn(_session) { Error(Unknown) }, activate: fn(_, _) {
+    Error(Nil)
+  })
+}
+
+/// The directory with its `activate` replaced. A directory built by `peers`
+/// activates nothing until it is given the question to ask.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_directory.peers(configured, held, ask) |> session_directory.activating(activate)
+/// ```
+pub fn activating(
+  directory: Directory,
+  activate: fn(Orchestrator, Activation) -> Result(Verdict, Nil),
+) -> Directory {
+  Directory(..directory, activate:)
 }
 
 /// The phase 3 directory over the configured orchestrators.
@@ -141,12 +189,33 @@ pub fn peers(
   case asked {
     [] -> none()
     _ ->
-      Directory(lookup: fn(session) {
-        case held(session) {
-          Ok(Owned) -> Ok(Here)
-          Ok(NotOwned) | Error(Nil) -> fan_out(asked, session, ask) |> decide
-        }
-      })
+      Directory(
+        lookup: fn(session) {
+          case held(session) {
+            Ok(Owned) -> Ok(Here)
+
+            // This catalogue gave the session away and says to whom. It is the
+            // daemon's own record, so no peer is asked.
+            Ok(Moved(to:)) -> Ok(Elsewhere(configured_or_named(asked, to)))
+            Ok(NotOwned) | Error(Nil) -> fan_out(asked, session, ask) |> decide
+          }
+        },
+        activate: fn(_orchestrator, _activation) { Error(Nil) },
+      )
+  }
+}
+
+// The configured orchestrator a tombstone names. A tombstone outlives the
+// configuration that was current when it was written, so one naming an
+// orchestrator that is no longer listed still redirects, by name alone: the
+// refusal carries a name and no address, and the client is told to ask there.
+fn configured_or_named(
+  asked: List(Orchestrator),
+  name: String,
+) -> Orchestrator {
+  case orchestrators.find(asked, name) {
+    Ok(found) -> found
+    Error(Nil) -> orchestrators.Orchestrator(name:, node: "", address: None)
   }
 }
 
@@ -165,22 +234,78 @@ pub fn over_distribution(
   membership: Membership,
 ) -> fn(Orchestrator, String) -> Result(Ownership, Nil) {
   fn(orchestrator: Orchestrator, session: String) {
-    use peer <- result.try(
-      distribution.peer(membership, orchestrator.node)
-      |> result.replace_error(Nil),
-    )
-    use Nil <- result.try(
-      distribution.connect(peer, connect_ms) |> result.replace_error(Nil),
-    )
-    orchestrator_port.ask(
-      address.Address(
-        node: distribution.node(peer),
-        name: orchestrator_port.default(),
-      ),
-      session,
-      reply_ms,
-    )
+    use at <- result.try(reached(membership, orchestrator))
+    orchestrator_port.ask(at, session, reply_ms)
   }
+}
+
+/// How long the source waits for the receiver to take one piece of a copy.
+pub const chunk_reply_ms = 15_000
+
+/// How long the source waits for the receiver to say how far a move has got.
+pub const stage_reply_ms = 5000
+
+/// How long the source waits for the receiver to activate a session. It hashes
+/// the whole copy and opens it, so this is the longest of the three.
+pub const activation_reply_ms = 120_000
+
+// Connects to the pinned peer of an orchestrator, or says nothing: every way
+// of not reaching it is the silence the callers already treat as "try again".
+fn reached(
+  membership: Membership,
+  orchestrator: Orchestrator,
+) -> Result(address.Address(orchestrator_port.Message), Nil) {
+  use peer <- result.try(
+    distribution.peer(membership, orchestrator.node)
+    |> result.replace_error(Nil),
+  )
+  use Nil <- result.try(
+    distribution.connect(peer, connect_ms) |> result.replace_error(Nil),
+  )
+  Ok(address.Address(
+    node: distribution.node(peer),
+    name: orchestrator_port.default(),
+  ))
+}
+
+/// The production `Directory.activate`: connect to the pinned peer and ask its
+/// port to activate the session. A peer the membership does not know, a refused
+/// handshake, an unreachable host, a missing port and a late answer are all
+/// `Error(Nil)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_directory.peers(configured, held, ask) |> session_directory.activating(session_directory.activation_over(membership))
+/// ```
+pub fn activation_over(
+  membership: Membership,
+) -> fn(Orchestrator, Activation) -> Result(Verdict, Nil) {
+  fn(orchestrator, activation) {
+    use at <- result.try(reached(membership, orchestrator))
+    orchestrator_port.ask_activation(at, activation, activation_reply_ms)
+  }
+}
+
+/// The production courier: each call connects to the pinned peer if it is not
+/// already connected and asks its port.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let courier = session_directory.courier_over(membership)
+/// ```
+pub fn courier_over(membership: Membership) -> Courier {
+  Courier(
+    send: fn(orchestrator, chunk) {
+      use at <- result.try(reached(membership, orchestrator))
+      orchestrator_port.send_chunk(at, chunk, chunk_reply_ms)
+    },
+    stage: fn(orchestrator, session, op) {
+      use at <- result.try(reached(membership, orchestrator))
+      orchestrator_port.ask_stage(at, session, op, stage_reply_ms)
+    },
+  )
 }
 
 // Every orchestrator is asked at once from the calling process, in one weft
@@ -216,8 +341,12 @@ fn fan_out(
 
 /// The directory's policy, as a function of the replies. The first
 /// orchestrator that holds the session, in configuration order, owns it.
-/// Otherwise any silence makes the miss `Unreachable`, naming each silent
-/// orchestrator, and only a full set of "not held" answers is `Unknown`.
+/// Failing that, a peer's tombstone points at where the session went: the first
+/// one, in configuration order, redirects to the orchestrator it names, even if
+/// that orchestrator was silent, since a record of a hand-over is proof and
+/// silence is not. Otherwise any silence makes the miss `Unreachable`, naming
+/// each silent orchestrator, and only a full set of "not held" answers is
+/// `Unknown`.
 ///
 /// ## Examples
 ///
@@ -228,11 +357,32 @@ pub fn decide(replies: List(Reply)) -> Result(Owner, Miss) {
   case list.find(replies, fn(reply) { reply.1 == Ok(Owned) }) {
     Ok(#(orchestrator, _)) -> Ok(Elsewhere(orchestrator))
     Error(Nil) ->
-      case silent(replies) {
-        [] -> Error(Unknown)
-        names -> Error(Unreachable(names))
+      case first_tombstone(replies) {
+        Some(name) ->
+          Ok(
+            Elsewhere(configured_or_named(
+              list.map(replies, fn(reply) { reply.0 }),
+              name,
+            )),
+          )
+        None ->
+          case silent(replies) {
+            [] -> Error(Unknown)
+            names -> Error(Unreachable(names))
+          }
       }
   }
+}
+
+// The orchestrator the first tombstone in the replies names.
+fn first_tombstone(replies: List(Reply)) -> Option(String) {
+  list.find_map(replies, fn(reply) {
+    case reply.1 {
+      Ok(Moved(to:)) -> Ok(to)
+      Ok(Owned) | Ok(NotOwned) | Error(Nil) -> Error(Nil)
+    }
+  })
+  |> option.from_result
 }
 
 // The names of the orchestrators that gave no answer, in the order asked.

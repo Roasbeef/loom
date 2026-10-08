@@ -6,6 +6,7 @@
 import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port.{NotOwned, Owned}
 import client/session_directory.{Elsewhere, Here, Unknown, Unreachable}
+import client/session_move
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
@@ -214,4 +215,94 @@ pub fn a_question_that_crashes_is_silence_not_a_negative_test() {
       fn(_orchestrator, _session) { panic as "the question crashed" },
     )
   assert directory.lookup(id) == Error(Unreachable(["beta"]))
+}
+
+// --- a session that moved away ----------------------------------------------
+
+pub fn a_tombstone_in_the_local_catalogue_names_the_new_owner_and_asks_nobody_test() {
+  let sent = process.new_subject()
+  let directory =
+    session_directory.peers(
+      [beta(), gamma()],
+      fn(_id) { Ok(orchestrator_port.Moved(to: "gamma")) },
+      recording(sent, fn(_) { Ok(Owned) }),
+    )
+
+  // The catalogue's own record of the hand-over is the whole answer, so no peer
+  // is asked and the configured row of the new owner is returned.
+  assert directory.lookup(id) == Ok(Elsewhere(gamma()))
+  assert questions(sent) == []
+}
+
+pub fn a_tombstone_naming_an_orchestrator_no_longer_listed_still_redirects_test() {
+  let directory =
+    session_directory.peers(
+      [beta()],
+      fn(_id) { Ok(orchestrator_port.Moved(to: "retired")) },
+      fn(_, _) { Ok(Owned) },
+    )
+  let assert Ok(Elsewhere(found)) = directory.lookup(id)
+  assert found.name == "retired"
+  assert found.address == option.None
+}
+
+pub fn a_peers_tombstone_redirects_when_nobody_holds_the_session_test() {
+  // The session went to beta, which is silent. The tombstone is proof of where
+  // it went, so the asker is not left with an unreachable miss.
+  assert session_directory.decide([
+      #(beta(), Error(Nil)),
+      #(gamma(), Ok(orchestrator_port.Moved(to: "beta"))),
+    ])
+    == Ok(Elsewhere(beta()))
+}
+
+pub fn a_holder_outweighs_a_tombstone_that_points_elsewhere_test() {
+  // The session moved from gamma to beta and on again to a third machine
+  // that answered that it holds it.
+  assert session_directory.decide([
+      #(beta(), Ok(Owned)),
+      #(gamma(), Ok(orchestrator_port.Moved(to: "beta"))),
+    ])
+    == Ok(Elsewhere(beta()))
+  assert session_directory.decide([
+      #(beta(), Ok(orchestrator_port.Moved(to: "gamma"))),
+      #(gamma(), Ok(Owned)),
+    ])
+    == Ok(Elsewhere(gamma()))
+}
+
+pub fn a_directory_activates_nothing_until_it_is_given_the_question_test() {
+  let activation =
+    session_move.Activation(
+      session: id,
+      op: "op1",
+      from_node: "alpha@10.0.0.1",
+      digest: "00",
+      incarnation: 1,
+      manifest: session_move.Manifest(
+        workspace: "repo",
+        name: "n",
+        profile: option.None,
+        executor: "box",
+        pool: "",
+        subtitle: option.None,
+        created_at: 0,
+      ),
+    )
+  let plain =
+    session_directory.peers([beta()], fn(_) { Ok(NotOwned) }, fn(_, _) {
+      Ok(NotOwned)
+    })
+  assert plain.activate(beta(), activation) == Error(Nil)
+  assert session_directory.none().activate(beta(), activation) == Error(Nil)
+  let asking =
+    session_directory.activating(plain, fn(orchestrator, asked) {
+      assert orchestrator == beta()
+      assert asked == activation
+      Ok(session_move.Accepted)
+    })
+  assert asking.activate(beta(), activation) == Ok(session_move.Accepted)
+
+  // Giving a directory its question changes nothing about what it looks up.
+  assert asking.lookup(id) == Error(Unknown)
 }
