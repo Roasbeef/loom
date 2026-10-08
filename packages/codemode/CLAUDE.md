@@ -86,7 +86,7 @@ session and sends it many invocations.
   widened. Every stage's failure is a
   value: `VetRejected`, `CompileFailed`, `RunFailed`,
   `Ran(source, artifact, outcome)`. `Execution.edits` lists what the
-  harness changed before the run (see `unused_imports`). `ExecConfig.identity` is the one
+  harness changed before the run (see `unused_repair`). `ExecConfig.identity` is the one
   place in the pipeline an operation, a step, a budget *or an approval's
   grants* can be written.
 - `codemode/identity.{ExecIdentity, PhaseIdentity, Phase, BuildLedger,
@@ -931,23 +931,31 @@ The satellite owns total decoding of this response into public capability types.
 
 See [protocol 057](../../protocol-change/057-typed-capability-results.md).
 
-## Unused imports are removed and rebuilt once
+## Unused imports, arguments and bindings are repaired and rebuilt once
 
-`codemode/unused_imports.rewrite(source, diagnostics, file)` is a pure
+`codemode/unused_repair.rewrite(source, diagnostics, file)` is a pure
 parser over the compiler's text output. `codemode.execute` calls it when a
 build returns `BuildRejected`, and only then. It returns a rewritten
 source only when every diagnostic block is an `Unused imported
-module|value|type|item` warning about `src/loom_program.gleam` and the
+module|value|type|item` warning, an `Unused function argument` warning or
+an `Unused variable` warning about `src/loom_program.gleam`, and the
 closing `error: N warnings generated.` count equals the warnings listed;
 anything else, the transitive-dependency warning above all, returns
-`Error(Nil)` and the failure stands as printed. The rewritten source goes
-back through `vet.vet` under the same `VetPolicy` and is built once more in
-the same build root; that second source is what the artifact's content
-address covers and what `Ran.source` returns. The second build's result is
-final, so there is never a second rewrite. `Execution.edits` carries the
-removal notes. The tests run over output captured from the pinned
-toolchain; if a Gleam upgrade changes the diagnostic layout the rewrite
-refuses (the tests fail first), it never guesses.
+`Error(Nil)` and the failure stands as printed. Imports are removed. An
+unused argument or binding gets one `_` inserted before its name at the
+underlined column, after the `Hint:` line's `_name` is checked against the
+underlined text and the echoed line against the source; several edits on
+one line apply right to left. `Unused function argument` also covers
+`use x <- ...` (the `use` desugars to a callback), and the note for a `use`
+or `let` binding adds that nothing reads it, so a value the program meant to
+return may be missing. The rewritten source goes back through `vet.vet`
+under the same `VetPolicy` and is built once more in the same build root;
+that second source is what the artifact's content address covers and what
+`Ran.source` returns. The second build's result is final, so there is never
+a second rewrite. `Execution.edits` carries one note per edit. The tests
+run over output captured from the pinned toolchain; if a Gleam upgrade
+changes the diagnostic layout the rewrite refuses (the tests fail first),
+it never guesses.
 
 ## The call record (protocol 060)
 
@@ -973,3 +981,17 @@ sequence number; the persistent host shares `InFlight` and records nothing.
   attach it to `details`. `execution_value` never does.
 - A run that never launched, or whose host never answered, carries
   `call_record.empty()`.
+
+### The last failing command
+
+`satellite.Run.last_failure` and `codemode.Execution.last_failure` carry an
+`Option(tools/proc_failure.ProcFailure)`: the most recent `proc.run` that
+settled `CapOk` with a non-zero `exit_code` or `timed_out`, with its command
+(argv joined, at most 160 bytes) and the tail of its stderr (at most 400 bytes, ellipsis included, cut on bytes). The host
+reads the argv at admission into `State.proc_commands` (in-flight `proc.run`
+calls only) and `close_call` drops it at settlement, so the host holds the
+in-flight set plus one record. A later success does not clear the record. A
+`CapErr`, a refusal, and a call cancelled before it settled make none. The
+call record still never keeps argv beyond the executable name; this record
+goes only into the model's own result (`tools/codemode`, `tools/proc_failure`).
+A run that never launched, or whose host never answered, carries `None`.

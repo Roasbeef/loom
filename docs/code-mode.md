@@ -71,7 +71,7 @@ through its side effects.
 The trade-off is fluency. Models have seen far more JavaScript than Gleam,
 and every run pays for a compile. Loom offsets this in three ways: the
 compiler's diagnostics go back to the model as an ordinary result, a build
-that fails only on unused imports is rewritten and retried once
+that fails only on unused imports, arguments or bindings is rewritten and retried once
 automatically, and the tool description carries the admitted modules'
 types so the model starts from the real surface.
 

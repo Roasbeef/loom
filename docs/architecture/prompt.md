@@ -518,7 +518,7 @@ behind the pack and its stability contract is Part B of
 
 ## Semantic capability guidance
 
-The shipped `loom-default-15` pack prefers `cap/lsp` in code mode when that
+The shipped `loom-default-16` pack prefers `cap/lsp` in code mode when that
 module is offered, and `cap/lsp_sql` for joins, counts and filters over explicit
 observations when its separate module is offered. It names `cap://lsp` and
 `cap://lsp_sql` as the API reads to perform before writing unfamiliar calls.
@@ -535,7 +535,7 @@ rewritten; fresh sessions receive the new pack.
 
 ## Saved program guidance
 
-`loom-default-15` asks agents to save tested reusable code-mode programs in real
+`loom-default-16` asks agents to save tested reusable code-mode programs in real
 workspace files, with short purpose and input notes. The agent submits exactly
 one of `program` or `program_path`; the latter avoids retransmitting source.
 Each invocation reloads the file under current read and execution permissions.
@@ -545,4 +545,18 @@ The guidance keeps reuse separate from observation freshness. A saved LSP
 summary program collects fresh facts each time it runs, then reuses its SQL
 observation for local queries within that invocation. Saving source preserves
 neither an observation nor permission to execute it. Existing pinned prompts
-retain their original text; fresh sessions receive version 15.
+retain their original text; fresh sessions receive version 16.
+
+## Batching read-only queries
+
+`loom-default-16` asks for code mode on any batch of reads, searches, `git` or
+`gh` queries and checks the agent can already list, including the first round
+of an investigation. The agent judges between programs rather than between
+commands, and uses a direct tool only when the next command cannot be written
+before the previous result is read. Independent probes stay independent so one
+failure does not discard the others. A program that fails at runtime is fixed
+and rerun instead of having its remaining probes moved to `bash`. The `bash`
+paragraph keeps builds, tests, formatters and external mutations, and sends
+read-only `git`/`gh` queries, especially `--json` output, to code mode. The
+warning rule is stated once, in the `code_mode` tool description, not in the
+system prompt.
