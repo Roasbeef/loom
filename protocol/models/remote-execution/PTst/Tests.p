@@ -128,6 +128,11 @@ test tcOnlyAtMostOnceJoin [main = TestPartition]:
 test tcOnlyNoStartAfterFence [main = TestRuntimeRestart]:
   assert NoStartAfterFence in (union System, { TestRuntimeRestart });
 
+// The same traffic with the acknowledgement sent at once, for the mutant that
+// deletes an acknowledged key's row.
+test tcOnlyNoStartAfterAck [main = TestRuntimeRestartAckAtOnce]:
+  assert NoStartAfterFence in (union System, { TestRuntimeRestartAckAtOnce });
+
 test tcOnlyUnknownIsFinal [main = TestAll]:
   assert UnknownIsFinal in (union System, { TestAll });
 
