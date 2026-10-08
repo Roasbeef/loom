@@ -858,8 +858,12 @@ boundaries and the split's measurements under Invariants.
   the child's own status. `Replay` is the same shape for a different
   reason: `loom replay <path>` drives a recording through the virtual
   backend and prints frames, so it installs no terminal state and opens no
-  socket either. `Sessions` is `loom sessions list` and `loom sessions rm
-  <id>`: it reaches the control endpoint as the owner over the same
+  socket either. `Sessions` is `loom sessions list`, `loom sessions rm
+  <id>` and `loom sessions move <id> --to <orchestrator>` (protocol-change/078,
+  phase 5; `--to` is checked against `placement.is_orchestrator_name` before any
+  daemon is started, `MoveSession` is a mutation, and the answer `MovedReply`
+  names the operation; the command returns once the daemon accepted the move and
+  does not wait for it): it reaches the control endpoint as the owner over the same
   bootstrap ladder the picker uses, prints a styled table on a terminal and
   one line per row otherwise, or one line of outcome, and exits with a
   status. `list` shows the resident track by default — every lifecycle but
