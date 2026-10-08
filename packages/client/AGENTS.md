@@ -6595,8 +6595,11 @@ local fixtures).
   workspace's arrives in `census.prompt`, and the platform, shell and policy
   facts come from `census.census`.
 - **Scope record.** `remote/scope` keeps `{incarnation, closed, executor}` in the
-  reserved cell `client/remote/scope`. No cell attaches at 1, a clean close at the
-  stored incarnation plus one, anything else at the stored one. It is written
+  reserved cell `client/remote/scope`. No cell attaches at 1, a close that ended,
+  clean or with unknown cleanup, at the stored incarnation plus one, anything
+  else at the stored one. The unknown-cleanup case asks for the next
+  incarnation so that an operator's `loomd executor release` on the executor
+  turns the executor's `UncleanClose` into a reopen. It is written
   straight to the store (the way `session_git` writes), so only while no runtime
   owns it: after the connection and before the attach is sent, by the close
   below, and removed by `scope.clear` after a first open's capacity refusal. A

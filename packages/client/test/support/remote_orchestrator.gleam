@@ -164,7 +164,13 @@ pub fn start_on(
   executor_clock executor_clock: clock.Clock,
 ) -> Executor {
   let path = fixtures.scratch("orchestrator") <> "/ledger.db"
-  start_with(path, factory, exec_ledger.default_limits(), executor_clock)
+  start_with(
+    path,
+    factory,
+    exec_ledger.default_limits(),
+    executor_clock,
+    host_name(),
+  )
 }
 
 /// A clock that reads `from` until `set` gives it another value, for a test
@@ -221,6 +227,7 @@ pub fn start_limited(
       max_unclean_scopes: scopes,
     ),
     clock.fixed(at: 1000),
+    host_name(),
   )
 }
 
@@ -229,7 +236,36 @@ pub fn start_at(
   path: String,
   factory: host.PlaneFactory(RemoteCensus),
 ) -> Executor {
-  start_with(path, factory, exec_ledger.default_limits(), clock.fixed(at: 1000))
+  start_with(
+    path,
+    factory,
+    exec_ledger.default_limits(),
+    clock.fixed(at: 1000),
+    host_name(),
+  )
+}
+
+/// A fresh name for a host, to give to `start_named` more than once. A host
+/// that restarts on the same machine registers the same name again, and an
+/// orchestrator's address for it stays good.
+pub fn host_name() -> process.Name(protocol.HostMessage(RemoteCensus)) {
+  process.new_name("orchestrator_test_host")
+}
+
+/// Starts a host over the ledger at `path`, registered as `name`. Stop the
+/// earlier host that held the name first, and wait for it to be gone.
+pub fn start_named(
+  path: String,
+  factory: host.PlaneFactory(RemoteCensus),
+  name: process.Name(protocol.HostMessage(RemoteCensus)),
+) -> Executor {
+  start_with(
+    path,
+    factory,
+    exec_ledger.default_limits(),
+    clock.fixed(at: 1000),
+    name,
+  )
 }
 
 fn start_with(
@@ -237,10 +273,11 @@ fn start_with(
   factory: host.PlaneFactory(RemoteCensus),
   limits: exec_ledger.Limits,
   executor_clock: clock.Clock,
+  name: process.Name(protocol.HostMessage(RemoteCensus)),
 ) -> Executor {
   let assert Ok(started) =
     host.start(host.Config(
-      name: process.new_name("orchestrator_test_host"),
+      name:,
       ledger_path: path,
       limits:,
       max_result_bytes: 65_536,

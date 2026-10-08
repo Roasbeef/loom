@@ -16,6 +16,7 @@ import core/ids
 import core/json
 import core/register
 import core/tx
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -24,6 +25,7 @@ import machine/operation
 import machine/strand
 import runtime/effects
 import session/session
+import storage/exec_ledger
 import storage/storage
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator as rig
@@ -184,6 +186,58 @@ pub fn a_close_with_unknown_cleanup_gets_no_successor_test() {
   assert string.starts_with(reason, "executor_unavailable: ")
   assert string.contains(reason, "2 children")
   rig.stop(executor)
+}
+
+pub fn a_scope_an_executor_restart_left_unproven_reopens_after_a_release_test() {
+  // The executor's VM restarts while the session is open. The new VM has no
+  // plane for the scope, so the session's close finds no witness and records
+  // unknown cleanup, and the scope then refuses every attach. An operator's
+  // release is the way out, and the next open must ask for the incarnation
+  // after the one that closed.
+  let path = fixtures.scratch("restart-release") <> "/ledger.db"
+  let name = rig.host_name()
+  let probe = fixtures.probe(fixtures.Open)
+  let factory = fn() {
+    rig.factory(probe, rig.census(rig.standard_tools()), protocol.AllRetired)
+  }
+  let first = rig.start_named(path, factory(), name)
+  let opened = store()
+  let hands = attached(first, opened)
+  assert hands.incarnation == 1
+  rig.stop(first)
+  process.sleep(100)
+  let second = rig.start_named(path, factory(), name)
+
+  hands.plane.close()
+
+  assert scope.read(opened)
+    == Ok(
+      Some(scope.Scope(
+        1,
+        Some(protocol.UnknownCleanup(0)),
+        Some(rig.executor_name),
+      )),
+    )
+  let assert Error(refused) =
+    workspace.attach(rig.registered(second, opened, clock.fixed(at: 1000)))
+  assert string.contains(refused, "0 children")
+
+  // The executor daemon is stopped for the release.
+  rig.stop(second)
+  process.sleep(100)
+  let assert Ok(ledger) = exec_ledger.open(path) as "the ledger opens"
+  let assert Ok(exec_ledger.Released(incarnation: 1, ..)) =
+    exec_ledger.release(ledger, "registered-session", 2000)
+    as "the scope is released"
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
+  let third = rig.start_named(path, factory(), name)
+
+  let reopened = attached(third, opened)
+
+  assert reopened.incarnation == 2
+  assert scope.read(opened)
+    == Ok(Some(scope.Scope(2, None, Some(rig.executor_name))))
+  rig.stop(third)
 }
 
 pub fn a_record_out_of_step_with_the_executor_fails_naming_both_numbers_test() {

@@ -19,13 +19,19 @@
 //// | --- | --- | --- |
 //// | nothing | 1 | creates the scope |
 //// | a clean close | the stored incarnation plus one | reopens the scope |
+//// | a close with unknown cleanup | the stored incarnation plus one | refuses the attach until an operator releases the scope, then reopens it |
 //// | anything else | the stored incarnation | rebinds the open scope |
 ////
-//// A close that ended with unknown cleanup, a close that was never recorded
-//// because the orchestrator died first, and a plain open all fall in the last
-//// row. The executor decides what to do with them: it rebinds an open scope
-//// and refuses a scope whose cleanup it could not prove. The orchestrator
-//// never guesses that a scope is reusable.
+//// A close that was never recorded because the orchestrator died first, and a
+//// plain open, fall in the last row. The executor decides what to do with them:
+//// it rebinds an open scope. A close with unknown cleanup ends its incarnation
+//// all the same, so the next attach asks for the one after it. The executor
+//// refuses that attach while the scope holds unknown cleanup, and the operator's
+//// `loomd executor release` on the executor is what turns the refusal into a
+//// reopen at that incarnation. Asking for the stored incarnation instead would
+//// be refused as stale after a release, because the released scope is cleanly
+//// closed and a reopen has to name the next incarnation. The orchestrator never
+//// guesses that a scope is reusable.
 ////
 //// ## Which executor
 ////
@@ -109,14 +115,17 @@ pub fn read(opened: Session) -> Result(Option(Scope), String) {
 /// assert scope.attach_at(Some(scope.Scope(3, Some(protocol.AllRetired), None)))
 ///   == 4
 /// assert scope.attach_at(Some(scope.Scope(3, None, None))) == 3
+/// assert scope.attach_at(
+///     Some(scope.Scope(3, Some(protocol.UnknownCleanup(2)), None)),
+///   )
+///   == 4
 /// ```
 pub fn attach_at(found: Option(Scope)) -> Int {
   case found {
     None -> 1
-    Some(Scope(incarnation:, closed: Some(protocol.AllRetired), ..)) ->
+    Some(Scope(incarnation:, closed: Some(protocol.AllRetired), ..))
+    | Some(Scope(incarnation:, closed: Some(protocol.UnknownCleanup(..)), ..)) ->
       incarnation + 1
-    Some(Scope(incarnation:, closed: Some(protocol.UnknownCleanup(..)), ..)) ->
-      incarnation
     Some(Scope(incarnation:, closed: None, ..)) -> incarnation
   }
 }

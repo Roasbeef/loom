@@ -30,12 +30,15 @@ pub fn a_clean_close_attaches_one_higher_test() {
     == 4
 }
 
-pub fn every_other_shape_attaches_at_the_stored_incarnation_test() {
-  assert scope.attach_at(Some(scope.Scope(3, None, None))) == 3
+pub fn a_close_that_proved_nothing_also_attaches_one_higher_test() {
   assert scope.attach_at(
       Some(scope.Scope(3, Some(protocol.UnknownCleanup(2)), None)),
     )
-    == 3
+    == 4
+}
+
+pub fn an_open_or_an_unrecorded_close_attaches_at_the_stored_incarnation_test() {
+  assert scope.attach_at(Some(scope.Scope(3, None, None))) == 3
 }
 
 pub fn a_session_with_no_record_reads_as_absent_test() {
