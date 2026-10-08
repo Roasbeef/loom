@@ -350,7 +350,8 @@ fi
 # ------------------------------------------------------------ the build
 
 echo "==> exporting the erlang shipment"
-( cd packages/client && gleam build --warnings-as-errors && gleam export erlang-shipment >/dev/null )
+( cd packages/client && gleam build --warnings-as-errors )
+python3 scripts/shipment.py client >/dev/null
 mkdir -p "$SMOKE_SUPPORT"
 cp packages/client/build/dev/erlang/client/ebin/client@release_probe_test.beam "$SMOKE_SUPPORT/"
 cp scripts/release-smoke.toml "$SMOKE_SUPPORT/"

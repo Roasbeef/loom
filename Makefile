@@ -140,7 +140,7 @@ profile-launcher-test: tui-shipment ## Check --profile argument and credential h
 
 .PHONY: tui-shipment
 tui-shipment: ## Package the native TUI: build/tui-erlang-shipment + bin/loom
-	@cd packages/tui && gleam export erlang-shipment
+	@python3 scripts/shipment.py tui
 	@$(MAKE) _package-tui-shipment
 
 # Only callers that just exported the TUI may use this staging recipe. Dist
@@ -219,7 +219,7 @@ _package-tui-shipment:
 # network, and it is a no-op once the seed builds offline.
 .PHONY: server-shipment
 server-shipment: codemode-seed ## Package the server: build/erlang-shipment + bin/loomd (needs erl to run)
-	@cd packages/client && gleam export erlang-shipment
+	@python3 scripts/shipment.py client
 	@mkdir -p bin build
 	@rm -f bin/loom-server
 	@rm -rf build/erlang-shipment
