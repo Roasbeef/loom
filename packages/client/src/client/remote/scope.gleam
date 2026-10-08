@@ -51,6 +51,7 @@
 //// released. The cell is never written while a writer is running.
 
 import client/remote/protocol.{type CloseOutcome}
+import core/clock.{type Clock}
 import core/json.{type JsonValue}
 import core/register
 import core/tx
@@ -59,6 +60,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session/session.{type Session}
+import simplifile
 import storage/catalogue
 import storage/storage
 
@@ -176,6 +178,77 @@ pub fn clear(opened: Session) -> Result(Nil, String) {
   |> result.replace(Nil)
   |> result.map_error(fn(error) {
     "the remote scope record was not cleared: " <> string.inspect(error)
+  })
+}
+
+// How long the lease of one cell access on a closed file lasts. The access
+// reads or writes one cell and closes, so this only has to outlast a slow disk;
+// a crash leaves the lease to lapse, and the next access steals it.
+const file_lease_ttl_ms = 30_000
+
+/// Reads the cell of a closed session file by path, for a session move that
+/// has to know how the last close ended before it cuts or accepts a copy.
+///
+/// The file is opened under `owner`, which must not be the owner of a running
+/// writer or of an export, and closed again before this returns. A file a
+/// writer holds is refused with the lease holder named, and a file that is not
+/// a current session is refused with the storage's reason. Opening migrates an
+/// older file, so a caller that must keep the bytes it was given reads a copy.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // scope.read_at("/state/sessions/0198c0de.db", "move-read", clock)
+/// ```
+pub fn read_at(
+  path: String,
+  owner: String,
+  clock: Clock,
+) -> Result(Option(Scope), String) {
+  use opened <- result.try(open_at(path, owner, clock))
+  let found = read(opened)
+  let _closed = session.close(opened)
+  found
+}
+
+/// Writes the cell of a closed session file by path, as `read_at` reads it. A
+/// mover calls it when it learned from the executor how a close ended that the
+/// session's own cleanup never recorded, so the file says what the executor
+/// says before the session can be opened again or sent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // scope.write_at(path, "move-write", clock, scope.Scope(2, Some(protocol.AllRetired), Some("box")))
+/// ```
+pub fn write_at(
+  path: String,
+  owner: String,
+  clock: Clock,
+  scope: Scope,
+) -> Result(Nil, String) {
+  use opened <- result.try(open_at(path, owner, clock))
+  let written = write(opened, scope)
+  let _closed = session.close(opened)
+  written
+}
+
+// A session file that is not there is refused before it is opened, because
+// opening creates a missing file. A mover that read the cell of a session whose
+// file had already been set aside would otherwise conjure an empty session in
+// its place.
+fn open_at(
+  path: String,
+  owner: String,
+  clock: Clock,
+) -> Result(Session, String) {
+  use Nil <- result.try(case simplifile.is_file(path) {
+    Ok(True) -> Ok(Nil)
+    Ok(False) | Error(_) -> Error("there is no session file at " <> path)
+  })
+  session.open_sqlite(path:, owner:, lease_ttl_ms: file_lease_ttl_ms, clock:)
+  |> result.map_error(fn(error) {
+    "the session file " <> path <> " did not open: " <> string.inspect(error)
   })
 }
 
