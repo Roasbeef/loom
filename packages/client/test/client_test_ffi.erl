@@ -9,9 +9,27 @@
 -export([ws_roundtrip/4, which/1, run/3, gzip/1,
          origin_start/0, origin_stop/1, origin_seen/1, monitored_by/1,
          owner_label_of/1, reductions_of/1, log_capture_start/0,
-         log_capture_stop/0, log/2, utf_codepoint_calls/1]).
+         log_capture_stop/0, log/2, utf_codepoint_calls/1,
+         function_values/1, wire_round_trip/1]).
 
 -include_lib("public_key/include/public_key.hrl").
+
+%% The number of function values reachable in a term. A closure serializes on
+%% one node and fails to decode on another whose code differs, so a term that
+%% crosses distribution must contain none. Tuples, lists (proper or not) and
+%% maps are walked; a binary, pid or reference is a leaf.
+function_values(Term) when is_function(Term) -> 1;
+function_values(Term) when is_tuple(Term) ->
+    function_values(tuple_to_list(Term));
+function_values([Head | Tail]) ->
+    function_values(Head) + function_values(Tail);
+function_values(Term) when is_map(Term) ->
+    function_values(maps:to_list(Term));
+function_values(_Term) -> 0.
+
+%% What a term becomes when it is sent to another node and decoded there.
+wire_round_trip(Term) ->
+    binary_to_term(term_to_binary(Term)).
 
 %% OTP's private trace session witnesses the removed Unicode list walk in
 %% this test process alone. No Gleam process primitive exposes function call
