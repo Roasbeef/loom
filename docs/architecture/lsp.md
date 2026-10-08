@@ -683,8 +683,12 @@ under a count of all of them.
 
 The answer is a two-variant type, `Settled | Unsettled`, rather than a
 list and a flag, because the two are different claims. `Settled([])` is
-clean code. `Unsettled([])` is only that nothing had arrived, and every
-surface renders it as "did not settle", never as clean.
+clean for the explicit requested file scope. `Unsettled([])` establishes
+neither freshness nor complete coverage and is never clean. A no-path
+`diagnostics(None)` snapshot is always `Unsettled`: the manager holds only the
+current package server, so a healthy control cannot certify other owners.
+[Protocol 078](../../protocol-change/078-lsp-diagnostics-scope.md) records that
+scope correction.
 
 With a door present, `fs_write` and `fs_edit` are built with
 `tools/lsp.diagnostics_observer`, and a landed write's result gains the

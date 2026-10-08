@@ -995,3 +995,11 @@ in-flight set plus one record. A later success does not clear the record. A
 call record still never keeps argv beyond the executable name; this record
 goes only into the model's own result (`tools/codemode`, `tools/proc_failure`).
 A run that never launched, or whose host never answered, carries `None`.
+
+## Seed capability coverage
+
+`seed.verify` checks every statically admitted program, harness-only and
+extension prelude module in the vendored tree, in addition to the dependency
+table and built inventory. Discovery and each build share this check. A missing
+`cap/lsp_sql` is reported as a stale host seed before any satellite clearance.
+This is a module-presence check, not a digest check of unchanged module names.
