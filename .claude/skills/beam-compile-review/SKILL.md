@@ -151,6 +151,9 @@ that expand the most (`sizes`), and measures what each of the largest saves
 when stubbed (`ablate`). It reads existing build output and writes nothing.
 CPU time from `erlang:statistics(runtime)` is steady on a loaded host where a
 `Compiled in` wall time is not; interleave runs and report medians anyway.
+A missing or empty abstract-form directory fails with exit 2. Never treat
+zero discovered modules as a compile-time measurement; confirm the compiler
+version and rebuild the intended mode first.
 
 If `core_inline_module` dominates, test a focused ablation or equivalent helper
 extraction in a temporary copy of generated Erlang. Retain the original and its
