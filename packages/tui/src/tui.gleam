@@ -40,8 +40,9 @@
 ////
 //// 1. `main` answers help first (`help_for`), peels `--record` off the arguments,
 ////    and lets `parse_launch` classify what is left into a `Launch`.
-//// 2. Launches that are not a terminal (version, update, ext, `replay`, sessions,
-////    claim, enroll, access, view) run to completion in their own functions.
+//// 2. Launches that are not a terminal (version, update, ext, distribution,
+////    `replay`, sessions, claim, enroll, access, view) run to completion in
+////    their own functions.
 //// 3. `interactive_terminal` refuses a detached stdin, then `interactive` builds
 ////    the model with `new_model` and connects it: `attach_daemon` for a local
 ////    daemon, `connect_remote` for a remote address.
@@ -167,11 +168,13 @@ type Launch {
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
-  // `loom ext …` is not a terminal application at all: it is a
-  // passthrough to `loomd`, whose own `ext` subcommand owns every verb.
-  // Forwarding rather than reimplementing is what stops the launcher and
-  // the server disagreeing about what an install did.
-  Forward(arguments: List(String))
+  // `loom ext …` and `loom distribution …` (`dist` for short) are not
+  // terminal applications at all: they are passthroughs to `loomd`, whose
+  // own subcommand owns every verb. Forwarding rather than reimplementing
+  // is what stops the launcher and the server disagreeing about what an
+  // install did, or about which certificate a provisioned node holds. The
+  // `verb` is the server subcommand, spelled the way the server spells it.
+  Forward(verb: String, arguments: List(String))
 
   // Updates run before terminal setup and own their daemon restart policy.
   Update(arguments: List(String))
@@ -303,6 +306,8 @@ pub fn main() {
 
       let #(record, arguments) = case raw {
         ["ext", ..]
+        | ["distribution", ..]
+        | ["dist", ..]
         | ["replay", ..]
         | ["sessions", ..]
         | ["claim", ..]
@@ -320,7 +325,7 @@ pub fn main() {
         // The passthrough runs before a single line of terminal setup: this
         // process is a pipe for the duration and then it is gone.
         Version -> print_version()
-        Forward(arguments:) -> forward(arguments)
+        Forward(verb:, arguments:) -> forward(verb, arguments)
         Update(arguments:) -> run_update(arguments)
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
@@ -425,6 +430,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("sessions") -> Some(sessions_usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
+    Ok("distribution") | Ok("dist") -> Some(distribution_usage())
     Ok("update") -> Some(update_options.usage())
     Ok("version") -> Some(version_usage())
     Ok("ui") | Ok("--ui") -> Some(ui_usage())
@@ -437,6 +443,8 @@ fn is_topic(word: String) -> Bool {
     "replay"
     | "sessions"
     | "ext"
+    | "distribution"
+    | "dist"
     | "update"
     | "version"
     | "claim"
@@ -476,22 +484,22 @@ fn take_flag(arguments: List(String), flag: String) -> #(String, List(String)) {
 // output through and exiting with its status. The daemon is located by the
 // same ladder an implicit local launch uses, so `loom ext` and an
 // auto-started session cannot end up talking to two different binaries.
-fn forward(arguments: List(String)) -> Nil {
+fn forward(verb: String, arguments: List(String)) -> Nil {
   case bootstrap.server_executable(flag_or_empty(arguments, "--server")) {
     Error(reason) -> {
-      io.println_error("loom ext: " <> reason)
+      io.println_error("loom " <> verb <> ": " <> reason)
       ffi_terminal.halt(1)
       Nil
     }
     Ok(server) ->
-      case ffi_terminal.run_forwarding(server, ["ext", ..arguments]) {
+      case ffi_terminal.run_forwarding(server, [verb, ..arguments]) {
         Ok(status) -> {
           ffi_terminal.halt(status)
           Nil
         }
         Error(reason) -> {
           io.println_error(
-            "loom ext: could not run " <> server <> ": " <> reason,
+            "loom " <> verb <> ": could not run " <> server <> ": " <> reason,
           )
           ffi_terminal.halt(1)
           Nil
@@ -1002,9 +1010,13 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["--demo"] -> Demo
     ["version"] | ["--version"] -> Version
     ["version", ..] | ["--version", ..] -> Invalid(version_usage())
-    ["ext", ..rest] -> Forward(arguments: rest)
+    ["ext", ..rest] -> Forward(verb: "ext", arguments: rest)
+    ["distribution", ..rest] | ["dist", ..rest] ->
+      Forward(verb: "distribution", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
-    ["help", "ext"] -> Forward(arguments: ["--help"])
+    ["help", "ext"] -> Forward(verb: "ext", arguments: ["--help"])
+    ["help", "distribution"] | ["help", "dist"] ->
+      Forward(verb: "distribution", arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
@@ -1838,7 +1850,10 @@ fn launch_usage() -> String {
   <> "  access <command>    Owner access: list, show, invite, rotate, revoke.\n"
   <> "                      Runs against the local daemon, or a remote one\n"
   <> "                      with --addr and --token-file.\n"
-  <> "  ext <command>       Manage daemon extensions.\n\n"
+  <> "  ext <command>       Manage daemon extensions.\n"
+  <> "  distribution <command>\n"
+  <> "                      Provision trusted distribution between daemons\n"
+  <> "                      (init, provision, install, show). `dist` is short.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --model-profile names a [profiles.<name>] table of that file whose\n"
   <> "       roles a newly created session uses; a resumed session keeps its own\n"
@@ -1898,6 +1913,68 @@ fn extension_usage() -> String {
   <> "A source is a local path, an https:// .tar.gz, or an\n"
   <> "https://github.com/<owner>/<repo> URL. Extensions install under\n"
   <> "<home>/.loom/extensions."
+}
+
+// The help text of `loom distribution`, held here for the reason
+// `extension_usage` is: the launcher must describe the command when `loomd` is
+// absent, and the terminal package cannot import the daemon package. The shipped
+// acceptance compares this text with `loomd distribution --help` so the two
+// literals cannot silently drift.
+fn distribution_usage() -> String {
+  "usage: loom distribution <command>   (also: loomd distribution, and `dist` for short)
+
+Provision a trusted Erlang distribution between Loom daemons with one plan, one
+file per machine, and one command on each machine. No openssl is needed.
+
+commands:
+  init [PATH]                     Write an example plan (default
+                                  distribution-plan.toml). Refuses to overwrite.
+  provision PLAN OUT [--force]    Read PLAN (.toml or .json), mint the CA, the
+                                  node certificates and the shared cookie, and
+                                  write OUT/<node>.loombundle (mode 0600) for
+                                  each node plus OUT/system.json (no secrets).
+                                  Refuses a non-empty OUT without --force.
+  show OUT                        Print OUT/system.json as a table.
+  install BUNDLE [--home DIR] [--config PATH] [--force]
+                                  Run on the node's machine. Installs the
+                                  credentials, the cookie at DIR/.erlang.cookie
+                                  (default $HOME), the [distribution] and role
+                                  tables in PATH (default DIR/.loom/loom.toml)
+                                  and the TLS options file, then prints the
+                                  command that starts the daemon. Running it
+                                  again with the same bundle changes nothing.
+                                  A different existing cookie, credential file
+                                  or table is refused unless --force.
+  options CONFIG OUTPUT           Render the TLS distribution options file for
+                                  the [distribution] table of CONFIG (mode
+                                  0600). `install` does this for you.
+
+A .loombundle holds the node's private key and the deployment's cookie. Copy it
+to its machine over a channel you trust, and delete it there after installing.
+
+Example:
+  loom dist init plan.toml
+  loom dist provision plan.toml out
+  scp out/devbox.loombundle devbox:
+  ssh devbox loom dist install devbox.loombundle"
+}
+
+/// The arguments `loom` would hand to the server for a passthrough command,
+/// or `None` when the command is the launcher's own. `loom ext` and
+/// `loom distribution` (with its `dist` shorthand) are passthroughs, and the
+/// server sees the subcommand spelled the way it spells it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.server_arguments(["dist", "init"]) == Some(["distribution", "init"])
+/// ```
+@internal
+pub fn server_arguments(arguments: List(String)) -> Option(List(String)) {
+  case parse_launch(arguments) {
+    Forward(verb:, arguments:) -> Some([verb, ..arguments])
+    _other -> None
+  }
 }
 
 fn parse_replay(arguments: List(String)) -> Launch {
