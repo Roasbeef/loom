@@ -131,7 +131,9 @@ pub fn factory(
           )
         },
         census:,
-        close: fn() {
+        children: fn(builder) { builder },
+        close: fn(retire_children) {
+          let _ = retire_children()
           process.send(probe.subject, fixtures.Closed)
           close_outcome
         },

@@ -527,9 +527,10 @@ fn rank(part: custody.Part) -> Int {
     custody.Services -> 2
     custody.Broker -> 3
     custody.Helpers -> 4
-    custody.Mcp -> 5
-    custody.Storage -> 6
-    custody.Namespace -> 7
+    custody.Workspace -> 5
+    custody.Mcp -> 6
+    custody.Storage -> 7
+    custody.Namespace -> 8
   }
 }
 
