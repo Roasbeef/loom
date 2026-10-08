@@ -108,7 +108,7 @@ pub fn fixture_building(
       peer_endpoint:,
       daemon:,
       domain_configuration: "",
-      executors: [executors.Executor("build-box", "executor@10.0.0.2")],
+      executors: [executors.plain("build-box", "executor@10.0.0.2")],
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
       session_upgrade: fn(_, _) {
         response.new(501)

@@ -4,8 +4,9 @@
 //// read.
 
 import client/catalog
-import client/executors.{Executor}
+import client/executors.{Degraded, Enforced, Executor, Observed}
 import gleam/dict
+import gleam/option.{Some}
 import gleam/string
 
 const distribution =
@@ -47,12 +48,12 @@ node = \"spare@10.0.0.3\"
 "
   assert executors.parse(text)
     == Ok([
-      Executor("alpha", "spare@10.0.0.3"),
-      Executor("build-box", "executor@10.0.0.2"),
+      executors.plain("alpha", "spare@10.0.0.3"),
+      executors.plain("build-box", "executor@10.0.0.2"),
     ])
   let assert Ok(configured) = executors.parse(text)
   assert executors.find(configured, "build-box")
-    == Ok(Executor("build-box", "executor@10.0.0.2"))
+    == Ok(executors.plain("build-box", "executor@10.0.0.2"))
   assert executors.find(configured, "elsewhere") == Error(Nil)
 }
 
@@ -114,4 +115,132 @@ pub fn the_catalogue_parser_refuses_what_the_executor_parser_refuses_test() {
     distribution <> "\n[executors.build-box]\nnode = \"executor@10.0.0.2\"\n"
   let assert Error(without_models) = catalog.parse(valid)
   assert without_models == "the catalogue needs a [models.<name>] table"
+}
+
+// --- declarations ------------------------------------------------------------
+
+fn executor_with(lines: String) -> String {
+  distribution
+  <> "\n[executors.build-box]\nnode = \"executor@10.0.0.2\"\n"
+  <> lines
+}
+
+pub fn a_row_may_declare_its_platform_enforcement_and_toolchains_test() {
+  let text =
+    executor_with(
+      "platform = \"linux/x86_64\"
+enforcement = \"enforced\"
+toolchains = [\"codemode\", \"gleam_ls\"]
+",
+    )
+
+  assert executors.parse(text)
+    == Ok([
+      Executor(
+        name: "build-box",
+        node: "executor@10.0.0.2",
+        platform: Some("linux/x86_64"),
+        enforcement: Some(Enforced),
+        toolchains: ["codemode", "gleam_ls"],
+      ),
+    ])
+  assert executors.parse(executor_with("enforcement = \"degraded\"\n"))
+    == Ok([
+      Executor(
+        ..executors.plain("build-box", "executor@10.0.0.2"),
+        enforcement: Some(Degraded),
+      ),
+    ])
+}
+
+pub fn a_malformed_declaration_is_refused_with_the_key_it_names_test() {
+  refused(
+    executor_with("platform = 1\n"),
+    "executors.build-box.platform must be a string of the form <os>/<architecture>",
+  )
+  refused(
+    executor_with("platform = \"linux\"\n"),
+    "executors.build-box.platform must be a string",
+  )
+  refused(
+    executor_with("platform = \"Linux/x86_64\"\n"),
+    "executors.build-box.platform must be a string",
+  )
+  refused(
+    executor_with("platform = \"linux/x86/64\"\n"),
+    "executors.build-box.platform must be a string",
+  )
+  refused(
+    executor_with("enforcement = \"strict\"\n"),
+    "executors.build-box.enforcement must be \"enforced\" or \"degraded\"",
+  )
+  refused(
+    executor_with("enforcement = true\n"),
+    "executors.build-box.enforcement must be",
+  )
+  refused(
+    executor_with("toolchains = \"codemode\"\n"),
+    "executors.build-box.toolchains must be a list of distinct lowercase names",
+  )
+  refused(
+    executor_with("toolchains = [\"Code Mode\"]\n"),
+    "executors.build-box.toolchains must be a list",
+  )
+  refused(
+    executor_with("toolchains = [1]\n"),
+    "executors.build-box.toolchains must be a list",
+  )
+  refused(
+    executor_with("toolchains = [\"codemode\", \"codemode\"]\n"),
+    "executors.build-box.toolchains must be a list",
+  )
+  refused(
+    executor_with("capacity = 4\n"),
+    "unknown key `capacity` in [executors.build-box] (allowed: node, platform, enforcement, toolchains)",
+  )
+}
+
+fn declared() -> executors.Executor {
+  Executor(
+    name: "build-box",
+    node: "executor@10.0.0.2",
+    platform: Some("linux/x86_64"),
+    enforcement: Some(Enforced),
+    toolchains: ["codemode"],
+  )
+}
+
+pub fn a_census_that_matches_the_declaration_is_not_contradicted_test() {
+  let observed = Observed("linux/x86_64", Enforced, ["codemode", "gleam_ls"])
+
+  // A machine that provides more than it declared is not contradicted, and a
+  // row that declares nothing is never contradicted.
+  assert executors.contradiction(declared(), observed) == Ok(Nil)
+  assert executors.contradiction(
+      executors.plain("build-box", "executor@10.0.0.2"),
+      Observed("macos/arm64", Degraded, []),
+    )
+    == Ok(Nil)
+}
+
+pub fn a_census_that_contradicts_the_declaration_names_both_values_test() {
+  let box = declared()
+  assert executors.contradiction(
+      box,
+      Observed("macos/arm64", Enforced, ["codemode"]),
+    )
+    == Error(
+      "executor build-box declares platform linux/x86_64 but its census reports macos/arm64",
+    )
+  assert executors.contradiction(
+      box,
+      Observed("linux/x86_64", Degraded, ["codemode"]),
+    )
+    == Error(
+      "executor build-box declares enforcement enforced but its census reports degraded",
+    )
+  assert executors.contradiction(box, Observed("linux/x86_64", Enforced, []))
+    == Error(
+      "executor build-box declares toolchain codemode but its census reports []",
+    )
 }

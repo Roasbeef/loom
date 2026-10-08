@@ -164,6 +164,7 @@ import client/distribution
 import client/executors
 import client/lsp/profile.{type LspServer}
 import client/peer_defaults
+import client/pools
 import client/workspaces
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
@@ -449,14 +450,17 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // ladder's attempts and delays, which `serve.load_config` reads beside the
   // other operator tables and which is refused here if this list omits it.
   // `executors` is `client/executors`'s: the peers an orchestrator may place a
-  // session's workspace on, read once when the daemon starts. `workspaces` is
-  // `client/workspaces`': the checkouts an executor serves, read the same way.
+  // session's workspace on, read once when the daemon starts. `pools` is
+  // `client/pools`': named groups of those executors a session may be placed
+  // on without naming one. `workspaces` is `client/workspaces`': the checkouts
+  // an executor serves, read the same way.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
-      "profiles", "peers", "retry", "distribution", "executors", "workspaces",
+      "profiles", "peers", "retry", "distribution", "executors", "pools",
+      "workspaces",
     ],
     "the top level",
   ))
@@ -464,6 +468,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   use Nil <- result.try(validate_peers(document))
   use Nil <- result.try(validate_distribution(document))
   use Nil <- result.try(validate_executors(document))
+  use Nil <- result.try(validate_pools(document))
   use Nil <- result.try(validate_workspaces(document))
   use model_tables <- result.try(
     table_entries(document, "models")
@@ -510,6 +515,13 @@ fn validate_distribution(
 // is a pinned peer, so it runs after that table's own validation.
 fn validate_executors(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
   executors.from_document(document) |> result.replace(Nil)
+}
+
+// `[pools.<name>]` groups executors a session may be placed on without naming
+// one (protocol-change/078). Its members are executors, so it runs after the
+// executors' own validation.
+fn validate_pools(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
+  pools.from_document(document) |> result.replace(Nil)
 }
 
 // `[workspaces.<name>]` names the checkouts an executor serves

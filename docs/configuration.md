@@ -32,6 +32,7 @@ Worked, commented files:
 | `loom` with no `--config` | `<state-dir>/loom.toml` when that file exists, where the state directory is `--state-dir` or `~/.loom`. When it does not exist, no file is read. |
 | `loom --model-profile <name>` | Selects a `[profiles.<name>]` table of the file for a newly created session. A resumed session keeps the profile it was created with. |
 | `loom --executor <name> --workspace <registered name>` | Not a file choice: creates new sessions in the workspace registered under that name on that `[executors.<name>]` of the file the daemon loaded. With `--executor`, `--workspace` is a name and not a path. |
+| `loom --pool <name> --workspace <registered name>` | The same, but the daemon picks the executor from that `[pools.<name>]` when the session first opens. Exclusive with `--executor`. |
 
 A file given with `--config` replaces the `LOOM_*` environment surface for model
 and role configuration entirely. Precedence is command-line flags, then the
@@ -55,10 +56,11 @@ error instead of a setting that silently does nothing.
 **There is no live reload.** A session reads the file when it is built: when it
 is created, opened, or resumed. It keeps what it read for as long as it runs, so
 an edit reaches a running session only after that session is stopped and opened
-again. Five tables are read once, when the daemon starts, and need a daemon
+again. Six tables are read once, when the daemon starts, and need a daemon
 restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077),
-[`[distribution]`](#distribution), [`[executors.<name>]`](#executorsname) and
-[`[workspaces.<name>]`](#workspacesname) (from protocol-change 078). `[distribution]` also needs the VM booted for it.
+[`[distribution]`](#distribution), [`[executors.<name>]`](#executorsname),
+[`[pools.<name>]`](#poolsname) and [`[workspaces.<name>]`](#workspacesname)
+(from protocol-change 078). `[distribution]` also needs the VM booted for it.
 The MCP, language-server, rule and schedule tables are trust decisions and
 have no flag, no discovery and no reload path; editing the file and reopening the
 session is the decision.
@@ -100,6 +102,7 @@ is not in this list is refused.
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
 | `distribution` | table and array of `[[distribution.peers]]` | Trusted TLS Erlang distribution (from protocol-change 078). | [`[distribution]`](#distribution) |
 | `executors` | table of `[executors.<name>]` | Machines a session's workspace may be registered on (from protocol-change 078). | [`[executors.<name>]`](#executorsname) |
+| `pools` | table of `[pools.<name>]` | Named groups of executors a session may be placed on without naming one (from protocol-change 078). | [`[pools.<name>]`](#poolsname) |
 | `workspaces` | table of `[workspaces.<name>]` | Checkouts this machine serves to orchestrators (from protocol-change 078). | [`[workspaces.<name>]`](#workspacesname) |
 
 ## `[models.<name>]`
@@ -519,9 +522,53 @@ created on one with `loom --executor <name> --workspace <registered name>` or wi
 the web home's "New session on an executor" form, which is offered only when this
 table has an entry; see [Setting up a distributed Loom](distributed-setup.md).
 
+An executor may also declare what its machine provides. A declaration is a claim
+written in this file, not something the daemon discovers. A pool that requires a
+platform, an enforcement or a toolchain skips the executors that did not declare
+it, and when a session attaches, the executor's answer is compared with the
+declaration: a session whose executor contradicts it fails to open with a reason
+that names the declared and the reported value. An executor that provides more
+than it declared is not contradicted.
+
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that serves this executor's workspaces. |
+| `platform` | string | none declared | `<os>/<architecture>`, such as `linux/x86_64` or `macos/arm64` | The platform the machine reports in the system prompt. |
+| `enforcement` | string | none declared | `enforced` or `degraded` | Whether the machine's sandbox helper confines what it runs. |
+| `toolchains` | array of strings | none declared | distinct lowercase names | What the machine provides: `codemode` for the code-mode toolchain, or the key of an `[lsp.<name>]` server it serves. |
+
+## `[pools.<name>]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[executors.<name>]`. A pool is a named list of executors, so that a session can
+be created on "any of these" instead of on one machine: `sessions.create` accepts
+a `pool` in place of an `executor`, never both, and its `workspace` is the name of
+a workspace that every executor of the pool is expected to register. `<name>` has
+the same grammar as an executor name. The pool's executors must each be a
+configured `[executors.<name>]`.
+
+The daemon picks the executor when the session first opens. It tries the pool's
+executors in the order listed, after dropping the ones that do not satisfy the
+pool's requirements, and it goes to the next executor only when the first could
+not have created a scope: the machine could not be reached, or it answered that
+it already holds its maximum number of scopes. Any other failure fails the open.
+The chosen executor is recorded with the session and is never chosen again: a
+session that is stopped and opened again goes back to the same executor, and
+when that executor is full or down the open fails with `executor_unavailable:`
+and no other machine is tried, because the checkout it holds is the session's
+only copy. See [Setting up a distributed Loom](distributed-setup.md).
+
+The three requirement keys have the same values as the declarations of an
+executor. A pool that sets one admits only the executors that declared the same
+value (for `toolchains`, every name listed), and an executor that declared nothing
+is skipped, because the daemon would be guessing.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `executors` | array of strings | required | one or more distinct names of `[executors.<name>]` tables | The executors of the pool, in the order they are tried. |
+| `platform` | string | no requirement | `<os>/<architecture>` | Admit only executors that declared this platform. |
+| `enforcement` | string | no requirement | `enforced` or `degraded` | Admit only executors that declared this enforcement. |
+| `toolchains` | array of strings | no requirement | distinct lowercase names | Admit only executors that declared all of these toolchains. |
 
 ## `[workspaces.<name>]`
 
@@ -557,6 +604,10 @@ directory, in `scopes/<session>`, and removed when the session's scope closes.
   [compaction](architecture/compaction.md).
 - **Helper pool and disabled tools.** `LOOM_HELPER_POOL` and
   `LOOM_DISABLE_TOOLS`, environment variables read by the daemon.
+- **Executor scope limit.** `LOOM_EXECUTOR_MAX_SCOPES`, an environment variable
+  read by a daemon that serves `[workspaces.<name>]`: the most scopes the executor
+  admits that are not cleanly closed, 16 when unset. An executor at its limit
+  refuses a further session's attach, which is what a pool moves past.
 - **Daemon flags.** `--state-dir`, `--bind`, `--capacity`, `--owner-name`, `--ui`,
   `--helper`, `--codemode-seed`, `--codemode-seams`, `--best-effort` and
   `--full-enforcement` are flags with no table. Run `loomd --help`.
