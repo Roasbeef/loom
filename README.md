@@ -53,6 +53,9 @@ Build from source on Linux or macOS. You'll need
 delegated cgroup v2 resources; see the [sandbox guide](packages/sandbox/README.md)
 and [Docker guide](docs/docker.md) for host setup.
 
+To run the agent on one machine and its tools on another, see the
+[distributed setup guide](docs/distributed-setup.md).
+
 Reproducible release builds use the
 [maintained compiler patches](scripts/toolchain/gleam/README.md); ordinary
 source builds can use the stock compiler.

@@ -584,6 +584,19 @@ A label exposes session and strand ids to anyone who can attach to the node.
 That principal already has full control of it, and the node's owner-only
 cookie remains the only gate.
 
+## Joining a distributed deployment
+
+A daemon that has a `[distribution]` table must boot its VM on TLS distribution
+before any Gleam code runs, so both launchers add `-proto_dist inet_tls
+-ssl_dist_optfile <file>` when `LOOM_DISTRIBUTION_OPTFILE` names an options
+file, and add nothing when it is unset. The `bin/loomd` that `make
+server-shipment` writes does this through `ERL_FLAGS`; the release launcher
+`scripts/release.sh` writes does it with arguments to `erl`, so a path with a
+space survives. `loomd distribution options CONFIG OUTPUT` renders the file. The
+release itself is unchanged and a deployment needs no second build:
+[the distributed setup guide](distributed-setup.md) covers the credentials, the
+networking and the container example.
+
 ## Cross-compilation: there is none
 
 A release targets one platform, and `make dist` does not produce

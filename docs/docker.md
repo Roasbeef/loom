@@ -198,6 +198,17 @@ machine, such as the one `LOOM_SIGNOFF_HOST` names, not for a shared
 host where Docker's own confinement is the thing keeping one container's
 compromise from reaching another's.
 
+## Running a distributed pair
+
+`docker/distributed/compose.yaml` runs two containers of this image, an
+orchestrator and an executor, on one private network, and publishes only the
+orchestrator's client port on the host's loopback. The orchestrator stays in the
+plain posture; the executor can take the full-isolation posture above through
+`compose.isolated.yaml`. The loopback bind described above is why the client
+port goes through a small forwarder service. `make docker-distributed-smoke`
+brings the pair up and checks that both run a TLS node. See
+[the distributed setup guide](distributed-setup.md).
+
 ## Measured self-test counts
 
 `loom-exec --self-test` runs eleven probes (`docs/architecture/effects.md`)
