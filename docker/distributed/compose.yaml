@@ -1,0 +1,119 @@
+# A distributed Loom deployment on one Docker host: an orchestrator ("brains")
+# and an executor ("hands") built from the same loom-runtime image, on one
+# private network. docs/distributed-setup.md is the guide; this file is its
+# "Quick start C".
+#
+# To deploy:
+#
+#   1. Build the image once:         make docker-image
+#   2. Provision the deployment:     loom distribution provision plan.toml out/
+#      The plan names two nodes, orchestrator@orchestrator.loom.internal and
+#      executor@executor.loom.internal, and gives the executor a workspace
+#      rooted at /work/project.
+#   3. Put the two bundles here:     cp out/orchestrator.loombundle out/executor.loombundle docker/distributed/
+#   4. Start:                        docker compose -f docker/distributed/compose.yaml up -d
+#
+# Each bundle holds that node's private key and the deployment cookie. Treat it
+# like a password file: copy it over a secure channel and keep it out of
+# version control. It is mounted read-only and copied into the container's own
+# home, so nothing private is written back to the host.
+#
+# Ports. Only the client port is published, and only on the host's loopback.
+# Distribution (epmd on 4369 and the node's listener on 9100) stays on the
+# private network. The daemon itself binds container loopback, which a
+# published port cannot reach, so the optional "client-port" service (profile
+# client-port) forwards it:
+#
+#   docker compose -f docker/distributed/compose.yaml --profile client-port up -d
+#
+# Postures (docs/docker.md). As written, both containers run in the plain
+# posture: Docker's boundary is the jail, and loom's own sandbox does not come
+# up. For real jailing on the executor, add the override file:
+#
+#   docker compose -f docker/distributed/compose.yaml \
+#                  -f docker/distributed/compose.isolated.yaml up -d
+#
+# Environment (all optional):
+#   LOOM_IMAGE            image to run (default loom-runtime:dev)
+#   ORCHESTRATOR_BUNDLE   path of the orchestrator bundle (default ./orchestrator.loombundle)
+#   EXECUTOR_BUNDLE       path of the executor bundle (default ./executor.loombundle)
+#   EXECUTOR_CHECKOUT     a host directory or named volume mounted at /work on the executor
+#   LOOM_CLIENT_PORT      host loopback port for the client (default 7331)
+
+name: loom-distributed
+
+x-node: &node
+  image: ${LOOM_IMAGE:-loom-runtime:dev}
+  # The entrypoint copies the bundle into the loom user's home as root, then
+  # drops to uid 10000 before it starts the daemon.
+  user: root
+  entrypoint: ["tini", "--", "/entrypoint.sh"]
+  restart: "no"
+  healthcheck:
+    test: ["CMD-SHELL", "grep -q '\"ready\"' /var/lib/loom/daemon.endpoint"]
+    interval: 3s
+    timeout: 3s
+    retries: 40
+
+services:
+  orchestrator:
+    <<: *node
+    hostname: orchestrator
+    volumes:
+      - type: bind
+        source: ${ORCHESTRATOR_BUNDLE:-./orchestrator.loombundle}
+        target: /bundle
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./entrypoint.sh
+        target: /entrypoint.sh
+        read_only: true
+      - orchestrator-state:/var/lib/loom
+    networks:
+      loom:
+        aliases: [orchestrator.loom.internal]
+    ports:
+      - "127.0.0.1:${LOOM_CLIENT_PORT:-7331}:7332"
+
+  executor:
+    <<: *node
+    hostname: executor
+    volumes:
+      - type: bind
+        source: ${EXECUTOR_BUNDLE:-./executor.loombundle}
+        target: /bundle
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./entrypoint.sh
+        target: /entrypoint.sh
+        read_only: true
+      - executor-state:/var/lib/loom
+      - ${EXECUTOR_CHECKOUT:-checkout}:/work
+    networks:
+      loom:
+        aliases: [executor.loom.internal]
+
+  # Forwards the orchestrator's loopback-only client port to the published
+  # one. It shares the orchestrator's network namespace, so it reaches the
+  # daemon at 127.0.0.1:7331 and the host reaches it at 127.0.0.1:7331 too.
+  client-port:
+    profiles: [client-port]
+    image: alpine/socat
+    network_mode: service:orchestrator
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    command: ["TCP-LISTEN:7332,fork,reuseaddr", "TCP:127.0.0.1:7331"]
+
+networks:
+  loom:
+    driver: bridge
+
+volumes:
+  orchestrator-state:
+  executor-state:
+  checkout:

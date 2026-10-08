@@ -1,0 +1,28 @@
+# Override for compose.yaml: run the executor in the full-isolation posture of
+# docs/docker.md, so loom's own jail (bubblewrap, Landlock, seccomp, cgroup v2
+# ceilings) comes up inside the container instead of Docker's boundary being
+# the only one.
+#
+#   docker compose -f docker/distributed/compose.yaml \
+#                  -f docker/distributed/compose.isolated.yaml up -d
+#
+# Only the executor needs this. The orchestrator runs no model-written code,
+# so it stays in the plain posture.
+#
+# These settings remove pieces of Docker's own confinement; read "Full
+# isolation" in docs/docker.md for what each one gives up before using them.
+# They are the measured flags of that page. Doing the cgroup delegation from
+# the entrypoint, and moving the daemon into the delegated cgroup, has not been
+# verified: run `docker compose exec executor loom-exec --self-test` and expect
+# 10 of 11 probes enforced before trusting this posture.
+
+services:
+  executor:
+    cgroup: host
+    cap_add: [SYS_ADMIN]
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
+    environment:
+      LOOM_CGROUP_DELEGATE: "1"

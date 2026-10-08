@@ -613,6 +613,10 @@ docker-image: ## Build the runnable loomd image (BuildKit; DOCKER_IMAGE=name:tag
 docker-smoke: ## Build the image, boot it, run a client command and the self-test, then stop it
 	@bash scripts/docker_smoke.sh "$(DOCKER_IMAGE)"
 
+.PHONY: docker-distributed-smoke
+docker-distributed-smoke: ## Bring up docker/distributed (orchestrator + executor), check both run a TLS node, tear down; skips without Docker
+	@bash scripts/distributed_smoke.sh "$(DOCKER_IMAGE)"
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	@rm -rf packages/*/build $(HELPER) bin build dist
