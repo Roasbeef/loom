@@ -164,6 +164,7 @@ import client/distribution
 import client/executors
 import client/lsp/profile.{type LspServer}
 import client/peer_defaults
+import client/workspaces
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
@@ -448,13 +449,14 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // ladder's attempts and delays, which `serve.load_config` reads beside the
   // other operator tables and which is refused here if this list omits it.
   // `executors` is `client/executors`'s: the peers an orchestrator may place a
-  // session's workspace on, read once when the daemon starts.
+  // session's workspace on, read once when the daemon starts. `workspaces` is
+  // `client/workspaces`': the checkouts an executor serves, read the same way.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
-      "profiles", "peers", "retry", "distribution", "executors",
+      "profiles", "peers", "retry", "distribution", "executors", "workspaces",
     ],
     "the top level",
   ))
@@ -462,6 +464,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   use Nil <- result.try(validate_peers(document))
   use Nil <- result.try(validate_distribution(document))
   use Nil <- result.try(validate_executors(document))
+  use Nil <- result.try(validate_workspaces(document))
   use model_tables <- result.try(
     table_entries(document, "models")
     |> result.replace_error("the catalogue needs a [models.<name>] table"),
@@ -507,6 +510,14 @@ fn validate_distribution(
 // is a pinned peer, so it runs after that table's own validation.
 fn validate_executors(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
   executors.from_document(document) |> result.replace(Nil)
+}
+
+// `[workspaces.<name>]` names the checkouts an executor serves
+// (protocol-change/078). Like `[executors.<name>]` it needs `[distribution]`.
+fn validate_workspaces(
+  document: Dict(String, tom.Toml),
+) -> Result(Nil, String) {
+  workspaces.from_document(document) |> result.replace(Nil)
 }
 
 // tom renders a TOML parse failure as a structured value; the server
@@ -976,6 +987,26 @@ fn mcp_command(
 }
 
 // --- the [lsp.<name>] tables -----------------------------------------------
+
+/// Parses only the `[lsp.<name>]` tables of a configuration text.
+///
+/// An executor has no model catalogue, so it cannot call `parse`, which
+/// insists on `[models]` and `[roles]`. It still serves language servers for
+/// the workspaces it hosts, and this reads the same tables through the same
+/// decoder, so a server means the same thing wherever the file is read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_lsp("") == Ok([])
+/// ```
+pub fn parse_lsp(text: String) -> Result(List(LspServer), String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(describe_parse_error),
+  )
+  parse_lsp_servers(document)
+}
 
 // The optional [lsp] table: absent parses to no servers, which is the
 // workspace that registers no `lsp_*` tools and pays nothing. Present, it

@@ -54,10 +54,10 @@ error instead of a setting that silently does nothing.
 **There is no live reload.** A session reads the file when it is built: when it
 is created, opened, or resumed. It keeps what it read for as long as it runs, so
 an edit reaches a running session only after that session is stopped and opened
-again. Four tables are read once, when the daemon starts, and need a daemon
+again. Five tables are read once, when the daemon starts, and need a daemon
 restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077),
-[`[distribution]`](#distribution) and [`[executors.<name>]`](#executorsname)
-(from protocol-change 078). `[distribution]` also needs the VM booted for it.
+[`[distribution]`](#distribution), [`[executors.<name>]`](#executorsname) and
+[`[workspaces.<name>]`](#workspacesname) (from protocol-change 078). `[distribution]` also needs the VM booted for it.
 The MCP, language-server, rule and schedule tables are trust decisions and
 have no flag, no discovery and no reload path; editing the file and reopening the
 session is the decision.
@@ -99,6 +99,7 @@ is not in this list is refused.
 | `peers` | table | Default peer links (from protocol-change 077). | [`[peers]`](#peers) |
 | `distribution` | table and array of `[[distribution.peers]]` | Trusted TLS Erlang distribution (from protocol-change 078). | [`[distribution]`](#distribution) |
 | `executors` | table of `[executors.<name>]` | Machines a session's workspace may be registered on (from protocol-change 078). | [`[executors.<name>]`](#executorsname) |
+| `workspaces` | table of `[workspaces.<name>]` | Checkouts this machine serves to orchestrators (from protocol-change 078). | [`[workspaces.<name>]`](#workspacesname) |
 
 ## `[models.<name>]`
 
@@ -518,6 +519,28 @@ only records the choice: a session registered on an executor does not open yet.
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that serves this executor's workspaces. |
+
+## `[workspaces.<name>]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[distribution]`. This is the executor's side of a registered workspace: each table
+names a checkout this machine serves, and an orchestrator that registers a
+workspace under that name is attached to it. The orchestrator sends only the name.
+It never learns or sends a path, so a session cannot reach a directory that is not
+listed here. `<name>` is 1 to 128 bytes with no `/` and no NUL. The tables require
+a `[distribution]` table, and a daemon that has at least one starts the executor
+host, which serves every listed workspace to the peers it pins. A daemon with no
+`[workspaces]` starts no host.
+
+The machine's own settings apply to every attached session: the `[tools]`,
+`[workspace]`, `[lsp.<name>]`, `[jobs]` and `[secrets]` tables of this file, the
+toolchain and code-mode seed it finds, and the helper it runs. A session's
+scratch, blob and work directories are created under the daemon's state
+directory, in `scopes/<session>`, and removed when the session's scope closes.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `root` | string | required | an absolute path with no `..` segment, naming an existing directory | The checkout served under this name. The daemon refuses to start when it is not a directory. |
 
 ## What this file does not configure
 
