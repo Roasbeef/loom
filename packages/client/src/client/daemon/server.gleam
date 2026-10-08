@@ -53,9 +53,8 @@ import client/daemon/ui_relay
 import client/daemon/ui_result
 import client/daemon/ui_sessions
 import client/daemon/upgrade_log
+import client/directory/deletion
 import client/directory/member
-import client/directory/ownership
-import client/directory/record
 import client/directory/store
 import client/executors
 import client/internal/ffi_khepri
@@ -2250,6 +2249,7 @@ fn control(
             | protocol.OpenSession(..)
             | protocol.StopSession(..)
             | protocol.MoveSession(..)
+            | protocol.AbandonMove(..)
             | protocol.DeleteSession(..) -> KeepServing
           }
           #(protocol.event(Some(request.id), event, body), after)
@@ -2300,6 +2300,7 @@ fn control_use(command: protocol.Command) {
     | protocol.OpenSession(..)
     | protocol.StopSession(..)
     | protocol.MoveSession(..)
+    | protocol.AbandonMove(..)
     | protocol.DeleteSession(..)
     | protocol.Shutdown(_) -> root.ControlMutation
   }
@@ -3147,6 +3148,34 @@ fn dispatch_class(
       |> result.map_error(error_code)
       |> result.map(fn(status) { #("sessions.stop", status_json(status)) })
     }
+    protocol.AbandonMove(id, supplied) -> {
+      use Nil <- result.try(owner(principal))
+      use Nil <- result.try(epoch(state, supplied))
+      use Nil <- result.try(case config.directory.ownership {
+        Some(_) -> Ok(Nil)
+        None ->
+          Error(
+            admin_error_code(manager.AdminNotMovable(
+              "only a directory member can abandon a move",
+            )),
+          )
+      })
+      case manager.custody(state.registry, id) {
+        Ok(catalogue.Moving(op:, ..)) -> {
+          config.movers.abandon(id)
+          Ok(#(
+            "sessions.move",
+            json.Object([
+              #("session_id", json.String(id)),
+              #("op", json.String(op)),
+              #("state", json.String("abandoning")),
+            ]),
+          ))
+        }
+        Ok(_) -> Error("conflict")
+        Error(error) -> Error(error_code(error))
+      }
+    }
     protocol.MoveSession(id, to, supplied) -> {
       use Nil <- result.try(owner(principal))
       use Nil <- result.try(epoch(state, supplied))
@@ -3334,62 +3363,33 @@ fn deleted_through_directory(
   supplied: String,
   id: String,
 ) -> Result(Option(catalogue.Registration), String) {
-  case config.directory.ownership {
-    None -> Ok(None)
-    Some(ownership) ->
-      case manager.get(state.registry, id) {
-        Error(_) -> Ok(None)
-        Ok(manager.View(registration:, ..)) ->
-          case registration.executor, registration.pool {
-            "", "" -> Ok(None)
-            _, _ -> {
-              use marked <- result.try(
-                manager.begin_delete(state.registry, digest, supplied, id)
-                |> result.map_error(admin_error_code),
-              )
-              released(
-                state.registry,
-                state.sessions_directory,
-                ownership,
-                marked.id,
-              )
-              |> result.map(Some)
-            }
-          }
-      }
+  case config.directory.ownership, manager.get(state.registry, id) {
+    Some(ownership), Ok(manager.View(registration:, ..))
+      if registration.executor != "" || registration.pool != ""
+    -> {
+      use marked <- result.try(
+        manager.begin_delete(state.registry, digest, supplied, id)
+        |> result.map_error(admin_error_code),
+      )
+      deletion.finish(
+        state.registry,
+        state.sessions_directory,
+        ownership,
+        marked.id,
+      )
+      |> result.map(Some)
+      |> result.map_error(deletion_code)
+    }
+    _, _ -> Ok(None)
   }
 }
 
-/// Deletes the directory record of a session marked for deletion, then the
-/// registration, its mark and its file (protocol-change/079). A record that is
-/// already absent means this daemon's own earlier delete removed it, which the
-/// mark proves, so the deletion finishes; a record naming someone else, or a
-/// move, clears the mark and refuses; a write that did not commit leaves the
-/// mark for a later pass. The movers' tick calls it for every marked session.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // server.released(registry, sessions, ownership, session_id)
-/// ```
-pub fn released(
-  registry: manager.Manager(instance),
-  sessions: String,
-  ownership: ownership.Ownership,
-  id: String,
-) -> Result(catalogue.Registration, String) {
-  case ownership.release(id) {
-    Ok(Nil) | Error(store.Mismatch(None)) ->
-      manager.finish_delete(registry, id, sessions)
-      |> result.map_error(admin_error_code)
-    Error(store.Mismatch(Some(found))) -> {
-      let _unmarked = manager.unmark_deleting(registry, id)
-      case found.state {
-        record.Moving(..) if found.owner == ownership.node -> Error("moving")
-        record.Moving(..) | record.Serving -> Error(not_owner_code)
-      }
-    }
-    Error(store.NoQuorum(_)) -> Error(no_quorum_code)
+fn deletion_code(refusal: deletion.Refusal) -> String {
+  case refusal {
+    deletion.Moving -> "moving"
+    deletion.NotOwner -> not_owner_code
+    deletion.NoQuorum -> no_quorum_code
+    deletion.Registry(error:) -> admin_error_code(error)
   }
 }
 

@@ -253,6 +253,12 @@ pub type Command {
   /// itself runs on, and outlasts, the connection.
   MoveSession(session_id: String, to: String, epoch: String)
 
+  /// `sessions.move` with `abandon: true`: gives up the session's move in
+  /// flight, on a directory member (protocol-change/079). Owner-only. The
+  /// abandon is a compare-and-set that fails if the receiver already took the
+  /// session, in which case the move is retired instead.
+  AbandonMove(session_id: String, epoch: String)
+
   /// Removes a stopped registration and its conversation database.
   DeleteSession(session_id: String, epoch: String)
 
@@ -617,16 +623,16 @@ fn decode_fields(
       use epoch <- result.map(text_field(fields, "epoch", 256))
       DeleteSession(id, epoch)
     }
-    "sessions.move" -> {
-      use id <- result.try(session_id(fields))
-      use to <- result.try(text_field(fields, "to", 64))
-      use Nil <- result.try(case catalogue.is_orchestrator_name(to) {
-        True -> Ok(Nil)
-        False -> Error("to must be the name of an orchestrator")
-      })
-      use epoch <- result.map(text_field(fields, "epoch", 256))
-      MoveSession(id, to, epoch)
-    }
+    "sessions.move" ->
+      case list.key_find(fields, "abandon") {
+        Ok(json.Bool(True)) -> {
+          use id <- result.try(session_id(fields))
+          use epoch <- result.map(text_field(fields, "epoch", 256))
+          AbandonMove(id, epoch)
+        }
+        Ok(json.Bool(False)) | Error(Nil) -> move_session(fields)
+        Ok(_) -> Error("abandon must be a boolean")
+      }
     "operations.get" -> {
       use id <- result.try(session_id(fields))
       use operation <- result.try(text_field(fields, "operation", 512))
@@ -637,6 +643,17 @@ fn decode_fields(
     "directory.status" -> Ok(DirectoryStatus)
     _unknown -> Error("unsupported control command")
   }
+}
+
+fn move_session(fields) {
+  use id <- result.try(session_id(fields))
+  use to <- result.try(text_field(fields, "to", 64))
+  use Nil <- result.try(case catalogue.is_orchestrator_name(to) {
+    True -> Ok(Nil)
+    False -> Error("to must be the name of an orchestrator")
+  })
+  use epoch <- result.map(text_field(fields, "epoch", 256))
+  MoveSession(id, to, epoch)
 }
 
 // The scope of a creation. A session on an executor or in a pool can only be
