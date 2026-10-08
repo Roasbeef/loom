@@ -177,6 +177,20 @@ pub type Outcome {
   Stalled(reason: String)
 }
 
+// Whether a send has already begun the file again. A receiver that loses its
+// place is answered by starting the file over once, and a second loss in one send
+// is not a race.
+type Sending {
+  FirstTry
+  RestartedOnce
+}
+
+// Whether the whole file has already been sent again for a refused digest.
+type Asking {
+  FirstAsk
+  AfterResend
+}
+
 // Why a step ended the run. A halt is the error side of every step, so the steps
 // read as a chain and the run's outcome is decided in one place.
 type Halt {
@@ -294,9 +308,9 @@ fn destination(
   move: catalogue.Pending,
 ) -> Result(Orchestrator, Halt) {
   orchestrators.find(environment.orchestrators, move.to)
-  |> result.replace_error(Stall(
-    "this daemon does not list an orchestrator named " <> move.to,
-  ))
+  |> result.map_error(fn(_unlisted) {
+    Stall("this daemon does not list an orchestrator named " <> move.to)
+  })
 }
 
 fn receiver_stage(
@@ -530,7 +544,7 @@ fn send_all(
   copy: Copy,
 ) -> Result(Nil, Halt) {
   bounded(environment.budget.send_ms, "sending the copy", fn() {
-    pieces(environment, move, receiver, copy, 0, False)
+    pieces(environment, move, receiver, copy, 0, FirstTry)
   })
 }
 
@@ -543,7 +557,7 @@ fn pieces(
   receiver: Orchestrator,
   copy: Copy,
   offset: Int,
-  restarted: Bool,
+  sending: Sending,
 ) -> Result(Nil, Halt) {
   let total = bit_array.byte_size(copy.bytes)
   let length = int.min(session_move.chunk_bytes, total - offset)
@@ -569,13 +583,14 @@ fn pieces(
                 receiver,
                 copy,
                 offset + length,
-                restarted,
+                sending,
               )
           }
         Ok(session_move.Refused(session_move.OutOfOrder(..))) ->
-          case restarted {
-            False -> pieces(environment, move, receiver, copy, 0, True)
-            True ->
+          case sending {
+            FirstTry ->
+              pieces(environment, move, receiver, copy, 0, RestartedOnce)
+            RestartedOnce ->
               Error(Stall("the receiver keeps losing its place in the copy"))
           }
         Ok(session_move.Refused(refusal:)) ->
@@ -619,7 +634,7 @@ fn activate(
       incarnation: cell.incarnation,
       manifest: session_move.manifest_of(registration),
     )
-  asked_to_activate(environment, move, receiver, copy, request, False)
+  asked_to_activate(environment, move, receiver, copy, request, FirstAsk)
 }
 
 fn asked_to_activate(
@@ -628,7 +643,7 @@ fn asked_to_activate(
   receiver: Orchestrator,
   copy: Copy,
   request: session_move.Activation,
-  resent: Bool,
+  asking: Asking,
 ) -> Result(Nil, Halt) {
   let answer =
     bounded(environment.budget.activate_ms, "the activation", fn() {
@@ -646,12 +661,19 @@ fn asked_to_activate(
         "the orchestrator " <> move.to <> " could not decide: " <> reason,
       ))
     Ok(session_move.Refused(refusal:)) ->
-      case refusal, resent {
-        session_move.DigestMismatch, False
-        | session_move.NothingReceived, False
+      case refusal, asking {
+        session_move.DigestMismatch, FirstAsk
+        | session_move.NothingReceived, FirstAsk
         -> {
           use Nil <- result.try(send_all(environment, move, receiver, copy))
-          asked_to_activate(environment, move, receiver, copy, request, True)
+          asked_to_activate(
+            environment,
+            move,
+            receiver,
+            copy,
+            request,
+            AfterResend,
+          )
         }
         _, _ ->
           Error(Abandon(

@@ -61,18 +61,6 @@ pub type Control {
   )
 }
 
-/// The control of a daemon that moves nothing: it lists no orchestrator, so every
-/// move is refused before the registry is asked, and `begin` does nothing.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert session_movers.idle().orchestrators == []
-/// ```
-pub fn idle() -> Control {
-  Control(orchestrators: [], begin: fn(_move) { Nil })
-}
-
 // What the actor is told.
 type Message {
   Begin(move: catalogue.Pending)
@@ -96,6 +84,18 @@ type State(instance) {
     inbox: Subject(Message),
     entries: Dict(String, Entry),
   )
+}
+
+/// The control of a daemon that moves nothing: it lists no orchestrator, so every
+/// move is refused before the registry is asked, and `begin` does nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_movers.idle().orchestrators == []
+/// ```
+pub fn idle() -> Control {
+  Control(orchestrators: [], begin: fn(_move) { Nil })
 }
 
 /// Starts the actor, linked to the caller, and returns the control that reaches

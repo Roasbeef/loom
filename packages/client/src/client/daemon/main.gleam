@@ -686,8 +686,9 @@ fn closer_of(
   config: Config,
   membership: distribution.Membership,
 ) -> session_mover.Closer {
+  let configured = config.executors
   fn(executor, session, workspace_name, incarnation) {
-    case workspace.reach(Some(membership), config.executors, executor) {
+    case workspace.reach(Some(membership), configured, executor) {
       Ok(reach) ->
         workspace.close_stopped(reach, session, workspace_name, incarnation)
       Error(_unreachable) -> Error(workspace.CloseUnanswered)
