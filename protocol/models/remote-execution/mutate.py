@@ -97,6 +97,14 @@ MUTATIONS = {
     ("PSrc/Host.p",
      "      if (m.key in ledger) {\n        answerFromRow(m);\n      } else {\n        reply(m, K_ANSWER, ANS_NOPLANE, LOOK_MISSING, 0);\n      }\n",
      "      reply(m, K_ANSWER, ANS_NOPLANE, LOOK_MISSING, 0);\n")]),
+
+  # exec_ledger.ack leaves a tombstone that keeps the key taken. Here it deletes
+  # the row, so a dead runtime's late Run, which carries the same attach token,
+  # finds no row and starts a key that was fenced and acknowledged.
+  "M7-ack-deletes-the-row": ("tcDefectLateRun", 20000, r"started after the key was fenced", [
+    ("PSrc/Host.p",
+     "      ledger[key] = (phase = ROW_ACKED, outcome = 0);\n",
+     "      ledger -= (key);\n")]),
 }
 
 

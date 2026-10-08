@@ -48,23 +48,32 @@
 //// started those runs is gone, so nothing is relaunched, and `unknown` is the
 //// honest record that the call may have run and that its outcome was lost.
 ////
-//// ## Why an acknowledgement deletes the row
+//// ## Why an acknowledgement leaves a tombstone
 ////
-//// There is no acknowledged state. After the orchestrator durably stages a
-//// result it sends `ack`, and `ack` deletes the row. The orchestrator does
-//// re-send a `Run` for a call after a reconnect or a runtime restart, and the
-//// row is what makes that safe, so a row may go only when no `Run` for its key
-//// can arrive again. The orchestrator acknowledges a key only when its
-//// operation state no longer lists the call as planned or effect-pending
-//// (`workspace.settled`), which is after the effect returned and its outcome
-//// was staged. The planner sends a `Run`, and recovery asks about a call, only
-//// while the call is planned or pending, and one `Run` is outstanding at a time
-//// for a call (a message lost with a dropped connection is never delivered
-//// later). Once a key is acknowledged, then, nothing for it is sent or in
-//// flight. A stale runtime's late `Run` is stopped by the attach token whether
-//// or not a row exists. A tombstone would guard a `Run` for a settled key,
-//// which the orchestrator does not send, at the price of a row that never
-//// frees.
+//// After the orchestrator durably stages a result it sends `ack`, and `ack`
+//// retires the row: the outcome and its reservation go, and a tombstone for the
+//// key stays in `call_ack`. A key with a tombstone reads as `Acked`, `admit`
+//// answers it as `Existing(Acked)` and never `Fresh`, and it stays so until the
+//// scope's incarnation changes. So a key admitted once in an incarnation never
+//// starts again in it, by construction.
+////
+//// The tombstone is there because nothing else orders a late `Run` after an
+//// acknowledgement. The orchestrator re-sends a `Run` after a reconnect and
+//// after a runtime restart, and Erlang orders messages only for one sender and
+//// receiver pair. A runtime that restarts inside one open keeps the open's
+//// attach token, so a `Run` from its dead effect process is current by token.
+//// Recovery's `query_or_fence` from a new process can overtake that `Run`,
+//// fence the key and be told "did not run", the acknowledgement can follow, and
+//// the dead process's `Run` can arrive last. With the row gone, nothing would
+//// refuse it, and it would start a call the model was told never ran. The
+//// token stops such a `Run` across opens and the row stops it inside one, and
+//// only the tombstone keeps the row's refusal after the acknowledgement.
+////
+//// A tombstone holds no outcome and no reserved bytes, so it is not counted in
+//// the byte budget and costs one small row. They are dropped when the scope
+//// reopens at a new incarnation, which refuses every request from the old one
+//// by itself, when it closes with every child retired, and when an operator
+//// releases it. A scope that closed with unknown cleanup keeps them.
 ////
 //// ## Releasing a scope
 ////
@@ -103,7 +112,8 @@
 //// over `admitted` and `terminal` rows plus the new reservation must stay within
 //// `max_ledger_bytes`, so an executor cannot accept a call whose result it might
 //// have nowhere to put. `finish` shrinks the reservation to the outcome's real
-//// size, and `ack` releases it. An `unknown` row holds no bytes.
+//// size, and `ack` releases it. An `unknown` row holds no bytes, and neither does
+//// a tombstone.
 ////
 //// ## One opener
 ////
@@ -150,6 +160,7 @@ import gleam/result
 import gleam/string
 import parrot/dev
 import sqlight
+import storage/exec_ledger_acks_schema
 import storage/exec_ledger_releases_schema
 import storage/exec_ledger_schema
 import storage/sql
@@ -235,6 +246,11 @@ pub type CallState {
   /// The executor restarted or the host gave up on the run; the call may have
   /// run and its outcome is lost.
   Unknown
+
+  /// The orchestrator acknowledged the call's result and the row went. The key
+  /// stays taken for the rest of the scope's incarnation, so a `Run` still in
+  /// flight for it never starts the call. Nothing about the outcome is kept.
+  Acked
 }
 
 /// The answer to `query`.
@@ -414,7 +430,7 @@ const fence_tool = "(fence)"
 // ledger from opening, and recovering rows in, some other SQLite file.
 const application_id = 1_279_607_884
 
-const schema_version = 2
+const schema_version = 3
 
 /// The limits the design note fixes: sixteen unclean scopes, and the default
 /// byte budget.
@@ -684,7 +700,7 @@ pub fn query(ledger: Ledger, key: Key) -> Result(Lookup, Error) {
 /// After that no `admit` for this key can succeed, which is what makes a
 /// missing row trustworthy to the caller (see "The key fence" above). The byte
 /// budget is not consulted: a fence holds one short outcome, the caller makes
-/// one per orphaned call, and `ack` deletes it like any settled row.
+/// one per orphaned call, and `ack` retires it like any settled row.
 ///
 /// ## Examples
 ///
@@ -732,13 +748,14 @@ pub fn query_or_fence(
   })
 }
 
-/// Deletes a settled call's row after the orchestrator durably staged its
-/// result (see "Why an acknowledgement deletes the row" above).
+/// Retires a settled call's row after the orchestrator durably staged its
+/// result (see "Why an acknowledgement leaves a tombstone" above).
 ///
-/// A `Terminal` or `Unknown` row is deleted and its bytes are released. A missing
-/// row is already acknowledged, so the call succeeds. An `Admitted` row is
-/// untouched, so a misdirected acknowledgement can never discard a live run's
-/// reservation.
+/// A `Terminal` or `Unknown` row is deleted, its bytes are released, and a
+/// tombstone for the key stays, so the key reads as `Acked` and no `admit`
+/// succeeds for it again in this incarnation. A missing row, or one already
+/// acknowledged, succeeds without a change. An `Admitted` row is untouched, so a
+/// misdirected acknowledgement can never discard a live run's reservation.
 ///
 /// ## Examples
 ///
@@ -746,15 +763,29 @@ pub fn query_or_fence(
 /// // exec_ledger.ack(ledger, key)
 /// ```
 pub fn ack(ledger: Ledger, key: Key) -> Result(Nil, Error) {
-  statement(
-    ledger.connection,
-    sql.ack_ledger_call(
-      session: key.session,
-      op: key.op,
-      step: key.step,
-      source_index: key.source_index,
-    ),
-  )
+  let connection = ledger.connection
+  transaction(connection, fn() {
+    // The tombstone is copied from the row it replaces, so a row that is not
+    // settled leaves none.
+    use Nil <- result.try(statement(
+      connection,
+      sql.insert_ledger_ack(
+        session: key.session,
+        op: key.op,
+        step: key.step,
+        source_index: key.source_index,
+      ),
+    ))
+    statement(
+      connection,
+      sql.ack_ledger_call(
+        session: key.session,
+        op: key.op,
+        step: key.step,
+        source_index: key.source_index,
+      ),
+    )
+  })
 }
 
 /// Fences the scope: `Open` becomes `Closing`, and from this commit no `admit`
@@ -823,15 +854,20 @@ pub fn finish_close(
       incarnation,
     ))
     case scope.state {
-      Closing ->
-        statement(
+      Closing -> {
+        use Nil <- result.try(statement(
           connection,
           sql.finish_ledger_scope_close(
             close_outcome: Some(stored),
             session:,
             workspace:,
           ),
-        )
+        ))
+        case outcome {
+          AllRetired -> forget_acks(connection, session)
+          UnknownCleanup(_) -> Ok(Nil)
+        }
+      }
       Open | Closed(_) -> Error(ScopeNotClosing(scope.state))
     }
   })
@@ -901,6 +937,7 @@ pub fn release(
         workspace: scope.workspace,
       ),
     ))
+    use Nil <- result.try(forget_acks(connection, session))
     use Nil <- result.try(statement(
       connection,
       sql.insert_ledger_release(
@@ -973,11 +1010,18 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
     use found <- result.try(number(connection, "PRAGMA application_id"))
     use version <- result.try(number(connection, "PRAGMA user_version"))
     case found, version {
-      id, 2 if id == application_id -> Ok(Nil)
+      id, 3 if id == application_id -> Ok(Nil)
 
-      // A version 1 file has every table but the release record. Adding it is
-      // the whole migration, and an older build refuses the result.
-      id, 1 if id == application_id -> migrate_to_releases(connection)
+      // Each version added one table, so a migration is the tables the file
+      // lacks and the version stamp. An older build refuses the result.
+      id, 2 if id == application_id -> migrate_to_acks(connection)
+      id, 1 if id == application_id -> {
+        use Nil <- result.try(execute(
+          connection,
+          exec_ledger_releases_schema.schema,
+        ))
+        migrate_to_acks(connection)
+      }
       0, 0 -> {
         use tables <- result.try(number(connection, "PRAGMA schema_version"))
         case tables {
@@ -993,6 +1037,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 fn create_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use Nil <- result.try(execute(connection, exec_ledger_schema.schema))
   use Nil <- result.try(execute(connection, exec_ledger_releases_schema.schema))
+  use Nil <- result.try(execute(connection, exec_ledger_acks_schema.schema))
   execute(
     connection,
     "PRAGMA application_id = "
@@ -1002,8 +1047,8 @@ fn create_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   )
 }
 
-fn migrate_to_releases(connection: sqlight.Connection) -> Result(Nil, Error) {
-  use Nil <- result.try(execute(connection, exec_ledger_releases_schema.schema))
+fn migrate_to_acks(connection: sqlight.Connection) -> Result(Nil, Error) {
+  use Nil <- result.try(execute(connection, exec_ledger_acks_schema.schema))
   execute(connection, "PRAGMA user_version = " <> int.to_string(schema_version))
 }
 
@@ -1076,6 +1121,7 @@ fn attach_existing(
               workspace:,
             ),
           ))
+          use Nil <- result.try(forget_acks(connection, scope.session))
           Ok(Reopened)
         }
         False -> Error(StaleIncarnation(scope.incarnation))
@@ -1151,7 +1197,7 @@ fn admitted_reservation(
       use state <- result.try(call_state(key, row))
       case state {
         Admitted -> Ok(row.outcome_bytes)
-        Terminal(_) | Unknown -> Error(CallNotAdmitted)
+        Terminal(_) | Unknown | Acked -> Error(CallNotAdmitted)
       }
     }
     [_, _, ..] -> Error(MalformedRow("call key matches several rows"))
@@ -1263,10 +1309,41 @@ fn find_call(
 ) -> Result(Option(CallState), Error) {
   use found <- result.try(call_rows(connection, key))
   case found {
-    [] -> Ok(None)
+    [] -> acked_state(connection, key)
     [row] -> result.map(call_state(key, row), Some)
     [_, _, ..] -> Error(MalformedRow("call key matches several rows"))
   }
+}
+
+// A key with no row is `Acked` when the acknowledgement left a tombstone.
+fn acked_state(
+  connection: sqlight.Connection,
+  key: Key,
+) -> Result(Option(CallState), Error) {
+  use found <- result.try(rows(
+    connection,
+    sql.ledger_ack(
+      session: key.session,
+      op: key.op,
+      step: key.step,
+      source_index: key.source_index,
+    ),
+  ))
+  case found {
+    [] -> Ok(None)
+    [_tombstone] -> Ok(Some(Acked))
+    [_, _, ..] -> Error(MalformedRow("call key has several tombstones"))
+  }
+}
+
+// The scope is at a new incarnation, or closed with every child retired, so
+// every request that a tombstone guards against is refused by the scope's own
+// check, and the tombstones can go.
+fn forget_acks(
+  connection: sqlight.Connection,
+  session: String,
+) -> Result(Nil, Error) {
+  statement(connection, sql.delete_ledger_acks(session:))
 }
 
 fn call_rows(

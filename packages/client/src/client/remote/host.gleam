@@ -777,7 +777,8 @@ fn admit_run(
           process.send(reply, stored_answer(stored))
           state
         }
-        Ok(exec_ledger.Existing(exec_ledger.Unknown)) -> {
+        Ok(exec_ledger.Existing(exec_ledger.Unknown))
+        | Ok(exec_ledger.Existing(exec_ledger.Acked)) -> {
           process.send(reply, protocol.RunLost)
           state
         }
@@ -804,7 +805,8 @@ fn answer_without_plane(
       process.send(reply, stored_answer(stored))
       state
     }
-    Ok(exec_ledger.Found(exec_ledger.Unknown)) -> {
+    Ok(exec_ledger.Found(exec_ledger.Unknown))
+    | Ok(exec_ledger.Found(exec_ledger.Acked)) -> {
       process.send(reply, protocol.RunLost)
       state
     }
@@ -1333,6 +1335,11 @@ fn lookup_of(found: exec_ledger.CallState) -> Result(protocol.Lookup, Refusal) {
   case found {
     exec_ledger.Admitted -> Ok(protocol.Admitted)
     exec_ledger.Unknown -> Ok(protocol.Unknown)
+
+    // The orchestrator staged this call's result and the host kept only the
+    // key. The outcome is not recoverable from here, which is what `Unknown`
+    // says, and the key never starts again.
+    exec_ledger.Acked -> Ok(protocol.Unknown)
     exec_ledger.Terminal(stored) ->
       case codec.decode_outcome(stored) {
         Ok(outcome) -> Ok(protocol.Terminal(outcome))

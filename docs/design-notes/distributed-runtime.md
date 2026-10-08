@@ -285,9 +285,16 @@ tool starts and `terminal` with the encoded `ToolOutcome` before replying.
 A second request with the same key never starts a second run: it waits on the
 live run or returns the stored outcome. When the executor VM restarts, every
 `admitted` row becomes `unknown`; nothing is relaunched. After the orchestrator
-durably stages a result it sends `ack`, which deletes the row (an `unknown`
-row too, so executor restarts do not leak them). A lost `ack` would otherwise
-leak a row forever (the call is no longer orphaned, so nobody queries it), so
+durably stages a result it sends `ack`, which retires the row (an `unknown`
+row too, so executor restarts do not leak them): the outcome and its reserved
+bytes go, and a small tombstone keeps the key taken until the scope's
+incarnation changes. The tombstone is what lets a key admitted once in an
+incarnation never start again in it. Without it, a `Run` from a runtime that
+restarted inside one open, delayed past recovery's fence and the
+acknowledgement, would find no row and a current token and start a call the
+model was told never ran. Tombstones are dropped when the scope reopens at a
+new incarnation, closes with every child retired, or is released. A lost `ack`
+would otherwise leak a row forever (the call is no longer orphaned, so nobody queries it), so
 every `Attach` reply lists the scope's unacked terminal and unknown keys and
 the orchestrator acks the ones its store already holds.
 

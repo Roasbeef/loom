@@ -480,7 +480,7 @@ pub fn an_oversized_outcome_is_replaced_by_a_failure_that_fits_test() {
   stop(rig)
 }
 
-pub fn an_ack_deletes_the_row_and_a_listing_reports_what_waits_test() {
+pub fn an_ack_retires_the_row_and_a_listing_reports_what_waits_test() {
   let rig = rig(fixtures.Open)
   let assert Ok(_attached) = attach(rig, 0, token(1))
   let run = fixtures.tool_run("call_1", 0)
@@ -495,9 +495,10 @@ pub fn an_ack_deletes_the_row_and_a_listing_reports_what_waits_test() {
   }
   assert listed() == Ok(protocol.Unacked(terminal: [key_of(run)], unknown: []))
 
-  // The acknowledgement is a cast, so the row goes when the host gets to it.
+  // The acknowledgement is a cast, so the row goes when the host gets to it. A
+  // tombstone keeps the key taken, and the ledger answers it as lost.
   address.deliver(rig.address, protocol.Ack(key_of(run)))
-  assert fixtures.eventually(fn() { query(rig, run) == Ok(protocol.Missing) })
+  assert fixtures.eventually(fn() { query(rig, run) == Ok(protocol.Unknown) })
   assert listed() == Ok(protocol.Unacked(terminal: [], unknown: []))
   stop(rig)
 }
@@ -780,4 +781,38 @@ pub fn a_restarted_host_answers_a_stored_outcome_without_a_plane_test() {
   assert heard(send_run(restarted, run, 0, token(1)))
     == protocol.RunFinished(fixtures.expected_outcome(run))
   stop(restarted)
+}
+
+pub fn a_late_run_for_a_fenced_and_acknowledged_key_never_starts_test() {
+  // The runtime restarted inside one open, so the attach token is unchanged.
+  // Recovery fenced the key and the model was told it did not run. The
+  // reconciler then acknowledged the key, and only after that did the dead
+  // runtime's delayed `Run` for it arrive. The acknowledgement must not make the
+  // key startable again.
+  let rig = rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let run = fixtures.tool_run("call_1", 0)
+  assert query_or_fence(rig, run, 0) == Ok(protocol.Fenced)
+  address.deliver(rig.address, protocol.Ack(key_of(run)))
+
+  // The query is sent after the acknowledgement by the same process, so the
+  // host has handled the acknowledgement when it answers.
+  assert query(rig, run) == Ok(protocol.Unknown)
+  assert heard(send_run(rig, run, 0, token(1))) == protocol.RunLost
+  assert fixtures.run_count(rig.probe, "call_1") == 0
+  stop(rig)
+}
+
+pub fn a_late_run_for_an_acknowledged_result_does_not_run_it_again_test() {
+  let rig = rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let run = fixtures.tool_run("call_1", 0)
+  assert heard(send_run(rig, run, 0, token(1)))
+    == protocol.RunFinished(fixtures.expected_outcome(run))
+  address.deliver(rig.address, protocol.Ack(key_of(run)))
+  assert query(rig, run) == Ok(protocol.Unknown)
+
+  assert heard(send_run(rig, run, 0, token(1))) == protocol.RunLost
+  assert fixtures.run_count(rig.probe, "call_1") == 1
+  stop(rig)
 }

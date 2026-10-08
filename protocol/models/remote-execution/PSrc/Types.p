@@ -19,8 +19,10 @@ type tKey = int;
 enum tReplay { REPLAY_SAFE, REPLAY_NEVER }
 
 // A ledger row's state (exec_ledger.CallState). A missing row is the absence of
-// an entry; `ack` deletes the row, so there is no acknowledged state.
-enum tRow { ROW_ADMITTED, ROW_TERMINAL, ROW_UNKNOWN }
+// an entry. `ack` turns a settled row into a tombstone, ROW_ACKED, which keeps
+// the key taken for the rest of the scope's incarnation (the model has one) and
+// holds no outcome.
+enum tRow { ROW_ADMITTED, ROW_TERMINAL, ROW_UNKNOWN, ROW_ACKED }
 
 // A `Run`'s reply (protocol.RunAnswer). The two refusals the model can reach
 // are named: an attach token that is not the scope's (`StaleToken`) and a

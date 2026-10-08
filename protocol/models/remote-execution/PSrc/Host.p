@@ -113,6 +113,8 @@ machine Host {
       }
       reply(m, K_ANSWER, ANS_FINISHED, LOOK_MISSING, row.outcome);
     } else {
+      // An unknown row, or a tombstone: the call may have run, and its outcome
+      // is not here to give.
       reply(m, K_ANSWER, ANS_LOST, LOOK_MISSING, 0);
     }
   }
@@ -274,6 +276,7 @@ machine Host {
       } else if (row.phase == ROW_TERMINAL) {
         reply(m, K_LOOKUP, ANS_FINISHED, LOOK_TERMINAL, row.outcome);
       } else {
+        // Unknown, and a tombstone, which the host reports as unknown.
         reply(m, K_LOOKUP, ANS_FINISHED, LOOK_UNKNOWN, 0);
       }
     } else if (m.fence) {
@@ -286,15 +289,17 @@ machine Host {
     }
   }
 
-  // exec_ledger.ack: a settled row is deleted, an admitted one is untouched.
+  // exec_ledger.ack: a settled row becomes a tombstone that keeps the key
+  // taken, and an admitted one is untouched. A tombstone acknowledged again is
+  // unchanged.
   fun ack(key: tKey) {
     var row: tRowRec;
     if (!(key in ledger)) {
       return;
     }
     row = ledger[key];
-    if (row.phase != ROW_ADMITTED) {
-      ledger -= (key);
+    if (row.phase == ROW_TERMINAL || row.phase == ROW_UNKNOWN) {
+      ledger[key] = (phase = ROW_ACKED, outcome = 0);
       announce eAcked, key;
     }
   }

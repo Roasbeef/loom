@@ -6,11 +6,11 @@
 // (mutate.py) is reported under the name of the rule it breaks.
 //
 // The `tcProbe*` cases must fail: each finds a witness for a situation the
-// specs are only meaningful if the model reaches. Two of them,
-// `tcProbeDefectNoPlane` and `tcProbeDefectLateRun`, demonstrate a defect in
-// the code the model describes (README.md, "Defects found"). They fail today.
-// When the defect is fixed they will pass, the gate will say the probe found
-// no witness, and the case becomes an ordinary one.
+// specs are only meaningful if the model reaches.
+//
+// `tcDefectNoPlane` and `tcDefectLateRun` are ordinary cases that were probes
+// while the defects they name were open (README.md, "Defects found"). They
+// pass now, and a mutant in mutate.py reopens each.
 
 module System = { Wire, Host, Body, Orch, Call, Chaos, Harness };
 
@@ -167,5 +167,6 @@ test tcProbeAbortCancels [main = TestOpenCrash]:
 test tcDefectNoPlane [main = TestHostCrash]:
   assert RefusalMeansUntouched in (union System, { TestHostCrash });
 
-test tcProbeDefectLateRun [main = TestRuntimeRestartAckAtOnce]:
-  assert NoStartAfterFence in (union System, { TestRuntimeRestartAckAtOnce });
+test tcDefectLateRun [main = TestRuntimeRestartAckAtOnce]:
+  assert AtMostOnceStart, NoStartAfterFence, UnknownIsFinal, OutcomeFaithful, StaleTokenRefused, CancelOnlyOnAbort, EveryKeyDelivered in
+  (union System, { TestRuntimeRestartAckAtOnce });

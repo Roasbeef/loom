@@ -17,6 +17,7 @@ import storage/exec_ledger.{
   Existing, Fenced, Found, Fresh, Key, Limits, Missing, Open, Rebound, Reopened,
   Standing, Terminal, Unknown, UnknownCleanup,
 }
+import storage/exec_ledger_acks_schema
 import storage/exec_ledger_releases_schema
 import storage/exec_ledger_schema
 import support/fixtures
@@ -102,12 +103,15 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(releases) = simplifile.read("sql/exec_ledger_releases.sql")
     as "the release schema is checked in"
   assert exec_ledger_releases_schema.schema == releases
+  let assert Ok(acks) = simplifile.read("sql/exec_ledger_acks.sql")
+    as "the tombstone schema is checked in"
+  assert exec_ledger_acks_schema.schema == acks
 }
 
 pub fn a_new_ledger_is_stamped_with_the_current_version_test() {
   let file = path("version")
   let _ledger = open_at(file)
-  assert count(file, "PRAGMA user_version") == 2
+  assert count(file, "PRAGMA user_version") == 3
 }
 
 pub fn admit_finish_query_ack_round_trip_test() {
@@ -120,12 +124,13 @@ pub fn admit_finish_query_ack_round_trip_test() {
   assert exec_ledger.finish(ledger, key, bytes("done")) == Ok(Nil)
   assert exec_ledger.query(ledger, key) == Ok(Found(Terminal(bytes("done"))))
   assert exec_ledger.ack(ledger, key) == Ok(Nil)
-  assert exec_ledger.query(ledger, key) == Ok(Missing)
+  assert exec_ledger.query(ledger, key) == Ok(Found(exec_ledger.Acked))
 
   // An acknowledgement that arrives twice, or for a row never written, is the
   // same answer as the first.
   assert exec_ledger.ack(ledger, key) == Ok(Nil)
   assert exec_ledger.ack(ledger, call(9)) == Ok(Nil)
+  assert exec_ledger.query(ledger, call(9)) == Ok(Missing)
 }
 
 pub fn an_empty_outcome_is_a_terminal_outcome_test() {
@@ -648,7 +653,7 @@ pub fn a_file_that_is_not_a_ledger_is_refused_test() {
   let versioned = path("future")
   let first = open_at(versioned)
   let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
-  tamper(versioned, "PRAGMA user_version = 3;")
+  tamper(versioned, "PRAGMA user_version = 4;")
   assert result_is_unsupported(exec_ledger.open(versioned))
 }
 
@@ -760,7 +765,13 @@ fn present(keys: List(Key), key: Key) -> Bool {
 // properties the design rests on after each step: a key is `Fresh` only while
 // the ledger holds no row for it, and a request is admitted only under the
 // scope's current incarnation and token.
-fn exercise(ledger: Ledger, seed: Int, held: List(Key), remaining: Int) -> Nil {
+fn exercise(
+  ledger: Ledger,
+  seed: Int,
+  held: List(Key),
+  acked: List(Key),
+  remaining: Int,
+) -> Nil {
   case remaining {
     0 -> Nil
     _ -> {
@@ -792,9 +803,9 @@ fn exercise(ledger: Ledger, seed: Int, held: List(Key), remaining: Int) -> Nil {
       }
       let #(slot, seed) = draw(seed, 4)
       let key = key_for(session, slot)
-      let held = case op {
+      let #(held, acked) = case op {
         0 | 1 | 2 | 3 -> {
-          let _attached =
+          let attached =
             exec_ledger.attach(
               ledger,
               session,
@@ -803,23 +814,31 @@ fn exercise(ledger: Ledger, seed: Int, held: List(Key), remaining: Int) -> Nil {
               attach_token,
               limits(),
             )
-          held
+
+          // A reopen is a new incarnation, and the scope's tombstones go.
+          case attached {
+            Ok(exec_ledger.Attached(how: Reopened, ..)) ->
+              forget(session, held, acked)
+            Ok(exec_ledger.Attached(..)) | Error(_) -> #(held, acked)
+          }
         }
-        4 | 5 | 6 | 7 | 8 | 9 ->
-          admit_checked(ledger, current, key, incarnation, attach_token, held)
+        4 | 5 | 6 | 7 | 8 | 9 -> #(
+          admit_checked(ledger, current, key, incarnation, attach_token, held),
+          acked,
+        )
         10 | 11 | 12 -> {
           let _finished = exec_ledger.finish(ledger, key, bytes("ok"))
-          held
+          #(held, acked)
         }
-        13 | 14 -> acknowledge(ledger, key, held)
+        13 | 14 -> acknowledge(ledger, key, held, acked)
         15 -> {
           let _lost = exec_ledger.mark_unknown(ledger, key)
-          held
+          #(held, acked)
         }
         16 -> {
           let _begun =
             exec_ledger.begin_close(ledger, session, "/work", incarnation)
-          held
+          #(held, acked)
         }
         _ -> {
           // The two clean closes for every unclean one keep scopes reopening.
@@ -827,7 +846,7 @@ fn exercise(ledger: Ledger, seed: Int, held: List(Key), remaining: Int) -> Nil {
             19 -> UnknownCleanup(1)
             _ -> AllRetired
           }
-          let _ended =
+          let ended =
             exec_ledger.finish_close(
               ledger,
               session,
@@ -835,14 +854,19 @@ fn exercise(ledger: Ledger, seed: Int, held: List(Key), remaining: Int) -> Nil {
               incarnation,
               outcome,
             )
-          held
+
+          // A close with every child retired drops the scope's tombstones.
+          case ended, outcome {
+            Ok(Nil), AllRetired -> forget(session, held, acked)
+            _, _ -> #(held, acked)
+          }
         }
       }
 
       // Presence in the model and in the ledger agree for the key just used.
       let assert Ok(looked) = exec_ledger.query(ledger, key) as "the key reads"
       assert { looked == Missing } == !present(held, key)
-      exercise(ledger, seed, held, remaining - 1)
+      exercise(ledger, seed, held, acked, remaining - 1)
     }
   }
 }
@@ -884,20 +908,39 @@ fn admit_checked(
   }
 }
 
-fn acknowledge(ledger: Ledger, key: Key, held: List(Key)) -> List(Key) {
+// An acknowledged key stays taken: its tombstone reads as `Acked` until the
+// scope's incarnation changes.
+fn acknowledge(
+  ledger: Ledger,
+  key: Key,
+  held: List(Key),
+  acked: List(Key),
+) -> #(List(Key), List(Key)) {
   let assert Ok(before) = exec_ledger.query(ledger, key) as "the key reads"
   let assert Ok(Nil) = exec_ledger.ack(ledger, key) as "the ack succeeds"
   case before {
-    Found(Admitted) -> held
-    Found(Terminal(_)) | Found(Unknown) | Missing ->
-      list.filter(held, fn(other) { other != key })
+    Found(Terminal(_)) | Found(Unknown) -> #(held, [key, ..acked])
+    Found(Admitted) | Found(exec_ledger.Acked) | Missing -> #(held, acked)
   }
+}
+
+// The scope's tombstones are gone, and so are the keys that only they held.
+fn forget(
+  session: String,
+  held: List(Key),
+  acked: List(Key),
+) -> #(List(Key), List(Key)) {
+  let gone = list.filter(acked, fn(key) { key.session == session })
+  #(
+    list.filter(held, fn(key) { !list.contains(gone, key) }),
+    list.filter(acked, fn(key) { key.session != session }),
+  )
 }
 
 pub fn random_sequences_never_admit_a_key_twice_or_under_a_stale_token_test() {
   list.each(upto(1, 40), fn(seed) {
     let ledger = open_at(":memory:")
-    exercise(ledger, seed * 7919, [], 200)
+    exercise(ledger, seed * 7919, [], [], 200)
     let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
     Nil
   })
@@ -955,7 +998,7 @@ pub fn a_fence_row_is_acknowledged_like_any_settled_row_test() {
   let assert Ok(unacked) = exec_ledger.unacked(ledger, "s")
   assert unacked.terminal == [call(0)]
   assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
-  assert exec_ledger.query(ledger, call(0)) == Ok(Missing)
+  assert exec_ledger.query(ledger, call(0)) == Ok(Found(exec_ledger.Acked))
 }
 
 pub fn a_fence_needs_the_scope_at_the_callers_incarnation_test() {
@@ -1174,7 +1217,10 @@ pub fn a_version_one_ledger_gains_the_release_record_on_open_test() {
   let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
 
   // What an executor wrote before the release record existed.
-  tamper(file, "DROP TABLE scope_release; PRAGMA user_version = 1;")
+  tamper(
+    file,
+    "DROP TABLE scope_release; DROP TABLE call_ack; PRAGMA user_version = 1;",
+  )
   let migrated = open_at(file)
 
   assert exec_ledger.releases(migrated, "s") == Ok([])
@@ -1184,5 +1230,136 @@ pub fn a_version_one_ledger_gains_the_release_record_on_open_test() {
       incarnation: 0,
       was: exec_ledger.Closing,
     ))
-  assert count(file, "PRAGMA user_version") == 2
+  assert count(file, "PRAGMA user_version") == 3
+}
+
+// --- acknowledgement tombstones ----------------------------------------------
+
+pub fn an_acknowledged_key_is_never_admitted_again_in_its_incarnation_test() {
+  let file = path("tombstone")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert admit(ledger, call(0), 64) == Ok(Fresh)
+  assert exec_ledger.finish(ledger, call(0), bytes("done")) == Ok(Nil)
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+
+  // The row went and a tombstone stands in its place, holding no bytes.
+  assert count(file, "SELECT count(*) FROM call") == 0
+  assert count(file, "SELECT count(*) FROM call_ack") == 1
+  assert count(file, "SELECT COALESCE(SUM(outcome_bytes), 0) FROM call") == 0
+
+  // A `Run` that was still in flight finds the key taken and starts nothing.
+  assert admit(ledger, call(0), 64) == Ok(Existing(exec_ledger.Acked))
+  assert count(file, "SELECT count(*) FROM call") == 0
+  assert exec_ledger.query(ledger, call(0)) == Ok(Found(exec_ledger.Acked))
+  assert exec_ledger.unacked(ledger, "s")
+    == Ok(exec_ledger.Unacked(terminal: [], unknown: []))
+}
+
+pub fn a_fence_that_was_acknowledged_still_blocks_a_late_run_test() {
+  // Recovery fenced the key and told the model it did not run, the
+  // acknowledgement followed, and the dead runtime's `Run` for the same key
+  // arrives last, under the same attach token.
+  let ledger = open_at(path("fence-then-ack"))
+  attached(ledger)
+  let assert Ok(Fenced) =
+    exec_ledger.query_or_fence(ledger, call(0), 0, bytes("did not run"))
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+
+  assert admit(ledger, call(0), 8) == Ok(Existing(exec_ledger.Acked))
+  assert exec_ledger.query_or_fence(ledger, call(0), 0, bytes("again"))
+    == Ok(Standing(exec_ledger.Acked))
+}
+
+pub fn an_acknowledgement_of_a_live_or_missing_key_leaves_no_tombstone_test() {
+  let file = path("tombstone-none")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert admit(ledger, call(0), 8) == Ok(Fresh)
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+  assert exec_ledger.ack(ledger, call(1)) == Ok(Nil)
+  assert count(file, "SELECT count(*) FROM call_ack") == 0
+  assert exec_ledger.query(ledger, call(0)) == Ok(Found(Admitted))
+}
+
+pub fn an_unknown_row_is_acknowledged_into_a_tombstone_too_test() {
+  let file = path("tombstone-unknown")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert admit(ledger, call(0), 8) == Ok(Fresh)
+  assert exec_ledger.mark_unknown(ledger, call(0)) == Ok(Nil)
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+  assert admit(ledger, call(0), 8) == Ok(Existing(exec_ledger.Acked))
+  assert count(file, "SELECT count(*) FROM call_ack") == 1
+}
+
+pub fn a_reopen_at_a_new_incarnation_drops_the_tombstones_test() {
+  let file = path("tombstone-reopen")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert admit(ledger, call(0), 8) == Ok(Fresh)
+  assert exec_ledger.finish(ledger, call(0), bytes("done")) == Ok(Nil)
+
+  // The clean close drops what is there, and a later acknowledgement of a row
+  // the close left behind makes a tombstone in the closed scope.
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, AllRetired)
+    == Ok(Nil)
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+  assert count(file, "SELECT count(*) FROM call_ack") == 1
+
+  let assert Ok(exec_ledger.Attached(how: Reopened, ..)) =
+    exec_ledger.attach(ledger, "s", "/work", 1, token(2), limits())
+    as "the scope reopens"
+  assert count(file, "SELECT count(*) FROM call_ack") == 0
+  assert exec_ledger.query(ledger, call(0)) == Ok(Missing)
+  assert exec_ledger.admit(ledger, call(0), 1, token(2), "bash", 8, limits())
+    == Ok(Fresh)
+}
+
+pub fn a_clean_close_and_a_release_drop_the_tombstones_but_an_unclean_one_does_not_test() {
+  let file = path("tombstone-close")
+  let ledger = open_at(file)
+  attached(ledger)
+  assert admit(ledger, call(0), 8) == Ok(Fresh)
+  assert exec_ledger.finish(ledger, call(0), bytes("done")) == Ok(Nil)
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+
+  // Unknown cleanup proves nothing, so the tombstones stay.
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, UnknownCleanup(1))
+    == Ok(Nil)
+  assert count(file, "SELECT count(*) FROM call_ack") == 1
+
+  // The release is a clean close by the operator's word.
+  let assert Ok(_released) = exec_ledger.release(ledger, "s", 5)
+    as "the scope is released"
+  assert count(file, "SELECT count(*) FROM call_ack") == 0
+
+  let other = open_at(path("tombstone-close-clean"))
+  attached(other)
+  assert exec_ledger.admit(other, call(0), 0, token(1), "bash", 8, limits())
+    == Ok(Fresh)
+  assert exec_ledger.finish(other, call(0), bytes("done")) == Ok(Nil)
+  assert exec_ledger.ack(other, call(0)) == Ok(Nil)
+  assert exec_ledger.begin_close(other, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.finish_close(other, "s", "/work", 0, AllRetired) == Ok(Nil)
+  assert exec_ledger.query(other, call(0)) == Ok(Missing)
+}
+
+pub fn a_version_two_ledger_gains_the_tombstone_table_on_open_test() {
+  let file = path("tombstone-migrate")
+  let first = open_at(file)
+  attached(first)
+  assert admit(first, call(0), 8) == Ok(Fresh)
+  assert exec_ledger.finish(first, call(0), bytes("done")) == Ok(Nil)
+  let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
+
+  // What an executor wrote before acknowledgements left tombstones.
+  tamper(file, "DROP TABLE call_ack; PRAGMA user_version = 2;")
+  let migrated = open_at(file)
+
+  assert exec_ledger.ack(migrated, call(0)) == Ok(Nil)
+  assert exec_ledger.query(migrated, call(0)) == Ok(Found(exec_ledger.Acked))
+  assert count(file, "PRAGMA user_version") == 3
 }

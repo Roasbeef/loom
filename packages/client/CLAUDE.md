@@ -6639,7 +6639,11 @@ local fixtures).
   says this session no longer holds the call pending: the operation's state is
   gone, or its `Tools` batch for that step no longer lists the call as planned or
   running. A staged, interrupted or aborted call is therefore settled; a call
-  still running is not.
+  still running is not. The host retires the row on the acknowledgement and keeps
+  a tombstone for the key until the scope's incarnation changes, so a `Run` for
+  an acknowledged key, which a dead runtime's effect process can still have in
+  flight, is answered `RunLost` and never starts (`Existing(Acked)` in
+  `admit_run`; a `Query` reports `Unknown`).
 - **Jobs.** `plane.live_jobs` reads the `job/*` cells from the session's store
   and builds the board with `jobs.live_board_of`.
 - **Refused or omitted.** Extension tools (`tool_placement` answers `Error(Nil)`,

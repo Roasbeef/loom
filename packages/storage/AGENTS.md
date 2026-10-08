@@ -358,19 +358,21 @@ with these forks: they define the same modules.
   session, no process of its own (a later node-level actor owns the single
   connection). Its DDL is `sql/exec_ledger.sql` (embedded as
   `exec_ledger_schema`, with `sql/exec_ledger_releases.sql` as its second
-  version, embedded as `exec_ledger_releases_schema`; `PRAGMA user_version` 2,
-  its own `application_id`; a version 1 file gains the second table when it is
+  version, embedded as `exec_ledger_releases_schema`, and `sql/exec_ledger_acks.sql`
+  as its third, embedded as `exec_ledger_acks_schema`; `PRAGMA user_version` 3,
+  its own `application_id`; an older file gains the tables it lacks when it is
   opened) and its named queries are `src/storage/sql/exec_ledger.sql`, generated into
   `sql.gleam` with the `Ledger*` names. Two tables: `scope(session, workspace,
   incarnation, state open|closing|closed, close_outcome, attach_token)` and
   `call(session, op, step, source_index, incarnation, tool, state
   admitted|terminal|unknown, outcome, outcome_digest, outcome_bytes)`, plus
   `scope_release(session, workspace, incarnation, was, released_at_ms)`, the
-  operator release record.
+  operator release record, and `call_ack(session, op, step, source_index,
+  incarnation)`, the acknowledgement tombstones.
   `Ledger` is opaque; `Key` is the planner's call identity;
   `Limits(max_unclean_scopes, max_ledger_bytes)` is passed on every call;
   `ScopeState` is `Open | Closing | Closed(AllRetired | UnknownCleanup(n))`;
-  `CallState` is `Admitted | Terminal(outcome) | Unknown`; `Lookup` is
+  `CallState` is `Admitted | Terminal(outcome) | Unknown | Acked`; `Lookup` is
   `Missing | Found(CallState)`; `Admission` is `Fresh | Existing(CallState)`;
   `Fencing` is `Standing(CallState) | Fenced`;
   `Error` is one closed type (`StaleIncarnation`, `StaleToken`,
@@ -663,19 +665,27 @@ with these forks: they define the same modules.
   `admit` for that key returns `Existing(Terminal)` and never `Fresh`. It checks
   the scope exists and is at the caller's incarnation, not the attach token (the
   only thing it writes is that the call did not run), and skips the byte budget
-  (one short outcome per orphaned call, deleted by `ack`). A fence that inserts
+  (one short outcome per orphaned call, retired by `ack`). A fence that inserts
   nothing fails `a_fence_with_no_row_inserts_a_terminal_row_and_blocks_admission_test`.
   The default ledger budget is 512 MiB: sixteen live calls reserve 16 MiB each,
   and the rest is room for unacknowledged results.
-- **An `ack` deletes; there is no acknowledged state.** The orchestrator does
-  re-send a `Run` after a reconnect or a runtime restart, and the row is what
-  makes that safe, so a row may go only when no `Run` for its key can come
-  again. The orchestrator acks a key only when `workspace.settled` says the
-  operation no longer lists the call as planned or effect-pending, after which
-  it sends no `Run` for the key and none is in flight. `ack` deletes only
-  `terminal` and `unknown` rows, so a misdirected ack cannot discard a live
-  run's reservation. An attach reply lists a session's unacknowledged `terminal`
-  and `unknown` keys so a lost ack cannot leak a row forever.
+- **An `ack` retires the row and leaves a tombstone.** `ack` deletes a `terminal`
+  or `unknown` row, releases its bytes, and writes a `call_ack` row for the key
+  (schema version 3, `sql/exec_ledger_acks.sql`). A key with a tombstone reads as
+  `CallState.Acked`, `admit` returns `Existing(Acked)` for it and never `Fresh`,
+  and `query_or_fence` returns `Standing(Acked)`. That makes a key admitted once
+  in an incarnation never start again in it. Nothing else orders a late `Run`
+  after the acknowledgement: a runtime restart inside one open keeps the attach
+  token, recovery's fence from a new process can overtake the dead process's
+  `Run`, and the acknowledgement follows the fence. Tombstones hold no outcome or
+  bytes, are not in the byte budget, and are dropped by `forget_acks` when the
+  scope reopens, when `finish_close` records `AllRetired`, and in `release`; a
+  scope closed with unknown cleanup keeps them. `ack` deletes only `terminal` and
+  `unknown` rows, so a misdirected ack cannot discard a live run's reservation,
+  and an attach reply lists a session's unacknowledged `terminal` and `unknown`
+  keys so a lost ack cannot leak a row forever. Deleting the row without the
+  tombstone fails `an_acknowledged_key_is_never_admitted_again_in_its_incarnation_test`
+  and the P model's `tcDefectLateRun`.
 - **`exec_ledger.open` is restart recovery, so one opener per VM.** It turns
   every `admitted` row into `unknown` and nothing turns one back; a second
   `open` while runs are in flight would mark them lost. The node-level actor is
@@ -701,11 +711,12 @@ with these forks: they define the same modules.
   decode together, a `terminal` row's outcome must match its SHA-256 digest
   and recorded size (`DigestMismatch`), and a state that fits no variant is
   `MalformedRow`. Nothing defaults.
-- **`exec_ledger_schema` and `exec_ledger_releases_schema` are generated** from
-  `sql/exec_ledger.sql` and `sql/exec_ledger_releases.sql` by `make gen-sql`, and
+- **`exec_ledger_schema`, `exec_ledger_releases_schema` and
+  `exec_ledger_acks_schema` are generated** from `sql/exec_ledger.sql`,
+  `sql/exec_ledger_releases.sql` and `sql/exec_ledger_acks.sql` by `make gen-sql`, and
   the ledger's `Ledger*` queries are in the generated `sql.gleam`;
   `exec_ledger_test` checks each embedded schema against its file. An older
-  build refuses a version 2 file as `Unsupported`.
+  build refuses a version 3 file as `Unsupported`.
 
 ## Deep Docs
 

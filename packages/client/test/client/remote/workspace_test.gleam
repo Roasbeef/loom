@@ -363,11 +363,13 @@ pub fn a_staged_result_is_acknowledged_when_the_next_open_attaches_test() {
   let _outcome = first.plane.run(finished, fixtures.authority())
 
   // Nothing here holds the call pending, so its row is a leak the reconciler
-  // deletes: the attach lists it and the port acknowledges it.
+  // retires: the attach lists it and the port acknowledges it. The key stays
+  // taken, as a tombstone, so the executor now reports it as lost and not as a
+  // key that never arrived.
   let second = attached(executor, opened)
 
   assert fixtures.eventually(fn() {
-    second.recover(finished) == effects.NotStarted
+    second.recover(finished) == effects.OutcomeUnknown
   })
   rig.stop(executor)
 }
