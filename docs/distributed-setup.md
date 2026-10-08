@@ -30,10 +30,19 @@ three parts:
 All three minted their credentials with `scripts/distributed/mint-fixture.sh`,
 and drove sessions over the control protocol with a scripted model provider. None
 used `loom distribution provision` or `install`, the terminal or the web page.
-Those are covered by the client test suite, which boots two nodes from the files
-that `install` writes, and are marked **Pending** here. Steps that an earlier
-edition of this page ran on one machine, and that the cross-host run did not
-repeat, are also **Pending**.
+
+A second run covers those, the local provisioning run on commit `46a3d0112`. It
+ran on one Mac, with the orchestrator and the executor as two daemons under
+separate home directories on the loopback address. It followed sections 3, 4, 7
+and 8 literally: `init`, `provision`, `show` and `install`, the start commands
+that `install` prints, a scripted model provider, a remote session created from
+the terminal and from the web page, and the checks of section 8. It could not
+observe anything that depends on two machines, such as a host name that differs
+between the two roles, a tunnel or a firewall, so those marks stay with the
+cross-host run or stay **Pending**.
+
+Steps that an earlier edition of this page ran on one machine, and that neither
+run repeated, are also **Pending**.
 
 ## 1. The two roles
 
@@ -65,7 +74,18 @@ You need:
 
 - The same Loom release on both machines (`loomd`, and `loom` for clients). See
   [running Loom](running.md) for installing it, or build from a checkout. The
-  commands below say `loomd`; from a checkout, use `bin/loomd`.
+  commands below say `loomd` and `loom`; from a checkout, use `bin/loomd` and
+  `bin/loom`. A checkout builds them, the sandbox helper and the code-mode seed
+  with:
+
+  ```sh
+  make codemode-seed server-shipment tui-shipment sandbox
+  install -m 0755 packages/sandbox/loom-exec bin/loom-exec
+  ```
+
+  `bin/loomd` finds `bin/loom-exec` beside it, which is what an executor needs to
+  run commands. Build `bin/loom` from the same commit as `bin/loomd`: the terminal
+  warns that the daemon build differs from its own when the two commits differ.
 - A network path from the orchestrator to the executor. Only the orchestrator
   dials. Section 5 says which ports.
 - For the Docker quick start, Docker with the Compose plugin and an x86_64
@@ -91,9 +111,10 @@ a plan, provision it once, and install one bundle per machine. (`loom dist` is a
 shorthand for `loom distribution`; this page uses the full form.) It needs no
 `openssl`, because the Erlang runtime mints the certificates.
 
-**Pending.** The cross-host run used `mint-fixture.sh` instead (see the end of
-this section). The files are the same, and the client tests start two nodes from
-the files `install` writes.
+**Verified** (local provisioning run `46a3d0112`: `init`, `provision`, `show` and
+`install` for one orchestrator and one executor, then both daemons started from
+the files `install` wrote). The cross-host run used `mint-fixture.sh` instead (see
+the end of this section). The files are the same.
 
 Write an example plan:
 
@@ -101,8 +122,8 @@ Write an example plan:
 loom distribution init plan.toml
 ```
 
-Success looks like `wrote /…/plan.toml`. `init` refuses to overwrite an existing
-file. Edit the plan to name your nodes. A plan lists each node, its role, its
+Success prints `wrote /…/plan.toml` and a line that names the next command.
+`init` refuses to overwrite an existing file. Edit the plan to name your nodes. A plan lists each node, its role, its
 Erlang node name, and for an executor its workspaces (a short name and an
 absolute path on that machine). This one has a laptop orchestrator and a Linux
 box executor:
@@ -135,8 +156,10 @@ Then mint everything:
 loom distribution provision plan.toml out
 ```
 
-This writes `out/system.json`, a description of the deployment with no secrets,
-and one file per node, `out/<name>.loombundle`. **A bundle contains that node's
+This prints each bundle's path, role and node name, and writes
+`out/system.json`, a description of the deployment with no secrets, and one file
+per node, `out/<name>.loombundle`. `loom distribution show out` prints
+`system.json` as a table of nodes, pins and peer edges. **A bundle contains that node's
 private key and the shared cookie.** Copy each bundle to its machine over a
 channel you trust and delete the copies you do not need. Do not commit bundles.
 
@@ -152,10 +175,14 @@ loom distribution install box.loombundle
 
 Install puts the certificates and key under `~/.loom/distribution` (or the
 plan's `bundle_dir`), writes the cookie to `$HOME/.erlang.cookie`, merges the
-role tables into `~/.loom/loom.toml`, writes the TLS options file, and prints the
-command that starts the daemon. It is safe to run twice. Use `--home DIR` to
-install under another home, as section 4 does. Success is a printed line of the
-form `LOOM_DISTRIBUTION_OPTFILE=… loomd --config …`.
+role tables into `~/.loom/loom.toml`, writes the TLS options file next to the
+certificates as `dist.options`, and prints the command that starts the daemon. It
+is safe to run twice. Use `--home DIR` to install under another home, as section 4
+does. It lists each file as `created`, and success ends with a printed line of the
+form `HOME=… LOOM_DISTRIBUTION_OPTFILE=… loomd --config …`. That line names the
+installed home, the options file and the configuration, and adds no flag of its
+own: add `--bind` as section 4 shows, and from a checkout write `bin/loomd` for
+`loomd`.
 
 An orchestrator's installed `loom.toml` declares nothing about its executors.
 Add `platform`, `enforcement` or `toolchains` to an `[executors.<name>]` table by
@@ -241,9 +268,11 @@ state.
 
 ### Provision and install
 
-**Pending.** Write a plan with two nodes on the loopback address. Two nodes on
-one host need different `listen_port` values, and only the executor needs a fixed
-one. Save it as `plan.toml`:
+**Verified** (local provisioning run `46a3d0112`, with `/Users/me/src/myproj`
+replaced by a small git repository and `listen_port` 9150). Write a plan with two
+nodes on the loopback address. Only the executor needs a fixed `listen_port`,
+because the orchestrator dials and does not need to be dialled. Save it as
+`plan.toml`:
 
 ```toml
 [[node]]
@@ -266,7 +295,9 @@ proj = "/Users/me/src/myproj"
 loom distribution provision plan.toml out
 ```
 
-Install each bundle under its own home:
+The workspace path is a directory on the executor's machine. It does not need to
+exist when you provision. Install each bundle under its own home. `install`
+creates the home directory if it is missing:
 
 ```sh
 loom distribution install out/box.loombundle --home $HOME/loom-demo/exec
@@ -276,17 +307,37 @@ loom distribution install out/box.loombundle --home $HOME/loom-demo/exec
 loom distribution install out/orch.loombundle --home $HOME/loom-demo/orch
 ```
 
-Each prints the command that starts its daemon. The orchestrator also needs a
-`[models]` table and a `main` role in its `loom.toml`, as any daemon does;
-install keeps whatever else the file holds.
+Each prints the command that starts its daemon. The orchestrator's `loom.toml`
+also needs a `[models]` table and a `main` role, as any daemon's does, and
+`install` does not write them. Append them to
+`$HOME/loom-demo/orch/.loom/loom.toml`; `install` keeps whatever else the file
+holds. A minimal pair for one Anthropic model looks like this, and
+[the configuration reference](configuration.md#modelsname) lists every key and
+the other dialects:
+
+```toml
+[models.main]
+dialect = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model_id = "<the model id your provider expects>"
+context_window = 200000
+max_output_tokens = 8192
+
+[roles]
+main = ["main"]
+```
+
+`api_key_env` names an environment variable, and the orchestrator reads it from
+the environment of the process that runs `loomd`. Set it on the orchestrator's
+start command below, and not in the file. The executor needs no model, and no key.
 
 ### Start the executor
 
 In one terminal, run the command install printed for the executor and add a
-`--bind` address (**Pending** for the provisioned files; the cross-host run
-started its daemons the same way from fixture files, with `HOME` set to the
-node's home and `LOOM_DISTRIBUTION_OPTFILE` set, and the executor logged
-`daemon.executor_serving`). It looks like this:
+`--bind` address (**Verified**, local provisioning run `46a3d0112`: the executor
+started from the provisioned files and logged `daemon.executor_serving`, and the
+cross-host run started its daemons the same way from fixture files). It looks like
+this:
 
 ```sh
 HOME=$HOME/loom-demo/exec LOOM_DISTRIBUTION_OPTFILE=$HOME/loom-demo/exec/.loom/distribution/dist.options \
@@ -296,25 +347,39 @@ HOME=$HOME/loom-demo/exec LOOM_DISTRIBUTION_OPTFILE=$HOME/loom-demo/exec/.loom/d
 `LOOM_DISTRIBUTION_OPTFILE` makes the launcher boot the Erlang VM with
 `-proto_dist inet_tls -ssl_dist_optfile <file>`. Both the `bin/loomd` that
 `make server-shipment` builds and the self-contained release launcher honour it.
-Use the exact path install printed, which may differ from the one shown.
+Use the exact path install printed, which may differ from the one shown. From a
+checkout, `loomd` is `bin/loomd`.
+
+The daemon writes JSON log lines to its standard output, and starting TLS
+distribution adds many `"event":"erlang"` progress records first. Look for the
+`daemon.executor_serving` line, which an executor logs when it is ready to serve
+its workspaces.
+
+Code mode is off on an executor until you give it a seed, because `loomd` looks
+for one at `<workspace>/build/codemode-seed` and then in the release. A remote
+session then starts with a notice that code mode is unavailable and the
+`code_mode` tool is not registered; every other tool works. From a checkout, add
+`--codemode-seed <checkout>/build/codemode-seed` to the executor's command, after
+`make codemode-seed`.
 
 ### Start the orchestrator
 
-In another terminal:
+In another terminal. This is the command install printed with `--bind` added and
+the model's key in front (**Verified**, same run):
 
 ```sh
-HOME=$HOME/loom-demo/orch LOOM_DISTRIBUTION_OPTFILE=$HOME/loom-demo/orch/.loom/distribution/dist.options \
+ANTHROPIC_API_KEY=… HOME=$HOME/loom-demo/orch LOOM_DISTRIBUTION_OPTFILE=$HOME/loom-demo/orch/.loom/distribution/dist.options \
   loomd --config $HOME/loom-demo/orch/.loom/loom.toml --bind 127.0.0.1:7441
 ```
 
-Each daemon prints `daemon listening on ws://127.0.0.1:<port>/v2/control` and its
-token file path when it is up.
+Add `--ui` to this command if you want the web page of section 7. Each daemon
+prints `daemon listening on ws://127.0.0.1:<port>/v2/control` and its token file
+path when it is up.
 
 ### Check that both are TLS nodes
 
-**Pending** (run on one machine for an earlier edition of this page; the
-cross-host run used `epmd -names` on each machine, which listed the executor).
-From a third terminal:
+**Verified** (local provisioning run `46a3d0112`; the cross-host run used
+`epmd -names` on each machine). From a third terminal:
 
 ```sh
 epmd -names
@@ -323,21 +388,27 @@ epmd -names
 The output lists both nodes next to the ports of their distribution listeners:
 
 ```text
-name exec at port 49390
+name exec at port 9150
 name orch at port 49392
 ```
+
+The executor shows the `listen_port` from the plan. The orchestrator shows a port
+the system chose. Any other Erlang node on the machine is listed too.
 
 If you are running a release without Erlang installed, `epmd` is in the release
 at `erts-<version>/bin/epmd`.
 
 To see the TLS handshake itself, connect to the executor's port with the
-orchestrator's certificate. Use the port `epmd -names` printed:
+orchestrator's certificate. Use the port `epmd -names` printed for the executor,
+which is its `listen_port`:
 
 ```sh
-openssl s_client -connect 127.0.0.1:49390 -cert $HOME/loom-demo/orch/.loom/distribution/cert.pem -key $HOME/loom-demo/orch/.loom/distribution/key.pem -CAfile $HOME/loom-demo/orch/.loom/distribution/ca.pem </dev/null
+openssl s_client -connect 127.0.0.1:9150 -cert $HOME/loom-demo/orch/.loom/distribution/cert.pem -key $HOME/loom-demo/orch/.loom/distribution/key.pem -CAfile $HOME/loom-demo/orch/.loom/distribution/ca.pem </dev/null
 ```
 
-Look for `Verification: OK` and `Protocol: TLSv1.3`.
+Look for `Verification: OK` and `Protocol: TLSv1.3`. The certificate shown has
+the executor's bundle name as its subject (`CN=box`), the deployment's authority
+as issuer, and the node name in its subject alternative names.
 
 Stop each daemon with Ctrl-C in its terminal when you are done.
 
@@ -626,9 +697,11 @@ defines at least one model and a `main` role, as any session does. The workspace
 name is the executor's `[workspaces.<name>]` key. It is a name and not a path: the
 orchestrator never looks for it on its own disk.
 
-**In the terminal** (**Pending**; the cross-host run created sessions over the
-control protocol), start `loom` as the orchestrator's user with the executor and
-the registered name:
+**In the terminal** (**Verified**, local provisioning run `46a3d0112`; the
+cross-host run created sessions over the control protocol), start `loom` as the
+orchestrator's user with the executor and the registered name. It needs a real
+terminal, and exits with `interactive mode requires terminal input and output`
+when its input or output is not one:
 
 ```sh
 HOME=$HOME/loom-demo/orch loom --executor box --workspace proj
@@ -637,14 +710,20 @@ HOME=$HOME/loom-demo/orch loom --executor box --workspace proj
 `--executor` is an `[executors.<name>]` key of the orchestrator's `loom.toml`, and
 with it `--workspace` is the registered name, not a directory. The session picker
 opens as it always does, with the remote sessions you already have grouped under
-`PROJ  on box`. Press `n` to create a new one in that workspace on that executor.
-Every `n` in that terminal does the same until you quit. Add `--model-profile
+`PROJ on box`, or with `No saved sessions. Press n to create one.` when there are
+none. Press `n` to create a new one in that workspace on that executor. The
+session is `resident` once it opens, and the composer takes your prompt. Every `n`
+in that terminal does the same until you quit. Add `--model-profile
 <name>` to choose a model profile. `--executor` cannot be combined with
 `--session`, which opens a session that exists, and `loom sessions list` shows a
 remote session's workspace as `box:proj`.
 
-**In the browser** (**Pending**), run
-`HOME=$HOME/loom-demo/orch loom ui --open`. When the orchestrator configures any
+**In the browser** (**Verified**, same run), start the orchestrator's daemon with
+`--ui` (or set `[daemon] ui = true`), then run
+`HOME=$HOME/loom-demo/orch loom ui --open`. Without `--ui` on that daemon,
+`loom ui` answers `the running daemon was started without --ui` and starts
+nothing, because it will not stop a daemon that other terminals may be using. When
+the orchestrator configures any
 executor, the home page's "Other folders" section has a "New session on an
 executor" button. It opens a form with the executor to choose, the registered
 workspace name to type, and an optional session name. A remote session is listed
@@ -657,11 +736,17 @@ What to expect:
   `executor_unknown`. The terminal says `executor_unknown: no executor with that
   name is configured on this daemon; --executor must be an [executors.<name>] key
   of the daemon's configuration`. The page says the executor is not in the
-  daemon's configuration, in fixed words that its tests pin.
-- A workspace name that holds a `/` is refused before a daemon is asked.
+  daemon's configuration, in fixed words that its tests pin. **Verified** for the
+  terminal message, local provisioning run `46a3d0112`.
+- A workspace name that holds a `/` is refused before a daemon is asked, with
+  `--workspace with --executor needs a registered workspace name: 1 to 128 bytes
+  with no / and no NUL, not a path`. `--executor` with `--session` is refused with
+  `--executor and --pool name where a new session is created; --session opens an
+  existing one`. **Verified**, same run.
 - A valid name creates the session, which is `opening` while the orchestrator
   attaches the workspace on the executor, then `resident`. **Verified** in both
-  directions of the cross-host run `193dbd8db`.
+  directions of the cross-host run `193dbd8db`, and from the terminal and from the
+  web form in the local provisioning run `46a3d0112`.
 
 ### When the executor cannot be reached
 
@@ -694,6 +779,14 @@ with the same key, not call `sessions.open`. The protocol documents this in
 check it with section 9. A session that has opened once and then fails to reopen
 stays `saved`, and `sessions.open` retries it on the same executor.
 
+**Verified** (local provisioning run `46a3d0112`) for the reopen case. With the
+executor stopped, `sessions.open` on a saved remote session answered `opening` and
+then `start_failed` with the same `executor_unavailable:` message as above. The
+session stayed `saved`, and the orchestrator logged `daemon.session_start_failed`
+with `stage` `runtime_assembly`, `class` `executor_unavailable` and that `reason`.
+After the executor was started again, `sessions.open` on the same session reached
+`resident`.
+
 ### Once a session is open
 
 **Verified** (cross-host run `193dbd8db`, both directions). With a remote session
@@ -702,6 +795,18 @@ ran `uname -n; pwd; git …`. The results came from the executor: its host name,
 checkout path and its git commit. The file the model wrote was on the executor and
 nowhere on the orchestrator. Approval prompts still appear on the orchestrator's
 clients.
+
+**Verified** on one machine (local provisioning run `46a3d0112`, from the terminal,
+with a scripted provider). The same four tool calls ran, and the file landed in the
+registered workspace on the executor and nowhere under the orchestrator's home. One
+machine cannot show a different host name, so that part of the check needs two
+machines. The `bash` call that ran `ls -la` exited 1 with `Operation not
+permitted` for `.blobs/`, because the executor's sandbox protects that directory,
+so the terminal summarised the turn as `1 failed`; the model's other calls and the
+turn itself succeeded. The executor creates `.blobs/` and `.codemode/` in the
+workspace root, each with its own `.gitignore`, so `git status` there stays clean.
+Stopping the session and opening it again reattached at the next incarnation, and
+a command in a second turn read the file written in the first.
 
 Stopping the session closed the executor's scope, recorded as `closed` with
 `all_retired`. Opening it
@@ -774,17 +879,18 @@ against these daemons. The web home does not offer pools yet.
 
 | Check | How | Status |
 |---|---|---|
-| Each daemon booted on TLS distribution | `epmd -names` on that machine lists its node name. A dial-only orchestrator (section 5) does not appear. | **Verified**, cross-host run `193dbd8db` (the box listed its executor and the Mac its orchestrator) |
-| The options file matches the config | The daemon started with `LOOM_DISTRIBUTION_OPTFILE` and did not exit with an options message | **Verified**, same run |
-| The peer answers as itself | `printf '\x00\x01n' \| nc -w 3 <host> 4369` prints `name <node> at port <n>`, and `openssl s_client -connect <host>:<port>` shows the node's own certificate | **Verified**, cross-host run `193dbd8db`: in the first attempt the `s_client` check showed a provider proxy's certificate, and in direction A the `epmd` request printed the node's name through the tunnel |
-| The TLS handshake and pins | `openssl s_client` with the peer's certificate (section 4) shows `Verification: OK` | **Pending** |
-| The orchestrator is connected to the executor | On the executor, an established connection on its `listen_port`: `lsof -nP -iTCP:9100 -sTCP:ESTABLISHED` (macOS) or `ss -tn state established '( sport = :9100 )'` (Linux) | **Pending** (the daemon connects when a remote session opens) |
-| A tool ran remotely | Create a remote session, ask for `uname -n` and `pwd`, and compare with the executor's host and checkout. Check that a file the model wrote exists there and not on the orchestrator. | **Verified**, cross-host run `193dbd8db`, both directions |
+| Each daemon booted on TLS distribution | `epmd -names` on that machine lists its node name. A dial-only orchestrator (section 5) does not appear. | **Verified**, cross-host run `193dbd8db` (the box listed its executor and the Mac its orchestrator), and local provisioning run `46a3d0112` (both nodes listed, the executor at its `listen_port`) |
+| The options file matches the config | The daemon started with `LOOM_DISTRIBUTION_OPTFILE` and did not exit with an options message | **Verified**, both runs |
+| The peer answers as itself | `printf '\x00\x01n' \| nc -w 3 <host> 4369` prints `name <node> at port <n>`, and `openssl s_client -connect <host>:<port>` shows the node's own certificate | **Verified**, cross-host run `193dbd8db`: in the first attempt the `s_client` check showed a provider proxy's certificate, and in direction A the `epmd` request printed the node's name through the tunnel. In the local provisioning run `46a3d0112` the `epmd` request listed both nodes and `s_client` showed the executor's own certificate (`CN=box`, issued by the deployment's authority) |
+| The TLS handshake and pins | `openssl s_client` with the peer's certificate (section 4) shows `Verification: OK` | **Verified**, local provisioning run `46a3d0112`: `Verification: OK`, `Protocol: TLSv1.3`, and the pin recomputed with `openssl dgst -sha256` equal to the `sha256` in the orchestrator's `[[distribution.peers]]` |
+| The orchestrator is connected to the executor | On the executor, an established connection on its `listen_port`: `lsof -nP -iTCP:9100 -sTCP:ESTABLISHED` (macOS) or `ss -tn state established '( sport = :9100 )'` (Linux), with your `listen_port` for 9100. The daemon connects when a remote session opens, so create one first. | **Verified** on macOS, local provisioning run `46a3d0112`: after a session opened, `lsof` listed the connection from the orchestrator's VM to the executor's `listen_port`, established at both ends. The `ss` form is **Pending**. |
+| A tool ran remotely | Create a remote session, ask for `uname -n` and `pwd`, and compare with the executor's host and checkout. Check that a file the model wrote exists there and not on the orchestrator. | **Verified**, cross-host run `193dbd8db`, both directions. On one machine (local provisioning run `46a3d0112`) the file check passed, and the host-name comparison cannot tell the two roles apart. |
 
 Where things land on a remote session (**Verified** for the files, same run): the
 checkout and the files a tool writes are on the executor, under the workspace root.
 The conversation database, approvals and `~/.loom` stay on the orchestrator. The
-`.blobs` and code-mode work directories are on the executor too (**Pending**).
+`.blobs` and `.codemode` work directories are in the workspace root on the executor
+too (**Verified**, local provisioning run `46a3d0112`).
 
 The daemon prints JSON lines to its standard output. When a boot check fails, it
 prints one plain line first (see below) and exits with status 1.
