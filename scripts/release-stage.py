@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import tomllib
 
 spec = importlib.util.spec_from_file_location('release_compare', Path(__file__).with_name('release-compare.py'))
 compare = importlib.util.module_from_spec(spec)
@@ -15,6 +16,11 @@ spec.loader.exec_module(compare)
 def stage(candidates, destination, tag, commit):
     if not re.fullmatch('[0-9a-f]{40}', commit):
         raise ValueError('expected full commit hash')
+    if tag == f'commit-{commit}':
+        with (Path(__file__).resolve().parent.parent / 'packages/client/gleam.toml').open('rb') as stream:
+            version = tomllib.load(stream)['version']
+    else:
+        version = tag[1:]
     reports = {}
     selected = []
     for platform, prefix in [('linux-x86_64', 'release'), ('macos-arm64', 'release-macos')]:
@@ -22,7 +28,7 @@ def stage(candidates, destination, tag, commit):
         reports[platform] = compare.compare(first, candidates / f'{prefix}-second')
         manifest_name = f'manifest-{platform}.json'
         document = json.loads((first / manifest_name).read_text())
-        for key, value in [('tag', tag), ('commit', commit), ('platform', platform), ('version', tag[1:])]:
+        for key, value in [('tag', tag), ('commit', commit), ('platform', platform), ('version', version)]:
             if document.get(key) != value:
                 raise ValueError(f'{platform}: manifest {key} does not match requested release')
         names = [manifest_name, *(artifact['name'] for artifact in document['artifacts'])]

@@ -1,6 +1,12 @@
-# A tag starts native builds; publication remains a reviewed draft, as in lnd.
-name: Build release draft
+# Version tags create reviewed drafts; captured main commits publish nightlies.
+name: Build release
 on:
+  workflow_call:
+    inputs:
+      source_commit:
+        description: Captured main commit for an immutable nightly release.
+        required: true
+        type: string
   push:
     tags: ['v*']
   workflow_dispatch:
@@ -13,7 +19,7 @@ permissions:
   contents: read
   packages: read
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.source_commit || inputs.tag || github.ref_name }}
   cancel-in-progress: false
 jobs:
   prepare:
@@ -21,26 +27,48 @@ jobs:
     outputs:
       tag: ${{ steps.identity.outputs.tag }}
       commit: ${{ steps.identity.outputs.commit }}
+      exists: ${{ steps.identity.outputs.exists }}
     steps:
       - name: Check tag syntax
+        if: ${{ !inputs.source_commit }}
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$ ]]
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          ref: ${{ inputs.source_commit || format('refs/tags/{0}', inputs.tag || github.ref_name) }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Bind tag to the checked-out source
+      - name: Bind release to the checked-out source
         id: identity
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          python3 scripts/release-tag.py "$RELEASE_TAG" --check
+          set -euo pipefail
+          if [ -n "$SOURCE_COMMIT" ]; then
+            [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+            [ "$(git rev-parse HEAD)" = "$SOURCE_COMMIT" ]
+            git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main
+            RELEASE_TAG="commit-$SOURCE_COMMIT"
+            if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+              [ "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$SOURCE_COMMIT" ]
+            fi
+            tags=$(gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[].tag_name')
+            if printf '%s\n' "$tags" | grep -Fx "$RELEASE_TAG" > /dev/null; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            python3 scripts/release-tag.py "$RELEASE_TAG" --check
+          fi
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   linux:
     needs: prepare
+    if: ${{ needs.prepare.outputs.exists != 'true' }}
     uses: ./.github/workflows/release-candidate.yml
     with:
       source_commit: ${{ needs.prepare.outputs.commit }}
@@ -48,6 +76,7 @@ jobs:
       builder_image: ghcr.io/roasbeef/loom/release-builder@sha256:03edc3c58c7962f51b1faf4634d8efa4a0f63b1ca0699fc5eaaea45fa20694af
   macos:
     needs: prepare
+    if: ${{ needs.prepare.outputs.exists != 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -105,16 +134,22 @@ jobs:
         run: python3 scripts/release-stage.py candidates upload --tag "$RELEASE_TAG" --commit "$SOURCE_COMMIT"
       # No overwrite path: rerunning after creation fails rather than replacing
       # bytes that someone may already have installed from this release.
-      - name: Create the draft release
+      - name: Publish the immutable release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
           SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          NIGHTLY_COMMIT: ${{ inputs.source_commit }}
         run: |
           set -euo pipefail
-          actual=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
-          [ "$actual" = "$SOURCE_COMMIT" ]
-          args=(--draft --verify-tag --title "Loom $RELEASE_TAG" --notes-file docs/release-notes.md --generate-notes)
-          if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+          if [ -n "$NIGHTLY_COMMIT" ]; then
+            [ "$RELEASE_TAG" = "commit-$SOURCE_COMMIT" ]
+            args=(--target "$SOURCE_COMMIT" --prerelease --latest=false --title "Loom nightly $SOURCE_COMMIT" --notes "Built from main commit $SOURCE_COMMIT. See reproduction.json for artifact comparison.")
+          else
+            actual=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+            [ "$actual" = "$SOURCE_COMMIT" ]
+            args=(--draft --verify-tag --title "Loom $RELEASE_TAG" --notes-file docs/release-notes.md --generate-notes)
+            if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+          fi
           gh release create "$RELEASE_TAG" "${args[@]}" upload/*
