@@ -471,7 +471,7 @@ fn assemble(raw: Raw) -> Result(Bundle, String) {
     bundle_dir: raw.bundle_dir,
     peers:,
     executors: list.map(raw.executors, fn(pair) {
-      executors.Executor(name: pair.0, node: pair.1)
+      executors.plain(pair.0, pair.1)
     }),
     workspaces: list.map(raw.workspaces, fn(pair) {
       distribution_plan.Workspace(name: pair.0, root: pair.1)

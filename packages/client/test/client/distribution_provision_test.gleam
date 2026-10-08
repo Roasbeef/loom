@@ -715,7 +715,7 @@ pub fn a_tampered_bundle_is_refused_and_installs_nothing_test() {
   // A role carrying the other role's tables.
   refused_bundle(
     distribution_bundle.Bundle(..devbox, executors: [
-      executors.Executor("devbox", "loom@laptop.example"),
+      executors.plain("devbox", "loom@laptop.example"),
     ]),
     "executors belong on an orchestrator",
   )
@@ -727,7 +727,7 @@ pub fn a_tampered_bundle_is_refused_and_installs_nothing_test() {
   )
   refused_bundle(
     distribution_bundle.Bundle(..laptop, executors: [
-      executors.Executor("ghost", "loom@ghost.example"),
+      executors.plain("ghost", "loom@ghost.example"),
     ]),
     "which is not one of its peers",
   )

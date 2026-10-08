@@ -307,7 +307,7 @@ fn bundle(
       distribution.PeerPin(node: peer.erlang_node, sha256: pin_of(issued, peer))
     }),
     executors: list.map(distribution_plan.used_executors(plan, node), fn(row) {
-      executors.Executor(name: row.name, node: row.erlang_node)
+      executors.plain(row.name, row.erlang_node)
     }),
     workspaces: node.workspaces,
     ca: authority,
