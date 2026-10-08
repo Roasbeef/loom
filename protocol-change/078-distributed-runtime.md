@@ -11,7 +11,8 @@ one table for session movement),
 orchestrator, `[pools.*]` tables beside them, `[workspaces.*]` rows on an
 executor, and `[orchestrators.*]` rows for a deployment with two
 orchestrators), two refusal codes of `sessions.get` and `sessions.open`
-(see the second addendum), `effects.ToolSurface`
+(see the second addendum), one orchestrator-port message for peer mail (see the
+last addendum), `effects.ToolSurface`
 (one slot), and two new formats that are not Part 1 interfaces: the closed
 message vocabulary between orchestrator and executor nodes, and the
 executor's execution ledger. The helper wire (Part 1.4) is unchanged.
@@ -522,6 +523,84 @@ holds up to 64 rows of receipts, each about the size of the message. A message
 queued for an hour and then refused has been attempted about 720 times, each a
 bounded call. And a model that sends the same id again after an hour gets a new
 attempt, because a refused row is not final.
+
+### Addendum: peer mail between orchestrators
+
+The second half of phase 4. A session on one orchestrator sends to a session on
+another by way of the second orchestrator's port. It adds one constructor to the
+orchestrator port's closed message type and changes the error type of two Gleam
+interfaces. It changes no client-protocol frame and no Part 1 interface.
+
+#### The wire command
+
+`orchestrator_port.Message` gains
+`PeerCommand(session, command, reply: Subject(Result(JsonValue, String)))`,
+beside `Owns`. `session` is the recipient's canonical identity and `command` is
+a `peer_mail.Command`, which is plain data. The port serves exactly four
+commands, the ones a recipient receives from `client/peers`:
+
+- `Allow(grant)` writes the recipient's grant, for `peers.link`.
+- `Revoke(grant)` removes it, for `peers.unlink` and `peers.unlink_session`.
+- `Deliver(source, target, message_id, text)` admits a message and stores its
+  receipt under `client/peers/receipt/<digest(source session, strand, id)>`, for
+  `peers.send` and the outbox drainer.
+- `SentReceipt(source session, strand, id)` reads that receipt, for
+  `peer.sent_receipt`.
+
+Every other `peer_mail.Command` is answered `Error("that command is not served
+to a peer orchestrator")` without reaching the session. The port forwards a
+served command to the resident session's own endpoint (`manager.resolve`, then
+the endpoint the daemon's `peer_endpoint` projects), and a session that is not
+resident on that orchestrator is answered `that session is not running; the
+owner has to open it`, the refusal a send within one daemon gets. Admission is
+unchanged: `peer_mail.deliver` runs in the recipient's Agency, the recipient's
+grant is the authority, and a repeated `Deliver` is answered with the stored
+receipt. The command crosses the same pinned distribution connection as `Owns`.
+
+#### Resolving a recipient
+
+`Directory.resolve` answers a session resident on the asking orchestrator with
+that session's endpoint, without asking the session directory. For any other
+session it asks `session_directory.lookup`. `Elsewhere` gives a remote endpoint
+that sends `PeerCommand` to the owner's `loom_orchestrator`. `Unreachable`, which
+means some orchestrator could not be asked and none said it holds the session, is
+unreachable. `Here` and `Unknown` keep the local refusal. The control commands
+`peers.link`, `peers.send` and `peers.unlink` and a session's `peer_*` tools all
+resolve this way, so a session on another orchestrator can be linked, written to
+and unlinked from a control socket.
+
+#### The typed failure
+
+The outbox addendum above had an endpoint report that nobody answered with the
+error text `owner unreachable`. That is replaced. `Endpoint.call` returns
+`Result(JsonValue, peer_mail.Failure)` and `Directory.resolve` returns
+`Result(Endpoint, peer_mail.Failure)`, where `Failure` is `Refused(reason)`, a
+definitive answer, or `Unreachable`. `peers.send` and the drainer match on the
+variant. The text `owner unreachable` remains in two places: the reason recorded
+in a row that waited an hour, and what an operator or a model is shown when a
+call other than a send finds the owner unreachable.
+
+A remote call ends in `Unreachable` when the port's node is not connected
+(`noconnection`), when no port is registered there (`noproc`), and when no answer
+comes within seven seconds. A reply that arrives later is dropped. The recipient
+may have committed the message by then, and the drainer's next attempt is
+answered with the stored receipt.
+
+#### What it costs
+
+A `Deliver` on a remote orchestrator waits on the recipient's Agency inside the
+port's loop, so a session that does not answer delays the next `Owns` question,
+and with it the other orchestrator's directory lookups, by at most the Agency's
+five-second holder timeout. `Roster` and `Describe` are not served, so a
+recipient on another orchestrator is listed as running with no exported strands,
+and `peers.inspect` shows no wake permission for the link. A message to a
+recipient that its owner holds but has not opened is refused, not queued, as
+protocol-change/077 requires, which means a recipient has to be opened again
+after its owner restarts before a queued message can be delivered. And a granting
+or revoking command from a pinned peer orchestrator is trusted on the same
+footing as the pinned connection itself: the port limits the kinds of command so
+that the sender cannot read a session's conversation, not to defend against a
+peer the operator has already trusted with the node.
 
 ## Impact
 

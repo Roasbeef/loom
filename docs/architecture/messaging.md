@@ -429,6 +429,58 @@ commits that original operation ID with the brief, so a later run cannot
 replace it. See the [API guide](../async-collaboration.md) for examples
 and recovery limits.
 
+### Peer mail across orchestrators
+
+A recipient can be on another orchestrator, one the daemon lists under
+`[orchestrators.<name>]` ([configuration](../configuration.md)). Every operation in `client/peers` reaches its
+recipient through a `peer_mail.Endpoint`, so reaching a remote recipient needs a
+second kind of endpoint and a directory that returns it. Nothing about
+admission changes: the recipient's own Agency runs `peer_mail.deliver`, which
+commits the message and its receipt in one transaction, so a repeated send is
+answered from the stored receipt wherever the recipient is.
+
+`Directory.resolve` (`peers.routed`) answers in this order:
+
+1. A session resident on this orchestrator is answered by its own Agency. The
+   session directory is not asked.
+2. Otherwise `session_directory.lookup` says where the session lives. A session
+   that another configured orchestrator holds gets a remote endpoint.
+3. If some orchestrator could not be asked, and none said it holds the session,
+   the answer is `Unreachable`, because the session may be on the one that did
+   not answer.
+4. If everybody answered that they do not hold it, or this orchestrator holds it
+   without running it, the refusal is the local one (`not_running`).
+
+The remote endpoint (`client/remote/remote_peer`) sends
+`orchestrator_port.PeerCommand(session, command, reply)` to the owner's
+`loom_orchestrator` and waits for the answer, the `DOWN` of the port, or a
+deadline. The port serves four commands, the ones `client/peers` sends to a
+recipient, and refuses every other with a fixed text:
+
+| Command | Sent by | What it does on the owner |
+|---|---|---|
+| `Allow(grant)` | `peers.link` | writes the recipient's grant |
+| `Revoke(grant)` | `peers.unlink`, `peers.unlink_session` | removes the grant |
+| `Deliver(source, target, id, text)` | `peers.send`, the drainer | admits the message and stores the receipt |
+| `SentReceipt(source, strand, id)` | `peer.sent_receipt` | reads the stored receipt |
+
+The port forwards each command to the session's own endpoint, found with
+`manager.resolve`, so a session that is not running on the owner is refused
+exactly as a send within one daemon is. A remote call ends three ways. An
+answer is `Ok` or `Refused`. A `noconnection` or `noproc` `DOWN`, and a
+deadline, are `Unreachable`, which is what makes the sender record the message
+(see below). A reply that arrives after the deadline reaches nobody; the
+recipient may have committed the message, and the drainer's next attempt gets the
+stored receipt.
+
+Two things stay on the sender's orchestrator. The link index and the outbox are
+reserved facts in the sending session's store. And `Roster` and `Describe` are
+not served, so a remote recipient is listed with `running: true` and no
+exported strands, and its catalogue metadata is "unavailable". A recipient that
+the owner holds but has not opened is refused as `not_running` and the message
+is not queued. After the owner restarts, the recipient session has to be opened
+before the sender's next attempt, or the attempt is refused.
+
 ### The sender outbox
 
 A peer message is admitted by the recipient's owner. On a distributed
@@ -442,14 +494,14 @@ recipient's owner does:
 |---|---|---|
 | answers with a receipt | the receipt, as before | `admitted`, holding the receipt |
 | answers with a refusal (not running, no grant, id reused with other content) | the refusal, as before | `refused`, holding the reason |
-| does not answer (`peer_mail.owner_unreachable`) | `{"state": "queued", ...}` | stays `pending`, holding the text |
+| does not answer (`peer_mail.Unreachable`) | `{"state": "queued", ...}` | stays `pending`, holding the text |
 
 A local recipient never produces the third case, so within one daemon
 `peer_send` behaves as it did before the outbox, apart from the row. The
-unreachable answer is an error text, `peer_mail.owner_unreachable`, that a
-remote endpoint returns through the channel `Endpoint.call` already has.
-`peers.send` treats exactly that text as "nobody answered" and every other
-error as the recipient's own refusal.
+distinction is the type of `Endpoint.call`'s error, `peer_mail.Failure`:
+`Unreachable` means nobody answered, and `Refused(reason)` is the recipient's own
+refusal or one made on the sender's side. `peers.send` matches on it, and so
+does the drainer.
 
 The rows are reserved facts in the sender's own store, one per message, under
 `client/peers/outbox/<digest(sending strand, recipient session, message id)>`.
@@ -553,6 +605,7 @@ bounds one schedule, and a model can create another. The
 | `events/bus.gleam` | The EventBus: typed per-session topics of thin hints. |
 | `events/projection.gleam` | Pull-based read models that converge from the store on each hint. |
 | `client/schedule*.gleam`, `client/cron.gleam` | Scheduled heartbeats: the store, the timer-driven scanner, and the model's and operator's doors. See [automation.md](automation.md#where-the-code-lives). |
+| `client/remote/remote_peer.gleam`, `client/remote/orchestrator_port.gleam`, `client/peers.gleam` (`routed`) | Peer mail across orchestrators: the remote endpoint, the port's `PeerCommand`, and the directory that picks between a local and a remote recipient. See [peer mail across orchestrators](#peer-mail-across-orchestrators). |
 | `client/peer_outbox.gleam`, `client/peer_outbox_drain.gleam`, `client/peers.gleam` | The sender outbox: the pure row rules, the drainer state machine, and `send`/`resend`. See [the sender outbox](#the-sender-outbox). |
 | `client/advisor.gleam` | The advisor loop: the run-boundary hooks, the branch scan from a stored cursor, the framed feed, and the `advise` seam that refuses any caller but the advisor strand. |
 
