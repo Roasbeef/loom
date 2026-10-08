@@ -13,6 +13,7 @@
 ////   connect NODE    connect to a configured peer, as a daemon would
 ////   dial A B        have the already-connected node A connect to node B
 ////   hidden NODE     list the hidden nodes the connected node NODE sees
+////   drop A B        have the already-connected node A disconnect from node B
 ////
 //// Each step prints one `RESULT` line that the parent reads back, and the
 //// emulator ends with `PROBE_COMPLETE` and status zero only after every step
@@ -100,6 +101,25 @@ fn step(membership: distribution.Membership, line: String) -> Nil {
         <> case reached {
           True -> " connected"
           False -> " refused"
+        },
+      )
+    }
+
+    ["drop", origin, target] -> {
+      let dropped =
+        ffi_probe.drop(
+          node_of(membership, origin),
+          node_of(membership, target),
+          step_ms,
+        )
+      io.println(
+        "RESULT drop "
+        <> origin
+        <> " "
+        <> target
+        <> case dropped {
+          True -> " dropped"
+          False -> " absent"
         },
       )
     }

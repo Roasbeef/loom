@@ -47,6 +47,21 @@ pub fn dial(origin: Node, target: Node, within_ms: Int) -> Bool {
   )
 }
 
+/// Asks `origin` to drop its connection to `target`, by running
+/// `erlang:disconnect_node/1` on it. This is a partition between the two
+/// daemons that neither of them chose: each sees the other's processes go down
+/// with `noconnection`, and neither is restarted. The answer is whether
+/// `origin` held a connection to drop.
+pub fn drop(origin: Node, target: Node, within_ms: Int) -> Bool {
+  erpc_dial(
+    origin,
+    atom.create("erlang"),
+    atom.create("disconnect_node"),
+    [target],
+    within_ms,
+  )
+}
+
 /// The hidden nodes `origin` is connected to right now, by running
 /// `erlang:nodes(hidden)` on it.
 pub fn hidden_nodes(origin: Node, within_ms: Int) -> List(Node) {

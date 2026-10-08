@@ -6093,16 +6093,37 @@ Removing the pin comparison, the name comparison, the PKIX failure or
 
 `test/client/daemon_shipped_remote_test.gleam` is the shipped-daemon end to end
 (issue #697, gated on `LOOM_BOOTSTRAP_E2E_SERVER` like the other shipped
-fixtures). `test/support/remote_daemons.gleam` mints a CA and per-node leaves
-with `openssl`, writes each node's cookie at that node's isolated `$HOME`,
-renders the `loom.toml` files and `loomd distribution options`, and starts an
-orchestrator, an executor and a second orchestrator with a decoy pin through a
-wrapper that sets `LOOM_DISTRIBUTION_OPTFILE`. A daemon dials nobody yet, so
-`test/support/remote_probe.gleam` runs as a throwaway emulator that each daemon
-lists as a peer and reports connections and `erpc` dials back. The module also
-holds the scripted registered-session turn and the file assertions the follow-up
-slice calls once the orchestrator can open a registered session; the executor's
-`[workspaces]` row is behind `WorkspaceRows`, off until that key exists.
+fixtures, and on the sibling `bin/loom-exec` enforcing a policy, which
+`enforcement.probe` measures; `make server-shipment` alone does not build the
+helper, `make binaries` or `make sandbox` plus an install into `bin/` does).
+`test/support/remote_daemons.gleam` mints a CA and per-node leaves with
+`openssl`, writes each node's cookie at that node's isolated `$HOME`, renders the
+`loom.toml` files and `loomd distribution options`, and starts an orchestrator, an
+executor and a second orchestrator with a decoy pin through a wrapper that sets
+`LOOM_DISTRIBUTION_OPTFILE`. `test/support/remote_probe.gleam` runs as a throwaway
+emulator that each daemon lists as a peer and reports connections, makes a daemon
+dial or drop a connection (`erpc`), and lists a daemon's hidden nodes. The
+orchestrator's model is a `provider_http` script on loopback. Three tests share
+the fixture:
+
+- `daemon_shipped_remote_test_`: wrong pins are refused in each direction and no
+  daemon dials the executor before a session exists; `sessions.create` with
+  `executor`/`workspace` settles `resident`; the model writes a file with
+  `fs_write`, reads it with `bash` and `fs_read`; the file is under the
+  executor's checkout and nothing named like it or like `repo` is on the
+  orchestrator; the executor then lists the orchestrator as connected with no
+  probe dial; a stop leaves the executor's scope `closed`/`all_retired` at
+  incarnation 1 (read from a copy of `exec-ledger.db`), and a reopen attaches at
+  incarnation 2 and reads the earlier file.
+- `daemon_shipped_remote_restart_test_`: the orchestrator is killed with
+  `SIGKILL` while a `bash` call sleeps on the executor and started again. The
+  reopen waits out the dead daemon's writer lease (up to 60 s), recovers the call
+  from the executor's ledger, and the model gets the stored outcome; the
+  side-effect file shows one run.
+- `daemon_shipped_remote_partition_test_`: the probe has the orchestrator
+  `disconnect_node` the executor mid-call; the surface repairs the link and
+  re-sends the same `Run`, the file shows one run, and the executor lists the
+  orchestrator again afterwards.
 
 ## Naming a registered workspace (protocol 078)
 
@@ -6240,6 +6261,11 @@ Invariants that break things when violated:
   unlinks the host and `wait` halts on its monitor.
 - `ffi_remote.send` to an unregistered name on the local node raises, so same-VM
   tests must keep the host up; across nodes the send is dropped instead.
+- The owner port's requester is a pid on the executor's node. `weft.cancel_when_exits`
+  checks its pid with `erlang:is_process_alive/1`, which raises `badarg` for a
+  remote pid, so `owner_port.answer` cancels its run through a signal and a
+  monitor-only watcher instead; do not "simplify" it back. The test builds an
+  unconnected node's pid with `client_test_ffi:remote_pid/0`.
 
 Tests: `remote/{codec,host,owner_port,surface}_test` run one VM against a real
 ledger and a fake plane (`support/remote_fixtures`, which counts how many times

@@ -10,7 +10,7 @@
 //// order, the configuration tables as an operator writes them, the home each
 //// VM reads its cookie from, and the process that outlives the test.
 ////
-//// The module has five parts, in the order a fixture uses them.
+//// The module has six parts, in the order a fixture uses them.
 ////
 //// 1. **Credentials.** `mint_authority` and `issue` call `openssl` to make a
 ////    certificate authority and one leaf per node, with the exact node name as
@@ -19,25 +19,29 @@
 ////    emulator reads its cookie from there and `client/distribution` refuses
 ////    any other path.
 //// 2. **Configuration.** `model_table`, `distribution_table`, `executor_table`
-////    and `workspace_rows` render the pieces of a `loom.toml`. The executor's
-////    `[workspaces.<name>] root` row is deliberately a separate function with
-////    its own switch, `WorkspaceRows`, because that key does not exist on every
-////    base this file runs against.
+////    and `workspace_table` render the pieces of a `loom.toml`. The
+////    orchestrator's `model_table` points at a scripted provider, and the
+////    executor's `[workspaces.<name>] root` row is the only place the
+////    checkout's path is written.
 //// 3. **Daemons.** `layout` fixes where a daemon lives before it starts, so a
 ////    fixture can retire it after a failed assertion; `write_options` runs
 ////    `loomd distribution options`; `start` launches the daemon through a
 ////    wrapper that sets `LOOM_DISTRIBUTION_OPTFILE` inside an isolated home;
 ////    `retire` ends it by the process identity it recorded.
-//// 4. **Observation.** A daemon dials no peer yet, so nothing in its VM says
-////    whether it is connected. `run_probe` boots a throwaway emulator
+//// 4. **Observation.** Nothing in a daemon's VM says from outside whether it
+////    is connected. `run_probe` boots a throwaway emulator
 ////    (`support/remote_probe`) that the daemons list as a peer, and reads back
-////    what it saw. `epmd_names` is the cheaper check that a node registered.
-//// 5. **Sessions.** `open_control`, `create_registered` and `await_operation`
-////    speak the control protocol to a daemon. `registered_script`,
-////    `drive_registered_session` and the file assertions are the part of the
-////    end-to-end that needs an orchestrator able to open a registered session.
-////    They are complete but are not called by any test on the base this file
-////    was written against, and each says so.
+////    what it saw or makes a daemon drop a connection. `epmd_names` is the
+////    cheaper check that a node registered.
+//// 5. **Sessions.** `open_control`, `create_registered`, `await_operation`,
+////    `stop_session` and `reopen_session` speak the control protocol to a
+////    daemon, and `attach`, `say` and `await_answers` drive a registered
+////    session from a terminal. `registered_script` and `reopened_script` are
+////    the model's side of the turns the end-to-end runs, and the file
+////    assertions check where the files landed.
+//// 6. **What the executor kept.** `crash` ends a daemon with `SIGKILL`, and
+////    `executor_scope` reads the executor's ledger from a copy, to see how it
+////    closed a scope.
 ////
 //// Everything a fixture creates lives under a directory the caller chose,
 //// below `build/`. Nothing is written to `/tmp`, which Loom's jail replaces.
@@ -61,6 +65,7 @@ import host/bootstrap as native
 import host/endpoint
 import session_view/session_channel
 import simplifile
+import storage/exec_ledger
 import support/daemon_observation
 import support/internal/ffi_probe
 import support/internal/ffi_proc
@@ -70,7 +75,6 @@ import support/shipped_server
 import support/tui_driver
 import tui/bootstrap
 import tui/daemon/bootstrap as daemon_bootstrap
-import tui/daemon/protocol
 import weft/poll
 
 // A reply from a shipped daemon waits behind its own admission budgets, as in
@@ -356,43 +360,21 @@ pub fn executor_table(name: String, node: String) -> String {
   "[executors." <> name <> "]\nnode = \"" <> node <> "\"\n"
 }
 
-/// Whether an executor's configuration registers a workspace.
+/// The `[workspaces.<name>]` table of an executor: `name` is the directory
+/// `root` on that machine.
 ///
-/// The executor's `[workspaces.<name>] root` table is added to the daemon by a
-/// separate change. A daemon built before it refuses the table as an unknown
-/// key, so a fixture on such a base must leave it out, and a fixture on a base
-/// that has it turns it on.
-pub type WorkspaceRows {
-  /// Write no `[workspaces]` table. The configuration every base accepts.
-  WithoutWorkspaceRows
-
-  /// Write the `[workspaces.<name>] root = "<checkout>"` table.
-  WithWorkspaceRows
-}
-
-/// THE PLACE THAT WRITES THE EXECUTOR'S REGISTERED WORKSPACE.
-///
-/// With `WithWorkspaceRows` this registers `name` on the executor as the
-/// directory `root`, which is what lets `sessions.create` on the orchestrator
-/// say `executor: "box", workspace: "<name>"`. The follow-up that lands the
-/// executor role turns the switch on in the test module and nowhere else.
+/// This is what lets `sessions.create` on the orchestrator say
+/// `executor: "box", workspace: "<name>"`: the orchestrator holds the name and
+/// the executor alone knows the directory.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// remote_daemons.workspace_rows(WithoutWorkspaceRows, "repo", "/srv/repo")
-/// // -> ""
+/// remote_daemons.workspace_table("repo", "/srv/repo")
+/// // -> "[workspaces.repo]\nroot = \"/srv/repo\"\n"
 /// ```
-pub fn workspace_rows(
-  rows: WorkspaceRows,
-  name: String,
-  root: String,
-) -> String {
-  case rows {
-    WithoutWorkspaceRows -> ""
-    WithWorkspaceRows ->
-      "[workspaces." <> name <> "]\nroot = \"" <> root <> "\"\n"
-  }
+pub fn workspace_table(name: String, root: String) -> String {
+  "[workspaces." <> name <> "]\nroot = \"" <> root <> "\"\n"
 }
 
 // --- daemons -----------------------------------------------------------------
@@ -925,7 +907,7 @@ pub fn field(value: JsonValue, key: String) -> JsonValue {
   found
 }
 
-// --- the end-to-end turn (not exercised on the base this file was written for)
+// --- the end-to-end turn -----------------------------------------------------
 
 /// The file the scripted model writes on the executor, relative to the
 /// registered workspace.
@@ -934,14 +916,25 @@ pub const note_path = "e2e-note.txt"
 /// What the scripted model writes into `note_path`.
 pub const note_content = "written on the executor\n"
 
-/// FOLLOW-UP SLICE. The model's side of one registered turn: write a file,
-/// read it back through `bash`, read it through `fs_read`, and answer.
+/// The user's first prompt, which `registered_script` answers.
+pub const first_prompt = "write the note"
+
+/// The first turn's final text.
+pub const first_answer = "registered done"
+
+/// The user's prompt after the session is reopened.
+pub const second_prompt = "read the note again"
+
+/// The second turn's final text.
+pub const second_answer = "reopened done"
+
+/// The model's side of the first registered turn: write a file, read it back
+/// through `bash`, read it through `fs_read`, and answer.
 ///
 /// The paths are relative, so every call resolves inside the registered
 /// workspace, which is on the executor. The three calls use three different
 /// tools on purpose: `fs_write` and `fs_read` are the filesystem tools, and
-/// `bash` is the one that runs a process in the executor's jail. Nothing
-/// calls this on a base whose orchestrator cannot open a registered session.
+/// `bash` is the one that runs a process in the executor's jail.
 ///
 /// ## Examples
 ///
@@ -951,7 +944,7 @@ pub const note_content = "written on the executor\n"
 pub fn registered_script() -> List(provider.Exchange) {
   [
     provider.ToolUseExchange(
-      "write the note",
+      first_prompt,
       "write-call",
       "fs_write",
       json.Object([
@@ -974,70 +967,243 @@ pub fn registered_script() -> List(provider.Exchange) {
       )
     }),
     provider.ComputedExchange(provider.AwaitToolResult("read-call"), fn(_seen) {
-      provider.ReplyText("registered done")
+      provider.ReplyText(first_answer)
     }),
   ]
 }
 
-/// FOLLOW-UP SLICE. Creates a session registered on `executor`, waits for it
-/// to be resident, attaches a terminal and sends the prompt `registered_script`
-/// answers, then waits for the final text.
+/// The model's side of the turn after a reopen: one `bash` call that reads the
+/// file the first incarnation wrote, then an answer.
 ///
-/// `config` is the orchestrator's `loom.toml`, already rewritten to name the
-/// provider of `provider.with_server(registered_script(), ..)`. The caller
-/// asserts on the provider's report afterwards.
+/// The file is on the executor's disk, not in the scope, so a new incarnation
+/// of the same workspace sees it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // remote_daemons.drive_registered_session(orchestrator, "box", "repo")
+/// // list.append(registered_script(), reopened_script())
 /// ```
-pub fn drive_registered_session(
-  orchestrator: Running,
+pub fn reopened_script() -> List(provider.Exchange) {
+  [
+    provider.ToolUseExchange(
+      second_prompt,
+      "again-call",
+      "bash",
+      json.Object([#("command", json.String("cat -- " <> note_path))]),
+    ),
+    provider.ComputedExchange(provider.AwaitToolResult("again-call"), fn(_seen) {
+      provider.ReplyText(second_answer)
+    }),
+  ]
+}
+
+/// Creates a session registered on `executor` and waits for its opening to
+/// settle, returning the session identity and the reply that settled it.
+///
+/// The settling reply is `operations.get`, whose `status.state` is `resident`
+/// once the orchestrator has attached to the executor and built the session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(session, settled) = remote_daemons.create_and_settle(control, 1, "key", "box", "repo")
+/// ```
+pub fn create_and_settle(
+  control: Control,
+  id: Int,
+  key: String,
   executor: String,
   workspace: String,
-) -> Nil {
-  let control = open_control(orchestrator)
-  let created = create_registered(control, 1, "e2e-turn", workspace, executor)
-  let assert json.String(session) = field(field(created, "body"), "session_id")
+) -> #(String, JsonValue) {
+  let created = create_registered(control, id, key, workspace, executor)
+  assert field(created, "event") == json.String("sessions.create")
+  let body = field(created, "body")
+  let assert json.String(session) = field(body, "session_id")
     as "the registered session was created"
+  let assert json.String(operation) = field(field(body, "status"), "operation")
+    as "creation starts one opening operation"
+  #(session, await_operation(control, id + 1, session, operation))
+}
+
+/// The state a settled `operations.get` reply reports.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.settled_state(settled) // -> "resident"
+/// ```
+pub fn settled_state(settled: JsonValue) -> String {
+  let assert json.String(state) =
+    field(field(field(settled, "body"), "status"), "state")
+    as "a settled opening reports a state"
+  state
+}
+
+/// Stops a resident session through the control socket and waits until the
+/// daemon has retired its runtime, so the executor's scope has been asked to
+/// close.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.stop_session(orchestrator, control, 10, session)
+/// ```
+pub fn stop_session(
+  orchestrator: Running,
+  control: Control,
+  id: Int,
+  session: String,
+) -> Nil {
+  let stopped =
+    command(
+      control,
+      id,
+      "sessions.stop",
+      json.Object([
+        #("session_id", json.String(session)),
+        #("epoch", json.String(control.epoch)),
+      ]),
+    )
+  assert field(stopped, "event") == json.String("sessions.stop")
   let assert poll.Answered(Nil) =
     daemon_observation.session_until(
       orchestrator.connected.control,
       session,
       within: 30_000,
       every: 50,
-      inspect: resident,
+      inspect: daemon_observation.saved,
     )
-    as "the registered session opens on the executor"
+    as "the stopped registered session retires to saved"
+  Nil
+}
+
+/// Opens a saved registered session again and waits for it to be resident,
+/// returning the reply that settled the opening.
+///
+/// A daemon that was killed leaves the session's writer lease unexpired, and
+/// the opening of its replacement fails with the lease's own words until the
+/// lease runs out, which is up to the sixty seconds `serve` grants. That
+/// refusal is the lease doing its job, so this asks again; any other failure is
+/// returned for the caller to assert on.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let settled = remote_daemons.reopen_session(control, 20, session)
+/// ```
+pub fn reopen_session(control: Control, id: Int, session: String) -> JsonValue {
+  reopen_loop(control, id, session, 150)
+}
+
+fn reopen_loop(
+  control: Control,
+  id: Int,
+  session: String,
+  remaining: Int,
+) -> JsonValue {
+  assert remaining > 0 as "the writer lease of a crashed daemon expires"
+  let opened =
+    command(
+      control,
+      id,
+      "sessions.open",
+      json.Object([
+        #("session_id", json.String(session)),
+        #("epoch", json.String(control.epoch)),
+      ]),
+    )
+  assert field(opened, "event") == json.String("sessions.open")
+  let assert json.String(operation) = field(field(opened, "body"), "operation")
+    as "opening starts one operation"
+  let settled = await_operation(control, id + 1, session, operation)
+  case string.contains(json.to_string(settled), "writer holds this session") {
+    True -> {
+      process.sleep(500)
+      reopen_loop(control, id + 2, session, remaining - 1)
+    }
+    False -> settled
+  }
+}
+
+/// Attaches a terminal to a session and waits until it can write.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let terminal = remote_daemons.attach(orchestrator, session)
+/// ```
+pub fn attach(
+  orchestrator: Running,
+  session: String,
+) -> process.Subject(tui_driver.Message) {
   let assert Ok(driver) =
     tui_driver.start(orchestrator.address, orchestrator.owner, session)
     as "a terminal attaches to the registered session"
   let _ = tui_v2_test.await(driver.data, writable)
+  driver.data
+}
+
+/// Types `prompt` and presses enter.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.say(terminal, "write the note")
+/// ```
+pub fn say(
+  terminal: process.Subject(tui_driver.Message),
+  prompt: String,
+) -> Nil {
   let _ =
-    tui_driver.play(driver.data, [
-      backend.Paste("write the note"),
+    tui_driver.play(terminal, [
+      backend.Paste(prompt),
       backend.KeyPress("enter"),
     ])
-  let _ =
-    tui_v2_test.await_within(
-      driver.data,
-      fn(sample) {
-        writable(sample) && assistant_texts(sample) == ["registered done"]
-      },
-      60_000,
-    )
-  tui_driver.stop(driver.data)
   Nil
 }
 
-fn resident(session: protocol.Session) -> poll.Attempt(Nil, String) {
-  case session.status {
-    protocol.Resident(_) -> poll.Done(Nil)
-    protocol.Reserved | protocol.Opening(_) -> poll.Retry
-    protocol.Saved | protocol.Stopping(_) | protocol.RecoveryBlocked ->
-      poll.Fail("the registered session did not open")
-  }
+/// Waits until the assistant's final texts are exactly `answers`, oldest first, and
+/// the session accepts input again.
+///
+/// A reopened session replays its whole transcript, so `answers` lists every
+/// final text the session has produced so far, not only the new one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.await_answers(terminal, ["registered done"], 60_000)
+/// ```
+pub fn await_answers(
+  terminal: process.Subject(tui_driver.Message),
+  answers: List(String),
+  within: Int,
+) -> Nil {
+  let _ =
+    tui_v2_test.await_within(
+      terminal,
+      fn(sample) { writable(sample) && assistant_texts(sample) == answers },
+      within,
+    )
+  Nil
+}
+
+/// Attaches a terminal, sends `prompt`, waits for `answers`, and detaches.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.converse(orchestrator, session, "write the note", ["registered done"])
+/// ```
+pub fn converse(
+  orchestrator: Running,
+  session: String,
+  prompt: String,
+  answers: List(String),
+) -> Nil {
+  let terminal = attach(orchestrator, session)
+  say(terminal, prompt)
+  await_answers(terminal, answers, 60_000)
+  tui_driver.stop(terminal)
 }
 
 fn writable(sample: tui_driver.Sample) -> Bool {
@@ -1048,7 +1214,9 @@ fn writable(sample: tui_driver.Sample) -> Bool {
 }
 
 fn assistant_texts(sample: tui_driver.Sample) -> List(String) {
-  list.filter_map(sample.model.shared.records, fn(record) {
+  sample.model.shared.records
+  |> list.reverse
+  |> list.filter_map(fn(record) {
     case record.entry {
       entry.MessageEntry(
         message: message.AssistantMessage(
@@ -1063,8 +1231,33 @@ fn assistant_texts(sample: tui_driver.Sample) -> List(String) {
   })
 }
 
-/// FOLLOW-UP SLICE. Asserts the note exists with its content under the
-/// executor's checkout.
+/// The text of the successful tool result the model saw for `call_id`.
+///
+/// The provider fixture records every request's latest message, so this is the
+/// tool's output as the harness put it in the transcript.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.result_text(requests, "cat-call")
+/// ```
+pub fn result_text(
+  requests: List(provider.ObservedRequest),
+  call_id: String,
+) -> String {
+  let found =
+    list.find_map(requests, fn(request) {
+      case request.latest {
+        provider.SuccessfulToolResult(id, text) if id == call_id -> Ok(text)
+        _ -> Error(Nil)
+      }
+    })
+  let assert Ok(text) = found
+    as { "the model received a successful result for " <> call_id }
+  text
+}
+
+/// Asserts the note exists with its content under the executor's checkout.
 ///
 /// ## Examples
 ///
@@ -1078,23 +1271,111 @@ pub fn assert_written_on_executor(checkout: String) -> Nil {
   Nil
 }
 
-/// FOLLOW-UP SLICE. Asserts no file named like the note exists anywhere under
+/// Asserts nothing named `name`, file or directory, exists anywhere under
 /// `roots`, the orchestrator's directories.
 ///
-/// The check is by file name, not by content, because the orchestrator's
-/// session database legitimately records the text the tools returned.
+/// The check is by name, not by content, because the orchestrator's session
+/// database records the text the tools returned.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // remote_daemons.assert_absent_from([orchestrator.layout.directory])
+/// // remote_daemons.assert_absent_from([orchestrator.layout.directory], note_path)
 /// ```
-pub fn assert_absent_from(roots: List(String)) -> Nil {
+pub fn assert_absent_from(roots: List(String), name: String) -> Nil {
   list.each(roots, fn(root) {
-    let assert Ok(files) = simplifile.get_files(root)
-      as { "the directory can be walked: " <> root }
     let copies =
-      list.filter(files, fn(file) { filepath.base_name(file) == note_path })
+      list.filter(entries_under(root), fn(path) {
+        filepath.base_name(path) == name
+      })
     assert copies == []
   })
+}
+
+// Every path beneath `root`, directories included.
+fn entries_under(root: String) -> List(String) {
+  let assert Ok(names) = simplifile.read_directory(root)
+    as { "the directory can be walked: " <> root }
+  list.flat_map(names, fn(entry) {
+    let path = root <> "/" <> entry
+    case simplifile.is_directory(path) {
+      Ok(True) -> [path, ..entries_under(path)]
+      _ -> [path]
+    }
+  })
+}
+
+// --- what the executor kept --------------------------------------------------
+
+/// Ends a daemon with `SIGKILL`, by the identity its endpoint recorded, and
+/// waits until that process is gone. The daemon gets no chance to close
+/// anything, which is what a crash is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_daemons.crash(orchestrator.layout)
+/// ```
+pub fn crash(layout: Layout) -> Nil {
+  let assert Ok(Some(record)) = endpoint.load(layout.paths)
+    as "the daemon recorded its identity"
+  assert record.fence.pid != native.current_process_id()
+  assert endpoint.is_present(record.fence) == Ok(True)
+  let assert Ok(kill) = ffi_proc.which("kill") as "kill is on PATH"
+  let assert Ok(#(0, _)) =
+    ffi_proc.run(
+      kill,
+      ["-KILL", int.to_string(record.fence.pid)],
+      layout.directory,
+    )
+    as "SIGKILL targets only this fixture's verified daemon"
+  let assert poll.Answered(Nil) =
+    poll.until(within: 10_000, every: 25, attempt: fn() {
+      case endpoint.is_present(record.fence) {
+        Ok(False) -> poll.Done(Nil)
+        Ok(True) -> poll.Retry
+        Error(reason) -> poll.Fail(reason)
+      }
+    })
+    as "the crashed daemon's native identity departs"
+  Nil
+}
+
+/// The executor's scope row for `session`, read from a copy of its ledger.
+///
+/// The executor keeps running, so the ledger is read from a copy of the file
+/// and its write-ahead log in `scratch`, never from the live one. Opening the
+/// copy changes the copy only. The copy is taken while the scope is quiet, which
+/// is when a test asks what the executor concluded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let scope = remote_daemons.executor_scope(executor.layout, directory, session)
+/// ```
+pub fn executor_scope(
+  executor: Layout,
+  scratch: String,
+  session: String,
+) -> exec_ledger.Scope {
+  let assert Ok(Nil) = simplifile.create_directory_all(scratch)
+    as "the ledger copy has a directory"
+  let source = executor.paths.root <> "/exec-ledger.db"
+  let copy = scratch <> "/exec-ledger-" <> random_hex(4) <> ".db"
+  list.each(["", "-wal", "-shm"], fn(suffix) {
+    case simplifile.is_file(source <> suffix) {
+      Ok(True) -> {
+        let assert Ok(Nil) =
+          simplifile.copy_file(source <> suffix, copy <> suffix)
+          as "the ledger file is copied"
+        Nil
+      }
+      _ -> Nil
+    }
+  })
+  let assert Ok(ledger) = exec_ledger.open(copy) as "the copied ledger opens"
+  let assert Ok(Some(scope)) = exec_ledger.scope(ledger, session)
+    as "the executor holds a scope for the session"
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the copy closes"
+  scope
 }
