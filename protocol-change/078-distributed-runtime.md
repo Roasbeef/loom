@@ -191,7 +191,7 @@ Orchestrator to executor:
 | `Query(key, reply)` | Return the ledger state and outcome for `key`, in any scope state or incarnation. |
 | `QueryOrFence(key, incarnation, reply)` | Like `Query`, but when no row exists, atomically insert a terminal "did not start" row so a stale `Run` for that key can never start. Used to recover an orphaned call that is not replay-safe. |
 | `ListUnacked(session, reply)` | List the scope's terminal and unknown keys without attaching, for the orchestrator's acknowledgement reconciler. |
-| `Ack(key)` | The orchestrator has durably staged this outcome. |
+| `Ack(key)` | The orchestrator has durably staged this outcome. A settled row is retired and a tombstone keeps the key taken until the scope's incarnation changes, so `Run` for it is answered as lost and never starts. |
 | `Close(session, workspace, incarnation, reply)` | Close the scope and report `all_retired` or `unknown(count)`. |
 
 There is no cancel message. Abort kills the orchestrator's effect process,
@@ -866,6 +866,39 @@ because a reopen names the next incarnation. The record now attaches at the
 incarnation after any close that ended one, clean or not. While the scope still
 holds unknown cleanup the executor refuses that attach as before. The refusal now
 names the command.
+
+#### Acknowledgements leave a tombstone (ledger version 3)
+
+The P model of remote execution (`protocol/models/remote-execution`) found that a
+`Run` could start a key that recovery had fenced and the orchestrator had
+acknowledged. A runtime restarts inside one open, so the attach token is
+unchanged. The dead effect process's `Run` is delayed. Recovery's `QueryOrFence`
+from a new process overtakes it, because Erlang orders messages only per sender
+and receiver pair, and stores the fence. The model is told the call did not run,
+the acknowledgement deletes the row, and then the late `Run` finds no row and a
+current token and starts the call.
+
+An acknowledgement no longer deletes the key. It deletes the row, which releases
+its outcome and its reserved bytes, and leaves a tombstone, a row in a new
+`call_ack` table. A key with a tombstone is never admitted again in that
+incarnation: `Run` for it is answered `RunLost`, and a `Query` for it reports
+`Unknown`. Tombstones are dropped when the scope reopens at a new incarnation,
+which refuses the old incarnation's requests by itself, when it closes with every
+child retired, and when an operator releases it. They are not counted in the byte
+budget. The ledger is at schema version 3, and an older file gains the table when
+it is opened. The wire does not change. The ledger's earlier rationale for a
+deleted row, that the orchestrator never re-sends a `Run` for a settled key, was
+true of the orchestrator and not of a dead runtime's in-flight message, which is
+why the row's refusal has to outlive the acknowledgement.
+
+#### A restarted executor answers a call it holds a row for
+
+After the executor's VM restarts, the host holds no plane until the next attach,
+and it refused every `Run` with `NoPlane`. The surface stages that refusal as one
+that says the call did not happen, even for a key whose row the restart turned
+`unknown`. The host now looks the key up in the ledger first: a stored outcome is
+answered, a lost one is answered `RunLost`, and only a key with no row is refused
+for the missing plane.
 
 ## Impact
 
