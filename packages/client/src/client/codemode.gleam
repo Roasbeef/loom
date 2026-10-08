@@ -574,17 +574,23 @@ pub type Seams {
 /// ```
 ///
 pub fn serving(config: Config, seams: Seams, over agency: Agency) -> Config {
-  let spawn_ceiling = orchestration.default_spawn_ceiling
   Config(
     ..config,
     strand_tools: Some(agency.holds),
     notes: Some(notes.Door(put: agency.note, scan: agency.notes)),
-    surface: case seams {
-      WorkspaceOnly -> Workspace
-      OrchestrationOnly -> Orchestration(agency:, spawn_ceiling:)
-      BothSeams -> Both(agency:, spawn_ceiling:)
-    },
+    surface: surface_of(seams, agency),
   )
+}
+
+// The surface a setting and an Agency make, shared by a host that serves code
+// mode and by an owner that only answers for one.
+fn surface_of(seams: Seams, agency: Agency) -> Surface {
+  let spawn_ceiling = orchestration.default_spawn_ceiling
+  case seams {
+    WorkspaceOnly -> Workspace
+    OrchestrationOnly -> Orchestration(agency:, spawn_ceiling:)
+    BothSeams -> Both(agency:, spawn_ceiling:)
+  }
 }
 
 /// The same host configuration, serving the orchestration seam over a
@@ -723,8 +729,12 @@ pub fn seam_allowlist(
 // extensions retain their separate authority; resident hooks have no
 // capability loader.
 fn seam_mcp(config: Config, seam: vet_policy.Seam) -> McpLayer {
+  mcp_for(config.mcp, seam)
+}
+
+fn mcp_for(layer: McpLayer, seam: vet_policy.Seam) -> McpLayer {
   case seam {
-    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.mcp
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> layer
 
     // The extension seam sees none of it either, and for a different
     // reason than the orchestration seam's: an extension's allowlist is
@@ -2531,8 +2541,8 @@ fn surface_router(
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
   owner_calls(
-    config,
     owner_arms(config, vetting_seam(request.seam)),
+    emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
     strand: request.strand,
     source_index: request.source_index,
     over: workspace_router(config, request),
@@ -2544,13 +2554,13 @@ fn surface_router(
 /// behind `notes.*`, the scheduling door behind `schedule.*` and the MCP
 /// layer behind `mcp.*`.
 ///
-/// They are read off the `Config` once, by `owner_arms`, and every router
+/// They are read off an `OwnerSide` once, by `owner_arms`, and every router
 /// below is built from this value rather than from the fields it came from.
 /// That is what lets the same arms be composed in two places. A workspace on
 /// the owner's machine composes them into the execution's own router. A
 /// workspace elsewhere has the owner compose them to answer
-/// `owner_capability`, and its executor routes the names in `owner_caps`
-/// there instead.
+/// `owner_answering`, and its executor routes the names in
+/// `cap_placement.owner_caps` there instead.
 pub type OwnerArms {
   OwnerArms(
     /// The Agency `strand.*` answers over, or `None` on a host with no
@@ -2566,6 +2576,70 @@ pub type OwnerArms {
   )
 }
 
+/// The doors a session's owner answers code mode from, apart from any
+/// workspace.
+///
+/// A `Config` holds these beside a broker, a toolchain and a work root, none
+/// of which the owner of a workspace on another node has. This record is the
+/// part of the `Config` that the owner's arms read, so that the owner can be
+/// built without the rest.
+pub type OwnerSide {
+  OwnerSide(
+    /// Which seams the owner serves, and the Agency behind `strand.*`.
+    surface: Surface,
+    /// The blackboard door behind `notes.*`.
+    notes: Option(notes.Door),
+    /// The scheduling door behind `schedule.*`.
+    schedules: Option(scheduleseam.Door),
+    /// The MCP servers behind `mcp.<server>`.
+    mcp: McpLayer,
+  )
+}
+
+/// Reads the owner's side off a host configuration.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.owner_side(config).schedules
+/// ```
+///
+pub fn owner_side(config: Config) -> OwnerSide {
+  OwnerSide(
+    surface: config.surface,
+    notes: config.notes,
+    schedules: config.schedules,
+    mcp: config.mcp,
+  )
+}
+
+/// The owner's side for a session whose workspace is on another node.
+///
+/// It is what `serving` and `over_schedules` put into a `Config`, without a
+/// `Config`: the seams the operator chose, the Agency they route onto, the
+/// blackboard on the Agency's own note and scan functions, and the
+/// scheduling door. There is no MCP layer, because a workspace on an
+/// executor omits the MCP façades.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.owner_serving(codemode.BothSeams, agency_seam, schedule_door)
+/// ```
+///
+pub fn owner_serving(
+  seams: Seams,
+  over agency: Agency,
+  schedules schedules: Option(scheduleseam.Door),
+) -> OwnerSide {
+  OwnerSide(
+    surface: surface_of(seams, agency),
+    notes: Some(notes.Door(put: agency.note, scan: agency.notes)),
+    schedules:,
+    mcp: mcp_wiring.none(),
+  )
+}
+
 /// Reads the owner-bound arms off the configuration for one seam.
 ///
 /// ## Examples
@@ -2575,14 +2649,21 @@ pub type OwnerArms {
 /// ```
 ///
 pub fn owner_arms(config: Config, seam: vet_policy.Seam) -> OwnerArms {
+  arms_of(owner_side(config), seam)
+}
+
+// The arms one seam sees. `strand.*` follows the surface alone. The
+// blackboard and the MCP layer also follow the seam, because the extension
+// and resident seams reach neither.
+fn arms_of(side: OwnerSide, seam: vet_policy.Seam) -> OwnerArms {
   OwnerArms(
-    agency: case config.surface {
+    agency: case side.surface {
       Workspace -> None
       Orchestration(agency:, ..) | Both(agency:, ..) -> Some(agency)
     },
-    notes: notes_on(config, seam),
-    schedules: config.schedules,
-    mcp: seam_mcp(config, seam),
+    notes: notes_for(side.notes, seam),
+    schedules: side.schedules,
+    mcp: mcp_for(side.mcp, seam),
   )
 }
 
@@ -2590,9 +2671,13 @@ pub fn owner_arms(config: Config, seam: vet_policy.Seam) -> OwnerArms {
 // arm answers the Agency's names except the artifact emitter, which is a
 // workspace write and falls through; the notes arm wraps whatever is
 // beneath, so a blackboard call never reaches the strand arm.
+//
+// `emit` is the artifact writer the strand router is built with. Nothing
+// calls it here, because `report.emit` falls through, but the router takes
+// one and the caller says whose blob store it would have been.
 fn owner_calls(
-  config: Config,
   arms: OwnerArms,
+  emit emit: artifact.Emit,
   strand strand: String,
   source_index source_index: Int,
   over inner: satellite.CapRouter,
@@ -2605,7 +2690,7 @@ fn owner_calls(
           agency:,
           strand:,
           source_index:,
-          emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
+          emit:,
           emit_ceiling: artifact.default_emit_ceiling,
         ))
       fn(call: satellite.CapRequest) {
@@ -2652,16 +2737,54 @@ fn owner_calls(
 pub fn owner_capability(
   config: Config,
 ) -> fn(owner_services.OwnerCapCall) -> Result(CapOutcome, satellite.CapDenial) {
+  owner_answering(owner_side(config), beyond: fn(_strand, router) { router })
+}
+
+/// `owner_capability` over an `OwnerSide` alone, with a place for arms which
+/// a `Config` does not carry.
+///
+/// `beyond` wraps the owner's whole chain for the call's strand, outermost.
+/// It is how the peer mailbox joins: `client/serve` composes `peer.*` around
+/// the execution's router through `Config.wrap_router`, which the owner has
+/// no `Config` to read, so the caller states it again here.
+///
+/// A call under a seam the owner's surface does not serve is refused, as
+/// `execute` refuses an unserved seam on a local host. The executor offers
+/// both seams without asking the owner, so this is where an operator's
+/// narrower choice is enforced for a remote session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.owner_answering(codemode.owner_side(config), beyond: wrap)
+/// ```
+///
+pub fn owner_answering(
+  side: OwnerSide,
+  beyond beyond: fn(String, satellite.CapRouter) -> satellite.CapRouter,
+) -> fn(owner_services.OwnerCapCall) -> Result(CapOutcome, satellite.CapDenial) {
   fn(call: owner_services.OwnerCapCall) {
-    let arms = owner_arms(config, call.seam)
+    use <- bool.lazy_guard(
+      when: !list.contains(surface_seams(side.surface), call.seam),
+      return: fn() {
+        Error(satellite.CapDenial(
+          code: workspace.unsupported_cap_code,
+          message: "the session owner does not serve the "
+            <> seam_name(call.seam)
+            <> " seam",
+        ))
+      },
+    )
+    let arms = arms_of(side, call.seam)
     let router =
       owner_calls(
-        config,
         arms,
+        emit: refused_emit,
         strand: call.strand,
         source_index: call.source_index,
-        over: scheduling(config, call, over: owner_mcp(arms)),
+        over: scheduling(arms.schedules, call, over: owner_mcp(arms)),
       )
+      |> beyond(call.strand, _)
     case router(owner_request(call)) {
       Ok(satellite.ServedHere(serve)) | Ok(satellite.ScopedService(serve)) ->
         Ok(serve())
@@ -2677,6 +2800,25 @@ pub fn owner_capability(
   }
 }
 
+// The artifact writer of an owner which holds no blob store for a workspace
+// on another node. `report.emit` is the workspace's, so nothing reaches it.
+fn refused_emit(
+  _artifact: artifact.Artifact,
+) -> Result(String, artifact.EmitRefusal) {
+  Error(artifact.StoreFailed(
+    reason: "the session owner stores no artifacts for a remote workspace",
+  ))
+}
+
+fn seam_name(seam: vet_policy.Seam) -> String {
+  case seam {
+    vet_policy.WorkspaceSeam -> "workspace"
+    vet_policy.OrchestrationSeam -> "orchestration"
+    vet_policy.ExtensionSeam -> "extension"
+    vet_policy.ResidentSeam -> "resident"
+  }
+}
+
 // The MCP arm over a base which answers nothing: a name no owner arm claims
 // is denied instead of being handed to the default router, which would plan
 // a jailed process.
@@ -2689,26 +2831,17 @@ fn owner_mcp(arms: OwnerArms) -> satellite.CapRouter {
   })
 }
 
-// `schedule.*` over `inner`, and only those three names. The workspace
-// seam's router answers every harness-side capability, so it is fenced by
-// name here: the owner serves the scheduling arm of it and none of the
-// filesystem, scratch, job or emit arms beside it.
+// `schedule.*` over `inner`, and only those three names. The workspace seam
+// answers every harness-side capability, so it is fenced by name here: the
+// owner serves the scheduling arm of it and none of the filesystem, scratch,
+// job or emit arms beside it. The seam is built from the scheduling door
+// alone, and the closures for what the owner does not serve refuse.
 fn scheduling(
-  config: Config,
+  door: Option(scheduleseam.Door),
   call: owner_services.OwnerCapCall,
   over inner: satellite.CapRouter,
 ) -> satellite.CapRouter {
-  let routed =
-    workspace.routing(
-      workspace_seam_for(
-        config,
-        workspace: "/",
-        strand: call.strand,
-        operation: call.op_id,
-        protected: [],
-      ),
-      over: inner,
-    )
+  let routed = workspace.routing(schedule_seam(door, call.strand), over: inner)
   fn(request: satellite.CapRequest) {
     case
       list.contains(
@@ -2724,6 +2857,40 @@ fn scheduling(
       False -> inner(request)
     }
   }
+}
+
+// A workspace seam whose only live closures are the scheduling ones, bound to
+// the calling strand as `workspace_seam_with_access` binds them. Everything
+// else answers that the owner has no workspace, which `scheduling` never
+// reaches because it routes by name.
+fn schedule_seam(
+  door: Option(scheduleseam.Door),
+  strand: String,
+) -> workspace.Workspace {
+  let no_files =
+    workspace.ListRefused(tool.FsFailure(
+      path: "",
+      reason: "the session owner holds no workspace files",
+    ))
+  workspace.Workspace(
+    fs_read: fn(_path) { Error(no_files) },
+    fs_list: fn(_path) { Error(no_files) },
+    fs_write: fn(_path, _contents) { Error(no_files) },
+    fs_edit: fn(_path, _edits) { Error(no_files) },
+    kv_get: scratch.none().get,
+    kv_set: scratch.none().set,
+    kv_delete: scratch.none().delete,
+    schedule_create: fn(request) {
+      schedule_create_in(door, request, on: strand)
+    },
+    schedule_list: fn() { schedule_list_in(door, strand) },
+    schedule_cancel: fn(name, target) {
+      schedule_cancel_in(door, name, target, on: strand)
+    },
+    jobs: workspace.no_jobs(),
+    emit: refused_emit,
+    emit_ceiling: artifact.default_emit_ceiling,
+  )
 }
 
 // The request an owner arm is given. The arms read the capability, its
@@ -3930,8 +4097,15 @@ fn lsp_on(config: Config, seam: vet_policy.Seam) -> Option(query.Door) {
 // Installed extensions and resident hooks do not inherit model note writes.
 // This choice gates the import surface, advertised calls, router, and quotas.
 fn notes_on(config: Config, seam: vet_policy.Seam) -> Option(notes.Door) {
+  notes_for(config.notes, seam)
+}
+
+fn notes_for(
+  door: Option(notes.Door),
+  seam: vet_policy.Seam,
+) -> Option(notes.Door) {
   case seam {
-    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.notes
+    vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> door
     vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
   }
 }
