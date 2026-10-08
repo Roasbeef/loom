@@ -83,6 +83,7 @@ packages/client/src/client/distribution.gleam|peer_row|call|[[distribution.peers
 packages/client/src/client/executors.gleam|row|call|[executors.<name>]|
 packages/client/src/client/pools.gleam|row|call|[pools.<name>]|
 packages/client/src/client/workspaces.gleam|row|call|[workspaces.<name>]|
+packages/client/src/client/orchestrators.gleam|row|call|[orchestrators.<name>]|
 SPEC
 }
 

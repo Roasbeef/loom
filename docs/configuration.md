@@ -56,11 +56,11 @@ error instead of a setting that silently does nothing.
 **There is no live reload.** A session reads the file when it is built: when it
 is created, opened, or resumed. It keeps what it read for as long as it runs, so
 an edit reaches a running session only after that session is stopped and opened
-again. Six tables are read once, when the daemon starts, and need a daemon
+again. Seven tables are read once, when the daemon starts, and need a daemon
 restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077),
 [`[distribution]`](#distribution), [`[executors.<name>]`](#executorsname),
-[`[pools.<name>]`](#poolsname) and [`[workspaces.<name>]`](#workspacesname)
-(from protocol-change 078). `[distribution]` also needs the VM booted for it.
+[`[pools.<name>]`](#poolsname), [`[workspaces.<name>]`](#workspacesname) and
+[`[orchestrators.<name>]`](#orchestratorsname) (from protocol-change 078). `[distribution]` also needs the VM booted for it.
 The MCP, language-server, rule and schedule tables are trust decisions and
 have no flag, no discovery and no reload path; editing the file and reopening the
 session is the decision.
@@ -104,6 +104,7 @@ is not in this list is refused.
 | `executors` | table of `[executors.<name>]` | Machines a session's workspace may be registered on (from protocol-change 078). | [`[executors.<name>]`](#executorsname) |
 | `pools` | table of `[pools.<name>]` | Named groups of executors a session may be placed on without naming one (from protocol-change 078). | [`[pools.<name>]`](#poolsname) |
 | `workspaces` | table of `[workspaces.<name>]` | Checkouts this machine serves to orchestrators (from protocol-change 078). | [`[workspaces.<name>]`](#workspacesname) |
+| `orchestrators` | table of `[orchestrators.<name>]` | Other orchestrators this daemon asks who owns a session it does not know (from protocol-change 078). | [`[orchestrators.<name>]`](#orchestratorsname) |
 
 ## `[models.<name>]`
 
@@ -592,6 +593,34 @@ directory, in `scopes/<session>`, and removed when the session's scope closes.
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `root` | string | required | an absolute path with no `..` segment, naming an existing directory | The checkout served under this name. The daemon refuses to start when it is not a directory. |
+
+## `[orchestrators.<name>]`
+
+(From protocol-change 078.) Optional, read once when the daemon starts, like
+`[executors.<name>]`. This is the table for a deployment with more than one
+orchestrator. Each orchestrator keeps its own catalogue, and a session is created
+on, and owned by, the orchestrator the client was connected to. A client that
+connects to the other orchestrator and names that session gets no record there, so
+the daemon asks the orchestrators listed here, over distribution, which of them
+holds it. If one does, `sessions.get` and `sessions.open` answer `not_owner`,
+naming that orchestrator and, when this table gives one, the address to connect
+to; if none does, the answer is `not_found` as before, and if a listed
+orchestrator cannot be reached the answer is `owner_unreachable`. Only the daemon's
+owner is redirected. The daemon never connects a client to the other orchestrator
+itself: the client needs that machine's own credential.
+
+`<name>` is a lowercase letter, then lowercase letters, digits, `_` or `-`, at most
+32 characters, and is the name a `not_owner` refusal carries. The table requires a
+`[distribution]` table, because an orchestrator is a pinned peer, and two names may
+not share a node. List each orchestrator on the other. A daemon with a
+`[distribution]` table answers these questions for its peers whether or not it
+lists any orchestrator itself; the table only says whom this daemon asks. A daemon
+without `[orchestrators]` asks nobody.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `node` | string | required | one of the `node` values in `[[distribution.peers]]` | The peer node that answers for this orchestrator. |
+| `address` | string | none | `wss://<host>[:<port>]/v2/control`, or `ws://` for a loopback host, with no credentials, query or fragment | The control address a client passes to `loom --addr` to reach this orchestrator. A daemon binds loopback only, so this is whatever the operator exposes (a tunnel, a proxy). When absent, `not_owner` names the orchestrator and no address. |
 
 ## Provisioning a deployment
 

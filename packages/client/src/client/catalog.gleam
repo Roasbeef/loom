@@ -163,6 +163,7 @@ import client/daemon/limits as daemon_limits
 import client/distribution
 import client/executors
 import client/lsp/profile.{type LspServer}
+import client/orchestrators
 import client/peer_defaults
 import client/pools
 import client/workspaces
@@ -453,14 +454,16 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // session's workspace on, read once when the daemon starts. `pools` is
   // `client/pools`': named groups of those executors a session may be placed
   // on without naming one. `workspaces` is `client/workspaces`': the checkouts
-  // an executor serves, read the same way.
+  // an executor serves, read the same way. `orchestrators` is
+  // `client/orchestrators`': the other orchestrators this daemon asks which of
+  // them owns a session it has no record of.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
       "profiles", "peers", "retry", "distribution", "executors", "pools",
-      "workspaces",
+      "workspaces", "orchestrators",
     ],
     "the top level",
   ))
@@ -470,6 +473,7 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   use Nil <- result.try(validate_executors(document))
   use Nil <- result.try(validate_pools(document))
   use Nil <- result.try(validate_workspaces(document))
+  use Nil <- result.try(validate_orchestrators(document))
   use model_tables <- result.try(
     table_entries(document, "models")
     |> result.replace_error("the catalogue needs a [models.<name>] table"),
@@ -530,6 +534,15 @@ fn validate_workspaces(
   document: Dict(String, tom.Toml),
 ) -> Result(Nil, String) {
   workspaces.from_document(document) |> result.replace(Nil)
+}
+
+// `[orchestrators.<name>]` names the peers this daemon asks who owns a session
+// it does not know (protocol-change/078). Like `[executors.<name>]` it needs
+// `[distribution]`, because an orchestrator is a pinned peer.
+fn validate_orchestrators(
+  document: Dict(String, tom.Toml),
+) -> Result(Nil, String) {
+  orchestrators.from_document(document) |> result.replace(Nil)
 }
 
 // tom renders a TOML parse failure as a structured value; the server
