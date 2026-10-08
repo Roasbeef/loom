@@ -14,8 +14,8 @@ import simplifile
 import sqlight
 import storage/exec_ledger.{
   type Key, type Ledger, Admitted, AllRetired, Closed, Closing, Created,
-  Existing, Found, Fresh, Key, Limits, Missing, Open, Rebound, Reopened,
-  Terminal, Unknown, UnknownCleanup,
+  Existing, Fenced, Found, Fresh, Key, Limits, Missing, Open, Rebound, Reopened,
+  Standing, Terminal, Unknown, UnknownCleanup,
 }
 import storage/exec_ledger_schema
 import support/fixtures
@@ -896,4 +896,150 @@ pub fn random_sequences_never_admit_a_key_twice_or_under_a_stale_token_test() {
 pub fn a_session_without_a_scope_reads_as_none_test() {
   let ledger = open_at(path("no-scope"))
   assert exec_ledger.scope(ledger, "nobody") == Ok(None)
+}
+
+pub fn a_fence_with_no_row_inserts_a_terminal_row_and_blocks_admission_test() {
+  let file = path("fence-first")
+  let ledger = open_at(file)
+  attached(ledger)
+  let key = call(0)
+  assert exec_ledger.query_or_fence(ledger, key, 0, bytes("did not run"))
+    == Ok(Fenced)
+  assert count(file, "SELECT count(*) FROM call WHERE state = 'terminal'") == 1
+  assert exec_ledger.query(ledger, key)
+    == Ok(Found(Terminal(bytes("did not run"))))
+
+  // A stale `Run` that arrives after the fence finds the key taken. It gets
+  // the stored outcome back and is never told to start.
+  assert admit(ledger, key, 64) == Ok(Existing(Terminal(bytes("did not run"))))
+  assert count(file, "SELECT count(*) FROM call") == 1
+
+  // A second fence for the same key changes nothing and says what stands.
+  assert exec_ledger.query_or_fence(ledger, key, 0, bytes("different"))
+    == Ok(Standing(Terminal(bytes("did not run"))))
+}
+
+pub fn a_fence_after_the_run_reports_the_row_it_finds_test() {
+  let file = path("run-first")
+  let ledger = open_at(file)
+  attached(ledger)
+  let key = call(0)
+  assert admit(ledger, key, 64) == Ok(Fresh)
+
+  // The stale `Run` got in first: recovery learns the call is live and writes
+  // nothing.
+  assert exec_ledger.query_or_fence(ledger, key, 0, bytes("did not run"))
+    == Ok(Standing(Admitted))
+  assert count(file, "SELECT count(*) FROM call WHERE state = 'admitted'") == 1
+  assert exec_ledger.finish(ledger, key, bytes("done")) == Ok(Nil)
+  assert exec_ledger.query_or_fence(ledger, key, 0, bytes("did not run"))
+    == Ok(Standing(Terminal(bytes("done"))))
+}
+
+pub fn a_fence_row_is_acknowledged_like_any_settled_row_test() {
+  let file = path("fence-ack")
+  let ledger = open_at(file)
+  attached(ledger)
+  let assert Ok(Fenced) =
+    exec_ledger.query_or_fence(ledger, call(0), 0, bytes("did not run"))
+  let assert Ok(unacked) = exec_ledger.unacked(ledger, "s")
+  assert unacked.terminal == [call(0)]
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+  assert exec_ledger.query(ledger, call(0)) == Ok(Missing)
+}
+
+pub fn a_fence_needs_the_scope_at_the_callers_incarnation_test() {
+  let file = path("fence-scope")
+  let ledger = open_at(file)
+  assert exec_ledger.query_or_fence(ledger, call(0), 0, bytes("x"))
+    == Error(exec_ledger.NoSuchScope)
+  attached(ledger)
+  assert exec_ledger.query_or_fence(ledger, call(0), 1, bytes("x"))
+    == Error(exec_ledger.StaleIncarnation(0))
+  assert exec_ledger.query_or_fence(
+      ledger,
+      Key(..call(0), source_index: -1),
+      0,
+      bytes("x"),
+    )
+    == Error(exec_ledger.Invalid("call source index is negative"))
+  assert count(file, "SELECT count(*) FROM call") == 0
+}
+
+pub fn a_fence_still_answers_in_a_closed_scope_test() {
+  let ledger = open_at(path("fence-closed"))
+  attached(ledger)
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, AllRetired)
+    == Ok(Nil)
+
+  // Recovery of an orphaned call may run after the scope closed, and a row
+  // never moves, so the key is fenced and queryable all the same.
+  assert exec_ledger.query_or_fence(ledger, call(0), 0, bytes("did not run"))
+    == Ok(Fenced)
+  assert exec_ledger.query(ledger, call(0))
+    == Ok(Found(Terminal(bytes("did not run"))))
+}
+
+pub fn two_connections_racing_a_fence_and_an_admit_agree_test() {
+  let file = path("fence-race")
+  let first = open_at(file)
+  let second = open_at(file)
+  attached(first)
+  let outcomes = process.new_subject()
+  let keys = upto(0, 29)
+  let _fencer =
+    process.spawn_unlinked(fn() {
+      list.each(keys, fn(n) {
+        process.send(outcomes, #(
+          n,
+          Fencer,
+          exec_ledger.query_or_fence(first, call(n), 0, bytes("no")),
+        ))
+      })
+    })
+  let _admitter =
+    process.spawn_unlinked(fn() {
+      list.each(keys, fn(n) {
+        let admitted = case admit(second, call(n), 8) {
+          Ok(Fresh) -> Ok(Fenced)
+          Ok(Existing(state)) -> Ok(Standing(state))
+          Error(error) -> Error(error)
+        }
+        process.send(outcomes, #(n, Admitter, admitted))
+      })
+    })
+  let gathered = gather(outcomes, 60, [])
+
+  // For every key exactly one side won: either the fence inserted (and the
+  // admit found a terminal row) or the admit inserted (and the fence found it
+  // admitted). Never both inserting, never neither.
+  list.each(keys, fn(n) {
+    let mine = list.filter(gathered, fn(entry) { entry.0 == n })
+    let wins =
+      list.filter(mine, fn(entry) { entry.2 == Ok(Fenced) })
+      |> list.length
+    assert wins == 1
+  })
+}
+
+type Side {
+  Fencer
+  Admitter
+}
+
+fn gather(
+  from: process.Subject(
+    #(Int, Side, Result(exec_ledger.Fencing, exec_ledger.Error)),
+  ),
+  remaining: Int,
+  seen: List(#(Int, Side, Result(exec_ledger.Fencing, exec_ledger.Error))),
+) -> List(#(Int, Side, Result(exec_ledger.Fencing, exec_ledger.Error))) {
+  case remaining {
+    0 -> seen
+    _ -> {
+      let assert Ok(entry) = process.receive(from, 5000) as "a racer reports"
+      gather(from, remaining - 1, [entry, ..seen])
+    }
+  }
 }

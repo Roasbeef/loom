@@ -61,6 +61,20 @@
 //// whether or not a row exists. A tombstone would guard a resend the protocol
 //// does not make, at the price of a row that never frees.
 ////
+//// ## The key fence
+////
+//// A runtime that restarts inside one VM leaves effect processes behind whose
+//// `Run` may still be in flight, and Erlang orders messages only per sender, so
+//// recovery cannot assume its own query arrives after the dead runtime's `Run`.
+//// `query_or_fence` settles the race for one call key in one transaction. If a
+//// row exists it answers with that row's state, and if none does it inserts a
+//// `terminal` row that carries the caller's "did not start" outcome and answers
+//// `Fenced`. A stale `Run` that arrives afterwards finds the key taken and
+//// never starts; a stale `Run` that arrived first is `admitted`, so recovery
+//// waits for it. Either order gives one truthful answer. The fence checks the
+//// scope's incarnation but not its attach token, because it only ever writes
+//// the answer "this call did not run", which is true for any runtime that asks.
+////
 //// ## The byte budget
 ////
 //// Admission reserves the call's maximum result size in `outcome_bytes`. The sum
@@ -80,8 +94,8 @@
 ////
 //// ## Flow
 ////
-//// `open` → `attach` → `admit` → `finish` → `query` → `ack` → `begin_close` →
-//// `finish_close`
+//// `open` → `attach` → `admit` → `finish` → `query` → `query_or_fence` → `ack` →
+//// `begin_close` → `finish_close`
 ////
 //// 1. `open` validates or creates the schema, sets full synchronous durability,
 ////    and records every run the previous VM had in flight as lost.
@@ -90,8 +104,9 @@
 //// 3. `admit` checks the scope's state, incarnation and token, then reserves the
 ////    call, or reports what the ledger already holds for the key.
 //// 4. `finish` records the outcome, and `mark_unknown` records that it was lost.
-//// 5. `query` answers for any key in any scope state, and `ack` deletes a settled
-////    row once the orchestrator has staged it.
+//// 5. `query` answers for any key in any scope state, `query_or_fence` answers
+////    the same way but records "did not start" when there is no row, and `ack`
+////    deletes a settled row once the orchestrator has staged it.
 //// 6. `begin_close` is the fence that stops new admissions, and `finish_close`
 ////    records how the cleanup ended.
 
@@ -211,6 +226,16 @@ pub type Admission {
   Existing(CallState)
 }
 
+/// The answer to `query_or_fence`.
+pub type Fencing {
+  /// The key already had a row. Nothing was written.
+  Standing(CallState)
+
+  /// The key had no row, so the ledger stored the caller's outcome as a
+  /// `terminal` row. A `Run` for this key now finds it taken and never starts.
+  Fenced
+}
+
 /// How `attach` changed the ledger.
 pub type Attachment {
   /// The session had no scope, and now has an open one.
@@ -313,6 +338,10 @@ pub const max_unclean_scopes = 16
 
 /// The default byte budget: 256 MiB of reservations and unacknowledged outcomes.
 pub const default_max_ledger_bytes = 268_435_456
+
+// The tool name a fence row carries. No tool ran, so the column holds a label
+// that no registered tool can be mistaken for.
+const fence_tool = "(fence)"
 
 // The `application_id` this ledger stamps: the ASCII bytes "LEDL". It keeps the
 // ledger from opening, and recovering rows in, some other SQLite file.
@@ -577,6 +606,63 @@ pub fn query(ledger: Ledger, key: Key) -> Result(Lookup, Error) {
     Some(state) -> Ok(Found(state))
     None -> Ok(Missing)
   }
+}
+
+/// Reports the ledger's row for a call key, or fences the key when it has none.
+///
+/// One immediate transaction reads the scope and the key. The scope must exist
+/// and be at `incarnation`. An existing row is returned as `Standing` and
+/// nothing is written. When there is no row, `outcome` is stored as a
+/// `terminal` row with its SHA-256 digest and size, and the answer is `Fenced`.
+/// After that no `admit` for this key can succeed, which is what makes a
+/// missing row trustworthy to the caller (see "The key fence" above). The byte
+/// budget is not consulted: a fence holds one short outcome, the caller makes
+/// one per orphaned call, and `ack` deletes it like any settled row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.query_or_fence(ledger, key, 0, did_not_start)
+/// ```
+pub fn query_or_fence(
+  ledger: Ledger,
+  key: Key,
+  incarnation: Int,
+  outcome: BitArray,
+) -> Result(Fencing, Error) {
+  use Nil <- result.try(valid_key(key))
+  use Nil <- result.try(valid_incarnation(incarnation))
+  let connection = ledger.connection
+  transaction(connection, fn() {
+    use found <- result.try(find_scope(connection, key.session))
+    use scope <- result.try(option.to_result(found, NoSuchScope))
+    use Nil <- result.try(case scope.incarnation == incarnation {
+      True -> Ok(Nil)
+      False -> Error(StaleIncarnation(scope.incarnation))
+    })
+    use existing <- result.try(find_call(connection, key))
+    case existing {
+      Some(state) -> Ok(Standing(state))
+      None -> {
+        let size = bit_array.byte_size(outcome)
+        use Nil <- result.try(statement(
+          connection,
+          sql.insert_ledger_fence(
+            session: key.session,
+            op: key.op,
+            step: key.step,
+            source_index: key.source_index,
+            incarnation:,
+            tool: fence_tool,
+            outcome: Some(outcome),
+            outcome_digest: Some(crypto.hash(crypto.Sha256, outcome)),
+            outcome_bytes: size,
+          ),
+        ))
+        Ok(Fenced)
+      }
+    }
+  })
 }
 
 /// Deletes a settled call's row after the orchestrator durably staged its
