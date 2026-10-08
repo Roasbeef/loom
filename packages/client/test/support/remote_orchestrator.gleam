@@ -45,16 +45,14 @@ pub fn described(name: String, replay: tool.ReplaySafety) -> tool.Described {
   )
 }
 
-/// The census the fake executor reports when its clock reads `now_ms`, with a
-/// broker subject nothing answers. A caller that never reaches the broker needs
-/// no more.
-pub fn census(now_ms: Int, tools: List(tool.Described)) -> RemoteCensus {
-  census_over(now_ms, tools, process.new_subject())
+/// The census the fake executor reports, with a broker subject nothing
+/// answers. A caller that never reaches the broker needs no more.
+pub fn census(tools: List(tool.Described)) -> RemoteCensus {
+  census_over(tools, process.new_subject())
 }
 
 /// The same census over an executor broker that is really running.
 pub fn census_over(
-  now_ms: Int,
   tools: List(tool.Described),
   executor_broker: process.Subject(broker.Msg),
 ) -> RemoteCensus {
@@ -86,7 +84,6 @@ pub fn census_over(
       helper: workspace_plane.Healthy,
     ),
     broker: executor_broker,
-    executor_now_ms: now_ms,
   )
 }
 
@@ -159,6 +156,56 @@ pub fn start(factory: host.PlaneFactory(RemoteCensus)) -> Executor {
   start_at(path, factory)
 }
 
+/// Starts a host whose clock is `executor_clock`, over a fresh ledger. The
+/// clock is the executor's reading in every attach reply, so a test sets the
+/// executor's time apart from this machine's through it.
+pub fn start_on(
+  factory: host.PlaneFactory(RemoteCensus),
+  executor_clock executor_clock: clock.Clock,
+) -> Executor {
+  let path = fixtures.scratch("orchestrator") <> "/ledger.db"
+  start_with(path, factory, exec_ledger.default_limits(), executor_clock)
+}
+
+/// A clock that reads `from` until `set` gives it another value, for a test
+/// that moves an executor's time between two attaches. The value lives in a
+/// process of its own, so the clock can be read from the host's process.
+pub fn settable_clock(from from: Int) -> #(clock.Clock, fn(Int) -> Nil) {
+  // A subject is received only by the process that made it, so the holder
+  // makes its own and hands it back.
+  let made = process.new_subject()
+  let _holder =
+    process.spawn_unlinked(fn() {
+      let cell = process.new_subject()
+      process.send(made, cell)
+      hold_time(cell, from)
+    })
+  let assert Ok(cell) = process.receive(made, 5000) as "the clock cell starts"
+  let read = fn() {
+    let reply = process.new_subject()
+    process.send(cell, ReadTime(reply))
+    let assert Ok(now) = process.receive(reply, 5000)
+      as "the clock cell answers"
+    now
+  }
+  #(clock.from_function(read), fn(now) { process.send(cell, SetTime(now)) })
+}
+
+type TimeMessage {
+  ReadTime(reply: Subject(Int))
+  SetTime(now: Int)
+}
+
+fn hold_time(cell: Subject(TimeMessage), now: Int) -> Nil {
+  case process.receive_forever(cell) {
+    ReadTime(reply:) -> {
+      process.send(reply, now)
+      hold_time(cell, now)
+    }
+    SetTime(now: next) -> hold_time(cell, next)
+  }
+}
+
 /// Starts a host that admits at most `scopes` scopes that are not cleanly
 /// closed, over a fresh ledger.
 pub fn start_limited(
@@ -173,6 +220,7 @@ pub fn start_limited(
       ..exec_ledger.default_limits(),
       max_unclean_scopes: scopes,
     ),
+    clock.fixed(at: 1000),
   )
 }
 
@@ -181,13 +229,14 @@ pub fn start_at(
   path: String,
   factory: host.PlaneFactory(RemoteCensus),
 ) -> Executor {
-  start_with(path, factory, exec_ledger.default_limits())
+  start_with(path, factory, exec_ledger.default_limits(), clock.fixed(at: 1000))
 }
 
 fn start_with(
   path: String,
   factory: host.PlaneFactory(RemoteCensus),
   limits: exec_ledger.Limits,
+  executor_clock: clock.Clock,
 ) -> Executor {
   let assert Ok(started) =
     host.start(host.Config(
@@ -195,7 +244,7 @@ fn start_with(
       ledger_path: path,
       limits:,
       max_result_bytes: 65_536,
-      clock: clock.fixed(at: 1000),
+      clock: executor_clock,
       factory:,
     ))
     as "the host starts"

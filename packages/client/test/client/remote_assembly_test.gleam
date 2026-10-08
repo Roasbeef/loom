@@ -202,11 +202,7 @@ fn observed_executor() {
   let executor =
     rig.start(rig.factory(
       probe,
-      rig.census_over(
-        1000,
-        rig.standard_tools(),
-        broker.subject(executor_broker),
-      ),
+      rig.census_over(rig.standard_tools(), broker.subject(executor_broker)),
       protocol.AllRetired,
     ))
   #(probe, executor, attempts)

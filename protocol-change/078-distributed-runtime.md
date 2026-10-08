@@ -174,7 +174,7 @@ Orchestrator to executor:
 
 | Message | Meaning |
 |---|---|
-| `Attach(version, session, workspace, incarnation, token, owner_port, reply)` | Sent each time the orchestrator opens the session. `version` is `protocol.version` (1); any other value is refused with `VersionMismatch`. Start or adopt the scope at this incarnation and make `token` its only valid attach token. The plane is built asynchronously and the reply, the census and the scope's unacked terminal keys or a refusal, is sent when the build lands. While it builds, a second `Attach`, a `Run` and a `Close` for the session are refused with `PlaneBuilding`. |
+| `Attach(version, session, workspace, incarnation, token, owner_port, reply)` | Sent each time the orchestrator opens the session. `version` is `protocol.version` (2); any other value is refused with `VersionMismatch`. Start or adopt the scope at this incarnation and make `token` its only valid attach token. The plane is built asynchronously and the reply, the census, the executor's clock reading when the reply is sent and the scope's unacked terminal keys or a refusal, is sent when the build lands. A rebound attach is answered at once from the plane it already has. While it builds, a second `Attach`, a `Run` and a `Close` for the session are refused with `PlaneBuilding`. |
 | `Run(key, incarnation, token, run, authority, reply)` | Run one tool call. Idempotent by `key`. Admitted only if `incarnation` and `token` equal the scope's. The host monitors the sender: a DOWN other than `noconnection` cancels the run. |
 | `Query(key, reply)` | Return the ledger state and outcome for `key`, in any scope state or incarnation. |
 | `QueryOrFence(key, incarnation, reply)` | Like `Query`, but when no row exists, atomically insert a terminal "did not start" row so a stale `Run` for that key can never start. Used to recover an orphaned call that is not replay-safe. |
@@ -789,6 +789,23 @@ or revoking command from a pinned peer orchestrator is trusted on the same
 footing as the pinned connection itself: the port limits the kinds of command so
 that the sender cannot read a session's conversation, not to defend against a
 peer the operator has already trusted with the node.
+
+### Addendum: the review of the remote core
+
+An independent review of phases 1 and 2 found two defects that need a wire or
+operator change. The smaller items are fixed in code and noted where they
+belong.
+
+#### The executor's clock at each attach (protocol version 2)
+
+`Attached` gains `executor_now_ms`, the executor's wall clock read by the host
+when it sends the reply, and the field of the same name leaves the census.
+`protocol.version` goes from 1 to 2, because the shape of a reply changed. The
+census is built once, when the scope's plane is built, so a rebound attach that
+read the clock from it rebased the orchestrator's `call_clock` on a timestamp
+as old as the scope. Every absolute deadline a hook, a goal check or a Git
+observation then put into a `CallSpec` was in the executor's past by that age.
+Tool runs were unaffected, because their deadlines are made on the executor.
 
 ## Impact
 

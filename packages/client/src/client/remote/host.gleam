@@ -528,7 +528,7 @@ fn place(
       owner_link.replace(placement.link, owner_port)
       process.send(
         reply,
-        Ok(protocol.Attached(census: placement.plane.census, unacked:)),
+        Ok(attached_reply(state, placement.plane.census, unacked)),
       )
       state
     }
@@ -613,10 +613,7 @@ fn plane_built(
       case start_children(plane) {
         Ok(children) -> {
           let placement = Placement(plane:, link:, children:)
-          process.send(
-            reply,
-            Ok(protocol.Attached(census: plane.census, unacked:)),
-          )
+          process.send(reply, Ok(attached_reply(state, plane.census, unacked)))
           State(
             ..state,
             placements: dict.insert(state.placements, session, Ready(placement)),
@@ -633,6 +630,22 @@ fn plane_built(
         }
       }
   }
+}
+
+// The reply to a successful attach. The executor's clock is read here, when the
+// reply is sent, and not kept with the census: a rebound attach answers from a
+// plane built long ago, and the orchestrator rebases its deadlines on this
+// reading as though it were current.
+fn attached_reply(
+  state: State(census),
+  census: census,
+  unacked: protocol.Unacked,
+) -> protocol.Attached(census) {
+  protocol.Attached(
+    census:,
+    executor_now_ms: clock.read(state.config.clock).0,
+    unacked:,
+  )
 }
 
 fn build_failed(

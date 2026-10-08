@@ -364,7 +364,7 @@ fn attach_to(
             port,
             incarnation,
             surface.functions(joined),
-            reply.census,
+            reply,
             received,
           ))
         }
@@ -397,13 +397,17 @@ fn build(
   port: owner_port.Port,
   incarnation: Int,
   functions: surface.Functions,
-  remote: RemoteCensus,
+  reply: protocol.Attached(RemoteCensus),
   received_at_ms: Int,
 ) -> Hands {
+  let remote = reply.census
+
+  // The reading comes from this reply and not from the census, because a
+  // rebound attach is answered from a plane built before this open began.
   let executor_clock =
     rebased(
       registered.clock,
-      executor_now_ms: remote.executor_now_ms,
+      executor_now_ms: reply.executor_now_ms,
       local_now_ms: received_at_ms,
     )
   let opened = registered.opened

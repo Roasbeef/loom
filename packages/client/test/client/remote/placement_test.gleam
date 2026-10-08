@@ -34,11 +34,7 @@ fn executor_of(scopes: Int) -> #(fixtures.Probe, rig.Executor) {
   #(
     probe,
     rig.start_limited(
-      rig.factory(
-        probe,
-        rig.census(1000, rig.standard_tools()),
-        protocol.AllRetired,
-      ),
+      rig.factory(probe, rig.census(rig.standard_tools()), protocol.AllRetired),
       scopes:,
     ),
   )

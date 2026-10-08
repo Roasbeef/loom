@@ -275,7 +275,7 @@ fn start(
   let executor =
     host_rig.start(host_rig.factory(
       probe,
-      host_rig.census(1000, host_rig.standard_tools()),
+      host_rig.census(host_rig.standard_tools()),
       executor_closes,
     ))
   let source =

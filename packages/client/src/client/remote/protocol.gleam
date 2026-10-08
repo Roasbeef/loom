@@ -58,7 +58,11 @@ import tools/tool
 /// disagree about the messages learn it at the first exchange and not from a
 /// crash on a term one of them does not recognise. Change it whenever a
 /// constructor or field of `HostMessage`, `OwnerMessage` or a reply changes.
-pub const version = 1
+///
+/// Version 2 added `Attached.executor_now_ms`, the executor's clock read when
+/// the reply is sent. Version 1 carried that reading inside the census, where
+/// it was as old as the scope.
+pub const version = 2
 
 /// A tool call's identity: the one the orchestrator's planner already uses and
 /// the executor's ledger keys its rows by.
@@ -105,6 +109,13 @@ pub type Attached(census) {
   Attached(
     /// The startup census of the scope's workspace plane.
     census: census,
+    /// The executor's wall clock when this reply was sent, in Unix
+    /// milliseconds. The host reads it for each reply, not once per scope, so a
+    /// rebound attach to a scope built an hour ago still reports the executor's
+    /// time now. The orchestrator compares it with its own clock at receipt to
+    /// rebase the absolute deadlines its non-tool callers put into a
+    /// `CallSpec`.
+    executor_now_ms: Int,
     /// The scope's unacknowledged calls when the attach took effect.
     unacked: Unacked,
   )

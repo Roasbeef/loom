@@ -46,7 +46,7 @@ fn standard(
   probe: fixtures.Probe,
   close: protocol.CloseOutcome,
 ) -> rig.Executor {
-  rig.start(rig.factory(probe, rig.census(1000, rig.standard_tools()), close))
+  rig.start(rig.factory(probe, rig.census(rig.standard_tools()), close))
 }
 
 pub fn an_attach_records_the_open_and_builds_the_plane_from_the_census_test() {
@@ -81,15 +81,41 @@ pub fn the_non_tool_clock_reads_the_executors_timebase_test() {
   let skew = 3_600_000
   let probe = fixtures.probe(fixtures.Open)
   let executor =
-    rig.start(rig.factory(
-      probe,
-      rig.census(1000 + skew, rig.standard_tools()),
-      protocol.AllRetired,
-    ))
+    rig.start_on(
+      rig.factory(probe, rig.census(rig.standard_tools()), protocol.AllRetired),
+      executor_clock: clock.fixed(at: 1000 + skew),
+    )
 
   let hands = attached(executor, store())
 
   assert clock.read(hands.clock).0 == 1000 + skew
+  rig.stop(executor)
+}
+
+pub fn a_rebound_attach_reads_the_executors_clock_now_test() {
+  // The scope was built when the executor's clock read `built_at`. An open
+  // that rebinds to it two hours later must rebase on the executor's time at
+  // that attach. Rebasing on the census would leave every deadline a hook or a
+  // Git observation computes two hours in the executor's past.
+  let built_at = 1000 + 3_600_000
+  let two_hours = 7_200_000
+  let #(executor_clock, set_executor_time) = rig.settable_clock(from: built_at)
+  let probe = fixtures.probe(fixtures.Open)
+  let executor =
+    rig.start_on(
+      rig.factory(probe, rig.census(rig.standard_tools()), protocol.AllRetired),
+      executor_clock:,
+    )
+  let opened = store()
+  let first = attached(executor, opened)
+  assert clock.read(first.clock).0 == built_at
+
+  set_executor_time(built_at + two_hours)
+  let second = attached(executor, opened)
+
+  assert first.incarnation == second.incarnation
+  assert list.length(fixtures.builds(probe)) == 1
+  assert clock.read(second.clock).0 == built_at + two_hours
   rig.stop(executor)
 }
 

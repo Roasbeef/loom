@@ -34,9 +34,5 @@ pub type RemoteCensus {
     /// (imported hooks, goal checks, Git observation). The orchestrator wraps
     /// it with `broker.over` and its own clock.
     broker: Subject(broker.Msg),
-    /// The executor's wall clock at the moment the census was built, in Unix
-    /// milliseconds. The orchestrator compares it with its own to rebase the
-    /// absolute deadlines its non-tool callers put into a `CallSpec`.
-    executor_now_ms: Int,
   )
 }

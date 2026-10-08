@@ -431,7 +431,6 @@ fn plane_over(
             tools: started.decls,
             prompt: facts,
             broker: broker.subject(plane.broker),
-            executor_now_ms: ffi_os.system_time_ms(),
           ),
           children: fn(builder) {
             builder

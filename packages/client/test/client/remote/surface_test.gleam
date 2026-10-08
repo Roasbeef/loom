@@ -110,6 +110,7 @@ pub fn attach_reports_the_census_and_a_run_comes_back_complete_test() {
   assert attached
     == protocol.Attached(
       census: "census-0",
+      executor_now_ms: 1000,
       unacked: protocol.Unacked(terminal: [], unknown: []),
     )
   let run = fixtures.tool_run("call_1", 0)

@@ -6453,8 +6453,10 @@ below.
   `CloseOutcome`. The census is a type parameter the host never reads.
   `unknown_outcome_text` is the model's wording for a lost call and
   `did_not_run_text` the wording of a fenced one. `Attach` carries
-  `protocol.version`; the host refuses any other value with `VersionMismatch`.
-  Change the version whenever a constructor or field changes.
+  `protocol.version` (2); the host refuses any other value with `VersionMismatch`.
+  Change the version whenever a constructor or field changes. Version 2 moved
+  the executor's clock reading out of the census and into `Attached`, so each
+  reply carries the time it was sent.
 - `remote/address` is `{registered name, node}`. `deliver` and `watch` go through
   `internal/ffi_remote`, three stock-OTP `@external`s (`erlang:send/2` and
   `erlang:monitor/2` on a `{Name, Node}` destination, and `gleam_stdlib`'s
@@ -6583,7 +6585,8 @@ local fixtures).
   replay, anything else is unknown). Clearance stays local.
 - **Non-tool callers.** Imported hooks, the goal check and Git observation use
   `plane.broker`, a `broker.over(census.broker, clock)` handle, and
-  `Half.call_clock`, this machine's clock shifted by `executor_now_ms` minus the
+  `Half.call_clock`, this machine's clock shifted by the reply's `executor_now_ms`
+  (the host reads its clock for each `Attached`, a rebound one included) minus the
   local reading at receipt (`workspace.rebased`). A `CallSpec` deadline is
   absolute and the executor's broker compares it with its own clock, so every
   caller that builds a deadline must read `call_clock`, not `clock`.

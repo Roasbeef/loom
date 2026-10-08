@@ -407,7 +407,7 @@ These are what the code does today, recorded so that a change to one is a
 decision and not a surprise.
 
 **The protocol version tag.** Every `Attach` carries the sender's
-`protocol.version`, an integer that is 1 today (`pub const version`,
+`protocol.version`, an integer that is 2 today (`pub const version`,
 `client/remote/protocol.gleam:61`; the field is `Attach.version`,
 `client/remote/protocol.gleam:212`, and the surface fills it in,
 `client/remote/surface.gleam:200`). The host compares it with its own for
