@@ -237,6 +237,17 @@ pub type Attached {
   )
 }
 
+/// The reply to `unacked`: the same two lists an attach reports, read without
+/// attaching.
+pub type Unacked {
+  Unacked(
+    /// The session's calls with a stored result nobody acknowledged.
+    terminal: List(Key),
+    /// The session's calls whose outcome is lost.
+    unknown: List(Key),
+  )
+}
+
 /// Every way a ledger call can fail, with the refusals named for the rule that
 /// produced them.
 pub type Error {
@@ -673,6 +684,25 @@ pub fn finish_close(
   })
 }
 
+/// Lists the session's calls whose results the orchestrator has not
+/// acknowledged, without attaching.
+///
+/// An attach reports these lists once, but an acknowledgement can also be lost
+/// after the attach, and a replaced attach token must not be the price of
+/// finding it. This read changes nothing, so the host can answer it for a
+/// periodic reconciliation. The scope need not exist: a session with no rows
+/// has empty lists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.unacked(ledger, "s")
+/// ```
+pub fn unacked(ledger: Ledger, session: String) -> Result(Unacked, Error) {
+  use found <- result.try(unacked_keys(ledger.connection, session))
+  Ok(Unacked(terminal: found.0, unknown: found.1))
+}
+
 /// Reads the session's scope, or `None` when it has none.
 ///
 /// ## Examples
@@ -1016,7 +1046,7 @@ fn call_state(key: Key, row: sql.LedgerCall) -> Result(CallState, Error) {
 }
 
 // A row to tell the orchestrator about: its key, and whether it holds a result.
-type Unacked {
+type Pending {
   Resulted(Key)
   Lost(Key)
 }

@@ -502,6 +502,31 @@ pub fn attach_lists_the_unacknowledged_results_for_the_orchestrator_test() {
     == Ok(exec_ledger.Attached(how: Rebound, terminal: [call(2)], unknown: []))
 }
 
+pub fn unacked_lists_the_same_keys_without_replacing_the_token_test() {
+  let ledger = open_at(path("unacked"))
+  attached(ledger)
+  assert admit(ledger, call(0), 8) == Ok(Fresh)
+  assert admit(ledger, call(1), 8) == Ok(Fresh)
+  assert admit(ledger, call(2), 8) == Ok(Fresh)
+  assert exec_ledger.finish(ledger, call(0), bytes("r0")) == Ok(Nil)
+  assert exec_ledger.mark_unknown(ledger, call(1)) == Ok(Nil)
+
+  // A session with no rows has nothing to acknowledge, and asking is not an
+  // attach, so it needs no scope.
+  assert exec_ledger.unacked(ledger, "nobody")
+    == Ok(exec_ledger.Unacked(terminal: [], unknown: []))
+
+  // The admitted call is still running, so it is neither list.
+  assert exec_ledger.unacked(ledger, "s")
+    == Ok(exec_ledger.Unacked(terminal: [call(0)], unknown: [call(1)]))
+
+  // The read did not touch the scope: the original token still admits.
+  assert admit(ledger, call(3), 8) == Ok(Fresh)
+  assert exec_ledger.ack(ledger, call(0)) == Ok(Nil)
+  assert exec_ledger.unacked(ledger, "s")
+    == Ok(exec_ledger.Unacked(terminal: [], unknown: [call(1)]))
+}
+
 pub fn a_damaged_outcome_is_a_digest_error_never_a_result_test() {
   let file = path("digest")
   let ledger = open_at(file)
