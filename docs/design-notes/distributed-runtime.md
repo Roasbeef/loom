@@ -439,7 +439,7 @@ call that was `admitted` into `unknown`, as for any executor restart.
 **The 16 MiB per-call reservation inside the 512 MiB budget.** Admission
 reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
 file `fs_read` returns (`client/remote/host.gleam:202`). The daemon passes it as
-`max_result_bytes` (`client/daemon/main.gleam:487`) and the host hands it to
+`max_result_bytes` (`client/daemon/main.gleam:495`) and the host hands it to
 `exec_ledger.admit` (`client/remote/host.gleam:734`). The ledger's byte budget
 is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:345`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
@@ -522,8 +522,9 @@ work before the previous one runs.
    could not be asked. Only the owner principal is redirected, and nothing
    follows the redirect for the client, which would need a credential for a
    second daemon. The lookup is behind a `Directory` interface of one
-   operation, shaped so that an authoritative store replaces its backing in
-   phase 5 and adds the write half there. There is no merged session list, no
+   operation, shaped so that a different backing could replace it and a write
+   half could sit beside it. Phase 5 added that half and kept the catalogues as
+   the authority. There is no merged session list, no
    registration step, no address advertised by the owner and no new
    constructor on the executor host's vocabulary. The protocol-change/078
    addendum on two orchestrators has the wire, the configuration and the
@@ -531,11 +532,50 @@ work before the previous one runs.
 4. **Cross-node messaging.** Peer mail already deduplicates on the recipient
    by message id (`peer_mail` admission); we add a directory-aware endpoint and
    a durable sender outbox. Event catch-up is already by commit sequence.
-5. **Controlled movement.** Drain, close the scope cleanly, cut a consistent
-   SQLite backup, transfer and verify, then activate the target with
-   `incarnation + 1` through the directory. The target's attach replaces the
-   scope's attach token, so the executor refuses anything the old
-   orchestrator still sends. Faults are injected at every step.
+5. **Controlled movement.** *Built.* An owner hands a session on an executor to
+   another orchestrator with `sessions.move`, and the source drives the move in
+   six steps, each durable before the next. No third store decides who owns the
+   session. Two catalogue rows do, ordered by a write-ahead intent: the source's
+   `moving` and then `moved`, and the receiver's `imported`. The executor's
+   incarnation fence is a second guard and not the authority, because it cannot
+   say which orchestrator is the session's owner, only which token is current.
+   1. *Intend and stop.* The source commits `moving(op, to)` in the same registry
+      turn that stops the session's slot, and admission refuses a session in that
+      state, so nothing on the source can open the file after the commit.
+   2. *Close.* The session's own cleanup closes its scope on the executor and
+      writes the outcome into the file's `client/remote/scope` cell. A cell that
+      never recorded a close, because the orchestrator died first, is settled by
+      asking the executor to close again, which answers the stored outcome for a
+      scope already closed, and writing the answer into the file. An unproven
+      cleanup refuses the move.
+   3. *Cut.* The closed file is copied with the writer lease held under
+      `move:<op>`, the lease row is dropped from the copy, and the copy is hashed.
+   4. *Send.* The copy goes to the receiver in 256 KiB pieces, each acknowledged,
+      and is bounded at 256 MiB. A failure sends the whole file again; there is no
+      resume inside a file.
+   5. *Activate.* The receiver checks the digest, that the copy's scope cell reads
+      a clean close at the incarnation the sender claims, and that it lists the
+      executor. Then one registry turn registers the session, records
+      `imported(op, from)` and puts the file in place. That compare-and-set is the
+      hand-over.
+   6. *Retire.* The source's row becomes `moved(to)`, which has no way out under
+      the same operation, its lease is released and its file is set aside.
+
+   The receiver opens the session like any other and attaches at the incarnation
+   the copied cell implies, one higher than the clean close, so the executor
+   refuses the source's old token. Every step starts from what is on disk: the
+   daemon resumes each `moving` row at boot, and a mover asks the receiver how far
+   the move has got before it takes a step. A move is abandoned only on an answer
+   (an unproven cleanup, a corrupt or oversized file, the receiver's refusal) and
+   never because a peer was unreachable, since an unreachable receiver may have
+   taken the session and lost the reply. The source's `moving` row is still exactly
+   one owner. `Move.tla` checks the protocol with a crash between any two writes,
+   and the shipped test loses the source after each of the six steps. A session
+   can move onward from the catalogue that received it and back to the one that
+   gave it up, each under a new operation. A local session cannot move, and the
+   memory domain, memberships and claims stay with the source. The
+   protocol-change/078 addendum on moving a session between orchestrators has the
+   wire, the messages and the rules.
 6. **Acceptance.** The evidence table, full repository gates, both placements,
    the failure matrix, the formal models, an independent review of the
    assembled system, and hosted CI once publication is authorized.
