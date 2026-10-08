@@ -1724,8 +1724,8 @@ pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
   tool.Tool(
     name: "fs_edit",
     description: "Apply anchored edit hunks to a file. When you do not have "
-      <> "current anchors, call fs_read first; pass its digest and reference lines by "
-      <> "the {line, anchor} "
+      <> "current anchors, call fs_read first. Pass the digest from "
+      <> "fs_read's result text; each hunk references lines by the {line, anchor} "
       <> "pairs from fs_read. A stale anchor or a changed file rejects the "
       <> "whole edit and returns fresh anchors and the fresh digest. A "
       <> "successful edit returns the fresh digest and the fresh anchors of "
@@ -1734,10 +1734,10 @@ pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
       <> "fs_read's `N:anchor|` prefix into them, and an edit that does is "
       <> "refused. Provide one or more hunks; an empty array is invalid.",
     prompt_snippet: Some(
-      "When you lack current anchors, call `fs_read` first; use its digest "
-      <> "and anchors in one or more `fs_edit` hunks. Stale anchors reject "
-      <> "the whole patch rather than "
-      <> "corrupting a file that moved under you. A successful "
+      "`fs_edit` applies anchored hunks to a file, and rejects the patch "
+      <> "rather than corrupting a file that moved under you. When you lack "
+      <> "current anchors, call `fs_read` first; use its digest and anchors "
+      <> "in one or more hunks. A successful "
       <> "edit returns the fresh digest and the changed regions' anchors, so "
       <> "chained edits of one file need one read.",
     ),
