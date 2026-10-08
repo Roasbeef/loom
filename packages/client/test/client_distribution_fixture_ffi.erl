@@ -143,7 +143,39 @@ run(<<"start_refusals">>, Root) ->
     expect_missing_key(A, Good),
     expect_readable_key(A, Good),
     expect_foreign_cookie(Root, A, B),
-    ok.
+    ok;
+
+%% Remote tool calls over real TLS distribution (client/remote). The executor
+%% emulator runs the real host over a fake workspace plane, and the orchestrator
+%% emulator attaches a real surface and runs one call. The Gleam roles live in
+%% test/support/remote_nodes.gleam, which each child loads through the code path
+%% the parent passes with -pa.
+%%
+%%   remote_run          an undisturbed call that round-trips an owner callback
+%%   remote_short_outage the connection is dropped while the tool runs and is
+%%                       repaired at once, so the re-sent Run joins the live call
+%%   remote_long_outage  the connection stays down until the tool has finished,
+%%                       so the re-sent Run is answered from the ledger
+run(<<"remote_run">>, Root) ->
+    remote(Root, <<"run">>, <<"owner">>, 800);
+run(<<"remote_short_outage">>, Root) ->
+    remote(Root, <<"short_outage">>, <<"nothing">>, 800);
+run(<<"remote_long_outage">>, Root) ->
+    remote(Root, <<"long_outage">>, <<"nothing">>, 800).
+
+remote(Root, Scenario, Asks, Hold) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
+    B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
+    Ledger = filename:join(Root, "ledger"),
+    ok = file:make_dir(Ledger),
+    ConfigA = config(A, B, cert_of(B), none),
+    ConfigB = config(B, A, cert_of(A), none),
+    exchange(A, ConfigA, remote_orchestrator,
+             #{peer => name_of(B), scenario => Scenario},
+             B, ConfigB, remote_host,
+             #{ledger => bin(Ledger), asks => Asks, hold => Hold}).
 
 %% ---------------------------------------------------------------- provisioning
 
@@ -412,7 +444,20 @@ role(silent_send, Config, #{peer := PeerName}) ->
     [] = nodes(connected);
 role(expect, Config, #{expected := Expected}) ->
     Expected = ?DIST:start(Config),
-    false = erlang:is_alive().
+    false = erlang:is_alive();
+%% The executor of a remote tool call: the real host over a fake plane. It
+%% stays up until the parent says stop, then checks that the tool ran once.
+role(remote_host, Config, #{ledger := Ledger, asks := Asks, hold := Hold}) ->
+    {ok, _} = ?DIST:start(Config),
+    {ok, Handle} = support@remote_nodes:host(Ledger, Asks, Hold),
+    ready_and_stop(),
+    {ok, nil} = support@remote_nodes:verify_host(Handle);
+%% The orchestrator of a remote tool call: a real surface running one call.
+role(remote_orchestrator, Config, #{peer := PeerName, scenario := Scenario}) ->
+    {ok, Membership} = ?DIST:start(Config),
+    {ok, Peer} = ?DIST:peer(Membership, PeerName),
+    {ok, nil} = ?DIST:connect(Peer, 15000),
+    {ok, nil} = support@remote_nodes:orchestrate(Peer, Scenario).
 
 ready() -> io:format("FIXTURE_READY~n").
 
