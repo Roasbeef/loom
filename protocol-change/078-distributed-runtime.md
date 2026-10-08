@@ -63,9 +63,20 @@ unchanged workspace plane beside the checkout.
 path, and the daemon never canonicalizes it locally; the executor validates
 it when the scope attaches. When absent, behavior is exactly today's. A
 session record gains an optional `executor` member that a client which does
-not know it ignores. Two refusal codes are added: `executor_unknown` (the
-name is not configured on this orchestrator) and `executor_unavailable` (it
-is configured but could not attach the scope).
+not know it ignores. One refusal code is added, `executor_unknown`, for an
+executor name this orchestrator has not configured. A configured executor
+that cannot attach the scope is not a separate wire code: the opening fails
+the way an unavailable workspace fails today, and `operations.get` reports
+`start_failed` with a reason beginning `executor_unavailable:`. The
+registration stays reserved, so a retry under the same creation key tries
+again.
+
+A registered workspace name is 1 to 128 bytes with no `/` and no NUL, so it
+can never be mistaken for a local path, which always starts with `/`. A
+session created with an `executor` defaults to the `session_only` domain
+scope and refuses `workspace_private`, because the workspace aggregate is
+keyed by path and two executors may register the same name. For the same
+reason a registered session can never be a workspace default.
 
 ### Catalogue (version 10)
 
