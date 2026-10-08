@@ -105,6 +105,7 @@ import client/notes
 import client/owner_codemode
 import client/owner_services
 import client/peer_mail
+import client/peer_outbox_drain
 import client/peers
 import client/remote/owner_port
 import client/remote/workspace as remote_workspace
@@ -3336,6 +3337,12 @@ fn assemble_in(
   // below needs an address that survives the scanner being replaced.
   let schedulescan_name = address.new_address(namespace)
 
+  // The peer outbox drainer is reached by name. The Agency's config rings it
+  // when a message is left undelivered, before any drainer exists, and the
+  // restartable tier below needs an address that survives the drainer being
+  // replaced.
+  let outbox_drain_name = address.new_address(namespace)
+
   // The distillation pass, on the same arrangement and for the same
   // reason: it is a supervised child, and `client/distillpass.settled`
   // asks it by name rather than holding a pid that a restart would
@@ -3356,6 +3363,7 @@ fn assemble_in(
         settings.peer_defaults,
         peer_mail.no_defaults,
       ),
+      outbox_queued: fn() { peer_outbox_drain.poke(outbox_drain_name) },
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(
@@ -4252,6 +4260,11 @@ fn assemble_in(
     |> half.children.lsp_manager
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
+    // The peer outbox drainer is in this tier because everything it owes is
+    // a pending row in the session's own store: a replacement begins with a
+    // pass that reads them again, and a message sent while it restarts is
+    // picked up by that pass.
+    |> with_peer_outbox_drain(peer_wiring, runtime, outbox_drain_name, logger)
     // Started here rather than inside the boot: the pass dispatches
     // model turns, and this tier starts after the session's own writer
     // lease is held — which is what makes the live session the one file
@@ -4682,6 +4695,26 @@ fn with_rule_scanner(
       )
     }
   }
+}
+
+// The peer outbox drainer. Unlike the scanners it is always started: whether a
+// session will ever owe a peer message is not known at boot, and an idle
+// drainer holds no timer.
+fn with_peer_outbox_drain(
+  builder: sup.Builder,
+  wiring: peers.Wiring,
+  runtime: api.Runtime,
+  name: address.Address(peer_outbox_drain.Message),
+  logger: Logger,
+) -> sup.Builder {
+  sup.add(
+    builder,
+    peer_outbox_drain.supervised(
+      peer_outbox_drain.options(wiring, runtime.effects.timers.after)
+        |> peer_outbox_drain.with_logger(logger),
+      name,
+    ),
+  )
 }
 
 // The scheduled-heartbeat scanner, and the decision not to start one —

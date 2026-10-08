@@ -23,6 +23,7 @@ import client/async_runs
 import client/codemode
 import client/internal/ffi_os
 import client/peer_mail
+import client/peer_outbox
 import client/peers
 import client/serve
 import client/workflow_ledger
@@ -3085,6 +3086,39 @@ pub fn peer_delivery_requires_exact_grant_and_commits_one_receipt_test() {
   ))
   close(source)
   close(target)
+}
+
+pub fn an_undelivered_peer_message_rings_the_outbox_doorbell_once_test() {
+  let rung = process.new_subject()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, outbox_queued: fn() { process.send(rung, Nil) })
+    })
+  let endpoint = agency.peer_endpoint(harness.config, "sender-session")
+
+  // A message that was delivered or refused is settled; nothing is owed.
+  let assert Ok(_) =
+    endpoint.call(peer_mail.OutboxSettle(
+      "main",
+      "peer",
+      "m1",
+      peer_outbox.Rejected("no grant"),
+    ))
+    as "a refusal is recorded"
+  assert process.receive(rung, 50) == Error(Nil)
+
+  // One that nobody answered rings the drainer once.
+  let assert Ok(_) =
+    endpoint.call(peer_mail.OutboxSettle(
+      "main",
+      "peer",
+      "m2",
+      peer_outbox.Unanswered,
+    ))
+    as "an unanswered attempt is recorded"
+  assert process.receive(rung, 1000) == Ok(Nil)
+  assert process.receive(rung, 50) == Error(Nil)
+  close(harness)
 }
 
 pub fn collaboration_example_exchanges_findings_across_sessions_test_() -> AsyncEunitTest {

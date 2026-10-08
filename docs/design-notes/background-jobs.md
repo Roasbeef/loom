@@ -75,7 +75,7 @@ owns.
 The consequence we accept is that the machine cannot wait on a job. A
 model that wants to block on one calls `job_poll` with a wait, and a
 pending job is a successful result, not a failure (the "pending is an
-answer" rule `agent_wait` already follows, `client/agency.gleam:255`).
+answer" rule `agent_wait` already follows, `client/agency.gleam:267`).
 
 ### 2. The durable record is a reserved prefix, and restart reaps
 
@@ -118,7 +118,7 @@ actor out of the strand's turn machinery entirely.
 ### 3. One actor, one runner per job, weft all the way down
 
 `client/jobs.gleam` is a `weft/actor` in the *restartable* services tier
-beside `extension_hosts` (`client/serve.gleam:4211`), bound to a
+beside `extension_hosts` (`client/serve.gleam:4219`), bound to a
 reclaimable `weft/registry` address so a replacement is the same address
 and no caller caches a subject. Losing it costs what losing the extension
 registry costs: every runner it owned dies with it, and the reap rule

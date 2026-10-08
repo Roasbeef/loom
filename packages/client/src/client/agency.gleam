@@ -136,6 +136,7 @@ import broker/internal/call
 import client/internal/session_owner
 import client/internal/timebase
 import client/peer_mail
+import client/peer_outbox
 import client/workflow_ledger
 import core/clock.{type Clock}
 import core/entry
@@ -244,6 +245,13 @@ pub type Config {
     /// (protocol-change/077). `peer_mail.no_defaults` links nothing
     /// implicitly, which is every embedded host.
     peer_defaults: peer_mail.Defaults,
+    /// Called once after a peer message is recorded as still undelivered
+    /// (`peer_outbox.Unanswered`), so the outbox drainer arms its retry
+    /// timer. The Agency does not own the drainer and cannot start it; the
+    /// host supplies a closure over the drainer's name. An embedded host with
+    /// no drainer leaves the no-op, and a message that could not be delivered
+    /// then waits for the next session open.
+    outbox_queued: fn() -> Nil,
   )
 }
 
@@ -298,6 +306,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     subagent_model: fn() { Error(Nil) },
     models: [],
     peer_defaults: peer_mail.no_defaults,
+    outbox_queued: fn() { Nil },
   )
 }
 
@@ -371,15 +380,22 @@ pub fn start(
         actor.continue(state)
       }
       PeerRequest(command:, reply:) -> {
-        process.send(
-          reply,
+        let answer =
           peer_mail.handle_with(
             state,
             config.clock,
             config.peer_defaults,
             command,
-          ),
-        )
+          )
+
+        // The doorbell rings after the row is durable, so a drainer that
+        // wakes at once finds the message it was told about.
+        case command, answer {
+          peer_mail.OutboxSettle(outcome: peer_outbox.Unanswered, ..), Ok(_) ->
+            config.outbox_queued()
+          _, _ -> Nil
+        }
+        process.send(reply, answer)
         actor.continue(state)
       }
       SpawnChild(caller:, request:, custody:, reply:) -> {
