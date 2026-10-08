@@ -2,6 +2,8 @@ package jail
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -137,5 +139,47 @@ func TestSeatbeltPlanEmitsMountsBeforeTheDenies(t *testing.T) {
 	if strings.Index(plan.Profile, write) > deny {
 		t.Fatalf("a mount rule follows the denies and can reopen a "+
 			"protected path:\n%s", plan.Profile)
+	}
+}
+
+// TestSeatbeltHelperSpellingsCoverEveryLink checks the read grant a helper
+// named through links receives: the name as given, the intermediate link,
+// and the resolved file, each link spelled with its directory resolved. The
+// darwin test runs the profile itself; this one pins the walk on any host.
+func TestSeatbeltHelperSpellingsCoverEveryLink(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real", "loom-exec")
+	links := filepath.Join(root, "links")
+	for _, dir := range []string{filepath.Dir(real), links} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	middle := filepath.Join(links, "middle")
+	helper := filepath.Join(links, "loom-exec")
+	if err := os.Symlink(real, middle); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("middle", helper); err != nil {
+		t.Fatal(err)
+	}
+
+	resolvedLinks := normalizeSeatbeltPath(links)
+	got := seatbeltHelperSpellings(helper)
+	want := []string{
+		normalizeSeatbeltPath(real),
+		filepath.Join(resolvedLinks, "loom-exec"),
+		filepath.Join(resolvedLinks, "middle"),
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("spellings:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// A helper that is no link at all is granted as before: its one file.
+	if got := seatbeltHelperSpellings(real); len(got) != 1 || got[0] != normalizeSeatbeltPath(real) {
+		t.Fatalf("plain helper spellings = %v", got)
 	}
 }
