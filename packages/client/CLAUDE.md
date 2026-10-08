@@ -6526,7 +6526,11 @@ Invariants that break things when violated:
   the host or another session. While a scope is `Building`, a second `Attach`,
   a `Run` and a `Close` for it are refused with `PlaneBuilding` before the
   ledger is touched; do not move the check after `exec_ledger.attach`, which
-  would replace the token the first attach is waiting on.
+  would replace the token the first attach is waiting on. `surface.attach` treats
+  that refusal as "ask again": it re-sends the same attach, with the same token,
+  until `attach_within_ms` runs out and only then returns `PlaneBuilding`, so a
+  repair that re-sends an attach whose build is still running does not fail the
+  open.
 - A repeated `Close` on a scope that already ended at that incarnation answers
   the stored `CloseOutcome` and does not ask the plane again, so an orchestrator
   whose reply was lost, or whose move resumes after a restart, learns the

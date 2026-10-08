@@ -71,6 +71,7 @@ import client/remote/protocol.{
 }
 import client/wiring.{type Authority}
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import machine/operation
 import runtime/effects.{type Recovery, type ToolOutcome, type ToolRun}
@@ -184,7 +185,9 @@ pub fn strong_token() -> BitArray {
 /// executor reported unacknowledged.
 ///
 /// An executor that cannot be reached within `attach_within_ms` is
-/// `Unreachable`; the caller decides whether to try again.
+/// `Unreachable`; the caller decides whether to try again. One that is still
+/// building the scope's workspace is asked again until the time is up, and
+/// then answers `PlaneBuilding`.
 ///
 /// ## Examples
 ///
@@ -194,30 +197,57 @@ pub fn strong_token() -> BitArray {
 pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
   let token = config.mint_token()
   let owner = owner_port.inbox(config.port)
+  let make = fn(reply) {
+    protocol.Attach(
+      version: protocol.version,
+      session: config.session,
+      workspace: config.workspace,
+      incarnation: config.incarnation,
+      token:,
+      owner_port: owner,
+      reply:,
+    )
+  }
+
+  // A host that is still building this scope's workspace answers
+  // `PlaneBuilding` and changes nothing, which includes the attach whose reply
+  // is on its way to a send the link has since dropped. The same attach is sent
+  // again within what is left of `attach_within_ms`; the token is the same
+  // each time, so a build that lands between two sends is simply rebound.
+  let clock = poll.monotonic()
+  let deadline = clock.now() + config.attach_within_ms
   let sent =
-    exchange(config, Within(config.attach_within_ms), fn(reply) {
-      protocol.Attach(
-        version: protocol.version,
-        session: config.session,
-        workspace: config.workspace,
-        incarnation: config.incarnation,
-        token:,
-        owner_port: owner,
-        reply:,
-      )
-    })
+    poll.fold_until(
+      clock:,
+      within: config.attach_within_ms,
+      every: poll.Doubling(from: first_pause_ms, to: longest_pause_ms),
+      from: Nil,
+      attempt: fn(_nothing) {
+        let left = int.max(0, deadline - clock.now())
+        case exchange(config, Within(left), make) {
+          Ok(Error(protocol.PlaneBuilding)) -> poll.Pending(Nil)
+          Ok(answer) -> poll.Settled(answer)
+          Error(Nil) -> poll.Broken(Nil)
+        }
+      },
+    )
   case sent {
-    Ok(Ok(attached)) -> {
+    poll.Answer(value: Ok(attached)) -> {
       let surface = Surface(config:, token:)
       owner_port.bind(config.port, host_link(surface), attached.unacked)
       Ok(Attachment(surface:, attached:))
     }
-    Ok(Error(refusal)) -> Error(refusal)
-    Error(Nil) ->
+    poll.Answer(value: Error(refusal)) -> Error(refusal)
+
+    // The exchange itself ran out of patience before any answer came.
+    poll.Failure(error: Nil) ->
       Error(protocol.Unreachable(
         "no answer to the attach within "
         <> "the allowed time; the executor may be down or partitioned",
       ))
+
+    // Every send in the time allowed met a build in progress.
+    poll.RanOut(state: Nil) -> Error(protocol.PlaneBuilding)
   }
 }
 

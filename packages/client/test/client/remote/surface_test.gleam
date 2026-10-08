@@ -387,3 +387,70 @@ pub fn a_replayable_call_is_not_fenced_so_the_replay_runs_test() {
   assert fixtures.run_count(rig.probe, "call_1") == 1
   stop(rig)
 }
+
+pub fn an_attach_that_meets_a_build_in_progress_waits_for_it_test() {
+  // An attach whose reply the link lost has started the build, and the
+  // orchestrator's repair sends the same attach again. The host refuses the
+  // second one while the first is building, and the open must not fail on that
+  // refusal: the build is seconds long and the refusal asks for another try.
+  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  fixtures.hold_build(rig.probe, "s1")
+  address.deliver(
+    rig.address,
+    protocol.Attach(
+      version: protocol.version,
+      session: "s1",
+      workspace: "/work",
+      incarnation: 0,
+      token: bit_array.from_string("token-lost"),
+      owner_port: owner_port.inbox(rig.port),
+      reply: process.new_subject(),
+    ),
+  )
+  assert fixtures.eventually(fn() {
+    list.length(fixtures.builds(rig.probe)) == 1
+  })
+
+  let attaching = process.new_subject()
+  let _attacher =
+    process.spawn_unlinked(fn() {
+      process.send(attaching, surface.attach(config(rig, 2)))
+    })
+
+  // The attach has been refused at least once and is still asking.
+  assert process.receive(attaching, 300) == Error(Nil)
+  fixtures.release_build(rig.probe, "s1")
+  let assert Ok(Ok(surface.Attachment(surface: remote, ..))) =
+    process.receive(attaching, 3000)
+    as "the attach succeeds once the build lands"
+  let run = fixtures.tool_run("call_1", 0)
+  assert surface.run(remote, run) == fixtures.expected_outcome(run)
+  assert list.length(fixtures.builds(rig.probe)) == 1
+  stop(rig)
+}
+
+pub fn an_attach_that_never_sees_the_build_finish_reports_it_building_test() {
+  let rig = rig(fixtures.Open, fixtures.AsksNothing)
+  fixtures.hold_build(rig.probe, "s1")
+  address.deliver(
+    rig.address,
+    protocol.Attach(
+      version: protocol.version,
+      session: "s1",
+      workspace: "/work",
+      incarnation: 0,
+      token: bit_array.from_string("token-lost"),
+      owner_port: owner_port.inbox(rig.port),
+      reply: process.new_subject(),
+    ),
+  )
+  assert fixtures.eventually(fn() {
+    list.length(fixtures.builds(rig.probe)) == 1
+  })
+
+  let impatient = surface.Config(..config(rig, 2), attach_within_ms: 200)
+
+  assert surface.attach(impatient) == Error(protocol.PlaneBuilding)
+  fixtures.release_build(rig.probe, "s1")
+  stop(rig)
+}
