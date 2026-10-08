@@ -439,6 +439,25 @@ work before the previous one runs.
 2. **Executor pools.** Several registered executors; placement filters by
    authorization, platform, toolchain and enforcement before capacity; a full
    executor refuses at attach; no fallback to a different mutable checkout.
+   *Built.* A `[pools.<name>]` lists configured executors in the order they are
+   tried, and the platform, enforcement and toolchains it requires are matched
+   against what each `[executors.<name>]` row declares, so the filter is a pure
+   function of configuration and no message asks a machine what it has.
+   Capacity is not predicted. The orchestrator attaches to the candidates in
+   order, and an executor that already holds its limit refuses inside the attach
+   transaction, before it builds a plane, so a received refusal proves that no
+   scope exists there. The scope record in the session's store names the
+   executor before the attach is sent, and that makes the one rule that matters
+   structural: a session whose record names an executor has only that candidate,
+   a lost reply is retried against the same machine where the ledger's rebind
+   makes it converge, and a first open moves to the next candidate only on a
+   failed connection or a capacity refusal. A full executor at reopen is
+   `executor_unavailable:` and never a reason to move, because the checkout
+   exists only where the record says. After an attach the census is compared
+   with the declaration, and a contradiction closes the scope and fails the open
+   naming both values. The protocol-change/078 addendum has the wire, the
+   catalogue and the placement rules; `docs/distributed-setup.md` has the
+   operator's side.
 3. **Two orchestrators.** A session directory on a designated orchestrator,
    backed by SQLite, with conditional transitions keyed by an operation id so
    a committed transition whose reply was lost can be reconciled. Clients may

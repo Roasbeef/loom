@@ -6414,13 +6414,16 @@ outage scenarios.
 turns an executor's attach reply into the `workspace_plane.WorkspacePlane` that
 `serve.assemble_in` already reads, so the conversation half is assembled by the
 same code for both placements and only the `Home` (`Here(prepared)` or
-`There(reach)`) and the `Half` it yields differ. In order, an open: connects the
-peer (`Reach.connect`, failure keeps the `executor_unavailable:` prefix); reads
-`remote/scope` and chooses the incarnation; starts one `owner_port` over the same
-`OwnerServices` a local session builds; attaches once; records the attach in the
-scope cell; builds the plane. `serve.assemble_registered` is the entry point,
-`daemon/main` keeps the `distribution.Membership` and calls `workspace.reach`
-for a registration with an `executor`, and `Instance.pool` and `Instance.executor`
+`There(placement)`) and the `Half` it yields differ. In order, an open: reads
+`remote/scope` and chooses the candidates (the executor the cell names, else the
+`Placement`'s, see "Executor pools" below); connects the candidate's peer
+(`Reach.connect`, failure keeps the `executor_unavailable:` prefix); writes the
+cell, naming the executor and the incarnation; starts one `owner_port` over the
+same `OwnerServices` a local session builds; attaches once; compares the census
+with the executor's declaration; builds the plane. `serve.assemble_registered` is
+the entry point, `daemon/main` keeps the `distribution.Membership` and builds the
+`Placement` (`workspace.fixed` or `workspace.pooled`) for a registration with an
+`executor` or a `pool`, and `Instance.pool` and `Instance.executor`
 are `None` for such a session (`test/support/local_workspace` unwraps them for
 local fixtures).
 
@@ -6443,11 +6446,12 @@ local fixtures).
 - **Prompt.** `render_prompt` is unchanged: the user's guidance is read here, the
   workspace's arrives in `census.prompt`, and the platform, shell and policy
   facts come from `census.census`.
-- **Scope record.** `remote/scope` keeps `{incarnation, closed}` in the reserved
-  cell `client/remote/scope`. No cell attaches at 1, a clean close at the stored
-  incarnation plus one, anything else at the stored one. It is written straight
-  to the store (the way `session_git` writes), so only while no runtime owns it:
-  after the attach and before the runtime opens, and by the close below. A
+- **Scope record.** `remote/scope` keeps `{incarnation, closed, executor}` in the
+  reserved cell `client/remote/scope`. No cell attaches at 1, a clean close at the
+  stored incarnation plus one, anything else at the stored one. It is written
+  straight to the store (the way `session_git` writes), so only while no runtime
+  owns it: after the connection and before the attach is sent, by the close
+  below, and removed by `scope.clear` after a first open's capacity refusal. A
   `StaleIncarnation` from the executor fails the open naming both numbers; it is
   never retried.
 - **Close.** `custody.Workspace` (after `Services`, before `Mcp`) runs
@@ -6554,3 +6558,65 @@ serves a real workspace to a second node. Making `retire` ignore the helper
 witness fails `a_scope_with_no_helper_cleanup_has_no_witness_test`; building the
 plane back inside the host actor fails the two build-isolation tests in
 `host_test`.
+
+## Executor pools (protocol 078)
+
+A session may be created in a `[pools.<name>]` instead of on one executor
+(`sessions.create{pool}`, exclusive with `executor`). The executor is chosen when
+the session first opens and then never again.
+
+- `client/executors` also reads the optional declarations of a row: `platform`
+  (`<os>/<architecture>`, the label `system_prompt.platform` writes),
+  `enforcement` (`enforced` or `degraded`, the census's `PromptFacts.helper`) and
+  `toolchains` (`codemode` or an `[lsp.<name>]` key). They are the operator's
+  claims. `executors.contradiction(row, observed)` compares them with what an
+  attach census says and words both values; a row that declares nothing, or that
+  provides more than it declared, is never contradicted. `client/pools` reads
+  `[pools.<name>]` (`executors` in trial order, plus the same three keys as
+  requirements) and `pools.candidates(pool, configured)` is the whole filter, a
+  pure function of configuration: an executor that declared nothing cannot
+  satisfy a requirement. `catalog.parse` validates both tables.
+- `workspace.attach` is the placement loop (read its module doc for the order of
+  steps). The scope record names the executor, and it is written after the
+  connection and before `Attach` is sent. That one ordering is what makes "a
+  session whose record names an executor has only that candidate" structural, and
+  a reply lost after delivery is retried against the same machine, where the
+  ledger's `Rebound` arm makes it converge. A first open (no record) goes to the
+  next candidate on exactly two outcomes, both of which prove no scope exists: the
+  connection failed, or the executor answered `CapacityExhausted` (decided inside
+  the attach transaction before any plane is built). After the capacity refusal
+  the record is cleared. A capacity refusal at reopen, an unanswered attach, a
+  version or workspace refusal and a build failure all fail the open and leave the
+  record where it is. The census is compared with the declaration after the attach;
+  a contradiction asks the executor to close the scope and fails the open.
+- `workspace.Placement` is three functions so that the configuration and the
+  catalogue stay outside this module: `first` (the candidates for a session with
+  no record, or why there are none), `named` (a configured executor by name, for
+  a record that names one) and `chosen` (told the executor after every successful
+  attach, because an earlier open whose reply was lost may have named it without
+  the catalogue hearing). `workspace.fixed` and `workspace.pooled` build them.
+  `chosen` is `manager.seed_executor`, a cast that runs `catalogue.seed_executor`
+  in the registry's turn, which writes the `executor` column once, only for a
+  registration with a pool and no executor.
+- The catalogue is at version 11: `Registration.pool` is part of the creation
+  request and `reserve_creation` compares it, and for a pooled request it does not
+  compare the executor, which is the first open's choice (`named_same_executor`).
+  `view_json` adds `executor` and `pool` members only when non-empty. The control
+  decoder refuses `executor` with `pool`, a `workspace_private` scope and a
+  workspace that is not a registered name; `server.create_session` answers
+  `pool_unknown` for a pool the daemon does not configure.
+- `LOOM_EXECUTOR_MAX_SCOPES` (`executor_plane.scope_limits`) lowers the number of
+  scopes an executor admits before refusing an attach; the ledger default is 16.
+  It is how a test makes an executor full.
+
+Tests: `remote/placement_test` runs real hosts and ledgers, each with a limit of
+one scope and its own name, in one VM, and covers the order, a connection that
+fails, a pool full everywhere (the record is withdrawn), a reopen into a full
+executor, a bound executor that is down, a link that breaks after the attach was
+delivered (`remote_orchestrator.lossy_link`), and declarations the census
+confirms and contradicts. `daemon_registered_test`, `daemon_protocol_test`,
+`executors_test` and `pools_test` cover the wire and the tables, and
+`daemon_shipped_remote_pool_test` boots an orchestrator and two executors with
+`support/remote_daemons.trio`. Dropping the record write before the attach fails
+five tests of `placement_test`, and letting a reopen treat a capacity refusal as
+"next" fails `a_reopen_into_a_full_executor_never_moves_to_another_test`.

@@ -473,6 +473,60 @@ and `grep` run on the executor, in the registered workspace, and their results
 come back into the conversation. Approval prompts still appear on the
 orchestrator's clients.
 
+### Several executors: pools
+
+With more than one executor you can let the orchestrator choose. A pool is a
+named list of executors in the orchestrator's `loom.toml`:
+
+```toml
+[executors.box]
+node = "exec@10.0.0.2"
+platform = "linux/x86_64"
+enforcement = "enforced"
+
+[executors.spare]
+node = "spare@10.0.0.3"
+platform = "linux/x86_64"
+enforcement = "enforced"
+
+[pools.linux]
+executors = ["box", "spare"]
+platform = "linux/x86_64"
+```
+
+Create a session in the pool with `loom --pool linux --workspace proj`, or send
+`pool` in place of `executor` to `sessions.create`. Every executor of the pool
+needs a `[workspaces.proj]` of its own, because the orchestrator sends only the
+name. The rules are short:
+
+- **Order, not balance.** The orchestrator tries the executors in the order the
+  pool lists them. It goes to the next one only when the first could not hold the
+  session: the connection to it failed, or it answered that it already holds the
+  most scopes it admits (16 unless `LOOM_EXECUTOR_MAX_SCOPES` lowers it).
+- **A session stays where it landed.** The first open records the executor in the
+  session's own store. Every later open goes to that executor and never chooses
+  again, because the checkout exists only there. If that executor is full or down,
+  the open fails with `executor_unavailable:` and no other machine is tried.
+  `loom sessions list` shows the session as `box:proj` once it has landed.
+- **Declarations are claims you make.** `platform` is `<os>/<architecture>` as
+  the system prompt writes it (`linux/x86_64`, `macos/arm64`), `enforcement` is
+  `enforced` or `degraded`, and `toolchains` lists `codemode` or the key of an
+  `[lsp.<name>]` server. A pool that sets one of them skips the executors that did
+  not declare it. When a session attaches, the executor's answer is compared with
+  its declaration, and a contradiction (an executor declared as `linux/x86_64`
+  that reports `macos/arm64`) closes the scope and fails the open with both values
+  in the message. Fix the file and open again.
+- **A pool that is full everywhere fails and keeps nothing.** The next open starts
+  from the whole pool again.
+
+**Verified** by the repository's shipped end-to-end test, which boots an
+orchestrator and two executors and creates sessions with `pool` over the control
+protocol: a pool skips an executor that declares the wrong platform, a contradicted
+declaration closes its scope and fails the open, a full executor is moved past,
+and a reopen into a full executor fails without moving. The terminal's `--pool`
+flag is covered by its own unit tests and was not run against these daemons. The
+web home does not offer pools yet.
+
 ## 8. Verify it is working
 
 | Check | How | Status |
@@ -555,10 +609,10 @@ Linux executor for untrusted work.
 This phase moves a whole tool call to the machine that holds the checkout. It
 does not yet do the following.
 
-- **One executor per session, chosen at creation.** There are no pools, no
-  failover to a second executor, and no moving a session from one executor to
-  another. If the executor is down, the session shows it as unavailable and
-  waits.
+- **One executor per session, chosen at its first open.** A pool picks the
+  executor in the order you list, but there is no failover to a second executor
+  and no moving a session from one executor to another. If the executor is down,
+  the session shows it as unavailable and waits.
 - **No extension tools on remote sessions.** Extensions are installed under the
   orchestrator's home and would have to run beside the checkout. A remote
   session refuses them.
