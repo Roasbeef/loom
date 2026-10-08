@@ -241,6 +241,44 @@ pub fn a_scope_an_executor_restart_left_unproven_reopens_after_a_release_test() 
   rig.stop(third)
 }
 
+pub fn a_close_the_record_never_saw_is_learned_from_the_executor_test() {
+  // The executor's host ended after it began the close, and the orchestrator
+  // never recorded that close. An operator released the scope, so the executor
+  // holds it closed at incarnation 1 while the record still says the open at 1
+  // was never closed. The open must learn the close from the executor and
+  // reopen at incarnation 2, not fail as out of step.
+  let path = fixtures.scratch("unrecorded-close") <> "/ledger.db"
+  let name = rig.host_name()
+  let probe = fixtures.probe(fixtures.Open)
+  let factory = fn() {
+    rig.factory(probe, rig.census(rig.standard_tools()), protocol.AllRetired)
+  }
+  let first = rig.start_named(path, factory(), name)
+  let opened = store()
+  let hands = attached(first, opened)
+  assert hands.incarnation == 1
+  rig.stop(first)
+  process.sleep(100)
+  let assert Ok(ledger) = exec_ledger.open(path) as "the ledger opens"
+  let assert Ok(Nil) =
+    exec_ledger.begin_close(ledger, "registered-session", "registered-name", 1)
+    as "the close begins and never finishes"
+  let assert Ok(exec_ledger.Released(was: exec_ledger.Closing, ..)) =
+    exec_ledger.release(ledger, "registered-session", 2000)
+    as "the scope is released"
+  let assert Ok(Nil) = exec_ledger.close(ledger) as "the ledger closes"
+  let second = rig.start_named(path, factory(), name)
+  assert scope.read(opened)
+    == Ok(Some(scope.Scope(1, None, Some(rig.executor_name))))
+
+  let reopened = attached(second, opened)
+
+  assert reopened.incarnation == 2
+  assert scope.read(opened)
+    == Ok(Some(scope.Scope(2, None, Some(rig.executor_name))))
+  rig.stop(second)
+}
+
 pub fn a_record_out_of_step_with_the_executor_fails_naming_both_numbers_test() {
   let probe = fixtures.probe(fixtures.Open)
   let executor = standard(probe, protocol.AllRetired)

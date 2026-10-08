@@ -6616,8 +6616,12 @@ local fixtures).
   straight to the store (the way `session_git` writes), so only while no runtime
   owns it: after the connection and before the attach is sent, by the close
   below, and removed by `scope.clear` after a first open's capacity refusal. A
-  `StaleIncarnation` from the executor fails the open naming both numbers; it is
-  never retried.
+  `StaleIncarnation` from the executor fails the open naming both numbers, except
+  in one case: when the record never saw the close of the incarnation it just
+  attached under (`closed: None`) and the executor reports that same incarnation,
+  the scope is closed cleanly there. The open then asks the executor to close it
+  (a closed scope answers its stored outcome), records the answer, and attaches
+  once more at the incarnation the record now allows.
 - **Close.** `custody.Workspace` (after `Services`, before `Mcp`) runs
   `plane.close`: ask the executor to close the scope, record what it reports,
   stop the owner port. An unanswered or refused close records nothing and still

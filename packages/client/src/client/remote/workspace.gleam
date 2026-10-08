@@ -247,7 +247,7 @@ fn try_in_order(
   case candidates {
     [] -> Error(none_accepted(list.reverse(declined)))
     [candidate, ..rest] ->
-      case attach_to(registered, stored, candidate) {
+      case attach_to(registered, stored, candidate, MayHeal) {
         Ok(hands) -> Ok(hands)
         Error(Failed(reason)) -> Error(reason)
         Error(Declined(..) as attempt) ->
@@ -279,14 +279,26 @@ fn none_accepted(declined: List(Attempt)) -> String {
   }
 }
 
+// Whether an attach may ask the executor how an unrecorded close ended and try
+// once more. The second attempt of an open is `Healed`, so one open never loops.
+type Healing {
+  MayHeal
+  Healed
+}
+
 fn attach_to(
   registered: Registered,
   stored: Option(Scope),
   candidate: Candidate,
+  healing: Healing,
 ) -> Result(Hands, Attempt) {
   let reach = candidate.reach
   let name = candidate.executor.name
   let first_open = option.is_none(stored)
+  let close_unrecorded = case stored {
+    Some(scope.Scope(closed: None, ..)) -> True
+    Some(scope.Scope(closed: Some(_), ..)) | None -> False
+  }
 
   // A connection that fails has not sent the attach, so this candidate holds
   // nothing for the session. If it was the only candidate, as it is whenever
@@ -338,6 +350,22 @@ fn attach_to(
         Error(reason) -> Error(Failed(unavailable(reason)))
       }
     }
+
+    // The executor says the scope is at the incarnation this open just
+    // attached under, and the record never saw that incarnation's close. Only a
+    // scope closed cleanly answers that way: an open scope at this incarnation
+    // rebinds, a closing one answers `ScopeClosing`, and one closed with unknown
+    // cleanup answers `UncleanClose`. So the close finished after the record
+    // was last written, because the orchestrator died or its reply was lost, or
+    // an operator released the scope. The record is brought up to date from the
+    // executor, which answers a closed scope with its stored outcome, and the
+    // open tries once more at the incarnation that outcome allows.
+    Error(protocol.StaleIncarnation(stored: held))
+      if healing == MayHeal && close_unrecorded && held == incarnation
+    -> {
+      owner_port.stop(port)
+      learn_unrecorded_close(registered, candidate, held)
+    }
     Error(refusal) -> {
       owner_port.stop(port)
       Error(Failed(refused(refusal, incarnation, registered.session)))
@@ -369,6 +397,44 @@ fn attach_to(
           ))
         }
       }
+  }
+}
+
+// Asks the executor how the scope's close at `held` ended, records the answer,
+// and attaches again from the updated record. The answer for a scope that is
+// closed is its stored outcome, so a clean close reopens at the next
+// incarnation and an unproven one is refused as an unclean close, which still
+// needs an operator's release.
+fn learn_unrecorded_close(
+  registered: Registered,
+  candidate: Candidate,
+  held: Int,
+) -> Result(Hands, Attempt) {
+  let asked =
+    request_close(
+      registered.session,
+      registered.workspace,
+      candidate.reach,
+      held,
+      2,
+    )
+  case asked {
+    Ok(outcome) -> {
+      let updated =
+        scope.Scope(held, Some(outcome), Some(candidate.executor.name))
+      case scope.write(registered.opened, updated) {
+        Ok(Nil) -> attach_to(registered, Some(updated), candidate, Healed)
+        Error(reason) -> Error(Failed(unavailable(reason)))
+      }
+    }
+    Error(_failure) ->
+      Error(
+        Failed(refused(
+          protocol.StaleIncarnation(stored: held),
+          held,
+          registered.session,
+        )),
+      )
   }
 }
 
