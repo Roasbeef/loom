@@ -19,14 +19,16 @@
 ////
 //// Every stage's failure is a value, not a crash: `execute` is total.
 ////
-//// # One rewrite, for unused imports only
+//// # One rewrite, for unused names only
 ////
-//// A build that fails with nothing but unused-import warnings is run once
-//// more without those imports (`codemode/unused_imports`): the rewritten
-//// source is vetted again, built, content-addressed and returned as the
-//// program (`Ran.source`), and `Execution.edits` says what was removed.
-//// Any other diagnostic leaves the failure exactly as the compiler said
-//// it, and there is never a second rewrite.
+//// A build that fails with nothing but unused import, argument or variable
+//// warnings is run once more with those repaired (`codemode/unused_repair`):
+//// imports are removed and unused arguments and bindings get a leading
+//// underscore. The rewritten source is vetted again, built,
+//// content-addressed and returned as the program (`Ran.source`), and
+//// `Execution.edits` says what changed. Any other diagnostic leaves the
+//// failure exactly as the compiler said it, and there is never a second
+//// rewrite.
 ////
 //// # The durable-entry seam
 ////
@@ -48,7 +50,7 @@ import codemode/identity.{type ExecIdentity}
 import codemode/satellite.{
   type Launcher, type Outcome, type RunError, type SatelliteConfig,
 }
-import codemode/unused_imports
+import codemode/unused_repair
 import codemode/vet.{type Rejection, type Vetted}
 import codemode/vet/policy.{type VetPolicy}
 import gleam/list
@@ -81,8 +83,9 @@ pub type Execution {
     calls: CallLog,
     /// What the harness changed in the submitted program before it ran, one
     /// line per change (`removed unused import gleam/int (line 3)`), in
-    /// source order. Empty unless the build named unused imports and the
-    /// program was rebuilt without them (`unused_imports`); when it is not
+    /// source order. Empty unless the build named only unused imports,
+    /// arguments or bindings and the program was rebuilt with them
+    /// repaired (`unused_repair`); when it is not
     /// empty, `Ran.source` is the rewritten program, the one that was
     /// vetted, built and run, and diagnostics refer to its line numbers.
     edits: List(String),
@@ -189,7 +192,7 @@ fn compile_and_run(
   let first = compile_once(vetted, config)
 
   // One rewrite at most. The second build's result is final whatever it
-  // says: a program whose unused imports were not the whole problem gets the
+  // says: a program whose unused names were not the whole problem gets the
   // second build's diagnostics, and nothing is rewritten twice.
   let #(source, compiled, edits) = case rewritten(vetted, first, config) {
     Ok(#(next, rewrite)) -> #(
@@ -220,22 +223,23 @@ fn compile_once(vetted: Vetted, config: ExecConfig) -> compile.Compiled {
   )
 }
 
-// The program without the imports a failed build named as unused, vetted
-// again, when that is the whole of the failure.
+// The program with the imports, arguments and bindings a failed build named
+// as unused repaired, vetted again, when that is the whole of the failure.
 //
 // What runs is what was vetted, so the rewritten source goes back through
 // `vet.vet` under the same policy and the new `Vetted` is what is built. A
-// removal can only narrow what a program imports, so the vet is not
-// expected to refuse; if it ever does, the original failure stands rather
-// than a program nobody vetted being built.
+// repair removes an import or prefixes a name with an underscore, so it
+// cannot add an import and the vet is not expected to refuse; if it ever
+// does, the original failure stands rather than a program nobody vetted
+// being built.
 fn rewritten(
   vetted: Vetted,
   compiled: compile.Compiled,
   config: ExecConfig,
-) -> Result(#(Vetted, unused_imports.Rewrite), Nil) {
+) -> Result(#(Vetted, unused_repair.Rewrite), Nil) {
   case compiled.result {
     Error(compile.BuildRejected(diagnostics:)) -> {
-      use rewrite <- result.try(unused_imports.rewrite(
+      use rewrite <- result.try(unused_repair.rewrite(
         vet.vetted_source(vetted),
         diagnostics,
         "src/" <> compile.program_module <> ".gleam",

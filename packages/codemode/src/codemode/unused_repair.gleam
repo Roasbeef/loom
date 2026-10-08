@@ -1,18 +1,19 @@
-//// Removing the imports a build reported as unused, and nothing else.
+//// Repairing what a build reported as unused, and nothing else.
 ////
 //// The production build runs with `--warnings-as-errors`, which is what
 //// turns Gleam's "transitive dependency imported" warning into a compile
 //// error (`codemode/build`). The same flag makes an unused `import
-//// gleam/int` fail the build, and a failure costs the model a round trip
-//// to delete a line the compiler already named. This module reads the
-//// compiler's own diagnostics and, only when *every* diagnostic is an
-//// unused-import warning, returns the program with exactly those imports
-//// removed. The caller vets and builds that program once more.
+//// gleam/int`, an unused lambda argument or an unused `let` fail the
+//// build, and a failure costs the model a round trip to fix something the
+//// compiler already named. This module reads the compiler's own
+//// diagnostics and, only when *every* diagnostic is one of those unused
+//// warnings, returns the program with exactly those spots repaired. The
+//// caller vets and builds that program once more.
 ////
 //// # Why the rule is all-or-nothing
 ////
 //// A build that fails for any other reason, or that carries any other
-//// warning alongside the unused imports, is not rewritten at all. A
+//// warning alongside the unused ones, is not rewritten at all. A
 //// transitive-dependency warning in particular must keep failing the
 //// build, so one such diagnostic anywhere makes the whole rewrite refuse,
 //// as does an error, a diagnostic that does not parse, and a summary that
@@ -23,17 +24,36 @@
 //// toolchain, so the text is parsed, and every step that could be wrong
 //// refuses instead of guessing. The location line and the echoed source
 //// line must agree with the program text exactly before a character is
-//// removed.
+//// changed.
 ////
-//// # What is removed
+//// # What is repaired
 ////
-//// Gleam names four titles: `Unused imported module` for a whole import,
-//// and `Unused imported value`, `type` or `item` for one name inside an
-//// unqualified list `{...}`. A whole import is removed with its line. A
-//// named item is removed from its list together with its `as` alias, and
-//// the braces and the `.` go with the last item, leaving an `as` alias on
-//// the module itself in place. Imports written across several lines are
-//// refused, because their spans do not sit on one line.
+//// Imports: Gleam names four titles: `Unused imported module` for a whole
+//// import, and `Unused imported value`, `type` or `item` for one name
+//// inside an unqualified list `{...}`. A whole import is removed with its
+//// line. A named item is removed from its list together with its `as`
+//// alias, and the braces and the `.` go with the last item, leaving an
+//// `as` alias on the module itself in place. Imports written across
+//// several lines are refused, because their spans do not sit on one line.
+////
+//// Names: `Unused function argument` covers lambda parameters, named
+//// function parameters and `use` bindings (`use` desugars to a callback,
+//// so the compiler files an unused one under this title), and `Unused
+//// variable` covers `let` bindings. The underline covers the name and the
+//// `Hint:` line gives the replacement, `_name`. The underlined text must
+//// equal the hinted name, and then one `_` is inserted before it. A
+//// labelled parameter `label name` has its underline on `name`, so the
+//// label is never touched. Edits on one line apply right to left so the
+//// columns of the earlier ones stay valid.
+////
+//// A `let` or `use` binding that nothing reads often means the program
+//// forgot to use a value it computed, so those notes say so. Underscoring
+//// it makes the build pass and leaves the missing value missing.
+////
+//// A variable bound in alternative patterns (`Ok(x) | Error(x) ->`) gets one
+//// warning and so one underscore, and the second build then fails because
+//// the alternatives no longer bind the same name. That build's diagnostics
+//// are final and its note names the rename, so this case is left as it is.
 
 import gleam/int
 import gleam/list
@@ -44,31 +64,40 @@ import gleam/string
 /// to read, in source order.
 pub type Rewrite {
   Rewrite(
-    /// The submitted source with the unused imports removed.
+    /// The submitted source with the unused spots repaired.
     source: String,
-    /// Lines such as `removed unused import gleam/int (line 3)`.
+    /// One line per repair, such as `removed unused import gleam/int (line
+    /// 3)` or `renamed unused argument e to _e (line 18)`.
     notes: List(String),
   )
 }
 
-// What an unused-import warning removes.
+// What an unused warning repairs.
 type Scope {
   // The whole `import` statement.
   Statement
 
   // One name inside the `{...}` list.
   Member
+
+  // A function or lambda parameter, or a `use` binding, which the compiler
+  // reports under the same title. Carries the name without its underscore.
+  Argument(name: String)
+
+  // A `let` binding, or a pattern variable the compiler calls a variable.
+  Binding(name: String)
 }
 
-// One parsed unused-import warning: where the compiler underlined, how wide,
-// and the source line it echoed beside the underline.
+// One parsed unused warning: where the compiler underlined, how wide, and
+// the source line it echoed beside the underline.
 type Unused {
   Unused(scope: Scope, line: Int, column: Int, width: Int, echoed: String)
 }
 
-/// Removes the imports `diagnostics` reports as unused from `source`, or
-/// `Error(Nil)` when anything else is in the output or anything fails to
-/// agree. `file` is the path suffix the warnings must be about, such as
+/// Repairs what `diagnostics` reports as unused in `source`: unused imports
+/// are removed, unused arguments and bindings get a leading underscore. It
+/// returns `Error(Nil)` when anything else is in the output or anything
+/// fails to agree. `file` is the path suffix the warnings must be about, such as
 /// `src/loom_program.gleam`: a warning about another module is not this
 /// program's to fix.
 ///
@@ -80,8 +109,8 @@ type Unused {
 ///   <> "1 │ import gleam/int\n  │ ^^^^^^^^^^^^^^^^ This imported module "
 ///   <> "is never used\n\nHint: You can safely remove it.\n\n"
 ///   <> "error: 1 warning generated.\n"
-/// assert unused_imports.rewrite("import gleam/int\npub fn main() { 1 }", diagnostics, "src/p.gleam")
-///   == Ok(unused_imports.Rewrite(
+/// assert unused_repair.rewrite("import gleam/int\npub fn main() { 1 }", diagnostics, "src/p.gleam")
+///   == Ok(unused_repair.Rewrite(
 ///     source: "pub fn main() { 1 }",
 ///     notes: ["removed unused import gleam/int (line 1)"],
 ///   ))
@@ -101,7 +130,7 @@ pub fn rewrite(
 
 // --- reading the compiler's output ---------------------------------------
 
-// Every diagnostic block must be an unused-import warning, apart from the
+// Every diagnostic block must be an unused warning, apart from the
 // closing `error: N warning(s) generated.` summary, whose count must match.
 fn parse(diagnostics: String, file: String) -> Result(List(Unused), Nil) {
   let blocks = blocks(string.split(diagnostics, "\n"))
@@ -162,12 +191,38 @@ fn classify(
   let #(title, body) = block
   case title {
     "warning: Unused imported module" ->
-      unused(Statement, body, file) |> result.map(Warning)
+      unused(fn(_) { Ok(Statement) }, body, file) |> result.map(Warning)
     "warning: Unused imported value"
     | "warning: Unused imported type"
     | "warning: Unused imported item" ->
-      unused(Member, body, file) |> result.map(Warning)
+      unused(fn(_) { Ok(Member) }, body, file) |> result.map(Warning)
+    "warning: Unused function argument" ->
+      unused(named(_, Argument), body, file) |> result.map(Warning)
+    "warning: Unused variable" ->
+      unused(named(_, Binding), body, file) |> result.map(Warning)
     _ -> summary(title)
+  }
+}
+
+// The scope of a rename warning. The `Hint:` line names the replacement,
+// `` `_e` ``, and the text under the underline must be that name without the
+// underscore: a hint that disagrees with the underline, such as the `name:`
+// shorthand in a pattern, is not a name this module knows how to rename.
+fn named(
+  found: #(List(String), String),
+  scope: fn(String) -> Scope,
+) -> Result(Scope, Nil) {
+  let #(body, underlined) = found
+  use hint <- result.try(
+    list.find_map(body, fn(line) {
+      after_prefix(line, "Hint: You can ignore it with an underscore: `")
+    }),
+  )
+  use hinted <- result.try(string.split_once(hint, "`"))
+  use name <- result.try(after_prefix(hinted.0, "_"))
+  case name != "" && name == underlined {
+    True -> Ok(scope(name))
+    False -> Error(Nil)
   }
 }
 
@@ -182,8 +237,10 @@ fn summary(title: String) -> Result(Classified, Nil) {
 }
 
 // The location line, then the echoed source line and the underline under it.
+// `scope_of` is given the block body and the underlined text and answers
+// the scope, or refuses.
 fn unused(
-  scope: Scope,
+  scope_of: fn(#(List(String), String)) -> Result(Scope, Nil),
   body: List(String),
   file: String,
 ) -> Result(Unused, Nil) {
@@ -198,13 +255,27 @@ fn unused(
     False -> Error(Nil)
   })
   use #(echoed, width, offset) <- result.try(echoed_span(body, line))
+  let underlined = slice(echoed, offset, width)
+  use scope <- result.try(scope_of(#(body, underlined)))
 
   // The underline must start under the column the location names, or the
-  // two descriptions of one span disagree and nothing is removed.
+  // two descriptions of one span disagree and nothing is changed.
   case offset == column - 1 {
     True -> Ok(Unused(scope:, line:, column:, width:, echoed:))
     False -> Error(Nil)
   }
+}
+
+// `width` graphemes of `text` from the zero-based grapheme `offset`.
+//
+// Three units meet here. Gleam's location column counts characters, the
+// underline's offset in the echoed line is a display width, and `slice`
+// counts graphemes. They agree for ordinary text. When they do not, as after
+// an emoji or a combining mark earlier on the line, the underlined text
+// differs from the hinted name or the offset differs from the column, and
+// the caller refuses instead of editing the wrong span.
+fn slice(text: String, offset: Int, width: Int) -> String {
+  text |> string.drop_start(offset) |> string.slice(0, width)
 }
 
 // `path:line:column`, split from the right because a path may hold colons.
@@ -302,12 +373,102 @@ fn edit_line(
           False -> Error(Nil)
         },
       )
-      case list.any(warnings, fn(warning) { warning.scope == Statement }) {
-        True -> remove_statement(line, warnings, number)
-        False -> remove_members(line, warnings, number)
+      case list.all(warnings, is_rename), list.any(warnings, is_rename) {
+        True, _ -> rename_names(line, warnings, number)
+        False, True -> Error(Nil)
+        False, False ->
+          case list.any(warnings, fn(warning) { warning.scope == Statement }) {
+            True -> remove_statement(line, warnings, number)
+            False -> remove_members(line, warnings, number)
+          }
       }
     }
   }
+}
+
+// Whether the warning is about a name to underscore rather than an import.
+// A line holding both kinds is refused: an `import` statement cannot hold a
+// parameter, so the two descriptions of the line disagree.
+fn is_rename(warning: Unused) -> Bool {
+  case warning.scope {
+    Argument(name: _) | Binding(name: _) -> True
+    Statement | Member -> False
+  }
+}
+
+// Inserts `_` before each flagged name, right to left so the columns of the
+// names still to be edited stay valid. Two warnings at one column would
+// double the underscore, so they refuse. The underlined text was checked
+// against the hinted name while parsing, and the echoed line against this
+// one, so the column is known to hold the name.
+fn rename_names(
+  line: String,
+  warnings: List(Unused),
+  number: Int,
+) -> Result(#(List(String), List(String)), Nil) {
+  let ordered =
+    list.sort(warnings, fn(a, b) { int.compare(a.column, b.column) })
+  let columns = list.map(ordered, fn(warning) { warning.column })
+  use _ <- result.try(case list.unique(columns) == columns {
+    True -> Ok(Nil)
+    False -> Error(Nil)
+  })
+  let rebuilt =
+    list.fold(list.reverse(ordered), line, fn(text, warning) {
+      string.slice(text, 0, warning.column - 1)
+      <> "_"
+      <> string.drop_start(text, warning.column - 1)
+    })
+  Ok(#([rebuilt], list.map(ordered, rename_note(_, line, number))))
+}
+
+// The note for one rename. A `use` or `let` binding gets the warning that
+// nothing reads it, because that usually means the program forgot to use a
+// value it computed; underscoring only silences the compiler.
+fn rename_note(warning: Unused, line: String, number: Int) -> String {
+  let at = " (line " <> int.to_string(number) <> ")"
+  case warning.scope {
+    Argument(name:) ->
+      case is_use_binding(line, warning.column) {
+        True -> binding_note(name, at)
+        False -> "renamed unused argument " <> name <> " to _" <> name <> at
+      }
+    Binding(name:) -> binding_note(name, at)
+    Statement | Member -> ""
+  }
+}
+
+fn binding_note(name: String, at: String) -> String {
+  "renamed unused binding "
+  <> name
+  <> " to _"
+  <> name
+  <> at
+  <> "; nothing reads it, so a value the program meant to return may be missing"
+}
+
+// A `use` binding's name sits in the pattern list between `use ` and `<-`.
+// The compiler reports it as an argument; the source line is what tells the
+// two apart. Only identifier characters, commas and spaces may stand between
+// `use ` and the name, so a lambda argument later on a `use` line, as in
+// `use _ <- result.try(f(fn(y) { 1 }))`, is not mistaken for a binding.
+fn is_use_binding(line: String, column: Int) -> Bool {
+  let before = string.trim_start(string.slice(line, 0, column - 1))
+  case string.starts_with(before, "use ") {
+    True ->
+      string.drop_start(before, 4)
+      |> string.to_graphemes
+      |> list.all(is_pattern_character)
+    False -> False
+  }
+}
+
+fn is_pattern_character(grapheme: String) -> Bool {
+  grapheme == "_"
+  || grapheme == ","
+  || grapheme == " "
+  || string.lowercase(grapheme) != string.uppercase(grapheme)
+  || list.contains(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"], grapheme)
 }
 
 // A whole-import warning removes the line. It must start the line and span
