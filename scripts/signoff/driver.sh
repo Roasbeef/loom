@@ -220,7 +220,7 @@ if [ "$verdict" -ne 0 ]; then
 	inside=$(realpath -- "$container")
 	for lane in $failed; do
 		lane_log="$container/lanes/$lane.log"
-		real=$(realpath -e -- "$lane_log" 2>/dev/null) || continue
+		real=$(realpath -- "$lane_log" 2>/dev/null) || continue
 		if [ -f "$real" ] && [ ! -L "$lane_log" ] && [[ $real == "$inside"/* ]]; then
 			echo "== the last 80 lines of the $lane lane"
 			tail -n 80 -- "$real"

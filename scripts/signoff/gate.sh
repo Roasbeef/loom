@@ -149,7 +149,7 @@ if [ "$verb" = logs ]; then
 	esac
 	inside=$(realpath -- "$run")
 	if [ -n "$lane" ] && [ "$lane" != image-build ]; then inside="$inside/container"; fi
-	real=$(realpath -e -- "$file" 2>/dev/null) || real=""
+	real=$(realpath -- "$file" 2>/dev/null) || real=""
 	if [ -z "$real" ] || [ -L "$file" ] || [ ! -f "$real" ] || [[ $real != "$inside"/* ]]; then
 		echo "loom-signoff-gate: no such log '${lane:-signoff}' for $sha" >&2
 		lane=""
@@ -197,6 +197,15 @@ fi
 # SIGPIPE ignored so that a session that has gone fails the write rather
 # than killing this script, and a failed write ends the request. The
 # driver keeps the same watch over the run itself.
+#
+# flock is util-linux's, which every host that runs this gate has. On a host
+# without it, `flock -n` failing for want of the program would read as a held
+# lock and the wait below would retry it without pause, so its absence ends
+# the request instead.
+command -v flock >/dev/null || {
+	echo "loom-signoff-gate: flock (util-linux) is required to serialise runs" >&2
+	exit 3
+}
 trap '' PIPE
 exec 9>"$state/lock"
 if ! flock -n 9; then
