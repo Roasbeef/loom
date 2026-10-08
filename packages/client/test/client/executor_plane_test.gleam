@@ -15,6 +15,9 @@ import client/executor_plane
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/jobs
+import client/owner_codemode
+import client/owner_codemode_test
+import client/owner_services.{type OwnerServices}
 import client/remote/address
 import client/remote/host
 import client/remote/owner_port
@@ -90,7 +93,20 @@ fn rig() -> Rig {
 // A rig whose code-mode seed is `seed`, when there is one, and otherwise a
 // path that holds nothing, so that no `code_mode` tool is registered.
 fn rig_with(seed: Option(String)) -> Rig {
-  let scratch = absolute(fixtures.scratch("executor-plane"))
+  rig_over(
+    seed,
+    fixtures.quiet_services(),
+    absolute(fixtures.scratch("executor-plane")),
+  )
+}
+
+// A rig whose owner port serves `services`, which is what the executor's
+// workspace calls back into, under the directory `scratch`.
+fn rig_over(
+  seed: Option(String),
+  services: OwnerServices,
+  scratch: String,
+) -> Rig {
   let checkout = scratch <> "/checkout"
   let state = scratch <> "/state"
   let assert Ok(Nil) = simplifile.create_directory_all(checkout)
@@ -115,7 +131,7 @@ fn rig_with(seed: Option(String)) -> Rig {
     as "the host starts"
   let assert Ok(port) =
     owner_port.start(owner_port.Config(
-      services: fixtures.quiet_services(),
+      services:,
       clock: clock.fixed(at: 1000),
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
@@ -143,7 +159,7 @@ fn config(
     port: rig.port,
     read_authority: fn(_run) { Ok(fixtures.authority()) },
     reconnect: fn() { Ok(Nil) },
-    remote_tools: ["fs_write", "fs_read", "bash"],
+    remote_tools: ["fs_write", "fs_read", "bash", "code_mode"],
     attach_within_ms: 60_000,
     mint_token: surface.strong_token,
   )
@@ -435,4 +451,90 @@ pub fn a_plane_offers_code_mode_the_owner_bound_capabilities_test() {
       stop(rig)
     }
   }
+}
+
+// A program which calls two owner-bound capabilities and reports.
+const owner_program =
+  "import cap/notes
+import cap/report
+import cap/strand
+import gleam/int
+import gleam/list
+
+pub fn main() -> report.Outcome {
+  case strand.roster() {
+    Ok(peers) -> write(list.length(peers))
+    Error(error) -> report.failure(strand.error_text(error))
+  }
+}
+
+fn write(peers: Int) -> report.Outcome {
+  case notes.put(\"proof\", report.string(\"from the executor\")) {
+    Ok(Nil) -> report.text(\"note written, roster of \" <> int.to_string(peers))
+    Error(error) -> report.failure(notes.error_text(error))
+  }
+}
+"
+
+pub fn a_program_on_the_executor_reaches_the_owners_doors_test() {
+  case exec.unjailed_skip_reason(exec.host_platform()), prepared_seed() {
+    option.Some(reason), _ ->
+      io.println_error("SKIP a_program_reaches_the_owners_doors: " <> reason)
+    option.None, Error(reason) ->
+      io.println_error("SKIP a_program_reaches_the_owners_doors: " <> reason)
+    option.None, Ok(seed) -> {
+      let seen = process.new_subject()
+      let services =
+        owner_services.OwnerServices(
+          ..fixtures.quiet_services(),
+          capability: owner_codemode.answering(
+            codemode.owner_serving(
+              codemode.BothSeams,
+              over: owner_codemode_test.agency_over(seen),
+              schedules: None,
+            ),
+            peers: owner_codemode_test.mailbox(seen),
+          ),
+          holds: fn(_caller, _tool) { Ok(Nil) },
+        )
+      let rig = rig_over(Some(seed), services, shallow_scratch())
+      let remote = attached(rig, 0).surface
+
+      // A real compile in the executor's jail and a real satellite, whose two
+      // capability calls cross the owner port to doors that are not on the
+      // executor. The note is written for the strand the call named.
+      let outcome =
+        surface.run(
+          remote,
+          call(
+            "code_mode",
+            [
+              #("program", json.String(owner_program)),
+              #("within_ms", json.Int(240_000)),
+            ],
+            0,
+          ),
+        )
+      let assert Ok(text) = text_of(outcome)
+      assert string.contains(text, "note written, roster of 0")
+      assert process.receive(seen, 1000) == Ok("roster main")
+      assert process.receive(seen, 1000) == Ok("note main proof")
+      stop(rig)
+      let _removed = simplifile.delete_all([rig.checkout, rig.state])
+      Nil
+    }
+  }
+}
+
+// A code-mode execution binds a unix socket under the state root, and a socket
+// path may be about a hundred bytes, so a program test keeps its state in a
+// shallow directory of its own. It is not under /tmp, which the jail replaces.
+fn shallow_scratch() -> String {
+  let directory =
+    "/var/tmp/.loom-executor-plane-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let _removed = simplifile.delete_all([directory])
+  let assert Ok(Nil) = simplifile.create_directory_all(directory)
+    as "the shallow scratch directory is created"
+  directory
 }

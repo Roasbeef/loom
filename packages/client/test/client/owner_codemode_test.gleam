@@ -159,7 +159,7 @@ fn routed(
 
 // What the owner's Agency saw: one line per operation, naming the strand it
 // was asked on behalf of.
-fn agency_over(seen: Subject(String)) -> agent.Agency {
+pub fn agency_over(seen: Subject(String)) -> agent.Agency {
   agent.Agency(
     spawn: fn(_caller, _request) { Error(agent.AgencyUnavailable) },
     send: fn(_caller, _to, _text, _within_ms) { Error(agent.AgencyUnavailable) },
@@ -193,7 +193,7 @@ fn permissive() -> OwnerServices {
 
 // The session's peer mailbox: every command is recorded and answered with an
 // empty list, which is what a strand with no links is told.
-fn mailbox(seen: Subject(String)) -> peers.Wiring {
+pub fn mailbox(seen: Subject(String)) -> peers.Wiring {
   peers.Wiring(
     own: peer_mail.Endpoint(session: "owner-session", call: fn(command) {
       case command {
