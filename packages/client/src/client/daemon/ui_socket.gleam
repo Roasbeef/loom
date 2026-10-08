@@ -1390,7 +1390,9 @@ fn authentication_failure(error: manager.Error) -> Failure {
     | manager.Unavailable
     | manager.StaleOperation
     | manager.StartFailed(_)
-    | manager.Preparation(_) -> Unreadable
+    | manager.Preparation(_)
+    | manager.SessionMoving(..)
+    | manager.SessionMoved(..) -> Unreadable
   }
 }
 
@@ -2046,7 +2048,11 @@ fn sign_out_reason(error: manager.AdminError) -> signins.Reason {
     | manager.AdminStaleEpoch
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> signins.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> signins.Unavailable
   }
 }
 
@@ -2688,7 +2694,9 @@ fn startup_reason(
         | Error(manager.Capacity)
         | Error(manager.Unavailable)
         | Error(manager.StaleOperation)
-        | Error(manager.Preparation(_)) -> None
+        | Error(manager.Preparation(_))
+        | Error(manager.SessionMoving(..))
+        | Error(manager.SessionMoved(..)) -> None
       }
     manager.Reserved
     | manager.Saved
@@ -3435,6 +3443,10 @@ fn give_back(
     | Managed(manager.AdminStaleEpoch)
     | Managed(manager.AdminBusy)
     | Managed(manager.AdminForeignPath)
+    | Managed(manager.AdminMoving(..))
+    | Managed(manager.AdminMoved(..))
+    | Managed(manager.AdminNotMovable(..))
+    | Managed(manager.AdminFailed(..))
     | Managed(manager.AdminMetadata(..))
     | Undrawn -> ui_sessions.release_invite(tickets, credential)
   }
@@ -3450,6 +3462,10 @@ fn reason_of(refusal: Refusal) -> invites.Reason {
     | Managed(manager.AdminUnavailable)
     | Managed(manager.AdminBusy)
     | Managed(manager.AdminForeignPath)
+    | Managed(manager.AdminMoving(..))
+    | Managed(manager.AdminMoved(..))
+    | Managed(manager.AdminNotMovable(..))
+    | Managed(manager.AdminFailed(..))
     | Managed(manager.AdminMetadata(..))
     | Undrawn -> invites.Unavailable
   }
@@ -3780,7 +3796,11 @@ fn rename_refusal(error: manager.AdminError) -> renames.Reason {
     | manager.IsolationRequired
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> renames.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> renames.Unavailable
   }
 }
 
@@ -3946,7 +3966,9 @@ fn stop_for(
         | manager.Unavailable
         | manager.StaleOperation
         | manager.StartFailed(_)
-        | manager.Preparation(_) -> actions.Unavailable
+        | manager.Preparation(_)
+        | manager.SessionMoving(..)
+        | manager.SessionMoved(..) -> actions.Unavailable
       }
     }),
   )
@@ -4004,7 +4026,11 @@ fn action_refusal(error: manager.AdminError) -> actions.Reason {
     | manager.AdminMetadata(catalogue.Database(_))
     | manager.IsolationRequired
     | manager.AdminUnavailable
-    | manager.AdminForeignPath -> actions.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> actions.Unavailable
   }
 }
 
@@ -4189,7 +4215,11 @@ fn name_refusal(error: manager.AdminError) -> names.Reason {
     | manager.IsolationRequired
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> names.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> names.Unavailable
   }
 }
 
@@ -4820,7 +4850,11 @@ fn admin_failure(error: manager.AdminError) -> Failure {
     | manager.AdminStaleEpoch
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> Unreadable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> Unreadable
   }
 }
 
@@ -5285,7 +5319,11 @@ fn admin_reason(error: manager.AdminError) -> grants.Reason {
     | manager.AdminStaleEpoch
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> grants.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> grants.Unavailable
   }
 }
 

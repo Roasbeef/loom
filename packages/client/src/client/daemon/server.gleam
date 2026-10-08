@@ -1687,6 +1687,10 @@ fn registry_refusal(error: manager.Error) -> Option(String) {
     manager.StaleOperation -> Some("operation was overtaken")
     manager.StartFailed(_) -> Some("session start failed")
     manager.Preparation(_) -> Some("session preparation failed")
+    manager.SessionMoving(..) ->
+      Some("session is moving to another orchestrator")
+    manager.SessionMoved(..) ->
+      Some("session was moved to another orchestrator")
   }
 }
 
@@ -3147,6 +3151,10 @@ fn rename_error_code(error) {
     | manager.AdminUnavailable
     | manager.AdminForeignPath
     | manager.AdminBusy
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..)
     | manager.AdminMetadata(_) -> admin_error_code(error)
   }
 }
@@ -3159,6 +3167,10 @@ fn admin_error_code(error) {
     manager.AdminUnavailable -> "unavailable"
     manager.AdminForeignPath -> "unavailable"
     manager.AdminBusy -> "busy"
+    manager.AdminMoving(..) -> "moving"
+    manager.AdminMoved(..) -> not_owner_code
+    manager.AdminNotMovable(..) -> "not_movable"
+    manager.AdminFailed(..) -> "unavailable"
     manager.AdminMetadata(error) -> error_code(manager.Catalogue(error))
   }
 }
@@ -3445,6 +3457,8 @@ fn error_code(error) {
     manager.SessionArchived -> "session_archived"
     manager.NotInitialized -> "not_initialized"
     manager.Unavailable | manager.Preparation(_) -> "unavailable"
+    manager.SessionMoving(..) -> "moving"
+    manager.SessionMoved(..) -> not_owner_code
     manager.Catalogue(catalogue.Missing) -> "not_found"
     manager.Catalogue(catalogue.Conflict) -> "conflict"
     manager.Catalogue(catalogue.Invalid(_)) -> "bad_request"
