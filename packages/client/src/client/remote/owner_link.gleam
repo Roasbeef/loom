@@ -74,8 +74,6 @@ import codemode/internal/args
 import codemode/satellite.{type CapDenial}
 import core/clock.{type Clock}
 import core/msgpack
-import gleam/dynamic
-import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/result
@@ -337,34 +335,15 @@ fn send_once(
   port: Subject(OwnerMessage),
   sending: fn(Subject(reply)) -> OwnerMessage,
 ) -> Sent(reply) {
-  case process.subject_owner(port) {
-    Error(Nil) -> Gone
-    Ok(owner) -> {
-      let reply = process.new_subject()
-      let watch = process.monitor(owner)
-      process.send(port, sending(reply))
-      let heard =
-        process.new_selector()
-        |> process.select_map(reply, Answered)
-        |> process.select_specific_monitor(watch, fn(down) {
-          case down {
-            process.ProcessDown(reason: process.Abnormal(detail), ..) ->
-              case is_noconnection(detail) {
-                True -> Disconnected
-                False -> Gone
-              }
-            process.ProcessDown(..) | process.PortDown(..) -> Gone
-          }
-        })
-        |> process.selector_receive(capability_wait_ms)
-      process.demonitor_process(watch)
-      result.unwrap(heard, Gone)
-    }
+  case call.try_call_watching(port, waiting: capability_wait_ms, sending:) {
+    Ok(reply) -> Answered(reply)
+    Error(call.CalleeDown(reason:)) ->
+      case call.is_disconnection(reason) {
+        True -> Disconnected
+        False -> Gone
+      }
+    Error(call.TimedOut) | Error(call.NoCallee) -> Gone
   }
-}
-
-fn is_noconnection(detail: dynamic.Dynamic) -> Bool {
-  detail == atom.to_dynamic(atom.create("noconnection"))
 }
 
 // Asks the owner to decide a refusal, giving it the call's remaining time.
