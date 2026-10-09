@@ -12,8 +12,10 @@
 //// 1. `adopt_legacy` is called by `client/serve` while a session's
 ////    directories are prepared, after the new store exists and before any
 ////    tool can run.
-//// 2. `adopt` lists the legacy directory and keeps the names `is_address`
-////    accepts: `sha256-` and 64 lowercase hex digits, each checked by
+//// 2. `adopt` first looks at `<workspace>/.blobs` itself with `link_info`,
+////    which does not follow a link, and goes on only if it is a real
+////    directory. `adopt_directory` then lists it and keeps the names
+////    `is_address` accepts: `sha256-` and 64 lowercase hex digits, each checked by
 ////    `is_lower_hex`. Staging files, the old `.gitignore` and anything else
 ////    a person left there are not addresses and are never touched.
 //// 3. `adopting` walks those names one at a time, and `one` skips a name
@@ -33,6 +35,12 @@
 //// logged rather than copied. A symbolic link, a FIFO or a device is skipped
 //// for the same reason, since reading one could block the session or leak a
 //// file that was never an artifact.
+////
+//// The same writability is why `.blobs` itself is checked. A jailed tool can
+//// replace the directory with a link to another workspace's store, whose
+//// files hash to their own names and would pass every per-file check. Only
+//// a real directory is listed; a link, or anything else, is refused and
+//// logged.
 ////
 //// There is no fallback read of the legacy directory after this step. The
 //// new store is the only one the harness resolves ids against.
@@ -105,21 +113,15 @@ pub fn adopt_legacy(
   into store: String,
   logger logger: Logger,
 ) -> Nil {
-  let legacy = legacy_directory(workspace)
-  case simplifile.is_directory(legacy) {
-    Ok(True) -> {
-      let report =
-        adopt(
-          legacy:,
-          into: store,
-          filesystem: fs.real_filesystem(),
-          within_ms: adoption_budget_ms,
-          now: ffi_os.system_time_ms,
-        )
-      report_to(logger, report)
-    }
-    Ok(False) | Error(_) -> Nil
-  }
+  let report =
+    adopt(
+      legacy: legacy_directory(workspace),
+      into: store,
+      filesystem: fs.real_filesystem(),
+      within_ms: adoption_budget_ms,
+      now: ffi_os.system_time_ms,
+    )
+  report_to(logger, report)
 }
 
 /// Where earlier releases kept the blob store for a workspace.
@@ -155,12 +157,41 @@ pub fn adopt(
   within_ms budget: Int,
   now now: fn() -> Int,
 ) -> Report {
+  let empty =
+    Report(adopted: 0, already_present: 0, rejected: [], unfinished: 0)
+
+  // `link_info` does not follow a link, so a `.blobs` that a jailed tool
+  // replaced with a link to somewhere else is seen as a link. An absent
+  // directory is the ordinary case and says nothing.
+  case simplifile.link_info(legacy) {
+    Error(_) -> empty
+    Ok(info) ->
+      case simplifile.file_info_type(info) {
+        simplifile.Directory ->
+          adopt_directory(legacy, store, filesystem, budget, now, empty)
+        simplifile.File | simplifile.Symlink | simplifile.Other ->
+          Report(..empty, rejected: [
+            Rejection(
+              name: legacy,
+              reason: "it is not a real directory, so it was not read",
+            ),
+          ])
+      }
+  }
+}
+
+fn adopt_directory(
+  legacy: String,
+  store: String,
+  filesystem: FileSystem,
+  budget: Int,
+  now: fn() -> Int,
+  empty: Report,
+) -> Report {
   let names = case simplifile.read_directory(legacy) {
     Ok(names) -> list.filter(names, is_address) |> list.sort(string.compare)
     Error(_) -> []
   }
-  let empty =
-    Report(adopted: 0, already_present: 0, rejected: [], unfinished: 0)
   case names {
     [] -> empty
     _ ->

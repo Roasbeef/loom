@@ -110,6 +110,29 @@ pub fn a_symbolic_link_is_not_followed_test() {
   assert simplifile.is_file(blob.ref_path(store, ref)) == Ok(False)
 }
 
+// A jailed tool can replace `.blobs` with a link to another workspace's
+// store. Every file there hashes to its own name, so only refusing the
+// linked directory itself keeps one workspace out of another's artifacts.
+pub fn a_symbolic_link_in_place_of_the_legacy_directory_is_not_read_test() {
+  let #(legacy, store) = fresh("linked-directory")
+  let other_store = legacy <> "-other-workspace-store"
+  let bytes = <<"an artifact that belongs to a different workspace":utf8>>
+  let ref = blob.ref_for(bytes)
+  let assert Ok(Nil) = simplifile.create_directory_all(other_store)
+  write_bits(blob.ref_path(other_store, ref), bytes)
+
+  // Put the link where the legacy directory was.
+  let assert Ok(Nil) = simplifile.delete(legacy)
+  let assert Ok(Nil) = simplifile.create_symlink(to: other_store, from: legacy)
+
+  let report = adopt(legacy, store)
+
+  assert report.adopted == 0
+  assert list.length(report.rejected) == 1
+  assert simplifile.is_file(blob.ref_path(store, ref)) == Ok(False)
+  assert simplifile.is_directory(store) == Ok(False)
+}
+
 pub fn a_workspace_with_no_legacy_directory_is_a_no_op_test() {
   let #(legacy, store) = fresh("absent")
   let report = adopt(legacy <> "/missing", store)
