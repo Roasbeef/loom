@@ -1060,17 +1060,31 @@ The normal 64 KiB envelope bound still applies after JSON encoding.
 
 The server checks owner authority and epoch before resolving the source. It
 then uses the same outgoing-link, recipient-grant, wake-policy, and receipt
-checks as `peer_send`. Both sessions MUST be resident. The owner can select the
+checks as `peer_send`. The source MUST be resident. The owner can select the
 source strand, but cannot bypass its communication grants or supply source
 metadata. The harness constructs provenance from the selected resident endpoint
 and its catalogue record.
 
 The success event is `peers.send`, and its body is the recipient's admission
-receipt. When the recipient's owner is on another orchestrator and cannot be
-reached, the body is instead `{"state": "queued", "session", "message_id",
-"note"}`, and the message is delivered when the owner answers (see the
-[sender outbox](architecture/messaging.md#the-sender-outbox)). Retrying requires the same message ID, target, and text. A changed body
-is refused; revoking a grant can also refuse a retry. During daemon drain the
+receipt. The body is instead `{"state": "queued", "session", "message_id",
+"note"}` in two cases, and the message is then delivered once, later (see the
+[sender outbox](architecture/messaging.md#the-sender-outbox)):
+
+- The recipient's owner is on another orchestrator and cannot be reached. The
+  message is delivered when the owner answers.
+- The recipient's owner holds the session saved, here or on another
+  orchestrator, so nothing is running to admit the message. The `note` says so.
+  The message is delivered when the owner next opens the session, under the wake
+  permission the recipient's grant has at that moment, and the send never opens
+  it. The owner's attempts become less frequent the longer the session stays
+  saved (5 seconds, then doubling to 5 minutes). A message that waits an hour
+  is refused with `recipient not opened in time`. A recipient that no
+  catalogue holds is refused at once with `that session is not running; the
+  owner has to open it`, as is one deleted while the message waits.
+
+Retrying requires the same message ID, target, and text. A changed body
+is refused; revoking a grant, or removing the link, can also end a retry: the
+pending messages to a removed link are deleted. During daemon drain the
 command is refused like other control mutations. See the
 [API guide](async-collaboration.md#peer-messaging) for an example.
 
@@ -1089,8 +1103,13 @@ source catalogue `metadata`, `outgoing` links, `incoming` grants, and `next`.
 Each outgoing row has `session`, `target_strand`, catalogue `metadata`, and the
 effective `wake` for that exact target strand. It does not repeat unrelated
 exports. A saved or unavailable target remains visible with `wake: null`.
-Incoming rows name exact source coordinates, source catalogue metadata, and
-the recipient-owned `wake` permission.
+A target on another orchestrator is read from its owner: the `metadata` is that
+owner's catalogue record, saved sessions included, and the `wake` is the owner's
+grant to the source strand while the target is open there. An owner that cannot
+be reached leaves the row with `metadata: {"unavailable": "owner unreachable"}`
+and `wake: null`, and does not fail the reply. Incoming rows name exact source
+coordinates, source catalogue metadata, and the recipient-owned `wake`
+permission.
 
 The first request omits `after`. If `next` is a string, repeat the same request
 with `after` set to that opaque string; `next: null` ends the listing. The
