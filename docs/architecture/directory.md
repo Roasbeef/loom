@@ -373,9 +373,12 @@ sequenceDiagram
 registry turn, as phase 5 does, and returns. The mover waits until this
 daemon's migration marker exists, then writes the record from `serving` to
 `moving`. A record already `moving` under the same operation is a repeat and
-the mover goes on. A missing record means the session was never recorded (it
-was created before the daemon migrated, and migration did not reach it), so the
-mover reverts the row and the move is abandoned. A record that already names
+the mover goes on. A missing record, now that the seed has run, means only one
+thing: the session's owner deleted it. That happens when the source was down
+while the receiver activated, imported and then deleted the session. The mover
+must not serve it again, so it ends the move as a retirement does, with the
+`moved` row and the file set aside (never deleted), and logs
+`daemon.move_record_gone`. A record that already names
 another owner means the receiver's activation committed and its reply was lost,
 and the mover carries on, so that the receiver is asked again and answers from
 what it holds.

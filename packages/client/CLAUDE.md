@@ -7233,7 +7233,8 @@ ADR-019 the choice of Khepri and its measurements, and
 - `session_mover` takes `Authority` (`Rows | Recorded(ownership)`). Under
   `Recorded` it waits for this node's migration marker (`migrated`), writes the
   intent (`intended`: a record naming another owner carries on, an absent one is
-  `Unrecorded` and reverts), retires only after a consistent read names another
+  `Gone`, deleted elsewhere after the seed, and `gone` sets the copy aside as a
+  retirement does, never reverting), retires only after a consistent read names another
   owner (`retire_recorded`), and abandons by the record first
   (`abandon_recorded`). An abandon carries its `Cause`: one that followed an
   answer and finds the record naming another owner retires; one that followed
@@ -7292,6 +7293,9 @@ Invariants that break things when violated:
   does not ask) names the right owner, which answers `not_found`.
 - A given-up move retires only on the receiver's answer
   (`KhepriMutantRetireOnSilence`).
+- A missing record after the seed never grants serving: it means the owner
+  deleted the session, and the source sets its copy aside
+  (`KhepriMutantGoneReverts`).
 
 Tests: `directory/record_test`, `directory/store_test`, `directory/ownership_test`,
 `directory/settings_test`, `directory/migrate_test`, `directory/bootstrap_cli_test`
