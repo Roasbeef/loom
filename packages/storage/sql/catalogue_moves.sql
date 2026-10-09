@@ -1,4 +1,4 @@
--- Catalogue v12: where a session is going to or came from. A session with no
+-- Catalogue v13: where a session is going to or came from. A session with no
 -- row is served by this catalogue and has never moved. A row is 'moving' while
 -- this side hands the session to the peer, 'moved' once it has (a tombstone with
 -- no way out), or 'imported' on the side that received it. The op identifies one

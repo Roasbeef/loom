@@ -3,4 +3,4 @@
 
 /// The schema used both at runtime and by sqlc during generation.
 pub const schema =
-  "-- Catalogue v11: the executor pool a session was created in, empty for a session\n-- that named no pool.\nALTER TABLE catalogue_sessions ADD COLUMN pool TEXT NOT NULL DEFAULT ''\n  CHECK(length(CAST(pool AS BLOB)) <= 64);\n"
+  "-- Catalogue v12: the executor pool a session was created in, empty for a session\n-- that named no pool.\nALTER TABLE catalogue_sessions ADD COLUMN pool TEXT NOT NULL DEFAULT ''\n  CHECK(length(CAST(pool AS BLOB)) <= 64);\n"

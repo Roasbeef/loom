@@ -3,4 +3,4 @@
 
 /// The schema used both at runtime and by sqlc during generation.
 pub const schema =
-  "-- Catalogue v10: the executor a session's workspace is registered on, empty for\n-- a session whose workspace is a path on this host.\nALTER TABLE catalogue_sessions ADD COLUMN executor TEXT NOT NULL DEFAULT ''\n  CHECK(length(CAST(executor AS BLOB)) <= 64);\n"
+  "-- Catalogue v11: the executor a session's workspace is registered on, empty for\n-- a session whose workspace is a path on this host.\nALTER TABLE catalogue_sessions ADD COLUMN executor TEXT NOT NULL DEFAULT ''\n  CHECK(length(CAST(executor AS BLOB)) <= 64);\n"
