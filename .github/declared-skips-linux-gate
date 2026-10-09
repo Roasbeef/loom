@@ -51,6 +51,7 @@ declared|linux|SKIP shipped remote strand: platform enforcement unavailable|The 
 declared|linux|SKIP shipped remote owner loss: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the owner-loss scenario for real.
 declared|linux|SKIP shipped remote directory: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the two-orchestrator directory scenarios for real.
 declared|linux|SKIP shipped remote peer mail: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the cross-orchestrator peer mail scenarios for real.
+declared|linux|SKIP shipped remote peer mail over a slow first handshake: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the slow-handshake link scenario for real.
 declared|linux|SKIP shipped remote move: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the session-move scenarios for real.
 
 # The shipped confinement fixture reads the daemon's own credentials from a
