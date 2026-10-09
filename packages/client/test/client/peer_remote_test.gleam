@@ -850,6 +850,42 @@ pub fn a_session_moved_while_a_message_waits_for_it_is_delivered_by_its_new_owne
   assert peer_rig.due(rig) == []
 }
 
+pub fn an_owner_that_serves_no_descriptions_leaves_the_row_unavailable_and_keeps_serving_test() {
+  // A port that was not given a catalogue to describe from refuses the
+  // question, as a port with no description to give does.
+  let name = process.new_name("peer_remote_undescribing_port")
+  let port = address.Address(node: node.self(), name:)
+  let beta = orchestrators.plain("beta", "beta@127.0.0.1")
+  let assert Ok(_) =
+    orchestrator_port.start_serving(
+      name,
+      fn(_) { Ok(Owned) },
+      fn(_session, _command) { Ok(json.Null) },
+    )
+    as "the port starts"
+  assert orchestrator_port.ask_description(port, "s", answers_within_ms)
+    == Ok(Error(orchestrator_port.peer_unserved))
+
+  // The asker reads the refusal as a description that is not available, and
+  // the port is still there to answer the questions it does serve.
+  let sessions =
+    session_directory.Directory(
+      ..session_directory.none(),
+      lookup: fn(_) { Ok(session_directory.Elsewhere(orchestrator: beta)) },
+      describe: fn(_orchestrator, session) {
+        case
+          orchestrator_port.ask_description(port, session, answers_within_ms)
+        {
+          Ok(answer) -> answer
+          Error(Nil) -> Error(peer_mail.unreachable_reason)
+        }
+      },
+    )
+  assert peers.described(fn(_) { Error("not_found") }, sessions)("s")
+    == Error(orchestrator_port.peer_unserved)
+  assert orchestrator_port.ask(port, "s", answers_within_ms) == Ok(Owned)
+}
+
 fn remote_peer_unused(session: String) -> peer_mail.Endpoint {
   peer_mail.Endpoint(session, fn(_) { Error(peer_mail.Unreachable) })
 }

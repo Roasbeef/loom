@@ -5523,7 +5523,8 @@ and `peer_mail.not_opened_in_time_reason` for one that last waited for an open
 (5000) while any row waits on an owner that did not answer, and a doubling
 interval up to `max_retry_interval_ms` (300000) while every owed row waits for an
 open (`backlog_of` decides from the list of outcomes, so the order of the rows
-does not matter; `State.interval_ms` is the interval in force), no timer when none
+does not matter; a session that did not answer or is saved is asked once per
+pass; `State.interval_ms` is the interval in force), no timer when none
 is owed. The doorbell cannot say which row it announces, since the machine's own
 settles ring it, so a new row waits for the next tick. It is
 built from a `peers.Wiring` and an injected `after`, reads rows through
@@ -6950,7 +6951,10 @@ so the work is a second kind of endpoint and a directory that returns it:
   `peers.not_running` when it does not. The command is plain data. The port runs a
   command in its own loop, so a wedged session delays the next `Owns` by at most
   the Agency's 5 s holder timeout.
-- `orchestrator_port.Describe(session, reply)` is a third `Message`: what this
+- `orchestrator_port.Describe(session, reply)` is a third `Message` (a constructor
+  an older port lacks raises `case_clause` and halts it, and a new
+  `peer_mail.Command` would too, since `served` has no catch-all, so the port
+  assumes same-build peers): what this
   daemon's catalogue says about a session, answered in the port's own turn by the
   `start_with` argument `Describer` (`server.local_description`, which is
   `manager.get` and `view_json`, and `moved` for a tombstone). It never opens the
@@ -7001,7 +7005,9 @@ so the work is a second kind of endpoint and a directory that returns it:
   about sessions its own links and grants name, and a default link
   (`[peers] default_links`) joins the sessions of one daemon only.
 - A recipient its owner holds saved is `NotOpen` and is queued, not refused, here
-  and on another orchestrator alike: `peers.deliver` maps it to
+  and on another orchestrator alike (`server.standing` classifies a non-resident
+  session as `Unopened`, `Handed` (a tombstone; waits, so the next lookup follows
+  the move), `Archived` (refused: opening needs a restore) or `Unheld`): `peers.deliver` maps it to
   `peer_outbox.NotOpen`, the row stays `pending` waiting for an open, and the
   send answers `peers.queued_unopened`. Each attempt resolves the recipient
   again, so a moved session is followed to its new owner and a deleted one is

@@ -631,7 +631,8 @@ asking session.
 `Unreachable` and `NotOpen`. `NotOpen` is the owner's answer that its catalogue
 holds the session and it is not resident: the owner replies with the fixed text
 `peer_mail.not_open_reason`, and `remote_peer` turns it back into the variant. A
-session that no catalogue holds is `Refused`, because nothing will ever open it.
+session that no catalogue holds, or that its owner archived, is `Refused`, because
+nothing a message does will open it.
 Before it asks, `peers.send` writes an outbox row (`client/peers/outbox/<digest>`)
 in the sending session's store. When the first attempt finds the owner
 unreachable, or the recipient saved, the tool returns `queued`, and a weft state
@@ -828,6 +829,11 @@ The directory holds no state of its own, so it has no model.
   and closed; there is no listing of them on the executor.
 - **Imported sessions whose origin is gone** (decommissioned, renamed or
   reinstalled) can never move on, and have no override yet.
+- **Mixed builds across orchestrators.** The orchestrator port's message type is
+  closed and matched without a catch-all, as the executor host's is, so a newer
+  peer that sends a constructor an older port lacks (`Describe`, in this
+  release) halts the older port until that daemon restarts. Upgrade both
+  orchestrators together, or the one that owns the sessions first.
 - **Peer mail across orchestrators** has no push when a session opens: the
   sender finds out on its next attempt, at most five minutes after the owner
   opens it. A message queued while the drainer is backed off for older messages
