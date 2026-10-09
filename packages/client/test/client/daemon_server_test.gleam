@@ -1246,6 +1246,33 @@ pub fn peer_send_control_routes_bound_identity_and_refuses_unlinked_and_queues_s
     assert field(field(queued, "body"), "note")
       == json.String(peers.queued_unopened_note)
     assert result.is_error(manager.resolve(ready.registry, target_id))
+
+    // Archived, the recipient cannot be opened by a message either, so a send
+    // is refused and does not hold a slot of the outbox for an hour.
+    let archived =
+      send(
+        socket,
+        5,
+        "sessions.archive",
+        json.Object([
+          #("session_id", json.String(target_id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(archived, "event") == json.String("sessions.archive")
+    let other_id =
+      json.Object([
+        #("source_strand", json.String("main")),
+        ..list.map(fields, fn(pair) {
+          case pair.0 {
+            "message_id" -> #("message_id", json.String("review-2"))
+            _ -> pair
+          }
+        })
+      ])
+    let refused = send(socket, 6, "peers.send", other_id, within_ms: 1000)
+    assert field(refused, "event") == json.String("error")
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })

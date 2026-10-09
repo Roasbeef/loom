@@ -86,6 +86,30 @@ pub fn a_recipient_this_catalogue_holds_but_has_not_opened_is_not_open_test() {
     // A tombstone is still a held row, so the local answer is the same and the
     // session directory behind it decides where the session went.
     assert local(tombstone(store, 821)) == Error(peer_mail.NotOpen)
+
+    // An archived session is held and cannot be opened by anything a message
+    // does: it needs a restore first. It is refused, as a gone session is.
+    let archived = saved(store, 825)
+    let assert Ok(_) =
+      catalogue.set_visibility(store, archived, catalogue.Archived)
+    let assert Error(peer_mail.Refused(_)) = local(archived)
+      as "an archived session is refused and not queued"
+    assert catalogue.close(store) == Ok(Nil)
+  })
+}
+
+pub fn a_session_that_is_not_resident_stands_as_unopened_handed_archived_or_unheld_test() {
+  wire.fixture(fn(_, ready, _port, _credential) {
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "fixture administration opens the durable catalogue"
+    let archived = saved(store, 826)
+    let assert Ok(_) =
+      catalogue.set_visibility(store, archived, catalogue.Archived)
+    assert server.standing(ready.registry, saved(store, 827)) == server.Unopened
+    assert server.standing(ready.registry, tombstone(store, 828))
+      == server.Handed
+    assert server.standing(ready.registry, archived) == server.Archived
+    assert server.standing(ready.registry, unheld) == server.Unheld
     assert catalogue.close(store) == Ok(Nil)
   })
 }
@@ -102,6 +126,16 @@ pub fn the_owner_answers_a_saved_recipient_apart_from_one_it_does_not_hold_test(
     // The text a sender turns back into `NotOpen`, and the refusal it does not.
     assert serve(held, roster) == Error(peer_mail.not_open_reason)
     assert serve(unheld, roster) == Error(peers.not_running)
+
+    // A session handed away waits too, because the sender's next lookup
+    // follows the move where a refusal would end the message. An archived one
+    // is refused, because a message never causes a session to open.
+    assert serve(tombstone(store, 829), roster)
+      == Error(peer_mail.not_open_reason)
+    let archived = saved(store, 830)
+    let assert Ok(_) =
+      catalogue.set_visibility(store, archived, catalogue.Archived)
+    assert serve(archived, roster) == Error(peers.not_running)
     assert catalogue.close(store) == Ok(Nil)
   })
 }
