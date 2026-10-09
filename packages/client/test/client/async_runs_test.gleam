@@ -7,6 +7,7 @@
 import client/agency
 import client/async_codemode
 import client/async_runs
+import client/internal/ffi_os
 import client/notice
 import client/owner_services
 import client/remote/owner_port
@@ -357,7 +358,7 @@ pub fn the_service_labels_itself_with_its_session_test() {
         clock: harness.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
   let session = ids.session_id_to_string(api.session_id(harness.runtime))
@@ -378,7 +379,7 @@ pub fn cumulative_launch_limit_survives_settlement_and_retry_test() {
         clock: harness.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 23))
@@ -402,7 +403,7 @@ pub fn cumulative_launch_limit_survives_settlement_and_retry_test() {
         clock: harness.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
   let assert Ok(first) = list.first(records)
@@ -489,7 +490,7 @@ fn start_execution_observed(
         clock: harness.clock,
         abort:,
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 19))
@@ -619,7 +620,7 @@ fn launch(
         clock: harness.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms:,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 23))
@@ -787,7 +788,7 @@ fn await_context(harness: Harness, needle: String, attempts: Int) -> String {
 fn service_with(
   harness: Harness,
   abort: fn(ids.OpId, String) -> Nil,
-  surviving_value: fn(async_execution.Execution) -> Result(json.JsonValue, Nil),
+  surviving_value: async_runs.Survival,
 ) -> #(address.Address(async_runs.Message), process.Pid) {
   let name = addresses.new()
   let assert Ok(service) =
@@ -823,7 +824,7 @@ fn settles(harness: Harness, id: String, phase: async_execution.Phase) -> Bool {
 pub fn a_worker_that_knows_why_it_failed_records_that_reason_test() {
   let harness = start_harness()
   let #(name, pid) =
-    service_with(harness, fn(_, _) { Nil }, async_runs.no_value_survives)
+    service_with(harness, fn(_, _) { Nil }, async_runs.NothingSurvives)
   let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 41))
   let record = execution_record(harness, operation, "c1")
   let assert Ok(_) =
@@ -853,12 +854,12 @@ pub fn recovery_keeps_a_value_that_outlived_the_service_test() {
     service_with(
       harness,
       fn(operation, step) { process.send(aborted, #(operation, step)) },
-      fn(found) {
+      async_runs.AskWhere(fn(found: async_execution.Execution) {
         case found.id {
           "c2" -> Ok(json.String("finished on the executor"))
           _ -> Error(Nil)
         }
-      },
+      }),
     )
 
   // The program finished on the executor before the old service could hear
@@ -891,7 +892,7 @@ pub fn recovery_without_a_value_records_the_loss_and_stops_the_program_test() {
     service_with(
       harness,
       fn(operation, step) { process.send(aborted, #(operation, step)) },
-      async_runs.no_value_survives,
+      async_runs.NothingSurvives,
     )
   assert settles(
     harness,
@@ -920,9 +921,11 @@ pub fn a_draining_record_is_lost_on_recovery_even_if_a_value_survives_test() {
   // A draining record had been told to stop; a value the program stored after
   // that does not undo the decision.
   let #(_name, pid) =
-    service_with(harness, fn(_, _) { Nil }, fn(_found) {
-      Ok(json.String("too late"))
-    })
+    service_with(
+      harness,
+      fn(_, _) { Nil },
+      async_runs.AskWhere(fn(_found) { Ok(json.String("too late")) }),
+    )
   assert settles(
     harness,
     "c4",
@@ -930,6 +933,50 @@ pub fn a_draining_record_is_lost_on_recovery_even_if_a_value_survives_test() {
   )
   assert phase_of(harness, "c4")
     == async_execution.Lost("execution service restarted")
+  stop(pid)
+}
+
+pub fn the_service_answers_while_recovery_waits_on_an_executor_test() {
+  let harness = start_harness()
+  let #(operation, _) = ids.mint_op(ids.generator(harness.clock, seed: 59))
+  let record =
+    async_execution.Execution(
+      ..execution_record(harness, operation, "c5"),
+      phase: async_execution.Running,
+    )
+  let assert Ok(_) =
+    api.put_reserved_fact(
+      harness.runtime,
+      async_execution.key(record.id),
+      async_execution.encode(record),
+    )
+
+  // The executor cannot be reached: the question about c5 takes three seconds
+  // to give up, as `surface.query` takes its bound.
+  let #(name, pid) =
+    service_with(
+      harness,
+      fn(_, _) { Nil },
+      async_runs.AskWhere(fn(_found) {
+        process.sleep(3000)
+        Error(Nil)
+      }),
+    )
+
+  // A check meanwhile is answered at once from the record, which still says
+  // running, instead of waiting behind the question.
+  let started = ffi_os.system_time_ms()
+  let assert Ok(_answer) =
+    async_runs.interact(name, "main", "c5", async_runs.Check, 0)
+    as "the service answers during recovery"
+  assert ffi_os.system_time_ms() - started < 1000
+
+  // The question ends without a value, so the record is lost.
+  assert settles(
+    harness,
+    "c5",
+    async_execution.Lost("execution service restarted"),
+  )
   stop(pid)
 }
 
@@ -974,7 +1021,7 @@ fn remote_terms(
 pub fn a_remote_launch_claims_the_record_and_its_worker_starts_the_program_test() {
   let harness = start_harness()
   let #(name, pid) =
-    service_with(harness, fn(_, _) { Nil }, async_runs.no_value_survives)
+    service_with(harness, fn(_, _) { Nil }, async_runs.NothingSurvives)
   let executions =
     async_codemode.remote(
       name,
@@ -1019,7 +1066,7 @@ pub fn a_remote_launch_claims_the_record_and_its_worker_starts_the_program_test(
 pub fn a_remote_execution_the_executor_lost_is_recorded_lost_test() {
   let harness = start_harness()
   let #(name, pid) =
-    service_with(harness, fn(_, _) { Nil }, async_runs.no_value_survives)
+    service_with(harness, fn(_, _) { Nil }, async_runs.NothingSurvives)
   let executions =
     async_codemode.remote(
       name,
@@ -1052,7 +1099,7 @@ pub fn a_remote_execution_the_executor_lost_is_recorded_lost_test() {
 pub fn a_running_remote_execution_stands_live_and_an_unknown_key_closed_test() {
   let harness = start_harness()
   let #(name, pid) =
-    service_with(harness, fn(_, _) { Nil }, async_runs.no_value_survives)
+    service_with(harness, fn(_, _) { Nil }, async_runs.NothingSurvives)
   let executions =
     async_codemode.remote(
       name,

@@ -2520,7 +2520,7 @@ pub fn async_inputs_survive_repeated_reads_and_enforce_handle_ownership_test() {
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
     as "the execution service must start"
@@ -2589,7 +2589,7 @@ pub fn async_cancellation_fences_new_children_before_reporting_terminal_test() {
         clock: harness.config.clock,
         abort: fn(operation, step) { process.send(aborted, #(operation, step)) },
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
     as "the execution service must start"
@@ -2649,7 +2649,7 @@ pub fn async_service_restart_records_loss_without_replaying_a_program_test() {
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
     as "the replacement must start"
@@ -2681,7 +2681,7 @@ pub fn async_operation_abort_also_refuses_a_delayed_launch_test() {
         clock: harness.config.clock,
         abort: fn(_, _) { Nil },
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
     as "the execution service must start"
@@ -2772,7 +2772,7 @@ fn async_satellite(
         clock: wall,
         abort: async_codemode.abort(plane.broker),
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
     as "the execution service must start"
@@ -3405,7 +3405,7 @@ fn specialist_mode(
         clock: wall,
         abort: async_codemode.abort(plane.broker),
         heartbeat_ms: 0,
-        surviving_value: async_runs.no_value_survives,
+        surviving_value: async_runs.NothingSurvives,
       ),
     )
   let config =
@@ -4317,7 +4317,7 @@ fn nested_background_cancellation(parent_custody: ParentCustody) {
         harness.config.clock,
         fn(_, _) { Nil },
         0,
-        async_runs.no_value_survives,
+        async_runs.NothingSurvives,
       ),
     )
     as "background execution service starts"
@@ -4411,7 +4411,7 @@ pub fn async_completed_value_cannot_override_a_lost_scope_proof_test() {
         harness.config.clock,
         fn(_, _) { Nil },
         0,
-        async_runs.no_value_survives,
+        async_runs.NothingSurvives,
       ),
     )
     as "the execution service starts"

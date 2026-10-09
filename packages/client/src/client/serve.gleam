@@ -4316,20 +4316,23 @@ fn assemble_in(
   // ledger records, and a value it committed before a restart is read back
   // from that ledger instead of being called lost.
   let #(async_abort, async_surviving) = case half.executions {
-    None -> #(async_codemode.abort(broker_actor), async_runs.no_value_survives)
+    None -> #(async_codemode.abort(broker_actor), async_runs.NothingSurvives)
     Some(remote) -> {
       let lookup = remote.lookup
-      #(remote.stop, fn(record: async_execution.Execution) {
-        case lookup(record.operation, record.step) {
-          Ok(protocol.Executed(value:)) -> Ok(value)
-          Ok(protocol.Missing)
-          | Ok(protocol.Admitted)
-          | Ok(protocol.Terminal(..))
-          | Ok(protocol.Unknown)
-          | Ok(protocol.Fenced)
-          | Error(_) -> Error(Nil)
-        }
-      })
+      #(
+        remote.stop,
+        async_runs.AskWhere(fn(record: async_execution.Execution) {
+          case lookup(record.operation, record.step) {
+            Ok(protocol.Executed(value:)) -> Ok(value)
+            Ok(protocol.Missing)
+            | Ok(protocol.Admitted)
+            | Ok(protocol.Terminal(..))
+            | Ok(protocol.Unknown)
+            | Ok(protocol.Fenced)
+            | Error(_) -> Error(Nil)
+          }
+        }),
+      )
     }
   }
 
