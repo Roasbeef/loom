@@ -2455,9 +2455,11 @@ pub fn a_standalone_store_inside_the_workspace_is_protected_test() {
   let protected = serve.protecting_standalone_blobs(base, settings, inside)
   assert list.contains(protected.protected, inside)
 
-  let outside = absolute("build/blob-standalone-elsewhere/blobs")
-  let untouched = serve.protecting_standalone_blobs(base, settings, outside)
-  assert !list.contains(untouched.protected, outside)
+  // Unconditional, like the index database's entry: the directory is
+  // created before any jail runs, so the entry needs no existence test.
+  let elsewhere = absolute("build/blob-standalone-elsewhere/blobs")
+  let always = serve.protecting_standalone_blobs(base, settings, elsewhere)
+  assert list.contains(always.protected, elsewhere)
 
   let managed =
     serve.Settings(
@@ -2467,6 +2469,29 @@ pub fn a_standalone_store_inside_the_workspace_is_protected_test() {
   assert serve.protecting_standalone_blobs(base, managed, inside) == base
 }
 
+// A standalone host with its session file inside the workspace keeps the
+// store there, so it must stay out of the operator's `git status` the way
+// `.codemode` does.
+pub fn a_standalone_store_inside_the_workspace_is_ignored_test() {
+  let location =
+    "build/serve-test-inside-"
+    <> int.to_string(ffi_os.unique_positive_integer())
+  let settings = settings_under(location)
+  let inside =
+    serve.Settings(
+      ..settings,
+      session_path: settings.workspace <> "/session.db",
+    )
+  let assert Ok(store) = serve.session_blob_root(inside)
+  assert store == settings.workspace <> "/blobs"
+
+  let assert Ok(booted) = serve.boot(inside)
+    as "a standalone host with its store in the workspace boots"
+  serve.shutdown(booted)
+
+  assert simplifile.read(store <> "/.gitignore") == Ok(serve.ignore_everything)
+  let _cleanup = simplifile.delete(absolute(location))
+}
 pub fn boot_adopts_the_blobs_an_earlier_release_left_in_the_workspace_test() {
   let location =
     "build/serve-test-adopt-" <> int.to_string(ffi_os.unique_positive_integer())

@@ -6256,6 +6256,14 @@ fn prepare_directories(
   // home. The blob store needs no such file: it is no longer in the
   // workspace.
   ignore_directory(settings.workspace <> "/" <> codemode_wiring.work_directory)
+
+  // A standalone host may keep its store inside the workspace, beside a
+  // session file that is there. The daemon never does, but the directory is
+  // then the harness's in the operator's tree and needs the same file.
+  case policy.covers(root: settings.workspace, path: blob_root) {
+    True -> ignore_directory(blob_root)
+    False -> Nil
+  }
   Ok(Nil)
 }
 
@@ -6387,9 +6395,16 @@ pub fn session_blob_root(settings: Settings) -> Result(String, String) {
 ///
 /// Under the daemon the store sits in the state root, whose masks already
 /// keep every jail out, and this adds nothing. A host with no domain keeps
-/// the store beside its session file, outside any state root, so the
-/// protection is the one `protecting_memory` gives its files: present
-/// exactly when a writable root reaches the path or the path exists.
+/// the store beside its session file, outside any state root, so the entry
+/// is unconditional, like the index database's: `prepare_directories`
+/// creates the directory before any jail is spawned, which is the only
+/// thing the existence-conditional half of `protecting` exists to wait for.
+///
+/// If the session file sits inside the workspace, the store is protected
+/// there too, with the cost the daemon avoids by keeping it out: a jail
+/// cannot reach `<workspace>/blobs`, so `ls` reports it on macOS. That shape
+/// is a test fixture's, not the daemon's, and `prepare_directories` still
+/// writes the ignore file into the directory.
 ///
 /// ## Examples
 ///
@@ -6405,7 +6420,7 @@ pub fn protecting_standalone_blobs(
 ) -> policy.SandboxPolicy {
   case settings.domain_paths {
     Some(_) -> base
-    None -> protecting(base, always: [], where_maskable: [blob_root])
+    None -> protecting(base, always: [blob_root], where_maskable: [])
   }
 }
 
