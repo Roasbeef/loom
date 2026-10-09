@@ -17,9 +17,13 @@
 import broker/broker
 import broker/exec
 import broker/policy
+import client/catalog
 import client/codemode
 import client/scratch
+import client/serve
 import codemode/artifact
+import codemode/launch
+import codemode/search as search_router
 import codemode/vet/policy as vet_policy
 import codemode/workspace
 import core/clock
@@ -35,6 +39,7 @@ import tools/blob
 import tools/codemode as codemode_tool
 import tools/directory_access
 import tools/fs
+import tools/search as engine
 import tools/tool
 
 // --- fs.read ------------------------------------------------------------------
@@ -55,7 +60,7 @@ pub fn a_read_of_an_absent_file_is_not_found_test() {
 
 pub fn an_empty_path_is_the_tools_own_refusal_test() {
   let seam = seam_over(fresh("empty"))
-  let assert Error(workspace.PathRefused(fs.EmptyPath)) = seam.fs_read("")
+  let assert Error(workspace.ReadPathRefused(fs.EmptyPath)) = seam.fs_read("")
     as "an empty path is refused before anything is read"
 }
 
@@ -81,8 +86,8 @@ pub fn a_read_outside_the_workspace_is_refused_in_the_tools_vocabulary_test() {
       let assert Error(refusal) = seam.fs_read(path)
         as { "a path escaping the workspace must be refused: " <> path }
       let denial = workspace.fs_denial(refusal)
-      assert denial.code == workspace.permission_denied_code
-      assert string.contains(denial.message, "outside the workspace root")
+      assert denial.code == workspace.outside_readable_roots_code
+      assert string.contains(denial.message, "outside the readable roots")
     },
   )
   // And the file really was readable to the harness, so the refusal is
@@ -197,7 +202,8 @@ pub fn a_list_outside_the_workspace_is_refused_test() {
     as "the outside directory must be creatable"
   let assert Error(refusal) = seam.fs_list(root <> "-outside")
     as "a directory outside the workspace must be refused"
-  assert workspace.fs_denial(refusal).code == workspace.permission_denied_code
+  assert workspace.fs_denial(refusal).code
+    == workspace.outside_readable_roots_code
 }
 
 pub fn a_list_of_an_absent_directory_is_refused_test() {
@@ -687,7 +693,15 @@ pub fn explicit_directory_authority_reaches_capabilities_test() {
     )
   let read_only = codemode.workspace_seam(config_over(root), read_request)
   assert read_only.fs_read(added <> "/input") == Ok("shared")
-  let search = codemode.search_seam_with_access(root, [added])
+  let search =
+    codemode.search_seam_with_access(
+      root,
+      directory_access.widen(
+        base.base_policy,
+        directory_access.Access([added], []),
+      ),
+      root <> "/.blobs",
+    )
   let assert Ok(entry) = search.stat(added <> "/input")
     as "metadata lookup must use the same added directory authority"
   assert entry.path == added <> "/input"
@@ -714,4 +728,333 @@ pub fn explicit_directory_authority_reaches_capabilities_test() {
       "denied",
     )
     != Ok(Nil)
+}
+
+// --- native reads follow the session's read policy ------------------------------
+//
+// Under the default host reads a jailed `bash` reads anywhere the base
+// policy's readable root `/` covers, minus whatever the jail masks. These
+// tests drive the harness-side half of the same question with the same
+// policy value, so the two cannot disagree without one of them failing.
+
+type Verdict {
+  Readable
+  Refused
+}
+
+// One path and what each read scope should say about it.
+type Probe {
+  Probe(path: String, under_host: Verdict, under_workspace: Verdict)
+}
+
+// The session policy as `client/serve` builds it for a daemon whose state
+// root is `state`: the scope's readable roots, the blob directory masked,
+// and the daemon's secrets masked.
+fn session_policy(
+  root: String,
+  state: String,
+  scope: catalog.ReadScope,
+) -> policy.SandboxPolicy {
+  let base =
+    serve.protecting_state_root(serve.base_policy_for(root, scope), state)
+  policy.SandboxPolicy(..base, protected: [
+    root <> "/.private",
+    ..base.protected
+  ])
+}
+
+// A workspace with a sibling directory, a daemon state root beside it, a
+// protected directory inside it, and three symlinks: onto a protected file,
+// onto the sibling, and onto the daemon's token. The blob root is protected
+// too and is the one entry a native read may open; its own test follows.
+fn read_fixture(name: String) -> #(String, List(Probe)) {
+  let root = fresh(name)
+  let outside = root <> "-outside"
+  let state = root <> "-elsewhere"
+  make_directory(root <> "/src")
+  make_directory(root <> "/.private")
+  make_directory(outside)
+  make_directory(state <> "/sessions")
+  write(root, "src/a.txt", "workspace\n")
+  write(root, ".private/b", "private\n")
+  write(outside, "s.txt", "sibling\n")
+  write(state, "owner.token", "secret\n")
+  write(state, "notes.txt", "plain\n")
+  write(state, "sessions/x", "transcript\n")
+  link(to: root <> "/.private/b", from: root <> "/link_private")
+  link(to: outside, from: root <> "/link_outside")
+  link(to: state <> "/owner.token", from: root <> "/link_token")
+  let probes = [
+    Probe("src/a.txt", Readable, Readable),
+    Probe(outside <> "/s.txt", Readable, Refused),
+    Probe(".private/b", Refused, Refused),
+    Probe(".private", Refused, Refused),
+    Probe(state <> "/owner.token", Refused, Refused),
+    Probe(state <> "/sessions/x", Refused, Refused),
+    Probe(state <> "/notes.txt", Readable, Refused),
+    Probe("link_private", Refused, Refused),
+    Probe("link_outside/s.txt", Readable, Refused),
+    Probe("link_token", Refused, Refused),
+    Probe("absent/nothing.txt", Readable, Readable),
+
+    // The roots the jail replaces with its own: never visible to a tool,
+    // so refused natively whatever the scope.
+    Probe("/proc/self/environ", Refused, Refused),
+    Probe("/dev/null", Refused, Refused),
+    Probe("/tmp/native-reads-agreement-probe", Refused, Refused),
+  ]
+  #(root, probes)
+}
+
+fn make_directory(path: String) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(path)
+    as "the fixture directory must be creatable"
+  Nil
+}
+
+fn link(to to: String, from from: String) -> Nil {
+  let assert Ok(Nil) = simplifile.create_symlink(to:, from:)
+    as "the fixture symlink must be creatable"
+  Nil
+}
+
+// What the jail would do with a path: it sees the resolved target, and
+// `launch.path_reachable` is the harness's model of that view (roots and
+// masks), which is the check a code-mode launch is judged by.
+fn jail_verdict(
+  root: String,
+  session: policy.SandboxPolicy,
+  path: String,
+) -> Verdict {
+  let absolute = case path {
+    "/" <> _ -> path
+    _ -> root <> "/" <> path
+  }
+  let assert Ok(canonical) =
+    fs.resolve_real(fs.real_filesystem(), "/", absolute)
+    as "a fixture path must resolve"
+  // `path_reachable` models the masks and the scratch tmpfs; the jail also
+  // mounts its own /proc and /dev, which `jail_replaced_roots` names. Both
+  // spellings of each root count, so macOS `/tmp` -> `/private/tmp` does.
+  let replaced =
+    list.any(
+      fs.protected_forms(fs.real_filesystem(), policy.jail_replaced_roots),
+      fn(root) { policy.covers(root:, path: canonical) },
+    )
+  case launch.path_reachable(session, canonical, "read"), replaced {
+    Ok(Nil), False -> Readable
+    _, _ -> Refused
+  }
+}
+
+fn native_verdict(
+  root: String,
+  session: policy.SandboxPolicy,
+  path: String,
+) -> Verdict {
+  case fs.resolve_readable(fs.real_filesystem(), root, session, path) {
+    Ok(_resolved) -> Readable
+    Error(_refused) -> Refused
+  }
+}
+
+// The bridge's own answer, which is what a code-mode program sees. Only a
+// path refusal counts: a missing file or a directory still passed the
+// boundary.
+fn seam_verdict(
+  root: String,
+  session: policy.SandboxPolicy,
+  path: String,
+) -> Verdict {
+  let request =
+    codemode_tool.Request(..request_over(root), base_policy: session)
+  case codemode.workspace_seam(config_over(root), request).fs_read(path) {
+    Error(workspace.ReadPathRefused(_)) -> Refused
+    _ -> Readable
+  }
+}
+
+// The blob root is the one protected entry native reads still open: blobs
+// are the harness's output to the model, and protection guards writes. The
+// jail masks it, so this is the single place the two views differ.
+pub fn the_blob_root_is_the_one_protected_entry_native_reads_open_test() {
+  let #(root, _probes) = read_fixture("blob-exemption")
+  let state = root <> "-elsewhere"
+  make_directory(root <> "/.blobs")
+  write(root, ".blobs/b", "blob\n")
+  link(to: root <> "/.blobs/b", from: root <> "/link_blob")
+  list.each([catalog.HostReads, catalog.WorkspaceReads], fn(scope) {
+    let session = session_policy(root, state, scope)
+    let request =
+      codemode_tool.Request(..request_over(root), base_policy: session)
+    let seam = codemode.workspace_seam(config_over(root), request)
+    let search =
+      codemode.search_seam_with_access(root, session, root <> "/.blobs")
+
+    // Reads of a blob, directly and through a workspace symlink to the
+    // same file, succeed; the jail would not see them.
+    assert seam.fs_read(".blobs/b") == Ok("blob\n")
+    assert seam.fs_read("link_blob") == Ok("blob\n")
+    assert search.read_lines(".blobs/b", 1, 1)
+      == Ok(engine.Lines(text: "blob", first: 1, last: 1, total: 1))
+    assert jail_verdict(root, session, ".blobs/b") == Refused
+
+    // Every other protected entry is still refused, through a symlink too.
+    assert seam_verdict(root, session, "link_token") == Refused
+    assert seam_verdict(root, session, "link_private") == Refused
+
+    // And nothing can be written behind a hash.
+    let assert Error(workspace.PathRefused(fs.ProtectedPath(..))) =
+      seam.fs_write(".blobs/c", "forged")
+      as "a write into the blob root is refused"
+    let assert Error(workspace.PathRefused(fs.ProtectedPath(..))) =
+      seam.fs_write("link_blob", "forged")
+      as "a write through a link into the blob root is refused"
+  })
+}
+
+pub fn native_reads_agree_with_the_jail_under_both_scopes_test() {
+  let #(root, probes) = read_fixture("agreement")
+  let state = root <> "-elsewhere"
+  list.each(probes, fn(probe) {
+    let host = session_policy(root, state, catalog.HostReads)
+    let confined = session_policy(root, state, catalog.WorkspaceReads)
+
+    // The expected column is pinned so a change that moved both sides
+    // together cannot pass; the equalities are the claim.
+    assert native_verdict(root, host, probe.path) == probe.under_host
+    assert jail_verdict(root, host, probe.path) == probe.under_host
+    assert seam_verdict(root, host, probe.path) == probe.under_host
+    assert native_verdict(root, confined, probe.path) == probe.under_workspace
+    assert jail_verdict(root, confined, probe.path) == probe.under_workspace
+    assert seam_verdict(root, confined, probe.path) == probe.under_workspace
+  })
+}
+
+pub fn code_mode_reads_and_searches_a_sibling_under_host_reads_test() {
+  let root = fresh("host-sibling")
+  let outside = root <> "-outside"
+  make_directory(outside <> "/lib")
+  write(outside, "lib/s.txt", "needle in the sibling\n")
+  let session = serve.base_policy_for(root, catalog.HostReads)
+  let request =
+    codemode_tool.Request(..request_over(root), base_policy: session)
+  let seam = codemode.workspace_seam(config_over(root), request)
+  let search =
+    codemode.search_seam_with_access(root, session, root <> "/.blobs")
+
+  assert seam.fs_read(outside <> "/lib/s.txt") == Ok("needle in the sibling\n")
+  let assert Ok(entries) = seam.fs_list(outside <> "/lib")
+    as "a sibling directory is listable"
+  assert sorted_names(entries) == ["s.txt"]
+  let assert Ok(found) = search.grep(outside, a_needle_query())
+    as "grep over a sibling root must succeed"
+  assert list.map(found.matches, fn(match) { match.path })
+    == [outside <> "/lib/s.txt"]
+  let assert Ok(listing) = search.glob(outside, a_glob_query())
+    as "glob over a sibling root must succeed"
+  assert list.length(listing.entries) == 2
+}
+
+pub fn code_mode_refuses_a_sibling_under_workspace_reads_and_says_how_in_test() {
+  let root = fresh("workspace-sibling")
+  let outside = root <> "-outside"
+  make_directory(outside)
+  write(outside, "s.txt", "needle in the sibling\n")
+  let session = serve.base_policy_for(root, catalog.WorkspaceReads)
+  let request =
+    codemode_tool.Request(..request_over(root), base_policy: session)
+  let seam = codemode.workspace_seam(config_over(root), request)
+  let search =
+    codemode.search_seam_with_access(root, session, root <> "/.blobs")
+
+  let assert Error(refusal) = seam.fs_read(outside <> "/s.txt")
+    as "a sibling read is refused under workspace reads"
+  let denial = workspace.fs_denial(refusal)
+  assert denial.code == workspace.outside_readable_roots_code
+  assert string.contains(denial.message, "permissions.readable_roots")
+  assert string.contains(denial.message, "/add-dir")
+
+  let assert Error(search_refusal) = search.grep(outside, a_needle_query())
+    as "a sibling search is refused under workspace reads"
+  let search_denial = search_router.denial(search_refusal)
+  assert search_denial.code == workspace.outside_readable_roots_code
+  assert string.contains(search_denial.message, "/add-dir")
+}
+
+pub fn a_protected_path_is_refused_for_every_code_mode_read_door_test() {
+  let root = fresh("protected-doors")
+  let state = root <> "-elsewhere"
+  make_directory(root <> "/.private")
+  make_directory(state)
+  write(root, ".private/b", "needle in a private file\n")
+  write(root, "kept.txt", "needle in a kept file\n")
+  write(state, "owner.token", "needle in a secret\n")
+  list.each([catalog.HostReads, catalog.WorkspaceReads], fn(scope) {
+    let session = session_policy(root, state, scope)
+    let request =
+      codemode_tool.Request(..request_over(root), base_policy: session)
+    let seam = codemode.workspace_seam(config_over(root), request)
+    let search =
+      codemode.search_seam_with_access(root, session, root <> "/.blobs")
+
+    // Direct reads, through a door that resolves the whole path.
+    let assert Error(blob) = seam.fs_read(".private/b")
+      as "a protected read is refused"
+    let denial = workspace.fs_denial(blob)
+    assert denial.code == workspace.protected_path_code
+    assert string.contains(denial.message, "no approval")
+    let assert Error(workspace.ReadPathRefused(fs.ProtectedPath(..))) =
+      seam.fs_read(state <> "/owner.token")
+      as "the daemon token read is refused"
+    let assert Error(_) = search.read_lines(".private/b", 1, 1)
+      as "read_lines of a protected file is refused"
+
+    // `stat` reports a leaf without following it, so it asks the list too.
+    let assert Error(_) = search.stat(".private")
+      as "stat of the protected directory is refused"
+    let assert Error(_) = search.stat(state <> "/owner.token")
+      as "stat of the token is refused"
+
+    // A walk over the parent offers nothing under the protected entry.
+    let assert Ok(found) = search.grep(".", a_needle_query())
+      as "grep over the workspace must succeed"
+    assert list.map(found.matches, fn(match) { match.path }) == ["kept.txt"]
+  })
+}
+
+pub fn host_reads_leave_code_mode_writes_inside_the_workspace_test() {
+  let root = fresh("host-writes")
+  let outside = root <> "-outside"
+  make_directory(outside)
+  let session = serve.base_policy_for(root, catalog.HostReads)
+  let request =
+    codemode_tool.Request(..request_over(root), base_policy: session)
+  let seam = codemode.workspace_seam(config_over(root), request)
+
+  let assert Error(workspace.PathRefused(fs.EscapesWorkspace(..))) =
+    seam.fs_write(outside <> "/new.txt", "no")
+    as "a write outside the workspace is still refused under host reads"
+  assert simplifile.read(outside <> "/new.txt") |> result.is_error
+  assert seam.fs_write("inside.txt", "yes") == Ok(Nil)
+}
+
+fn a_needle_query() -> engine.GrepQuery {
+  engine.GrepQuery(
+    pattern: "needle",
+    globs: [],
+    context: 0,
+    max_matches: 10,
+    hidden: engine.IncludeHidden,
+    prune: [],
+  )
+}
+
+fn a_glob_query() -> engine.GlobQuery {
+  engine.GlobQuery(
+    pattern: "**",
+    max_entries: 10,
+    hidden: engine.SkipHidden,
+    prune: [],
+  )
 }

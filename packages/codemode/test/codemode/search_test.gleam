@@ -559,12 +559,13 @@ pub fn arguments_that_are_not_a_map_are_invalid_test() {
   assert drain(seen) == []
 }
 
-pub fn a_path_outside_the_workspace_keeps_the_tools_own_vocabulary_test() {
+pub fn a_path_outside_the_readable_roots_says_how_to_get_access_test() {
   // The router does not decide containment and does not word it: the
-  // decision is `tools/fs.resolve_real`'s, the sentence is the harness's
-  // own — the very one `codemode/workspace` renders for `fs.read` — and
-  // the code is the one `cap/search.map_error` turns back into
-  // `PermissionDenied` so a program can branch on it.
+  // decision is `tools/fs.resolve_readable`'s, the sentence is the
+  // harness's own — the very one `codemode/workspace` renders for
+  // `fs.read`. The code is not `permission_denied`: `cap/search` decodes
+  // that to a variant carrying only the path, and this sentence is the
+  // part that names the two ways in.
   let assert framing.CapErr(code:, message:) =
     serviced(
       refusing(search.PathRefused(fs.EscapesWorkspace(path: "../etc"))),
@@ -578,9 +579,34 @@ pub fn a_path_outside_the_workspace_keeps_the_tools_own_vocabulary_test() {
       ]),
     )
     as "an escaping root is refused in band, not at plan time"
-  assert code == workspace.permission_denied_code
+  assert code == workspace.outside_readable_roots_code
   assert string.contains(message, "../etc")
-  assert string.contains(message, "outside the workspace root")
+  assert string.contains(message, "permissions.readable_roots")
+  assert string.contains(message, "/add-dir")
+}
+
+pub fn a_protected_path_says_no_grant_opens_it_test() {
+  let assert framing.CapErr(code:, message:) =
+    serviced(
+      refusing(
+        search.PathRefused(fs.ProtectedPath(
+          path: "/w/.blobs/x",
+          protected: "/w/.blobs",
+        )),
+      ),
+      "search.glob",
+      map([
+        #("root", text("/w/.blobs/x")),
+        #("pattern", text("*")),
+        #("max_entries", int(10)),
+        #("include_hidden", flag(False)),
+        #("prune", strings([])),
+      ]),
+    )
+    as "a protected root is refused in band"
+  assert code == workspace.protected_path_code
+  assert string.contains(message, "protected")
+  assert string.contains(message, "no approval")
 }
 
 pub fn each_refusal_keeps_its_own_code_test() {
@@ -592,7 +618,11 @@ pub fn each_refusal_keeps_its_own_code_test() {
     #(search.PathRefused(fs.EmptyPath), workspace.invalid_argument_code),
     #(
       search.PathRefused(fs.EscapesWorkspace(path: "x")),
-      workspace.permission_denied_code,
+      workspace.outside_readable_roots_code,
+    ),
+    #(
+      search.PathRefused(fs.ProtectedPath(path: "x", protected: "/p")),
+      workspace.protected_path_code,
     ),
     #(
       search.PathRefused(fs.Unresolvable(path: "x", reason: "loop")),

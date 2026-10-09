@@ -695,6 +695,18 @@ was asked.
   `max_link_follows` = 40) and the resolved path must land under the
   equally-resolved workspace root, so neither `..` nor a symlink planted
   inside the workspace reaches outside it.
+- **Native reads follow the session's read policy (ADR-019).**
+  `fs.resolve_readable(filesystem, workspace, policy, path)` takes the same
+  `SandboxPolicy` the jail is built from, already widened by
+  `directory_access.widen`: the workspace and every `readable_roots` entry
+  are readable, `protected` is not, and nothing branches on the read scope.
+  `fs.resolve_for_read(ctx, path)` is the `Ctx` form; `fs_read`, `grep`'s
+  root and `working_directory` use it. `fs.read_path_outcome` words the
+  refusals: outside the roots names `permissions.readable_roots` (accepted by
+  `code_mode` and `bash`) and `/add-dir`; protected says no grant lifts it.
+  `search.glob` and `search.grep` take the protected list and skip a
+  protected subtree; a root outside the workspace renders absolute result
+  paths. Writes are untouched.
 - **`protected` is enforced harness-side too, on the resolved path, and
   no grant lifts it.** The base policy's never-writable list is masked by
   bwrap for a *jailed* process, and the `fs_*` tools meet no jail — so
@@ -714,10 +726,15 @@ was asked.
   `policy.Grant` has no variant for `protected` and `apply_grant` never
   writes the field. The refusal is in band as `PathError.ProtectedPath`,
   opening `permission denied:` and naming the entry that matched, with
-  `details.error = "protected_path"`. Reads are untouched — an
-  asymmetry with the jail, which masks a protected path out of view
-  entirely — and stated in `resolve_for_write`'s doc rather than
-  glossed.
+  `details.error = "protected_path"`. Reads are refused the same way
+  (ADR-019): `resolve_readable` takes the session policy and refuses a
+  target under any `protected` entry, so the harness reads no more than the
+  jail. The one exception is the session's blob root
+  (`fs.exempting_blob_root`, ADR-019): blob refs are read with `fs_read`, so
+  reads drop that entry while writes keep it. A read under
+  `broker/policy.jail_replaced_roots` (`/proc`, `/dev`, `/tmp`) outside the
+  workspace is refused as `PathError.JailReplaced`, because the jail mounts
+  its own there; `read_bytes` reads only regular files.
 - **A `protected` list the jail would refuse fails the harness closed
   too.** A non-absolute entry cannot be applied: `normalize` roots it at
   `/`, where it covers nothing under any workspace, so a list written as
@@ -730,8 +747,8 @@ was asked.
   `PathError.ProtectionMisconfigured`, in band, naming the entry, with
   `details.error = "protection_misconfigured"`. It refuses **any** path,
   not just the one the entry meant to cover: what a misconfigured list
-  intended is exactly what cannot be recovered from it. Reads stay
-  untouched, the same asymmetry the entry above has.
+  intended is exactly what cannot be recovered from it. Reads fail
+  closed on the same list.
   `client/serve.base_policy_fault` closes the other end, refusing the
   boot outright, so the in-band refusal is the backstop rather than the
   operator's first notice.

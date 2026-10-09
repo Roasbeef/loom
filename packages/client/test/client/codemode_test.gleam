@@ -1233,7 +1233,7 @@ fn gated_write(
       workspace: dir,
       strand:,
       operation: an_op(5),
-      protected: [],
+      base_policy: policy.workspace_default(dir),
     )
   broker.stop(broker_actor)
   let request =
@@ -2075,7 +2075,12 @@ pub fn a_search_root_above_the_workspace_is_refused_test() {
   // to keep it structured. A scripted closure could not prove it, which
   // is why it is tested here and not in the router's own suite.
   let fixture = search_fixture("above")
-  let seam = codemode.search_seam_for(workspace: fixture.workspace)
+  let seam =
+    codemode.search_seam_with_access(
+      fixture.workspace,
+      policy.workspace_default(fixture.workspace),
+      fixture.workspace <> "/.blobs",
+    )
   assert seam.glob("../", a_glob())
     == Error(search_router.PathRefused(fs.EscapesWorkspace(path: "../")))
 }
@@ -2085,7 +2090,12 @@ pub fn a_search_root_through_an_escaping_symlink_is_refused_test() {
   // workspace and its target is not, so walking it would put the whole of
   // `outside` in reach of a read-only capability.
   let fixture = search_fixture("through")
-  let seam = codemode.search_seam_for(workspace: fixture.workspace)
+  let seam =
+    codemode.search_seam_with_access(
+      fixture.workspace,
+      policy.workspace_default(fixture.workspace),
+      fixture.workspace <> "/.blobs",
+    )
   assert seam.glob("away", a_glob())
     == Error(search_router.PathRefused(fs.EscapesWorkspace(path: "away")))
   // And so is a read through it, which resolves exactly as `fs.read`
@@ -2103,7 +2113,12 @@ pub fn a_stat_reports_an_escaping_link_as_a_link_test() {
   // resolved: a program has to be able to see the link to route around
   // it.
   let fixture = search_fixture("stat")
-  let seam = codemode.search_seam_for(workspace: fixture.workspace)
+  let seam =
+    codemode.search_seam_with_access(
+      fixture.workspace,
+      policy.workspace_default(fixture.workspace),
+      fixture.workspace <> "/.blobs",
+    )
   let assert Ok(entry) = seam.stat("away")
     as "an lstat of a contained link must succeed"
   assert entry.path == "away"
@@ -2124,7 +2139,12 @@ pub fn a_glob_renders_its_entries_workspace_relative_test() {
   // rendered against the *resolved* workspace root, so a workspace that
   // itself sits behind a symlink still yields relative paths.
   let fixture = search_fixture("relative")
-  let seam = codemode.search_seam_for(workspace: fixture.workspace)
+  let seam =
+    codemode.search_seam_with_access(
+      fixture.workspace,
+      policy.workspace_default(fixture.workspace),
+      fixture.workspace <> "/.blobs",
+    )
   let assert Ok(listing) = seam.glob("src", a_glob())
     as "a walk of a contained root must succeed"
   assert list.map(listing.entries, fn(entry) { entry.path })

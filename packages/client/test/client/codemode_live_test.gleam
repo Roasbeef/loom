@@ -2634,7 +2634,7 @@ const searched_link = "sfind/away"
 
 // The two labels the refusal legs report. Written as labels rather than
 // asserted on the harness's sentence because the claim is that the
-// *program* observed `PermissionDenied` and `InvalidArgument` — a
+// *program* observed `outside_readable_roots` and `InvalidArgument` — a
 // substring of a message would pass on any refusal at all.
 const escape_denied = "escape-denied"
 
@@ -2697,7 +2697,7 @@ pub fn search_program_source() -> String {
   <> "  let escaped = case search.read_lines(\""
   <> searched_link
   <> "/secret.gleam\", from: 1, to: 1) {\n"
-  <> "    Error(search.PermissionDenied(_path)) -> \""
+  <> "    Error(search.SearchFailed(code: \"outside_readable_roots\", message: _message)) -> \""
   <> escape_denied
   <> "\"\n"
   <> "    Error(_other) -> \""
@@ -2780,7 +2780,13 @@ pub fn a_program_navigates_and_searches_through_the_bridge_test() {
 // widened itself would still produce a green count.
 fn run_search(ready: Ready) -> Nil {
   let rig = rig(ready, under: ready.root)
-  let outside = ready.root <> "/outside-the-workspace"
+
+  // The escape target is a sibling of the rig root rather than a child of
+  // it: the rig's base reads `[root]`, and native reads follow the base
+  // policy, so a target under the root would be readable and the escape
+  // leg would prove nothing. A sibling sharing the root as a string prefix
+  // also holds the containment check to whole path components.
+  let outside = ready.root <> "-outside"
   let assert Ok(Nil) = simplifile.create_directory_all(outside)
     as "the escape target must be creatable"
   let assert Ok(Nil) =
@@ -2849,6 +2855,9 @@ fn run_search(ready: Ready) -> Nil {
     <> "the real pipeline; the hidden tree and the escaping link stayed out",
   )
   stop_rig(rig)
+  let assert Ok(Nil) = simplifile.delete_all([outside])
+    as "the escape target sits outside the rig root, so it is removed here"
+  Nil
 }
 
 // Two real jailed programs, separated by SQLite close/reopen, prove that

@@ -909,6 +909,26 @@ here, only Loom's own code on model-supplied arguments. The tools still
 declare policy-shaped requirements, so a policy audit covers every tool
 uniformly.
 
+**Native reads follow the session's read policy**
+([ADR-019](../adr/019-native-reads-follow-read-scope.md)). A native read
+(`fs_read`, code mode's `fs.*` and `search.*`, the working-directory check)
+is allowed when its resolved path is under the workspace or a root in the
+session base policy's `readable_roots`, widened by `/add-dir` roots and
+approved grants, and no `protected` entry covers it. Under the default
+`read_scope = "host"` the root is `/`, so a native read and a jailed `bash`
+read of the same path agree; under `workspace` only the workspace and explicit
+additions are readable. `protected` is refused on reads as it is on writes, so
+the index and memory stores and the daemon's state-root secrets cannot be
+read natively either, and no grant lifts them. The session's blob root is the
+one exception: blob refs are read with `fs_read`, and protection guards
+writes. Directory
+walks skip a protected subtree. Writes keep the workspace plus explicit
+writable additions. A read outside the roots is refused with a message naming
+`permissions.readable_roots` and `/add-dir`.
+A read under `/proc`, `/dev` or `/tmp` outside the workspace is refused too
+(`broker/policy.jail_replaced_roots`): the jail replaces those roots with its
+own, so the host's version is not what a tool sees.
+
 `bash` exercises the composition path end to end. It requires the
 workspace writable, tmpfs scratch, and the environment names it actually
 passes, so composition checks them against the session allowlist. It also

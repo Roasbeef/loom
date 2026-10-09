@@ -6329,11 +6329,11 @@ fn beside_session_file(
 /// Search snippets are read back into *future* sessions' contexts, so an
 /// index a model can write is a channel from one execution's output into
 /// a later execution's input — prompt injection with a persistence
-/// layer. Writing is the whole of the poisoning path: `protected` bars
-/// writes and leaves reads alone, which is exactly the asymmetry wanted,
-/// since the harness's own indexing never goes through `resolve_writable`
-/// and a model reading the file learns nothing it could not ask
-/// `history_search` for.
+/// layer. Writing is the whole of the poisoning path, and `protected` bars
+/// it. It bars native reads of the file too (ADR-019), because the jail
+/// masks the path and the harness's tools are no wider than the jail; the
+/// harness's own indexing never goes through `resolve_writable` or the
+/// native read check.
 ///
 /// ## Examples
 ///

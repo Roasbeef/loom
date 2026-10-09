@@ -66,6 +66,15 @@ fn with_protected(ctx: tool.Ctx, paths: List(String)) -> tool.Ctx {
   )
 }
 
+// The same ctx under the default host reads: the session base policy's
+// readable root is `/`, as `client/serve.base_policy_for` builds it.
+fn with_host_reads(ctx: tool.Ctx) -> tool.Ctx {
+  tool.Ctx(
+    ..ctx,
+    base_policy: policy.SandboxPolicy(..ctx.base_policy, readable_roots: ["/"]),
+  )
+}
+
 fn args(fields: List(#(String, json.JsonValue))) -> json.JsonValue {
   json.Object(fields)
 }
@@ -327,7 +336,7 @@ pub fn read_escape_rejected_test() {
   let outcome =
     fs.read_tool().run(ctx, args([#("path", json.String("../secrets"))]))
   assert outcome.is_error
-  assert string.contains(first_text(outcome), "outside the workspace")
+  assert string.contains(first_text(outcome), "outside the readable roots")
 }
 
 pub fn read_binary_rejected_test() {
@@ -860,7 +869,7 @@ pub fn symlink_directory_escape_refused_test() {
   let read =
     fs.read_tool().run(ctx, args([#("path", json.String("link/secret.txt"))]))
   assert read.is_error
-  assert string.contains(first_text(read), "outside the workspace")
+  assert string.contains(first_text(read), "outside the readable roots")
   // Writing through the link is refused, and nothing lands outside.
   let write =
     fs.write_tool().run(
@@ -887,7 +896,7 @@ pub fn symlink_file_escape_refused_test() {
   let read =
     fs.read_tool().run(ctx, args([#("path", json.String("alias.txt"))]))
   assert read.is_error
-  assert string.contains(first_text(read), "outside the workspace")
+  assert string.contains(first_text(read), "outside the readable roots")
   let write =
     fs.write_tool().run(
       ctx,
@@ -985,7 +994,7 @@ pub fn symlinked_workspace_root_allowed_test() {
   let escape =
     fs.read_tool().run(ctx, args([#("path", json.String("../../secret"))]))
   assert escape.is_error
-  assert string.contains(first_text(escape), "outside the workspace")
+  assert string.contains(first_text(escape), "outside the readable roots")
 }
 
 pub fn symlink_loop_is_unresolvable_test() {
@@ -1128,17 +1137,293 @@ pub fn symlink_onto_protected_path_refused_test() {
   assert untouched == "[core]\n"
 }
 
-pub fn read_of_protected_path_still_allowed_test() {
-  // Deliberate asymmetry with the jail, stated in `resolve_for_write`:
-  // `protected` governs writes here, and reading `.git/HEAD` is
-  // ordinary work.
+pub fn read_of_protected_path_is_refused_test() {
+  // The jail masks a protected path out of view, so a native read of one
+  // is refused too: the harness's tools are no wider than the jail. The
+  // refusal says the path is protected and that nothing lifts it.
   let #(ctx, _filesystem) = memory_ctx()
   write_file(ctx, ".git/HEAD", "ref: refs/heads/main\n")
   let ctx = with_protected(ctx, ["/work/.git"])
   let outcome =
     fs.read_tool().run(ctx, args([#("path", json.String(".git/HEAD"))]))
+  assert outcome.is_error
+  assert string.contains(first_text(outcome), "protected path `/work/.git`")
+  assert string.contains(first_text(outcome), "no approval")
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "error") == Ok(json.String("protected_path"))
+}
+
+pub fn read_of_a_protected_path_is_refused_under_host_reads_too_test() {
+  // The read scope widens containment and nothing else. A protected entry
+  // outside the workspace, such as the daemon's token, stays closed.
+  let #(ctx, filesystem) = memory_ctx()
+  let assert Ok(Nil) = filesystem.write("/state/owner.token", <<"secret":utf8>>)
+  let assert Ok(Nil) = filesystem.write("/state/other", <<"fine":utf8>>)
+  let ctx = with_host_reads(with_protected(ctx, ["/state/owner.token"]))
+  let denied =
+    fs.read_tool().run(
+      ctx,
+      args([#("path", json.String("/state/owner.token"))]),
+    )
+  assert denied.is_error
+  assert string.contains(first_text(denied), "protected path")
+  let allowed =
+    fs.read_tool().run(ctx, args([#("path", json.String("/state/other"))]))
+  assert allowed.is_error == False
+}
+
+pub fn read_through_a_workspace_symlink_onto_a_protected_path_is_refused_test() {
+  // The same ordering argument as for writes: only the resolved path says
+  // the innocent-looking link names a protected file.
+  let #(ctx, _filesystem) = real_ctx("protected_read_symlink")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(ctx.workspace <> "/.private")
+  let assert Ok(Nil) =
+    simplifile.write(ctx.workspace <> "/.private/b", "blob\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: ctx.workspace <> "/.private/b",
+      from: ctx.workspace <> "/innocent.txt",
+    )
+  let ctx = with_protected(ctx, [ctx.workspace <> "/.private"])
+  let call = args([#("path", json.String("innocent.txt"))])
+  assert fs.read_tool().run(ctx, call).is_error
+  assert fs.read_tool().run(with_host_reads(ctx), call).is_error
+}
+
+pub fn the_blob_root_is_readable_in_both_scopes_and_never_writable_test() {
+  // Blobs are the harness's output to the model, which is told to read a
+  // ref with `fs_read`. The blob root is protected so nothing can be written
+  // behind a hash, not to hide it, so it is the one protected entry a read
+  // may open. A link onto a blob reads the blob, which is the same file; a
+  // link onto any other protected entry stays refused.
+  let #(ctx, _filesystem) = real_ctx("blob_root_reads")
+  let blobs = ctx.workspace <> "/.blobs"
+  let assert Ok(Nil) = simplifile.create_directory_all(blobs)
+  let assert Ok(Nil) = simplifile.write(blobs <> "/b", "blob text\n")
+  let assert Ok(Nil) = simplifile.write(ctx.workspace <> "/token", "secret\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: blobs <> "/b", from: ctx.workspace <> "/lb")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(
+      to: ctx.workspace <> "/token",
+      from: ctx.workspace <> "/lt",
+    )
+  let ctx = with_protected(ctx, [blobs, ctx.workspace <> "/token"])
+  list.each([ctx, with_host_reads(ctx)], fn(ctx) {
+    let blob = fn(path) {
+      fs.read_tool().run(ctx, args([#("path", json.String(path))]))
+    }
+    assert blob(".blobs/b").is_error == False
+    assert string.contains(first_text(blob(".blobs/b")), "|blob text")
+    assert blob("lb").is_error == False
+    assert blob("token").is_error
+    assert blob("lt").is_error
+    let forged =
+      fs.write_tool().run(
+        ctx,
+        args([
+          #("path", json.String(".blobs/b")),
+          #("content", json.String("forged")),
+        ]),
+      )
+    assert forged.is_error
+    let through_link =
+      fs.write_tool().run(
+        ctx,
+        args([
+          #("path", json.String("lb")),
+          #("content", json.String("forged")),
+        ]),
+      )
+    assert through_link.is_error
+    assert simplifile.read(blobs <> "/b") == Ok("blob text\n")
+  })
+}
+
+pub fn host_reads_read_a_sibling_without_asking_test() {
+  // Under host reads the base policy's readable root is `/`, the same
+  // root a jailed `bash` reads under, so no approval is asked.
+  let #(ctx, filesystem) = memory_ctx()
+  let assert Ok(Nil) = filesystem.write("/sibling/a.txt", <<"sibling\n":utf8>>)
+  let asked = process.new_subject()
+  let ctx =
+    tool.Ctx(
+      ..with_host_reads(ctx),
+      raise_refusal: fn(request: tool.RaisedRefusal) {
+        process.send(asked, request.denial.wanted)
+        tool.Settle
+      },
+    )
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("/sibling/a.txt"))]))
   assert outcome.is_error == False
-  assert string.contains(first_text(outcome), "|ref: refs/heads/main")
+  assert string.contains(first_text(outcome), "|sibling")
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+pub fn workspace_reads_refuse_a_sibling_and_name_both_ways_in_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let assert Ok(Nil) = filesystem.write("/sibling/a.txt", <<"sibling\n":utf8>>)
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("/sibling/a.txt"))]))
+  assert outcome.is_error
+  let text = first_text(outcome)
+  assert string.contains(text, "outside the readable roots")
+  assert string.contains(text, "permissions.readable_roots")
+  assert string.contains(text, "/add-dir")
+}
+
+pub fn host_reads_follow_a_symlink_to_a_sibling_test() {
+  let #(ctx, _filesystem) = real_ctx("host_reads_symlink")
+  let sibling = ctx.workspace <> "-sibling"
+  let _gone = simplifile.delete(sibling)
+  let assert Ok(Nil) = simplifile.create_directory_all(sibling)
+  let assert Ok(Nil) = simplifile.write(sibling <> "/a.txt", "sibling\n")
+  let assert Ok(Nil) =
+    simplifile.create_symlink(to: sibling, from: ctx.workspace <> "/away")
+  let call = args([#("path", json.String("away/a.txt"))])
+  assert fs.read_tool().run(ctx, call).is_error
+  let outcome = fs.read_tool().run(with_host_reads(ctx), call)
+  assert outcome.is_error == False
+  assert string.contains(first_text(outcome), "|sibling")
+}
+
+pub fn resolve_readable_judges_roots_and_protection_from_one_policy_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let assert Ok(Nil) = filesystem.write("/sibling/a", <<"a":utf8>>)
+  let assert Ok(Nil) = filesystem.write("/state/token", <<"t":utf8>>)
+  let host =
+    policy.SandboxPolicy(..ctx.base_policy, readable_roots: ["/"], protected: [
+      "/state/token",
+    ])
+  let confined = policy.SandboxPolicy(..host, readable_roots: ["/work"])
+  assert fs.resolve_readable(filesystem, "/work", host, "/sibling/a")
+    == Ok("/sibling/a")
+  assert fs.resolve_readable(filesystem, "/work", confined, "/sibling/a")
+    == Error(fs.EscapesWorkspace("/sibling/a"))
+
+  // Protection wins over containment, in both scopes, so the refusal never
+  // suggests that a grant would open the path.
+  let protected = Error(fs.ProtectedPath("/state/token", "/state/token"))
+  assert fs.resolve_readable(filesystem, "/work", host, "/state/token")
+    == protected
+  assert fs.resolve_readable(filesystem, "/work", confined, "/state/token")
+    == protected
+}
+
+pub fn host_reads_refuse_the_roots_the_jail_replaces_test() {
+  // The jail mounts its own /proc, /dev and /tmp, so the host's versions are
+  // never visible to a tool. `/proc/self/environ` holds the daemon's
+  // environment, secrets included, and a native read must not reach it.
+  let #(ctx, filesystem) = memory_ctx()
+  let ctx = with_host_reads(ctx)
+  list.each(
+    [
+      #("/proc/self/environ", "/proc"),
+      #("/dev/null", "/dev"),
+      #("/tmp/outside.txt", "/tmp"),
+    ],
+    fn(row) {
+      let assert Ok(Nil) = filesystem.write(row.0, <<"host":utf8>>)
+      let outcome =
+        fs.read_tool().run(ctx, args([#("path", json.String(row.0))]))
+      assert outcome.is_error
+      assert string.contains(first_text(outcome), "not visible to tools")
+      let assert Some(json.Object(fields)) = outcome.details
+      assert list.key_find(fields, "error") == Ok(json.String("jail_replaced"))
+      assert list.key_find(fields, "root") == Ok(json.String(row.1))
+    },
+  )
+}
+
+pub fn a_write_under_a_replaced_root_is_refused_before_any_prompt_test() {
+  // An approved write prompt must not let `fs_edit` read `/proc/<pid>/environ`
+  // and echo it in a stale-anchor rejection, so the replaced roots refuse
+  // before the approval is asked.
+  let #(ctx, filesystem) = memory_ctx()
+  let asked = process.new_subject()
+  let ctx =
+    tool.Ctx(..ctx, raise_refusal: fn(request: tool.RaisedRefusal) {
+      process.send(asked, request.denial.wanted)
+      tool.Resume(request.denial.wanted)
+    })
+  list.each(["/proc/self/environ", "/tmp/outside.txt"], fn(path) {
+    let assert Ok(Nil) = filesystem.write(path, <<"host\n":utf8>>)
+    let written =
+      fs.write_tool().run(
+        ctx,
+        args([#("path", json.String(path)), #("content", json.String("x"))]),
+      )
+    assert written.is_error
+    assert string.contains(first_text(written), "not visible to tools")
+    let edited = fs.edit_tool().run(ctx, insert_call(path, "host\n"))
+    assert edited.is_error
+    assert string.contains(first_text(edited), "not visible to tools")
+    assert filesystem.read(path) == Ok(<<"host\n":utf8>>)
+  })
+  assert process.receive(asked, 0) == Error(Nil)
+}
+
+pub fn a_workspace_under_a_replaced_root_still_reads_test() {
+  // Workspaces can live under /tmp; the exception is the workspace itself,
+  // not its parent.
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let assert Ok(Nil) = filesystem.write("/tmp/ws/a.txt", <<"a":utf8>>)
+  let assert Ok(Nil) = filesystem.write("/tmp/other/b.txt", <<"b":utf8>>)
+  let host =
+    policy.SandboxPolicy(..policy.workspace_default("/tmp/ws"), readable_roots: [
+      "/",
+    ])
+  assert fs.resolve_readable(filesystem, "/tmp/ws", host, "a.txt")
+    == Ok("/tmp/ws/a.txt")
+  assert fs.resolve_readable(filesystem, "/tmp/ws", host, "/tmp/other/b.txt")
+    == Error(fs.JailReplaced("/tmp/other/b.txt", "/tmp"))
+}
+
+pub fn the_replaced_roots_are_refused_by_every_policy_decision_test() {
+  let filesystem = memory_fs.filesystem(memory_fs.start())
+  let host =
+    policy.SandboxPolicy(..policy.workspace_default("/work"), readable_roots: [
+      "/",
+    ])
+  list.each(["/proc/self/environ", "/dev/null", "/tmp/x"], fn(path) {
+    let assert Error(fs.JailReplaced(..)) =
+      fs.resolve_readable(filesystem, "/work", host, path)
+      as { path <> " is not visible to the jail" }
+  })
+  assert fs.walk_exclusions(filesystem, [], "/work")
+    == policy.jail_replaced_roots
+  assert fs.walk_exclusions(filesystem, [], "/tmp/ws") == ["/proc", "/dev"]
+}
+
+pub fn a_device_is_refused_before_it_is_read_test() {
+  // A device or a FIFO has no size to bound, and reading one can hang or
+  // exhaust the VM, so only a regular file is read.
+  let filesystem = fs.real_filesystem()
+  let assert Error(fs.ReadFailed(tool.FsFailure(reason:, ..))) =
+    fs.read_text_file(filesystem:, resolved: "/dev/zero")
+    as "a device is not read"
+  assert string.contains(reason, "not a regular file")
+}
+
+pub fn host_reads_do_not_widen_writes_test() {
+  // Writes keep the workspace plus explicit writable additions. A readable
+  // root of `/` reaches reads only.
+  let #(ctx, filesystem) = memory_ctx()
+  let ctx = with_host_reads(ctx)
+  let outcome =
+    fs.write_tool().run(
+      ctx,
+      args([
+        #("path", json.String("/sibling/a.txt")),
+        #("content", json.String("written")),
+      ]),
+    )
+  assert outcome.is_error
+  assert filesystem.read("/sibling/a.txt") |> result.is_error
+  let edit = fs.edit_tool().run(ctx, insert_call("/sibling/b.txt", "x\n"))
+  assert edit.is_error
 }
 
 pub fn a_relative_protected_entry_refuses_every_write_test() {
@@ -1182,15 +1467,19 @@ pub fn a_relative_protected_entry_refuses_an_edit_too_test() {
   assert bytes == <<"keep\n":utf8>>
 }
 
-pub fn a_relative_protected_entry_leaves_reads_alone_test() {
-  // The refusal is on the write path only, exactly as the protected
-  // check itself is: `resolve_real` never consults the list.
+pub fn a_relative_protected_entry_refuses_reads_too_test() {
+  // A read fails closed on the same misconfiguration. The jail refuses a
+  // policy with a relative entry outright, so a harness that read past it
+  // would be the only door left open.
   let #(ctx, _filesystem) = memory_ctx()
   write_file(ctx, "notes.txt", "readable\n")
   let ctx = with_protected(ctx, [".git"])
   let outcome =
     fs.read_tool().run(ctx, args([#("path", json.String("notes.txt"))]))
-  assert outcome.is_error == False
+  assert outcome.is_error
+  let assert Some(json.Object(fields)) = outcome.details
+  assert list.key_find(fields, "error")
+    == Ok(json.String("protection_misconfigured"))
 }
 
 pub fn write_whole_creates_missing_parents_test() {

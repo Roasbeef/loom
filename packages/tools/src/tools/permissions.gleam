@@ -68,7 +68,9 @@ pub fn authorize(
   authorize_against(ctx, args, ctx.base_policy)
 }
 
-/// Checks declared capability paths against native workspace authority.
+/// Checks declared capability paths against the session's native authority:
+/// the base policy's readable roots (widened by additions) and the workspace
+/// plus explicit writable additions.
 ///
 /// ## Examples
 ///
@@ -86,10 +88,15 @@ pub fn authorize_native(
     }),
   )
   let access = directory_access.approved(ctx.directory_access, ctx.grants)
+
+  // Readable roots are the session policy's own, so a declared read the jail
+  // would already allow (any path, under host reads) asks no approval.
+  // Writable roots stay the workspace plus explicit additions.
+  let readable = directory_access.widen(ctx.base_policy, access).readable_roots
   let base =
     policy.SandboxPolicy(
       ..ctx.base_policy,
-      readable_roots: [workspace, ..access.readable],
+      readable_roots: [workspace, ..readable],
       writable_roots: [workspace, ..access.writable],
     )
   authorize_against(ctx, args, base)

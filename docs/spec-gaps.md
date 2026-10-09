@@ -269,6 +269,8 @@ the other side.
    declared requirements exist for uniform policy audit.
 6. **Blob refs "readable via fs_read"** requires the runtime to place the
    blob root under a readable workspace path; tools only record the ref.
+   The blob root is a `protected` entry, and native reads still open it
+   (ADR-019), so blob refs stay readable through `fs_read`.
 7. **Timeout ceiling** is clamped tool-side (600 s max, 120 s default),
    and the wiring has since decided it: the clamp *is* the ceiling, now
    §3.5. Session policy narrows and cannot widen past it —

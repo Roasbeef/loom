@@ -708,7 +708,11 @@ fn router(
       // program with a different entry point, so `search.*` must mean the
       // same thing on both paths or the seam has two answers.
       over: search.routing(
-        codemode.search_seam_for(workspace: at.workspace),
+        codemode.search_seam_with_access(
+          at.workspace,
+          at.base_policy,
+          config.host.blob_root,
+        ),
         over: satellite.default_router,
       ),
     ),
@@ -729,7 +733,7 @@ fn bridge(config: Config, at: hosts.Coordinates) -> workspace.Workspace {
       // this invocation's operation reaches the job, and an abort of a
       // later one does not.
       operation: at.op_id,
-      protected: at.base_policy.protected,
+      base_policy: at.base_policy,
     )
 
   // A hook fires with nobody watching, so it gets no jobs plane. The

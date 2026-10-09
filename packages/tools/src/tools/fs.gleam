@@ -22,7 +22,8 @@
 //// harness's own tools would hold strictly more filesystem authority
 //// than the jail they are supposed to be no wider than, and a written
 //// `.git/hooks/post-checkout` is arbitrary code execution outside the
-//// jail on the next checkout.
+//// jail on the next checkout. Reads are bounded by the same policy
+//// (`resolve_readable`): the roots the jail reads under, minus `protected`.
 ////
 //// ## Flow
 ////
@@ -118,8 +119,8 @@ pub type PathError {
   Unresolvable(path: String, reason: String)
 
   /// The path resolves at or under an entry of the session base
-  /// policy's `protected` list, which no write may touch. `protected`
-  /// carries the entry that matched.
+  /// policy's `protected` list, which no write may touch and no read may
+  /// open. `protected` carries the entry that matched.
   ProtectedPath(path: String, protected: String)
 
   /// The session base policy's `protected` list holds a non-absolute
@@ -134,6 +135,13 @@ pub type PathError {
   /// stays open — a `protected` list the jail will not accept must not
   /// be one the harness silently ignores.
   ProtectionMisconfigured(path: String, protected: String)
+
+  /// A read resolves at or under a root the jail replaces with its own
+  /// (`broker/policy.jail_replaced_roots`: `/proc`, `/dev`, `/tmp`) and
+  /// outside the session workspace. A jailed process never sees the host's
+  /// version of that path, so a native read of it would show what no tool
+  /// is meant to. `root` carries the replaced root that matched.
+  JailReplaced(path: String, root: String)
 }
 
 /// The production `FileSystem` seam, backed by simplifile.
@@ -285,45 +293,100 @@ pub fn resolve_real(
   }
 }
 
-/// Resolves a path against workspace plus explicit canonical additions.
+/// Resolves a path for a **read** against the session's composed read
+/// policy: the workspace, every root in `base.readable_roots`, and nothing
+/// that `base.protected` covers.
 ///
-/// Added roots are already canonical authority, so they are not followed again
-/// if a host later replaces one with a symlink to another directory.
+/// `base` is the same `SandboxPolicy` value a jailed process is built from,
+/// already widened by session additions and approved grants
+/// (`directory_access.widen`). That is the point of taking a policy rather
+/// than a list of roots: under the default host reads the policy's readable
+/// root is `/`, so a native read and a `bash` command on the same path get
+/// the same answer, and under workspace reads the roots are the workspace
+/// plus explicit additions, as before. Nothing here branches on the read
+/// scope; the roots carry it.
+///
+/// The `protected` list is checked on the resolved target, as for writes
+/// (`resolve_writable_roots`). The jail masks a protected path out of view,
+/// so a jailed read of it fails; a native read that succeeded would be wider
+/// than the jail it is meant to be no wider than. A grant cannot lift it.
+///
+/// Roots in `base.readable_roots` are treated as canonical authority and are
+/// not followed again; the workspace root is always walked.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // fs.resolve_readable(filesystem, "/work", ["/sibling"], "/sibling/a")
+/// // fs.resolve_readable(filesystem, "/work", policy.workspace_default("/work"), "src/a")
 /// ```
 pub fn resolve_readable(
   filesystem: FileSystem,
   workspace: String,
-  roots: List(String),
+  base: policy.SandboxPolicy,
   path: String,
 ) -> Result(String, PathError) {
-  use <- bool.guard(path == "", Error(EmptyPath))
-  let joined = case path {
-    "/" <> _ -> path
-    _ -> workspace <> "/" <> path
-  }
-  use real_root <- result.try(
-    walk(filesystem, workspace)
-    |> result.map_error(Unresolvable(path:, reason: _)),
+  resolve_contained(
+    filesystem,
+    workspace,
+    base.readable_roots,
+    base.protected,
+    policy.jail_replaced_roots,
+    path,
   )
-  use resolved <- result.try(
-    walk(filesystem, joined)
-    |> result.map_error(Unresolvable(path:, reason: _)),
-  )
+}
 
-  // Containment is checked on the resolved target, never the input spelling.
-  case
-    list.any([real_root, ..roots], fn(root) {
-      result.is_ok(check_under(root, resolved, path))
-    })
-  {
-    True -> Ok(resolved)
-    False -> Error(EscapesWorkspace(path:))
-  }
+/// `resolve_readable` for a tool that holds a `Ctx`: the session base policy
+/// widened by this invocation's directory additions and consumed grants.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.resolve_for_read(ctx, "../sibling/README.md")
+/// ```
+pub fn resolve_for_read(ctx: Ctx, path: String) -> Result(String, PathError) {
+  resolve_readable(ctx.filesystem, ctx.workspace, readable_policy(ctx), path)
+}
+
+// The policy a native read is judged against. The widening is idempotent, so
+// a base that `client/wiring.run_tool` already widened with the session's
+// additions is not widened twice into anything different; what this adds is
+// the grants consumed by this one call.
+fn readable_policy(ctx: Ctx) -> policy.SandboxPolicy {
+  exempting_blob_root(
+    directory_access.widen(
+      ctx.base_policy,
+      directory_access.approved(ctx.directory_access, ctx.grants),
+    ),
+    ctx.blob_root,
+  )
+}
+
+/// The read policy with the session's blob root taken off the protected
+/// list. This is the one protected entry a native read may open.
+///
+/// Blobs are the harness's own output to the model: an overflowed tool result
+/// carries a ref the model is told to read with `fs_read`. Protection exists
+/// so nothing can write behind a content hash, and it was never meant to hide
+/// them. Only reads call this. Writes judge the unmodified list, so a write
+/// into the blob root stays refused, and every other protected entry,
+/// including one reached through a symlink, stays refused on reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.exempting_blob_root(base, "/work/.blobs").protected
+/// ```
+pub fn exempting_blob_root(
+  base: policy.SandboxPolicy,
+  blob_root: String,
+) -> policy.SandboxPolicy {
+  let blobs = normalize(blob_root)
+  policy.SandboxPolicy(
+    ..base,
+    protected: list.filter(base.protected, fn(entry) {
+      normalize(entry) != blobs
+    }),
+  )
 }
 
 /// Applies the same write protection to every explicitly authorized root.
@@ -340,13 +403,169 @@ pub fn resolve_writable_roots(
   protected: List(String),
   path: String,
 ) -> Result(String, PathError) {
+  resolve_contained(filesystem, workspace, roots, protected, [], path)
+}
+
+// The one containment check behind reads and writes: the protected list must
+// be usable, the resolved target must lie under the workspace or a root, and
+// no protected entry may cover it. Reads and writes differ only in which
+// roots they pass, so neither can acquire a check the other lacks.
+fn resolve_contained(
+  filesystem: FileSystem,
+  workspace: String,
+  roots: List(String),
+  protected: List(String),
+  replaced: List(String),
+  path: String,
+) -> Result(String, PathError) {
   use _ <- result.try(all_absolute(protected, path))
-  use resolved <- result.try(resolve_readable(
+  resolve_within(filesystem, workspace, roots, protected, replaced, path)
+}
+
+// Resolves a path against the real filesystem, refuses it if a protected
+// entry covers it, and requires it to land under the workspace or one of the
+// roots, which are already canonical authority and so are not followed again
+// if a host later replaces one with a symlink.
+//
+// Protection is judged before containment so that a protected path outside
+// the roots is reported as protected, which no grant lifts, and not as merely
+// outside, which a grant would appear to fix.
+fn resolve_within(
+  filesystem: FileSystem,
+  workspace: String,
+  roots: List(String),
+  protected: List(String),
+  replaced: List(String),
+  path: String,
+) -> Result(String, PathError) {
+  use <- bool.guard(path == "", Error(EmptyPath))
+  let joined = case path {
+    "/" <> _ -> path
+    _ -> workspace <> "/" <> path
+  }
+  use real_root <- result.try(
+    walk(filesystem, workspace)
+    |> result.map_error(Unresolvable(path:, reason: _)),
+  )
+  use resolved <- result.try(
+    walk(filesystem, joined)
+    |> result.map_error(Unresolvable(path:, reason: _)),
+  )
+
+  use _ <- result.try(refuse_protected(filesystem, protected, path, resolved))
+  use _ <- result.try(refuse_replaced(
     filesystem,
-    workspace,
-    roots,
+    replaced,
+    real_root,
     path,
+    resolved,
   ))
+
+  // Containment is checked on the resolved target, never the input spelling.
+  case
+    list.any([real_root, ..roots], fn(root) {
+      result.is_ok(check_under(root, resolved, path))
+    })
+  {
+    True -> Ok(resolved)
+    False -> Error(EscapesWorkspace(path:))
+  }
+}
+
+/// Every form a protected entry can take on a resolved path: its lexical
+/// form and its real-filesystem form, as `covers_target` compares both.
+///
+/// For a walker that tests many paths against one list. Resolving each
+/// entry once up front keeps a search of twenty thousand files from
+/// resolving the same few entries twenty thousand times.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.protected_forms(filesystem, ["/work/.blobs"]) == ["/work/.blobs"]
+/// ```
+pub fn protected_forms(
+  filesystem: FileSystem,
+  protected: List(String),
+) -> List(String) {
+  list.flat_map(protected, fn(entry) {
+    let lexical = normalize(entry)
+    [lexical, walk(filesystem, lexical) |> result.unwrap(or: lexical)]
+  })
+  |> list.unique
+}
+
+/// Refuses a resolved read target that any protected entry covers. Public
+/// for a caller that resolves a final component by hand, as `search.stat`
+/// does so as to report a symlink as a link.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.refuse_protected_read(filesystem, protected, "a", "/work/.blobs/a")
+/// ```
+pub fn refuse_protected_read(
+  filesystem: FileSystem,
+  protected: List(String),
+  path: String,
+  resolved: String,
+) -> Result(String, PathError) {
+  use _ <- result.try(all_absolute(protected, path))
+  refuse_protected(filesystem, protected, path, resolved)
+}
+
+// Refuses a resolved read target under a root the jail replaces, unless it is
+// under the workspace. The lexical and the real form of each root are both
+// compared, so macOS `/tmp` -> `/private/tmp` is covered. An empty `replaced`
+// is a write, which has no such rule: a write outside the workspace is
+// already refused.
+fn refuse_replaced(
+  filesystem: FileSystem,
+  replaced: List(String),
+  workspace_real: String,
+  path: String,
+  resolved: String,
+) -> Result(String, PathError) {
+  case check_under(workspace_real, resolved, path) {
+    Ok(_) -> Ok(resolved)
+    Error(_) ->
+      case list.find(replaced, covers_target(filesystem, _, resolved)) {
+        Error(Nil) -> Ok(resolved)
+        Ok(root) -> Error(JailReplaced(path:, root:))
+      }
+  }
+}
+
+/// The entries a directory walk must not enter: the protected list, plus the
+/// jail-replaced roots that do not cover the walk's own (already resolved)
+/// root. A walk rooted inside a workspace that lives under `/tmp` keeps
+/// working; a walk from `/` skips `/proc`, `/dev` and `/tmp`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.walk_exclusions(filesystem, [], "/") == ["/proc", "/dev", "/tmp"]
+/// ```
+pub fn walk_exclusions(
+  filesystem: FileSystem,
+  protected: List(String),
+  search_root: String,
+) -> List(String) {
+  list.append(
+    protected,
+    list.filter(policy.jail_replaced_roots, fn(root) {
+      !covers_target(filesystem, root, search_root)
+    }),
+  )
+}
+
+// Refuses a resolved target that any protected entry covers.
+fn refuse_protected(
+  filesystem: FileSystem,
+  protected: List(String),
+  path: String,
+  resolved: String,
+) -> Result(String, PathError) {
   case list.find(protected, covers_target(filesystem, _, resolved)) {
     Error(Nil) -> Ok(resolved)
     Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
@@ -545,15 +764,10 @@ fn normalize(path: String) -> String {
 /// (`policy.meet`), so the base list is the whole of it and
 /// `Ctx.grants` is deliberately not consulted here.
 ///
-/// **Writes only, deliberately asymmetric with the jail.** bwrap masks a
-/// protected path out of the jail's view entirely, so a jailed process
-/// cannot read one either; this check refuses writes and leaves
-/// `fs_read` alone. Widening it to reads is a larger change than
-/// closing the write hole — `fs_read` of `.git/HEAD` is ordinary and
-/// useful work, and the harness-side read of a credential file is a
-/// disclosure question the base policy's `readable_roots` should answer
-/// — so the narrower fix ships first and the asymmetry is stated rather
-/// than glossed.
+/// **Reads are refused by the same list.** bwrap masks a protected path
+/// out of the jail's view entirely, so a jailed process cannot read one
+/// either, and `resolve_readable` applies the same check to a native read
+/// (ADR-019). The two differ only in which roots they pass.
 ///
 /// **The check is point-in-time, exactly as `resolve_real` is.** The
 /// protected entry is tested against where the path led when it was
@@ -595,31 +809,48 @@ fn resolve_invocation(
     "/" <> _ -> path
     _ -> ctx.workspace <> "/" <> path
   }
-  use target <- result.try(
-    case intent {
-      Reading -> resolve_real(ctx.filesystem, "/", absolute)
-      Writing ->
-        resolve_writable_roots(
-          ctx.filesystem,
-          "/",
-          [],
-          ctx.base_policy.protected,
-          absolute,
-        )
-    }
-    |> result.map_error(path_outcome),
-  )
+  let reads = readable_policy(ctx)
   use workspace <- result.try(
     resolve_real(ctx.filesystem, ctx.workspace, ".")
     |> result.map_error(path_outcome),
   )
+  use target <- result.try(case intent {
+    Reading ->
+      resolve_target_for_read(ctx, reads, workspace, absolute)
+      |> result.map_error(read_path_outcome)
+    Writing ->
+      resolve_writable_roots(
+        ctx.filesystem,
+        "/",
+        [],
+        ctx.base_policy.protected,
+        absolute,
+      )
+      |> result.try(refuse_replaced(
+        ctx.filesystem,
+        policy.jail_replaced_roots,
+        workspace,
+        absolute,
+        _,
+      ))
+      |> result.map_error(path_outcome)
+  })
   let access = directory_access.approved(ctx.directory_access, ctx.grants)
-  let base =
-    policy.SandboxPolicy(
-      ..ctx.base_policy,
-      readable_roots: [workspace, ..access.readable],
-      writable_roots: [workspace, ..access.writable],
-    )
+
+  // A read is judged against the roots the jail reads under, so under host
+  // reads the target is already inside the base and no approval is asked.
+  // A write differs only in its writable roots: the workspace plus explicit
+  // additions.
+  let readable = [workspace, ..reads.readable_roots]
+  let base = case intent {
+    Reading -> policy.SandboxPolicy(..reads, readable_roots: readable)
+    Writing ->
+      policy.SandboxPolicy(
+        ..ctx.base_policy,
+        readable_roots: readable,
+        writable_roots: [workspace, ..access.writable],
+      )
+  }
   let requested = case intent {
     Reading -> policy.SandboxPolicy(..base, readable_roots: [target])
     Writing ->
@@ -630,11 +861,42 @@ fn resolve_invocation(
   use _ <- result.try(
     tool.authorize_policy(ctx, base, requested)
     |> result.map_error(fn(outcome) {
-      let refused = path_outcome(EscapesWorkspace(path))
+      let refused = case intent {
+        Reading -> read_path_outcome(EscapesWorkspace(path))
+        Writing -> path_outcome(EscapesWorkspace(path))
+      }
       tool.ToolOutcome(..refused, details: outcome.details)
     }),
   )
   Ok(target)
+}
+
+// The exact target of a native read. It is resolved against the real
+// filesystem from the root, so the approval below judges the canonical path
+// and not the spelling, and it is refused here, before any approval is
+// asked, when a protected entry covers it (no grant lifts a protected path)
+// or when the jail replaces it (the host's version is not what a tool sees).
+fn resolve_target_for_read(
+  ctx: Ctx,
+  reads: policy.SandboxPolicy,
+  workspace: String,
+  absolute: String,
+) -> Result(String, PathError) {
+  use resolved <- result.try(resolve_contained(
+    ctx.filesystem,
+    "/",
+    [],
+    reads.protected,
+    [],
+    absolute,
+  ))
+  refuse_replaced(
+    ctx.filesystem,
+    policy.jail_replaced_roots,
+    workspace,
+    absolute,
+    resolved,
+  )
 }
 
 /// The same boundary with its seams spelled out, for a caller holding
@@ -650,10 +912,7 @@ pub fn resolve_writable(
 ) -> Result(String, PathError) {
   use _ <- result.try(all_absolute(protected, path))
   use resolved <- result.try(resolve_real(filesystem:, workspace:, path:))
-  case list.find(protected, covers_target(filesystem, _, resolved)) {
-    Error(Nil) -> Ok(resolved)
-    Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
-  }
+  refuse_protected(filesystem, protected, path, resolved)
 }
 
 // The `protected` list is checked for absoluteness *before* the target is
@@ -1157,6 +1416,14 @@ fn read_bytes(
   filesystem: FileSystem,
   resolved: String,
 ) -> Result(BitArray, ReadError) {
+  // Only a regular file is read. The bound below is checked after the read,
+  // so a device or a FIFO would hang or exhaust the VM before it applied.
+  use regular <- result.try(
+    filesystem.is_file(resolved) |> result.map_error(ReadFailed),
+  )
+  use <- bool.lazy_guard(when: !regular, return: fn() {
+    Error(ReadFailed(not_regular(filesystem, resolved)))
+  })
   use bytes <- result.try(
     filesystem.read(resolved) |> result.map_error(ReadFailed),
   )
@@ -1166,6 +1433,16 @@ fn read_bytes(
     return: Error(TooLarge(size:, limit: max_read_bytes)),
   )
   Ok(bytes)
+}
+
+// Why a path that is not a regular file could not be read: absent, which the
+// ordinary read reports as not found, or present as a directory, device,
+// FIFO or socket.
+fn not_regular(filesystem: FileSystem, resolved: String) -> FsError {
+  case filesystem.read_link(resolved) {
+    Ok(tool.LinkMissing) -> tool.FsNotFound(path: resolved)
+    _ -> tool.FsFailure(path: resolved, reason: "not a regular file")
+  }
 }
 
 // The prose the text tools have always answered a failed read with, one
@@ -2141,8 +2418,8 @@ fn object_field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
 
 /// Renders a `PathError` as the in-band failure result the model reads.
 /// Shared with `tools/grep`, whose lexical `resolve_path` fails the same
-/// way for the same reasons (it never produces `ProtectedPath`: only a
-/// write path is checked against `protected`).
+/// way for the same reasons. A path that was being read goes through
+/// `read_path_outcome` instead, which words the refusals a read can meet.
 ///
 /// A `ProtectedPath` refusal opens with `permission denied:`, the same
 /// wording `FsPermissionDenied` carries, so anything mapping these
@@ -2172,6 +2449,7 @@ pub fn path_outcome(error: PathError) -> ToolOutcome {
           #("protected", json.String(protected)),
         ]),
       )
+    JailReplaced(path:, root:) -> jail_replaced_outcome(path, root)
     ProtectionMisconfigured(path:, protected:) ->
       tool.failure(
         "permission denied: `"
@@ -2191,6 +2469,144 @@ pub fn path_outcome(error: PathError) -> ToolOutcome {
         ]),
       )
   }
+}
+
+/// `path_outcome` for a path that was being **read**.
+///
+/// The two differ where the advice differs. A read outside the readable
+/// roots can be opened by an approval or an operator's `/add-dir`, so the
+/// refusal says how (`outside_readable_text`). A read of a protected path
+/// cannot be opened by anything, and says so. Every other refusal reads the
+/// same as it does for a write.
+///
+/// `details` carries `error: "outside_readable_roots"` or `"protected_path"`
+/// so a caller need not parse the prose.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fs.read_path_outcome(fs.EscapesWorkspace("../loop/README.md"))
+/// ```
+pub fn read_path_outcome(error: PathError) -> ToolOutcome {
+  case error {
+    EscapesWorkspace(path:) ->
+      tool.failure(outside_readable_text(path))
+      |> tool.with_details(
+        json.Object([
+          #("error", json.String("outside_readable_roots")),
+          #("path", json.String(path)),
+        ]),
+      )
+    ProtectedPath(path:, protected:) ->
+      tool.failure(protected_read_text(path, protected))
+      |> tool.with_details(
+        json.Object([
+          #("error", json.String("protected_path")),
+          #("path", json.String(path)),
+          #("protected", json.String(protected)),
+        ]),
+      )
+    ProtectionMisconfigured(path:, protected:) ->
+      tool.failure(misconfigured_read_text(path, protected))
+      |> tool.with_details(
+        json.Object([
+          #("error", json.String("protection_misconfigured")),
+          #("path", json.String(path)),
+          #("protected", json.String(protected)),
+        ]),
+      )
+    JailReplaced(path:, root:) -> jail_replaced_outcome(path, root)
+    EmptyPath | Unresolvable(..) -> path_outcome(error)
+  }
+}
+
+fn jail_replaced_outcome(path: String, root: String) -> ToolOutcome {
+  tool.failure(jail_replaced_text(path, root))
+  |> tool.with_details(
+    json.Object([
+      #("error", json.String("jail_replaced")),
+      #("path", json.String(path)),
+      #("root", json.String(root)),
+    ]),
+  )
+}
+
+/// The refusal text for a read under a root the jail replaces.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(fs.jail_replaced_text("/proc/self/environ", "/proc"), "not visible")
+/// ```
+pub fn jail_replaced_text(path: String, root: String) -> String {
+  "permission denied: `"
+  <> path
+  <> "` is not visible to tools: the jail replaces `"
+  <> root
+  <> "` with its own, so the host's version is not readable here. No approval "
+  <> "or `/add-dir` changes this."
+}
+
+/// The refusal text for a read outside the readable roots, naming the two
+/// ways to get access. Shared by `fs_read` and the code-mode `fs`/`search`
+/// capabilities so a model sees one sentence wherever it is refused.
+///
+/// `permissions` is accepted by `code_mode` and `bash`, not by `fs_read`, so
+/// the text names those two calls. Under the default host reads this is
+/// unreachable for an ordinary path: the roots then cover the host.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   fs.outside_readable_text("../loop"),
+///   "permissions.readable_roots",
+/// )
+/// ```
+pub fn outside_readable_text(path: String) -> String {
+  "permission denied: `"
+  <> path
+  <> "` is outside the readable roots. Declare it in "
+  <> "`permissions.readable_roots` on a `code_mode` or `bash` call to request "
+  <> "approval, or ask the operator to run `/add-dir` with its absolute path."
+}
+
+/// The refusal text for a read of a protected path. The jail masks these
+/// paths, so no approval, grant or `/add-dir` makes one readable.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(fs.protected_read_text("/w/.blobs/x", "/w/.blobs"), "protected")
+/// ```
+pub fn protected_read_text(path: String, protected: String) -> String {
+  "permission denied: `"
+  <> path
+  <> "` resolves at or under the protected path `"
+  <> protected
+  <> "`. Protected paths are hidden from every jailed process too, and no "
+  <> "approval, grant or `/add-dir` makes one readable."
+}
+
+/// The refusal text when the protected list cannot be applied to a read,
+/// because an entry is not absolute. Refusing is the jail's answer to the
+/// same policy, so a read is refused rather than judged against a list that
+/// covers nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(fs.misconfigured_read_text("a", ".git"), "not absolute")
+/// ```
+pub fn misconfigured_read_text(path: String, protected: String) -> String {
+  "permission denied: `"
+  <> path
+  <> "` was not read because this session's protected-path list "
+  <> "is misconfigured — the entry `"
+  <> protected
+  <> "` is not absolute, so nothing can be judged against it. Ask "
+  <> "the operator to fix the session's base policy; no approval or "
+  <> "grant widens this."
 }
 
 fn fs_error_outcome(error: FsError) -> ToolOutcome {

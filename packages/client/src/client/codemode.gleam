@@ -2626,7 +2626,11 @@ fn workspace_router(
   workspace.routing(
     workspace_seam(config, request),
     over: search_router.routing(
-      search_seam_with_access(request.workspace, access.readable),
+      search_seam_with_access(
+        request.workspace,
+        directory_access.widen(request.base_policy, access),
+        config.blob_root,
+      ),
       over: lsp_router,
     ),
   )
@@ -2672,10 +2676,10 @@ pub fn workspace_seam(
     // started a job kills it, and aborting a later one does not, because
     // detachment is what the caller asked for.
     operation: request.op_id,
-    // The protected list rides the request's own base policy — the same
-    // value the launch composes against — so the bridge's write boundary
-    // and the jail's mask are fed from one source.
-    protected: request.base_policy.protected,
+    // The request's own base policy — the same value the launch composes
+    // against — so the bridge's read and write boundaries and the jail's
+    // roots and masks are fed from one source.
+    session_base: request.base_policy,
   )
 }
 
@@ -2693,7 +2697,7 @@ pub fn workspace_seam(
 ///
 /// ```gleam
 /// // codemode.workspace_seam_for(config, workspace: "/w", strand: "main",
-/// //   protected: []).fs_read("src/main.gleam")
+/// //   base_policy: base).fs_read("src/main.gleam")
 /// ```
 ///
 pub fn workspace_seam_for(
@@ -2701,7 +2705,7 @@ pub fn workspace_seam_for(
   workspace workspace_root: String,
   strand strand: String,
   operation operation: OpId,
-  protected protected: List(String),
+  base_policy base_policy: policy.SandboxPolicy,
 ) -> workspace.Workspace {
   workspace_seam_with_access(
     config,
@@ -2710,7 +2714,7 @@ pub fn workspace_seam_for(
     workspace_root,
     strand,
     operation,
-    protected,
+    base_policy,
   )
 }
 
@@ -2719,8 +2723,13 @@ pub fn workspace_seam_for(
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.workspace_seam_with_access(config, access, policy, root, strand, op, protected)
+/// // codemode.workspace_seam_with_access(config, access, policy, root, strand, op, base)
 /// ```
+///
+/// `session_base` is the policy a jailed process of this session is built
+/// from. Reads are judged against its `readable_roots` widened by `access`,
+/// and refused under its `protected` list; writes keep the workspace plus
+/// `access.writable`, and the same `protected` list.
 pub fn workspace_seam_with_access(
   config: Config,
   access access: directory_access.Access,
@@ -2728,14 +2737,20 @@ pub fn workspace_seam_with_access(
   workspace workspace_root: String,
   strand strand: String,
   operation operation: OpId,
-  protected protected: List(String),
+  session_base session_base: policy.SandboxPolicy,
 ) -> workspace.Workspace {
   let filesystem = fs.real_filesystem()
   let root = workspace_root
   let request_strand = strand
+  let protected = session_base.protected
+  let reads =
+    fs.exempting_blob_root(
+      directory_access.widen(session_base, access),
+      config.blob_root,
+    )
   workspace.Workspace(
-    fs_read: fn(path) { read_in(filesystem, root, access.readable, path) },
-    fs_list: fn(path) { list_in(filesystem, root, access.readable, path) },
+    fs_read: fn(path) { read_in(filesystem, root, reads, path) },
+    fs_list: fn(path) { list_in(filesystem, root, reads, path) },
     fs_write: fn(path, contents) {
       write_in(filesystem, root, access.writable, protected, path, contents)
     },
@@ -2794,23 +2809,29 @@ fn jobs_in(
 }
 
 /// The harness-side closures the search router calls, bound to one
-/// execution's workspace root.
+/// execution's workspace root and read policy.
 ///
 /// Public for the reason `workspace_seam_for` is: it is the whole of what
 /// `cap/search` authorizes, and a test that wants to prove a root is
 /// contained should be able to hold exactly these four functions still
-/// rather than standing up a satellite to reach them. It takes the
-/// workspace and nothing else, because a read-only search reaches no
-/// store, no schedule and no job — there is nothing else for it to be
-/// bound to.
+/// rather than standing up a satellite to reach them. A read-only search
+/// reaches no store, no schedule and no job, so the workspace, the read
+/// policy and the blob root are all it is bound to.
 ///
-/// **Every path decision here is `tools/fs.resolve_real`'s**, the same
+/// `session_reads` is the session base policy already widened by explicit
+/// directory additions (`directory_access.widen`). Its `readable_roots` and
+/// `protected` list are the whole of the read boundary, with the blob root
+/// taken off the protected list because it is the one protected entry a
+/// read may open (ADR-019), and the jail-replaced roots refused as
+/// `tools/fs` refuses them.
+///
+/// **Every path decision here is `tools/fs.resolve_readable`'s**, the same
 /// single boundary the `fs.*` arms go through. What each closure adds is
 /// which path it resolves, and the three answers differ:
 ///
 /// - `glob` and `grep` resolve the query's `root`, and the engine keeps
 ///   containment true for everything the walk reaches by never following
-///   a symlink.
+///   a symlink and by skipping protected and jail-replaced subtrees.
 /// - `read_lines` resolves the whole path exactly as `fs.read` does, so
 ///   reading *through* a contained link works and an escaping one is
 ///   refused.
@@ -2824,34 +2845,24 @@ fn jobs_in(
 /// ## Examples
 ///
 /// ```gleam
-/// // codemode.search_seam_for(workspace: "/w").stat("src/app.gleam")
-/// ```
-///
-pub fn search_seam_for(
-  workspace workspace_root: String,
-) -> search_router.Search {
-  search_seam_with_access(workspace_root, [])
-}
-
-/// Captures additional readable directories for structured search capabilities.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // codemode.search_seam_with_access("/work", ["/shared"])
+/// // codemode.search_seam_with_access("/work", policy.workspace_default("/work"), "/work/.blobs")
 /// ```
 pub fn search_seam_with_access(
   workspace_root: String,
-  roots: List(String),
+  session_reads: policy.SandboxPolicy,
+  blob_root: String,
 ) -> search_router.Search {
   let filesystem = fs.real_filesystem()
   let root = workspace_root
+
+  // The blob root is the one protected entry a read may open (ADR-019).
+  let reads = fs.exempting_blob_root(session_reads, blob_root)
   search_router.Search(
-    glob: fn(under, query) { glob_in(filesystem, root, roots, under, query) },
-    grep: fn(under, query) { grep_in(filesystem, root, roots, under, query) },
-    stat: fn(path) { stat_in(filesystem, root, roots, path) },
+    glob: fn(under, query) { glob_in(filesystem, root, reads, under, query) },
+    grep: fn(under, query) { grep_in(filesystem, root, reads, under, query) },
+    stat: fn(path) { stat_in(filesystem, root, reads, path) },
     read_lines: fn(path, first, last) {
-      read_lines_in(filesystem, root, roots, path, first, last)
+      read_lines_in(filesystem, root, reads, path, first, last)
     },
   )
 }
@@ -2875,7 +2886,7 @@ fn resolved_workspace(
 fn glob_in(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
+  reads: policy.SandboxPolicy,
   under: String,
   query: search.GlobQuery,
 ) -> Result(search.Listing, search_router.SearchRefusal) {
@@ -2884,10 +2895,15 @@ fn glob_in(
     |> result.map_error(search_router.PathRefused),
   )
   use resolved <- result.try(
-    fs.resolve_readable(filesystem, root, roots, under)
+    fs.resolve_readable(filesystem, root, reads, under)
     |> result.map_error(search_router.PathRefused),
   )
-  search.glob(workspace: workspace_root, root: resolved, query:)
+  search.glob(
+    workspace: workspace_root,
+    root: resolved,
+    protected: fs.walk_exclusions(filesystem, reads.protected, resolved),
+    query:,
+  )
   |> result.map_error(search_router.QueryRefused)
 }
 
@@ -2895,7 +2911,7 @@ fn glob_in(
 fn grep_in(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
+  reads: policy.SandboxPolicy,
   under: String,
   query: search.GrepQuery,
 ) -> Result(search.Found, search_router.SearchRefusal) {
@@ -2904,15 +2920,20 @@ fn grep_in(
     |> result.map_error(search_router.PathRefused),
   )
   use resolved <- result.try(
-    fs.resolve_readable(filesystem, root, roots, under)
+    fs.resolve_readable(filesystem, root, reads, under)
     |> result.map_error(search_router.PathRefused),
   )
-  search.grep(workspace: workspace_root, root: resolved, query:)
+  search.grep(
+    workspace: workspace_root,
+    root: resolved,
+    protected: fs.walk_exclusions(filesystem, reads.protected, resolved),
+    query:,
+  )
   |> result.map_error(search_router.QueryRefused)
 }
 
 // `search.stat`: resolve the parent, name the leaf beneath it, and let
-// the engine `lstat` that. See `search_seam_for`'s doc for why the leaf
+// the engine `lstat` that. See `search_seam_with_access`'s doc for why the leaf
 // is deliberately not resolved.
 //
 // `display` is the leaf's path relative to the resolved workspace root,
@@ -2921,7 +2942,7 @@ fn grep_in(
 fn stat_in(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
+  reads: policy.SandboxPolicy,
   path: String,
 ) -> Result(search.Entry, search_router.SearchRefusal) {
   use workspace_root <- result.try(
@@ -2929,7 +2950,7 @@ fn stat_in(
     |> result.map_error(search_router.PathRefused),
   )
   use absolute <- result.try(
-    resolved_leaf(filesystem, root, roots, path)
+    resolved_leaf(filesystem, root, reads, path)
     |> result.map_error(search_router.PathRefused),
   )
   search.stat(path: absolute, display: relative_to(workspace_root, absolute))
@@ -2942,13 +2963,13 @@ fn stat_in(
 fn read_lines_in(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
+  reads: policy.SandboxPolicy,
   path: String,
   first: Int,
   last: Int,
 ) -> Result(search.Lines, search_router.SearchRefusal) {
   use resolved <- result.try(
-    fs.resolve_readable(filesystem, root, roots, path)
+    fs.resolve_readable(filesystem, root, reads, path)
     |> result.map_error(search_router.PathRefused),
   )
   search.read_lines(path: resolved, from: first, to: last)
@@ -3001,20 +3022,28 @@ fn parent_of(segments: List(String)) -> String {
 fn resolved_leaf(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
+  reads: policy.SandboxPolicy,
   path: String,
 ) -> Result(String, fs.PathError) {
   case leaf_of(path) {
-    NoLeaf -> fs.resolve_readable(filesystem, root, roots, path)
+    NoLeaf -> fs.resolve_readable(filesystem, root, reads, path)
 
     Leaf(parent:, name:) -> {
       use directory <- result.try(fs.resolve_readable(
         filesystem,
         root,
-        roots,
+        reads,
         parent,
       ))
-      Ok(directory <> "/" <> name)
+
+      // The leaf is not resolved, so the protected list is asked about it
+      // here: `stat` of a masked file would otherwise report its size.
+      fs.refuse_protected_read(
+        filesystem,
+        reads.protected,
+        path,
+        directory <> "/" <> name,
+      )
     }
   }
 }
@@ -3193,12 +3222,12 @@ fn schedule_refusal(
 fn read_in(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
+  reads: policy.SandboxPolicy,
   path: String,
 ) -> Result(String, workspace.FsRefusal) {
   use resolved <- result.try(
-    fs.resolve_readable(filesystem, root, roots, path)
-    |> result.map_error(workspace.PathRefused),
+    fs.resolve_readable(filesystem, root, reads, path)
+    |> result.map_error(workspace.ReadPathRefused),
   )
   fs.read_text_file(filesystem:, resolved:)
   |> result.map_error(workspace.ReadRefused)
@@ -3284,12 +3313,12 @@ fn edit_in(
 fn list_in(
   filesystem: tool.FileSystem,
   root: String,
-  roots: List(String),
+  reads: policy.SandboxPolicy,
   path: String,
 ) -> Result(List(workspace.DirEntry), workspace.FsRefusal) {
   use resolved <- result.try(
-    fs.resolve_readable(filesystem, root, roots, path)
-    |> result.map_error(workspace.PathRefused),
+    fs.resolve_readable(filesystem, root, reads, path)
+    |> result.map_error(workspace.ReadPathRefused),
   )
   use names <- result.try(
     simplifile.read_directory(resolved)
