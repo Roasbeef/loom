@@ -107,7 +107,14 @@ pub fn claim_command_names_the_given_address_and_never_the_token_test() {
     let assert Ok(view) =
       manager.create_scoped(
         ready.registry,
-        manager.Creation("claim-address", "/workspace", "Session", "", None),
+        manager.Creation(
+          "claim-address",
+          "/workspace",
+          "Session",
+          "",
+          None,
+          None,
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(1), 907),
         scope: domain.SessionOnly,
@@ -216,7 +223,14 @@ pub fn owner_explicit_isolation_control_preserves_transcript_consent_test() {
     let assert Ok(view) =
       manager.create(
         ready.registry,
-        manager.Creation("isolate-wire", "/workspace", "Private", "", None),
+        manager.Creation(
+          "isolate-wire",
+          "/workspace",
+          "Private",
+          "",
+          None,
+          None,
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(1), 906),
       )
@@ -256,7 +270,14 @@ pub fn owner_admin_real_transport_rotates_and_revokes_members_test() {
     let assert Ok(view) =
       manager.create_scoped(
         ready.registry,
-        manager.Creation("admin-session", "/workspace", "Session", "", None),
+        manager.Creation(
+          "admin-session",
+          "/workspace",
+          "Session",
+          "",
+          None,
+          None,
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(1), 902),
         scope: domain.SessionOnly,
@@ -409,6 +430,7 @@ pub fn lost_invitation_reply_recovers_by_explicit_principal_rotation_test() {
           "/workspace",
           "Session",
           "",
+          None,
           None,
         ),
         directory: ready.sessions_directory,

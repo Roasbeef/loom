@@ -114,7 +114,14 @@ fn created(serving: entrypoint.Serving(String), key: String, seed: Int) {
   let assert Ok(view) =
     manager.create(
       serving.ready.registry,
-      manager.Creation(key, serving.ready.state_root, key, "", option.None),
+      manager.Creation(
+        key,
+        serving.ready.state_root,
+        key,
+        "",
+        option.None,
+        option.None,
+      ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1000), seed),
     )
@@ -386,7 +393,14 @@ pub fn daemon_listener_production_opens_two_owned_sessions_test() {
       let assert Ok(view) =
         manager.create(
           serving.ready.registry,
-          manager.Creation(pair.0, workspace, pair.0, file, option.None),
+          manager.Creation(
+            pair.0,
+            workspace,
+            pair.0,
+            file,
+            option.None,
+            option.None,
+          ),
           directory: serving.ready.sessions_directory,
           generator: ids.generator(clock.fixed(1000), pair.1),
         )

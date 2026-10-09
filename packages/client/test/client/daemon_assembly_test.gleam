@@ -125,6 +125,7 @@ fn create(
       name: "session " <> string.inspect(seed),
       configuration: "",
       profile: None,
+      model: None,
     )
   let assert Ok(view) =
     manager.create(
