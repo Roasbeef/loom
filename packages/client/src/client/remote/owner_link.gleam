@@ -47,7 +47,7 @@
 ////
 //// | Call | Why a second send is safe | Wait | When the wait runs out |
 //// | --- | --- | --- | --- |
-//// | `execution.receive`, `execution.receive_enveloped` | keyed by the program's cursor | its own `within_ms` | "no input yet" |
+//// | `execution.receive`, `execution.receive_enveloped` | keyed by the program's cursor | its own `within_ms`, at most the owner's 30 s | "no input yet" |
 //// | `execution.ready`, `execution.progress`, `execution.delivery` | the same observation recorded again | 120 s | `owner_unavailable` |
 ////
 //// Every other capability keeps the immediate denial, because a second send
@@ -270,16 +270,38 @@ type Exhausted {
 // The calls safe to send again after a lost reply, and how long each waits. A
 // receive is keyed by the program's cursor, so a second send returns the same
 // input; readiness, progress and a delivery record the same observation again.
+// A receive waits no longer than the owner would let it wait with the link up:
+// the owner refuses a longer one, so a longer wait here would only end at the
+// satellite's call timeout with an error instead of "no input yet".
 fn patience(call: OwnerCapCall) -> Patience {
   case call.cap {
     "execution.receive" | "execution.receive_enveloped" ->
       WaitsFor(
-        ms: args.int(call.args, "within_ms") |> result.unwrap(0) |> int.max(0),
+        ms: args.int(call.args, "within_ms")
+          |> result.unwrap(0)
+          |> int.clamp(min: 0, max: owner_services.max_receive_wait_ms),
         exhausted: NoInputYet,
       )
     "execution.ready" | "execution.progress" | "execution.delivery" ->
       WaitsFor(ms: capability_wait_ms, exhausted: Unreachable)
     _ -> Immediate
+  }
+}
+
+/// How long an owner-bound call waits for a cut link, in milliseconds; zero for
+/// a call that is denied at the first `DOWN`. A view of the patience table for
+/// tests.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_link.link_cut_wait_ms(call) == 30_000
+/// ```
+@internal
+pub fn link_cut_wait_ms(call: OwnerCapCall) -> Int {
+  case patience(call) {
+    Immediate -> 0
+    WaitsFor(ms:, exhausted: _) -> ms
   }
 }
 

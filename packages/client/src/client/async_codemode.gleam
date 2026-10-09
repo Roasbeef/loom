@@ -346,7 +346,11 @@ fn input_router(
       "execution.receive" -> {
         use after <- result.try(args.int(request.args, "after"))
         use within <- result.try(args.int(request.args, "within_ms"))
-        case after >= 0 && within >= 0 && within <= 30_000 {
+        case
+          after >= 0
+          && within >= 0
+          && within <= owner_services.max_receive_wait_ms
+        {
           False ->
             Error(satellite.CapDenial(
               "invalid_argument",
@@ -388,7 +392,11 @@ fn input_router(
       "execution.receive_enveloped" -> {
         use after <- result.try(args.int(request.args, "after"))
         use within <- result.try(args.int(request.args, "within_ms"))
-        case after >= 0 && within >= 0 && within <= 30_000 {
+        case
+          after >= 0
+          && within >= 0
+          && within <= owner_services.max_receive_wait_ms
+        {
           False ->
             Error(satellite.CapDenial(
               "invalid_argument",
