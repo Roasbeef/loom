@@ -25,7 +25,7 @@ import core/msgpack
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/string
 import machine/operation
@@ -310,7 +310,30 @@ fn fake_tool(
       }
   }
   process.call(probe.subject, 30_000, Wait)
-  effects.ToolCompleted(result: text_result(run, verdict), terminate: False)
+  case run.call.id {
+    "duplicate-keys" -> duplicate_key_outcome(run)
+    _ ->
+      effects.ToolCompleted(result: text_result(run, verdict), terminate: False)
+  }
+}
+
+/// The outcome the fake tool completes with for a call whose id is
+/// `duplicate-keys`: its details hold one key twice. It encodes, and the bytes
+/// do not parse back, because `core/json` refuses a duplicated key.
+pub fn duplicate_key_outcome(run: ToolRun) -> ToolOutcome {
+  effects.ToolCompleted(
+    result: message.ToolResultMessage(
+      tool_call_id: run.call.id,
+      tool_name: run.call.name,
+      content: [message.ToolResultText(text: "ran", text_signature: None)],
+      details: Some(json.Object([#("k", json.Int(1)), #("k", json.Int(2))])),
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ),
+    terminate: False,
+  )
 }
 
 // The fake background program: it records its run under its step, waits on the
