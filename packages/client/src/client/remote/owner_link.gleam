@@ -228,6 +228,26 @@ pub fn services(link: Link, clock: Clock) -> OwnerServices {
   )
 }
 
+/// Asks the current owner port for the session's MCP plan, which the host
+/// does once while it builds a scope's plane, after the attach's version check.
+/// An owner that does not answer within the record budget fails the build, and
+/// the orchestrator's next attach builds again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(plan) = owner_link.mcp_plan(link)
+/// ```
+pub fn mcp_plan(link: Link) -> Result(protocol.McpPlan, String) {
+  ask(link, record_wait_ms, protocol.AskMcpPlan)
+  |> result.map_error(fn(fault) {
+    case fault {
+      call.NoReply -> "the session's owner did not send its MCP plan"
+      call.CalleeGone -> "the session's owner is gone"
+    }
+  })
+}
+
 // A launch whose answer never came may still have been claimed: the request
 // can have reached the owner and only the reply been lost. The handle is a
 // digest of the launching call's coordinates, which this side has, so the

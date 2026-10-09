@@ -53,11 +53,13 @@
 ////
 //// ## MCP façades
 ////
-//// `Attach` carries an `McpPlan`: the façades of the MCP servers the
-//// orchestrator runs, which the executor compiles programs against without
-//// holding a client, and the names of the servers the orchestrator expects the
-//// executor to run from its own configuration. No command line and no secret
-//// crosses.
+//// The executor asks the owner port for the session's `McpPlan`
+//// (`AskMcpPlan`) while it builds the scope's plane: the façades of the MCP
+//// servers the orchestrator runs, which the executor compiles programs against
+//// without holding a client, and the names of the servers the orchestrator
+//// expects the executor to run from its own configuration. No command line and
+//// no secret crosses. The plan is not a field of `Attach`, because `Attach`
+//// keeps one shape across versions (see `version`).
 
 import broker/framing.{type CapOutcome}
 import client/escalate
@@ -91,7 +93,17 @@ import tools/tool
 ///
 /// Version 3 added background executions (`StartExecution`, `StopExecution`,
 /// `LaunchExecution`, `InteractExecution`, `Unacked.executions` and
-/// `Lookup.Executed`) and the MCP plan an `Attach` carries.
+/// `Lookup.Executed`) and the MCP plan the executor asks the owner for
+/// (`AskMcpPlan`).
+///
+/// `Attach` must keep the shape it had in version 2. It is the first
+/// message a peer of any version sends, and the host matches the term it
+/// receives against this module's constructors: an `Attach` of another arity
+/// matches no arm, and the host, and with it the executor daemon, exits instead
+/// of answering `VersionMismatch`. Anything a later version needs at attach
+/// travels in a message sent after the version check has passed, as the MCP
+/// plan does. Every other message may change shape, because a peer of another
+/// version never gets past the attach to send it.
 pub const version = 3
 
 /// The name an execution's ledger row is admitted under, in the column a tool
@@ -284,7 +296,8 @@ pub type Facade {
   )
 }
 
-/// The MCP servers a session's code mode reaches, as an attach states them.
+/// The MCP servers a session's code mode reaches, as the owner port answers
+/// `AskMcpPlan`.
 pub type McpPlan {
   McpPlan(
     /// The façades of the servers the orchestrator runs. Calls to them are
@@ -305,7 +318,8 @@ pub type HostMessage(census) {
   /// `version` is the sender's `protocol.version`. It starts or adopts the
   /// scope at `incarnation` and makes `token` its only
   /// valid attach token, which is the fence against an earlier open's in-flight
-  /// `Run`. `owner_port` is where the scope's workspace calls back.
+  /// `Run`. `owner_port` is where the scope's workspace calls back. Its shape
+  /// is fixed across versions; see `version`.
   Attach(
     version: Int,
     session: String,
@@ -313,7 +327,6 @@ pub type HostMessage(census) {
     incarnation: Int,
     token: BitArray,
     owner_port: Subject(OwnerMessage),
-    mcp: McpPlan,
     reply: Subject(Result(Attached(census), Refusal)),
   )
 
@@ -470,6 +483,11 @@ pub type OwnerMessage {
     within_ms: Int,
     reply: Subject(Result(JsonValue, String)),
   )
+
+  /// The executor is building the scope's plane and asks which MCP servers
+  /// its code mode reaches. Sent once per build, after the attach's version
+  /// check passed, so both ends speak this version.
+  AskMcpPlan(reply: Subject(McpPlan))
 }
 
 /// The key of one call of a session's tool run.

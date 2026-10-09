@@ -114,8 +114,6 @@ pub type Config(census) {
     /// Mints an attach token: thirty-two bytes from a strong source in
     /// production (`strong_token`), a fixed value in a test.
     mint_token: fn() -> BitArray,
-    /// The MCP servers the executor's code mode reaches, sent with the attach.
-    mcp: protocol.McpPlan,
   )
 }
 
@@ -217,7 +215,6 @@ pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
       incarnation: config.incarnation,
       token:,
       owner_port: owner,
-      mcp: config.mcp,
       reply:,
     )
   }

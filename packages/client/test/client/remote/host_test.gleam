@@ -6,6 +6,8 @@
 //// abort stops the call while a lost connection does not. The fake tool counts
 //// its runs, and that count is the number every test of idempotence reads.
 
+import client/internal/ffi_os
+import client/internal/ffi_remote
 import client/remote/address.{type Address}
 import client/remote/host
 import client/remote/protocol.{
@@ -13,6 +15,7 @@ import client/remote/protocol.{
 }
 import gleam/bit_array
 import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
@@ -86,9 +89,8 @@ fn attach(
       workspace: "/work",
       incarnation:,
       token: attach_token,
-      owner_port: process.new_subject(),
+      owner_port: fixtures.plan_port(),
       reply:,
-      mcp: protocol.McpPlan(served: [], expected: []),
     ),
   )
   let assert Ok(answer) = process.receive(reply, 5000)
@@ -583,9 +585,8 @@ pub fn an_attach_from_another_protocol_version_is_refused_test() {
       workspace: "/work",
       incarnation: 0,
       token: token(1),
-      owner_port: process.new_subject(),
+      owner_port: fixtures.plan_port(),
       reply:,
-      mcp: protocol.McpPlan(served: [], expected: []),
     ),
   )
   let assert Ok(answer) = process.receive(reply, 5000)
@@ -594,6 +595,53 @@ pub fn an_attach_from_another_protocol_version_is_refused_test() {
 
   // Nothing was built or bound, so a correct attach still creates the scope.
   assert fixtures.builds(rig.probe) == []
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  stop(rig)
+}
+
+pub fn a_version_2_attach_is_refused_and_the_host_stays_up_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let path = fixtures.scratch("host") <> "/ledger.db"
+  let text =
+    "remote_test_host_v2_" <> int.to_string(ffi_os.unique_positive_integer())
+  let rig =
+    start_config(
+      path,
+      probe,
+      host.Config(
+        ..fixtures.host_config(
+          path,
+          fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired),
+        ),
+        name: ffi_remote.fixed_name(text),
+      ),
+    )
+  let reply: Subject(Result(protocol.Attached(String), Refusal)) =
+    process.new_subject()
+
+  // Version 2's `Attach` as its build sends it, built by hand: the record tag
+  // and its seven fields, a term this build's constructors know nothing about.
+  // Its shape is the one this build's `Attach` keeps, so the host matches it,
+  // reads the version and refuses by value.
+  let version_2 = #(
+    atom.create("attach"),
+    2,
+    "s1",
+    "/work",
+    0,
+    token(1),
+    fixtures.plan_port(),
+    reply,
+  )
+  ffi_remote.send(
+    to: node.self(),
+    name: ffi_remote.fixed_name(text),
+    message: version_2,
+  )
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the host answers a version 2 attach"
+  assert answer == Error(protocol.VersionMismatch(supported: protocol.version))
+  assert process.is_alive(rig.pid)
   let assert Ok(_attached) = attach(rig, 0, token(1))
   stop(rig)
 }
@@ -631,9 +679,8 @@ fn attach_as(
       workspace: "/work",
       incarnation: 0,
       token: attach_token,
-      owner_port: process.new_subject(),
+      owner_port: fixtures.plan_port(),
       reply:,
-      mcp: protocol.McpPlan(served: [], expected: []),
     ),
   )
   reply

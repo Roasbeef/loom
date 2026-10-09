@@ -484,6 +484,29 @@ pub fn scratch(name: String) -> String {
   directory
 }
 
+/// An owner port that answers only the executor's request for the MCP plan,
+/// with no servers, and leaves every other request unanswered, as a bare
+/// subject would. A host asks for the plan while it builds a scope's plane.
+pub fn plan_port() -> Subject(protocol.OwnerMessage) {
+  let handed = process.new_subject()
+  process.spawn(fn() {
+    let inbox = process.new_subject()
+    process.send(handed, inbox)
+    answer_plans(inbox)
+  })
+  let assert Ok(inbox) = process.receive(handed, 1000) as "the plan port starts"
+  inbox
+}
+
+fn answer_plans(inbox: Subject(protocol.OwnerMessage)) -> Nil {
+  case process.receive_forever(inbox) {
+    protocol.AskMcpPlan(reply:) ->
+      process.send(reply, protocol.McpPlan(served: [], expected: []))
+    _unanswered -> Nil
+  }
+  answer_plans(inbox)
+}
+
 /// A host configuration over a ledger at `path`, for a fresh private name.
 pub fn host_config(
   path: String,

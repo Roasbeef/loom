@@ -22,6 +22,7 @@ import client/peer_mail
 import client/peers
 import client/remote/owner_link
 import client/remote/owner_port
+import client/remote/protocol as remote_protocol
 import codemode/identity
 import codemode/orchestration
 import codemode/satellite
@@ -238,6 +239,7 @@ fn linked(
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
+      mcp: remote_protocol.McpPlan(served: [], expected: []),
     ))
     as "the owner port starts"
   let assert Ok(link) = owner_link.start(owner_port.inbox(port))

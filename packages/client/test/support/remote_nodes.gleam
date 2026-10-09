@@ -137,6 +137,7 @@ pub fn orchestrate(
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     )),
   )
   use attachment <- result.try(
@@ -151,7 +152,6 @@ pub fn orchestrate(
       remote_tools: ["bash"],
       attach_within_ms: 10_000,
       mint_token: surface.strong_token,
-      mcp: protocol.McpPlan(served: [], expected: []),
     ))
     |> result.map_error(protocol.describe),
   )
@@ -305,6 +305,7 @@ pub fn orchestrate_workspace(peer: distribution.Peer) -> Result(Nil, String) {
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     )),
   )
   use attachment <- result.try(
@@ -319,7 +320,6 @@ pub fn orchestrate_workspace(peer: distribution.Peer) -> Result(Nil, String) {
       remote_tools: ["fs_write", "fs_read"],
       attach_within_ms: 60_000,
       mint_token: surface.strong_token,
-      mcp: protocol.McpPlan(served: [], expected: []),
     ))
     |> result.map_error(protocol.describe),
   )

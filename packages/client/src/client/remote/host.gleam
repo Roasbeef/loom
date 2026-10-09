@@ -259,15 +259,14 @@ type JobResult(census) {
   PlaneBuilt(built: Result(Plane(census), String))
 }
 
-// What one attach binds: the scope's identity, where its workspace calls
-// back to, and the MCP servers its code mode reaches.
+// What one attach binds: the scope's identity and where its workspace calls
+// back to.
 type Binding {
   Binding(
     session: String,
     workspace: String,
     incarnation: Int,
     owner_port: Subject(protocol.OwnerMessage),
-    mcp: protocol.McpPlan,
   )
 }
 
@@ -502,14 +501,13 @@ fn handle_peer(
       incarnation:,
       token:,
       owner_port:,
-      mcp:,
       reply:,
     ) ->
       case version == protocol.version {
         True ->
           attach(
             state,
-            Binding(session:, workspace:, incarnation:, owner_port:, mcp:),
+            Binding(session:, workspace:, incarnation:, owner_port:),
             token,
             reply,
           )
@@ -692,7 +690,11 @@ fn place(
 }
 
 // Starts the factory as a weft run. The scope is `Building` until the run
-// reports, so no other request for the session can slip in between.
+// reports, so no other request for the session can slip in between. The run
+// first asks the owner for the session's MCP plan: the attach has passed its
+// version check, so the owner speaks this version, and `Attach` itself keeps
+// the shape every version shares (`protocol.version`). An owner that does not
+// send it fails the build, and the next attach builds again.
 fn build_plane(
   state: State(census),
   binding: Binding,
@@ -706,18 +708,26 @@ fn build_plane(
       state
     }
     Ok(link) -> {
-      let spec =
-        AttachSpec(
-          session:,
-          workspace: binding.workspace,
-          incarnation: binding.incarnation,
-          owner: owner_link.services(link, state.config.clock),
-          clock: state.config.clock,
-          mcp: binding.mcp,
-        )
+      let workspace = binding.workspace
+      let incarnation = binding.incarnation
+      let owner = owner_link.services(link, state.config.clock)
+      let clock = state.config.clock
       let factory = state.config.factory
       let #(state, id, sink, cancel) =
-        start_job(state, fn() { Ok(PlaneBuilt(factory(spec))) })
+        start_job(state, fn() {
+          let built = {
+            use mcp <- result.try(owner_link.mcp_plan(link))
+            factory(AttachSpec(
+              session:,
+              workspace:,
+              incarnation:,
+              owner:,
+              clock:,
+              mcp:,
+            ))
+          }
+          Ok(PlaneBuilt(built))
+        })
       let tracked =
         Tracked(
           job: BuildJob(session:, link:, unacked:, reply:),

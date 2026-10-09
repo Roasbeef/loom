@@ -70,8 +70,7 @@ fn attach(rig: Rig, attach_token: BitArray) -> protocol.Attached(String) {
       workspace: "/work",
       incarnation: 0,
       token: attach_token,
-      owner_port: process.new_subject(),
-      mcp: protocol.McpPlan(served: [], expected: []),
+      owner_port: fixtures.plan_port(),
       reply:,
     ),
   )

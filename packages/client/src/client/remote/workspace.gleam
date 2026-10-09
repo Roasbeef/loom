@@ -340,6 +340,7 @@ fn attach_to(
       settled: settled_by_kind(registered.opened, registered.executions),
       reconcile_every_ms: registered.reconcile_every_ms,
       executions: registered.executions,
+      mcp: registered.mcp,
     ))
     |> result.map_error(fn(reason) { Failed(unavailable(reason)) }),
   )
@@ -355,7 +356,6 @@ fn attach_to(
       remote_tools: tool_placement.workspace_names,
       attach_within_ms: reach.attach_within_ms,
       mint_token: surface.strong_token,
-      mcp: registered.mcp,
     ))
   let received = clock.read(registered.clock).0
   case attached {

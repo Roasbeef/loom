@@ -150,6 +150,10 @@ pub type Config {
     reconcile_every_ms: Int,
     /// The session's background-execution service.
     executions: Executions,
+    /// The MCP servers the executor's code mode reaches: façades of the
+    /// servers this orchestrator runs, and the names it expects the executor to
+    /// run. The executor asks for it while it builds the scope's plane.
+    mcp: protocol.McpPlan,
   )
 }
 
@@ -339,6 +343,10 @@ fn serve(config: Config, link: Option(HostLink), message: OwnerMessage) -> Nil {
       answer(reply, fn() {
         executions.interact(strand, handle, interaction, within_ms)
       })
+
+    // Asked during the plane build, before the attach is answered and so
+    // before the link is bound; the plan is the port's own, fixed for the open.
+    protocol.AskMcpPlan(reply:) -> process.send(reply, config.mcp)
   }
 }
 
