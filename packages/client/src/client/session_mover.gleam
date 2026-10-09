@@ -961,6 +961,11 @@ fn retire_recorded(
           Error(Stall(
             "the receiver answered but the directory record still says moving",
           ))
+
+        // A session on an executor never has a local record; one that does is
+        // a fault for an operator, and nothing is changed on its strength.
+        record.Local ->
+          Error(Stall("the directory records this session as a local one"))
       }
     Ok(Some(_)) | Ok(None) -> retire_by_rows(environment, move, registration)
   }
@@ -1075,6 +1080,8 @@ fn abandon_recorded(
             record.Serving -> revert(environment, move, reason)
             record.Moving(..) ->
               Stalled("the directory record names another move of this session")
+            record.Local ->
+              Stalled("the directory records this session as a local one")
           }
         Error(store.Mismatch(found: Some(found))) ->
           taken_elsewhere(environment, move, cause, found.owner)

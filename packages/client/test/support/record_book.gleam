@@ -10,7 +10,7 @@
 //// want of a quorum, and a node can be marked as not having seeded the store.
 
 import client/directory/ownership.{type Ownership, Ownership}
-import client/directory/record.{type Record, Moving, Record, Serving}
+import client/directory/record.{type Record, Local, Moving, Record, Serving}
 import client/directory/store
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -168,6 +168,16 @@ pub fn ownership(book: Book, name: String, peer: String) -> Ownership {
       )
     },
     release: fn(session) { swap(session, Some(serving), None) },
+    record_local: fn(session) {
+      let local = Record(owner: name, state: Local)
+      case swap(session, None, Some(local)) {
+        Error(store.Mismatch(Some(found))) if found == local -> Ok(Nil)
+        outcome -> outcome
+      }
+    },
+    release_local: fn(session) {
+      swap(session, Some(Record(owner: name, state: Local)), None)
+    },
     migrated: fn(node) { Ok(process.call(book.inbox, 1000, Seeded(node, _))) },
     mark_migrated: fn() { Ok(Nil) },
     seed_moving: fn(session, op, _to) {

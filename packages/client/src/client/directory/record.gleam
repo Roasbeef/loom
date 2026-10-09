@@ -1,16 +1,23 @@
-//// The owner record of one remote session in the directory store
+//// The owner record of one session in the directory store
 //// (protocol-change/079).
 ////
-//// A deployment with a `[directory]` table keeps one record per session on
-//// an executor, at `[loom, sessions, <id>]` in the Khepri store
-//// `loom_directory`. The record says which orchestrator owns the session, by
-//// distribution node name, and whether that owner is serving it or has begun
-//// handing it to another node. Every change of ownership is one
-//// compare-and-set against this record, so the record is what decides when
-//// two daemons race; the catalogue rows only remember what each daemon began.
+//// A deployment with a `[directory]` table keeps one record per session, at
+//// `[loom, sessions, <id>]` in the Khepri store `loom_directory`. The record
+//// says which orchestrator owns the session, by distribution node name, and
+//// in what state. For a session on an executor that state is `serving` or
+//// `{moving, Op, To}`, and every change of ownership is one compare-and-set
+//// against the record, so the record is what decides when two daemons race;
+//// the catalogue rows only remember what each daemon began.
+////
+//// A local session, whose checkout is a directory on its orchestrator, never
+//// moves, so its record is only where to find it: state `local`. It is written
+//// after the session exists, best-effort, and nothing waits on it. Keeping it
+//// a state of its own means no move's compare-and-set can take a local
+//// session's record as its base: every move write expects `serving` or
+//// `moving`, and `local` matches neither.
 ////
 //// The payload is a plain Erlang term, `{loom_owner, 1, Owner, State}`, with
-//// `State` either `serving` or `{moving, Op, To}`. The Gleam constructors below
+//// `State` one of `serving`, `local` or `{moving, Op, To}`. The Gleam constructors below
 //// compile to exactly that term, so encoding is building a value. Decoding is
 //// the other direction across a durability boundary (Ra's log and snapshots are
 //// on disk), so it is total: a payload with another tag, another version, a
@@ -24,7 +31,7 @@ import gleam/erlang/atom
 import gleam/result
 import storage/catalogue
 
-/// Who owns a remote session, and in what state.
+/// Who owns a session, and in what state.
 pub type Record {
   Record(
     /// The owning orchestrator's distribution node name, `name@host`.
@@ -36,8 +43,13 @@ pub type Record {
 
 /// The owner's state. The constructors compile to the stored atoms and tuples.
 pub type OwnerState {
-  /// The owner serves the session, or will when a client opens it.
+  /// The owner serves a session on an executor, or will when a client opens
+  /// it.
   Serving
+
+  /// The session is local to its owner: its checkout is a directory on the
+  /// owner's machine, it never moves, and the record is a lookup hint only.
+  Local
 
   /// The owner has begun handing the session to the node `to` under the move
   /// `op`, and has stopped serving it.
@@ -149,17 +161,20 @@ fn decoder() -> decode.Decoder(Record) {
   }
 }
 
-// `serving` is an atom and `{moving, Op, To}` a tuple, so the two are tried in
-// turn and a payload that is neither fails both.
+// `serving` and `local` are atoms and `{moving, Op, To}` a tuple, so they are
+// tried in turn and a payload that is none of them fails all three.
 fn state_decoder() -> decode.Decoder(OwnerState) {
-  decode.one_of(serving_decoder(), [moving_decoder()])
+  decode.one_of(atom_state("serving", Serving), [
+    atom_state("local", Local),
+    moving_decoder(),
+  ])
 }
 
-fn serving_decoder() -> decode.Decoder(OwnerState) {
+fn atom_state(name: String, state: OwnerState) -> decode.Decoder(OwnerState) {
   use tag <- decode.then(atom.decoder())
-  case atom.to_string(tag) == "serving" {
-    True -> decode.success(Serving)
-    False -> decode.failure(Serving, "serving")
+  case atom.to_string(tag) == name {
+    True -> decode.success(state)
+    False -> decode.failure(state, name)
   }
 }
 

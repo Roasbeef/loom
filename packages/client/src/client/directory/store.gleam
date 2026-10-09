@@ -533,6 +533,7 @@ pub fn describe_refusal(refusal: WriteRefusal) -> String {
 fn state_words(state: record.OwnerState) -> String {
   case state {
     record.Serving -> " as serving"
+    record.Local -> " as a local session"
     record.Moving(op:, to:) -> " as moving to " <> to <> " under " <> op
   }
 }

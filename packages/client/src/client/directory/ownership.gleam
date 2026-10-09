@@ -19,7 +19,7 @@
 //// else is returned as the store's refusal, because what the record holds
 //// decides what the caller does next, and only the caller knows.
 
-import client/directory/record.{type Record, Moving, Record, Serving}
+import client/directory/record.{type Record, Local, Moving, Record, Serving}
 import client/directory/store.{type Unavailable, type WriteRefusal, Mismatch}
 import gleam/option.{type Option, Some}
 
@@ -45,6 +45,12 @@ pub type Ownership {
     abandon: fn(String, String, String) -> Result(Nil, WriteRefusal),
     /// Deletes the record of a session this node serves.
     release: fn(String) -> Result(Nil, WriteRefusal),
+    /// Records this node as the owner of a local session, as a lookup hint.
+    /// Best-effort: nothing waits on it, and a record already saying so is
+    /// success.
+    record_local: fn(String) -> Result(Nil, WriteRefusal),
+    /// Deletes the record of a local session this node deleted, best-effort.
+    release_local: fn(String) -> Result(Nil, WriteRefusal),
     /// Whether an orchestrator, by node name, has seeded the store from its
     /// catalogue.
     migrated: fn(String) -> Result(Bool, Unavailable),
@@ -66,6 +72,7 @@ pub type Ownership {
 /// ```
 pub fn over_store(node: String) -> Ownership {
   let serving = Record(owner: node, state: Serving)
+  let local = Record(owner: node, state: Local)
   Ownership(
     node:,
     read: store.read,
@@ -100,6 +107,13 @@ pub fn over_store(node: String) -> Ownership {
       )
     },
     release: fn(session) { store.delete_if(session, serving) },
+    record_local: fn(session) {
+      case store.create(session, local) {
+        Error(Mismatch(Some(found))) if found == local -> Ok(Nil)
+        outcome -> outcome
+      }
+    },
+    release_local: fn(session) { store.delete_if(session, local) },
     migrated: store.migrated,
     mark_migrated: fn() { store.mark_migrated(node) },
     seed_moving: fn(session, op, to) {

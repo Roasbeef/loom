@@ -57,7 +57,7 @@ pub fn finish(
       let _unmarked = manager.unmark_deleting(registry, id)
       case found.state {
         record.Moving(..) if found.owner == ownership.node -> Error(Moving)
-        record.Moving(..) | record.Serving -> Error(NotOwner)
+        record.Moving(..) | record.Serving | record.Local -> Error(NotOwner)
       }
     }
     Error(store.NoQuorum(_)) -> Error(NoQuorum)

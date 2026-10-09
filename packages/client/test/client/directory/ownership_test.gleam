@@ -4,7 +4,7 @@
 //// write fails. The store is a VM-wide singleton, so the module is serial.
 
 import client/directory/ownership
-import client/directory/record.{Moving, Record, Serving}
+import client/directory/record.{Local, Moving, Record, Serving}
 import client/directory/store.{Mismatch}
 import gleam/option.{None, Some}
 import support/remote_fixtures
@@ -97,4 +97,22 @@ pub fn the_migration_marker_is_per_node_test() {
   assert a.mark_migrated() == Ok(Nil)
   assert a.migrated(alpha) == Ok(True)
   assert a.migrated(bravo) == Ok(False)
+}
+
+pub fn a_local_record_is_no_base_for_a_move_test() {
+  use <- with_store
+  let a = ownership.over_store(alpha)
+  let local = Record(owner: alpha, state: Local)
+  assert a.record_local(session) == Ok(Nil)
+  assert a.record_local(session) == Ok(Nil)
+  assert a.read(session) == Ok(Some(local))
+
+  // Every write of a move expects `serving` or `moving`, so none of them can
+  // take a local session's record as its base, and neither can a remote delete.
+  assert a.begin_move(session, op, bravo) == Error(Mismatch(Some(local)))
+  assert a.release(session) == Error(Mismatch(Some(local)))
+
+  // Only the local release removes it.
+  assert a.release_local(session) == Ok(Nil)
+  assert a.read(session) == Ok(None)
 }

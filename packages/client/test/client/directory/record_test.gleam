@@ -2,7 +2,7 @@
 //// The payload crosses Ra's durable log, so anything that is not a version 1
 //// record with valid names is refused rather than read as absent.
 
-import client/directory/record.{Moving, Record, Serving}
+import client/directory/record.{Local, Moving, Record, Serving}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/atom
@@ -27,6 +27,16 @@ pub fn a_serving_record_round_trips_test() {
 pub fn a_moving_record_round_trips_test() {
   let moving = Record(owner: alpha, state: Moving(op:, to: "bravo@10.0.0.4"))
   assert record.decode(as_stored(record.encode(moving))) == Ok(moving)
+}
+
+pub fn a_local_record_round_trips_as_its_own_state_test() {
+  let local = Record(owner: alpha, state: Local)
+  assert record.decode(as_stored(record.encode(local))) == Ok(local)
+
+  // It is stored as the atom `local`, which no move's expected value matches.
+  let stored =
+    coerce(#(atom.create("loom_owner"), 1, alpha, atom.create("local")))
+  assert record.decode(stored) == Ok(local)
 }
 
 pub fn the_stored_term_is_the_documented_tuple_test() {
