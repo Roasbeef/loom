@@ -2498,7 +2498,7 @@ fn async_record(id: String, clock: Clock) -> async_execution.Execution {
     deadline_ms: now + 60_000,
     source: "test program",
     seam: "workspace",
-    phase: async_execution.Starting,
+    phase: async_execution.Starting, launch: option.None,
   )
 }
 

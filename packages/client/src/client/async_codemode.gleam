@@ -87,6 +87,10 @@ fn launch(
       source: request.source,
       seam: tool.seam_name(request.seam),
       phase: async_execution.Starting,
+      launch: Some(async_execution.Launch(
+        step: request.step_id,
+        source_index: request.source_index,
+      )),
     )
   let custody = api.AsyncCustody(request.strand, request.op_id, id, api.Owned)
   let execution_agency = agency.async_seam(agents, custody)

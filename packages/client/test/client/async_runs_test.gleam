@@ -510,7 +510,7 @@ fn execution_record(
     deadline_ms: now(harness.time) + 60_000,
     source: "test program",
     seam: "workspace",
-    phase: async_execution.Starting,
+    phase: async_execution.Starting, launch: option.None,
   )
 }
 

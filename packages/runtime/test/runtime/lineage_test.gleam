@@ -597,6 +597,7 @@ pub fn async_child_custody_precedes_lineage_and_fences_steering_test() {
       source: "program",
       seam: "orchestration",
       phase: async_execution.Running,
+      launch: None,
     )
   let assert Ok(_) =
     api.put_reserved_fact_expecting(
@@ -671,6 +672,7 @@ pub fn async_execution_codec_rejects_cross_execution_steps_test() {
       "program",
       "workspace",
       async_execution.Running,
+      None,
     )
   assert async_execution.decode(async_execution.encode(record)) == Ok(record)
   let forged = async_execution.Execution(..record, step: "async/def")
