@@ -272,6 +272,17 @@ has a section, "The session directory in Khepri".
 
 #### Evidence
 
+On the rebase onto PR #923's head `823530f28` (after its third merge of main,
+with this branch's proposal at 081 and its catalogue migration at 14), every
+gate passed: `make lint` (0 errors), `make doc-check`, `make prelude-check`,
+`make model-check` (`KhepriMove` 332,902 states, nine mutants caught), `make
+server-shipment` and `make sandbox`, the shipped `remote_move`, `directory`,
+`directory_quorum`, `peer_mail` and `remote_test` modules with 0 SKIP lines, and
+`make check-gleam` (3725 client tests, 667 s). An earlier `check-gleam` run at a
+load average near 200 failed 13 `ui_route_test` fixtures whose lock helper did
+not settle; the module passed alone once the load fell. The paragraphs and
+table below are earlier runs.
+
 After the re-verify review's fixes (a receiver that owns the record answers
 `Failed`, never `Refused`; the gone record logged on the abandon path; the seed
 marker's assumptions documented) and the rebase onto PR #923's head
