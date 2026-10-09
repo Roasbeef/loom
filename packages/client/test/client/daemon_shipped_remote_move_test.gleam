@@ -39,7 +39,7 @@
 ////
 //// `daemon_shipped_remote_move_members_test_` and
 //// `daemon_shipped_remote_move_members_crash_test_`, the same two with the
-//// session directory's Khepri cluster (protocol-change/079).
+//// session directory's Khepri cluster (protocol-change/080).
 ////
 //// - The three daemons are its members. The cluster is created on the executor
 ////   with `loomd directory bootstrap` before it starts, and every daemon is

@@ -36,7 +36,7 @@
 //// ## The directory
 ////
 //// A plan may list, under a top-level `directory`, the nodes that form the
-//// session directory's Khepri cluster (protocol-change/079): three to seven
+//// session directory's Khepri cluster (protocol-change/080): three to seven
 //// of them, orchestrators and executors, including every orchestrator, since a
 //// member daemon refuses an `[orchestrators.<name>]` peer that is not a member.
 //// Every member peers with every other member, because any member may become

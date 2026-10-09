@@ -1,5 +1,5 @@
 //// The second half of deleting a remote session on a directory member
-//// (protocol-change/079), shared by the control command and by the movers'
+//// (protocol-change/080), shared by the control command and by the movers'
 //// periodic pass.
 ////
 //// The first half, `manager.begin_delete`, writes the session's deletion mark

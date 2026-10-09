@@ -141,7 +141,7 @@ pub type Error {
   SessionMoved(to: String)
 
   /// The session's deletion has begun through the session directory
-  /// (protocol-change/079): its deletion mark is written, and nothing opens it
+  /// (protocol-change/080): its deletion mark is written, and nothing opens it
   /// while the mark stands.
   SessionDeleting
 }
@@ -660,7 +660,7 @@ type Message(instance) {
 
   /// Reserves a creation's registration without opening it, so a directory
   /// member can record the owner before the session can be served
-  /// (protocol-change/079).
+  /// (protocol-change/080).
   Reserve(
     Creation,
     String,
@@ -694,13 +694,13 @@ type Message(instance) {
   DeletingSessions(Subject(Result(List(String), Error)))
 
   /// Every remote registration, active or archived, with its custody row, for
-  /// seeding the directory store from this catalogue (protocol-change/079).
+  /// seeding the directory store from this catalogue (protocol-change/080).
   RemoteRegistrations(
     Subject(Result(List(#(catalogue.Registration, catalogue.Custody)), Error)),
   )
 
   /// The identities of every confirmed local session, active or archived, for
-  /// writing their owner records as lookup hints (protocol-change/079).
+  /// writing their owner records as lookup hints (protocol-change/080).
   LocalSessions(Subject(Result(List(String), Error)))
 
   WorkspaceDefault(String, Subject(Result(View, Error)))
@@ -1774,7 +1774,7 @@ pub fn delete_session(
 }
 
 /// Reserves a creation's registration without opening it
-/// (protocol-change/079). A repeat under the same request key returns the
+/// (protocol-change/080). A repeat under the same request key returns the
 /// stored registration, as `create` does.
 ///
 /// ## Examples
@@ -3440,7 +3440,7 @@ fn place_received(incoming: Import) -> Result(Nil, AdminError) {
 // to open it. The unlink follows the commit for the same reason isolation
 // writes metadata first — a half-applied delete must leave files without a
 // registration, never a registration without files.
-// The first half of a delete through the directory (protocol-change/079). The
+// The first half of a delete through the directory (protocol-change/080). The
 // mark is written in the same turn that finds no slot open, and admission reads
 // it in the turn that reserves one, so nothing can open the session between
 // this turn and the record's deletion. The mark comes before the record is

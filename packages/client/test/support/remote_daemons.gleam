@@ -45,7 +45,7 @@
 ////    `executor_scope` reads the executor's ledger from a copy, to see how it
 ////    closed a scope.
 //// 7. **The session directory.** `directory_table` renders the `[directory]`
-////    table of a Khepri member (protocol-change/079), `bootstrap_directory`
+////    table of a Khepri member (protocol-change/080), `bootstrap_directory`
 ////    runs `loomd directory bootstrap` through the daemon's own launcher, and
 ////    `await_directory` polls `directory.status` until a member has joined a
 ////    cluster with every voter.
@@ -1929,7 +1929,7 @@ pub fn await_moved(
 // --- the session directory ---------------------------------------------------
 
 /// The `[directory]` table of a daemon that is a member of the session
-/// directory's Khepri cluster (protocol-change/079). Every member's
+/// directory's Khepri cluster (protocol-change/080). Every member's
 /// configuration names the same members.
 ///
 /// ## Examples

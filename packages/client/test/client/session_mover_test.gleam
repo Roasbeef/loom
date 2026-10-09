@@ -1451,7 +1451,7 @@ pub fn a_daemon_with_no_movers_lists_no_destination_test() {
   session_movers.idle().begin(catalogue.Pending(session: "s", op: "op", to: "x"))
 }
 
-// --- on a directory member (protocol-change/079) -----------------------------
+// --- on a directory member (protocol-change/080) -----------------------------
 
 // A rig whose two daemons decide by a shared record book: the source writes it
 // as "alpha" and the receiver as "bravo".

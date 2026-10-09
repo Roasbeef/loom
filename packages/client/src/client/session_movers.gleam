@@ -28,7 +28,7 @@
 ////   nothing, so two owners asking at once, or a command racing a restart, start
 ////   one mover.
 ////
-//// On a directory member (protocol-change/079) two more things happen on the
+//// On a directory member (protocol-change/080) two more things happen on the
 //// tick. A move that has stalled for thirty minutes while the store had a
 //// quorum, toward a receiver whose migration marker exists, is given up
 //// (`session_mover.give_up`), which is safe because the abandon is a
@@ -100,7 +100,7 @@ pub type Control {
 }
 
 /// The work a directory member's movers do on their tick beside the moves
-/// (protocol-change/079). A daemon that is not a member passes `no_upkeep()`.
+/// (protocol-change/080). A daemon that is not a member passes `no_upkeep()`.
 pub type Upkeep {
   Upkeep(
     /// Runs on every tick: the seed, until it has run once, and the deletions
@@ -213,7 +213,7 @@ pub fn start(
 }
 
 /// `start`, with how long a member lets a move stall before it gives it up and
-/// the member's upkeep (protocol-change/079); a daemon passes
+/// the member's upkeep (protocol-change/080); a daemon passes
 /// `give_up_after_ms` and an `Upkeep` over its registry and its ownership.
 ///
 /// ## Examples

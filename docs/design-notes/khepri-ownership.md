@@ -1,6 +1,6 @@
 # Khepri session ownership: the model and the implementation plan
 
-Status: **implemented, 2026-10-08.** This note ordered the work that [protocol-change/079](../../protocol-change/079-khepri-session-ownership.md)
+Status: **implemented, 2026-10-08.** This note ordered the work that [protocol-change/080](../../protocol-change/080-khepri-session-ownership.md)
 specifies and [docs/architecture/directory.md](../architecture/directory.md)
 describes. It has three parts: the TLA+ model of a move under the record, the
 implementation slices in order with what each became, and what is left open.
@@ -140,7 +140,7 @@ member variants.
 
 ### Slice 9: documentation
 
-The architecture page and 079 at the implemented spellings, the package
+The architecture page and 080 at the implemented spellings, the package
 `CLAUDE.md` files through `/doc-gardening`, `docs/distributed-setup.md`,
 `docs/configuration.md` and `docs/next.md`.
 

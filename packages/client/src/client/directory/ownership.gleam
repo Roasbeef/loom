@@ -1,5 +1,5 @@
 //// The writes an orchestrator makes to the session directory's owner records
-//// (protocol-change/079), as one record of functions.
+//// (protocol-change/080), as one record of functions.
 ////
 //// Every change of ownership is one compare-and-set on one record, and each
 //// function here names the exact value it expects, so two daemons racing for a

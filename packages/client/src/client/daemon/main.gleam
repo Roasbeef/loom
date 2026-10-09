@@ -128,7 +128,7 @@ pub type Config {
     orchestrators: List(orchestrators.Orchestrator),
     /// The `[directory]` table, read at startup and never reread: whether this
     /// daemon is a member of the session directory's Khepri cluster and who the
-    /// members are (protocol-change/079). `None` leaves the daemon exactly as
+    /// members are (protocol-change/080). `None` leaves the daemon exactly as
     /// it was before the directory existed.
     directory: Option(directory_settings.Settings),
     /// The running member actor, set by `run` once `start_directory` has
@@ -529,7 +529,7 @@ pub fn start_executor(
 }
 
 /// Starts this daemon's membership in the session directory's Khepri cluster
-/// when the configuration has a `[directory]` table (protocol-change/079), and
+/// when the configuration has a `[directory]` table (protocol-change/080), and
 /// nothing otherwise. A store marked joined is started before this returns; one
 /// that has not joined is joined in the background, and until then every store
 /// call is refused as no quorum. The actor is linked to the process that starts
@@ -705,7 +705,7 @@ pub fn catalogue_holds(
 // A directory member reads its copy of the owner record instead of asking its
 // peers, and on an orchestrator (a daemon that places sessions on executors)
 // it also carries the record writes; an executor member builds none, which is
-// how it is held to never writing (protocol-change/079).
+// how it is held to never writing (protocol-change/080).
 fn session_directory_of(
   config: Config,
   registry: manager.Manager(instance),

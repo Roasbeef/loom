@@ -7142,7 +7142,7 @@ a partial `Unsettled` snapshot, while explicit file queries retain their own
 server acquisition and settlement. A healthy control cannot certify unavailable
 owners elsewhere in the workspace. Protocol 078 records that scope contract.
 
-## The session directory in Khepri (protocol-change/079)
+## The session directory in Khepri (protocol-change/080)
 
 A deployment may add a `[directory]` table, which makes the listed orchestrators
 and executors the members of one Khepri cluster. Khepri then holds the single

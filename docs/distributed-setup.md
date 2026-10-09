@@ -1205,7 +1205,7 @@ a daemon asked about a session it does not hold asks the others. A deployment
 can instead keep one authoritative record of each remote session's owner in a
 Khepri cluster whose members are the orchestrators and the executors
 ([the session directory](architecture/directory.md),
-[protocol-change/079](../protocol-change/079-khepri-session-ownership.md)). Choose
+[protocol-change/080](../protocol-change/080-khepri-session-ownership.md)). Choose
 it when you run two orchestrators and want a move that can be abandoned when the
 receiver goes silent, lookups that never wait on a peer that is down, and the
 record that failover will need. Everything above still applies; this adds to

@@ -232,7 +232,7 @@ there.
 ## The session directory in Khepri (`directory/khepri`)
 
 This section covers `directory/khepri`, built on top of the tree this handoff
-describes: the session directory in Khepri (protocol-change/079). Everything
+describes: the session directory in Khepri (protocol-change/080). Everything
 above still describes the distributed runtime it builds on. What the branch adds is a deployment option, a `[directory]`
 table, under which the orchestrators and executors form one Khepri cluster that
 holds the single authoritative record of which orchestrator owns each remote
@@ -246,7 +246,7 @@ publishes the branch.
 
 Read [the session directory](architecture/directory.md) for the design,
 [ADR-019](adr/019-khepri-for-session-ownership.md) for the choice of Khepri and
-what the spikes measured, [protocol-change/079](../protocol-change/079-khepri-session-ownership.md)
+what the spikes measured, [protocol-change/080](../protocol-change/080-khepri-session-ownership.md)
 for the interfaces, [the plan](design-notes/khepri-ownership.md) for how the work
 was ordered, and the section "The session directory" in
 [the setup guide](distributed-setup.md) for running it. `packages/client/CLAUDE.md`

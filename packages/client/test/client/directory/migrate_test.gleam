@@ -1,5 +1,5 @@
 //// Seeding the directory store from a version 12 catalogue
-//// (protocol-change/079), over a real registry and a one-member Khepri store
+//// (protocol-change/080), over a real registry and a one-member Khepri store
 //// in the test VM. Each custody row becomes the record the table in
 //// `client/directory/migrate` names, a conflict is left standing and reported,
 //// the marker is written last, and a second run does nothing. The store is a

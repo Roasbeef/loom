@@ -310,7 +310,7 @@ pub fn a_directory_activates_nothing_until_it_is_given_the_question_test() {
   assert asking.lookup(id) == Error(Unknown)
 }
 
-// --- the directory backing (protocol-change/079) ------------------------------
+// --- the directory backing (protocol-change/080) ------------------------------
 
 fn reading(
   answer: Result(option.Option(record.Record), store.Unavailable),

@@ -574,7 +574,7 @@ fi
 # as before. The flags are emulator arguments, not ERL_FLAGS, so a path with a
 # space survives. connect_all is off so that a node that is a member of the
 # session directory's cluster, which runs visible, is never connected by
-# \`global\` to a node its peers know (protocol-change/079); a hidden node is
+# \`global\` to a node its peers know (protocol-change/080); a hidden node is
 # unaffected by it.
 dist_flags=()
 if [[ -n "\${LOOM_DISTRIBUTION_OPTFILE:-}" ]]; then

@@ -1,5 +1,5 @@
 //// The directory members of `client_distribution_fixture_ffi`'s three-emulator
-//// scenarios (protocol-change/079).
+//// scenarios (protocol-change/080).
 ////
 //// Each child emulator boots with the production TLS distribution flags as a
 //// directory member and calls into this module. One member bootstraps the

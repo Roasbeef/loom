@@ -80,7 +80,7 @@ pub fn options(peers: List(#(String, BitArray)), files: files) -> String
 /// Checks the boot preconditions, reads the credentials, makes sure an epmd
 /// answers, and starts TLS distribution under `dist_auto_connect = never`:
 /// hidden, or visible when `members` names the directory's members
-/// (protocol-change/079), in which case `connect_all` must be off.
+/// (protocol-change/080), in which case `connect_all` must be off.
 ///
 /// OTP `net_kernel:start/2`, `init:get_argument/1` and `ssl_dist_sup:consult/1`.
 /// A node cannot start distribution except through `net_kernel`, and the

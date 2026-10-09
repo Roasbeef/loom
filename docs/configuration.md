@@ -106,7 +106,7 @@ is not in this list is refused.
 | `pools` | table of `[pools.<name>]` | Named groups of executors a session may be placed on without naming one (from protocol-change 078). | [`[pools.<name>]`](#poolsname) |
 | `workspaces` | table of `[workspaces.<name>]` | Checkouts this machine serves to orchestrators (from protocol-change 078). | [`[workspaces.<name>]`](#workspacesname) |
 | `orchestrators` | table of `[orchestrators.<name>]` | Other orchestrators this daemon asks who owns a session it does not know (from protocol-change 078). | [`[orchestrators.<name>]`](#orchestratorsname) |
-| `directory` | table | Membership of the session directory's Khepri cluster (from protocol-change 079). | [`[directory]`](#directory) |
+| `directory` | table | Membership of the session directory's Khepri cluster (from protocol-change 080). | [`[directory]`](#directory) |
 
 ## `[models.<name>]`
 
@@ -649,7 +649,7 @@ without `[orchestrators]` asks nobody.
 
 ## `[directory]`
 
-(From protocol-change 079.) Optional, read once when the daemon starts. It makes
+(From protocol-change 080.) Optional, read once when the daemon starts. It makes
 the daemon a member of the session directory's Khepri cluster, which holds the
 single authoritative record of which orchestrator owns each session on an
 executor. Write the same table on every orchestrator and executor that is a member.

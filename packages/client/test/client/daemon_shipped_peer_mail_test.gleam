@@ -33,7 +33,7 @@
 //// `a_message_between_directory_members_is_delivered_once_the_owner_returns_test_`
 ////
 //// The same six steps with the session directory's Khepri cluster
-//// (protocol-change/079): `alpha`, `bravo` and an executor are its members,
+//// (protocol-change/080): `alpha`, `bravo` and an executor are its members,
 //// and `a` and `b` are remote sessions on that executor, since a member
 //// records only the sessions it places on executors. `alpha` finds `b`'s owner
 //// in its own copy of the owner records instead of asking `bravo`, which is

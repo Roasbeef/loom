@@ -24,7 +24,7 @@
 ////   `connect` makes, and only to configured peers;
 //// - the node is hidden, and only configured peers are allowed to connect.
 ////   The one exception is a node that is a member of the session directory's
-////   Khepri cluster (protocol-change/079): it is started visible, because Ra
+////   Khepri cluster (protocol-change/080): it is started visible, because Ra
 ////   reads `nodes()` to decide where to send snapshots and heartbeats, and it
 ////   must run with `connect_all` off so that `global` never connects it to a
 ////   node because a peer is connected there. Its connections to other members
@@ -107,7 +107,7 @@ pub opaque type Peer {
 }
 
 /// Whether this node is a member of the session directory's Khepri cluster
-/// (protocol-change/079), and if so who the members are.
+/// (protocol-change/080), and if so who the members are.
 pub type Cluster {
   /// The node is not a member: it starts hidden and connects hidden.
   NotMember
