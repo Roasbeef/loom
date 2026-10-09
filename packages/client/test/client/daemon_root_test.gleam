@@ -90,6 +90,7 @@ fn saved(path: String) {
       request_key: "saved",
       state: catalogue.Reserved,
       profile: option.None,
+      model: option.None,
       executor: "",
       pool: "",
       subtitle: option.None,

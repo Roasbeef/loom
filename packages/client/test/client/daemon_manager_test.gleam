@@ -40,6 +40,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
     profile: option.None,
+    model: option.None,
     executor: "",
     pool: "",
     subtitle: option.None,
@@ -152,6 +153,7 @@ pub fn rename_requires_owner_epoch_and_preserves_residency_test() {
         record.name,
         record.configuration,
         option.None,
+        option.None,
         "",
         "",
       ),
@@ -225,6 +227,7 @@ pub fn archive_requires_owner_and_stopped_custody_test() {
         record.workspace,
         record.name,
         record.configuration,
+        option.None,
         option.None,
         "",
         "",
@@ -371,6 +374,7 @@ pub fn domain_configuration_is_selected_at_creation_not_open_test() {
             example.1,
             "Session",
             example.2,
+            option.None,
             option.None,
             "",
             "",
@@ -683,6 +687,7 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       "first",
       "",
       option.None,
+      option.None,
       "",
       "",
     )
@@ -764,6 +769,7 @@ pub fn reserved_creation_requires_explicit_retry_after_capacity_refusal_test() {
       "/workspace/project",
       "second",
       "",
+      option.None,
       option.None,
       "",
       "",
@@ -1939,6 +1945,54 @@ pub fn every_open_builds_from_the_profile_the_registration_stores_test() {
     as "the resume admits the session again"
   assert process.receive(built, 2000) == Ok(option.Some("alt"))
   await_status(registry, profiled.id, manager.Resident(second))
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn every_open_builds_from_the_model_the_registration_stores_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let pinned =
+    catalogue.Registration(
+      ..registration(921),
+      profile: option.Some("alt"),
+      model: option.Some("fast"),
+    )
+  assert catalogue.reserve(store, pinned) == Ok(pinned)
+  let assert Ok(pinned) = catalogue.confirm(store, pinned.id)
+    as "fixture represents initialized metadata"
+  let selected =
+    domain.Domain(
+      domain.key(domain.SessionOnly, pinned.workspace, pinned.id),
+      domain.SessionOnly,
+      pinned.workspace,
+      "",
+      "/fixture-domains/" <> pinned.id <> "/memory.db",
+      "/fixture-domains/" <> pinned.id <> "/search.db",
+    )
+  assert domain.bind(store, pinned.id, selected) == Ok(selected)
+  let built = process.new_subject()
+  let registry =
+    start(store, 1, fn(record, _) {
+      process.send(built, #(record.profile, record.model))
+      Ok(record.id)
+    })
+
+  // The first open and the open after a stop both hand the builder the stored
+  // key beside the stored profile, which is what lets a resume resolve both
+  // again.
+  let assert Ok(manager.Opening(first)) = manager.open(registry, pinned.id)
+    as "the first open admits the session"
+  assert process.receive(built, 2000)
+    == Ok(#(option.Some("alt"), option.Some("fast")))
+  await_status(registry, pinned.id, manager.Resident(first))
+  let assert Ok(_) = manager.stop_session(registry, pinned.id)
+    as "the session is stopped"
+  await_status(registry, pinned.id, manager.Saved)
+  let assert Ok(manager.Opening(second)) = manager.open(registry, pinned.id)
+    as "the resume admits the session again"
+  assert process.receive(built, 2000)
+    == Ok(#(option.Some("alt"), option.Some("fast")))
+  await_status(registry, pinned.id, manager.Resident(second))
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }

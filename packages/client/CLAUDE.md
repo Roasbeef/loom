@@ -6092,6 +6092,36 @@ and only for a page that holds the creation capability; `ui_socket.create_for`
 takes the chosen profile and maps `unknown_profile` to
 `creations.UnknownProfile`.
 
+### Pinned main model (protocol 080)
+
+A session can also be created on one `[models.<key>]` entry. The key is a second
+optional `sessions.create` field (`protocol.CreateSession.model`, decoded by
+`model_field` against `storage/catalogue.is_model_key` and refused when present
+and not a key), a field of `manager.Creation` and of the registration
+(`Registration.model`, compared on a retry like the profile), and an argument of
+`serve.load_config`, which applies `catalog.select_model` after
+`select_profile`: the `main` chain becomes that entry alone and no other role
+moves. Every open resolves it again, so a key the file no longer defines fails
+the open with `unknown model "x"; the configuration defines: ...` and never
+opens on the default model; with no config file it fails like a profile does.
+`daemon/profiles` answers the daemon's pre-reservation question for both:
+`check_choice` judges the profile and then the model (`check_model`, a third
+`Refusal`, `UnknownModel`), `server.create_session` maps it to the code
+`unknown_model`, and the control dispatch words it with the keys that exist.
+`HomeAttachment.models` reads `profiles.model_keys` for the web form once at page
+open and, as for profiles, only for a page that holds the creation capability.
+`ui_socket.create_for` and `create_task` take a `creations.Roles` in place of a
+bare profile and map `unknown_model` to `creations.UnknownModel`. The observer
+socket's admission is untouched: the form's existing submit carries the field.
+
+The model composes with a session's place (protocol 078): `manager.Creation` and
+the registration carry the model beside `executor` and `pool`, `reserve_creation`
+compares all of them on a retry (a pooled request still does not compare the
+executor). The web
+form for a registered workspace draws no model select, so `create_for` passes
+`creations.default_roles` for that place; the control command can pin a model on
+an executor or pool session.
+
 ## Trusted distribution membership (protocol 078)
 
 `client/distribution` is the membership layer for orchestrator and executor
@@ -6797,7 +6827,7 @@ the session first opens and then never again.
   `chosen` is `manager.seed_executor`, a cast that runs `catalogue.seed_executor`
   in the registry's turn, which writes the `executor` column once, only for a
   registration with a pool and no executor.
-- The catalogue is at version 12 (v12 adds `catalogue_session_moves`, the
+- The catalogue is at version 13 (v13 adds `catalogue_session_moves`, the
   custody of a session moving between orchestrators, read with
   `catalogue.custody`; nothing in the client reads it yet). `Registration.pool` is part of the creation
   request and `reserve_creation` compares it, and for a pooled request it does not

@@ -637,7 +637,11 @@ fn creating_from_home(
     Ok(chosen) -> Some(chosen)
     Error(Nil) -> None
   }
-  let ask = fn(place, name, sharing, profile, deliver) {
+  let model = case req.get_header(request, "x-create-model") {
+    Ok(chosen) -> Some(chosen)
+    Error(Nil) -> None
+  }
+  let ask = fn(place, name, sharing, roles, deliver) {
     ui_socket.create_task(
       standing,
       tickets,
@@ -657,7 +661,7 @@ fn creating_from_home(
       place,
       name,
       sharing,
-      profile,
+      roles,
       deliver,
     )
   }
@@ -676,7 +680,7 @@ fn creating_from_home(
         Ok(_) -> creations.Typed(workspace)
         Error(Nil) -> creations.Drawn(workspace)
       }
-      ask(place, name, sharing, profile, fn(answer) {
+      ask(place, name, sharing, creations.Roles(profile:, model:), fn(answer) {
         process.send(answers, answer)
       })
       case process.receive(answers, 10_000) {
@@ -1351,7 +1355,7 @@ fn create_session(ready: root.Ready(String), key: String, seed: Int) -> String {
   let assert Ok(created) =
     manager.create(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, "", None, "", ""),
+      manager.Creation(key, ready.state_root, key, "", None, None, "", ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
     )
@@ -3201,7 +3205,7 @@ fn create_shared_session(
   let assert Ok(created) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(key, ready.state_root, key, "", None, "", ""),
+      manager.Creation(key, ready.state_root, key, "", None, None, "", ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(0), seed),
       scope: domain.SessionOnly,
@@ -3714,7 +3718,7 @@ pub fn a_creation_that_cannot_start_says_why_and_is_released_test() {
         creations.Drawn(ready.state_root),
         name,
         creations.Private,
-        None,
+        creations.default_roles,
         within: 3000,
       )
     }
@@ -3750,7 +3754,7 @@ pub fn a_refused_release_keeps_the_row_and_the_reason_test() {
         creations.Drawn(ready.state_root),
         "broken-kept",
         creations.Private,
-        None,
+        creations.default_roles,
         within: 3000,
       )
       == creations.Unstarted(Some(broken_reason), creations.InList)
@@ -3777,7 +3781,7 @@ pub fn a_member_page_learns_no_startup_reason_test() {
         creations.Drawn(ready.state_root),
         "broken-member",
         creations.Private,
-        None,
+        creations.default_roles,
         within: 3000,
       )
       == creations.Declined(creations.NotOwner)
@@ -4370,7 +4374,7 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
-        None,
+        creations.default_roles,
         within: 2000,
       )
     }
@@ -4394,7 +4398,7 @@ pub fn each_standing_that_is_not_the_owners_asks_nothing_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
-        None,
+        creations.default_roles,
         within: 2000,
       )
       == creations.Declined(creations.NotOwner)
@@ -4439,7 +4443,7 @@ pub fn a_registered_workspace_is_created_as_a_name_on_an_executor_test() {
         place,
         name,
         sharing,
-        None,
+        creations.default_roles,
         within: 2000,
       )
     }
@@ -4495,7 +4499,7 @@ pub fn an_unconfigured_executor_is_refused_in_fixed_words_test() {
         creations.Registered("gone", "app"),
         "",
         creations.Private,
-        None,
+        creations.default_roles,
         within: 2000,
       )
       == creations.Declined(creations.UnknownExecutor)
@@ -4524,7 +4528,7 @@ pub fn the_eleventh_creation_in_an_hour_is_refused_test() {
         creations.Drawn(workspace),
         name,
         creations.Shareable,
-        None,
+        creations.default_roles,
         within: 2000,
       )
     }
@@ -4574,7 +4578,7 @@ pub fn each_creation_draws_its_own_request_key_test() {
           creations.Drawn(ready.state_root),
           "k",
           creations.Private,
-          None,
+          creations.default_roles,
           within: 2000,
         )
       Nil
@@ -4620,7 +4624,7 @@ pub fn a_session_that_does_not_open_is_reported_as_created_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
-        None,
+        creations.default_roles,
         within: 300,
       )
       == creations.Unstarted(None, creations.InList)
@@ -4657,7 +4661,7 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       creations.Drawn(ready.state_root),
       "slow",
       creations.Private,
-      None,
+      creations.default_roles,
       fn(answer) { process.send(answers, #(answer, process.self())) },
     )
     assert process.receive(answers, 0) == Error(Nil)
@@ -4856,7 +4860,7 @@ pub fn a_remembered_folder_is_judged_again_at_the_press_test() {
         creations.Drawn(path),
         "again",
         creations.Private,
-        None,
+        creations.default_roles,
         within: 2000,
       )
     }
@@ -6734,6 +6738,7 @@ pub fn the_admin_read_says_whether_the_chosen_session_may_be_shared_test() {
           "admin-scope-private",
           "",
           None,
+          None,
           "",
           "",
         ),
@@ -6773,6 +6778,7 @@ pub fn the_admin_read_summarises_each_listed_session_test() {
           ready.state_root,
           "admin-rows-private",
           "",
+          None,
           None,
           "",
           "",
@@ -8501,7 +8507,7 @@ pub fn a_page_creation_carries_the_chosen_profile_to_the_registry_test() {
       creator_standing(ready, credential, access.Operator)
     let asked = process.new_subject()
     let create = counting_create(ready, existing, asked)
-    let attempt = fn(profile) {
+    let attempt = fn(roles) {
       ui_socket.create_for(
         standing,
         tickets,
@@ -8512,16 +8518,78 @@ pub fn a_page_creation_carries_the_chosen_profile_to_the_registry_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
-        profile,
+        roles,
         within: 2000,
       )
     }
-    let _ = attempt(Some("deepseek"))
+    let _ = attempt(creations.Roles(Some("deepseek"), None))
     let assert Ok(named) = process.receive(asked, 0)
     assert named.profile == Some("deepseek")
-    let _ = attempt(None)
+    assert named.model == None
+    let _ = attempt(creations.default_roles)
     let assert Ok(plain) = process.receive(asked, 0)
     assert plain.profile == None
+    assert plain.model == None
+  })
+}
+
+// The model a page chose reaches the creation beside the profile, and each is
+// independent: the registry stores both when both were chosen and either alone.
+pub fn a_page_creation_carries_the_chosen_model_to_the_registry_test() {
+  fixture(fn(ready, _, credential) {
+    let existing = create_session(ready, "model-known", 1110)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let asked = process.new_subject()
+    let create = counting_create(ready, existing, asked)
+    let attempt = fn(roles) {
+      ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        create,
+        no_release,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        "x",
+        creations.Private,
+        roles,
+        within: 2000,
+      )
+    }
+    let _ = attempt(creations.Roles(None, Some("fast")))
+    let assert Ok(pinned) = process.receive(asked, 0)
+    assert pinned.model == Some("fast")
+    assert pinned.profile == None
+    let _ = attempt(creations.Roles(Some("deepseek"), Some("fast")))
+    let assert Ok(both) = process.receive(asked, 0)
+    assert both.model == Some("fast")
+    assert both.profile == Some("deepseek")
+  })
+}
+
+// The registry's refusal of a model its configuration does not define reaches
+// the page as the model's own fixed words, not as a general failure.
+pub fn an_unknown_model_is_declined_in_its_own_words_test() {
+  fixture(fn(ready, _, credential) {
+    let _existing = create_session(ready, "model-unknown", 1111)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let refuse = fn(_, _, _) { Error("unknown_model") }
+    assert ui_socket.create_for(
+        standing,
+        tickets,
+        page_open,
+        refuse,
+        no_release,
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        "x",
+        creations.Private,
+        creations.Roles(None, Some("nope")),
+        within: 2000,
+      )
+      == creations.Declined(creations.UnknownModel)
   })
 }
 
@@ -8543,7 +8611,7 @@ pub fn an_unknown_profile_is_declined_in_its_own_words_test() {
         creations.Drawn(ready.state_root),
         "x",
         creations.Private,
-        Some("nope"),
+        creations.Roles(Some("nope"), None),
         within: 2000,
       )
       == creations.Declined(creations.UnknownProfile)

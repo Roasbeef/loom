@@ -240,7 +240,16 @@ pub fn a_session_this_daemon_holds_never_asks_the_directory_test() {
     let assert Ok(held) =
       manager.create(
         ready.registry,
-        manager.Creation("held", ready.state_root, "Held", "", None, "", ""),
+        manager.Creation(
+          "held",
+          ready.state_root,
+          "Held",
+          "",
+          None,
+          None,
+          "",
+          "",
+        ),
         directory: ready.sessions_directory,
         generator: ids.generator(clock.fixed(0), 700),
       )
@@ -346,6 +355,7 @@ pub fn the_catalogue_answers_owned_for_every_state_and_not_owned_for_absence_tes
         name: "Reserved",
         configuration: "",
         profile: None,
+        model: None,
         executor: "",
         pool: "",
         created_at: 0,
@@ -385,6 +395,7 @@ pub fn a_session_that_moved_away_is_answered_as_moved_to_its_new_owner_test() {
         name: "Moving",
         configuration: "",
         profile: None,
+        model: None,
         executor: "box",
         pool: "",
         created_at: 0,

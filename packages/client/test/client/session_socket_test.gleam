@@ -111,6 +111,7 @@ fn fixture_with(
         "socket",
         "",
         None,
+        None,
         "",
         "",
       ),

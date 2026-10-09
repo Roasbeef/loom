@@ -50,6 +50,26 @@ pub type Sharing {
   Private
 }
 
+/// Which model roles a creation asks for, beyond the daemon's defaults
+/// (protocol-change/076 and 080). A profile and a model are independent and
+/// compose: the model, when there is one, replaces the `main` chain of whatever
+/// role set the profile (or the configuration) gives. Both are text the page was
+/// told when it opened, chosen from a list and never typed, and the daemon checks
+/// each against its configuration again when the creation runs.
+pub type Roles {
+  Roles(
+    /// The profile's name, or `None` for the configuration's default roles.
+    profile: Option(String),
+    /// The `[models.<key>]` key the session's `main` role is pinned to, or
+    /// `None` for the chain the profile or configuration gives.
+    model: Option(String),
+  )
+}
+
+/// The roles a creation gets when the form chose nothing: the configuration's
+/// own, with no profile and no pinned model.
+pub const default_roles = Roles(profile: None, model: None)
+
 /// The most bytes a typed path may hold, which is the catalogue's own bound on
 /// a workspace.
 pub const path_limit = 4096
@@ -170,6 +190,12 @@ pub type Reason {
   /// draw (protocol-change/076).
   UnknownProfile
 
+  /// The model the form chose is not one the daemon's configuration defines
+  /// now. As for a profile, the page offers only keys it read when it opened, so
+  /// this is a configuration that changed under the person or a frame the page
+  /// did not draw (protocol-change/080).
+  UnknownModel
+
   /// The executor the form chose is not an `[executors.<name>]` of the daemon's
   /// configuration. The page offers only the executors it was given when it
   /// opened, so this is a frame the page did not draw (protocol-change/078).
@@ -221,6 +247,8 @@ pub fn reason_words(reason: Reason) -> String {
       "Use a name of up to 256 bytes with no control or invisible characters."
     UnknownProfile ->
       "That model profile is not in the configuration now. Reload the page."
+    UnknownModel ->
+      "That model is not in the configuration now. Reload the page."
     UnknownExecutor ->
       "That executor is not in the daemon's configuration now. Reload the page."
     InvalidWorkspaceName ->

@@ -19,13 +19,13 @@ with these forks: they define the same modules.
 
 ## Key Types
 
-- The catalogue is at `user_version` 12. Each later version has its own embedded
+- The catalogue is at `user_version` 13. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
   `catalogue_recent_folders_schema`, `catalogue_profiles_schema`,
-  `catalogue_executors_schema`, `catalogue_pools_schema`,
-  `catalogue_moves_schema`), and
+  `catalogue_models_schema`, `catalogue_executors_schema`,
+  `catalogue_pools_schema`, `catalogue_moves_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -50,10 +50,18 @@ with these forks: they define the same modules.
   configuration file and the wire. A stored value that is not a name fails the
   read with `Invalid` and is never read as "no profile", because that would open
   a profiled session under the default roles.
+- `Registration.model: Option(String)` is the `[models.<key>]` key the session's
+  `main` role was pinned to at creation (protocol-change/080), stored as version
+  10's `model` column (`NOT NULL DEFAULT ''`, empty meaning none) and carried,
+  compared on a retry and read exactly as `profile` is. `is_model_key` is the
+  whole grammar: 1 to `model_key_limit` (64) bytes, the column's own bound, since
+  a `[models.<key>]` key is any TOML key. Because the column cannot hold more than
+  the limit, a stored value is always a key, and there is no damaged-model read to
+  refuse.
 - `Registration.executor: String` names the `[executors.<name>]` a session's
   workspace is registered on, empty for a local session (protocol-change/078).
-  Version 10 adds it as a `NOT NULL DEFAULT ''` column of `catalogue_sessions`,
-  so a v9 row reads back as local, and it is part of the creation request: a
+  Version 11 adds it as a `NOT NULL DEFAULT ''` column of `catalogue_sessions`,
+  so a v10 row reads back as local, and it is part of the creation request: a
   retry that repeats the key with another executor is a `Conflict`. When it is
   set, `workspace` holds the registered workspace name and never a path on this
   host. `validate` enforces the split from the text alone: a local workspace
@@ -64,7 +72,7 @@ with these forks: they define the same modules.
   register the same one. `storage/domain.validate` lets only a `SessionOnly`
   domain carry a workspace name; the workspace aggregate stays path-keyed.
 - `Registration.pool: String` names the `[pools.<name>]` a session was created
-  in, empty for a session that named none. Version 11 adds it as a
+  in, empty for a session that named none. Version 12 adds it as a
   `NOT NULL DEFAULT ''` column, and it is part of the creation request. A
   pooled session's `executor` is empty at creation and is set once by
   `seed_executor` after its first attach chose one (the executor shown in
@@ -74,7 +82,7 @@ with these forks: they define the same modules.
   shares the profile grammar.
 - `catalogue.Custody` says who serves a session, apart from `State` and
   `Visibility`: `Resident` (no row), `Moving(op, to)`, `Moved(op, to)` and
-  `Imported(op, from)`. Version 12 adds `catalogue_session_moves(session_id,
+  `Imported(op, from)`. Version 13 adds `catalogue_session_moves(session_id,
   op, peer, state)`, one row per session, with `state` one of `moving`, `moved`
   and `imported`. `custody` reads it; `begin_move`, `finish_move`,
   `abort_move` and `import_session` are compare-and-set transitions, each in

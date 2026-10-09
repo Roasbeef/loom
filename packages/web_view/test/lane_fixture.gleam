@@ -2565,3 +2565,78 @@ pub fn prompted(text: String) -> session_channel.Update {
     [],
   )
 }
+
+/// A record of `seq` whose parent is the record of `parent` (none for a
+/// strand's first), holding a person's message of `text` sent by `origin`.
+/// Strands that share a session interleave their sequences, so a fixture that
+/// holds two strands links each record to its own parent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.said_after(5, Some(4), "link the PR", Some(message.Origin("p", "Owner")))
+/// ```
+pub fn said_after(
+  seq: Int,
+  parent: Option(Int),
+  text: String,
+  origin: Option(message.Origin),
+) -> snapshot.Item {
+  linked(seq, parent, said(text, origin))
+}
+
+/// A record of `seq` after the record of `parent` holding an assistant's text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.answered_after(6, Some(5), "https://example.test/pull/1")
+/// ```
+pub fn answered_after(
+  seq: Int,
+  parent: Option(Int),
+  text: String,
+) -> snapshot.Item {
+  linked(seq, parent, assistant([message.AssistantText(text, None)]))
+}
+
+fn linked(
+  seq: Int,
+  parent: Option(Int),
+  body: message.AgentMessage,
+) -> snapshot.Item {
+  snapshot.Loaded(
+    entry.MessageEntry(
+      id(seq),
+      option.map(parent, id),
+      seq,
+      10_000 + seq,
+      body,
+      False,
+    ),
+    100,
+  )
+}
+
+/// A capture of the newest `count` of `items` (oldest first), with each of
+/// `leaves` naming the last record of a strand's ancestry by its sequence and
+/// `main` running under `operation` when one is given.
+///
+/// ## Examples
+///
+/// ```gleam
+/// lane_fixture.cut(items, 100, [#("main", 6)], None)
+/// ```
+pub fn cut(
+  items: List(snapshot.Item),
+  count: Int,
+  leaves: List(#(String, Int)),
+  operation: Option(String),
+) -> session_channel.Update {
+  let held = list.drop(items, list.length(items) - count)
+  let newest =
+    list.fold(held, 0, fn(newest, item) {
+      int.max(newest, snapshot.sequence(item))
+    })
+  capture_leaves(held, newest, leaves, operation, [], [])
+}

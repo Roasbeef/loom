@@ -86,10 +86,10 @@ check anywhere.
 A UI session is a `Grant` (`ui_sessions.gleam:310`) of one session, one
 credential digest, one principal and one ceiling, kept with the digests of
 the page's cookie, key and nonce in one actor. A ticket for it is minted
-only by `UiLink` (`client/daemon/server.gleam:2216`) over the principal's own
+only by `UiLink` (`client/daemon/server.gleam:2225`) over the principal's own
 control connection, after `session_authority`
 (`client/daemon/manager.gleam:936`) finds a membership, and by a page
-switching to another session (`ticket_for` (`ui_socket.gleam:1496`)). The
+switching to another session (`ticket_for` (`ui_socket.gleam:1509`)). The
 exchange redeems it once (`redeem` (`ui_sessions.gleam:737`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
@@ -309,7 +309,7 @@ anyone who sees the cookie knows it, and the row's digest is the digest of
 it. The first edition of this note said a login presented as a bearer is
 refused because the daemon would hash the whole token; that was true and
 beside the point, because the daemon hashes any presented string
-(`credential` (`client/daemon/server.gleam:797`)), and `Authorization:
+(`credential` (`client/daemon/server.gleam:806`)), and `Authorization:
 Bearer <id>` would have hashed to the row and authenticated as the
 principal with no ceiling, no expiry, no key and no nonce: for the owner's
 login, owner authority on the control socket. The review of 2026-10-04
@@ -730,7 +730,7 @@ and the epoch the page was admitted in:
 1. the page is open and its ceiling is Operator;
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
-   it", the check `OpenSession` (`client/daemon/server.gleam:2234`) makes;
+   it", the check `OpenSession` (`client/daemon/server.gleam:2243`) makes;
 3. `open` (`client/daemon/manager.gleam:1198`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;

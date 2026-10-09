@@ -773,7 +773,7 @@ pub fn upgrade_home(
     home_create_capability(
       attachment.principal,
       ceiling,
-      fn(place, name, sharing, profile, deliver) {
+      fn(place, name, sharing, roles, deliver) {
         create_task(
           standing,
           tickets,
@@ -793,7 +793,7 @@ pub fn upgrade_home(
           place,
           name,
           sharing,
-          profile,
+          roles,
           deliver,
         )
       },
@@ -807,6 +807,14 @@ pub fn upgrade_home(
   // so a configuration edited since is refused in fixed words, not trusted.
   let profiles = case creating {
     Some(_) -> attachment.profiles()
+    None -> []
+  }
+
+  // The model keys the forms offer as the session's main model are told to the
+  // same pages, read the same way and checked again at the creation
+  // (protocol-change/080). Only the keys are read out of the configuration.
+  let models = case creating {
+    Some(_) -> attachment.models()
     None -> []
   }
 
@@ -925,6 +933,7 @@ pub fn upgrade_home(
       managing,
       creating,
       profiles,
+      models,
       executors,
       folders,
       signing,
@@ -1033,7 +1042,7 @@ pub fn home_create_capability(
     creations.Place,
     String,
     creations.Sharing,
-    Option(String),
+    creations.Roles,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
 ) -> Option(
@@ -1041,7 +1050,7 @@ pub fn home_create_capability(
     creations.Place,
     String,
     creations.Sharing,
-    Option(String),
+    creations.Roles,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
 ) {
@@ -1224,11 +1233,12 @@ fn admit_home(
       creations.Place,
       String,
       creations.Sharing,
-      Option(String),
+      creations.Roles,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
   ),
   profiles: List(String),
+  models: List(String),
   executors: List(String),
   folders: Option(home.Folders),
   signing: Signing,
@@ -1271,6 +1281,7 @@ fn admit_home(
       manage: managing,
       create: creating,
       profiles:,
+      models:,
       executors:,
       folders:,
       signins: fn(deliver) { read_task(deliver, signing.read) },
@@ -2556,9 +2567,10 @@ pub fn resume_task(
 ///    it there, wherever it is.
 /// 3. The name must pass `creations.chosen_name` against that workspace
 ///    (`InvalidName`).
-///    The profile, when one was chosen, is passed on to the creation and judged
-///    there against the configuration the session will load (`UnknownProfile`),
-///    because the page's list is only what the daemon read when it opened.
+///    The profile and the model, when either was chosen, are passed on to the
+///    creation and judged there against the configuration the session will load
+///    (`UnknownProfile`, `UnknownModel`), because the page's lists are only what
+///    the daemon read when it opened.
 /// 4. The credential must have a creation left (`ui_sessions.reserve_creation`),
 ///    counted for the credential and not for the page (`TooMany`).
 /// 5. `create` makes the session under a key drawn here, which no other
@@ -2583,7 +2595,7 @@ pub fn resume_task(
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.create_for(standing, tickets, open, create, release, new_folder.check, creations.Drawn("/work/loom"), "", creations.Private, None, within: 30_000)
+/// // ui_socket.create_for(standing, tickets, open, create, release, new_folder.check, creations.Drawn("/work/loom"), "", creations.Private, creations.default_roles, within: 30_000)
 /// ```
 @internal
 pub fn create_for(
@@ -2597,7 +2609,7 @@ pub fn create_for(
   place: creations.Place,
   name: String,
   sharing: creations.Sharing,
-  profile: Option(String),
+  roles: creations.Roles,
   within within: Int,
 ) -> creations.Answer {
   let outcome = {
@@ -2612,7 +2624,16 @@ pub fn create_for(
       |> result.replace_error(creations.TooMany),
     )
     let key = "web-" <> hex_entropy(16)
-    manager.Creation(key, workspace, name, "", profile, executor_of(place), "")
+    manager.Creation(
+      key,
+      workspace,
+      name,
+      "",
+      roles.profile,
+      roles.model,
+      executor_of(place),
+      "",
+    )
     |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
     |> result.map_error(creation_refusal)
@@ -2844,6 +2865,7 @@ fn creation_refusal(code: String) -> creations.Reason {
     "invalid_workspace" -> creations.NotAFolder
     "capacity" -> creations.Full
     "unknown_profile" -> creations.UnknownProfile
+    "unknown_model" -> creations.UnknownModel
     "executor_unknown" -> creations.UnknownExecutor
     _ -> creations.Unavailable
   }
@@ -2871,7 +2893,7 @@ fn hex_entropy(bytes: Int) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_socket.create_task(standing, tickets, open, create, release, new_folder.check, place, "", creations.Private, None, deliver)
+/// // ui_socket.create_task(standing, tickets, open, create, release, new_folder.check, place, "", creations.Private, creations.default_roles, deliver)
 /// ```
 @internal
 pub fn create_task(
@@ -2885,7 +2907,7 @@ pub fn create_task(
   place: creations.Place,
   name: String,
   sharing: creations.Sharing,
-  profile: Option(String),
+  roles: creations.Roles,
   deliver: fn(creations.Answer) -> Nil,
 ) -> Nil {
   let _ =
@@ -2901,7 +2923,7 @@ pub fn create_task(
           place,
           name,
           sharing,
-          profile,
+          roles,
           within: resume_wait_ms,
         ))
         Ok(Nil)

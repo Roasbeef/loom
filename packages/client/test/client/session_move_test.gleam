@@ -50,6 +50,7 @@ pub fn the_manifest_carries_what_the_receiver_registers_and_no_path_test() {
       name: "a name",
       configuration: "/source/loom.toml",
       profile: Some("fast"),
+      model: None,
       executor: "box",
       pool: "fleet",
       created_at: 1_700_000_000_000,

@@ -33,6 +33,7 @@ Worked, commented files:
 | `loom --model-profile <name>` | Selects a `[profiles.<name>]` table of the file for a newly created session. A resumed session keeps the profile it was created with. |
 | `loom --executor <name> --workspace <registered name>` | Not a file choice: creates new sessions in the workspace registered under that name on that `[executors.<name>]` of the file the daemon loaded. With `--executor`, `--workspace` is a name and not a path. |
 | `loom --pool <name> --workspace <registered name>` | The same, but the daemon picks the executor from that `[pools.<name>]` when the session first opens. Exclusive with `--executor`. |
+| New-session form on the web home | Offers the file's profiles and its `[models.<name>]` keys (see [Choosing a model for one session](#choosing-a-model-for-one-session)). |
 
 A file given with `--config` replaces the `LOOM_*` environment surface for model
 and role configuration entirely. Precedence is command-line flags, then the
@@ -193,6 +194,19 @@ names replaces the default chain whole. A role it omits keeps the default chain.
 | `summarize` | array of strings | the `[roles]` chain | model names | Replacement chain for `summarize`. |
 | `vision` | array of strings | the `[roles]` chain | model names, each reading images | Replacement chain for `vision`. |
 | `advisor` | array of strings | the `[roles]` chain | model names | Replacement chain for `advisor`. |
+
+### Choosing a model for one session
+
+The web home's new-session forms and the `sessions.create` control command can
+pin a session's `main` role to one `[models.<name>]` entry, with or without a
+profile. The `main` chain becomes that one entry, so it has no fallbacks, and
+every other role keeps the chain `[roles]` or the chosen profile gives it. A
+profile and a model compose: the profile's roles are applied first and `main` is
+pinned afterwards. The session stores the key and resolves it again at every
+open, so renaming or removing the entry makes the session unopenable until it is
+restored. The web form offers a key of at most 64 bytes; a longer `<name>` is
+valid in the file and cannot be chosen this way. Only the key is given to the
+web page.
 
 ## `[mcp.<name>]`
 

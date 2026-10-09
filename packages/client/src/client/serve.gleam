@@ -960,6 +960,9 @@ type Flags {
     // line flag: only a managed session has one, from its registration, so
     // `resolve_managed` is the one place that sets it.
     profile: Option(String),
+    // The model the session's `main` role is pinned to, for the same reason and
+    // from the same place (protocol-change/080).
+    model: Option(String),
     codemode_seed: Option(String),
     codemode_seams: Option(String),
     demand: Option(EnforcementDemand),
@@ -979,6 +982,7 @@ fn parse(arguments: List(String)) -> Result(Flags, String) {
       helper: None,
       config: None,
       profile: None,
+      model: None,
       codemode_seed: None,
       codemode_seams: None,
       demand: None,
@@ -1023,6 +1027,7 @@ pub fn resolve_managed(
       workspace: Some(registration.workspace),
       config: configuration,
       profile: registration.profile,
+      model: registration.model,
     ),
     placement,
   ))
@@ -1121,7 +1126,7 @@ pub fn build_domain(
       _workspace,
       _advisor,
     )
-  <- result.try(load_config(configuration, None))
+  <- result.try(load_config(configuration, None, None))
 
   // The `[secrets]` table resolved before the gateway that will spend
   // what it holds, once per domain assembly rather than once per daemon.
@@ -1344,7 +1349,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       workspace_config,
       advisor_config,
     )
-  <- result.try(load_config(flags.config, flags.profile))
+  <- result.try(load_config(flags.config, flags.profile, flags.model))
 
   // parse guarantees a routed, resolvable main chain, and the env
   // catalogue routes one by construction; the check stays for
@@ -1648,6 +1653,7 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
 fn load_config(
   flag: Option(String),
   profile: Option(String),
+  model: Option(String),
 ) -> Result(
   #(
     catalog.Catalog,
@@ -1666,17 +1672,26 @@ fn load_config(
 ) {
   case flag {
     None -> {
-      // The environment surface defines no profiles, so a session that was
-      // created under one cannot be served without the file that names it.
-      use catalogue <- result.try(case profile {
-        None -> Ok(env_catalog())
-        Some(name) ->
+      // The environment surface defines no profiles and no model keys, so a
+      // session that was created under either cannot be served without the
+      // file that names it.
+      use catalogue <- result.try(case profile, model {
+        None, None -> Ok(env_catalog())
+        Some(name), _ ->
           Error(
             "profile \""
             <> name
             <> "\" needs a config file with a [profiles."
             <> name
             <> ".roles] table, and this host has none",
+          )
+        None, Some(key) ->
+          Error(
+            "model \""
+            <> key
+            <> "\" needs a config file with a [models."
+            <> key
+            <> "] table, and this host has none",
           )
       })
       Ok(#(
@@ -1706,12 +1721,12 @@ fn load_config(
       let named = fn(reason) { path <> ": " <> reason }
       use parsed <- result.try(catalog.parse(text) |> result.map_error(named))
 
-      // The profile is resolved on every load, never remembered from an
-      // earlier one, so a resume reads the file as it stands. A profile the
+      // The profile and the model are resolved on every load, never remembered
+      // from an earlier one, so a resume reads the file as it stands. One the
       // file no longer defines refuses here, in the file's own words, where
-      // the alternative is opening a profiled session on the default roles.
+      // the alternative is opening a session on roles it was not created with.
       use catalogue <- result.try(
-        with_profile(parsed, profile) |> result.map_error(named),
+        with_choice(parsed, profile, model) |> result.map_error(named),
       )
       use rule_list <- result.try(rules.parse(text) |> result.map_error(named))
       use schedule_list <- result.try(
@@ -1759,14 +1774,21 @@ fn load_config(
 }
 
 // The catalogue a session routes by: the default one, or the one carrying the
-// named profile's roles.
-fn with_profile(
+// named profile's roles, with `main` then pinned to the named model. The profile
+// goes first because the model is laid over whatever role set results
+// (protocol-change/080).
+fn with_choice(
   catalogue: catalog.Catalog,
   profile: Option(String),
+  model: Option(String),
 ) -> Result(catalog.Catalog, String) {
-  case profile {
+  use profiled <- result.try(case profile {
     None -> Ok(catalogue)
     Some(name) -> catalog.select_profile(catalogue, name)
+  })
+  case model {
+    None -> Ok(profiled)
+    Some(key) -> catalog.select_model(profiled, key)
   }
 }
 

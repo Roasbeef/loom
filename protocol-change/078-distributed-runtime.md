@@ -5,7 +5,7 @@ spellings below are provisional until phase 1 lands; this document is updated
 to the implemented spellings before the change merges.
 **Affects**: the control command `sessions.create` and session records (one
 optional field each, and a second pair for pools, see the addendum), the
-catalogue schema (version 10, one column; version 11, one more; version 12,
+catalogue schema (version 11, one column; version 12, one more; version 13,
 one table for session movement),
 `loom.toml` (a `[distribution]` table and `[executors.*]` rows on an
 orchestrator, `[pools.*]` tables beside them, `[workspaces.*]` rows on an
@@ -115,12 +115,18 @@ whatever the form said. A session list entry carries the optional executor, and 
 remote group is headed `executor:name` and offers no directory-style "New
 session" button.
 
-### Catalogue (version 10)
+### Catalogue (version 11)
 
 `Registration` gains `executor: String`, empty for a local session. The
-migration from version 9 adds the column with an empty default. A
+migration from version 10 adds the column with an empty default. A
 registration with a non-empty `executor` stores the registered workspace name
 in `workspace`, never a path on the orchestrator.
+
+Version 10 belongs to protocol-change/080, which pinned a session's main model
+and shipped first. This proposal's migrations were numbered 10, 11 and 12 when it
+was drafted and are 11, 12 and 13 now: the executor column, the pool column and
+the move table, in that order, on top of the model column. A catalogue at
+version 10 (from the model change) migrates through all three.
 
 ### Configuration
 
@@ -282,8 +288,8 @@ refuses `workspace_private`, for the same reason. One refusal code is added,
 gains an optional `pool` member. A session in a pool has no `executor` member
 until its first open chooses one; from then on the record carries both.
 
-The catalogue is at version 11. `Registration` gains `pool: String`, empty for a
-session created without one, and the migration from version 10 adds the column
+The catalogue is at version 12. `Registration` gains `pool: String`, empty for a
+session created without one, and the migration from version 11 adds the column
 with an empty default. The pool is part of the immutable creation request, so a
 retry compares it. The executor of a pooled session is the first open's choice
 and not part of the request, so a retry compares the pool only, and a retry after
@@ -461,7 +467,7 @@ Phase 5 moves a session between orchestrators under the source's control. This
 addendum records the catalogue half. The next addendum records the command, the
 views, the messages and the mover that drive it.
 
-The catalogue is at version 12. The migration from version 11 adds one table,
+The catalogue is at version 13. The migration from version 12 adds one table,
 `catalogue_session_moves(session_id, op, peer, state)`, keyed by session and
 referencing `catalogue_sessions`. No row means the catalogue serves the session
 and has never moved it, so every existing session reads back as resident. A row
@@ -914,7 +920,7 @@ for the missing plane.
 - `runtime` and `machine`: one `ToolSurface` slot and one recovered tool
   observation. The machine stays pure.
 - `broker`: a public constructor for a `Broker` over a remote subject.
-- `storage`: catalogue versions 10 and 11; the ledger's generated SQL.
+- `storage`: catalogue versions 11, 12 and 13; the ledger's generated SQL.
 - New Erlang FFI: the TLS distribution verify function and boot checks
   (about 185 lines), the only thing `gleam_erlang` cannot express. It lives in
   an `internal/ffi_*` module with the reason recorded.

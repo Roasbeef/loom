@@ -166,7 +166,7 @@ fn create(
   let assert Ok(manager.View(record, manager.Opening(_))) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(name, workspace, name, "", None, "", ""),
+      manager.Creation(name, workspace, name, "", None, None, "", ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed:),
       scope: domain.SessionOnly,

@@ -2759,18 +2759,21 @@ fn completion_after(
   }
 }
 
-// Whether a turn's first block was drawn from a record the closed turns do not
-// already cover. The window is trimmed to the records after them, so this holds
-// of every turn the window shows, and it is what keeps a turn from being closed
-// twice if a trim ever could not be made.
-fn starts_after(group: List(transcript_lines.Block), frontier: Int) -> Bool {
-  case group {
-    [first, ..] ->
-      case transcript_lines.block_seq(first) {
-        Ok(seq) -> seq >= frontier
-        Error(Nil) -> False
-      }
-    [] -> False
+// Whether a block is not already covered by the closed turns, whose summaries
+// hold everything up to `frontier`. The window is trimmed to the records after
+// them, but it is not the only source of blocks: the advisor's commentary is
+// projected from the capture's whole window on every capture, keyed by the
+// sequences of the advisor's own records, so a review written after a turn
+// closed is still a block of the projection, older than the turns that close
+// after it. The same holds when the trim could not be made, which is while the
+// scrollback is being read or a page request is out. The page asks this of
+// every block before it groups them, so a block the closed turns cover is never
+// part of a group, and a turn cannot be drawn from its summary and from the
+// window at once.
+fn uncovered(block: transcript_lines.Block, frontier: Int) -> Bool {
+  case transcript_lines.block_seq(block) {
+    Ok(seq) -> seq >= frontier
+    Error(Nil) -> True
   }
 }
 
@@ -2836,6 +2839,7 @@ fn laid_out(
       shared.active_strand,
       shared.cache_notices,
     )
+    |> list.filter(uncovered(_, frontier(model.view.sealed)))
   let #(lead, opened) = turns.grouped(all, view.strands)
   let latest = turns.latest(view, shared.agent_rows, shared.active_strand)
   let standing = lead_of(model, lead, branch.unloaded, opened, latest)
@@ -2847,11 +2851,14 @@ fn laid_out(
   // Nothing is closed while the oldest turn is unread: the closed turns would
   // be newer than a turn the page does not hold, and the summaries are kept
   // oldest to newest without a gap. They are drawn from the window meanwhile.
+  //
+  // The closed turns are the oldest of the groups, and the window keeps the rest
+  // by dropping as many groups as were closed. `uncovered` has already dropped
+  // every block the summaries hold, so no group here is one a summary already
+  // covers.
   let closed = case standing {
     Unfinished -> []
-    NoLead | Whole ->
-      closing(groups, latest)
-      |> list.filter(starts_after(_, frontier(model.view.sealed)))
+    NoLead | Whole -> closing(groups, latest)
   }
   let fresh =
     turn_ledger.seal_all(

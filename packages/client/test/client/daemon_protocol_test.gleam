@@ -57,6 +57,7 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         None,
         None,
         None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -178,6 +179,7 @@ pub fn every_control_command_has_one_typed_decode_test() {
         "/workspace",
         "name",
         "/config",
+        None,
         None,
         None,
         None,
@@ -618,6 +620,7 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
         Some("deepseek"),
         None,
         None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -666,6 +669,7 @@ pub fn creation_executor_is_optional_and_makes_the_workspace_a_name_test() {
         "loom checkout",
         "name",
         "",
+        None,
         None,
         Some("build-box"),
         None,
@@ -754,6 +758,7 @@ pub fn creation_pool_is_optional_exclusive_with_an_executor_and_makes_the_worksp
         "",
         None,
         None,
+        None,
         Some("builders"),
         domain.SessionOnly,
       ),
@@ -791,4 +796,119 @@ pub fn creation_pool_is_optional_exclusive_with_an_executor_and_makes_the_worksp
         as "a malformed pool, or a pool beside an executor, is a bad request"
     },
   )
+}
+
+pub fn session_creation_decodes_an_optional_model_key_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("workspace", json.String("/workspace")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+  assert protocol.decode(
+      envelope(1, "sessions.create", [
+        #("model", json.String("baseten-glm-5-3")),
+        ..fields
+      ]),
+    )
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "/workspace",
+        "name",
+        "",
+        None,
+        Some("baseten-glm-5-3"),
+        None,
+        None,
+        domain.WorkspacePrivate,
+      ),
+    ))
+
+  // A model key has no grammar beyond its bound, so a key with spaces or dots
+  // is carried through and the daemon's catalogue is what judges it.
+  let assert Ok(protocol.Request(
+    _,
+    protocol.CreateSession(model: Some("opus 4.8"), ..),
+  )) =
+    protocol.decode(
+      envelope(1, "sessions.create", [
+        #("model", json.String("opus 4.8")),
+        ..fields
+      ]),
+    )
+    as "a key is any text within its bound"
+
+  // Anything present that is not a key is refused, never read as no choice: a
+  // misspelled model must not create a default-model session.
+  list.each(
+    [
+      json.String(""),
+      json.String(string.repeat("k", 65)),
+      json.Null,
+      json.Int(1),
+    ],
+    fn(value) {
+      let assert Error(_) =
+        protocol.decode(
+          envelope(1, "sessions.create", [#("model", value), ..fields]),
+        )
+        as "model must be a model key"
+    },
+  )
+}
+
+pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+    #("model", json.String("fast")),
+    #("workspace", json.String("loom checkout")),
+  ]
+  let create = fn(extra) {
+    protocol.decode(envelope(1, "sessions.create", list.append(extra, fields)))
+  }
+
+  // The model pins the main chain and the executor or pool places the
+  // workspace. They are independent fields, so each is carried beside the other.
+  assert create([#("executor", json.String("build-box"))])
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "loom checkout",
+        "name",
+        "",
+        None,
+        Some("fast"),
+        Some("build-box"),
+        None,
+        domain.SessionOnly,
+      ),
+    ))
+  assert create([#("pool", json.String("builders"))])
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "loom checkout",
+        "name",
+        "",
+        None,
+        Some("fast"),
+        None,
+        Some("builders"),
+        domain.SessionOnly,
+      ),
+    ))
+
+  // A malformed model is refused beside an executor as it is alone.
+  let assert Error(_) =
+    create([
+      #("executor", json.String("build-box")),
+      #("model", json.Null),
+    ])
+    as "a model that is not a key is a bad request on an executor"
 }

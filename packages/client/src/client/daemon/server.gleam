@@ -276,6 +276,11 @@ pub type HomeAttachment(instance) {
     /// it: the home socket asks once when the page opens. A configuration the
     /// daemon cannot read has no names.
     profiles: fn() -> List(String),
+    /// The model keys the same configuration defines, sorted, which the forms
+    /// offer as the session's main model (protocol-change/080). It is read and
+    /// bounded as `profiles` is, and a key is only a name: nothing else of a
+    /// `[models.<key>]` entry is ever handed to a page.
+    models: fn() -> List(String),
     /// The `[executors.<name>]` names of the daemon's configuration, in the
     /// order the configuration lists them, which the owner's page offers a form
     /// for a registered workspace on (protocol-change/078). They are the
@@ -590,6 +595,10 @@ fn home_upgrade(
             },
             profiles: fn() {
               profiles.names(config.domain_configuration)
+              |> result.unwrap([])
+            },
+            models: fn() {
+              profiles.model_keys(config.domain_configuration)
               |> result.unwrap([])
             },
             executors: list.map(config.executors, fn(executor) { executor.name }),
@@ -2374,10 +2383,10 @@ fn dispatch(
       })
       |> result.map(fn(view) { #("operations.get", view_json(view)) })
     }
-    protocol.CreateSession(_, _, _, configuration, profile, _, _, _) ->
+    protocol.CreateSession(_, _, _, configuration, profile, model, _, _, _) ->
       dispatch_class(config, state, digest, principal, reply_to, command)
       |> result.map_error(fn(code) {
-        creation_refusal(config, configuration, profile, code)
+        choice_refusal(config, configuration, profile, model, code)
       })
 
     // A session this daemon's catalogue does not hold may be one that another
@@ -2530,6 +2539,10 @@ pub const orchestrator_unknown_code = "orchestrator_unknown"
 /// one its configuration defines.
 pub const unknown_profile_code = "unknown_profile"
 
+/// The code `create_session` answers when the model key a creation names is not
+/// one its configuration defines (protocol-change/080).
+pub const unknown_model_code = "unknown_model"
+
 /// The code `create_session` answers when a creation names an executor that
 /// the daemon's configuration does not define (protocol-change/078).
 pub const executor_unknown_code = "executor_unknown"
@@ -2538,37 +2551,38 @@ pub const executor_unknown_code = "executor_unknown"
 /// daemon's configuration does not define (protocol-change/078).
 pub const pool_unknown_code = "pool_unknown"
 
-/// The code `create_session` answers when a creation names a profile and the
-/// configuration it would load cannot be read or parsed. The profile was never
+/// The code `create_session` answers when a creation names a profile or a model
+/// and the configuration it would load cannot be read or parsed. Nothing was
 /// looked up, so `unknown_profile` would blame the name for the file.
 pub const unusable_configuration_code = "unusable_configuration"
 
-// A refused creation's code and message. An unknown profile, an unusable
-// configuration, an unknown executor and an unknown pool are the refusals that
-// say more than "request refused": the owner who mistyped a name needs the
-// names that exist, the owner whose file does not parse needs the key it names,
-// and the owner who named an executor or a pool needs to know it is the
-// configuration that lacks it.
-// The caller is the owner because `create_session` checks that first. The
-// message is worded again here, from the same check, rather than carried out
-// of `create_session`, so that function's error stays the single code the
-// home page's creation shares.
-fn creation_refusal(
+// A refused creation's code and message. An unknown profile, an unknown model,
+// an unusable configuration, an unknown executor and an unknown pool are the
+// refusals that say more than "request refused": the owner who mistyped a name
+// needs the names that exist, the owner whose file does not parse needs the key
+// it names, and the owner who named an executor or a pool needs to know it is
+// the configuration that lacks it. The caller is the owner because
+// `create_session` checks that first. The message is worded again here, from
+// the same check, rather than carried out of `create_session`, so that
+// function's error stays the single code the home page's creation shares.
+fn choice_refusal(
   config: Config(instance),
   configuration: String,
   profile: Option(String),
+  model: Option(String),
   code: String,
 ) -> Refused {
-  case code, profile {
-    "unknown_profile", Some(name) | "unusable_configuration", Some(name) -> {
+  case code {
+    "unknown_profile" | "unknown_model" | "unusable_configuration" -> {
       let canonical = case configuration {
         "" -> ""
         path -> bootstrap.canonical_path(path) |> result.unwrap(path)
       }
       let words = case
-        profiles.check(
+        profiles.check_choice(
           profiles.effective(canonical, config.domain_configuration),
-          name,
+          profile,
+          model,
         )
       {
         Error(refusal) -> profiles.refusal_message(refusal)
@@ -2577,17 +2591,17 @@ fn creation_refusal(
       Refused(code, words, [])
     }
 
-    "executor_unknown", _ ->
+    "executor_unknown" ->
       Refused(
         code,
         "no executor with that name is configured on this daemon",
         [],
       )
 
-    "pool_unknown", _ ->
+    "pool_unknown" ->
       Refused(code, "no pool with that name is configured on this daemon", [])
 
-    _, _ -> control_refusal(code)
+    _ -> control_refusal(code)
   }
 }
 
@@ -3032,6 +3046,7 @@ fn dispatch_class(
       name,
       configuration,
       profile,
+      model,
       executor,
       pool,
       scope,
@@ -3047,6 +3062,7 @@ fn dispatch_class(
           name,
           configuration,
           profile,
+          model,
           option.unwrap(executor, ""),
           option.unwrap(pool, ""),
         ),
@@ -3227,7 +3243,10 @@ type Unsettled {
 ///
 /// The error is the control command's own code: `forbidden` for a caller that
 /// is not the owner, `invalid_workspace` and `invalid_configuration` for a path
-/// the host cannot canonicalize, and the registry's codes for the rest.
+/// the host cannot canonicalize, `unknown_profile`, `unknown_model` and
+/// `unusable_configuration` for a profile or model the configuration the session
+/// will load does not define (checked before an identity is reserved), and the
+/// registry's codes for the rest.
 ///
 /// ## Examples
 ///
@@ -3277,24 +3296,24 @@ pub fn create_session(
     |> result.replace_error("invalid_configuration"),
   )
 
-  // A profile is judged against the configuration this session will load,
-  // before an identity is reserved, so a mistyped name stores nothing. The
-  // session's builder resolves it again on every open, which is what keeps a
-  // later edit of the file from being silently ignored.
-  use Nil <- result.try(case request.profile {
-    None -> Ok(Nil)
-    Some(name) ->
-      profiles.check(
-        profiles.effective(configuration, config.domain_configuration),
-        name,
-      )
-      |> result.map_error(fn(refusal) {
-        case refusal {
-          profiles.UnknownProfile(_) -> unknown_profile_code
-          profiles.UnusableConfiguration(_) -> unusable_configuration_code
-        }
-      })
-  })
+  // A profile and a model are judged against the configuration this session
+  // will load, before an identity is reserved, so a mistyped name stores
+  // nothing. The session's builder resolves both again on every open, which is
+  // what keeps a later edit of the file from being silently ignored.
+  use Nil <- result.try(
+    profiles.check_choice(
+      profiles.effective(configuration, config.domain_configuration),
+      request.profile,
+      request.model,
+    )
+    |> result.map_error(fn(refusal) {
+      case refusal {
+        profiles.UnknownProfile(_) -> unknown_profile_code
+        profiles.UnknownModel(_) -> unknown_model_code
+        profiles.UnusableConfiguration(_) -> unusable_configuration_code
+      }
+    }),
+  )
   use created <- result.map(
     manager.create_scoped(
       registry,

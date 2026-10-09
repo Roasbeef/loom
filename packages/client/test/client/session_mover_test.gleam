@@ -300,6 +300,7 @@ fn start(
       name: "the moving session",
       configuration: "",
       profile: None,
+      model: None,
       executor: "box",
       pool: "",
       created_at: 1_700_000_000_000,

@@ -1930,6 +1930,13 @@ untouched.
   and are adopted whole: a viewport that has revealed nothing has no position
   to stay continuous with, a shrink must not leave retired rows on screen, and
   a growth taller than the viewport replaced everything the reader could see.
+  Rows that are not new output are adopted whole too:
+  `projection.refresh_render_cache` sets `revealed_rows` to the row count when
+  the reader switches strand or session, and when `transcript_lines.solo_owner`
+  differs before and after the event. A terminal that is no longer alone in its
+  session labels every owner prompt, one row above each, and counting those rows
+  as backlog would hide the tail and walk it back in whenever another terminal
+  or a browser page opened the session.
   An idle strand holds nothing back, which is what makes a replayed or
   scripted run settle on the complete frame. `pacing.viewport_address` classifies an
   input event as `AddressesTranscript` or `AddressesElsewhere`, and only the

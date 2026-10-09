@@ -58,6 +58,20 @@ below; the two code conflicts were in `client/serve.gleam` (main's
   viewer applies to one page, and byte windows can split JSON syntax or lines.
   Output summarization and whole-result browser search are not done.
 
+A third merge of `main` (after `e1dc3a77f`) brought in the web fixes queue
+[PR #933](https://github.com/Roasbeef/loom/pull/933), which pins a session's main
+model at creation
+([protocol-change/080](../protocol-change/080-session-model-choice.md)). It
+added catalogue version 10 (`catalogue_models`), so this branch's three
+migrations moved to 11 (executors), 12 (pools) and 13 (moves); main's version 10
+shipped first and keeps its number. `Registration` and `manager.Creation` now
+carry `model` beside `executor` and `pool`, the control command's `sessions.create`
+decodes all three. The web form for a registered workspace draws no model
+select, so a registered session created from the page takes the configuration's
+roles. The proposal numbers collide: `078` is taken twice (this branch's
+distributed runtime and main's LSP diagnostics scope) and the Khepri branch's
+`080-khepri-session-ownership` shares `080` with main's model choice.
+
 Main's handoff for that work also said: run `make gen-client` after changing
 browser source, and judge every gate by its own exit code. A gate run on a
 PR's original head does not attest to a later integration head, so each merge
@@ -71,7 +85,7 @@ checks its own current SHA.
 | 2. Executor pools | `[pools.<name>]` with a trial order and declared requirements. The scope record names the executor before `Attach`. The next candidate is tried only on a failed connection or `CapacityExhausted` at first open. A census that contradicts the declaration closes the scope. |
 | 3. Two orchestrators | Option C: `session_directory` is a Khepri-shaped interface backed by a 2 s parallel lookup over pinned peers, and each catalogue stays the source of truth. `not_owner` and `owner_unreachable` redirect the owner principal only, with no automatic follow. |
 | 4. Peer mail between orchestrators | A sender outbox (`client/peers/outbox/<digest>`: pending, admitted or refused) drained by a weft state machine; `PeerCommand` (Allow, Revoke, Deliver, SentReceipt) on the `loom_orchestrator` port; a typed `peer_mail.Failure`. |
-| 5. Controlled movement | `sessions.move` and `loom sessions move`. Authority is two catalogue CAS rows (v12 `catalogue_session_moves`), a write-ahead intent and the executor's token fence, over six steps with resume at boot. A committed activation is always answered `Accepted`. An imported session cannot be moved on or deleted until its origin has retired. |
+| 5. Controlled movement | `sessions.move` and `loom sessions move`. Authority is two catalogue CAS rows (v13 `catalogue_session_moves`), a write-ahead intent and the executor's token fence, over six steps with resume at boot. A committed activation is always answered `Accepted`. An imported session cannot be moved on or deleted until its origin has retired. |
 | 6. Acceptance | Two independent Fable 5.1 reviews of the assembled system (remote core; directory, peer mail and movement), each with re-verification of its fixes; a P model of remote execution and a TLA+ model of a move, both gated; the evidence below. |
 
 ### Evidence

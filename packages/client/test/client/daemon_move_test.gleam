@@ -162,6 +162,7 @@ fn imported(ready: root.Ready(String), seed: Int) -> String {
       name: "Imported",
       configuration: "",
       profile: None,
+      model: None,
       executor: "build-box",
       pool: "",
       created_at: 1_700_000_000_000,
@@ -193,7 +194,7 @@ fn remote(ready: root.Ready(String), key: String) -> String {
   let assert Ok(view) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(key, "repo", "Remote", "", None, "build-box", ""),
+      manager.Creation(key, "repo", "Remote", "", None, None, "build-box", ""),
       directory: ready.sessions_directory,
       generator: ids_for(key),
       scope: domain.SessionOnly,
@@ -207,7 +208,7 @@ fn local(ready: root.Ready(String), key: String) -> String {
   let assert Ok(view) =
     manager.create(
       ready.registry,
-      manager.Creation(key, ready.state_root, "Local", "", None, "", ""),
+      manager.Creation(key, ready.state_root, "Local", "", None, None, "", ""),
       directory: ready.sessions_directory,
       generator: ids_for(key),
     )

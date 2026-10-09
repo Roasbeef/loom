@@ -19,6 +19,7 @@ import storage/catalogue_claims_schema
 import storage/catalogue_credential_kinds_schema
 import storage/catalogue_executors_schema
 import storage/catalogue_logins_schema
+import storage/catalogue_models_schema
 import storage/catalogue_moves_schema
 import storage/catalogue_names_schema
 import storage/catalogue_pools_schema
@@ -59,6 +60,9 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(profiles) = simplifile.read("sql/catalogue_profiles.sql")
     as "profile migration is checked in"
   assert catalogue_profiles_schema.schema == profiles
+  let assert Ok(models) = simplifile.read("sql/catalogue_models.sql")
+    as "model migration is checked in"
+  assert catalogue_models_schema.schema == models
   let assert Ok(executors) = simplifile.read("sql/catalogue_executors.sql")
     as "executor migration is checked in"
   assert catalogue_executors_schema.schema == executors
@@ -96,7 +100,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
       on: old,
     )
     == Ok(Nil)
@@ -126,7 +130,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([12])
+    == Ok([13])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -136,7 +140,7 @@ pub fn generated_queries_match_the_sqlc_input_test() {
   let generated = [
     sql.initialize_catalogue_revision().0,
     sql.find_registrations("", "", "").0,
-    sql.insert_registration("", "", "", "", "", 0, "", "", "", "").0,
+    sql.insert_registration("", "", "", "", "", 0, "", "", "", "", "").0,
     sql.seed_registration_executor("", "").0,
     sql.confirm_registration("").0,
     sql.registration_display_name("").0,
@@ -231,7 +235,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -284,6 +288,7 @@ fn registration(seed: Int) -> catalogue.Registration {
     request_key: "request-" <> int.to_string(seed),
     state: catalogue.Reserved,
     profile: option.None,
+    model: option.None,
     executor: "",
     pool: "",
     subtitle: option.None,
@@ -606,7 +611,7 @@ pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
       on: old,
     )
     == Ok(Nil)
@@ -669,7 +674,7 @@ pub fn version_four_catalogue_migrates_subtitles_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
       on: old,
     )
     == Ok(Nil)
@@ -691,7 +696,7 @@ pub fn version_four_catalogue_migrates_subtitles_without_losing_names_test() {
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([12])
+    == Ok([13])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -713,6 +718,7 @@ pub fn the_first_prompt_seeds_the_subtitle_once_test() {
     catalogue.Registration(
       ..record,
       profile: option.None,
+      model: option.None,
       subtitle: option.Some("Fix the flaky retry test"),
     )
   assert seeded == expected
@@ -892,7 +898,7 @@ pub fn version_five_catalogue_migrates_every_credential_to_bearer_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=5",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=5",
       on: old,
     )
     == Ok(Nil)
@@ -939,7 +945,7 @@ pub fn version_six_catalogue_gains_the_login_columns_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; PRAGMA user_version=6",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; PRAGMA user_version=6",
       on: old,
     )
     == Ok(Nil)
@@ -1007,7 +1013,7 @@ pub fn version_four_catalogue_migrates_through_subtitles_and_kinds_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
       on: old,
     )
     == Ok(Nil)
@@ -1024,7 +1030,7 @@ pub fn version_four_catalogue_migrates_through_subtitles_and_kinds_test() {
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([12])
+    == Ok([13])
   assert sqlight.close(check) == Ok(Nil)
 }
 
@@ -1199,15 +1205,18 @@ pub fn a_stored_profile_that_is_not_a_name_fails_the_read_test() {
   assert catalogue.close(reopened) == Ok(Nil)
 }
 
-pub fn version_nine_catalogue_gains_an_empty_executor_column_test() {
+pub fn version_ten_catalogue_gains_an_empty_executor_column_test() {
+  // Version ten is the catalogue main shipped: it has the model column and no
+  // executor, so a pinned model must survive the step to the current version.
   let path = fresh_path("executor-migration")
   let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
-  let local = registration(40)
+  let local =
+    catalogue.Registration(..registration(40), model: option.Some("fast"))
   assert catalogue.reserve(store, local) == Ok(local)
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; PRAGMA user_version=9",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; PRAGMA user_version=10",
       on: old,
     )
     == Ok(Nil)
@@ -1216,7 +1225,7 @@ pub fn version_nine_catalogue_gains_an_empty_executor_column_test() {
   // The migration adds the column and moves the version in one step. The row
   // that existed reads back unchanged, as a local session with no executor,
   // and the migrated catalogue stores a registered one beside it.
-  let assert Ok(migrated) = catalogue.open(path) as "version nine migrates"
+  let assert Ok(migrated) = catalogue.open(path) as "version ten migrates"
   assert catalogue.get(migrated, local.id) == Ok(local)
   assert local.executor == ""
   let registered = registered(41)
@@ -1230,11 +1239,11 @@ pub fn version_nine_catalogue_gains_an_empty_executor_column_test() {
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([12])
+    == Ok([13])
   assert sqlight.close(check) == Ok(Nil)
 }
 
-pub fn version_ten_catalogue_gains_an_empty_pool_column_test() {
+pub fn version_eleven_catalogue_gains_an_empty_pool_column_test() {
   let path = fresh_path("pool-migration")
   let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
   let remote = registered(52)
@@ -1242,7 +1251,7 @@ pub fn version_ten_catalogue_gains_an_empty_pool_column_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; PRAGMA user_version=10",
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; PRAGMA user_version=11",
       on: old,
     )
     == Ok(Nil)
@@ -1250,7 +1259,7 @@ pub fn version_ten_catalogue_gains_an_empty_pool_column_test() {
 
   // The row that existed keeps its executor and reads back with no pool, and
   // the migrated catalogue stores a pooled session beside it.
-  let assert Ok(migrated) = catalogue.open(path) as "version ten migrates"
+  let assert Ok(migrated) = catalogue.open(path) as "version eleven migrates"
   assert catalogue.get(migrated, remote.id) == Ok(remote)
   assert remote.pool == ""
   let pooled = pooled(53)
@@ -1278,6 +1287,79 @@ pub fn a_registered_registration_round_trips_through_reads_and_a_restart_test() 
   assert list.contains(page.records, remote)
   assert list.contains(page.records, plain)
   assert catalogue.close(restored) == Ok(Nil)
+}
+
+pub fn is_model_key_accepts_any_text_within_the_byte_bound_test() {
+  assert catalogue.is_model_key("baseten-glm-5-3")
+  assert catalogue.is_model_key("opus 4.8")
+  assert catalogue.is_model_key(string.repeat("k", 64))
+  assert !catalogue.is_model_key("")
+  assert !catalogue.is_model_key(string.repeat("k", 65))
+
+  // The bound is in bytes, as the column's check is: 33 two-byte characters
+  // are 66 bytes and are refused although they are fewer than 64 characters.
+  assert !catalogue.is_model_key(string.repeat("\u{e9}", 33))
+}
+
+pub fn a_registration_keeps_its_model_through_reads_and_a_restart_test() {
+  let path = fresh_path("model")
+  let assert Ok(store) = catalogue.open(path) as "fresh catalogue opens"
+  let plain = registration(41)
+  let pinned =
+    catalogue.Registration(
+      ..registration(42),
+      profile: option.Some("deepseek"),
+      model: option.Some("baseten-glm-5-3"),
+    )
+  assert catalogue.reserve(store, plain) == Ok(plain)
+  assert catalogue.reserve(store, pinned) == Ok(pinned)
+  assert catalogue.close(store) == Ok(Nil)
+
+  // The model is read back by the key lookup, by identity and by the page, and
+  // beside a profile, so a resume sees both choices the creation made.
+  let assert Ok(restored) = catalogue.open(path) as "catalogue reopens"
+  assert catalogue.by_request_key(restored, pinned.request_key) == Ok(pinned)
+  assert catalogue.get(restored, pinned.id) == Ok(pinned)
+  assert catalogue.get(restored, plain.id) == Ok(plain)
+  let assert Ok(page) = catalogue.page(restored, after: "")
+  assert list.contains(page.records, pinned)
+  assert list.contains(page.records, plain)
+  assert catalogue.close(restored) == Ok(Nil)
+}
+
+pub fn version_nine_catalogue_migrates_through_the_model_column_to_the_current_version_test() {
+  let path = fresh_path("version-nine")
+  let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
+  let local = registration(75)
+  assert catalogue.reserve(store, local) == Ok(local)
+  assert catalogue.close(store) == Ok(Nil)
+  let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
+  assert sqlight.exec(
+      "DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; PRAGMA user_version=9",
+      on: old,
+    )
+    == Ok(Nil)
+  assert sqlight.close(old) == Ok(Nil)
+
+  // The model migration (version ten) runs before the executor, pool and move
+  // migrations, and the row that existed reads back with no model, executor or
+  // pool. The migrated catalogue then stores a row that sets all three.
+  let assert Ok(migrated) = catalogue.open(path) as "version nine migrates"
+  assert catalogue.get(migrated, local.id) == Ok(local)
+  let both =
+    catalogue.Registration(..registered(76), model: option.Some("fast"))
+  assert catalogue.reserve(migrated, both) == Ok(both)
+  assert catalogue.get(migrated, both.id) == Ok(both)
+  assert catalogue.close(migrated) == Ok(Nil)
+  let assert Ok(check) = sqlight.open(path) as "version is readable"
+  assert sqlight.query(
+      "PRAGMA user_version",
+      on: check,
+      with: [],
+      expecting: decode.at([0], decode.int),
+    )
+    == Ok([13])
+  assert sqlight.close(check) == Ok(Nil)
 }
 
 pub fn a_creation_retry_must_repeat_its_executor_test() {
@@ -1475,7 +1557,7 @@ fn registered(seed: Int) -> catalogue.Registration {
   )
 }
 
-// --- session moves (catalogue version 12) ------------------------------------
+// --- session moves (catalogue version 13) ------------------------------------
 
 const op_one = "0192f3c1-7b0e-7d2a-9c11-4f5a6b7c8d9e"
 
@@ -1837,7 +1919,7 @@ pub fn the_table_refuses_an_unknown_state_and_a_second_row_test() {
   assert sqlight.close(db) == Ok(Nil)
 }
 
-pub fn version_eleven_catalogue_gains_the_move_table_test() {
+pub fn version_twelve_catalogue_gains_the_move_table_test() {
   let path = fresh_path("move-migration")
   let assert Ok(store) = catalogue.open(path) as "fixture catalogue opens"
   let record = pooled(68)
@@ -1845,7 +1927,7 @@ pub fn version_eleven_catalogue_gains_the_move_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_session_moves; PRAGMA user_version=11",
+      "DROP TABLE catalogue_session_moves; PRAGMA user_version=12",
       on: old,
     )
     == Ok(Nil)
@@ -1854,7 +1936,7 @@ pub fn version_eleven_catalogue_gains_the_move_table_test() {
   // The migration adds the table and moves the version in one step. The row
   // that existed reads back unchanged and resident, and the migrated
   // catalogue takes a move beside it.
-  let assert Ok(migrated) = catalogue.open(path) as "version eleven migrates"
+  let assert Ok(migrated) = catalogue.open(path) as "version twelve migrates"
   assert catalogue.get(migrated, record.id) == Ok(record)
   assert catalogue.custody(migrated, record.id) == Ok(catalogue.Resident)
   assert catalogue.begin_move(migrated, record.id, op: op_one, to: "laptop")
@@ -1867,6 +1949,36 @@ pub fn version_eleven_catalogue_gains_the_move_table_test() {
       with: [],
       expecting: decode.at([0], decode.int),
     )
-    == Ok([12])
+    == Ok([13])
   assert sqlight.close(check) == Ok(Nil)
+}
+
+pub fn a_creation_retry_must_repeat_its_model_test() {
+  let assert Ok(store) = catalogue.open(fresh_path("model-retry"))
+    as "catalogue opens"
+  let record =
+    catalogue.Registration(..registration(43), model: option.Some("fast"))
+  assert catalogue.reserve(store, record) == Ok(record)
+  assert catalogue.reserve(store, record) == Ok(record)
+
+  // The same key with another model, or none, is a different request.
+  let other = catalogue.Registration(..record, model: option.Some("slow"))
+  let none = catalogue.Registration(..record, model: option.None)
+  assert catalogue.reserve(store, other) == Error(catalogue.Conflict)
+  assert catalogue.reserve(store, none) == Error(catalogue.Conflict)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_registration_with_an_oversized_model_key_is_refused_test() {
+  // The column's own check bounds a stored value at the key limit, so no
+  // damaged row can hold a non-key; the refusal that remains is a write of one.
+  let assert Ok(store) = catalogue.open(fresh_path("model-invalid"))
+    as "catalogue opens"
+  let record =
+    catalogue.Registration(
+      ..registration(44),
+      model: option.Some(string.repeat("k", 65)),
+    )
+  let assert Error(catalogue.Invalid(_)) = catalogue.reserve(store, record)
+  assert catalogue.close(store) == Ok(Nil)
 }

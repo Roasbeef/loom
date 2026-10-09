@@ -360,7 +360,7 @@ pub type Start {
         creations.Place,
         String,
         Sharing,
-        Option(String),
+        creations.Roles,
         fn(creations.Answer) -> Nil,
       ) -> Nil,
     ),
@@ -371,6 +371,14 @@ pub type Start {
     /// then the forms draw no select. The daemon checks the profile against its
     /// configuration again when the creation runs, whatever this page said.
     profiles: List(String),
+    /// The model keys the daemon's configuration defines, as the daemon read
+    /// them when the page opened (protocol-change/080). The forms offer them
+    /// beside the default model, and a creation carries one only if it is in
+    /// this list. It is `[]` unless `create` is `Some`. Only the key is given:
+    /// nothing else of a `[models.<key>]` entry is ever sent to a page. The
+    /// daemon checks the key against its configuration again when the creation
+    /// runs, whatever this page said.
+    models: List(String),
     /// The executor names the daemon's configuration defines, as the daemon
     /// knew them when the page opened (protocol-change/078). The section for
     /// folders offers a form for a workspace registered on one of them, and a
@@ -639,15 +647,15 @@ pub type Msg {
 
   /// The open form was submitted: ask the daemon to create the session. The
   /// workspace is the one the form was drawn under; the name, the sharing and
-  /// the profile are what the browser's event listed
-  /// (`view/create.fields_with_profile`), and the profile is one of
-  /// `Start.profiles` or `None` for the default roles. The page asks only for
-  /// the form that is open, and only once.
+  /// the roles are what the browser's event listed
+  /// (`view/create.fields_with_roles`), and the profile and the model in the
+  /// roles are each one of `Start.profiles` and `Start.models` or `None` for
+  /// the default. The page asks only for the form that is open, and only once.
   Creating(
     workspace: String,
     name: String,
     sharing: Sharing,
-    profile: Option(String),
+    roles: creations.Roles,
   )
 
   /// The "New session in another folder" button was pressed: open its form. A
@@ -655,8 +663,8 @@ pub type Msg {
   OpeningElsewhere
 
   /// The form for another folder was submitted: ask the daemon to create the
-  /// session in the typed path. The path, the name, the sharing and the profile
-  /// are what the browser's event listed (`view/create.typed_fields_with_profile`),
+  /// session in the typed path. The path, the name, the sharing and the roles
+  /// are what the browser's event listed (`view/create.typed_fields_with_roles`),
   /// and the path is the browser's text and nothing else is: the daemon decides
   /// whether it names a folder the owner may use. The page asks only for the form
   /// that is open, and only once.
@@ -664,7 +672,7 @@ pub type Msg {
     path: String,
     name: String,
     sharing: Sharing,
-    profile: Option(String),
+    roles: creations.Roles,
   )
 
   /// The "New session on an executor" button was pressed: open its form. A page
@@ -1085,7 +1093,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
                 creations.Registered(executor, workspace),
                 name,
                 creations.Shareable,
-                None,
+                creations.default_roles,
               ),
             )
             False -> #(model, effect.none())
@@ -1096,13 +1104,13 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // The typed folder's submit is honoured only for its form while it is open,
     // as a workspace's is. The path is the browser's text, so the daemon is
     // the one that decides what it names.
-    CreatingElsewhere(path:, name:, sharing:, profile:) ->
+    CreatingElsewhere(path:, name:, sharing:, roles:) ->
       case model.start.create, model.status, model.creating {
         Some(ask), Connected, create.Elsewhere ->
-          case offered_profile(model, profile) {
+          case offered_roles(model, roles) {
             True -> #(
               Model(..model, creating: create.Sending, note: None),
-              creation(ask, creations.Typed(path), name, sharing, profile),
+              creation(ask, creations.Typed(path), name, sharing, roles),
             )
             False -> #(model, effect.none())
           }
@@ -1139,13 +1147,13 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     // first is out, a submit for a form that is not drawn, and a page that may
     // not create ask nothing. These arms are the second layer: the daemon
     // refuses the same requests from the grant it holds.
-    Creating(workspace:, name:, sharing:, profile:) ->
+    Creating(workspace:, name:, sharing:, roles:) ->
       case model.start.create, model.status, model.creating {
         Some(ask), Connected, create.Composing(open) if open == workspace ->
-          case offered_profile(model, profile) {
+          case offered_roles(model, roles) {
             True -> #(
               Model(..model, creating: create.Waiting(workspace), note: None),
-              creation(ask, creations.Drawn(workspace), name, sharing, profile),
+              creation(ask, creations.Drawn(workspace), name, sharing, roles),
             )
             False -> #(model, effect.none())
           }
@@ -1766,26 +1774,31 @@ fn creation(
     creations.Place,
     String,
     Sharing,
-    Option(String),
+    creations.Roles,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
   place: creations.Place,
   name: String,
   sharing: Sharing,
-  profile: Option(String),
+  roles: creations.Roles,
 ) -> Effect(Msg) {
   use dispatch <- effect.from
-  ask(place, name, sharing, profile, fn(answer) { dispatch(Created(answer)) })
+  ask(place, name, sharing, roles, fn(answer) { dispatch(Created(answer)) })
 }
 
-// Whether a submitted profile is one the page offered: the default roles always
-// are, and a name only if the daemon listed it when the page opened. The form's
-// decoder already resolves a position in this list, so a submit that fails this
-// check did not come from a form the page drew.
-fn offered_profile(model: Model, profile: Option(String)) -> Bool {
-  case profile {
+// Whether submitted roles are ones the page offered: the default is always
+// offered, and a profile name or a model key only if the daemon listed it when
+// the page opened. The form's decoder already resolves a position in each list,
+// so a submit that fails this check did not come from a form the page drew.
+fn offered_roles(model: Model, roles: creations.Roles) -> Bool {
+  offered(model.start.profiles, roles.profile)
+  && offered(model.start.models, roles.model)
+}
+
+fn offered(listed: List(String), chosen: Option(String)) -> Bool {
+  case chosen {
     None -> True
-    Some(name) -> list.contains(model.start.profiles, name)
+    Some(text) -> list.contains(listed, text)
   }
 }
 
@@ -2225,6 +2238,7 @@ fn create_offer(model: Model) -> Create(Msg) {
         CreatingElsewhere,
         model.creating,
         model.start.profiles,
+        model.start.models,
         OpeningRemote,
         CreatingRemote,
         model.start.executors,

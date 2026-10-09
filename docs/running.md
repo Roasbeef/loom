@@ -47,7 +47,9 @@ when launching a daemon; without it, the launcher uses
 `<state-dir>/loom.toml` if present. `--model-profile <name>` creates new
 sessions under one of that file's `[profiles.<name>.roles]` tables (the
 default roles with the named roles replaced); an existing session keeps the
-profile it was created with. It is not `--profile`, which enables BEAM
+profile it was created with. A session can also be pinned to one of the file's
+`[models.<name>]` entries for its main model from the web home's new-session
+form. It is not `--profile`, which enables BEAM
 profiling. `--executor <name> --workspace <registered name>` makes the
 picker's `n` create sessions in a workspace registered on one of the daemon's
 `[executors.<name>]` (the name is not resolved as a path on this machine, and

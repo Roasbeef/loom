@@ -27,6 +27,7 @@
 #                        catalogue_logins_schema.gleam and
 #                        catalogue_recent_folders_schema.gleam and
 #                        catalogue_profiles_schema.gleam and
+#                        catalogue_models_schema.gleam and
 #                        catalogue_executors_schema.gleam and
 #                        catalogue_pools_schema.gleam and
 #                        catalogue_moves_schema.gleam. Each catalogue version
@@ -74,6 +75,7 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_logins.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_recent_folders.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_profiles.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_models.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_executors.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_pools.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_moves.sql
@@ -117,6 +119,9 @@ gleam format packages/storage/src/storage/catalogue_recent_folders_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_profiles.sql \
   packages/storage/src/storage/catalogue_profiles_schema.gleam
 gleam format packages/storage/src/storage/catalogue_profiles_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_models.sql \
+  packages/storage/src/storage/catalogue_models_schema.gleam
+gleam format packages/storage/src/storage/catalogue_models_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_executors.sql \
   packages/storage/src/storage/catalogue_executors_schema.gleam
 gleam format packages/storage/src/storage/catalogue_executors_schema.gleam

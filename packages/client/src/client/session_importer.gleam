@@ -499,6 +499,7 @@ fn import_it(
       name: manifest.name,
       configuration: "",
       profile: manifest.profile,
+      model: None,
       executor: manifest.executor,
       pool: manifest.pool,
       created_at: manifest.created_at,
