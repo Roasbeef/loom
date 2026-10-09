@@ -391,6 +391,43 @@ pub fn an_executor_the_configuration_lacks_is_refused_and_stores_nothing_test() 
   })
 }
 
+pub fn a_model_is_judged_on_an_executor_or_pool_session_too_test() {
+  wire.fixture(fn(_, ready, port, credential) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    // The executor and the pool exist, so the refusal is the model's: the
+    // daemon's configuration defines no such key. Naming a place does not skip
+    // the check that a pinned model is one the configuration defines.
+    let on_executor =
+      wire.send(
+        socket,
+        1,
+        "sessions.create",
+        registered_creation("model-executor", [
+          #("executor", json.String("build-box")),
+          #("model", json.String("nope")),
+        ]),
+        within_ms: 1000,
+      )
+    assert code_of(on_executor) == json.String("unknown_model")
+    let in_pool =
+      wire.send(
+        socket,
+        2,
+        "sessions.create",
+        pooled_creation("model-pool", [#("model", json.String("nope"))]),
+        within_ms: 1000,
+      )
+    assert code_of(in_pool) == json.String("unknown_model")
+
+    // Neither refused request reserved an identity.
+    assert page(ready) == Ok([])
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
 pub fn malformed_executor_creations_are_bad_requests_test() {
   wire.fixture(fn(_, ready, port, credential) {
     let #(socket, _) = wire.connect(port, credential, "/v2/control")

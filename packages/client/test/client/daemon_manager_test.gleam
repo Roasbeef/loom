@@ -720,6 +720,25 @@ pub fn creation_retry_preserves_reservation_before_and_after_assembly_test() {
       generator: later,
     )
     == Error(manager.Catalogue(catalogue.Conflict))
+
+  // The model, the executor and the pool are each part of the request, so a
+  // retry that changes any of them is another request under the same key.
+  list.each(
+    [
+      manager.Creation(..request, model: option.Some("fast")),
+      manager.Creation(..request, executor: "box"),
+      manager.Creation(..request, pool: "fleet"),
+    ],
+    fn(changed) {
+      assert manager.create(
+          registry,
+          changed,
+          directory: "/private/sessions",
+          generator: later,
+        )
+        == Error(manager.Catalogue(catalogue.Conflict))
+    },
+  )
   assert process.receive(arrivals, 0) == Error(Nil)
   process.send(release, Nil)
   await_status(registry, record.id, manager.Resident(operation))

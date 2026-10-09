@@ -83,17 +83,17 @@ fn page(
 }
 
 // A page that may create, whose every creation is heard with the place, the
-// name and the sharing it carried.
+// name, the sharing and the roles it carried.
 fn executing(
   rows: List(Entry),
   executors: List(String),
-  asked: Subject(#(creations.Place, String, creations.Sharing)),
+  asked: Subject(#(creations.Place, String, creations.Sharing, creations.Roles)),
 ) -> home.Start {
   page(
     rows,
     executors,
-    Some(fn(place, name, sharing, _, _) {
-      process.send(asked, #(place, name, sharing))
+    Some(fn(place, name, sharing, roles, _) {
+      process.send(asked, #(place, name, sharing, roles))
     }),
   )
 }
@@ -159,7 +159,8 @@ pub fn the_form_is_offered_only_when_executors_exist_test() {
 
 // A submit asks the daemon for a registered place under the name typed, as a
 // shareable session (a session on an executor is session-only), and the form is
-// locked until the answer arrives.
+// locked until the answer arrives. The form draws no profile or model select,
+// so the roles are the configuration's own even when the page offers both.
 pub fn a_creation_names_the_executor_and_the_workspace_test() {
   let asked = process.new_subject()
   let model = opened(executing([], ["build-box"], asked))
@@ -170,12 +171,41 @@ pub fn a_creation_names_the_executor_and_the_workspace_test() {
       creations.Registered("build-box", "app"),
       "review",
       creations.Shareable,
+      creations.default_roles,
     ))
   assert string.contains(drawn(model), "Creating")
 
   // A second submit while the first is out asks nothing.
   let _ = run(model, home.CreatingRemote("build-box", "app", "again"))
   assert process.receive(asked, 0) == Error(Nil)
+}
+
+// A page that offers profiles and models on its other forms still draws neither
+// on the registered form, and a registered session asks for the configuration's
+// own roles. The model select is for local folders; a registered session's model
+// can be pinned from the control command.
+pub fn the_registered_form_offers_no_profile_or_model_test() {
+  let asked = process.new_subject()
+  let start =
+    home.Start(
+      ..executing([], ["build-box"], asked),
+      profiles: ["alt"],
+      models: ["fast"],
+    )
+  let model = run(opened(start), home.OpeningRemote)
+  let html = drawn(model)
+  assert string.contains(html, "name=\"executor\"")
+  assert !string.contains(html, "name=\"profile\"")
+  assert !string.contains(html, "name=\"model\"")
+
+  let _ = run(model, home.CreatingRemote("build-box", "app", ""))
+  assert process.receive(asked, 0)
+    == Ok(#(
+      creations.Registered("build-box", "app"),
+      "",
+      creations.Shareable,
+      creations.default_roles,
+    ))
 }
 
 // The page asks only from the open form, and only for an executor it was told
