@@ -337,6 +337,17 @@ table (models, tools, MCP, language servers, mounts) is shared by all profiles.
 [Protocol 076](../../protocol-change/076-config-profiles.md) records the
 decision.
 
+A live session changes its profile with `/profile <name>` (alias `/model-profile`;
+`/profile default` returns to `[roles]`, bare `/profile` lists the names). The
+switch saves the name with the registration and restarts the session, because the
+gateway, the subagent, summarizer and vision routes and the existence of an advisor
+are all built once at open from the profile. It is refused while a strand runs.
+Strands that hold the old profile's head for `main`, `subagent` or `advisor` move
+to the new profile's head (`catalog.retargets`); a strand whose model was chosen
+with `/model` holds no head and stays. `default` is reserved, so no profile can be
+named it. [Protocol 082](../../protocol-change/082-session-profile-switch.md)
+records the decision.
+
 ### Pinning a session's main model
 
 A session can also be created on one `[models.<key>]` entry, without writing a

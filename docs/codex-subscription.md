@@ -187,6 +187,10 @@ table twice. Other routes, such as `advisor` and `vision`, are inherited when a
 profile omits them. A profile replaces each named chain whole. Its selection
 is saved with the session, so resuming that session keeps the same profile.
 `/model` changes one strand's selected entry; it does not select a role profile.
+`/profile codex-split` (or `/model-profile codex-split`) switches a running
+session to a profile, and `/profile default` returns it to `[roles]`. The switch
+restarts the session, is refused while a strand runs, and leaves a strand chosen
+with `/model` on its own entry.
 A sub-agent's explicit model argument can override the `subagent` default.
 
 All three ChatGPT entries share `profile = "personal"`, so one login is sufficient.

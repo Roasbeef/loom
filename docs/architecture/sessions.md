@@ -392,7 +392,12 @@ created under, or none ([protocol 076](../../protocol-change/076-config-profiles
 It is a name and not the roles it resolved to: every open loads the session's
 configuration and resolves the profile again, so two resident sessions of one
 daemon can route their roles differently, and a profile the file no longer
-defines refuses the open instead of falling back to the default roles. Shared
+defines refuses the open instead of falling back to the default roles. The name
+can be replaced while the session runs, by the owner's `profile_set` command
+([protocol 082](../../protocol-change/082-session-profile-switch.md)): the hub
+saves it, moves the strands that followed the old profile, and the daemon stops
+and opens the session again in a process the session does not own
+(`daemon/restart`). The hub refuses the switch while any strand runs. Shared
 domain maintenance does not use it.
 
 It likewise stores the key of the `[models.<key>]` entry the session's `main`

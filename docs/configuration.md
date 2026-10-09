@@ -30,7 +30,7 @@ Worked, commented files:
 | `loomd --config <path>` | The path given. The last `--config` wins. With no `--config`, no file is read and the catalogue is one entry built from the `LOOM_*` environment variables (`LOOM_MODEL`, `LOOM_BASE_URL`, `LOOM_CONTEXT_WINDOW`, `LOOM_MAX_OUTPUT_TOKENS`, and the API key variable). |
 | `loom --config <path>` | The path given, passed on to the daemon the launcher starts. |
 | `loom` with no `--config` | `<state-dir>/loom.toml` when that file exists, where the state directory is `--state-dir` or `~/.loom`. When it does not exist, no file is read. |
-| `loom --model-profile <name>` | Selects a `[profiles.<name>]` table of the file for a newly created session. A resumed session keeps the profile it was created with. |
+| `loom --model-profile <name>` | Selects a `[profiles.<name>]` table of the file for a newly created session. A resumed session keeps the profile it was created with, or the one `/profile` last saved for it. |
 | New-session form on the web home | Offers the file's profiles and its `[models.<name>]` keys (see [Choosing a model for one session](#choosing-a-model-for-one-session)). |
 
 A file given with `--config` replaces the `LOOM_*` environment surface for model
@@ -168,6 +168,20 @@ lowercase letters, digits, `_` or `-`, at most 32 characters. A session picks on
 when it is created (`loom --model-profile <name>`, or the new-session form on the
 web) and keeps it when resumed. Every profile is validated when the file is read,
 so a typo in a profile nobody has selected still refuses the file.
+
+`default` is reserved: it is the word `/profile default` uses for the `[roles]`
+table, so a `[profiles.default]` table is refused.
+
+A live session changes its profile with `/profile <name>`, or `/model-profile
+<name>`, in the terminal and on the web page. `/profile default` returns it to
+`[roles]`, and `/profile` alone shows the current profile and the names the file
+defines. A switch saves the name with the session and restarts the session so
+that every role, including the subagent, summarizer and advisor routes, is built
+from the new profile; it is refused while any strand is running. A strand that
+holds the old profile's model for `main`, `subagent` or `advisor` moves to the
+new profile's. A strand whose model was chosen with `/model` keeps it. Only the
+session owner may switch
+([protocol-change/082](../protocol-change/082-session-profile-switch.md)).
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
@@ -530,8 +544,8 @@ main = ["opus"]
 advisor = ["flash"]
 ```
 
-Start a session with `loom --model-profile cheap`. Roles a profile omits keep the
-`[roles]` chain.
+Start a session with `loom --model-profile cheap`, or switch a running one with
+`/profile cheap`. Roles a profile omits keep the `[roles]` chain.
 
 ### A Go module mirror
 

@@ -134,7 +134,7 @@ terminal, 4 handles, 3 split.
 | `input` | b | An etui `TextAreaState`; the web's editor is the browser's. |
 | `strand_workspaces` | split | The parked `scrollback` per strand is the session's history window and moves to a shared `Dict(#(session, strand), history_view.State)`; the editor, its history, the offset, anchors and height stay terminal; the record is `StrandWorkspace` (`tui/model.gleam:293`). |
 | `restored_workspace` | b | A viewport endpoint the next projection restores. |
-| `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`session_view/commands.gleam:687` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
+| `attachments` | a | What the next submission carries, not editor state; `submit_with_images` sends them (`session_view/commands.gleam:704` (`submit_with_images`)), and Part 2 adds images to the page's composer. |
 | `history`, `history_index`, `history_draft` | b | The composer's command history. |
 | `command_selected` | b | The palette's cursor. |
 | `submission_mode` | b | Tab's choice for the next Enter; the web sends its delivery with each submit. The shared `Submit` command carries it. |
@@ -572,7 +572,7 @@ The worst cases in the code, and the cut for each:
    `agent_summary` is dropped and derived at paint. The other 27 writes
    are shared and the function moves as it is.
 
-2. **`select_workspace`** (`session_view/event_fold.gleam:1554`
+2. **`select_workspace`** (`session_view/event_fold.gleam:1591`
    (`select_workspace`)) parks the editor, the history window, the
    viewport and the anchors under one key and restores another's. It
    splits into `step.select_workspace`, which parks and restores
@@ -696,7 +696,7 @@ no lines.
 | `reduce`, `drained`, `take_filed`, `received` | the shared `Ticked`: `drain_connection` then `tick_channel` | `session_view/inbound` |
 | `apply` | `apply_channel_update` | `session_view/inbound` |
 | `captured`, `fresh`, `recaptured` | `reconcile_cut`, `apply_cut`, `render_cut` | `session_view/inbound` |
-| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:960`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
+| `used`, `settle_cache`, `settle_pushed`, `noted` | `receive_usage` (`session_view/event_fold.gleam:1001`), `settle_usage`, `settle_pending_cache`, `note_cache_miss` | `session_view/inbound` |
 | `relaned`, `restripped`, `strip_of`, `outlook`, `running_ms`, `strands` | `derive(before, after)`: rebuild blocks, pieces and the strip when `shared.render_revision` moved | shell, view state |
 | `ticked` | the same per-chip label comparison over `shared.cache` and `shared.stamp` | shell |
 | `settled` | `apply_submission`; `drafts` bumps on the `pending_submission` edge | `session_view/outbound`, shell |
