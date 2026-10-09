@@ -834,6 +834,138 @@ footing as the pinned connection itself: the port limits the kinds of command so
 that the sender cannot read a session's conversation, not to defend against a
 peer the operator has already trusted with the node.
 
+The two sentences about `Roster` and `Describe` and about a saved recipient no
+longer hold. The "Addendum: peer mail reach" below serves the listing and queues
+the message.
+
+### Addendum: peer mail reach
+
+The peer mail addendum above left two things out, and its "What it costs" section
+names them: a recipient on another orchestrator was listed as running with no
+strands and no metadata, and a message to a recipient that its owner holds saved
+was refused. This addendum serves the listing and queues the message. It
+supersedes those two sentences and the refusal in protocol-change/077, "What a
+send to a closed session does". It changes no client-protocol frame and no Part 1
+interface. It adds one constructor to the orchestrator port's message type and
+one to `peer_mail.Failure`, one field to `session_directory.Directory`, and one
+field to a pending outbox row.
+
+#### What was considered
+
+Serving `Describe` through the recipient's Agency, as the four commands are, was
+rejected. A listing must describe a saved session, and a saved session has no
+Agency, so the command would fail for exactly the recipient that most needs
+describing. The description is the catalogue's, so the port reads the catalogue.
+
+Opening a saved recipient when a message arrives was rejected. protocol-change/077
+refuses it for a reason that does not depend on where the recipient lives: opening
+a session starts its runtime, its schedules and its resumed operations, which is
+a larger grant than adding a prompt to a running one. A message waits for the
+owner to open the session and never causes it.
+
+Queueing the message on the recipient's orchestrator was rejected. It would
+need a second durable store with its own expiry on a node that has no record of
+the sender, and the sender already has an outbox that survives its own restart.
+
+A per-row backoff stored in the outbox row was rejected for a pace held by the
+drainer, which a restart resets to the fixed interval. The row stores only what it
+waits for, because that decides the words of its refusal.
+
+#### Roster and description
+
+`orchestrator_port.Message` gains `Describe(session, reply: Subject(Result(JsonValue,
+String)))`. The daemon answers it with `server.local_description`: the catalogue's
+view of the session, the same one a listing of a local session shows, read without
+opening the session. A session this catalogue gave away to another orchestrator is
+answered `moved`, because its row is only the record of who owns it now. The
+daemon starts the port with this function as a new argument of
+`orchestrator_port.start_with`; `start`, `start_serving` and `start_importing`
+refuse every description.
+
+`Roster(source session, source strand)` joins `Allow`, `Revoke`, `Deliver` and
+`SentReceipt` as a served `PeerCommand`, so the port serves five commands. It
+reaches the recipient's Agency, which lists the strands the recipient granted
+that source session and strand. `peer_mail.Describe`, the command that writes a
+session's own description, is still refused, because a peer has no business
+writing it. Every other command is refused as before.
+
+`session_directory.Directory` gains `describe(orchestrator, session)`, which asks
+that orchestrator's port (`session_directory.description_over`, two seconds once
+connected). `peers.described` is the directory's `describe` for a daemon: this
+catalogue's row if it has one, otherwise the owner's. An owner that cannot be
+asked gives the text `owner unreachable`, which the roster and `peers.inspect`
+already show as the row's `unavailable` metadata, so one unreachable owner does
+not fail a listing. A `Roster` call waits two seconds, not the seven a delivery
+may, for the same reason.
+
+Nothing the listing reveals is new. The sender asks only about sessions its own
+links and grants name, and the owner lists only the strands the recipient granted
+the asking session, so a session with no grant for the asker, or a link the owner
+removed, shows nothing and is not asked about. The description is what a local
+listing shows for a local session, and the port already tells any pinned peer
+whether it holds a session at all (`Owns`). Default links
+(`[peers] default_links`) join the sessions of one daemon, so they do not reach
+across.
+
+#### A recipient that is saved
+
+`peer_mail.Failure` gains `NotOpen`: the recipient's owner answered, its
+catalogue holds the session, and the session is not resident. The daemon's
+`peer_command` answers a command for such a session with the fixed text
+`peer_mail.not_open_reason`, and `remote_peer` turns that text back into
+`NotOpen`. A local directory returns `NotOpen` for the same case
+(`server.local_peer`). A session no catalogue holds is still `Refused`, with the
+text it had, so the model reads `that session is not running; the owner has to
+open it` for a recipient that is gone and a queue note for one that is only
+saved.
+
+The sender treats `NotOpen` as it treats `Unreachable`: the outbox row stays
+`pending` and the send returns `{"state": "queued", ...}`. The note differs:
+`peers.queued_unopened_note` says the session is saved and only its owner can open
+it. A program calling `cap/peer.send` receives the denial `peer_queued` with that
+note.
+
+A pending row gains a `wait` field, `owner` or `open`, written when an attempt
+finds the other kind of wait. A row without the field, as an earlier version wrote
+it, waits on its owner. The field decides the words of the hour's refusal:
+`owner unreachable` as before, and `recipient not opened in time` for a recipient
+that was saved when last asked.
+
+Each attempt resolves the recipient again through the directory. A session moved
+to another orchestrator is therefore delivered to there, and one deleted meanwhile
+is refused as `that session is not running; the owner has to open it`. The
+message is delivered once, when the owner has the session open, under the grant
+and wake permission it has then: a `busy_only` grant on an idle recipient is
+refused at that moment, as a send to a running idle session is.
+
+The drainer waits five seconds between attempts while any row waits on an owner
+that does not answer, as before. When every pending row instead waits for an
+open, each pass doubles the wait, from five seconds to five minutes. It returns to
+five seconds when a pass finds an owner that does not answer and when the machine
+goes idle. The doorbell cannot tell which row it announces, because the machine's
+own attempts ring it, so a message queued while the wait is long is attempted at
+the next tick, at most five minutes later.
+
+This is a change of behavior for a single daemon too. protocol-change/077 refused
+a send to a session that is not running. A local send to a session that is saved
+now queues, under the one rule that applies to local and remote recipients alike.
+The model still cannot open a session, and a session that is gone is still
+refused. `peers.link` is unchanged: both sessions must still be resident when the
+owner creates a link, because the grant is written in the recipient.
+
+#### What it costs
+
+A send to a session that is never opened leaves a pending row for an hour, then a
+refusal. A strand with 64 such rows is at its outbox bound and refuses the next
+send with `outbox_full`, which was true of an unreachable owner and is now true of
+a saved recipient. The sender learns that a session was opened at its next
+attempt, not when it opened: up to five minutes later once the wait has grown.
+Every attempt costs the sender a directory lookup, and a remote one costs a round
+trip to the owner's port, which the growing wait keeps to about seventeen in the
+hour. A listing of a recipient on another orchestrator costs a catalogue read and a
+`Roster` on the owner for each link, bounded by the 64 links a strand may hold and
+by two seconds each.
+
 ### Addendum: the review of the remote core
 
 An independent review of phases 1 and 2 found two defects that need a wire or
