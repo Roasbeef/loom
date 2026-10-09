@@ -226,9 +226,9 @@ MCP clients and secrets inside the executor's hermetic build; a remote
 session's `code_mode` omits them until the MCP layer is split into the data an
 executor needs and the clients that stay on the orchestrator. The
 protocol-change/078 addendum on background code mode and MCP façades is the
-proposed design for both: the orchestrator keeps the execution record and the
-executor runs the program, and each MCP server is placed on one side by its
-`runs_on` key.
+design for both, since built at protocol version 3: the orchestrator keeps the
+execution record and the executor runs the program, and each MCP server is
+placed on one side by its `runs_on` key.
 
 The remaining placement questions follow the rule in section 3. The `[tools]
 env` table is resolved on the executor from its own configuration and secret

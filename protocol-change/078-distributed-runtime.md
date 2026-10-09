@@ -916,8 +916,11 @@ for the missing plane.
 ### Addendum: background code mode and MCP façades on a remote session
 
 **Status**: ACCEPTED 2026-10-09, revised after an independent design review
-(findings F1 to F7 below are folded in). The implementation follows on the
-branch `distributed/remote-codemode`, stacked on PR #923.
+(findings F1 to F7 below are folded in). Implemented at protocol version 3 on
+the branch `distributed/remote-codemode`, stacked on PR #923; the P model
+checks the execution path, and the shipped fixtures
+`daemon_shipped_remote_background_test` and `daemon_shipped_remote_mcp_test`
+drive both paths between two daemons.
 
 A remote session refused four features that read orchestrator-side state. This
 addendum adds two of them: background code mode (`async_runs`,
@@ -1289,9 +1292,9 @@ owner link's 120-second capability budget. The owner checks only that its layer
 holds the server for the call's seam, as a local router does; vetting on the
 executor is what limits a program to the servers it imported.
 
-If the census shows that the executor offers no `code_mode`, the orchestrator
-retires the layer it started and logs one line. Spawns wasted this way are an
-accepted cost.
+If the census shows that the executor offers no `code_mode`, the layer the
+orchestrator started stays up for the session and answers no call, because no
+program can import its façades. Spawns wasted this way are an accepted cost.
 
 #### MCP on the executor
 
@@ -1320,8 +1323,9 @@ after a local `mcp.unavailable`. A missing table is therefore found at attach,
 in words, and never at a call.
 
 The executor's plane starts the servers when it is built and owns their clients
-for the plane's life. The plane closes them when the scope closes, before the
-helper pool. A client whose server does not exit within its five-second grace
+for the plane's life. The plane closes them when the scope closes, after the
+helper pool and the workspace, in the order a local daemon retires the same
+parts. A client whose server does not exit within its five-second grace
 is killed, and it does not count toward the scope's `UnknownCleanup`: the
 retirement witness protects the checkout from jailed children that may still
 be writing, and an MCP server is neither jailed nor a helper child. On a local
@@ -1369,9 +1373,10 @@ census gains `mcp`, one entry per expected server, as described above.
 The plan is fixed for the life of the plane, that is, for one incarnation. A
 `Created` or `Reopened` attach builds the plane from the plan it carries. A
 `Rebound` attach, which happens only when a new open takes over a scope after an
-orchestrator restart, keeps the plane and the plan it was built with, and the
-orchestrator logs `mcp.plan_stale` naming the servers whose plan differs. The
-reason is that the executor-placed servers live with the plane and may be in use
+orchestrator restart, keeps the plane and the plan it was built with, and the plan the
+new attach carries is not used. The census the rebound attach answers with is
+the one the plane was built with, so the orchestrator's `mcp.ready` and
+`mcp.unavailable` lines describe the plan in force. The reason is that the executor-placed servers live with the plane and may be in use
 by a running program, and the `code_mode` description was rendered from the
 plan when the plane was built. A stale orchestrator-placed façade fails in
 band: a server removed from the configuration answers `unsupported_cap`, and a
@@ -1469,8 +1474,8 @@ owner. An execution row holds 1 MiB of the executor's ledger budget for up to
 15 minutes, and a result larger than that is stored as an error naming its
 size. A program whose record closed during a partition may run on until its
 deadline. An orchestrator-placed server is started before the orchestrator
-learns whether the executor offers `code_mode`, and is retired after the attach
-if it does not. A changed MCP plan waits for the next reopen. An executor-placed
+learns whether the executor offers `code_mode`, and stays up for the session if
+it does not. A changed MCP plan waits for the next reopen. An executor-placed
 server needs a table on the executor as well as the orchestrator's `runs_on`.
 
 ## Impact
