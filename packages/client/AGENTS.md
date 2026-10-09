@@ -7260,7 +7260,12 @@ ADR-019 the choice of Khepri and its measurements, and
   for an imported session whose sender already wrote `moving`), moving becomes
   `moving` unless the receiver already owns it, moved writes nothing. A record
   naming another daemon is logged `directory.migration_conflict` and left. The
-  marker is written last.
+  marker is written last, once per node name, and nothing checks afterwards that
+  every remote session has a record: a seeded member must not drop and re-add
+  `[directory]` or change its node name, since sessions created in between have
+  no record and a move of one would set it aside as deleted. To leave, move or
+  delete its remote sessions first; to rename, decommission it and bootstrap or
+  join it as a new member.
 - `daemon/directory_cli` is `loomd directory bootstrap`: it refuses without
   `[directory]`, with a store on disk (the `joined` marker or a Ra server
   directory; the Ra system's own files do not count), while the daemon runs
@@ -7284,7 +7289,9 @@ Invariants that break things when violated:
 - The source sets its file aside only on a consistent read naming another owner.
   A local read can be from before this daemon owned the session.
 - A receiver never removes a session the record says it owns, and refuses only
-  when the record names someone else.
+  when the record names someone else: once it owns the record, an import that
+  cannot finish is `Failed` and the copy stays (`owned_import`,
+  `kept_if_owned`).
 - No Khepri call runs inside a registry turn, and every one is bounded by a weft
   deadline. Opening a session makes no Khepri call.
 - A local session's record is `Local`, never `Serving`, so no move or remote

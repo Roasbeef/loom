@@ -1302,6 +1302,13 @@ majority, and logs `directory.migrated` with the count, or
 `directory.migration_conflict` for a session whose record already names another
 orchestrator.
 
+A member seeds once per node name. Do not remove `[directory]` from a seeded
+member and add it back later, and do not change a member's node name: remote
+sessions created in between have no record, and moving one would set it aside
+as deleted. To take a member out of the directory, move or delete its remote
+sessions first; to rename one, decommission it and bootstrap or join it again as
+a new member.
+
 **What to expect** (**Verified**, the shipped tests on macOS on the branch
 `directory/khepri`, three real daemons as members):
 `daemon_shipped_remote_move_test` (the member variants: one clean move, and the
