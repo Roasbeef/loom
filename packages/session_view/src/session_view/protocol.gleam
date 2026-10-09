@@ -290,8 +290,10 @@ pub type Event {
     seq: Option(Int),
     /// Operation billed by the row, when the gateway can attribute it.
     operation: Option(String),
-    /// The server-authoritative provider usage row.
+    /// The server-authoritative aggregate provider usage row.
     usage: Usage,
+    /// The final attempt alone measures context and prompt-cache behavior.
+    last_usage: Option(Usage),
   )
 
   /// A tool action awaiting an explicit operator decision.
@@ -1074,7 +1076,15 @@ fn decode_usage(body: JsonValue, seq: Option(Int)) -> Result(Event, String) {
     codec.decode_usage(value)
     |> result.map_error(fn(report) { report.expected }),
   )
-  Ok(UsageChanged(strand:, seq:, operation:, usage:))
+  use last_usage <- result.try(case list.key_find(fields, "last_usage") {
+    Error(Nil) -> Ok(Some(usage))
+    Ok(json.Null) -> Ok(None)
+    Ok(value) ->
+      codec.decode_usage(value)
+      |> result.map(Some)
+      |> result.map_error(fn(report) { report.expected })
+  })
+  Ok(UsageChanged(strand:, seq:, operation:, usage:, last_usage:))
 }
 
 fn decode_escalation(body: JsonValue) -> Result(Event, String) {

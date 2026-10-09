@@ -52,7 +52,6 @@ import core/message
 import core/origin
 import gleam/bool
 import gleam/dict.{type Dict}
-import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -83,6 +82,7 @@ import session_view/transcript_line.{
   SummarizedReasoning, System, ToolCall, ToolDetail, ToolFailure, ToolGroup,
   ToolPatch, ToolResult, User,
 }
+import session_view/usage_display
 import session_view/worktree_view
 
 /// What the line builders read of the client's current state.
@@ -4405,50 +4405,35 @@ pub fn usage_summary(usage: message.Usage) -> String {
   string.join(list.append(spend, [cache]), " · ")
 }
 
-/// The estimated cost as the footer and the web bar word it: `est $0.04`,
-/// or `est —` when no token was priced. A model with no price entry reports
-/// a zero total, and `$0.00` after real work reads as a bug rather than as
-/// "unpriced". A session that has spent nothing yet has priced nothing
-/// either, so a zero total is unpriced whatever the token count: the figure
-/// is not known, and `$0.00` would claim that it is.
+/// The estimated cost as the footer and the web bar word it. Evidence
+/// distinguishes an unavailable price (`est —`) from proven no expense
+/// (`est $0.00`); the numeric total alone establishes neither. Priced usage
+/// retains its coverage and rate basis, including subscription API reference
+/// rates, so a surface cannot imply that an estimate is a plan charge.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // cost_words(priced) == "est $0.04"
 /// // cost_words(spent_but_unpriced) == "est —"
-/// // cost_words(nothing_spent_yet) == "est —"
+/// // cost_words(nothing_spent_yet) == "est $0.00"
 /// ```
 pub fn cost_words(usage: message.Usage) -> String {
-  "est " <> cost_figure(usage)
+  usage_display.estimate(usage.cost.total, usage.evidence)
 }
 
-/// The estimated cost as a figure alone, for a place whose label says it is
-/// an estimate: `$0.04`, or `—` when no token was priced. Every surface
-/// words a zero total through this rule, so a fresh session never reads
-/// `$0.00` in one place and `est —` in another.
+/// The estimate without the `est` marker, for a surface whose label supplies
+/// it. Coverage and rate-basis qualifiers remain beside the figure, so the
+/// compact footer cannot turn a subscription reference into a billed price.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // cost_figure(priced) == "$0.04"
-/// // cost_figure(nothing_spent_yet) == "—"
+/// // cost_figure(unpriced) == "—"
 /// ```
 pub fn cost_figure(usage: message.Usage) -> String {
-  case usage.cost.total >. 0.0 {
-    True -> "$" <> money(usage.cost.total)
-    False -> "—"
-  }
-}
-
-/// Currency is display data. Round once to cents before splitting the whole
-/// and fractional parts, so binary floating point tails never reach the footer.
-@internal
-pub fn money(value: Float) -> String {
-  let cents = int.max(0, float.round(value *. 100.0))
-  int.to_string(cents / 100)
-  <> "."
-  <> string.pad_start(int.to_string(cents % 100), 2, "0")
+  usage_display.figure(usage.cost.total, usage.evidence)
 }
 
 fn advisor_history_label(annotation: advisor_history.Annotation) -> String {

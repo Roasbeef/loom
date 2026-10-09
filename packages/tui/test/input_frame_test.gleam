@@ -69,8 +69,8 @@ pub fn the_input_frame_is_closed_and_carries_the_live_status_test() {
 pub fn a_wide_bottom_rule_names_the_effort_and_a_narrow_one_drops_it_test() {
   let wide = lines(attached(), 120, 40) |> row_starting("╰─")
   let narrow = lines(attached(), 80, 24) |> row_starting("╰─")
-  assert string.contains(wide, "Kimi-K3 · low › ctx — › est —")
-  assert string.contains(narrow, "Kimi-K3 › ctx — › —")
+  assert string.contains(wide, "Kimi-K3 · low › ctx — › est $0.00")
+  assert string.contains(narrow, "Kimi-K3 › ctx — › $0.00")
 }
 
 pub fn a_running_strand_names_what_it_is_doing_on_the_top_rule_test() {

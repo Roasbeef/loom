@@ -30,6 +30,7 @@ import machine/strand as machine_strand
 import session_view/cache_miss
 import session_view/snapshot_view
 import session_view/transcript_lines
+import session_view/usage_display
 
 /// One pushed usage row waiting for a capture that covers its sequence.
 ///
@@ -440,6 +441,6 @@ pub fn notice_text(miss: cache_miss.CacheMiss) -> String {
   <> " tokens re-billed"
   <> case miss.estimate {
     None -> ""
-    Some(amount) -> " (~$" <> transcript_lines.money(amount) <> ")"
+    Some(amount) -> " (~$" <> usage_display.money(amount) <> ")"
   }
 }

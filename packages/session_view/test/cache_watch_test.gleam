@@ -5,6 +5,7 @@
 //// reducer (`cache_miss_notice_test`, `session_pushed_test`).
 
 import core/message
+import core/usage_evidence
 import gleam/dict
 import gleam/option.{None, Some}
 import session_view/cache_miss
@@ -21,6 +22,7 @@ fn warm() -> message.Usage {
     reasoning: None,
     total_tokens: 40_600,
     cost: message.UsageCost(0.0006, 0.006, 0.012, 0.0, 0.0186),
+    evidence: usage_evidence.priced_api(),
   )
 }
 
@@ -36,6 +38,7 @@ fn cold() -> message.Usage {
     reasoning: None,
     total_tokens: 40_600,
     cost: message.UsageCost(0.0006, 0.006, 0.0, 0.15, 0.1566),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

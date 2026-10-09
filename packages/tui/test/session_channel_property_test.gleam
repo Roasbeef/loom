@@ -74,6 +74,7 @@
 import core/codec
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/bit_array
 import gleam/bool
 import gleam/dynamic.{type Dynamic}
@@ -1857,6 +1858,7 @@ fn usage(seq: Int) -> connection_event.Message {
       None,
       0,
       message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+      usage_evidence.none(),
     )
   pushed.push([
     #("event", json.String("usage_observation")),

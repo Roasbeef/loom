@@ -6,11 +6,13 @@
 //// would decode to `Ignored` and quietly render an empty transcript, which
 //// is the failure mode this module exists to make impossible.
 
+import core/accounting
 import core/codec
 import core/entry
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/int
 import gleam/list
 import gleam/option.{None}
@@ -411,6 +413,7 @@ pub fn usage(strand: String, input: Int, output: Int, cost: Float) -> String {
         cache_write: 0.0,
         total: cost,
       ),
+      evidence: usage_evidence.priced_api(),
     )
   event("usage", [
     #("strand", json.String(strand)),
@@ -473,20 +476,8 @@ fn fallback_entry_id() -> ids.EntryId {
 
 fn zero_usage() -> message.Usage {
   message.Usage(
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: 0,
-    cost: message.UsageCost(
-      input: 0.0,
-      output: 0.0,
-      cache_read: 0.0,
-      cache_write: 0.0,
-      total: 0.0,
-    ),
+    ..accounting.zero_usage(),
+    evidence: usage_evidence.priced_api(),
   )
 }
 

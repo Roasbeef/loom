@@ -52,6 +52,7 @@
 //// `GoalChanged` is already consumed by the lane before this fold.
 //// An interrupt marker can retire here while the captured queue stays held.
 
+import core/accounting
 import core/entry
 import core/json
 import core/message
@@ -432,11 +433,17 @@ pub fn apply_event(
         False -> updated
       }
     }
-    protocol.UsageChanged(strand:, seq:, operation:, usage: settled) ->
+    protocol.UsageChanged(
+      strand:,
+      seq:,
+      operation:,
+      usage: settled,
+      last_usage:,
+    ) ->
       case seq {
         Some(seq) ->
-          receive_usage_observation(shared, strand, seq, operation, settled)
-        None -> receive_usage(shared, strand, settled)
+          receive_usage_observation(shared, strand, seq, operation, last_usage)
+        None -> receive_usage(shared, strand, settled, last_usage)
       }
 
     protocol.EscalationPending(id:, tool:, preview: _) ->
@@ -947,14 +954,30 @@ fn retire_recorded_tail(
 //
 // The row arrives once per settled generation, so this is both the moment
 // the output rate is known and the moment the prompt cache can be judged.
+// An unknown zero snapshot carries accounting uncertainty but no new reading.
 // Both readings are per event rather than cumulative, which is why they sit
 // here rather than in the status-line arithmetic over `model.usage`.
 fn receive_usage(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
   settled: message.Usage,
+  last_usage: Option(message.Usage),
 ) -> Shared(socket, recorder, source, replay_source) {
-  let usage = add_usage(shared.usage, settled)
+  let usage = accounting.add_usage(shared.usage, settled)
+  case option.then(last_usage, accounting.observed_usage) {
+    None -> Shared(..shared, usage:)
+    Some(last) -> receive_final_usage(shared, strand, last, usage)
+  }
+}
+
+// A fallback total updates the ledger, while output rate and cache readings
+// belong only to the final attempt retained beside it.
+fn receive_final_usage(
+  shared: Shared(socket, recorder, source, replay_source),
+  strand: String,
+  settled: message.Usage,
+  usage: message.Usage,
+) -> Shared(socket, recorder, source, replay_source) {
   let updated =
     settle_usage(
       shared,
@@ -974,6 +997,20 @@ fn receive_usage(
 // Which rows the ledger admits, holds and compares is `cache_watch`'s rule,
 // shared with the web view.
 fn receive_usage_observation(
+  shared: Shared(socket, recorder, source, replay_source),
+  strand: String,
+  seq: Int,
+  operation: Option(String),
+  last_usage: Option(message.Usage),
+) -> Shared(socket, recorder, source, replay_source) {
+  case option.then(last_usage, accounting.observed_usage) {
+    None -> shared
+    Some(settled) ->
+      receive_final_observation(shared, strand, seq, operation, settled)
+  }
+}
+
+fn receive_final_observation(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
   seq: Int,
@@ -1216,47 +1253,6 @@ fn note_cache_miss(
       )
       |> session_model.invalidate_transcript
       |> session_model.invalidate_frame
-  }
-}
-
-fn add_usage(left: message.Usage, right: message.Usage) -> message.Usage {
-  let message.UsageCost(
-    input: left_cost_input,
-    output: left_cost_output,
-    cache_read: left_cost_cache_read,
-    cache_write: left_cost_cache_write,
-    total: left_cost_total,
-  ) = left.cost
-  let message.UsageCost(
-    input: right_cost_input,
-    output: right_cost_output,
-    cache_read: right_cost_cache_read,
-    cache_write: right_cost_cache_write,
-    total: right_cost_total,
-  ) = right.cost
-  message.Usage(
-    input: left.input + right.input,
-    output: left.output + right.output,
-    cache_read: left.cache_read + right.cache_read,
-    cache_write: left.cache_write + right.cache_write,
-    cache_write_1h: add_optional_int(left.cache_write_1h, right.cache_write_1h),
-    reasoning: add_optional_int(left.reasoning, right.reasoning),
-    total_tokens: left.total_tokens + right.total_tokens,
-    cost: message.UsageCost(
-      input: left_cost_input +. right_cost_input,
-      output: left_cost_output +. right_cost_output,
-      cache_read: left_cost_cache_read +. right_cost_cache_read,
-      cache_write: left_cost_cache_write +. right_cost_cache_write,
-      total: left_cost_total +. right_cost_total,
-    ),
-  )
-}
-
-fn add_optional_int(left: Option(Int), right: Option(Int)) -> Option(Int) {
-  case left, right {
-    None, None -> None
-    Some(value), None | None, Some(value) -> Some(value)
-    Some(left), Some(right) -> Some(left + right)
   }
 }
 

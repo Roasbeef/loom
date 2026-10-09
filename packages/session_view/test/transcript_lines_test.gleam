@@ -2,6 +2,7 @@
 //// web page's bar and Session tab.
 
 import core/message
+import core/usage_evidence
 import gleam/option.{None, Some}
 import session_view/transcript_line
 import session_view/transcript_lines
@@ -16,6 +17,10 @@ fn usage(total_tokens: Int, total: Float) -> message.Usage {
     reasoning: Some(40),
     total_tokens:,
     cost: message.UsageCost(0.0, 0.0, 0.0, 0.0, total),
+    evidence: case total >. 0.0 {
+      True -> usage_evidence.priced_api()
+      False -> usage_evidence.reported(usage_evidence.Other)
+    },
   )
 }
 
@@ -90,4 +95,25 @@ pub fn an_unconfirmed_stop_says_so_in_plain_words_test() {
         "provider request was cancelled (runtime: explicit stop)",
       ),
     ]
+}
+
+pub fn compact_cost_keeps_subscription_basis_and_coverage_test() {
+  let measured =
+    usage_evidence.with_price(
+      usage_evidence.reported(usage_evidence.ChatGptPlan),
+      usage_evidence.ChatGptReferenceRates,
+    )
+  let partial =
+    usage_evidence.add(
+      measured,
+      usage_evidence.unknown(usage_evidence.ChatGptPlan),
+    )
+  let subscription = message.Usage(..usage(1000, 0.42), evidence: partial)
+  assert transcript_lines.cost_words(subscription)
+    == "API ref partial est $0.42"
+  assert transcript_lines.cost_figure(subscription) == "API ref partial $0.42"
+
+  let complete = message.Usage(..usage(1000, 0.42), evidence: measured)
+  assert transcript_lines.cost_words(complete) == "API ref est $0.42"
+  assert transcript_lines.cost_figure(complete) == "API ref $0.42"
 }

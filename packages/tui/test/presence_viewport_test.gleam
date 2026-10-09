@@ -11,6 +11,7 @@
 //// which is what the shipped step runs after the event that adopted it, with
 //// the model from before the event as its first argument.
 
+import core/accounting
 import core/clock
 import core/entry
 import core/ids
@@ -58,16 +59,7 @@ fn remote() {
 }
 
 fn usage() {
-  message.Usage(
-    0,
-    0,
-    0,
-    0,
-    None,
-    None,
-    0,
-    message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
-  )
+  accounting.zero_usage()
 }
 
 fn answer(text) {

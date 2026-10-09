@@ -842,6 +842,21 @@ states that this consent permits only the captured action on its strand; the
 wire still echoes the exact action, grant subset, and displayed sequence.
 The client gateway owns persistence and matching; this pure UI grants nothing.
 
+## Usage projection (protocol 080)
+
+`protocol.UsageChanged` separates aggregate usage from `last_usage`. The
+aggregate contributes to cumulative consumption; cache watches, output rate,
+and context observations use the final attempt. A present malformed final
+observation is refused, while a historical omitted field describes its
+single usage observation. Captures own network cumulative totals; a pushed
+observation is never another adder.
+
+`usage_display.estimate` supplies the same words to conversation bars and
+goal inspectors. Unavailable pricing shows `est —`, partial estimates name
+their coverage, and ChatGPT plan rates show `API ref`. The goal board carries
+`cost_evidence` beside `cost_used`, preserving uncertainty through restart
+and replay without introducing a ChatGPT allowance counter.
+
 ## Immutable result identities
 
 `turns.Item.Step.result_source` retains the result entry identity independently

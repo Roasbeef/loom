@@ -9,4 +9,4 @@
 ╭─ To main · Enter sends ────────────────────────╮
 │ ready                                          │
 │ ›  / commands                                  │
-╰─ baseten-kimi-k3 › ctx — › — ──────────────────╯
+╰─ baseten-kimi-k3 › ctx — › $0.00 ──────────────╯

@@ -112,6 +112,23 @@ pub fn the_figures_emphasise_the_number_test() {
   )
 }
 
+// A cost with qualifiers before the marker keeps them in the label, so the
+// emphasised element holds only the amount.
+pub fn a_qualified_cost_emphasises_only_the_amount_test() {
+  let partial = drawn(None, None, heading.Live, "API ref partial est $1.00")
+  assert string.contains(
+    partial,
+    "API ref partial est <span class=\"num\">$1.00</span>",
+  )
+  assert !string.contains(partial, "<span class=\"num\">ref")
+
+  let mixed = drawn(None, None, heading.Live, "mixed rates est $2.10")
+  assert string.contains(
+    mixed,
+    "mixed rates est <span class=\"num\">$2.10</span>",
+  )
+}
+
 // The context disclosure carries the fixed mark `<loom-dismiss>` reads, and the
 // element follows it as a sibling, so the panel's buttons keep their tree paths
 // (`component.context_refresh_path`).

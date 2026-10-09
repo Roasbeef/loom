@@ -19,6 +19,7 @@
 //// alone, `/clear` dropping the gutters, and `/approvals <id>` naming the
 //// record the dialog waits for.
 
+import core/accounting
 import core/json
 import core/message
 import etui/backend
@@ -155,7 +156,7 @@ pub fn a_full_snapshot_returns_the_viewport_to_the_tail_test() {
         session: "demo",
         strands: [],
         entries: [],
-        usage: inbound.zero_usage(),
+        usage: accounting.zero_usage(),
       )),
     )
   assert synchronized.view.scroll_offset == 0

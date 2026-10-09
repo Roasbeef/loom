@@ -12,6 +12,7 @@ import core/entry
 import core/ids
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -65,6 +66,7 @@ fn call_entry_with(extra: List(#(String, json.JsonValue))) -> entry.Entry {
         None,
         0,
         message.UsageCost(0.0, 0.0, 0.0, 0.0, 0.0),
+        usage_evidence.none(),
       ),
       message.Stop,
       None,
