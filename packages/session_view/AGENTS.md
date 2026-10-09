@@ -842,7 +842,7 @@ states that this consent permits only the captured action on its strand; the
 wire still echoes the exact action, grant subset, and displayed sequence.
 The client gateway owns persistence and matching; this pure UI grants nothing.
 
-## Usage projection (protocol 080)
+## Usage projection (protocol 081)
 
 `protocol.UsageChanged` separates aggregate usage from `last_usage`. The
 aggregate contributes to cumulative consumption; cache watches, output rate,
@@ -864,3 +864,14 @@ of its host-capped expansion. Narrative joins keep the identity alongside the
 exact joined outcome; compact groups already carry it in `tool_activity.Call`.
 `turns.block_result` reads an orphan result identity from its existing source.
 These are portable, pure projection facts and contain no I/O or result reader.
+
+## Profile commands (protocol 082)
+
+`command.ProfileShow` and `command.ProfileSelect` are session commands for
+`/profile` and its alias `/model-profile`. `commands.dispatch` sends
+`protocol.profile_get` and `protocol.profile_set` (an absent `profile` is the
+default roles). The lane classifies `profile_get` as a read and `profile_set` as a
+mutation, and both are answered by `protocol.ProfileSnapshot`
+(`session_channel.matching_presentation`). `event_fold.append_profile` writes the
+current profile and the names, with `default` first, or the switch confirmation
+that says the session is restarting. `attempt` accepts both names in a recording.

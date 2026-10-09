@@ -41,6 +41,9 @@
 ////    catalogue with that profile's roles in place of the default ones.
 ////    `select_model` is applied after it for a session pinned to one model
 ////    (protocol-change/080): it replaces the main role's chain with that entry alone.
+////    `retargets` compares two such catalogues and says which strand-bearing
+////    roles changed their head, through `role_head`, which is what a live
+////    profile switch moves strands by (protocol-change/082).
 //// 8. `gateway` registers each entry as a provider through `provider_config`
 ////    and `priced`, then routes every role's chain with `resolved`.
 ////
@@ -1197,6 +1200,18 @@ fn parse_profile(
         <> " characters)",
       )
   })
+  use Nil <- result.try(case name == default_profile {
+    True ->
+      Error(
+        place
+        <> " is reserved: `"
+        <> default_profile
+        <> "` names the default [roles] in `/profile "
+        <> default_profile
+        <> "`, so a table of that name could never be chosen there",
+      )
+    False -> Ok(Nil)
+  })
   use fields <- result.try(case value {
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
     _ -> Error(place <> " must be a table")
@@ -2158,6 +2173,83 @@ pub fn select_profile(
     Ok(Profile(roles:, ..)) -> Ok(Catalog(..catalog, roles:))
     Error(Nil) -> Error(unknown_profile(profile_names(catalog), name))
   }
+}
+
+/// The word that stands for "no profile" wherever a person types one: the
+/// `/profile` slash command in the terminal and on the page. It is the default
+/// `[roles]` table, which is what a session created without `--model-profile`
+/// routes by. A `[profiles.default]` table is refused at load, so the word can
+/// never also name a profile (protocol-change/082).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.default_profile == "default"
+/// ```
+///
+pub const default_profile = "default"
+
+/// A strand-bearing role whose head moves between two role tables: the entry a
+/// strand following that role holds now, and the entry it should hold after.
+///
+/// Only the roles a strand is seeded from are listed, in the order a tie is
+/// resolved (`main`, then `subagent`, then `advisor`), matching how
+/// `client/wiring` reads a strand's role from its model. The request-level
+/// roles (`plan`, `summarize`, `vision`) have no strand and are read from the
+/// gateway at each request, so they are not retargeted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.Retarget(role: model.Main, from: sol, to: daybreak)
+/// ```
+///
+pub type Retarget {
+  Retarget(
+    /// The role whose head changed.
+    role: model.Role,
+    /// The entry that headed the role under the table being left.
+    from: CatalogModel,
+    /// The entry that heads the role under the table being entered.
+    to: CatalogModel,
+  )
+}
+
+/// The strand-bearing roles whose head differs between the table `leaving`
+/// routes by and the one `entering` routes by, in tie-break order. A role that
+/// either table does not route, or whose head is the same entry, is left out.
+///
+/// A strand follows a role while its model is that role's head, because that is
+/// the model a role seeds it with. A strand whose model is not the head of any
+/// role in `leaving` was chosen by hand, with `/model`, and the caller leaves
+/// it alone. A hand choice of an entry that happens to head a role is
+/// indistinguishable from following it, and moves with it; the stored model is
+/// the only record there is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalog.retargets(codex, codex_blue)
+/// // -> [catalog.Retarget(role: model.Main, from: sol, to: daybreak)]
+/// ```
+///
+pub fn retargets(leaving: Catalog, entering: Catalog) -> List(Retarget) {
+  list.filter_map([model.Main, model.Subagent, advisor_role], fn(role) {
+    use from <- result.try(role_head(leaving, role))
+    use to <- result.try(role_head(entering, role))
+    case from.name == to.name && from.model_id == to.model_id {
+      True -> Error(Nil)
+      False -> Ok(Retarget(role:, from:, to:))
+    }
+  })
+}
+
+// The entry heading a role's chain, which is what `gateway.resolve` picks and
+// what a strand seeded from the role holds.
+fn role_head(catalog: Catalog, role: model.Role) -> Result(CatalogModel, Nil) {
+  use chain <- result.try(list.key_find(catalog.roles, role))
+  use name <- result.try(list.first(chain))
+  find(catalog, name)
 }
 
 /// The keys of the `[models.<key>]` entries a session may be created on, in the

@@ -41,9 +41,13 @@ with these forks: they define the same modules.
 - `Registration.profile: Option(String)` is the model profile a session was
   created under (protocol-change/076). Version 9 adds it as a column of
   `catalogue_sessions` (`NOT NULL DEFAULT ''`, the empty string meaning none),
-  so it is part of the immutable creation request: `find`, the pages and the
+  so it is part of the creation request: `find`, the pages and the
   insert carry it, and a creation retry that names another profile, or none,
-  is a `Conflict`. It stores the name and never the roles it resolved to.
+  is a `Conflict`. `set_profile` replaces it later (protocol-change/082, a live
+  profile switch): one transaction that writes the name and moves the revision,
+  a no-op for an unchanged name, and `Invalid` for a name outside the grammar. A
+  creation retried after a switch therefore carries the old profile and
+  conflicts. It stores the name and never the roles it resolved to.
   `is_profile_name` is the one grammar (lowercase letter first, then lowercase
   letters, digits, `_` and `-`, at most 32 characters) shared with the
   configuration file and the wire. A stored value that is not a name fails the
@@ -573,7 +577,7 @@ with these forks: they define the same modules.
   generation counter.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
 
-## Usage totals and measurement evidence (protocol 080)
+## Usage totals and measurement evidence (protocol 081)
 
 `empty_usage` delegates to the no-consumption identity in `core/accounting`.
 `add_usage` shares that module's numeric and evidence addition, so in-memory

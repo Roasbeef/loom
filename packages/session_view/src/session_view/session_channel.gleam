@@ -981,6 +981,7 @@ fn apply_pushed(
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.PermissionsSnapshot(..)
+    | protocol.ProfileSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.OperationChanged(..)
     | protocol.EscalationPending(..)
@@ -1334,6 +1335,12 @@ fn matching_presentation(name, intent, event) {
     "goal_resume", Mutation, protocol.GoalSnapshot(_) -> True
 
     "schedules", Read, protocol.SchedulesSnapshot(_) -> True
+
+    // A profile switch answers with the profile it saved, as a goal mutation
+    // answers with its board: the operator is told what was saved and how many
+    // strands moved, and the session closes the connection when it restarts.
+    "profile_get", Read, protocol.ProfileSnapshot(..) -> True
+    "profile_set", Mutation, protocol.ProfileSnapshot(..) -> True
     "schedule_cancel", Mutation, protocol.SchedulesSnapshot(_) -> True
 
     // A forget answers with the permissions that remain, as a goal mutation
@@ -1952,6 +1959,7 @@ pub fn is_read(command: String) -> Bool {
     "models"
     | "skills"
     | "schedules"
+    | "profile_get"
     | "permissions"
     | "notes"
     | "queued_input"

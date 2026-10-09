@@ -1660,6 +1660,120 @@ pub fn an_unknown_profile_names_the_known_ones_test() {
     == Error("unknown profile \"quick\"; the configuration defines no profiles")
 }
 
+const retargeting =
+  "
+[models.sol]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-sol\"
+context_window = 1000
+max_output_tokens = 100
+
+[models.luna]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-luna\"
+context_window = 1000
+max_output_tokens = 100
+
+[models.astra]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-astra\"
+context_window = 1000
+max_output_tokens = 100
+
+[models.blue]
+dialect = \"openai\"
+api_key_env = \"KEY\"
+model_id = \"m-blue\"
+context_window = 1000
+max_output_tokens = 100
+
+[roles]
+main = [\"blue\"]
+subagent = [\"luna\"]
+summarize = [\"luna\"]
+
+[profiles.codex.roles]
+main = [\"sol\"]
+advisor = [\"astra\"]
+
+[profiles.codex-blue.roles]
+main = [\"blue\"]
+advisor = [\"astra\"]
+"
+
+fn retarget_pairs(
+  parsed: catalog.Catalog,
+  leaving: String,
+  entering: String,
+) -> List(#(model.Role, String, String)) {
+  let select = fn(name) {
+    case name == catalog.default_profile {
+      True -> parsed
+      False -> {
+        let assert Ok(selected) = catalog.select_profile(parsed, name)
+        selected
+      }
+    }
+  }
+  catalog.retargets(select(leaving), select(entering))
+  |> list.map(fn(retarget) {
+    #(retarget.role, retarget.from.name, retarget.to.name)
+  })
+}
+
+pub fn retargets_list_the_strand_roles_whose_head_moves_test() {
+  let assert Ok(parsed) = catalog.parse(retargeting)
+
+  // Main and advisor move; subagent is inherited by both and stays.
+  assert retarget_pairs(parsed, "default", "codex")
+    == [
+      #(model.Main, "blue", "sol"),
+    ]
+  assert retarget_pairs(parsed, "codex", "codex-blue")
+    == [
+      #(model.Main, "sol", "blue"),
+    ]
+}
+
+pub fn retargets_include_the_advisor_once_both_tables_route_one_test() {
+  let assert Ok(parsed) = catalog.parse(retargeting)
+
+  // The default table routes no advisor, so there is no head to move from.
+  assert retarget_pairs(parsed, "default", "codex-blue") == []
+  assert retarget_pairs(parsed, "codex", "default")
+    == [#(model.Main, "sol", "blue")]
+}
+
+pub fn retargets_of_a_table_with_itself_are_empty_test() {
+  let assert Ok(parsed) = catalog.parse(retargeting)
+  assert retarget_pairs(parsed, "codex", "codex") == []
+  assert retarget_pairs(parsed, "default", "default") == []
+}
+
+pub fn retargets_follow_the_advisor_head_between_profiles_test() {
+  let text =
+    string.replace(
+      retargeting,
+      "[profiles.codex-blue.roles]\nmain = [\"blue\"]\nadvisor = [\"astra\"]",
+      "[profiles.codex-blue.roles]\nmain = [\"blue\"]\nadvisor = [\"luna\"]",
+    )
+  let assert Ok(parsed) = catalog.parse(text)
+  assert retarget_pairs(parsed, "codex", "codex-blue")
+    == [
+      #(model.Main, "sol", "blue"),
+      #(model.Custom("advisor"), "astra", "luna"),
+    ]
+}
+
+pub fn default_is_reserved_so_a_profile_cannot_shadow_it_test() {
+  let text = with_profiles <> "\n[profiles.default.roles]\nmain = [\"fast\"]\n"
+  let assert Error("profiles.default is reserved" <> _rest) =
+    catalog.parse(text)
+}
+
 pub fn a_profile_naming_an_undefined_model_refuses_the_file_test() {
   let text = with_profiles <> "\n[profiles.broken.roles]\nmain = [\"ghost\"]\n"
   let assert Error("profiles.broken.roles.main names \"ghost\"" <> _rest) =
@@ -1721,91 +1835,6 @@ pub fn a_non_table_profiles_entry_is_refused_test() {
   let text = "profiles = \"quick\"\n" <> minimal
   assert catalog.parse(text)
     == Error("profiles must be a table of [profiles.<name>.roles] entries")
-}
-
-// --- model choice (protocol-change/080) --------------------------------------
-
-pub fn model_keys_list_every_entry_sorted_test() {
-  let assert Ok(parsed) = catalog.parse(with_profiles)
-  assert catalog.model_keys(parsed) == ["eyes", "fast", "slow"]
-}
-
-pub fn a_model_key_beyond_the_stored_bound_is_not_offered_test() {
-  let long = string.repeat("k", 65)
-  let text =
-    minimal
-    <> "\n[models."
-    <> long
-    <> "]\ndialect = \"openai\"\napi_key_env = \"KEY\"\nmodel_id = \"m\"\ncontext_window = 1000\nmax_output_tokens = 100\n"
-  let assert Ok(parsed) = catalog.parse(text)
-
-  // The file still loads and the entry still exists, but a key the catalogue
-  // column cannot remember with a session is not offered.
-  assert list.contains(list.map(parsed.models, fn(entry) { entry.name }), long)
-  assert !list.contains(catalog.model_keys(parsed), long)
-}
-
-pub fn selecting_a_model_replaces_only_main_with_that_entry_alone_test() {
-  let assert Ok(parsed) = catalog.parse(with_profiles)
-  let assert Ok(pinned) = catalog.select_model(parsed, "eyes")
-
-  // `main` was a two-entry chain; it is now the chosen entry with no fallback,
-  // and every other role keeps the default chain.
-  assert pinned.roles
-    == [
-      #(model.Main, ["eyes"]),
-      #(model.Plan, ["slow"]),
-      #(model.Summarize, ["slow"]),
-      #(model.Vision, ["eyes"]),
-    ]
-  assert pinned.models == parsed.models
-  assert pinned.profiles == parsed.profiles
-  let assert Ok(main) = catalog.main_model(pinned)
-  assert main.name == "eyes"
-}
-
-pub fn a_model_is_laid_over_a_profiles_roles_test() {
-  let assert Ok(parsed) = catalog.parse(with_profiles)
-  let assert Ok(quick) = catalog.select_profile(parsed, "quick")
-  let assert Ok(pinned) = catalog.select_model(quick, "slow")
-
-  // The profile's `summarize` stays and only its `main` is moved.
-  assert pinned.roles
-    == [
-      #(model.Main, ["slow"]),
-      #(model.Plan, ["slow"]),
-      #(model.Summarize, ["fast", "slow"]),
-      #(model.Vision, ["eyes"]),
-    ]
-}
-
-pub fn selecting_a_model_moves_the_gateway_without_touching_the_original_test() {
-  let assert Ok(parsed) = catalog.parse(with_profiles)
-  let assert Ok(pinned) = catalog.select_model(parsed, "fast")
-  let build = fn(catalogue) {
-    catalog.gateway(
-      catalogue,
-      transport: provider_test.silent(),
-      secrets: secret.from_list([]),
-      clock: clock.fixed(at: 0),
-    )
-  }
-  let assert Ok(default_route) =
-    provider_gateway.resolve(build(parsed), model.Main)
-  let assert Ok(pinned_route) =
-    provider_gateway.resolve(build(pinned), model.Main)
-  assert default_route.provider == "slow"
-  assert pinned_route.provider == "fast"
-}
-
-pub fn an_unknown_model_names_the_known_keys_test() {
-  let assert Ok(parsed) = catalog.parse(with_profiles)
-  assert catalog.select_model(parsed, "fats")
-    == Error(
-      "unknown model \"fats\"; the configuration defines: eyes, fast, slow",
-    )
-  assert catalog.unknown_model([], "x")
-    == "unknown model \"x\"; the configuration defines no models"
 }
 
 pub fn cyber_access_values_are_typed_and_dialect_scoped_test() {
@@ -1950,4 +1979,89 @@ plan = [\"plain\"]
       )
     },
   )
+}
+
+// --- model choice (protocol-change/080) --------------------------------------
+
+pub fn model_keys_list_every_entry_sorted_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  assert catalog.model_keys(parsed) == ["eyes", "fast", "slow"]
+}
+
+pub fn a_model_key_beyond_the_stored_bound_is_not_offered_test() {
+  let long = string.repeat("k", 65)
+  let text =
+    minimal
+    <> "\n[models."
+    <> long
+    <> "]\ndialect = \"openai\"\napi_key_env = \"KEY\"\nmodel_id = \"m\"\ncontext_window = 1000\nmax_output_tokens = 100\n"
+  let assert Ok(parsed) = catalog.parse(text)
+
+  // The file still loads and the entry still exists, but a key the catalogue
+  // column cannot remember with a session is not offered.
+  assert list.contains(list.map(parsed.models, fn(entry) { entry.name }), long)
+  assert !list.contains(catalog.model_keys(parsed), long)
+}
+
+pub fn selecting_a_model_replaces_only_main_with_that_entry_alone_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(pinned) = catalog.select_model(parsed, "eyes")
+
+  // `main` was a two-entry chain; it is now the chosen entry with no fallback,
+  // and every other role keeps the default chain.
+  assert pinned.roles
+    == [
+      #(model.Main, ["eyes"]),
+      #(model.Plan, ["slow"]),
+      #(model.Summarize, ["slow"]),
+      #(model.Vision, ["eyes"]),
+    ]
+  assert pinned.models == parsed.models
+  assert pinned.profiles == parsed.profiles
+  let assert Ok(main) = catalog.main_model(pinned)
+  assert main.name == "eyes"
+}
+
+pub fn a_model_is_laid_over_a_profiles_roles_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(quick) = catalog.select_profile(parsed, "quick")
+  let assert Ok(pinned) = catalog.select_model(quick, "slow")
+
+  // The profile's `summarize` stays and only its `main` is moved.
+  assert pinned.roles
+    == [
+      #(model.Main, ["slow"]),
+      #(model.Plan, ["slow"]),
+      #(model.Summarize, ["fast", "slow"]),
+      #(model.Vision, ["eyes"]),
+    ]
+}
+
+pub fn selecting_a_model_moves_the_gateway_without_touching_the_original_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  let assert Ok(pinned) = catalog.select_model(parsed, "fast")
+  let build = fn(catalogue) {
+    catalog.gateway(
+      catalogue,
+      transport: provider_test.silent(),
+      secrets: secret.from_list([]),
+      clock: clock.fixed(at: 0),
+    )
+  }
+  let assert Ok(default_route) =
+    provider_gateway.resolve(build(parsed), model.Main)
+  let assert Ok(pinned_route) =
+    provider_gateway.resolve(build(pinned), model.Main)
+  assert default_route.provider == "slow"
+  assert pinned_route.provider == "fast"
+}
+
+pub fn an_unknown_model_names_the_known_keys_test() {
+  let assert Ok(parsed) = catalog.parse(with_profiles)
+  assert catalog.select_model(parsed, "fats")
+    == Error(
+      "unknown model \"fats\"; the configuration defines: eyes, fast, slow",
+    )
+  assert catalog.unknown_model([], "x")
+    == "unknown model \"x\"; the configuration defines no models"
 }

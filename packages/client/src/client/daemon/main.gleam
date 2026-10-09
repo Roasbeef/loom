@@ -10,6 +10,8 @@ import client/catalog
 import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
+import client/daemon/profiles
+import client/daemon/restart
 import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
@@ -22,6 +24,7 @@ import client/internal/ffi_os
 import client/peer_defaults
 import client/peer_mail
 import client/peers
+import client/profile_switch
 import client/serve
 import core/clock
 import core/glance
@@ -41,6 +44,7 @@ import host/build_identity
 import host/endpoint
 import mist
 import simplifile
+import storage/catalogue
 import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
@@ -463,6 +467,12 @@ pub fn prepare_startup(
             first_prompt: Some(fn(text) {
               manager.seed_subtitle(directory, registration.id, text)
             }),
+            profile_desk: Some(profile_desk(
+              directory,
+              registration,
+              profiles.effective(registration.configuration, configuration),
+              logger,
+            )),
           )
         serve.assemble_in_domain(settings, identity, logger, owner, services)
         |> diagnose_start(logger, identity, RuntimeAssembly)
@@ -473,6 +483,49 @@ pub fn prepare_startup(
     ),
   )
   |> result.map(fn(daemon) { #(config, daemon) })
+}
+
+// What a session's hub needs to read and switch its own model profile
+// (protocol-change/082). Every closure runs in the hub's process, over the
+// registry handle the builder was given, so none of them holds a credential:
+// the hub has already judged who may switch (the owner), and what it asks of
+// the daemon is the registry's write and a restart of this very session.
+//
+// `configuration` is the file this session loads, resolved the way creation
+// resolved it (`profiles.effective`), so the names the hub offers are the names
+// its own open will accept. The restart runs in a process the session does not
+// own (`restart.begin`), and a failure of either step is logged and leaves the
+// profile saved for the next open.
+fn profile_desk(
+  registry: manager.Manager(serve.Resident),
+  registration: catalogue.Registration,
+  configuration: String,
+  logger: Logger,
+) -> profile_switch.Desk {
+  let id = registration.id
+  profile_switch.Desk(
+    current: registration.profile,
+    names: fn() { profiles.names(configuration) },
+    load: fn(profile) {
+      profiles.load(configuration, profile)
+      |> result.map_error(profiles.refusal_message)
+    },
+    save: fn(profile) {
+      manager.set_profile(registry, id, profile)
+      |> result.replace_error("the session catalogue refused the write")
+    },
+    restart: fn() {
+      restart.begin(registry, id, fn(failure) {
+        log.warn(logger, "daemon.profile_restart_failed", [
+          field.ident("session", id),
+          field.text("stage", case failure {
+            restart.NotStopped -> "stop"
+            restart.NotReopened -> "reopen"
+          }),
+        ])
+      })
+    },
+  )
 }
 
 // Domain construction precedes session assembly, so its failures never reach

@@ -195,6 +195,7 @@ import client/grants
 import client/internal/session_owner
 import client/notes_view
 import client/permissions
+import client/profile_switch
 import client/protocol.{
   type Command, type EntryRecord, type Event as WireEvent, type EventEnvelope,
   EntryRecord, EventEnvelope, LiveOp, Strand,
@@ -395,6 +396,10 @@ pub type Options {
     /// strand, once (`protocol-change/067`). The daemon fills it with the
     /// catalogue's subtitle write; a host with no catalogue passes `None`.
     first_prompt: Option(fn(String) -> Nil),
+    /// What the hub needs from the daemon to read and switch the session's
+    /// model profile (`protocol-change/082`). `None` is a session with no
+    /// daemon behind it: `profile_get` and `profile_set` answer `unsupported`.
+    profile: Option(profile_switch.Desk),
   )
 }
 
@@ -469,6 +474,8 @@ type State {
     // `None` is both a host with no catalogue and a report already sent, so
     // the check on the hot path is one pattern match.
     first_prompt: Option(fn(String) -> Nil),
+    // The daemon's door for the session's model profile, when it has one.
+    profile: Option(profile_switch.Desk),
     delivery: Delivery,
     health: Health,
     admission: Admission,
@@ -549,6 +556,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     context: None,
     summary_demand: None,
     first_prompt: None,
+    profile: None,
   )
 }
 
@@ -604,6 +612,21 @@ pub fn with_first_prompt(
   report: fn(String) -> Nil,
 ) -> Options {
   Options(..options, first_prompt: Some(report))
+}
+
+/// Supplies the daemon's door for reading and switching the session's model
+/// profile (`protocol-change/082`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_profile_desk(options, profile_switch.Desk(current: None, ..))
+/// ```
+pub fn with_profile_desk(
+  options: Options,
+  desk: profile_switch.Desk,
+) -> Options {
+  Options(..options, profile: Some(desk))
 }
 
 /// Supplies the authenticated session directory administration door.
@@ -1135,6 +1158,7 @@ fn start_with_delivery(
         context: options.context,
         summary_demand: options.summary_demand,
         first_prompt: options.first_prompt,
+        profile: options.profile,
         delivery:,
         health: Reading,
         admission: Accepting,
@@ -2220,6 +2244,8 @@ fn network_command(
     | protocol.CancelSchedule(..)
     | protocol.PermissionsGet
     | protocol.PermissionForget(..)
+    | protocol.ProfileGet
+    | protocol.ProfileSet(..)
     | protocol.UnknownCommand(..) -> run_command(state, connection, id, command)
   }
 }
@@ -3107,13 +3133,20 @@ fn connection_origin(state: State, connection: Int) {
   |> result.unwrap(None)
 }
 
-// The commands that only the owner may send, beyond what an operator may.
-fn owner_only(command: Command) -> Bool {
+// The commands that only the owner may send, beyond what an operator may. The
+// answer is what a member who sends one is told it may not do, or `None` for a
+// command a member may send. A profile switch restarts the session for everyone
+// attached and rewrites the owner's registration, so it is the owner's alone, as
+// remembering permissions is.
+fn owner_only(command: Command) -> Option(String) {
   case command {
     protocol.ApproveForSession(..)
     | protocol.PermissionsGet
-    | protocol.PermissionForget(..) -> True
-    _ -> False
+    | protocol.PermissionForget(..) ->
+      Some("only the session owner may remember permissions for the session")
+    protocol.ProfileSet(..) ->
+      Some("only the session owner may switch the session's model profile")
+    _ -> None
   }
 }
 
@@ -3168,6 +3201,7 @@ fn read_only(command: Command) {
     | protocol.GoalGet
     | protocol.NotesGet(..)
     | protocol.QueuedInputGet(..)
+    | protocol.ProfileGet
     | protocol.ListSchedules -> True
     protocol.Prompt(..)
     | protocol.PromptContent(..)
@@ -3191,6 +3225,7 @@ fn read_only(command: Command) {
     | protocol.CancelSchedule(..)
     | protocol.PermissionsGet
     | protocol.PermissionForget(..)
+    | protocol.ProfileSet(..)
     | protocol.UnknownCommand(..) -> False
   }
 }
@@ -4851,14 +4886,15 @@ fn run_command(
   // credentials, and a member could otherwise forget the owner's grants. This
   // is the gate; the page's own offer is only a convenience over it.
   use <- bool.lazy_guard(
-    when: owner_only(command) && member_attached(state, connection),
+    when: option.is_some(owner_only(command))
+      && member_attached(state, connection),
     return: fn() {
       reply_error(
         state,
         connection,
         id,
         "forbidden",
-        "only the session owner may remember permissions for the session",
+        option.unwrap(owner_only(command), ""),
       )
       state
     },
@@ -5031,6 +5067,9 @@ fn run_command(
       read_notes(state, connection, id, strand)
     protocol.SetConfig(strand:, config:), Subscribed ->
       set_config(state, connection, id, strand, config)
+    protocol.ProfileGet, Subscribed -> read_profile(state, connection, id)
+    protocol.ProfileSet(profile:), Subscribed ->
+      set_profile(state, connection, id, profile)
     protocol.ListSchedules, Subscribed -> list_schedules(state, connection, id)
     protocol.CancelSchedule(target:, name:), Subscribed ->
       cancel_schedule(state, connection, id, target, name)
@@ -7154,6 +7193,229 @@ fn catalog_listing(catalogue: catalog.Catalog) -> List(protocol.ModelInfo) {
   })
 }
 
+// --- the model profile -----------------------------------------------------
+
+// `profile_get`: the profile this session routes its roles by, and the profile
+// names the configuration defines now, as a `profile` snapshot. The names are
+// read from the file at each request, so a profile added while the session runs
+// is offered at once.
+fn read_profile(state: State, connection: Int, id: Int) -> State {
+  use desk <- or_reply(profile_desk(state), state, connection, id)
+  use names <- or_reply(
+    desk.names() |> result.map_error(internal_failure),
+    state,
+    connection,
+    id,
+  )
+  reply(
+    state,
+    connection,
+    id,
+    protocol.SnapshotEvent(protocol.ProfileSnapshot(
+      current: desk.current,
+      available: names,
+      switched: None,
+    )),
+  )
+  state
+}
+
+fn profile_desk(
+  state: State,
+) -> Result(profile_switch.Desk, #(String, String)) {
+  option.to_result(state.profile, #(
+    protocol.code_unsupported,
+    "this session has no daemon behind it, so it has no model profile to read"
+      <> " or switch",
+  ))
+}
+
+fn internal_failure(reason: String) -> #(String, String) {
+  #(protocol.code_internal, reason)
+}
+
+// `profile_set`: saves the profile, moves the strands that followed the old
+// profile's models to the new one's, answers, and only then starts the restart
+// that builds the new profile's gateway (`protocol-change/082`).
+//
+// The order is what keeps every failure harmless. Nothing is written until the
+// new catalogue has loaded and the strands to move are known. The registration
+// is saved before any strand moves, so a refused save changes nothing. A strand
+// that is moved but whose restart then fails keeps working: a model that heads
+// no role of the saved profile is dispatched as exactly that model
+// (`wiring.request_target`), and the next open resolves the saved profile.
+//
+// A running strand refuses the switch outright. The restart stops the session,
+// which would end the run and resume it, and a request in flight is not ours to
+// interrupt; the operator may wait for the run to settle or abort it.
+fn set_profile(
+  state: State,
+  connection: Int,
+  id: Int,
+  profile: Option(String),
+) -> State {
+  use desk <- or_reply(profile_desk(state), state, connection, id)
+
+  // The busy check reads `live`, which a pull brings up to date. A run admitted
+  // a moment ago is in the store before it is in `live`, and a switch must not
+  // miss it.
+  let state = pull_and_broadcast(state)
+  use <- bool.lazy_guard(when: profile == desk.current, return: fn() {
+    read_profile(state, connection, id)
+  })
+  use <- bool.lazy_guard(when: !dict.is_empty(state.live), return: fn() {
+    reply_error(
+      state,
+      connection,
+      id,
+      protocol.code_conflict,
+      "a strand is running; wait for it to finish or abort it, then switch"
+        <> " the profile",
+    )
+    state
+  })
+  use entering <- or_reply(
+    desk.load(profile)
+      |> result.map_error(fn(reason) { #(protocol.code_bad_request, reason) }),
+    state,
+    connection,
+    id,
+  )
+  use names <- or_reply(
+    desk.names() |> result.map_error(internal_failure),
+    state,
+    connection,
+    id,
+  )
+  use leaving <- or_reply(
+    option.to_result(state.catalog, #(
+      protocol.code_unsupported,
+      "no model catalogue is configured",
+    )),
+    state,
+    connection,
+    id,
+  )
+  use moves <- or_reply(
+    retarget_moves(state, catalog.retargets(leaving, entering))
+      |> result.map_error(internal_failure),
+    state,
+    connection,
+    id,
+  )
+  use Nil <- or_reply(
+    desk.save(profile)
+      |> result.map_error(fn(reason) {
+        #(protocol.code_internal, "the profile could not be saved: " <> reason)
+      }),
+    state,
+    connection,
+    id,
+  )
+  case apply_moves(state, moves, connection_origin(state, connection)) {
+    Error(reason) -> {
+      reply_error(
+        state,
+        connection,
+        id,
+        protocol.code_internal,
+        "the profile was saved, but moving strands to its models failed: "
+          <> reason
+          <> "; they keep their models until the session is reopened",
+      )
+      state
+    }
+    Ok(moved) -> {
+      reply(
+        state,
+        connection,
+        id,
+        protocol.SnapshotEvent(protocol.ProfileSnapshot(
+          current: profile,
+          available: names,
+          switched: Some(list.length(moves)),
+        )),
+      )
+      desk.restart()
+      State(
+        ..moved,
+        profile: Some(profile_switch.Desk(..desk, current: profile)),
+      )
+    }
+  }
+}
+
+// The strands a switch moves, each with the model it moves to. A strand follows
+// a role while its stored model is the head of that role's chain under the
+// profile being left (`catalog.retargets`); one chosen by hand with `/model` is
+// not any role's head and is left where it is. Both conclusions come from the
+// stored model alone, because that is the only record of which it was.
+fn retarget_moves(
+  state: State,
+  retargets: List(catalog.Retarget),
+) -> Result(List(#(String, machine_strand.ModelIdentity)), String) {
+  list.try_fold(strand_names(state), [], fn(moves, strand) {
+    use cell <- result.try(
+      session.strand_configuration(state.runtime.session, strand)
+      |> result.map_error(fn(_) { "configuration could not be read" }),
+    )
+    case cell {
+      None -> Ok(moves)
+      Some(session.Cell(value:, ..)) ->
+        case followed_head(retargets, value.model) {
+          Ok(entry) ->
+            Ok([
+              #(
+                strand,
+                machine_strand.ModelIdentity(
+                  provider: entry.name,
+                  model_id: entry.model_id,
+                ),
+              ),
+              ..moves
+            ])
+          Error(Nil) -> Ok(moves)
+        }
+    }
+  })
+  |> result.map(list.reverse)
+}
+
+// The entry a strand holding `model` moves to, when `model` is a head that
+// moves. Retargets are in tie-break order, so a model that heads two roles
+// moves with the first.
+fn followed_head(
+  retargets: List(catalog.Retarget),
+  model: machine_strand.ModelIdentity,
+) -> Result(catalog.CatalogModel, Nil) {
+  list.find(retargets, fn(retarget) {
+    retarget.from.name == model.provider
+    && retarget.from.model_id == model.model_id
+  })
+  |> result.map(fn(retarget) { retarget.to })
+}
+
+// Writes the moved strands' models in one commit, by the path `set_config`
+// uses, and leaves their thinking levels alone for the reason `model_name`
+// does: the level belongs to whoever is having the conversation.
+fn apply_moves(
+  state: State,
+  moves: List(#(String, machine_strand.ModelIdentity)),
+  author: Option(message.Origin),
+) -> Result(State, String) {
+  use <- bool.guard(list.is_empty(moves), Ok(state))
+  let change = fn(plan) {
+    list.fold(moves, Ok(plan), fn(plan, move) {
+      use plan <- result.try(plan)
+      update_configuration(plan, move.0, fn(configuration) {
+        machine_strand.StrandConfiguration(..configuration, model: move.1)
+      })
+    })
+  }
+  apply_changes(state, None, [change], author)
+  |> result.map(fn(applied) { applied.0 })
+}
+
 // --- the schedule listing --------------------------------------------------
 
 // `schedules`: every schedule this session holds, as a `schedules`
@@ -7490,6 +7752,19 @@ fn apply_config(
   use changes <- result.try(
     list.try_map(fields, fn(field) { validate_config_key(state, strand, field) }),
   )
+  apply_changes(state, strand, changes, author)
+}
+
+// Stages the validated changes and commits them in one compare-and-set. It is
+// the second half of `apply_config`, separate so a change the hub makes on its
+// own account, such as moving strands after a profile switch, commits through
+// exactly the path an operator's `set_config` does.
+fn apply_changes(
+  state: State,
+  strand: Option(String),
+  changes: List(ConfigChange),
+  author: Option(message.Origin),
+) -> Result(#(State, JsonValue), String) {
   use defaults <- result.try(
     api.run_defaults_cell(state.runtime)
     |> result.map_error(fn(_) { "shared run settings could not be read" }),
@@ -7499,7 +7774,7 @@ fn apply_config(
       ..state,
       runtime: api.Runtime(..state.runtime, settings: defaults.settings),
     )
-  use <- bool.lazy_guard(fields == [], fn() {
+  use <- bool.lazy_guard(list.is_empty(changes), fn() {
     Ok(#(state, effective_config(state, strand)))
   })
 

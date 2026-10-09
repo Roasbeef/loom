@@ -70,6 +70,7 @@ import session_view/agent_roster
 import session_view/block_summary
 import session_view/cache_miss
 import session_view/cache_watch
+import session_view/command
 import session_view/composer
 import session_view/context_view
 import session_view/history_view
@@ -196,6 +197,8 @@ pub fn apply_event(
     }
     protocol.SchedulesSnapshot(schedules:) ->
       append_schedules(shared, schedules)
+    protocol.ProfileSnapshot(current:, available:, switched:) ->
+      append_profile(shared, current, available, switched)
 
     // The page's own read of what the session remembers, so the board is kept
     // for the host to draw and nothing is written to the transcript.
@@ -509,6 +512,7 @@ pub fn apply_event(
     | protocol.GoalSnapshot(..)
     | protocol.SchedulesSnapshot(..)
     | protocol.PermissionsSnapshot(..)
+    | protocol.ProfileSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.StreamDelta(..)
@@ -626,6 +630,43 @@ fn append_schedules(
         listed,
         int.to_string(list.length(rows)) <> " schedules",
       )
+    }
+  }
+}
+
+// The reply to `/profile`, in the words an operator reads back. A read lists
+// the profile the session routes by and the names it may switch to; the reply
+// to a switch says what was saved and that the connection is about to close,
+// because the daemon restarts the session to build the new profile's gateway
+// (protocol-change/082). `default` is listed with the names although the
+// daemon does not send it: it is the word that returns to the default roles.
+fn append_profile(
+  shared: Shared(socket, recorder, source, replay_source),
+  current: Option(String),
+  available: List(String),
+  switched: Option(Int),
+) -> Shared(socket, recorder, source, replay_source) {
+  let name = option.unwrap(current, "default roles")
+  case switched {
+    Some(moved) -> {
+      let summary =
+        "model profile set to "
+        <> name
+        <> " · "
+        <> int.to_string(moved)
+        <> " strand(s) moved · restarting the session to apply it"
+      session_model.append_system(shared, summary)
+      |> shared_set.notice("model profile: " <> name)
+    }
+    None -> {
+      let names = [command.default_profile, ..available]
+      session_model.append_system(shared, "model profile: " <> name)
+      |> session_model.append_system(
+        "available: "
+        <> string.join(names, ", ")
+        <> " · /profile <name> switches the session",
+      )
+      |> shared_set.notice("model profile: " <> name)
     }
   }
 }

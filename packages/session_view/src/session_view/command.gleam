@@ -109,6 +109,20 @@ pub type Session {
     name: String,
   )
 
+  /// Show the session's model role profile and the profiles the daemon's
+  /// configuration defines. Answered by the daemon, not read from local state:
+  /// the names are whatever the file defines now.
+  ProfileShow
+
+  /// Switch the session's saved model profile, so every role routes through
+  /// that profile's chains from the next open, and restart the session to
+  /// apply it (protocol-change/082).
+  ProfileSelect(
+    /// The profile to switch to, or `None` for the configuration's default
+    /// roles, which the operator spells `default`.
+    profile: Option(String),
+  )
+
   /// List every schedule the session holds — the operator's own tables
   /// and the ones its strands created.
   Schedules
@@ -259,6 +273,11 @@ pub type Suggestion {
   )
 }
 
+/// The word that returns a session to the configuration's default roles. The
+/// catalogue refuses a profile of this name (`client/catalog.default_profile`),
+/// so the word cannot also name one.
+pub const default_profile = "default"
+
 /// Returns prefix-matched slash commands for an incomplete command word.
 pub fn suggestions(input: String) -> List(Suggestion) {
   let input = string.trim_start(input)
@@ -274,6 +293,13 @@ pub fn suggestions(input: String) -> List(Suggestion) {
     // stop matching at the first character that differs, and an operator
     // who wanted the subcommand would have submitted it by then.
     "/goal " <> partial -> goal_suggestions(string.trim(partial))
+
+    // The profile names are the daemon's and are not known here, so the palette
+    // can offer only the word that is always valid. `/profile` alone lists the
+    // names the configuration defines.
+    "/profile " <> partial -> profile_suggestions("/profile", partial)
+    "/model-profile " <> partial ->
+      profile_suggestions("/model-profile", partial)
 
     _ -> word_suggestions(string.trim(input))
   }
@@ -336,6 +362,19 @@ fn goal_suggestions(partial: String) -> List(Suggestion) {
       word.0 == "--budget" || word.0 == "check",
     )
   })
+}
+
+fn profile_suggestions(command: String, partial: String) -> List(Suggestion) {
+  case string.starts_with(default_profile, string.trim(partial)) {
+    True -> [
+      Suggestion(
+        command <> " " <> default_profile,
+        "use the configuration's default roles",
+        False,
+      ),
+    ]
+    False -> []
+  }
 }
 
 /// Moves a slash palette selection and wraps at either edge.
@@ -406,6 +445,8 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/steer", "inject into the live operation", True),
     Suggestion("/queue", "inspect queued inputs; /queue text adds one", False),
     Suggestion("/access", "owner: see and reduce who has access", False),
+    Suggestion("/profile", "show or switch the model profile", True),
+    Suggestion("/model-profile", "alias of /profile", True),
     Suggestion("/clear", "clear this local transcript", False),
     Suggestion("/quit", "leave the client", False),
   ]
@@ -481,6 +522,8 @@ pub fn parse(input: String) -> Command {
     "/fork" -> Session(MissingArgument("fork"))
     "/model " <> rest ->
       required_argument("model", rest, fn(value) { Session(Model(value)) })
+    "/profile" | "/model-profile" -> Session(ProfileShow)
+    "/profile " <> rest | "/model-profile " <> rest -> profile(rest)
     "/approvals " <> rest ->
       required_argument("approvals", rest, fn(id) {
         Session(Approvals(Some(id)))
@@ -516,6 +559,18 @@ pub fn parse(input: String) -> Command {
     "/unschedule " <> rest -> unschedule(rest)
     "/" <> rest -> Session(Unknown(command_name(rest)))
     text -> Session(Prompt(text))
+  }
+}
+
+// `/profile [name]`, spelled `/model-profile` as well. No argument reads the
+// profile; `default` is the default roles, and any other word is sent as a
+// profile name for the daemon to judge, since only the daemon knows which names
+// the configuration defines now.
+fn profile(raw: String) -> Command {
+  case string.trim(raw) {
+    "" -> Session(ProfileShow)
+    word if word == default_profile -> Session(ProfileSelect(None))
+    word -> Session(ProfileSelect(Some(word)))
   }
 }
 
@@ -705,6 +760,9 @@ pub fn help_text() -> String {
   "/help             show this command reference\n"
   <> "/model            open the model selector\n"
   <> "/model <name>     switch the active strand model\n"
+  <> "/profile          show the model profile and the names it can switch to\n"
+  <> "/profile <name>   switch the session's model profile (default: the default roles)\n"
+  <> "/model-profile    alias of /profile\n"
   <> "/agents           inspect agents and sub-agents\n"
   <> "/peers            manage directional agent links\n"
   <> "/access           owner: see and reduce who has access\n"

@@ -6048,3 +6048,32 @@ The manager owns one package server at a time. `diagnostics(None)` always return
 a partial `Unsettled` snapshot, while explicit file queries retain their own
 server acquisition and settlement. A healthy control cannot certify unavailable
 owners elsewhere in the workspace. Protocol 078 records that scope contract.
+
+## Switching a session's profile (protocol 082)
+
+`profile_get` and `profile_set` are session commands
+([protocol 082](../../protocol-change/082-session-profile-switch.md)), answered
+by a `profile` snapshot (`protocol.ProfileSnapshot`: `current`, `available`, and
+`switched` only in the reply to a switch). The decoder reads an absent `profile`
+as the default roles and refuses null, the empty string and a malformed name
+(`optional_profile`). `ProfileSet` is owner-only (`gateway.owner_only` now
+answers the refusal words) and is not a read.
+
+The hub reaches the daemon through `profile_switch.Desk`, which
+`serve.Settings.profile_desk` carries from the daemon's builder
+(`daemon/main.profile_desk`) to `gateway.with_profile_desk`. A hub with no desk
+answers `unsupported`. `gateway.set_profile` refuses while `State.live` is
+non-empty, answers the listing for the profile the session already has, loads
+the entering catalogue (`desk.load` → `daemon/profiles.load`), computes the
+strands to move with `catalog.retargets` against `State.catalog`, saves the name
+(`desk.save` → `manager.set_profile` → `catalogue.set_profile`), rewrites the
+moved strands' models in one commit through `apply_changes` (the half of
+`apply_config` after validation), replies, and calls `desk.restart`
+(`daemon/restart.begin`: a `spawn_unlinked` stop and open that outlives the
+session, because every weft start is linked to its caller). A strand follows a
+role while its model is that role's head; a model chosen with `/model` heads no
+role and stays. `default` is reserved: `catalog.default_profile`, refused as a
+profile table name at load.
+
+`Settings` gained `profile_desk`, so every `serve.Settings` literal in the tests
+carries `profile_desk: None`.

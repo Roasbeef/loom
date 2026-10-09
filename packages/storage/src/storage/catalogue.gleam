@@ -442,6 +442,58 @@ pub fn rename(
   })
 }
 
+/// Replaces the model profile a registration names, or clears it with `None`
+/// so the session routes by the configuration's default roles
+/// (protocol-change/082).
+///
+/// The profile is a name, never the roles it resolved to, so this writes the
+/// name and the revision in one transaction and nothing else. Whether the
+/// configuration defines the name is the daemon's question, answered before it
+/// calls: the catalogue judges only the grammar, so a damaged value cannot be
+/// written that `stored_profile` would later refuse to read. An unchanged
+/// profile writes nothing and keeps list cursors valid.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.set_profile(store, session_id, Some("codex"))
+/// // catalogue.set_profile(store, session_id, None)
+/// ```
+pub fn set_profile(
+  catalogue: Catalogue,
+  id: String,
+  profile: Option(String),
+) -> Result(Registration, Error) {
+  use Nil <- result.try(case profile {
+    None -> Ok(Nil)
+    Some(name) ->
+      case is_profile_name(name) {
+        True -> Ok(Nil)
+        False -> Error(Invalid("registration profile is not a profile name"))
+      }
+  })
+  transaction(catalogue.connection, fn() {
+    use record <- result.try(get(catalogue, id))
+    case record.profile == profile {
+      True -> Ok(record)
+      False -> {
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.set_registration_profile(
+            profile: option.unwrap(profile, ""),
+            session_id: id,
+          ),
+        ))
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.increment_catalogue_revision(),
+        ))
+        Ok(Registration(..record, profile:))
+      }
+    }
+  })
+}
+
 /// Judges a display name about to be written.
 ///
 /// A name is nonblank after trimming, at most 256 UTF-8 bytes, and holds no

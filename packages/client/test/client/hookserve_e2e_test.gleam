@@ -558,6 +558,7 @@ fn settings(rig: Rig, script: Subject(ScriptMessage)) -> serve.Settings {
     peer_directory: None,
     peer_defaults: None,
     first_prompt: None,
+    profile_desk: None,
     codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],

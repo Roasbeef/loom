@@ -21,6 +21,7 @@
 //// ## Flow
 ////
 //// `effective` → `names` → `check` → `model_keys` → `check_model` → `check_choice`
+//// → `load`
 ////
 //// 1. `effective` picks the configuration path a creation will load: the one it
 ////    names, or else the daemon's own.
@@ -32,6 +33,8 @@
 //// 5. `check_choice` is what a creation asks: the profile it chose, if any, and
 ////    then the model, if any, so a creation that chose both is refused for the
 ////    first that fails.
+//// 6. `load` is the whole parsed catalogue with a profile's roles in place, or
+////    the same refusals; a live profile switch reads it (protocol-change/082).
 
 import client/catalog
 import gleam/list
@@ -97,23 +100,21 @@ fn read(
 ) -> Result(List(String), String) {
   case configuration {
     "" -> Ok([])
-    path -> {
-      use text <- result.try(
-        simplifile.read(path)
-        |> result.map_error(fn(error) {
-          "the config file "
-          <> path
-          <> " is unreadable: "
-          <> string.inspect(error)
-        }),
-      )
-      use parsed <- result.map(
-        catalog.parse(text)
-        |> result.map_error(fn(reason) { path <> ": " <> reason }),
-      )
-      pick(parsed)
-    }
+    path -> result.map(parse_file(path), pick)
   }
+}
+
+// The file parsed as a catalogue, with the daemon's startup wording for a file
+// that cannot be read or does not parse.
+fn parse_file(path: String) -> Result(catalog.Catalog, String) {
+  use text <- result.try(
+    simplifile.read(path)
+    |> result.map_error(fn(error) {
+      "the config file " <> path <> " is unreadable: " <> string.inspect(error)
+    }),
+  )
+  catalog.parse(text)
+  |> result.map_error(fn(reason) { path <> ": " <> reason })
 }
 
 /// Why a profile or model cannot be chosen. The causes need different words and
@@ -218,5 +219,44 @@ pub fn check_choice(
   case model {
     None -> Ok(Nil)
     Some(key) -> check_model(configuration, key)
+  }
+}
+
+/// The catalogue a session routes by when it runs under `profile`: the whole
+/// parsed configuration with that profile's roles in place, or with the default
+/// roles for `None`. A name the file does not define is `UnknownProfile`, and a
+/// file that cannot be read is `UnusableConfiguration`, the same split `check`
+/// makes.
+///
+/// A session with no configuration file has no profiles and no catalogue to
+/// load, so it can run under the default roles it already has and nothing else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert profiles.load("", Some("deepseek"))
+///   == Error(profiles.UnknownProfile(
+///     "unknown profile \"deepseek\"; the configuration defines no profiles",
+///   ))
+/// // profiles.load("/home/o/.loom/loom.toml", Some("deepseek")) -> Ok(catalogue)
+/// ```
+pub fn load(
+  configuration: String,
+  profile: Option(String),
+) -> Result(catalog.Catalog, Refusal) {
+  case configuration, profile {
+    "", Some(name) -> Error(UnknownProfile(catalog.unknown_profile([], name)))
+    "", None ->
+      Error(UnusableConfiguration(
+        "this session has no configuration file, so it has only its default roles",
+      ))
+    path, None -> parse_file(path) |> result.map_error(UnusableConfiguration)
+    path, Some(name) -> {
+      use parsed <- result.try(
+        parse_file(path) |> result.map_error(UnusableConfiguration),
+      )
+      catalog.select_profile(parsed, name)
+      |> result.map_error(UnknownProfile)
+    }
   }
 }

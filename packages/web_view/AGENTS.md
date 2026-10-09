@@ -1488,3 +1488,14 @@ keep its preview within 8,000 UTF-8 bytes without grapheme-scanning the complete
 output. The viewer's 16,000-byte windows partition complete codepoints; its
 requests and storage reads belong to client, not to the component or this
 package. No browser websocket event or component reader was added.
+
+## `/profile` on the page (protocol 082)
+
+The page runs `/profile` and `/model-profile` because they are session commands
+(`component.page_command` passes every `command.Session`), so no component, route
+or asset changed. `completion.rows` offers both spellings and `/profile default`
+automatically, and offers no profile name: the table is an attribute and a name is
+the daemon's text (051). The answer is written to the transcript as text by the
+shared fold. A switch restarts the session, so the page shows the session-stopped
+notice and the owner reloads it, as after making a session shareable. A member
+operator is refused `forbidden` by the hub, which the page shows as the refusal.

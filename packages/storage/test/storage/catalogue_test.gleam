@@ -130,6 +130,7 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.find_registrations("", "", "").0,
     sql.insert_registration("", "", "", "", "", 0, "", "", "").0,
     sql.confirm_registration("").0,
+    sql.set_registration_profile("", "").0,
     sql.registration_display_name("").0,
     sql.registration_subtitle("").0,
     sql.insert_registration_subtitle("", "").0,
@@ -1182,6 +1183,63 @@ pub fn a_stored_profile_that_is_not_a_name_fails_the_read_test() {
   let assert Ok(reopened) = catalogue.open(path) as "catalogue reopens"
   let assert Error(catalogue.Invalid(_)) = catalogue.get(reopened, record.id)
   assert catalogue.close(reopened) == Ok(Nil)
+}
+
+pub fn set_profile_replaces_and_clears_the_stored_name_test() {
+  let path = fresh_path("profile-switch")
+  let assert Ok(store) = catalogue.open(path) as "catalogue opens"
+  let record =
+    catalogue.Registration(..registration(36), profile: option.Some("deepseek"))
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(before) = catalogue.page(store, after: "")
+
+  // A new name replaces the old one and moves the revision, so a list
+  // cursor taken before the switch is known to be stale.
+  let assert Ok(switched) =
+    catalogue.set_profile(store, record.id, option.Some("glm"))
+  assert switched.profile == option.Some("glm")
+  let assert Ok(after) = catalogue.page(store, after: "")
+  assert after.revision > before.revision
+
+  // `None` returns the session to the default roles.
+  let assert Ok(cleared) = catalogue.set_profile(store, record.id, option.None)
+  assert cleared.profile == option.None
+  assert catalogue.close(store) == Ok(Nil)
+
+  // The switch is durable: a restart reads the name the last call wrote.
+  let assert Ok(restored) = catalogue.open(path) as "catalogue reopens"
+  let assert Ok(read) = catalogue.get(restored, record.id)
+  assert read.profile == option.None
+  assert catalogue.close(restored) == Ok(Nil)
+}
+
+pub fn set_profile_to_the_same_name_writes_nothing_test() {
+  let assert Ok(store) = catalogue.open(fresh_path("profile-same"))
+    as "catalogue opens"
+  let record =
+    catalogue.Registration(..registration(37), profile: option.Some("deepseek"))
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Ok(before) = catalogue.page(store, after: "")
+  assert catalogue.set_profile(store, record.id, option.Some("deepseek"))
+    == Ok(record)
+  let assert Ok(after) = catalogue.page(store, after: "")
+  assert after.revision == before.revision
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn set_profile_refuses_a_malformed_name_and_a_missing_session_test() {
+  let assert Ok(store) = catalogue.open(fresh_path("profile-refused"))
+    as "catalogue opens"
+  let record = registration(38)
+  assert catalogue.reserve(store, record) == Ok(record)
+  let assert Error(catalogue.Invalid(_)) =
+    catalogue.set_profile(store, record.id, option.Some("Not A Name"))
+  assert catalogue.set_profile(store, "absent", option.Some("glm"))
+    == Error(catalogue.Missing)
+
+  // The refusal changed nothing.
+  assert catalogue.get(store, record.id) == Ok(record)
+  assert catalogue.close(store) == Ok(Nil)
 }
 
 pub fn is_model_key_accepts_any_text_within_the_byte_bound_test() {
