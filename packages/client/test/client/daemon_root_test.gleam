@@ -8,6 +8,7 @@ import client/daemon/limits
 import client/daemon/manager
 import client/daemon/root
 import client/internal/instance_owner as custody
+import client/serve
 import core/clock
 import core/ids
 import gleam/bit_array
@@ -153,6 +154,25 @@ pub fn restored_catalogue_is_ready_without_opening_any_session_test() {
   assert process.receive(builds, 0) == Error(Nil)
   assert simplifile.is_file(record.path) == Ok(False)
   assert bootstrap.try_launch_lock(path <> "/daemon.lock") == Error("busy")
+  assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+  released_lock(path)
+}
+
+// Every session base masks both domain directories. A mask is only built
+// over a path that exists, so the root creates them rather than leaving each
+// to the first domain of its kind.
+pub fn a_fresh_state_root_masks_both_domain_directories_test() {
+  let path = directory("domain-masks")
+  let #(daemon, _ready) = start(path, inert())
+  assert simplifile.is_directory(path <> "/workspaces") == Ok(True)
+  assert simplifile.is_directory(path <> "/domains") == Ok(True)
+
+  // A workspace-private session admitted now has no session-only domain
+  // yet, and still masks where one will appear.
+  let masked =
+    serve.protecting_state_root(serve.base_policy(path <> "-work"), path)
+  assert list.contains(masked.protected, path <> "/domains")
+  assert list.contains(masked.protected, path <> "/workspaces")
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
   released_lock(path)
 }

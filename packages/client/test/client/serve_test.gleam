@@ -2492,6 +2492,7 @@ pub fn a_standalone_store_inside_the_workspace_is_ignored_test() {
   assert simplifile.read(store <> "/.gitignore") == Ok(serve.ignore_everything)
   let _cleanup = simplifile.delete(absolute(location))
 }
+
 pub fn boot_adopts_the_blobs_an_earlier_release_left_in_the_workspace_test() {
   let location =
     "build/serve-test-adopt-" <> int.to_string(ffi_os.unique_positive_integer())
@@ -2583,6 +2584,7 @@ fn blob_jail_fixture(name: String) -> BlobJail {
   make(workspace)
   make(state <> "/sessions")
   make(state <> "/run")
+  make(state <> "/domains")
   list.each(["owner.token", "catalogue.db", "daemon.lock"], fn(entry) {
     let assert Ok(Nil) = simplifile.write(state <> "/" <> entry, "x")
       as "a state-root entry must be writable"

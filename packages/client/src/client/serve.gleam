@@ -6612,6 +6612,19 @@ fn established_masks(state_root: String) -> List(String) {
     // connects by path regardless, so on macOS the unlisted digest name
     // is what keeps another jail from the socket.
     state_root <> "/" <> codemode_wiring.runtime_directory,
+
+    // Per-workspace domain state: the memory store and search index every
+    // session on that workspace injects from, and now its blob store.
+    // `protecting_memory` states why a model-writable digest is the
+    // cleanest injection channel in the tree; this is the same door for
+    // *other* workspaces. Created with the root, so it needs no existence
+    // question.
+    state_root <> "/workspaces",
+
+    // The session-scoped half of the same domain state. Also created with
+    // the root: a session admitted before the first session-only domain
+    // exists would otherwise run without this mask for its whole life.
+    state_root <> "/domains",
   ]
 }
 
@@ -6643,16 +6656,6 @@ fn lazy_masks(state_root: String) -> List(String) {
       // The launcher's per-endpoint locks, on `daemon.lock`'s argument:
       // the daemon's exclusion, not the model's to take or break.
       state_root <> "/locks",
-
-      // Per-workspace domain state — the memory store and search index
-      // every session on that workspace injects from. `protecting_memory`
-      // states why a model-writable digest is the cleanest injection
-      // channel in the tree; this is the same door for *other*
-      // workspaces.
-      state_root <> "/workspaces",
-
-      // The session-scoped half of the same domain state.
-      state_root <> "/domains",
 
       // The endpoint records, and the one the daemon publishes. They
       // carry no secret — `host/endpoint`'s schema deliberately holds no
