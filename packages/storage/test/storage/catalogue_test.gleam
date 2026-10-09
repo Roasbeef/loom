@@ -1987,7 +1987,7 @@ pub fn a_registration_with_an_oversized_model_key_is_refused_test() {
   assert catalogue.close(store) == Ok(Nil)
 }
 
-// --- deletion marks (version 14, protocol-change/080) ------------------------
+// --- deletion marks (version 14, protocol-change/081) ------------------------
 
 pub fn version_thirteen_catalogue_gains_the_deletion_table_test() {
   let path = fresh_path("deletion-migration")

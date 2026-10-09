@@ -552,7 +552,7 @@ fn validate_orchestrators(
 }
 
 // `[directory]` makes this daemon a member of the session directory's Khepri
-// cluster (protocol-change/080). Its members are pinned peers and every listed
+// cluster (protocol-change/081). Its members are pinned peers and every listed
 // orchestrator must be one, so it runs after both of those tables' checks.
 fn validate_directory(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
   directory_settings.from_document(document) |> result.replace(Nil)

@@ -11,7 +11,7 @@
 //// credentials, and `configure` writes both `loom.toml` files.
 ////
 //// A fixture that runs the session directory's Khepri cluster
-//// (protocol-change/080) adds a third daemon, an executor, because a cluster of
+//// (protocol-change/081) adds a third daemon, an executor, because a cluster of
 //// two members has no majority once one is gone. `configure_members` writes
 //// the three configurations with the same `[directory]` table, the executor
 //// registering the checkout `repo` that the orchestrators reach as `box`, and

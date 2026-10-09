@@ -1,5 +1,5 @@
 //// The owner record of one session in the directory store
-//// (protocol-change/080).
+//// (protocol-change/081).
 ////
 //// A deployment with a `[directory]` table keeps one record per session, at
 //// `[loom, sessions, <id>]` in the Khepri store `loom_directory`. The record

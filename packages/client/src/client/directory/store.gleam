@@ -1,5 +1,5 @@
 //// The directory store: the Khepri store `loom_directory` that holds one owner
-//// record per remote session (protocol-change/080).
+//// record per remote session (protocol-change/081).
 ////
 //// This module is the only caller of `client/internal/ffi_khepri`, and it adds
 //// two things the FFI cannot. Every call runs in a weft task under a deadline,

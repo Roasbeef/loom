@@ -4,7 +4,7 @@ Two [TLA+](https://lamport.azurewebsites.net/tla/tla.html) specifications live
 here. `Move.tla` is the move where each orchestrator's catalogue row decides
 who owns the session, which every deployment without a `[directory]` runs.
 `KhepriMove.tla` is the same move, and a move back, where the session
-directory's owner record decides (protocol-change/080); it is described in
+directory's owner record decides (protocol-change/081); it is described in
 the last part of this file. `make model-check` checks both.
 
 `Move.tla` is a model of one
@@ -176,7 +176,7 @@ The gate discovers it without an edit to the script.
 
 On a directory member the owner record decides who owns a session, and each
 node's catalogue row is local memory of what the node is doing
-(protocol-change/080). The record is one value, written only by
+(protocol-change/081). The record is one value, written only by
 compare-and-set while a majority of the cluster is up. A node writes its row
 before a change that takes serving away, the intent, and after a change that
 grants it, the import. The model checks that no interleaving of crashes, lost

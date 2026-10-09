@@ -616,7 +616,7 @@ The next step replaces the catalogue rows of phases 3 and 5 with one record
 per session in a Khepri store whose members are the orchestrators and the
 executors, so that a move is one compare-and-set and failover has a record to
 build on. It is proposed in [ADR-019](../adr/019-khepri-for-session-ownership.md)
-and [protocol-change/080](../../protocol-change/080-khepri-session-ownership.md),
+and [protocol-change/081](../../protocol-change/081-khepri-session-ownership.md),
 and [docs/architecture/directory.md](../architecture/directory.md) describes it.
 
 Automatic failover and workspace snapshot migration stay deferred. The

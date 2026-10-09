@@ -599,7 +599,7 @@ daemon does not forward the client, and the client needs a credential for the
 owner to use it. `owner_unreachable` can be retried.
 
 On a daemon that is a member of a session directory (a `[directory]` table,
-[protocol-change/080](../protocol-change/080-khepri-session-ownership.md)), the
+[protocol-change/081](../protocol-change/081-khepri-session-ownership.md)), the
 answer comes from the daemon's own copy of the owner records and no other
 orchestrator is asked. `not_owner` carries the same members, for a session on
 an executor or a pool and for a local session alike: every session on a member
@@ -1476,7 +1476,7 @@ another destination is in flight), and `not_owner` (the session already moved).
 the stored `op`.
 
 On a session directory member
-([protocol-change/080](../protocol-change/080-khepri-session-ownership.md)) the
+([protocol-change/081](../protocol-change/081-khepri-session-ownership.md)) the
 owner record decides the move. Three things differ for a client:
 
 - An imported session can move onward at once; `not_movable` is no longer
@@ -1501,7 +1501,7 @@ owner record decides the move. Three things differ for a client:
 ### 3.28 `directory.status`
 
 Owner-only, no arguments. Reports this daemon's view of the session directory's
-Khepri cluster (protocol-change/080). A daemon that is not a member refuses it
+Khepri cluster (protocol-change/081). A daemon that is not a member refuses it
 `not_found`.
 
 ```json

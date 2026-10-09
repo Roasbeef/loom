@@ -1,6 +1,6 @@
 # Khepri session ownership: the model and the implementation plan
 
-Status: **implemented, 2026-10-08.** This note ordered the work that [protocol-change/080](../../protocol-change/080-khepri-session-ownership.md)
+Status: **implemented, 2026-10-08.** This note ordered the work that [protocol-change/081](../../protocol-change/081-khepri-session-ownership.md)
 specifies and [docs/architecture/directory.md](../architecture/directory.md)
 describes. It has three parts: the TLA+ model of a move under the record, the
 implementation slices in order with what each became, and what is left open.
@@ -98,7 +98,7 @@ reconnects after a cut; bootstrap refuses a second time.
 ### Slice 4: the record in the directory, creation and deletion
 
 `Directory.lookup` over the local replica; `Ownership`; remote creation through
-`manager.reserve` and the record; catalogue version 13 and the deletion mark;
+`manager.reserve` and the record; catalogue version 14 and the deletion mark;
 delete through `begin_delete`, the record and `delete_session`; `no_quorum`.
 
 Tests: `session_directory_test` with a one-member store;
@@ -140,7 +140,7 @@ member variants.
 
 ### Slice 9: documentation
 
-The architecture page and 080 at the implemented spellings, the package
+The architecture page and 081 at the implemented spellings, the package
 `CLAUDE.md` files through `/doc-gardening`, `docs/distributed-setup.md`,
 `docs/configuration.md` and `docs/next.md`.
 

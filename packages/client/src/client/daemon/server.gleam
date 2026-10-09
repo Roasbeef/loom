@@ -2533,7 +2533,7 @@ fn not_owner(owner: orchestrators.Orchestrator) -> Refused {
 }
 
 /// The code a directory member answers when the session directory could not
-/// be read or could not commit in time (protocol-change/080).
+/// be read or could not commit in time (protocol-change/081).
 pub const no_quorum_code = "no_quorum"
 
 fn directory_status_json(status: member.Status) -> JsonValue {
@@ -3327,7 +3327,7 @@ fn inbound_settled(
     // On a directory member the origin's retry cannot undo anything here: it
     // abandons only by a compare-and-set that expects its own moving record,
     // which fails once this daemon activated the session, so there is nothing
-    // to wait for (protocol-change/080).
+    // to wait for (protocol-change/081).
     Some(_) -> Ok(Nil)
     None -> inbound_settled_by_rows(movers, registry, id)
   }
@@ -3357,7 +3357,7 @@ fn inbound_settled_by_rows(
   }
 }
 
-// A delete of a remote session on a directory member (protocol-change/080).
+// A delete of a remote session on a directory member (protocol-change/081).
 // The deletion mark is written in the registry turn that finds no slot open,
 // then the record is deleted on the condition that it names this daemon as
 // serving, then the registration, the mark and the file go, and the deleted
@@ -3514,7 +3514,7 @@ pub fn create_session(
   // A registered name is no folder on this host, so it is never offered. On a
   // directory member a local session's record is a lookup hint the movers'
   // next tick writes; the creation does not wait for it, so it succeeds without
-  // a majority (protocol-change/080).
+  // a majority (protocol-change/081).
   case request.executor, request.pool {
     "", "" -> {
       manager.remember_folder(registry, workspace)
@@ -3526,7 +3526,7 @@ pub fn create_session(
 }
 
 // A remote session created on a directory member is recorded before it can be
-// served (protocol-change/080): the registration is reserved without opening
+// served (protocol-change/081): the registration is reserved without opening
 // it, the record names this daemon, and only then does `create_scoped` find
 // the reservation by its request key and open it. A creation refused for no
 // quorum keeps its reservation, and a retry under the same key repeats the

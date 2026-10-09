@@ -8,7 +8,7 @@
 # The TLA+ models, protocol/models/session-move, run first. There are two
 # specifications: Move.tla, the move where catalogue rows decide, and
 # KhepriMove.tla, the moves where the directory's owner record decides
-# (protocol-change/080). For each, TLC must pass the clean configuration
+# (protocol-change/081). For each, TLC must pass the clean configuration
 # (Move.cfg, KhepriMove.cfg) and must report a violation of the property
 # each mutant configuration (Mutant*.cfg, KhepriMutant*.cfg) names on its
 # `\* expect-violation:` line: an invariant, which TLC names when it fails

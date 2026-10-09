@@ -1,5 +1,5 @@
 //// The control socket of a daemon that is a session directory member
-//// (protocol-change/080), over the real registry and a one-member Khepri store
+//// (protocol-change/081), over the real registry and a one-member Khepri store
 //// in the test VM. These tests prove what the socket does with the record:
 //// a remote creation writes it before the session can be served, a remote
 //// delete marks the session, deletes the record and only then the

@@ -1,4 +1,4 @@
-//// The owner record's stored shape and its total decoder (protocol-change/080).
+//// The owner record's stored shape and its total decoder (protocol-change/081).
 //// The payload crosses Ra's durable log, so anything that is not a version 1
 //// record with valid names is refused rather than read as absent.
 

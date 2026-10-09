@@ -1,5 +1,5 @@
--- Catalogue v13: a remote session whose deletion has begun on a daemon that
--- is a member of the session directory (protocol-change/080). The row is
+-- Catalogue v14: a remote session whose deletion has begun on a daemon that
+-- is a member of the session directory (protocol-change/081). The row is
 -- written in the registry turn that checks no slot is open, before the
 -- directory record is deleted, and admission refuses a session that has one.
 -- It is removed with the registration once the record is gone, or on its own

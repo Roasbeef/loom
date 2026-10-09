@@ -120,7 +120,7 @@ run(<<"no_automatic_connection">>, Root) ->
     ConfigB = config(B, A, cert_of(A), none),
     exchange(A, ConfigA, silent_send, #{peer => name_of(B)}, B, ConfigB, idle, #{});
 
-%% Two directory members (protocol-change/080). The connector reaches the
+%% Two directory members (protocol-change/081). The connector reaches the
 %% other through the production connect path, as an attach would, and both
 %% ends must then list each other among their visible nodes, whichever side
 %% dialed: a hidden link between members is the case Ra cannot work over.
@@ -184,7 +184,7 @@ run(<<"member_needs_connect_all_off">>, Root) ->
     try await_complete(Port, <<>>) after close_port(Port) end,
     ok;
 
-%% Three directory members (protocol-change/080). The first bootstraps the
+%% Three directory members (protocol-change/081). The first bootstraps the
 %% cluster; the other two start the real member actor and must become voters.
 %% The third then loses its disk: its emulator ends, its directory is deleted,
 %% and 24 MiB of writes push the leader past a snapshot. Started again, it must

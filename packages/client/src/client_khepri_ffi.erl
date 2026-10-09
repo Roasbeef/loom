@@ -1,5 +1,5 @@
 %% Khepri and Ra primitives for the session directory, reached only through
-%% client/internal/ffi_khepri.gleam (protocol-change/080, ADR-019). Neither
+%% client/internal/ffi_khepri.gleam (protocol-change/081, ADR-019). Neither
 %% gleam_stdlib, gleam_erlang, gleam_otp nor weft has a replicated store, so
 %% the directory has no pure alternative to these calls.
 %%

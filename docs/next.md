@@ -232,24 +232,26 @@ there.
 ## The session directory in Khepri (`directory/khepri`)
 
 This section covers `directory/khepri`, built on top of the tree this handoff
-describes: the session directory in Khepri (protocol-change/080). Everything
+describes: the session directory in Khepri (protocol-change/081). Everything
 above still describes the distributed runtime it builds on. What the branch adds is a deployment option, a `[directory]`
 table, under which the orchestrators and executors form one Khepri cluster that
 holds the single authoritative record of which orchestrator owns each remote
 session, and every change of owner is one compare-and-set on that record. Local
 sessions are recorded too, as lookup hints.
 
-The branch is **not pushed and has no PR**. An independent implementation review
+The branch is PR #934, built on PR #923. An independent implementation review
 was done; its confirmed findings and the owner's ruling on local sessions were
-fixed in a second pass (ADR-019's addendum lists them), and a third pass made a
-missing record after the seed set the source's copy aside instead of reverting.
-The branch is rebased onto PR #923's head (`ee6402c8b`), and its proposal is
-protocol-change 080, since main took 079. The coordinator publishes the
-branch.
+fixed in a second pass (ADR-019's addendum lists them), a third pass made a
+missing record after the seed set the source's copy aside instead of reverting,
+and a fourth made a receiver that owns the record answer `Failed` rather than
+`Refused`. The branch is rebased onto PR #923's head (`3150c12f4`, after its
+third merge of main). Its proposal is protocol-change 081, since main took 079
+and 080, and its catalogue migration is version 14, after #923's 11 to 13 and
+main's 10. The link's settle came from this branch and now lives on #923.
 
 Read [the session directory](architecture/directory.md) for the design,
 [ADR-019](adr/019-khepri-for-session-ownership.md) for the choice of Khepri and
-what the spikes measured, [protocol-change/080](../protocol-change/080-khepri-session-ownership.md)
+what the spikes measured, [protocol-change/081](../protocol-change/081-khepri-session-ownership.md)
 for the interfaces, [the plan](design-notes/khepri-ownership.md) for how the work
 was ordered, and the section "The session directory" in
 [the setup guide](distributed-setup.md) for running it. `packages/client/CLAUDE.md`
@@ -263,7 +265,7 @@ has a section, "The session directory in Khepri".
 | Distribution | Members start visible with `-kernel connect_all false` (the launchers pass it with the TLS flags; a member VM without it is refused). Member-to-member connects use `net_kernel:connect_node/1`; everything else stays hidden. A daemon without `[directory]` is unchanged. |
 | Configuration and provisioning | `[directory] members` (3 to 7, every orchestrator a member). A plan's top-level `directory` list makes members peer with each other and writes the table into their bundles. |
 | The cluster | `client/directory/member` keeps the links and joins a member with no joined store as a Ra `promotable` non-voter after removing its stale identity; Ra promotes it once caught up. The join is sequenced in `client/directory/store` over `weft/poll`, one FFI primitive per Ra call. `loomd directory bootstrap` creates the cluster once and refuses where it would make a second; the Ra system's own files are not a store, and each refusal names its remedy. `directory.status` reports the member's view. |
-| The record | `{loom_owner, 1, Owner, serving \| {moving, Op, To}}` per remote session, and `{loom_owner, 1, Owner, local}` per local session. Remote creation reserves, writes the record, then opens; deletion marks (catalogue v13 `catalogue_session_deletions`), deletes the record conditionally, then the registration. A local session's record is written after it exists by the movers' upkeep (`migrate.cover_local`, at boot and after each local creation, again until a pass succeeds) and removed best-effort on delete. Lookups read the local copy. Opening makes no Khepri call. |
+| The record | `{loom_owner, 1, Owner, serving \| {moving, Op, To}}` per remote session, and `{loom_owner, 1, Owner, local}` per local session. Remote creation reserves, writes the record, then opens; deletion marks (catalogue v14 `catalogue_session_deletions`), deletes the record conditionally, then the registration. A local session's record is written after it exists by the movers' upkeep (`migrate.cover_local`, at boot and after each local creation, again until a pass succeeds) and removed best-effort on delete. Lookups read the local copy. Opening makes no Khepri call. |
 | Moves | `session_mover` under `Recorded` authority: the row first, then the intent CAS (a record gone after the seed means the session was deleted elsewhere, and the move ends with the copy set aside, never served again), close, cut, send, the receiver's activation CAS before its import, and retirement on the receiver's answer and a consistent read. Abandon is a CAS that fails once the receiver activated; a give-up that finds the receiver owning the session asks it again rather than retiring. A silent receiver is given up after 30 minutes of stalls with a quorum (receiver's migration marker and this daemon's seed required; `Deferred` stalls are not counted); the owner can abandon with `sessions.move` `abandon: true`. No inbound hold on members. |
 | Migration | Each orchestrator seeds the store from its catalogue once, then writes `[loom, migrated, <node>]`. |
 | Model | `protocol/models/session-move/KhepriMove.tla`: two moves (there and back), content versions, crashes, a lost majority, late activations, a receiver that deletes the session, receiver steps fair only while the source asks, nine mutants (one temporal), gated by `make model-check` beside `Move.tla`. |

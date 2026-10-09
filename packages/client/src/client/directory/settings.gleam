@@ -1,5 +1,5 @@
 //// The `[directory]` table: whether this daemon is a member of the session
-//// directory's Khepri cluster, and who the members are (protocol-change/080).
+//// directory's Khepri cluster, and who the members are (protocol-change/081).
 ////
 //// A deployment that writes `[directory]` on its daemons has one Khepri store
 //// holding the owner record of every remote session. `members` lists the

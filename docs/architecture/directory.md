@@ -14,14 +14,14 @@ first for the two roles (an orchestrator holds a session's conversation, an
 executor holds its checkout) and for how a tool call crosses between them.
 [ADR-019](../adr/019-khepri-for-session-ownership.md) records why Khepri was
 chosen and what the spikes measured, and
-[protocol-change/080](../../protocol-change/080-khepri-session-ownership.md)
+[protocol-change/081](../../protocol-change/081-khepri-session-ownership.md)
 specifies the interfaces. [The plan](../design-notes/khepri-ownership.md)
 ordered the implementation, and
 [`protocol/models/session-move`](../../protocol/models/session-move/README.md)
 holds the formal model, `KhepriMove.tla`.
 
 **Status: implemented.** The code named here is on `main` once
-protocol-change/080 lands; the shipped tests that run it are listed at the
+protocol-change/081 lands; the shipped tests that run it are listed at the
 end.
 
 ## Two kinds of deployment
@@ -259,7 +259,7 @@ real one.
 
 The control command `directory.status` reports the configured members, Ra's
 members and which of them are voters, the leader, this member's applied index,
-and whether its store is joined (protocol-change/080 has the reply). When the configured list and Ra's list differ,
+and whether its store is joined (protocol-change/081 has the reply). When the configured list and Ra's list differ,
 Ra's is the one in force: membership lives in Raft's log, and `members` only
 tells a daemon whom to join and whom to keep connected.
 
@@ -609,7 +609,7 @@ needs five more pieces:
 | `client/daemon/directory_cli` | `loomd directory bootstrap` |
 | `client/session_directory` | `Directory`: the lookup, and on a member the writes and the status |
 | `client/session_mover`, `client/session_movers`, `client/session_importer` | The move, with the record deciding and the rows remembering; the give-up and the periodic pass |
-| `storage/catalogue` | The `catalogue_session_deletions` table (catalogue version 13) |
+| `storage/catalogue` | The `catalogue_session_deletions` table (catalogue version 14) |
 
 ## The tests that run it
 

@@ -107,8 +107,8 @@ with these forks: they define the same modules.
   `catalogue_sessions` means a registration cannot be removed while its row
   stands.
 - `catalogue.Deletion` (`NotDeleting | Deleting`) marks a remote session whose
-  deletion has begun on a session directory member (protocol-change/080).
-  Version 13 adds `catalogue_session_deletions(session_id)`, one row per
+  deletion has begun on a session directory member (protocol-change/081).
+  Version 14 adds `catalogue_session_deletions(session_id)`, one row per
   session, its foreign key on `catalogue_sessions`. `mark_deleting` checks the
   registration exists and writes the row in one transaction, `unmark_deleting`
   removes it, `deletion` reads it and `deleting` lists every marked session,
