@@ -1675,6 +1675,29 @@ pub fn ledger_unacked_keys_decoder() -> decode.Decoder(LedgerUnackedKeys) {
   decode.success(LedgerUnackedKeys(op:, step:, source_index:, state:))
 }
 
+pub type LedgerAdmittedKeys {
+  LedgerAdmittedKeys(op: String, step: String, source_index: Int)
+}
+
+pub fn ledger_admitted_keys(session session: String, tool tool: String) {
+  let sql =
+    "SELECT op, step, source_index FROM call
+WHERE session = ? AND tool = ? AND state = 'admitted'
+ORDER BY op, step, source_index"
+  #(
+    sql,
+    [dev.ParamString(session), dev.ParamString(tool)],
+    ledger_admitted_keys_decoder(),
+  )
+}
+
+pub fn ledger_admitted_keys_decoder() -> decode.Decoder(LedgerAdmittedKeys) {
+  use op <- decode.field(0, decode.string)
+  use step <- decode.field(1, decode.string)
+  use source_index <- decode.field(2, decode.int)
+  decode.success(LedgerAdmittedKeys(op:, step:, source_index:))
+}
+
 pub fn insert_ledger_release(
   session session: String,
   workspace workspace: String,
