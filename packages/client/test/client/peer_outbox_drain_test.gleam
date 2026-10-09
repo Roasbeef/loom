@@ -327,6 +327,36 @@ pub fn one_owner_that_does_not_answer_keeps_the_fixed_interval_beside_a_saved_re
   assert waits(armings, 3) == [5000, 5000, 5000]
 }
 
+pub fn a_saved_recipient_is_asked_once_per_pass_beside_a_silent_owner_test() {
+  let rig = peer_rig.rig(2130, [], Down)
+  let #(armings, name) = drainer(rig)
+  let open = arming(armings)
+  open.wake()
+
+  // One message waits on an owner that does not answer, which keeps the pass at
+  // the fixed interval, and three wait on a recipient that is saved.
+  let assert Ok(_) = peer_rig.send(rig, "m1")
+  let saved = ids.session_id_to_string(peer_rig.session_id(2135))
+  let assert Ok(_) = rig.source.call(peer_mail.Link("main", saved, "main"))
+    as "the sender records the link"
+  list.each(["s1", "s2", "s3"], fn(id) {
+    let assert Ok(queued) =
+      peers.send(rig.wiring, "main", saved, "main", id, "hello")
+    assert peers.is_queued(queued)
+  })
+  let before = peer_rig.other_lookups(rig)
+  assert before == 3
+  peer_outbox_drain.poke(name)
+
+  // The pass asks the saved recipient's owner once, not once for each of the
+  // three messages, and the next pass is still the fixed one.
+  let first = arming(armings)
+  first.wake()
+  let second = arming(armings)
+  assert second.delay_ms == peer_outbox_drain.retry_interval_ms
+  assert peer_rig.other_lookups(rig) == before + 1
+}
+
 pub fn a_message_to_a_saved_recipient_is_not_reattempted_by_a_doorbell_test() {
   let rig = peer_rig.rig(2110, [], Pass)
   peer_rig.set_resident(rig, Saved)

@@ -365,36 +365,40 @@ fn pass(data: State) -> Backlog {
   }
 }
 
-// Attempts the rows in order and answers what each attempt found. `silent`
-// holds the sessions that did not answer during this pass: the owner of one is
-// the owner of all its rows, so asking again would spend a full deadline per
-// row to learn the same thing, and a pass over 64 rows to a dead node would
-// last minutes. The row that was asked has already said the session is silent,
-// so a row skipped for that reason adds nothing to what the pass found. A
-// recipient that is saved is not in it: its owner answers at once, and the
-// answer can change between two rows if the owner opens the session meanwhile.
+// Attempts the rows in order and answers what each attempt found. `waiting`
+// holds the sessions that did not answer during this pass, and the ones whose
+// owner answered that they are saved. The owner of a silent session is the
+// owner of all its rows, so asking again would spend a full deadline per row to
+// learn the same thing, and a pass over 64 rows to a dead node would last
+// minutes. A saved session answers at once, but every row to it would get the
+// same answer, and the pass runs at the fixed interval while another owner is
+// silent, so asking for each of 64 rows would make 64 round trips every five
+// seconds. If the owner opens the session between two rows, the skipped ones
+// wait for the next pass. The row that was asked has said what the pass found,
+// so a skipped row adds nothing to it.
 fn drain_rows(
   options: Options,
   rows: List(peer_outbox.Row),
-  silent: List(String),
+  waiting: List(String),
   found: List(peer_outbox.Outcome),
 ) -> List(peer_outbox.Outcome) {
   case rows {
     [] -> found
 
     [row, ..rest] ->
-      case list.contains(silent, row.session) {
-        True -> drain_rows(options, rest, silent, found)
+      case list.contains(waiting, row.session) {
+        True -> drain_rows(options, rest, waiting, found)
         False -> {
           let outcome = peers.resend(options.wiring, row)
           report(options, row, outcome)
-          let silent = case outcome {
-            peer_outbox.Unanswered -> [row.session, ..silent]
-            peer_outbox.Receipt(..)
-            | peer_outbox.Rejected(..)
-            | peer_outbox.NotOpen -> silent
+          let waiting = case outcome {
+            peer_outbox.Unanswered | peer_outbox.NotOpen -> [
+              row.session,
+              ..waiting
+            ]
+            peer_outbox.Receipt(..) | peer_outbox.Rejected(..) -> waiting
           }
-          drain_rows(options, rest, silent, [outcome, ..found])
+          drain_rows(options, rest, waiting, [outcome, ..found])
         }
       }
   }

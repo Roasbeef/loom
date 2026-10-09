@@ -26,6 +26,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{Some}
+import gleam/string
 import support/peer_rig.{Down, Gone, Lose, Pass, Resident, Saved}
 
 pub fn a_reachable_recipient_is_answered_as_before_and_the_row_is_admitted_test() {
@@ -335,6 +336,12 @@ pub fn sent_receipt_reads_the_local_row_before_asking_the_recipient_test() {
       #("message_id", "never-sent"),
     ])
   assert unknown == framing.CapErr("peer_refused", peer_mail.not_open_reason)
+}
+
+pub fn the_unreachable_note_does_not_promise_a_fixed_pace_test() {
+  // The drainer slows while other messages wait for a session to be opened,
+  // and a message queued then is first retried at the next tick.
+  assert string.contains(peers.queued_note, "at first about every 5 seconds")
 }
 
 pub fn a_saved_recipient_is_queued_and_delivered_once_it_is_open_test() {

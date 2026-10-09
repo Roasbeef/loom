@@ -43,6 +43,7 @@ pub type Script {
     resident: Residency,
     deliveries: Int,
     lookups: Int,
+    others: Int,
   )
 }
 
@@ -64,6 +65,8 @@ pub type Step {
   SetResident(Residency)
   SetThen(Mode)
   Count(reply: Subject(#(Int, Int)))
+  OtherCount(reply: Subject(Int))
+  Other
 }
 
 pub type Rig {
@@ -93,6 +96,7 @@ pub fn start_script(modes: List(Mode), then: Mode) -> Subject(Step) {
       resident: Resident,
       deliveries: 0,
       lookups: 0,
+      others: 0,
     ))
     |> actor.on_message(handle_step)
     |> actor.start
@@ -122,6 +126,11 @@ pub fn handle_step(script: Script, step: Step) -> actor.Next(Script, Step) {
       process.send(reply, #(script.deliveries, script.lookups))
       actor.continue(script)
     }
+    OtherCount(reply:) -> {
+      process.send(reply, script.others)
+      actor.continue(script)
+    }
+    Other -> actor.continue(Script(..script, others: script.others + 1))
   }
 }
 
@@ -279,7 +288,10 @@ pub fn resolve(
 
     // Any other session is one the owner holds saved, so that a test can owe a
     // message to a second recipient whose answer differs from the first's.
-    False, False -> Error(peer_mail.NotOpen)
+    False, False -> {
+      process.send(script, Other)
+      Error(peer_mail.NotOpen)
+    }
   }
 }
 
@@ -315,6 +327,12 @@ pub fn send(rig: Rig, id: String) -> Result(JsonValue, String) {
 /// was asked for the recipient.
 pub fn counts(rig: Rig) -> #(Int, Int) {
   process.call(rig.script, 1000, Count)
+}
+
+/// How many times the directory was asked for a session other than the
+/// recipient.
+pub fn other_lookups(rig: Rig) -> Int {
+  process.call(rig.script, 1000, OtherCount)
 }
 
 pub fn receipts(runtime: api.Runtime) -> Int {
