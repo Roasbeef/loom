@@ -44,6 +44,13 @@ observe anything that depends on two machines, such as a host name that differs
 between the two roles, a tunnel or a firewall, so those marks stay with the
 cross-host run or stay **Pending**.
 
+The cross-host run was repeated on commit `61429be82` with the same two
+directions and the same tunnels, this time from `provision` and `install --home`
+on both machines, with direction B's orchestrator started dial-only as section 5
+now describes. Every check passed in both directions, including a partition held
+past the end of the call (section 7). The marks below still name the run that
+first observed each step.
+
 A third run covers section 6, the Compose run on commit `caf8bfcac`. It ran on a
 Linux x86_64 box with Docker 29.1.3 and Compose 2.40.3. It built the image from the
 commit, followed section 6 command by command in both postures, and created
@@ -983,8 +990,11 @@ the file written in the first.
 A call in flight when the tunnel dropped also survived. A 75-second command was
 started, the tunnel was cut after about 12 seconds in direction A (and mid-call in
 direction B), and the tunnel came back 16 to 30 seconds later. The command ran
-exactly once, and the model received its result after recovery. Partitions of
-other lengths were not run.
+exactly once, and the model received its result after recovery. The rerun on
+`61429be82` repeated that and added a longer partition in both directions: the
+tunnel stayed down for 96 seconds, past the end of the command, and after the
+reconnect the model still received the command's real result, read from the
+executor's ledger, with the command run once.
 
 ### Several executors: pools
 

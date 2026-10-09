@@ -7,8 +7,9 @@ approvals. An executor daemon of the same release holds the checkout and runs
 the session's workspace tool calls. The two talk over TLS Erlang distribution
 with pinned leaf certificates.
 
-The branch is **not pushed and has no PR**. Publishing it needs the owner's
-explicit authorization. Every claim below was verified on the code candidate
+The branch is published as
+[PR #923](https://github.com/Roasbeef/loom/pull/923); merging it is the owner's
+call. Every claim below was verified on the code candidate
 `3318250e0` (`3318250e0b32fd9f470c611d7e2022935f73f8e9`, 195 commits over
 `7091d5a42`). The next commit, `88a70dd34`, changes one shipped test to wait for
 a file rename it raced on Linux, and the commit after it changes only this file;
@@ -16,7 +17,10 @@ no source file differs from `3318250e0`. After that, `7628912ba` changes
 `client/distribution` so the daemon starts `epmd` when none answers, and
 `6c945a8c2` documents it (see "Rulings already made"). The gated signoff is
 green on `6c945a8c2`, and `main` was then merged into the branch as
-`3a541c1d4`.
+`3a541c1d4`. The commits up to `61429be82` add the architecture page and fix
+the Compose quick start; the cross-host run was repeated on `61429be82`. A
+second merge of `main` followed (below), with one semantic fix: the executor's
+code-mode seed ladder now verifies the workspace seed as a local daemon's does.
 
 The previous edition on `main` covered the compile and export work of
 [PR #917](https://github.com/Roasbeef/loom/pull/917); its measurements are in
@@ -87,9 +91,9 @@ Linux: the box described below.
 | `make e2e` | Linux | exit 0, 97 tests; two gopls tests skip because the box has no gopls |
 | Ten shipped modules | Linux | every one exit 0 with 0 SKIP lines, except `daemon_shipped_remote_move_test`'s first run, which failed asserting the moved session's file was gone in the instant between the `moved` row and the rename. It passed when rerun alone, and on `88a70dd34` (the test waits for the rename) it passed three runs out of three |
 | `make model-check` | Linux | not run: the box has no Java, TLA+ jar or P tool |
-| Cross-host, both directions (Mac brains with box hands, and the reverse): file, `bash`, `fs_read` and `git` in the remote checkout and absent locally; stop then `Closed(AllRetired)`; reopen at incarnation 2; tunnel cut during a 75 s call, which ran once and was delivered after recovery | Mac and Linux | passed on `193dbd8db`. The remote execution path has changed since (clock stamp, ledger v3), and the cross-host run was not repeated on `3318250e0` |
+| Cross-host, both directions (Mac brains with box hands, and the reverse): file, `bash`, `fs_read` and `git` in the remote checkout and absent locally; stop then `Closed(AllRetired)`; reopen at incarnation 2; tunnel cut during a 75 s call, which ran once and was delivered after recovery | Mac and Linux | passed on `61429be82` (and earlier on `193dbd8db`), credentials from `loom distribution provision` and `install --home`. Each direction ran two cuts: a short one restored while the call was still running, and a long one restored 96 s after the cut, about 20 s after the executor finished the call. In both, the command started once and finished once, and the model received its real result after the reconnect (in the long cut, from the executor's terminal ledger row). Before each drive, the tunnelled `epmd` named the executor and `openssl s_client` showed the executor's own leaf |
 | Shipped SIGKILL restart and partition drills (`daemon_shipped_remote_test`) | Mac | in the shipped row above |
-| Gated signoff (`make signoff-remote`), fresh Linux container | Linux | green on `6c945a8c2`. An earlier run in a fresh container, with no `epmd` running, found the missing `epmd` start that `7628912ba` fixes |
+| Gated signoff (`make signoff-remote`), fresh Linux container | Linux | green on `6c945a8c2`. An earlier run in a fresh container, with no `epmd` running, found the missing `epmd` start that `7628912ba` fixes. On `61429be82` it failed 1 of 3595: `daemon_shipped_remote_tools_test`'s goal check did not reach `complete` within its 60 s poll while the lane ran shipped modules side by side. The module passed three runs out of three on the Mac on the same commit (about 20 s each), so the failure looks load-bound, but that is not proven |
 
 ## Rulings already made
 
@@ -197,13 +201,14 @@ there.
 
 ## What to do next
 
-1. Owner: authorize publishing `distributed/simplify` (push and PR). Then run the gated
-   signoff (`LOOM_SIGNOFF_HOST=gilgamesh-signoff make signoff-remote`) and hosted CI on
-   the exact head. Exit: both green on the PR's head.
-2. Repeat the cross-host run on the published head, since the remote execution path
-   changed after `193dbd8db`. Exit: both directions pass with the tunnel cut.
-3. Close the cheap follow-ups above: the web delete hold, re-attach after an executor
+1. Run the gated signoff (`LOOM_SIGNOFF_HOST=gilgamesh-signoff make signoff-remote`) on
+   PR #923's exact head. Exit: green. If `daemon_shipped_remote_tools_test`'s goal check
+   fails again, treat it as a defect in the remote goal path, not as a poll budget to
+   raise.
+2. Close the cheap follow-ups above: the web delete hold, re-attach after an executor
    restart, an override for an imported session whose origin is gone, and the TUI's
    `moving`/`moved` rendering.
-4. Failover and executor movement: design a store behind `session_directory` (Khepri)
-   only when automatic failover is taken on.
+3. Session ownership in Khepri is a separate PR stacked on this one (branch
+   `directory/khepri`, ADR-019): opt-in by a `[directory]` table, with Khepri deciding
+   moves and every session on a member recorded. Failover and executor movement remain
+   out of scope.
