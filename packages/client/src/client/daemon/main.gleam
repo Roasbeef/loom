@@ -749,11 +749,13 @@ fn session_directory_of(
   }
 }
 
-// The record writes, for a member that places sessions on executors.
+// The record writes, for a member that is an orchestrator: one that places
+// sessions on executors or lists another orchestrator. An executor member
+// lists neither, and so has no writes.
 fn ownership_of(config: Config, local: String) -> Option(ownership.Ownership) {
-  case config.executors, config.pools {
-    [], [] -> None
-    _, _ -> Some(ownership.over_store(local))
+  case config.executors, config.pools, config.orchestrators {
+    [], [], [] -> None
+    _, _, _ -> Some(ownership.over_store(local))
   }
 }
 
@@ -798,24 +800,38 @@ pub fn start_movers(
     Some(membership) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
       let directory = session_directory_of(config, ready.registry)
-      let #(authority, deletions) = case directory.ownership {
+      let #(authority, upkeep) = case directory.ownership {
         // The movers' periodic pass seeds the store from the catalogue until
-        // it has once, then finishes the deletions left marked.
-        Some(ownership) -> #(session_mover.Recorded(ownership:), fn() {
-          let _seeded =
-            migrate.seed(
-              ready.registry,
-              ownership,
-              config.orchestrators,
-              logger,
-            )
-          deletion.finish_pending(
-            ready.registry,
-            ready.sessions_directory,
-            ownership,
-          )
-        })
-        None -> #(session_mover.Rows, fn() { Nil })
+        // it has once, then finishes the deletions left marked; on request it
+        // writes the local sessions' records.
+        Some(ownership) -> #(
+          session_mover.Recorded(ownership:),
+          session_movers.Upkeep(
+            every_tick: fn() {
+              let _seeded =
+                migrate.seed(
+                  ready.registry,
+                  ownership,
+                  config.orchestrators,
+                  logger,
+                )
+              deletion.finish_pending(
+                ready.registry,
+                ready.sessions_directory,
+                ownership,
+              )
+            },
+            cover: fn() {
+              migrate.cover_local(ready.registry, ownership, logger)
+              |> result.replace(Nil)
+            },
+            release: fn(session) {
+              let _released = ownership.release_local(session)
+              Nil
+            },
+          ),
+        )
+        None -> #(session_mover.Rows, session_movers.no_upkeep())
       }
       let environment =
         session_mover.Environment(
@@ -836,7 +852,7 @@ pub fn start_movers(
         session_movers.retry_ms,
         session_directory.over_distribution(membership),
         session_movers.give_up_after_ms,
-        deletions,
+        upkeep,
       ))
       use resumed <- result.try(session_movers.resume(control, ready.registry))
       log.info(logger, "daemon.movers", [

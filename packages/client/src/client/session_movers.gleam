@@ -35,8 +35,12 @@
 //// compare-and-set that fails if the receiver activated. The marker condition
 //// keeps a receiver that still runs the phase 5 code, which never writes the
 //// record, from being abandoned while it may hold the session. And the
-//// deletions a crash or a missing quorum left marked are finished. An owner can
-//// also give a move up at once (`Control.abandon`).
+//// upkeep runs (`Upkeep`): the store is seeded from the catalogue until it has
+//// been once, the deletions a crash or a missing quorum left marked are
+//// finished, and, at boot and after every local session's creation until a
+//// run succeeds, the local sessions' records are written. An owner can also
+//// give a move up at once (`Control.abandon`), and a deleted local session's
+//// record is removed best-effort (`Control.forget`).
 ////
 //// The entry is a map from session to the move, and a session has one row, so
 //// one session can have only one move. A `Begin` carrying another operation
@@ -86,7 +90,42 @@ pub type Control {
     /// Gives up the move of a session now, on a directory member, and returns
     /// at once; a session with no move in flight is left alone.
     abandon: fn(String) -> Nil,
+    /// Says a local session was created, so the next tick writes the local
+    /// sessions' records, and returns at once.
+    cover: fn() -> Nil,
+    /// Removes the record of a local session that was deleted, best-effort,
+    /// and returns at once.
+    forget: fn(String) -> Nil,
   )
+}
+
+/// The work a directory member's movers do on their tick beside the moves
+/// (protocol-change/079). A daemon that is not a member passes `no_upkeep()`.
+pub type Upkeep {
+  Upkeep(
+    /// Runs on every tick: the seed, until it has run once, and the deletions
+    /// left marked.
+    every_tick: fn() -> Nil,
+    /// Writes the record of every local session that lacks one. An error leaves
+    /// the work wanted, and the next tick tries again.
+    cover: fn() -> Result(Nil, String),
+    /// Removes the record of one deleted local session; its outcome is not
+    /// waited for.
+    release: fn(String) -> Nil,
+  )
+}
+
+/// The upkeep of a daemon that keeps no directory records: nothing to do.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_movers.start_with(environment, retry_ms, holds, give_up_after_ms, session_movers.no_upkeep())
+/// ```
+pub fn no_upkeep() -> Upkeep {
+  Upkeep(every_tick: fn() { Nil }, cover: fn() { Ok(Nil) }, release: fn(_) {
+    Nil
+  })
 }
 
 // What the actor is told.
@@ -95,7 +134,12 @@ type Message {
   Tick
   Ended(move: catalogue.Pending, outcome: session_mover.Outcome)
   GiveUp(session: String)
-  Swept
+  Cover
+  Forget(session: String)
+
+  // A pass of the upkeep ended. `covered` is the request count the pass wrote
+  // the local records for, when it was asked to and succeeded.
+  Swept(covered: Option(Int))
 }
 
 // Whether a mover is running for a move or waiting to run again.
@@ -110,7 +154,7 @@ type Entry {
   Entry(move: catalogue.Pending, phase: Phase, stalled_since: Option(Int))
 }
 
-// Whether a pass over the marked deletions is running.
+// Whether a pass of the upkeep is running.
 type Sweep {
   Sweeping
   Resting
@@ -122,8 +166,13 @@ type State(instance) {
     inbox: Subject(Message),
     entries: Dict(String, Entry),
     give_up_after_ms: Int,
-    deletions: fn() -> Nil,
+    upkeep: Upkeep,
     sweep: Sweep,
+    // How many times the local records were asked for, and the count the last
+    // successful pass covered. A request made while a pass runs is not covered
+    // by that pass, so the next tick runs another. Boot is the first request.
+    wanted: Int,
+    covered: Int,
   )
 }
 
@@ -141,6 +190,8 @@ pub fn idle() -> Control {
     begin: fn(_move) { Nil },
     holds: fn(_orchestrator, _session) { Error(Nil) },
     abandon: fn(_session) { Nil },
+    cover: fn() { Nil },
+    forget: fn(_session) { Nil },
   )
 }
 
@@ -158,24 +209,24 @@ pub fn start(
   every_ms: Int,
   holds: fn(Orchestrator, String) -> Result(Ownership, Nil),
 ) -> Result(Control, String) {
-  start_with(environment, every_ms, holds, give_up_after_ms, fn() { Nil })
+  start_with(environment, every_ms, holds, give_up_after_ms, no_upkeep())
 }
 
 /// `start`, with how long a member lets a move stall before it gives it up and
-/// the pass that finishes marked deletions (protocol-change/079); a daemon
-/// passes `give_up_after_ms` and `deletion.finish_pending` over its registry.
+/// the member's upkeep (protocol-change/079); a daemon passes
+/// `give_up_after_ms` and an `Upkeep` over its registry and its ownership.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // session_movers.start_with(environment, retry_ms, holds, give_up_after_ms, sweep)
+/// // session_movers.start_with(environment, retry_ms, holds, give_up_after_ms, upkeep)
 /// ```
 pub fn start_with(
   environment: Environment(instance),
   every_ms: Int,
   holds: fn(Orchestrator, String) -> Result(Ownership, Nil),
   give_up_after: Int,
-  deletions: fn() -> Nil,
+  upkeep: Upkeep,
 ) -> Result(Control, String) {
   let started =
     actor.new_with_initialiser(1000, fn(inbox) {
@@ -185,8 +236,10 @@ pub fn start_with(
           inbox:,
           entries: dict.new(),
           give_up_after_ms: give_up_after,
-          deletions:,
+          upkeep:,
           sweep: Resting,
+          wanted: 1,
+          covered: 0,
         )
       Ok(actor.initialised(state) |> actor.returning(inbox))
     })
@@ -202,6 +255,8 @@ pub fn start_with(
           begin: fn(move) { process.send(inbox, Begin(move)) },
           holds:,
           abandon: fn(session) { process.send(inbox, GiveUp(session)) },
+          cover: fn() { process.send(inbox, Cover) },
+          forget: fn(session) { process.send(inbox, Forget(session)) },
         ),
       )
     }
@@ -276,7 +331,31 @@ fn handle(
         Ok(Entry(phase: Running, ..)) | Error(Nil) -> actor.continue(state)
       }
 
-    Swept -> actor.continue(State(..state, sweep: Resting))
+    Cover -> actor.continue(State(..state, wanted: state.wanted + 1))
+
+    // The removal runs on its own and reports nothing: a record left behind
+    // names this daemon, which answers `not_found` for the session.
+    Forget(session:) -> {
+      let release = state.upkeep.release
+      let _witness =
+        weft.new([
+          fn() {
+            release(session)
+            Ok(Nil)
+          },
+        ])
+        |> weft.start_witnessed
+      actor.continue(state)
+    }
+
+    Swept(covered:) ->
+      actor.continue(
+        State(
+          ..state,
+          sweep: Resting,
+          covered: option.unwrap(covered, state.covered),
+        ),
+      )
 
     Ended(move:, outcome:) ->
       case outcome {
@@ -331,18 +410,30 @@ fn overdue(state: State(instance), entry: Entry, now: Int) -> Bool {
   }
 }
 
-// Starts one pass over the marked deletions unless one is running.
+// Starts one pass of the upkeep unless one is running. The local records are
+// written only when a request is not yet covered, and the pass reports the
+// request count it started with, so a creation during the pass is covered by
+// the next one.
 fn sweep(state: State(instance)) -> State(instance) {
   case state.sweep {
     Sweeping -> state
     Resting -> {
-      let deletions = state.deletions
+      let upkeep = state.upkeep
       let inbox = state.inbox
+      let through = state.wanted
+      let uncovered = state.covered < through
       let _witness =
         weft.new([
           fn() {
-            deletions()
-            process.send(inbox, Swept)
+            upkeep.every_tick()
+            let covered = case uncovered {
+              True ->
+                upkeep.cover()
+                |> result.replace(through)
+                |> option.from_result
+              False -> None
+            }
+            process.send(inbox, Swept(covered:))
             Ok(Nil)
           },
         ])

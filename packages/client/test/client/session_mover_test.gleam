@@ -1657,7 +1657,7 @@ pub fn the_movers_give_up_a_move_stalled_past_the_limit_test() {
       50,
       fn(_, _) { Error(Nil) },
       0,
-      fn() { Nil },
+      session_movers.no_upkeep(),
     )
     as "the movers start"
   let move = begin(rig)
@@ -1680,7 +1680,7 @@ pub fn an_owner_gives_a_move_up_through_the_movers_test() {
       200,
       fn(_, _) { Error(Nil) },
       session_movers.give_up_after_ms,
-      fn() { Nil },
+      session_movers.no_upkeep(),
     )
     as "the movers start"
   let move = begin(rig)
@@ -1717,7 +1717,9 @@ pub fn the_movers_sweep_marked_deletions_test() {
       50,
       fn(_, _) { Error(Nil) },
       session_movers.give_up_after_ms,
-      fn() { process.send(swept, Nil) },
+      session_movers.Upkeep(..session_movers.no_upkeep(), every_tick: fn() {
+        process.send(swept, Nil)
+      }),
     )
     as "the movers start"
   let assert Ok(Nil) = process.receive(swept, 5000)

@@ -136,6 +136,8 @@ fn moving_from(
       begin: fn(move) { process.send(told, Began(move)) },
       holds: fn(_, _) { process.call(desk_says, 1000, Ask) },
       abandon: fn(_) { Nil },
+      cover: fn() { Nil },
+      forget: fn(_) { Nil },
     )
   wire.fixture_moving(
     limits.defaults,
