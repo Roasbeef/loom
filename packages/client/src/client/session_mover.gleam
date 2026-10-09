@@ -268,10 +268,11 @@ type Halt {
   // it.
   Defer(reason: String)
 
-  // The directory holds no record for a session this daemon began moving, so
-  // it was created before the store was seeded and migration did not reach it;
-  // the row is reverted and the move abandoned.
-  Unrecorded
+  // The session's record is gone after this daemon seeded the store. Every
+  // remote session has a record once the seed ran, so its owner deleted it:
+  // the receiver took the session while this source was away, and then
+  // deleted it. The source's copy is set aside, never served again.
+  Gone
 
   // The receiver answered and the record decides: retire if it names another
   // owner.
@@ -362,12 +363,7 @@ fn ended(
     Error(Abandon(reason:)) -> abandon(environment, move, reason, Answered)
     Error(Stall(reason:)) -> Stalled(reason)
     Error(Defer(reason:)) -> Deferred(reason)
-    Error(Unrecorded) ->
-      revert(
-        environment,
-        move,
-        "the directory holds no record for the session, so it was never recorded; the move is abandoned",
-      )
+    Error(Gone) -> gone(environment, move)
     Error(Decide) ->
       case environment.authority {
         Rows -> Stalled("only a directory member decides by the record")
@@ -377,10 +373,39 @@ fn ended(
             Error(Defer(reason:)) -> Deferred(reason)
             Error(Stall(reason:)) -> Stalled(reason)
             Error(Abandon(reason:)) -> Aborted(reason)
-            Error(Unrecorded) | Error(Decide) ->
-              Stalled("the record did not decide")
+            Error(Gone) | Error(Decide) -> Stalled("the record did not decide")
           }
       }
+  }
+}
+
+// The session's record is gone after the seed, so it was deleted elsewhere. A
+// missing record never grants serving: the move ends as a retirement does,
+// with the `moved` row and the file set aside under its tombstone name, which
+// an operator can recover and nothing deletes.
+fn gone(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+) -> Outcome {
+  log.warn(environment.logger, "daemon.move_record_gone", [
+    field.ident("session", move.session),
+    field.ident("op", move.op),
+    field.text(
+      "reason",
+      "the session's directory record is gone, so it was deleted elsewhere; "
+        <> "this copy is set aside",
+    ),
+  ])
+  case
+    {
+      use registration <- result.try(registered(environment, move))
+      retire_by_rows(environment, move, registration)
+    }
+  {
+    Ok(Nil) | Error(Over) -> Finished
+    Error(Defer(reason:)) -> Deferred(reason)
+    Error(Stall(reason:)) | Error(Abandon(reason:)) -> Stalled(reason)
+    Error(Gone) | Error(Decide) -> Stalled("the record did not decide")
   }
 }
 
@@ -425,7 +450,9 @@ fn migrated(environment: Environment(instance)) -> Result(Nil, Halt) {
 // The record's half of the intent: `serving -> moving(op, to)`. A record that
 // already names another owner means the receiver's activation committed and its
 // import or its reply did not reach us, and the move carries on so that the
-// receiver is asked again and answers from what it holds.
+// receiver is asked again and answers from what it holds. No record at all, now
+// that the seed has run (`run` checks it first), means the session was deleted
+// elsewhere, and the move ends with the copy set aside (`gone`).
 fn intended(
   environment: Environment(instance),
   move: catalogue.Pending,
@@ -436,7 +463,7 @@ fn intended(
       use receiver <- result.try(destination(environment, move))
       case ownership.begin_move(move.session, move.op, receiver.node) {
         Ok(Nil) -> Ok(Nil)
-        Error(store.Mismatch(found: None)) -> Error(Unrecorded)
+        Error(store.Mismatch(found: None)) -> Error(Gone)
         Error(store.Mismatch(found: Some(found)))
           if found.owner != ownership.node
         -> Ok(Nil)
