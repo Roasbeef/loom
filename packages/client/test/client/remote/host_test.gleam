@@ -598,6 +598,19 @@ pub fn an_attach_from_another_protocol_version_is_refused_test() {
   stop(rig)
 }
 
+pub fn a_fresh_result_is_answered_as_the_tool_returned_it_test() {
+  let rig = rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let run = fixtures.tool_run("duplicate-keys", 0)
+
+  // The outcome's stored bytes would not parse back. A fresh result is
+  // answered from the value the tool returned, so the caller gets exactly that
+  // value and never a refusal saying the stored bytes are damaged.
+  assert heard(send_run(rig, run, 0, token(1)))
+    == protocol.RunFinished(fixtures.duplicate_key_outcome(run))
+  stop(rig)
+}
+
 pub fn the_result_reservation_covers_the_largest_file_read_test() {
   // A maximum-size image inflates by a third under base64, and the result is
   // wrapped in JSON on top, so twice the read limit is the reservation.

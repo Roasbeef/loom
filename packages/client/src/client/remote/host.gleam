@@ -305,7 +305,13 @@ type Reply {
 
 // How a keyed call ended, before it is put in a waiter's own words.
 type Settled {
-  // The ledger holds these bytes as the call's terminal row.
+  // The call just ended with this result, which the ledger now holds as its
+  // terminal row. The waiters are answered from the value in hand, so a fresh
+  // result is never parsed back out of the bytes it was just encoded to.
+  SettledFresh(fresh: Fresh)
+
+  // The ledger holds these bytes as the call's terminal row, read back for a
+  // request that found the call already ended.
   SettledStored(stored: BitArray)
 
   // The call was admitted and its outcome is lost.
@@ -1038,6 +1044,9 @@ fn deliver(reply: Reply, settled: Settled) -> Nil {
 
 fn run_answer(settled: Settled) -> RunAnswer {
   case settled {
+    SettledFresh(fresh: FreshOutcome(outcome:)) -> protocol.RunFinished(outcome)
+    SettledFresh(fresh: FreshValue(..)) ->
+      protocol.RunRefused(damaged("a tool outcome"))
     SettledStored(stored:) -> stored_answer(stored)
     SettledLost -> protocol.RunLost
     SettledRefused(refusal:) -> protocol.RunRefused(refusal)
@@ -1046,6 +1055,9 @@ fn run_answer(settled: Settled) -> RunAnswer {
 
 fn execution_answer(settled: Settled) -> ExecutionAnswer {
   case settled {
+    SettledFresh(fresh: FreshValue(value:)) -> protocol.ExecutionFinished(value)
+    SettledFresh(fresh: FreshOutcome(..)) ->
+      protocol.ExecutionRefused(damaged("an execution value"))
     SettledStored(stored:) ->
       case codec.decode_stored(stored) {
         Ok(codec.StoredExecution(value:)) -> protocol.ExecutionFinished(value)
@@ -1149,7 +1161,7 @@ fn settle_job(
             id,
             key,
             Finished(
-              stored: codec.encode_outcome(finished),
+              fresh: FreshOutcome(finished),
               oversized: oversized_outcome,
             ),
           )
@@ -1162,10 +1174,7 @@ fn settle_job(
             state,
             id,
             key,
-            Finished(
-              stored: codec.encode_execution(value),
-              oversized: oversized_value,
-            ),
+            Finished(fresh: FreshValue(value), oversized: oversized_value),
           )
         CloseJob(..) | BuildJob(..) -> job_lost(state, id, tracked)
       }
@@ -1209,10 +1218,24 @@ fn drop_job(state: State(census), id: Int) -> State(census) {
   }
 }
 
-// What a finished task hands the commit: the bytes it wants stored, and how to
-// say "too large" in its own kind when they do not fit the reservation.
+// What a finished task hands the commit: its result, and how to say "too
+// large" in its own kind when the result's bytes do not fit the reservation.
 type Finished {
-  Finished(stored: BitArray, oversized: fn(Int, Int) -> BitArray)
+  Finished(fresh: Fresh, oversized: fn(Int, Int) -> Fresh)
+}
+
+// A result in hand, of either kind of keyed work.
+type Fresh {
+  FreshOutcome(outcome: ToolOutcome)
+  FreshValue(value: JsonValue)
+}
+
+// The bytes the ledger stores for a result.
+fn encode_fresh(fresh: Fresh) -> BitArray {
+  case fresh {
+    FreshOutcome(outcome:) -> codec.encode_outcome(outcome)
+    FreshValue(value:) -> codec.encode_execution(value)
+  }
 }
 
 // A call ended with a result. The row is made terminal before any waiter hears
@@ -1242,12 +1265,15 @@ fn commit_outcome(
   key: Key,
   finished: Finished,
 ) -> Settled {
-  case exec_ledger.finish(state.ledger, to_ledger(key), finished.stored) {
-    Ok(Nil) -> SettledStored(finished.stored)
+  let stored = encode_fresh(finished.fresh)
+  case exec_ledger.finish(state.ledger, to_ledger(key), stored) {
+    Ok(Nil) -> SettledFresh(finished.fresh)
     Error(exec_ledger.OutcomeTooLarge(reserved:, size:)) -> {
       let replaced = finished.oversized(reserved, size)
-      case exec_ledger.finish(state.ledger, to_ledger(key), replaced) {
-        Ok(Nil) -> SettledStored(replaced)
+      case
+        exec_ledger.finish(state.ledger, to_ledger(key), encode_fresh(replaced))
+      {
+        Ok(Nil) -> SettledFresh(replaced)
         Error(_) -> lose(state, key)
       }
     }
@@ -1256,8 +1282,8 @@ fn commit_outcome(
 }
 
 // A tool outcome too large for its reservation, as the failure stored instead.
-fn oversized_outcome(reserved: Int, size: Int) -> BitArray {
-  codec.encode_outcome(
+fn oversized_outcome(reserved: Int, size: Int) -> Fresh {
+  FreshOutcome(
     ToolFailed(reason: too_large("the tool's result", reserved, size)),
   )
 }
@@ -1265,8 +1291,8 @@ fn oversized_outcome(reserved: Int, size: Int) -> BitArray {
 // An execution value too large for its reservation, as the errored value
 // stored instead. It has the shape `execution_value` gives a program that
 // returned an error, so a reader of the record sees an ordinary failed run.
-fn oversized_value(reserved: Int, size: Int) -> BitArray {
-  codec.encode_execution(
+fn oversized_value(reserved: Int, size: Int) -> Fresh {
+  FreshValue(
     json.Object([
       #("status", json.String("errored")),
       #(
