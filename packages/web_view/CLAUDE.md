@@ -611,7 +611,13 @@ page keys and nonces, and the relay into the session's gateway.
   is `Untried` again once the lead has been closed, `completion_after`), and a
   fold says how many steps it did not show. Records that arrive after a closed turn with no input of
   their own are read with that turn again (`lead_of`, `beside`). A parked
-  strand's closed turns are dropped with its window.
+  strand's closed turns are dropped with its window. No block the closed
+  turns cover reaches the window's groups (`uncovered`, in `laid_out`): the
+  advisor's commentary is projected from the capture's whole window and keeps
+  blocks older than the newest closed turn's end. Before this, such a block
+  stayed in the window as a group of its own, the count of closed groups no
+  longer matched the groups dropped, and the newest closed turn was drawn from
+  its summary and from the window again (`closed_turn_test`).
   `FoldToggled(fold)` opens or closes a fold (`folded_at`): it acts only on a
   `Connected` page with a cut and only on a number that is the id of a fold the
   page draws, as `OlderRequested` acts only on a page that is reading, and a
