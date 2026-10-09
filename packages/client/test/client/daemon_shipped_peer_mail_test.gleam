@@ -94,6 +94,7 @@ pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_tes
         duo.alpha.workspace,
       )
     assert remote_daemons.settled_state(settled) == "resident"
+      as { "a opens: " <> json.to_string(settled) }
     let #(b, settled) =
       remote_daemons.create_local_and_settle(
         on_bravo,
@@ -102,17 +103,21 @@ pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_tes
         duo.bravo.workspace,
       )
     assert remote_daemons.settled_state(settled) == "resident"
+      as { "b opens: " <> json.to_string(settled) }
 
     // The owner links the pair from `alpha`, which writes the grant on
     // `bravo`: the first command that crosses.
     let linked = link(on_alpha, 10, a, b)
     assert remote_daemons.field(linked, "event") == json.String("peers.link")
+      as { "the link answers peers.link: " <> json.to_string(linked) }
 
     // A send to a session on a reachable orchestrator is admitted exactly as a
     // local one is.
     let sent = send(on_alpha, 11, a, b, "m1", "first message")
     assert remote_daemons.field(sent, "event") == json.String("peers.send")
+      as { "the send answers peers.send: " <> json.to_string(sent) }
     assert remote_daemons.field(body_of(sent), "admitted") == json.Bool(True)
+      as { "the send is admitted: " <> json.to_string(sent) }
     await_peer_messages(duo, b, "first message", 1)
     await_row(duo, a, b, "m1", Admitted)
 
@@ -121,8 +126,10 @@ pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_tes
     remote_daemons.retire(duo.bravo.paths)
     let queued = send(on_alpha, 12, a, b, "m2", "second message")
     assert remote_daemons.field(queued, "event") == json.String("peers.send")
+      as { "the send answers peers.send: " <> json.to_string(queued) }
     assert remote_daemons.field(body_of(queued), "state")
       == json.String("queued")
+      as { "the send is queued: " <> json.to_string(queued) }
     await_row(duo, a, b, "m2", Pending)
 
     // `alpha` is frozen while `bravo` starts again and `b` is opened, so that
@@ -133,6 +140,7 @@ pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_tes
     let on_bravo = remote_daemons.open_control(bravo)
     let reopened = remote_daemons.reopen_session(on_bravo, 100, b)
     assert remote_daemons.settled_state(reopened) == "resident"
+      as { "b opens again: " <> json.to_string(reopened) }
     remote_duo.thaw(duo.alpha)
 
     // The drainer delivers it, once.
@@ -144,7 +152,9 @@ pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_tes
     let receipt = row_receipt(duo, a, b, "m2")
     let again = send(on_alpha, 13, a, b, "m2", "second message")
     assert remote_daemons.field(again, "event") == json.String("peers.send")
+      as { "the repeat answers peers.send: " <> json.to_string(again) }
     assert body_of(again) == receipt
+      as { "the repeat answers the stored receipt: " <> json.to_string(again) }
     assert peer_messages(duo, b, "second message") == Ok(1)
     Nil
   })
