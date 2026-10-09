@@ -38,6 +38,21 @@ declared|linux|SKIP shipped remote caps: platform enforcement unavailable|The or
 # fixture and asks the same measured question through the same probe.
 declared|linux|SKIP shipped remote pool: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the pool scenarios for real.
 
+# The rest of the distributed runtime's shipped fixtures (issue #697) boot two
+# or three daemons around an executor that jails every call, and each asks the
+# same measured question through the same probe: the remote tools, a strand
+# spawned from a remote program, the loss of the owner mid-program, the session
+# directory across two orchestrators, peer mail between them, and a session
+# moved from one to the other. A runner whose helper cannot enforce a policy
+# declines each fixture rather than running it unconfined; the macOS gate and
+# the local Linux sign-off gate run every scenario for real.
+declared|linux|SKIP shipped remote tools: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the search, working-directory, jobs, hooks, goal and git scenarios for real.
+declared|linux|SKIP shipped remote strand: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the spawned-strand scenario for real.
+declared|linux|SKIP shipped remote owner loss: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the owner-loss scenario for real.
+declared|linux|SKIP shipped remote directory: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the two-orchestrator directory scenarios for real.
+declared|linux|SKIP shipped remote peer mail: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the cross-orchestrator peer mail scenarios for real.
+declared|linux|SKIP shipped remote move: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the session-move scenarios for real.
+
 # The shipped confinement fixture reads the daemon's own credentials from a
 # jailed `bash` call and asserts the secret did not come back. Without a
 # helper that enforces a policy the reads succeed, which measures the absence
