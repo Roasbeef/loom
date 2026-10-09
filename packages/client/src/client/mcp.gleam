@@ -209,7 +209,20 @@ pub type Layer {
     call_timeout_ms: Int,
     /// Every prepared client, including failed handshakes and tool listings.
     custody: List(mcp_client.Client),
+    /// Servers another node runs and answers, whose generated modules this
+    /// host compiles programs against. A workspace on an executor holds the
+    /// façades of the servers its orchestrator runs here: they widen the
+    /// allowlist, the description and the build exactly as a local server
+    /// does, and this layer's router does not answer them, because the call
+    /// is sent to the node that holds the client.
+    elsewhere: List(Elsewhere),
   )
+}
+
+/// A server another node answers: its catalogue name and the module its
+/// listing generated there.
+pub type Elsewhere {
+  Elsewhere(server: String, generated: codegen.Generated)
 }
 
 /// An immutable census prepared before any MCP process can be spawned.
@@ -297,7 +310,12 @@ const blob_prefix = "sha256-"
 /// ```
 ///
 pub fn none() -> Layer {
-  Layer(servers: [], call_timeout_ms: default_call_timeout_ms, custody: [])
+  Layer(
+    servers: [],
+    call_timeout_ms: default_call_timeout_ms,
+    custody: [],
+    elsewhere: [],
+  )
 }
 
 /// Whether this layer reached any server at all. What the boot asks
@@ -310,7 +328,46 @@ pub fn none() -> Layer {
 /// ```
 ///
 pub fn serving(layer: Layer) -> Bool {
-  layer.servers != []
+  layer.servers != [] || layer.elsewhere != []
+}
+
+/// The layer with the façades of servers another node answers beside its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // mcp.answered_elsewhere(local_layer, facades)
+/// ```
+///
+pub fn answered_elsewhere(layer: Layer, facades: List(Elsewhere)) -> Layer {
+  Layer(..layer, elsewhere: facades)
+}
+
+/// This layer's own servers as façades another node can compile against: the
+/// name and the generated module of each, without the client.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert mcp.facades(mcp.none()) == []
+/// ```
+///
+pub fn facades(layer: Layer) -> List(Elsewhere) {
+  list.map(layer.servers, fn(server) {
+    Elsewhere(server: server.name, generated: server.generated)
+  })
+}
+
+/// The names of the servers this layer answers itself, in catalogue order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert mcp.answered_here(mcp.none()) == []
+/// ```
+///
+pub fn answered_here(layer: Layer) -> List(String) {
+  list.map(layer.servers, fn(server) { server.name })
 }
 
 // --- boot ------------------------------------------------------------------
@@ -429,6 +486,7 @@ pub fn start_prepared(prepared: Prepared) -> #(Layer, List(Refusal)) {
       servers: list.filter_map(started, fn(one) { one }),
       call_timeout_ms: options.call_timeout_ms,
       custody: prepared_clients(prepared),
+      elsewhere: [],
     ),
     list.filter_map(started, fn(one) {
       case one {
@@ -679,34 +737,43 @@ fn stopping(client: mcp_client.Client, refusal: Refusal) -> Refusal {
 /// ```
 ///
 pub fn allowed_imports(layer: Layer) -> List(String) {
-  case layer.servers {
+  case all_generated(layer) {
     [] -> []
-    servers -> [
+    generated -> [
       vocabulary_module,
-      ..list.map(servers, fn(server) { server.generated.module_name })
+      ..list.map(generated, fn(module) { module.1.module_name })
     ]
   }
+}
+
+// Every module this layer publishes, as `#(server name, generated)`: its own
+// servers first, then those another node answers, each in the order given.
+fn all_generated(layer: Layer) -> List(#(String, codegen.Generated)) {
+  list.append(
+    list.map(layer.servers, fn(server) { #(server.name, server.generated) }),
+    list.map(layer.elsewhere, fn(facade) { #(facade.server, facade.generated) }),
+  )
 }
 
 /// The rendered description surface of every generated module, in
 /// catalogue order — what `tools/codemode.SeamOffer.extra_surfaces`
 /// carries.
 pub fn surfaces(layer: Layer) -> List(String) {
-  list.map(layer.servers, fn(server) { server.generated.surface })
+  list.map(all_generated(layer), fn(module) { { module.1 }.surface })
 }
 
 /// The generated modules as the hermetic build takes them:
 /// `#(module name, source)`. `codemode.execute` narrows this to the
 /// program's own imports before anything is written.
 pub fn generated(layer: Layer) -> List(#(String, String)) {
-  list.map(layer.servers, fn(server) {
-    #(server.generated.module_name, server.generated.source)
+  list.map(all_generated(layer), fn(module) {
+    #({ module.1 }.module_name, { module.1 }.source)
   })
 }
 
 /// The capability names this layer's router services: one per server.
 pub fn serviced_caps(layer: Layer) -> List(String) {
-  list.map(layer.servers, fn(server) { cap_prefix <> server.name })
+  list.map(all_generated(layer), fn(module) { cap_prefix <> module.0 })
 }
 
 /// Each server's name and how many tools it listed — the `mcp.ready`

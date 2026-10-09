@@ -82,6 +82,7 @@ fn layer_of(call: fn(String, json.JsonValue) -> fake_mcp.Answer) -> mcp.Layer {
     ],
     call_timeout_ms: 5000,
     custody: [client],
+    elsewhere: [],
   )
 }
 
@@ -526,6 +527,7 @@ fn unspawnable_server(name: String) -> catalog.McpServer {
     name:,
     command: [unspawnable_command],
     api_key_env: option.None,
+    runs_on: catalog.RunsOnOrchestrator,
   )
 }
 
@@ -534,6 +536,7 @@ fn unkeyed_server(name: String) -> catalog.McpServer {
     name:,
     command: [unspawnable_command],
     api_key_env: option.Some(unset_key_env),
+    runs_on: catalog.RunsOnOrchestrator,
   )
 }
 
@@ -598,6 +601,7 @@ pub fn layer_cleanup_uses_one_deadline_for_failed_starters_test() {
       servers: [],
       call_timeout_ms: 1000,
       custody: list.map(clients, fn(entry) { entry.0 }),
+      elsewhere: [],
     )
   let clock = poll.monotonic()
   let started = clock.now()
@@ -835,4 +839,50 @@ pub fn a_host_with_no_servers_offers_exactly_what_it_did_before_test() {
   assert codemode.seam_caps_on(config, vet_policy.WorkspaceSeam)
     == codemode.seam(config).seams.default.serviced_caps
   broker.stop(broker_actor)
+}
+
+// --- servers another node answers -------------------------------------------------
+
+fn remote_facade() -> mcp.Elsewhere {
+  mcp.Elsewhere(
+    server: "beta",
+    generated: codegen.Generated(
+      module_name: "cap/mcp/beta",
+      source: "// beta\n",
+      surface: "### cap/mcp/beta\n",
+    ),
+  )
+}
+
+pub fn a_facade_answered_elsewhere_widens_what_programs_compile_against_test() {
+  let layer =
+    layer_of(always(fake_mcp.Answers(fake_mcp.text_result("x", False))))
+    |> mcp.answered_elsewhere([remote_facade()])
+
+  // A program may import the façade and the build writes it, exactly as for a
+  // server this host runs.
+  assert mcp.allowed_imports(layer)
+    == [mcp.vocabulary_module, "cap/mcp/alpha", "cap/mcp/beta"]
+  assert mcp.generated(layer)
+    == [#("cap/mcp/alpha", "// alpha\n"), #("cap/mcp/beta", "// beta\n")]
+  assert mcp.surfaces(layer) == ["### cap/mcp/alpha\n", "### cap/mcp/beta\n"]
+  assert mcp.serviced_caps(layer) == ["mcp.alpha", "mcp.beta"]
+
+  // This host answers only its own server, and offers only that one to
+  // another node.
+  assert mcp.answered_here(layer) == ["alpha"]
+  assert list.map(mcp.facades(layer), fn(facade) { facade.server }) == ["alpha"]
+  let assert Error(denial) =
+    mcp.routing(layer, over: beneath)(request(
+      "mcp.beta",
+      invocation("search", []),
+    ))
+    as "a façade's call is not answered by this host's router"
+  assert denial.code == mcp.unsupported_cap_code
+  mcp.stop(layer)
+}
+
+pub fn a_layer_of_facades_alone_is_serving_test() {
+  assert !mcp.serving(mcp.none())
+  assert mcp.serving(mcp.answered_elsewhere(mcp.none(), [remote_facade()]))
 }

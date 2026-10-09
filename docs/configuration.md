@@ -221,17 +221,15 @@ decision. There is no flag, discovery or live reload. See
 | --- | --- | --- | --- | --- |
 | `command` | array of strings | required | non-empty, each element non-empty | The server's argv, executable first. Never a shell string. |
 | `api_key_env` | string | none | an environment variable name | A host variable read when the server process starts and injected into its environment under the same name. |
+| `runs_on` | string | `"orchestrator"` | `"orchestrator"`, `"executor"` | Where the server runs for a session whose workspace is on an executor. `"orchestrator"` spawns it here with the key this machine holds, and a program on the executor reaches it through the owner port. `"executor"` names a server the executor runs from its own `[mcp.<name>]` table, with that table's `command` and `api_key_env`; this table's `command` is then used only by local sessions. A local session ignores the key and starts every server here. |
 
-**Planned, not accepted yet: `runs_on`.** The design in the protocol-change/078
-addendum on background code mode and MCP façades adds one key to this table,
-`runs_on`, a string that is `"orchestrator"` (the default) or `"executor"`. It
-places the server for a session whose workspace is on an executor: on the
-orchestrator, which holds the key and answers the calls, or on the executor,
-which resolves `api_key_env` from its own environment and `[secrets]` table and
-runs the server beside the checkout. A local session ignores it. Until that
-change lands the daemon refuses a table that sets `runs_on`, as it refuses any
-unknown key, and a remote session starts no MCP server. The key gets its row
-above when the daemon accepts it.
+A session whose workspace is on an executor reports, at attach, how each
+server it expects the executor to run fared: the orchestrator logs `mcp.ready`
+or `mcp.unavailable` with `placement: executor`, and an executor with no table
+for the name refuses it with a reason that says so. An executor's own
+`[mcp.<name>]` table is read the same way, and `runs_on` means nothing there,
+since a server in the executor's file can only run on the executor. See
+[distributed](architecture/distributed.md#background-code-mode-and-mcp-on-a-remote-session).
 
 ## `[lsp.<name>]`
 

@@ -389,6 +389,7 @@ fn live_layer() -> mcp_wiring.Layer {
     ],
     call_timeout_ms: 30_000,
     custody: [client],
+    elsewhere: [],
   )
 }
 
@@ -997,6 +998,7 @@ fn fixture_mcp_layer(
     ],
     call_timeout_ms: 30_000,
     custody: [client],
+    elsewhere: [],
   )
 }
 
@@ -1338,6 +1340,7 @@ fn run_mcp_process(fixture: Fixture) -> Nil {
       name: fixture_server,
       command: [fixture.escript, fixture.script, pid_file],
       api_key_env: option.None,
+      runs_on: catalog.RunsOnOrchestrator,
     )
   // The production boot: a real spawn, a real handshake, a real
   // `tools/list`, a real generated module.

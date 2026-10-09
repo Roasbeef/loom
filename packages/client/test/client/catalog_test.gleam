@@ -634,6 +634,7 @@ pub fn example_mcp_server_parses_test() {
         name: "github",
         command: ["mcp-server-github", "--stdio"],
         api_key_env: Some("GITHUB_TOKEN"),
+        runs_on: catalog.RunsOnOrchestrator,
       ),
     ]
 }
@@ -656,11 +657,13 @@ api_key_env = \"ALPHA_KEY\"
         name: "alpha",
         command: ["alpha-server", "--stdio"],
         api_key_env: Some("ALPHA_KEY"),
+        runs_on: catalog.RunsOnOrchestrator,
       ),
       catalog.McpServer(
         name: "zeta",
         command: ["zeta-server"],
         api_key_env: None,
+        runs_on: catalog.RunsOnOrchestrator,
       ),
     ]
 }
@@ -741,7 +744,14 @@ pub fn ordinary_mcp_name_parses_test() {
   let text = with_mcp_server("github", "command = [\"x\"]")
   let assert Ok(parsed) = catalog.parse(text)
   assert parsed.mcp_servers
-    == [catalog.McpServer(name: "github", command: ["x"], api_key_env: None)]
+    == [
+      catalog.McpServer(
+        name: "github",
+        command: ["x"],
+        api_key_env: None,
+        runs_on: catalog.RunsOnOrchestrator,
+      ),
+    ]
 }
 
 // --- the drift gate: catalog's restated rules against the mangler ------------
@@ -849,7 +859,7 @@ pub fn non_array_mcp_command_refused_test() {
 pub fn unknown_mcp_key_refused_test() {
   let text = with_mcp_server("one", "command = [\"x\"]\napi_key = \"KEY\"")
   let assert Error(
-    "unknown key `api_key` in mcp.one (allowed: command, api_key_env)" <> _rest,
+    "unknown key `api_key` in mcp.one (allowed: command, api_key_env, runs_on)" <> _rest,
   ) = catalog.parse(text)
 }
 
@@ -1563,4 +1573,40 @@ pub fn an_unknown_model_names_the_known_keys_test() {
     )
   assert catalog.unknown_model([], "x")
     == "unknown model \"x\"; the configuration defines no models"
+}
+
+pub fn an_mcp_server_is_placed_by_runs_on_test() {
+  let parse = fn(body) {
+    catalog.parse(with_mcp_server("files", "command = [\"files\"]\n" <> body))
+  }
+  let placed = fn(body) {
+    let assert Ok(parsed) = parse(body) as "the table parses"
+    let assert [server] = parsed.mcp_servers as "one server"
+    server.runs_on
+  }
+  assert placed("") == catalog.RunsOnOrchestrator
+  assert placed("runs_on = \"orchestrator\"") == catalog.RunsOnOrchestrator
+  assert placed("runs_on = \"executor\"") == catalog.RunsOnExecutor
+  assert parse("runs_on = \"laptop\"")
+    == Error("mcp.files.runs_on must be \"orchestrator\" or \"executor\"")
+}
+
+pub fn an_executor_reads_its_own_mcp_tables_alone_test() {
+  // An executor's file has no model catalogue, so `parse` would refuse it.
+  let text =
+    "[mcp.files]\ncommand = [\"/usr/local/bin/files-mcp\"]\n"
+    <> "api_key_env = \"FILES_KEY\"\nruns_on = \"executor\"\n"
+  assert catalog.parse_mcp(text)
+    == Ok([
+      catalog.McpServer(
+        name: "files",
+        command: ["/usr/local/bin/files-mcp"],
+        api_key_env: Some("FILES_KEY"),
+        runs_on: catalog.RunsOnExecutor,
+      ),
+    ])
+  assert catalog.parse_mcp("") == Ok([])
+  let assert Error(_) =
+    catalog.parse_mcp("[mcp.files]\nruns_on = \"executor\"\n")
+    as "a table with no command is refused"
 }

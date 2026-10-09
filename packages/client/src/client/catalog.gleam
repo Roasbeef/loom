@@ -280,7 +280,23 @@ pub type McpServer {
     command: List(String),
     /// The environment variable holding the server's API key, if any.
     api_key_env: Option(String),
+    /// Where the server answers for a session whose workspace is on an
+    /// executor. A local session ignores it and starts every server here.
+    runs_on: McpPlacement,
   )
+}
+
+/// Where an `[mcp.<name>]` server answers for a session whose workspace is on
+/// an executor (`runs_on`). A session whose workspace is local starts every
+/// configured server on its own daemon, whatever this says.
+pub type McpPlacement {
+  /// The orchestrator spawns the server with the key it holds, and a program
+  /// on the executor reaches it through the owner port. The default.
+  RunsOnOrchestrator
+
+  /// The executor runs the server from its own `[mcp.<name>]` table, beside
+  /// the checkout. This side only expects it there.
+  RunsOnExecutor
 }
 
 /// Whether this host's jailed tool shells reach the network at all.
@@ -909,7 +925,7 @@ fn parse_mcp_server(
   // first request.
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["command", "api_key_env"],
+    ["command", "api_key_env", "runs_on"],
     place,
   ))
   use command <- result.try(mcp_command(fields, place))
@@ -921,7 +937,14 @@ fn parse_mcp_server(
       Error(message) -> Error(message)
     },
   )
-  Ok(McpServer(name:, command:, api_key_env:))
+  use runs_on <- result.try(case optional_string(fields, place, "runs_on") {
+    Ok(Error(Nil)) | Ok(Ok("orchestrator")) -> Ok(RunsOnOrchestrator)
+    Ok(Ok("executor")) -> Ok(RunsOnExecutor)
+    Ok(Ok(_other)) ->
+      Error(place <> ".runs_on must be \"orchestrator\" or \"executor\"")
+    Error(message) -> Error(message)
+  })
+  Ok(McpServer(name:, command:, api_key_env:, runs_on:))
 }
 
 // The table key becomes the `cap/mcp/<name>` module a code-mode program
@@ -1033,6 +1056,28 @@ pub fn parse_lsp(text: String) -> Result(List(LspServer), String) {
     |> result.map_error(describe_parse_error),
   )
   parse_lsp_servers(document)
+}
+
+/// Parses only the `[mcp.<name>]` tables of a configuration, with the same
+/// rules `parse` applies to them.
+///
+/// An executor has no model catalogue, so it cannot use `parse`, and it runs
+/// the MCP servers its orchestrators expect from its own tables: the command a
+/// server runs as names an executable on this machine, and the key variable is
+/// read from this machine's environment and secrets. `runs_on` is read and
+/// means nothing here, since a server in this file can only run here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_mcp("") == Ok([])
+/// ```
+pub fn parse_mcp(text: String) -> Result(List(McpServer), String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(describe_parse_error),
+  )
+  parse_mcp_servers(document)
 }
 
 // The optional [lsp] table: absent parses to no servers, which is the
