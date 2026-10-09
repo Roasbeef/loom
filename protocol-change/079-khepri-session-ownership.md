@@ -197,7 +197,10 @@ as in phase 5, and replies. The mover then:
 
 1. waits for `[loom, migrated, <self>]`;
 2. writes the intent CAS; a record already `{self, {moving, Op, To}}` counts as
-   written; an absent record reverts the row (`abort_move`) and abandons; a
+   written; an absent record means the session was deleted elsewhere (every
+   remote session has a record once the seed ran), so the move ends as a
+   retirement, with the row `moved` and the file set aside, and the source
+   never serves it again; a
    record naming another owner means the receiver's activation committed and
    its reply was lost, so the move goes on and the receiver is asked again;
 3. closes, cuts and sends as in phase 5;
