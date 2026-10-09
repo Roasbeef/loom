@@ -901,6 +901,51 @@ pub fn symlink_directory_escape_refused_test() {
   assert simplifile.is_file(outside <> "/planted.txt") == Ok(False)
 }
 
+// The blob store sits outside the workspace, in the daemon's state, and a
+// transcript names its entries by path for `fs_read` to open. A session
+// whose base policy reads only the workspace must still be able to read
+// the store, and nothing else outside it.
+pub fn the_blob_store_is_readable_under_a_workspace_only_policy_test() {
+  let #(ctx, filesystem) = real_ctx("blob_store_read")
+  let store = outside_dir(ctx.workspace)
+  let ref = store <> "/sha256-" <> string.repeat("a", 64)
+  let assert Ok(Nil) = filesystem.write(ref, <<"stored output\n":utf8>>)
+  let assert Ok(Nil) = simplifile.write(store <> "-sibling", "elsewhere\n")
+  let narrowed =
+    tool.Ctx(
+      ..ctx,
+      blob_root: store,
+      base_policy: policy.SandboxPolicy(..ctx.base_policy, readable_roots: [
+        ctx.workspace,
+      ]),
+    )
+
+  let read = fs.read_tool().run(narrowed, args([#("path", json.String(ref))]))
+  assert !read.is_error
+  assert string.contains(first_text(read), "stored output")
+
+  // A path beside the store is not part of it.
+  let beside =
+    fs.read_tool().run(
+      narrowed,
+      args([#("path", json.String(store <> "-sibling"))]),
+    )
+  assert beside.is_error
+  assert string.contains(first_text(beside), "outside the readable roots")
+
+  // And reading the store does not make it writable.
+  let write =
+    fs.write_tool().run(
+      narrowed,
+      args([
+        #("path", json.String(store <> "/planted")),
+        #("content", json.String("x")),
+      ]),
+    )
+  assert write.is_error
+  assert simplifile.is_file(store <> "/planted") == Ok(False)
+}
+
 pub fn symlink_file_escape_refused_test() {
   let #(ctx, _filesystem) = real_ctx("h2_file")
   let outside = outside_dir(ctx.workspace)

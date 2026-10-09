@@ -14,9 +14,9 @@
 //// The blob directory is seam-injected (`Ctx.blob_root`); all I/O goes
 //// through the `FileSystem` seam, so tests run against an in-memory
 //// fake. Context projection (WP-C) is expected to surface the excerpts
-//// plus a note that the ref is readable via `fs_read` — which requires
-//// the runtime to place `blob_root` under a readable root; recorded as
-//// a spec gap.
+//// plus a note that the ref is readable via `fs_read`. The daemon keeps
+//// `blob_root` outside the workspace, so `tools/fs` treats it as a readable
+//// root for its own authorization rather than relying on the workspace.
 
 import core/ids
 import core/json.{type JsonValue}
