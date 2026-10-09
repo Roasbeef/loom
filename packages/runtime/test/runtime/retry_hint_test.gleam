@@ -1,8 +1,10 @@
 //// Provider retry hints survive the runtime's durable settlement bridge.
 
+import core/accounting
 import core/codec
 import core/json
 import core/message
+import core/usage_evidence
 import gleam/option.{None, Some}
 import gleam/string
 import provider/stream
@@ -18,7 +20,12 @@ pub fn retry_hint_survives_settlement_without_provider_text_test() {
       retry_after_ms: Some(1000),
     )
   let assert message.AssistantMessage(diagnostics:, raw_stop_reason:, ..) =
-    effects.settle_failure(error, harness.configuration(), 50)
+    effects.settle_failure(
+      error,
+      harness.configuration(),
+      50,
+      accounting.from_usage(accounting.unknown_usage(usage_evidence.Other)),
+    )
     as "Failures settle as assistant responses."
   assert raw_stop_reason == Some("retryable")
   assert diagnostics == Some(json.Object([#("retry_after_ms", json.Int(1000))]))
@@ -29,6 +36,7 @@ pub fn retry_hint_survives_settlement_without_provider_text_test() {
       stream.CancellationUnconfirmed,
       harness.configuration(),
       50,
+      accounting.from_usage(accounting.unknown_usage(usage_evidence.Other)),
     )
     as "Unconfirmed cancellation settles terminally."
   assert raw_stop_reason == Some("terminal")
@@ -48,7 +56,13 @@ pub fn contextual_failure_and_retry_hint_survive_durable_message_codec_test() {
   let failure =
     stream.HttpError(429, "rate_limit_error", "provider text", Some(5000))
     |> stream.with_context(observation)
-  let settled = effects.settle_failure(failure, harness.configuration(), 50)
+  let settled =
+    effects.settle_failure(
+      failure,
+      harness.configuration(),
+      50,
+      accounting.from_usage(accounting.unknown_usage(usage_evidence.Other)),
+    )
   assert codec.decode_message(codec.encode_message(settled)) == Ok(settled)
   let assert message.AssistantMessage(
     diagnostics: Some(diagnostics),

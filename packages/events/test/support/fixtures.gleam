@@ -9,6 +9,7 @@ import core/entry.{
 import core/ids.{type EntryId, type SessionId, type UsageId}
 import core/message.{Usage, UsageCost, UserMessage, UserText}
 import core/tx.{InsertEntry, InsertUsage, Tx}
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -140,6 +141,7 @@ pub fn usage_row(ctx: Ctx, input: Int) -> #(UsageRow, Ctx) {
           cache_write: 0.0,
           total: 0.003,
         ),
+        evidence: usage_evidence.priced_api(),
       ),
       details: None,
     )

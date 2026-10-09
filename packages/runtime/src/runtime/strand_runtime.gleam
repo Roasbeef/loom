@@ -71,6 +71,12 @@
 //// stale wake per period change — two per turn — and what it buys is that
 //// the strand never holds two chains, each arming its own successor.
 ////
+//// Provider terminals carry the final assistant message and a separate
+//// constant-space request report. `provider_terminal_observation` preserves
+//// both across the runtime-to-machine boundary, including failed nested
+//// summaries. `settled_observation` converts errors using the final attempt's
+//// usage while the independent report remains the ledger authority.
+////
 //// ## Flow
 ////
 //// `handle` → `drive_loop` → `plan_with` → `commit_then` → `start_effect` → `finish`
@@ -92,6 +98,7 @@
 //// 8. `finish` maps the `Outcome` onto `actor.Next` and re-arms the poll
 ////    through `arm_poll` at the period the drive's occupancy earned.
 
+import core/accounting
 import core/clock.{type Clock}
 import core/corruption
 import core/entry.{type Entry}
@@ -103,6 +110,7 @@ import core/message.{
 }
 import core/register
 import core/tx
+import core/usage_evidence
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Pid, type Subject, type Timer}
@@ -797,19 +805,22 @@ fn provider_terminal_observation(
 ) -> Result(Observation, String) {
   case token {
     AssistantEffect(..) ->
-      settled_observation(live, terminal, now, fn(settled) {
-        planner.ObservedAssistantSettled(settled:, overflow_preparation: None)
+      settled_observation(live, terminal, now, fn(settled, report) {
+        planner.ObservedAssistantSettled(
+          settled:,
+          accounting: report,
+          overflow_preparation: None,
+        )
       })
     PollEffect(..) ->
-      settled_observation(live, terminal, now, fn(settled) {
-        planner.ObservedDeferredSettled(settled:)
+      settled_observation(live, terminal, now, fn(settled, report) {
+        planner.ObservedDeferredSettled(settled:, accounting: report)
       })
     SummaryEffect(..) ->
       case terminal {
-        stream.Settled(message: _, usage:) ->
-          Ok(planner.ObservedSummaryReturned(usage:))
-        stream.Failed(error: _) ->
-          Ok(planner.ObservedSummaryReturned(usage: effects.zero_usage()))
+        stream.Settled(accounting: report, ..)
+        | stream.Failed(accounting: report, ..) ->
+          Ok(planner.ObservedSummaryReturned(accounting: report))
         stream.Delta(..) ->
           Error("provider stream delivered a delta as its terminal event")
       }
@@ -852,23 +863,28 @@ fn current_operation_owns(
 }
 
 // Bridges a provider terminal event into the machine's settled shape:
-// settled responses pass through; failures become zero-usage error
+// settled responses pass through; failures keep their final usage in error
 // responses carrying the retryability convention (see runtime/effects).
 fn settled_observation(
   live: Live,
   terminal: stream.StreamEvent,
   now: Int,
-  wrap: fn(classification.SettledAssistantMessage) -> Observation,
+  wrap: fn(classification.SettledAssistantMessage, accounting.RequestAccounting) ->
+    Observation,
 ) -> Result(Observation, String) {
-  use message <- result.try(case terminal {
-    stream.Settled(message: settled, usage: _) -> Ok(stream.message(settled))
-    stream.Failed(error:) ->
-      Ok(effects.settle_failure(error, live.configuration, now))
+  use observed <- result.try(case terminal {
+    stream.Settled(message: settled, accounting: report) ->
+      Ok(#(stream.message(settled), report))
+    stream.Failed(error:, accounting: report) ->
+      Ok(#(
+        effects.settle_failure(error, live.configuration, now, report),
+        report,
+      ))
     stream.Delta(..) ->
       Error("provider stream delivered a delta as its terminal event")
   })
-  classification.settle(message)
-  |> result.map(wrap)
+  classification.settle(observed.0)
+  |> result.map(fn(settled) { wrap(settled, observed.1) })
   |> result.map_error(corruption.describe)
 }
 
@@ -990,7 +1006,7 @@ fn abort(state: State, operation: OpId) -> Outcome {
       // real settlement — still queued in this mailbox — settles under
       // its reserved ids as aborted *retaining its reported usage*
       // (ORCH-M3), while one that dies unreported settles through the
-      // monitor as a synthetic zero-usage abort.
+      // monitor as a synthetic abort with unknown usage coverage.
       log.info(state.logger, "operation.aborted", [])
       let state = interrupt_live_effects(state)
       drive(state)
@@ -1423,9 +1439,14 @@ fn overflow_preparation_key(
   observation: Observation,
 ) -> KeyResolution {
   case observation {
-    planner.ObservedAssistantSettled(settled:, overflow_preparation: _) ->
+    planner.ObservedAssistantSettled(
+      settled:,
+      accounting: report,
+      overflow_preparation: _,
+    ) ->
       KeyObservation(planner.ObservedAssistantSettled(
         settled:,
+        accounting: report,
         overflow_preparation: Some(
           hooks.overflow_preparation(effects.OverflowQuery(
             operation:,
@@ -2423,7 +2444,12 @@ fn await_provider_selected(
     ProviderCancelExpired -> {
       retire_provider_deadline(deadline_timer)
       Some(stream.contextual_event(
-        stream.Failed(error: stream.CancellationUnconfirmed),
+        stream.Failed(
+          error: stream.CancellationUnconfirmed,
+          accounting: accounting.from_usage(accounting.unknown_usage(
+            usage_evidence.Other,
+          )),
+        ),
         context,
       ))
     }
@@ -2472,7 +2498,12 @@ fn await_provider_cancel_selected(
       case process.is_alive(driver) {
         True -> {
           Some(stream.contextual_event(
-            stream.Failed(error: stream.CancellationUnconfirmed),
+            stream.Failed(
+              error: stream.CancellationUnconfirmed,
+              accounting: accounting.from_usage(accounting.unknown_usage(
+                usage_evidence.Other,
+              )),
+            ),
             context,
           ))
         }
@@ -2480,12 +2511,22 @@ fn await_provider_cancel_selected(
       }
     ProviderCancelExpired ->
       Some(stream.contextual_event(
-        stream.Failed(error: stream.CancellationUnconfirmed),
+        stream.Failed(
+          error: stream.CancellationUnconfirmed,
+          accounting: accounting.from_usage(accounting.unknown_usage(
+            usage_evidence.Other,
+          )),
+        ),
         context,
       ))
     ProviderDeadline ->
       Some(stream.contextual_event(
-        stream.Failed(error: stream.CancellationUnconfirmed),
+        stream.Failed(
+          error: stream.CancellationUnconfirmed,
+          accounting: accounting.from_usage(accounting.unknown_usage(
+            usage_evidence.Other,
+          )),
+        ),
         context,
       ))
   }

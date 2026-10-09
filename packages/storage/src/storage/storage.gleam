@@ -19,13 +19,14 @@
 //// committers is then mailbox order, which is exactly the interleaving
 //// the CAS expectations exist to detect.
 
+import core/accounting
 import core/corruption.{type CorruptionReport}
 import core/entry.{
   type Entry, type UsageRow, BranchSummaryEntry, CompactionEntry, CustomEntry,
   MessageEntry,
 }
 import core/ids.{type EntryId, type Seq}
-import core/message.{type Usage, Usage, UsageCost}
+import core/message.{type Usage}
 import core/register.{type RegisterNs, type RegisterValue}
 import core/tx.{type CommitError, type CommitResult, type Tx}
 import gleam/dict.{type Dict}
@@ -802,22 +803,7 @@ pub fn stamp(entry: Entry, seq seq: Seq, ts ts: Int) -> Entry {
 /// ```
 ///
 pub fn empty_usage() -> Usage {
-  Usage(
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: 0,
-    cost: UsageCost(
-      input: 0.0,
-      output: 0.0,
-      cache_read: 0.0,
-      cache_write: 0.0,
-      total: 0.0,
-    ),
-  )
+  accounting.zero_usage()
 }
 
 /// Field-wise usage sum, used by the stats projection. Optional subsets
@@ -831,31 +817,7 @@ pub fn empty_usage() -> Usage {
 /// ```
 ///
 pub fn add_usage(total: Usage, usage: Usage) -> Usage {
-  Usage(
-    input: total.input + usage.input,
-    output: total.output + usage.output,
-    cache_read: total.cache_read + usage.cache_read,
-    cache_write: total.cache_write + usage.cache_write,
-    cache_write_1h: add_optional(total.cache_write_1h, usage.cache_write_1h),
-    reasoning: add_optional(total.reasoning, usage.reasoning),
-    total_tokens: total.total_tokens + usage.total_tokens,
-    cost: UsageCost(
-      input: total.cost.input +. usage.cost.input,
-      output: total.cost.output +. usage.cost.output,
-      cache_read: total.cost.cache_read +. usage.cost.cache_read,
-      cache_write: total.cost.cache_write +. usage.cost.cache_write,
-      total: total.cost.total +. usage.cost.total,
-    ),
-  )
-}
-
-fn add_optional(left: Option(Int), right: Option(Int)) -> Option(Int) {
-  case left, right {
-    None, None -> None
-    Some(a), None -> Some(a)
-    None, Some(b) -> Some(b)
-    Some(a), Some(b) -> Some(a + b)
-  }
+  accounting.add_usage(total, usage)
 }
 
 /// Empty session stats: no messages, zero usage.

@@ -8,12 +8,14 @@
 //// scripted call id. Invocations are counted in the recorder, which
 //// outlives the tree.
 
+import core/accounting
 import core/clock.{type Clock}
 import core/json as core_json
 import core/message.{
   type AgentMessage, AssistantMessage, AssistantText, AssistantToolCall,
   ToolCall, ToolResultMessage, ToolResultText, UserMessage, UserText,
 }
+import core/usage_evidence
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
@@ -26,8 +28,26 @@ import support/recorder
 pub type ProviderResult {
   /// Settle with this (already settled) assistant message.
   Reply(message: AgentMessage)
+
+  /// Settle with an explicit complete request report.
+  ReplyAccounted(
+    /// The final attempt's assistant response.
+    message: AgentMessage,
+    /// All attempts consumed by this logical request.
+    accounting: accounting.RequestAccounting,
+  )
+
   /// Fail in-band with this provider error.
   Refuse(error: stream.ProviderError)
+
+  /// Fail with the observations retained across this logical request.
+  RefuseAccounted(
+    /// The terminal provider failure.
+    error: stream.ProviderError,
+    /// All attempts consumed before the failure.
+    accounting: accounting.RequestAccounting,
+  )
+
   /// Never settle: the effect blocks until its process is killed.
   Hang
 }
@@ -61,15 +81,29 @@ pub fn effects(
         let events = process.new_subject()
         case provider(spec) {
           Reply(message:) -> {
-            let assert Ok(settled) = stream.settle(message)
-              as "provider scripts must reply with settled assistant messages"
             let usage = case message {
               AssistantMessage(usage:, ..) -> usage
-              _ -> effects.zero_usage()
+              UserMessage(..)
+              | ToolResultMessage(..)
+              | message.CustomMessage(..) ->
+                accounting.unknown_usage(usage_evidence.Other)
             }
-            process.send(events, stream.Settled(message: settled, usage:))
+            send_reply(events, message, accounting.from_usage(usage))
           }
-          Refuse(error:) -> process.send(events, stream.Failed(error:))
+          ReplyAccounted(message:, accounting: report) ->
+            send_reply(events, message, report)
+          Refuse(error:) ->
+            process.send(
+              events,
+              stream.Failed(
+                error:,
+                accounting: accounting.from_usage(accounting.unknown_usage(
+                  usage_evidence.Other,
+                )),
+              ),
+            )
+          RefuseAccounted(error:, accounting: report) ->
+            process.send(events, stream.Failed(error:, accounting: report))
           Hang -> Nil
         }
         stream.immediate(events:, cancel: fn() { Nil })
@@ -243,6 +277,7 @@ pub fn usage(tokens: Int) -> message.Usage {
       cache_write: 0.0,
       total: 0.0,
     ),
+    evidence: usage_evidence.priced_api(),
   )
 }
 
@@ -254,4 +289,15 @@ pub fn retryable_error() -> stream.ProviderError {
     message: "scripted transient failure",
     retry_after_ms: None,
   )
+}
+
+// The fake publishes the same terminal shape as the live provider boundary.
+fn send_reply(
+  events: Subject(stream.StreamEvent),
+  message: AgentMessage,
+  report: accounting.RequestAccounting,
+) -> Nil {
+  let assert Ok(settled) = stream.settle(message)
+    as "provider scripts must reply with settled assistant messages"
+  process.send(events, stream.Settled(message: settled, accounting: report))
 }

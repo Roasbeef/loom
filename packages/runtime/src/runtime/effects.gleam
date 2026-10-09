@@ -19,6 +19,7 @@
 //// `raw_stop_reason == "retryable"`; `settle_failure` encodes a
 //// `ProviderError` into that convention using `provider/retry.classify`.
 
+import core/accounting
 import core/clock.{type Clock}
 import core/entry.{type UsageRow}
 import core/ids.{type EntryId, type OpId}
@@ -562,7 +563,7 @@ pub fn default_hooks() -> Hooks {
   )
 }
 
-/// Encodes a provider failure as a settled zero-usage error response
+/// Encodes a provider failure as a settled error response with final usage
 /// under the captured identity — the retryability bridge (spec-gaps WP-D
 /// item 3): `raw_stop_reason` carries `"retryable"` exactly when
 /// `provider/retry.classify` judges the error retryable, which is the
@@ -571,7 +572,7 @@ pub fn default_hooks() -> Hooks {
 /// ## Examples
 ///
 /// ```gleam
-/// // effects.settle_failure(error, configuration, now).raw_stop_reason
+/// // effects.settle_failure(error, configuration, now, report).raw_stop_reason
 /// //   == Some("retryable")  // for a 500
 /// ```
 ///
@@ -579,6 +580,7 @@ pub fn settle_failure(
   error: ProviderError,
   configuration: StrandConfiguration,
   now: Int,
+  report: accounting.RequestAccounting,
 ) -> AgentMessage {
   // The failed response carries the provider's minimum delay across the
   // durable settlement boundary; classification alone would discard it.
@@ -603,39 +605,12 @@ pub fn settle_failure(
     response_model: None,
     response_id: None,
     diagnostics:,
-    usage: zero_usage(),
+    usage: option.lazy_unwrap(accounting.last(report), accounting.zero_usage),
     stop_reason: Errored,
     deferred: None,
     error_message: Some(stream.describe_error(error)),
     raw_stop_reason:,
     end_turn: None,
     timestamp: now,
-  )
-}
-
-/// The zero usage aggregate for synthetic settlements.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert effects.zero_usage().total_tokens == 0
-/// ```
-///
-pub fn zero_usage() -> message.Usage {
-  message.Usage(
-    input: 0,
-    output: 0,
-    cache_read: 0,
-    cache_write: 0,
-    cache_write_1h: None,
-    reasoning: None,
-    total_tokens: 0,
-    cost: message.UsageCost(
-      input: 0.0,
-      output: 0.0,
-      cache_read: 0.0,
-      cache_write: 0.0,
-      total: 0.0,
-    ),
   )
 }

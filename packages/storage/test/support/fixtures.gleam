@@ -10,6 +10,7 @@ import core/entry.{
 import core/ids.{type EntryId, type UsageId}
 import core/json
 import core/message.{Usage, UsageCost, UserMessage, UserText}
+import core/usage_evidence
 import gleam/option.{type Option, None, Some}
 import simplifile
 
@@ -145,6 +146,7 @@ pub fn usage_row(
           cache_write: 0.0,
           total: 0.003,
         ),
+        evidence: usage_evidence.priced_api(),
       ),
       details: Some(json.Object([#("note", json.String("fixture"))])),
     )

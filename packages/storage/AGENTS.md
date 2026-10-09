@@ -572,3 +572,13 @@ with these forks: they define the same modules.
   "From WP-C-full": rewrite scope, the memory backend's absent
   generation counter.
 - [Root CLAUDE.md](../../CLAUDE.md) — repo ground rules and the doc graph.
+
+## Usage totals and measurement evidence (protocol 080)
+
+`empty_usage` delegates to the no-consumption identity in `core/accounting`.
+`add_usage` shares that module's numeric and evidence addition, so in-memory
+and SQLite stats agree about incomplete estimates and mixed rate bases.
+No SQL column changes: usage evidence stays in its encoded payload and the
+request's bounded final-attempt metadata stays in `UsageRow.details`.
+Signed historical reconciliation deltas remain readable. A fork copies
+conversation entries but begins with an empty usage ledger.
