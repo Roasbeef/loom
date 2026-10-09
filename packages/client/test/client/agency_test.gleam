@@ -3121,6 +3121,29 @@ pub fn an_undelivered_peer_message_rings_the_outbox_doorbell_once_test() {
   close(harness)
 }
 
+pub fn a_peer_message_waiting_for_an_open_rings_the_outbox_doorbell_once_test() {
+  let rung = process.new_subject()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, outbox_queued: fn() { process.send(rung, Nil) })
+    })
+  let endpoint = agency.peer_endpoint(harness.config, "sender-session")
+
+  // A recipient that is saved leaves its message owed, so the drainer is told
+  // as it is for an owner that did not answer.
+  let assert Ok(_) =
+    endpoint.call(peer_mail.OutboxSettle(
+      "main",
+      "peer",
+      "m1",
+      peer_outbox.NotOpen,
+    ))
+    as "an attempt that found the recipient saved is recorded"
+  assert process.receive(rung, 1000) == Ok(Nil)
+  assert process.receive(rung, 50) == Error(Nil)
+  close(harness)
+}
+
 pub fn collaboration_example_exchanges_findings_across_sessions_test_() -> AsyncEunitTest {
   Timeout(90, fn() {
     let assert Ok(here) = simplifile.current_directory()

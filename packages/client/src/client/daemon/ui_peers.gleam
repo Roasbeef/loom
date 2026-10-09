@@ -233,7 +233,7 @@ fn reason_of(text: String) -> Reason {
     "invalid" | "invalid strand" -> peer_links.InvalidStrand
     _ ->
       case
-        text == peers.not_running,
+        text == peers.not_running || text == peer_mail.not_open_reason,
         string.contains(text, "does not exist"),
         string.contains(text, "64-link")
       {

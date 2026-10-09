@@ -3,7 +3,25 @@
 //// A link is an operator decision, independent of lineage, child custody,
 //// repository similarity, or permission to join. The sender's durable index
 //// bounds discovery; the recipient's grant remains the delivery authority.
-//// Saved sessions are described without opening their conversation stores.
+//// Saved sessions are described without opening their conversation stores,
+//// and a message to a saved session waits in the sender's outbox until its
+//// owner opens it. Nothing here opens a session.
+////
+//// ## Flow
+////
+//// `routed` → `link` → `send` → `record_attempt` → `attempt` → `deliver` → `roster`
+////
+//// 1. `routed` turns a session identity into the recipient's endpoint, here or
+////    on the owning orchestrator.
+//// 2. `link` and `unlink` change an exact directional link, the recipient's
+////    grant first.
+//// 3. `send` records the message in the sender's outbox, then `record_attempt`
+////    asks the recipient once through `attempt` and `deliver`, and writes down
+////    whether it was admitted, refused, or has to wait. `resend` is the same
+////    attempt for the drainer.
+//// 4. `roster` and `inspect` list what the sender may address.
+//// 5. `router` serves the same operations to a program, with the launching
+////    strand's identity.
 
 import broker/framing
 import broker/policy
@@ -25,7 +43,9 @@ import tools/tool
 /// Narrow lookups over the daemon manager, evaluated outside its mailbox.
 pub type Directory {
   Directory(
-    /// Looks up only a currently resident endpoint; never opens a session.
+    /// Looks up only a currently resident endpoint; never opens a session. A
+    /// session that its owner holds saved is `NotOpen`, and one no catalogue
+    /// holds is `Refused`.
     resolve: fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure),
     /// Current catalogue metadata and lifecycle, without opening a session.
     describe: fn(String) -> Result(JsonValue, String),
@@ -41,8 +61,9 @@ pub type Directory {
 /// operation in this module reaches it exactly as it reaches a local one. An
 /// owner that could not be asked is `Unreachable`, because the session may
 /// live on exactly the machine that did not answer. `Here` and `Unknown` leave
-/// `local`'s refusal standing: the session is catalogued here and not
-/// resident, or it exists nowhere.
+/// `local`'s failure standing, and `local` is what knows which it is: `NotOpen`
+/// when this catalogue holds the session and it is not resident, `Refused`
+/// when it exists nowhere.
 ///
 /// ## Examples
 ///
@@ -190,10 +211,12 @@ pub fn unlink_session(
   }
 }
 
-/// The refusal for a recipient that is not resident. Sending never opens a
-/// session: that would let one model start another session's runtime,
-/// schedules and resumed operations, which is a larger grant than adding a
-/// prompt to a running one (protocol-change/077).
+/// The refusal for a recipient that no catalogue holds, and the words every
+/// other refusal to find a recipient uses. Sending never opens a session: that
+/// would let one model start another session's runtime, schedules and resumed
+/// operations, which is a larger grant than adding a prompt to a running one
+/// (protocol-change/077). A recipient that is saved is not refused; it is
+/// queued (`queued_unopened_note`).
 pub const not_running = "that session is not running; the owner has to open it"
 
 /// What the model is told when a send could not reach the recipient's owner.
@@ -201,6 +224,12 @@ pub const not_running = "that session is not running; the owner has to open it"
 /// it again under a new id.
 pub const queued_note =
   "queued: the recipient's owner is not reachable. Delivery is retried about every 5 seconds for up to 1 hour. Do not send it again under a new message_id; sending it again with the same message_id returns the receipt once the message is admitted."
+
+/// What the model is told when the recipient is saved and not open. Only the
+/// owner opens a session, so the message waits for that, and the attempts
+/// become less frequent the longer it does.
+pub const queued_unopened_note =
+  "queued: the recipient session is saved and not open, and only its owner can open it. The message is delivered when it is opened. Delivery is retried, less often the longer it waits, for up to 1 hour. Do not send it again under a new message_id; sending it again with the same message_id returns the receipt once the message is admitted."
 
 /// Sends using a stable caller-chosen request identity. Reusing the identity
 /// for different content is refused by the recipient, even after a restart.
@@ -211,8 +240,11 @@ pub const queued_note =
 /// an error as it always was, and the row records it. When nobody answers for
 /// the recipient (`peer_mail.Unreachable`) the row stays pending, the
 /// outbox drainer (`client/peer_outbox_drain`) keeps attempting it, and the
-/// answer is `{"state": "queued", ...}`. A local recipient never answers
-/// that, so a send within one daemon is unchanged apart from the row.
+/// answer is `{"state": "queued", ...}`. So it is when the recipient's owner
+/// answers that the session is saved and not open (`peer_mail.NotOpen`): the
+/// message is delivered once, when the owner next opens the session, and an
+/// hour without that refuses it. A recipient that no catalogue holds is still
+/// refused.
 ///
 /// ## Examples
 ///
@@ -254,6 +286,7 @@ pub fn send(
         peer_outbox.Receipt(receipt:) -> Ok(receipt)
         peer_outbox.Rejected(reason:) -> Error(reason)
         peer_outbox.Unanswered -> Ok(queued(session, id))
+        peer_outbox.NotOpen -> Ok(queued_unopened(session, id))
       }
   }
 }
@@ -271,7 +304,7 @@ pub fn send(
 /// ```
 pub fn resend(wiring: Wiring, row: peer_outbox.Row) -> peer_outbox.Outcome {
   case row.state {
-    peer_outbox.Pending(text:) ->
+    peer_outbox.Pending(text:, ..) ->
       record_attempt(
         wiring,
         row.strand,
@@ -293,11 +326,27 @@ pub fn resend(wiring: Wiring, row: peer_outbox.Row) -> peer_outbox.Outcome {
 /// assert peers.is_queued(peers.queued("s2", "m1"))
 /// ```
 pub fn queued(session: String, id: String) -> JsonValue {
+  queued_with(session, id, queued_note)
+}
+
+/// The answer for a message that is recorded and waits for its saved recipient
+/// to be opened.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert peers.is_queued(peers.queued_unopened("s2", "m1"))
+/// ```
+pub fn queued_unopened(session: String, id: String) -> JsonValue {
+  queued_with(session, id, queued_unopened_note)
+}
+
+fn queued_with(session: String, id: String, note: String) -> JsonValue {
   json.Object([
     #("state", json.String("queued")),
     #("session", json.String(session)),
     #("message_id", json.String(id)),
-    #("note", json.String(queued_note)),
+    #("note", json.String(note)),
   ])
 }
 
@@ -329,9 +378,10 @@ fn record_attempt(
   outcome
 }
 
-// Asks the recipient once. Only `peer_mail.Unreachable` means nobody
-// answered; a `Refused` is the recipient's own refusal, or a refusal made
-// here, and retrying it unchanged cannot succeed.
+// Asks the recipient once. `peer_mail.Unreachable` means nobody answered and
+// `peer_mail.NotOpen` means its owner answered that the session is saved; the
+// row waits in both cases. A `Refused` is the recipient's own refusal, or a
+// refusal made here, and retrying it unchanged cannot succeed.
 fn attempt(
   wiring: Wiring,
   strand: String,
@@ -343,6 +393,7 @@ fn attempt(
   case deliver(wiring, strand, session, target, id, text) {
     Ok(receipt) -> peer_outbox.Receipt(receipt)
     Error(peer_mail.Unreachable) -> peer_outbox.Unanswered
+    Error(peer_mail.NotOpen) -> peer_outbox.NotOpen
     Error(peer_mail.Refused(reason:)) -> peer_outbox.Rejected(reason)
   }
 }
@@ -356,7 +407,7 @@ fn deliver(
   text: String,
 ) -> Result(JsonValue, peer_mail.Failure) {
   use destination <- result.try(
-    resolve(wiring, session) |> result.map_error(not_running_unless_unreachable),
+    resolve(wiring, session) |> result.map_error(recipient_failure),
   )
   use Nil <- result.try(case destination.session == session {
     True -> Ok(Nil)
@@ -376,14 +427,14 @@ fn deliver(
   ))
 }
 
-// A directory that cannot reach the session's owner says `Unreachable`. Any
-// other failure to find the session means it is not running, and the model is
-// told that.
-fn not_running_unless_unreachable(
-  failure: peer_mail.Failure,
-) -> peer_mail.Failure {
+// A directory that cannot reach the session's owner says `Unreachable`, and one
+// whose owner holds the session saved says `NotOpen`; the message waits for
+// either. Any other failure to find the session means that nothing holds it,
+// and the model is told it is not running.
+fn recipient_failure(failure: peer_mail.Failure) -> peer_mail.Failure {
   case failure {
     peer_mail.Unreachable -> peer_mail.Unreachable
+    peer_mail.NotOpen -> peer_mail.NotOpen
     peer_mail.Refused(..) -> peer_mail.Refused(not_running)
   }
 }
@@ -703,7 +754,7 @@ pub fn tools(wiring: Wiring) -> List(tool.Tool) {
     ),
     tool.Tool(
       name: "peer_roster",
-      description: "List linked sessions and exported strands, each marked running or not (only a running session can be sent to; you cannot open one). At most 64 links are listed; the rest are not addressable until the owner removes some. Repository similarity does not grant access. Model self-description is not authority.",
+      description: "List linked sessions and exported strands, each marked running or not (you cannot open a session that is not running; a message to one waits until its owner opens it). At most 64 links are listed; the rest are not addressable until the owner removes some. Repository similarity does not grant access. Model self-description is not authority.",
       prompt_snippet: None,
       schema: tool.object_schema([], []),
       replay: tool.Safe,
@@ -713,7 +764,7 @@ pub fn tools(wiring: Wiring) -> List(tool.Tool) {
     ),
     tool.Tool(
       name: "peer_send",
-      description: "Send to an operator-linked strand in a resident session. Supply a stable message_id and reuse it only when retrying the same message. The receipt proves durable admission, not consumption or completion. Idle recipients wake only when the operator granted it.",
+      description: "Send to an operator-linked strand in another session. Supply a stable message_id and reuse it only when retrying the same message. The receipt proves durable admission, not consumption or completion. Idle recipients wake only when the operator granted it. If the recipient is saved or its owner cannot be reached, the answer is queued: the message is delivered later, once, and you must not send it again under a new message_id.",
       prompt_snippet: None,
       schema: tool.object_schema(
         [
@@ -888,12 +939,18 @@ pub fn router(
 
 // A program's `peer.send` is typed to return a receipt, so a queued message
 // reaches it as the denial `peer_queued` with the model-facing note, which the
-// program can tell apart from a refusal by its code.
+// program can tell apart from a refusal by its code. The note is the answer's
+// own, because an unreachable owner and a saved recipient are told different
+// things.
 fn send_answer(answer: Result(JsonValue, String)) {
   case answer {
     Ok(value) ->
       case is_queued(value) {
-        True -> framing.CapErr("peer_queued", queued_note)
+        True ->
+          framing.CapErr("peer_queued", case text(value, "note") {
+            Ok(note) -> note
+            Error(_) -> queued_note
+          })
         False -> wire_answer(Ok(value))
       }
     Error(_) -> wire_answer(answer)

@@ -333,7 +333,7 @@ pub fn real_registry_restores_catalogue_then_lazily_opens_one_session_test() {
   let assert Ok(saved_roster) = peers.roster(reverse, "main")
     as "a stopped linked session remains discoverable without opening"
   assert string.contains(json.to_string(saved_roster), "saved")
-  let assert Error(_) =
+  let assert Ok(queued) =
     peers.send(
       reverse,
       "main",
@@ -342,8 +342,12 @@ pub fn real_registry_restores_catalogue_then_lazily_opens_one_session_test() {
       "do-not-wake",
       "saved stays saved",
     )
-    as "delivery never implicitly opens a saved session"
+    as "a send to a saved session waits for its owner"
+  assert peers.is_queued(queued)
   assert process.receive(arrivals, 0) == Error(Nil)
+  let assert Ok(manager.View(status: manager.Saved, ..)) =
+    manager.get(registry, first.id)
+    as "delivery never implicitly opens a saved session"
   assert process.is_alive(shared_history)
   stop(daemon)
   assert !process.is_alive(shared_history)

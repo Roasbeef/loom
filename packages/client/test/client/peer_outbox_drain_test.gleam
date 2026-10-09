@@ -12,6 +12,7 @@ import client/peer_outbox
 import client/peer_outbox_drain
 import client/peers
 import core/clock
+import core/ids
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -20,7 +21,7 @@ import runtime/api
 import simplifile
 import support/addresses
 import support/notes_session
-import support/peer_rig.{Down, Lose, Pass, Saved}
+import support/peer_rig.{Down, Gone, Lose, Pass, Resident, Saved}
 import weft/poll
 import weft/registry as address
 
@@ -139,7 +140,7 @@ pub fn a_lost_reply_is_delivered_once_and_settled_by_the_drainer_test() {
 
 pub fn a_definitive_refusal_is_never_attempted_again_test() {
   let rig = peer_rig.rig(2030, [], Pass)
-  peer_rig.set_resident(rig, Saved)
+  peer_rig.set_resident(rig, Gone)
   assert peer_rig.send(rig, "m1") == Error(peers.not_running)
   let #(armings, _name) = drainer(rig)
   let open = arming(armings)
@@ -239,6 +240,127 @@ pub fn unlinking_a_queued_message_ends_its_delivery_test() {
   peer_outbox_drain.poke(name)
   let again = arming(armings)
   assert again.delay_ms == peer_outbox_drain.retry_interval_ms
+}
+
+pub fn a_saved_recipient_slows_the_drainer_to_a_cap_and_is_delivered_once_open_test() {
+  let rig = peer_rig.rig(2090, [], Pass)
+  peer_rig.set_resident(rig, Saved)
+  let #(armings, name) = drainer(rig)
+  let open = arming(armings)
+  open.wake()
+  assert_no_arming(armings)
+  let assert Ok(queued) = peer_rig.send(rig, "m1")
+  assert peers.is_queued(queued)
+  peer_outbox_drain.poke(name)
+
+  // A queued message is first attempted one fixed interval later. Each pass
+  // that finds the recipient still saved doubles the wait, to the cap.
+  let delays = waits(armings, 8)
+  assert delays
+    == [
+      5000,
+      10_000,
+      20_000,
+      40_000,
+      80_000,
+      160_000,
+      peer_outbox_drain.max_retry_interval_ms,
+      peer_outbox_drain.max_retry_interval_ms,
+    ]
+  assert peer_rig.receipts(rig.recipient) == 0
+
+  // The owner opens the session; the next pass delivers, exactly once, and
+  // nothing is armed after it. The arming is taken first, so the pass that
+  // made it has finished before the session is opened.
+  let waiting = arming(armings)
+  assert waiting.delay_ms == peer_outbox_drain.max_retry_interval_ms
+  peer_rig.set_resident(rig, Resident)
+  waiting.wake()
+  wait_for("the recipient admitted the message", fn() {
+    peer_rig.receipts(rig.recipient) == 1
+  })
+  assert_no_arming(armings)
+  assert peer_rig.stored_receipt(rig, "m1") != json.Null
+}
+
+pub fn an_owner_that_does_not_answer_returns_the_drainer_to_the_fixed_interval_test() {
+  let rig = peer_rig.rig(2100, [], Down)
+  peer_rig.set_resident(rig, Saved)
+  let #(armings, name) = drainer(rig)
+  let open = arming(armings)
+  open.wake()
+  let assert Ok(_) = peer_rig.send(rig, "m1")
+  peer_outbox_drain.poke(name)
+  assert waits(armings, 3) == [5000, 10_000, 20_000]
+
+  // The directory now finds the owner, which does not answer. Whatever might
+  // have opened the recipient may have opened it, so the wait is the fixed
+  // one again and stays so while the owner is silent.
+  let waiting = arming(armings)
+  assert waiting.delay_ms == 40_000
+  peer_rig.set_resident(rig, Resident)
+  waiting.wake()
+  assert waits(armings, 2) == [5000, 5000]
+}
+
+pub fn one_owner_that_does_not_answer_keeps_the_fixed_interval_beside_a_saved_recipient_test() {
+  let rig = peer_rig.rig(2120, [], Down)
+  let #(armings, name) = drainer(rig)
+  let open = arming(armings)
+  open.wake()
+
+  // One message waits on an owner that does not answer and another on a
+  // recipient that is saved.
+  let other = ids.session_id_to_string(peer_rig.session_id(2125))
+  let assert Ok(_) = rig.source.call(peer_mail.Link("main", other, "main"))
+    as "the sender records the second link"
+  let assert Ok(silent) = peer_rig.send(rig, "m1")
+  assert peers.is_queued(silent)
+  let assert Ok(saved) =
+    peers.send(rig.wiring, "main", other, "main", "m2", "hello")
+  assert peer_rig.field(saved, "note")
+    == json.String(peers.queued_unopened_note)
+  peer_outbox_drain.poke(name)
+
+  // Whatever order the pass attempts them in, the owner that is silent may be
+  // back by the next pass, so the interval does not grow.
+  assert waits(armings, 3) == [5000, 5000, 5000]
+}
+
+pub fn a_message_to_a_saved_recipient_is_not_reattempted_by_a_doorbell_test() {
+  let rig = peer_rig.rig(2110, [], Pass)
+  peer_rig.set_resident(rig, Saved)
+  let #(armings, name) = drainer(rig)
+  let open = arming(armings)
+  open.wake()
+  let assert Ok(_) = peer_rig.send(rig, "m1")
+  peer_outbox_drain.poke(name)
+  let first = arming(armings)
+  assert first.delay_ms == peer_outbox_drain.retry_interval_ms
+  first.wake()
+  let second = arming(armings)
+  assert second.delay_ms == 10_000
+
+  // The machine's own settle rings the doorbell after each pass. It must not
+  // put the interval back to the fixed one.
+  peer_outbox_drain.poke(name)
+  peer_outbox_drain.poke(name)
+  assert_no_arming(armings)
+  second.wake()
+  let third = arming(armings)
+  assert third.delay_ms == 20_000
+}
+
+// The delays of the next `count` armings, each woken as soon as it is seen.
+fn waits(armings: Subject(Arming), count: Int) -> List(Int) {
+  case count {
+    0 -> []
+    _ -> {
+      let next = arming(armings)
+      next.wake()
+      [next.delay_ms, ..waits(armings, count - 1)]
+    }
+  }
 }
 
 pub fn a_reopened_sender_resumes_draining_what_it_owed_test() {

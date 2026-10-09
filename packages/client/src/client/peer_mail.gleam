@@ -243,22 +243,41 @@ pub type Endpoint {
 
 /// Why an endpoint call produced no answer from the recipient.
 pub type Failure {
-  /// The recipient, or the host in front of it, answered and said no: not
-  /// resident, no grant, an id reused for different text, a command the host
-  /// does not accept. Asking again unchanged cannot succeed.
+  /// The recipient, or the host in front of it, answered and said no: no
+  /// catalogue holds the session, no grant, an id reused for different text, a
+  /// command the host does not accept. Asking again unchanged cannot succeed.
   Refused(reason: String)
 
   /// Nobody answered for the recipient: the orchestrator that owns the session
   /// cannot be reached, so the message is neither admitted nor refused. Only a
   /// remote endpoint, or a directory that could not tell who owns the session,
-  /// produces it. The sender's outbox treats exactly this as "try again later"
-  /// and every `Refused` as the recipient's definitive answer.
+  /// produces it. The sender's outbox treats this and `NotOpen` as "try again
+  /// later" and every `Refused` as the recipient's definitive answer.
   Unreachable
+
+  /// The recipient's owner answered, and its catalogue holds the session, but
+  /// the session is saved and not resident, so nothing is running to admit the
+  /// message. Opening a session is the owner's decision and a message never
+  /// causes it (protocol-change/077), so this is not a refusal: the same
+  /// request succeeds once the owner opens the session. A session that no
+  /// catalogue holds is `Refused`, because nothing will ever open it.
+  NotOpen
 }
 
-/// The text recorded in an outbox row that waited too long, and the text a
-/// model or an operator is shown for an `Unreachable` failure.
+/// The text recorded in an outbox row that waited too long for its owner, and
+/// the text a model or an operator is shown for an `Unreachable` failure.
 pub const unreachable_reason = "owner unreachable"
+
+/// The text a remote owner answers when a command names a session its
+/// catalogue holds and that is not resident. `remote/remote_peer` turns it back
+/// into `NotOpen`, so it is the one spelling of that fact on the wire, and it is
+/// what `reason` gives for `NotOpen`.
+pub const not_open_reason =
+  "that session is saved, not running; the owner has to open it"
+
+/// The text recorded in an outbox row that waited an hour for its recipient to
+/// be opened.
+pub const not_opened_in_time_reason = "recipient not opened in time"
 
 /// The failure of a call that was answered locally with an error text. Every
 /// local endpoint answers this way, because a local call is always answered.
@@ -280,10 +299,15 @@ pub fn refused(answer: Result(a, String)) -> Result(a, Failure) {
 /// ```gleam
 /// assert peer_mail.reason(peer_mail.Unreachable) == "owner unreachable"
 /// ```
+///
+/// ```gleam
+/// assert peer_mail.reason(peer_mail.NotOpen) == peer_mail.not_open_reason
+/// ```
 pub fn reason(failure: Failure) -> String {
   case failure {
     Refused(reason:) -> reason
     Unreachable -> unreachable_reason
+    NotOpen -> not_open_reason
   }
 }
 
@@ -571,7 +595,12 @@ pub fn handle_with(
       |> result.replace(json.Null)
     OutboxDue -> {
       let #(now, _) = clock.read(clock)
-      peer_outbox_store.due(runtime, now, unreachable_reason)
+      peer_outbox_store.due(
+        runtime,
+        now,
+        unreachable_reason,
+        not_opened_in_time_reason,
+      )
       |> result.map(fn(rows) { json.Array(list.map(rows, peer_outbox.encode)) })
     }
     OutboxReceipt(strand, session, id) ->

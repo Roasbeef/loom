@@ -575,9 +575,10 @@ pub fn start_orchestrator_port(
 /// Forwards one peer-mail command from another orchestrator to a session
 /// resident here, the way the control commands reach the same session
 /// (`server.peer_endpoint`): resolve the identity with the manager and call the
-/// session's own endpoint. A session that is not resident answers
-/// `peers.not_running`, the refusal a send within one daemon gets, so the
-/// sender cannot tell where the recipient was supposed to be.
+/// session's own endpoint. A session that is not resident but that this
+/// catalogue holds answers `peer_mail.not_open_reason`, which the sender turns
+/// back into `NotOpen` and waits on. One this catalogue does not hold answers
+/// `peers.not_running`, a refusal, because nothing here will ever open it.
 ///
 /// ## Examples
 ///
@@ -591,7 +592,11 @@ pub fn peer_command(
 ) -> fn(String, peer_mail.Command) -> Result(JsonValue, String) {
   fn(session, command) {
     case manager.resolve(registry, session) {
-      Error(_) -> Error(peers.not_running)
+      Error(_) ->
+        case manager.get(registry, session) {
+          Ok(_) -> Error(peer_mail.not_open_reason)
+          Error(_) -> Error(peers.not_running)
+        }
       Ok(resident) ->
         case endpoint(resident) {
           None -> Error("peer_service_unavailable")
@@ -1503,13 +1508,7 @@ pub fn peer_directory_across(
 ) -> peers.Directory {
   peers.Directory(
     resolve: peers.routed(
-      fn(id) {
-        manager.resolve(registry, id)
-        |> result.map(endpoint)
-        |> result.map_error(fn(error) {
-          peer_mail.Refused(string.inspect(error))
-        })
-      },
+      server.local_peer(registry, fn(resident) { Ok(endpoint(resident)) }),
       sessions,
     ),
     describe: fn(id) {

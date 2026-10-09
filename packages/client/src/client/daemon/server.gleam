@@ -3978,7 +3978,10 @@ fn peer_directory(
 ) -> peers.Directory {
   peers.Directory(
     resolve: peers.routed(
-      fn(id) { peer_endpoint(config, registry, id) |> peer_mail.refused },
+      local_peer(registry, fn(resident) {
+        config.peer_endpoint(resident)
+        |> option.to_result(peer_mail.Refused("peer_service_unavailable"))
+      }),
       config.directory,
     ),
     describe: fn(id) {
@@ -3987,6 +3990,37 @@ fn peer_directory(
       |> result.map_error(error_code)
     },
   )
+}
+
+/// Resolves a recipient on this daemon to the endpoint of its resident
+/// session, and says why it cannot. A session that is not resident but that
+/// this catalogue holds is `NotOpen`: its message can be admitted once the
+/// owner opens it, and nothing here opens it. A session this catalogue does
+/// not hold, and a resident whose endpoint is not available, are `Refused`.
+///
+/// `project` turns a resident into its endpoint, or into the failure that says
+/// it has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.local_peer(registry, fn(resident) { Ok(resident.peer) })("0198...")
+/// ```
+@internal
+pub fn local_peer(
+  registry: manager.Manager(instance),
+  project: fn(instance) -> Result(peer_mail.Endpoint, peer_mail.Failure),
+) -> fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
+  fn(id) {
+    case manager.resolve(registry, id) {
+      Ok(resident) -> project(resident)
+      Error(error) ->
+        case manager.get(registry, id) {
+          Ok(_) -> Error(peer_mail.NotOpen)
+          Error(_) -> Error(peer_mail.Refused(error_code(error)))
+        }
+    }
+  }
 }
 
 // The recipient of a link. A lookup bounds one connection at a second and a

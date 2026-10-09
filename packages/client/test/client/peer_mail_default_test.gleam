@@ -412,7 +412,7 @@ pub fn inspection_marks_default_rows_in_both_directions_test() {
   assert field(incoming, "default") == json.Bool(True)
 }
 
-pub fn a_closed_default_peer_is_listed_as_not_running_and_refuses_a_send_test() {
+pub fn a_closed_default_peer_is_listed_as_not_running_and_queues_a_send_test() {
   let first = session_id(632)
   let closed = session_id(633)
   let defaults =
@@ -430,7 +430,7 @@ pub fn a_closed_default_peer_is_listed_as_not_running_and_refuses_a_send_test() 
       resolve: fn(id) {
         case id == name(first) {
           True -> Ok(endpoint)
-          False -> Error(peer_mail.Refused("session is saved, not open"))
+          False -> Error(peer_mail.NotOpen)
         }
       },
       describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
@@ -442,9 +442,13 @@ pub fn a_closed_default_peer_is_listed_as_not_running_and_refuses_a_send_test() 
   assert field(listed, "running") == json.Bool(False)
   assert field(listed, "exported_strands") == json.Null
 
-  // Sending is refused in words the model can act on, and opens nothing.
-  assert peers.send(wiring, "main", name(closed), "main", "m1", "hello")
-    == Error(peers.not_running)
+  // Sending opens nothing. The message waits, and the model is told so in
+  // words it can act on.
+  let assert Ok(queued) =
+    peers.send(wiring, "main", name(closed), "main", "m1", "hello")
+    as "a send to a closed default peer is queued"
+  assert peers.is_queued(queued)
+  assert field(queued, "note") == json.String(peers.queued_unopened_note)
 }
 
 pub fn the_roster_marks_a_resident_default_peer_as_running_test() {

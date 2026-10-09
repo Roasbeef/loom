@@ -2,8 +2,9 @@
 //// attempting the peer messages the session owes (`client/peer_outbox`).
 ////
 //// `peers.send` writes an outbox row before it asks the recipient. When the
-//// recipient's owner is unreachable the row stays pending and the send
-//// returns `queued`; this machine is what delivers it later. It lives in the
+//// recipient's owner is unreachable, or answers that the recipient is saved
+//// and not open, the row stays pending and the send returns `queued`; this
+//// machine is what delivers it later. It lives in the
 //// session's restartable service tier, so a crash costs the pass in flight
 //// and nothing else: every pass recomputes what is owed from the session's
 //// own store, and a session that is opened again starts with a pass.
@@ -29,14 +30,26 @@
 ////
 //// ## One named timeout, and no timer when there is nothing owed
 ////
-//// The machine's whole liveness is one named timeout, `drain_timer`, fixed at
-//// `retry_interval_ms`. There is no backoff: a recipient that is down for an
-//// hour costs 720 attempts, each a single bounded call, and a fixed interval
-//// means the moment the owner returns is the next tick and not the end of a
-//// growing delay. When a pass finds nothing owed the timeout is cancelled and
-//// the machine is `Idle`, so a session that never queues a message never has
-//// a timer. `Queued` is the only thing that wakes it, and the row it
-//// announces is already durable when the message is sent.
+//// The machine's whole liveness is one named timeout, `drain_timer`. While any
+//// owed row waits on an owner that did not answer, it is fixed at
+//// `retry_interval_ms`: a recipient that is down for an hour costs 720
+//// attempts, each a single bounded call, and a fixed interval means the moment
+//// the owner returns is the next tick and not the end of a growing delay.
+//// When every owed row instead waits for its recipient to be opened, the
+//// owner is up and answering, and only the owner's decision to open the
+//// session ends the wait. Nothing the sender does hastens it, so each such pass
+//// doubles the interval, up to `max_retry_interval_ms`, and a message waiting
+//// an hour costs about seventeen attempts. The interval returns to
+//// `retry_interval_ms` as soon as a pass finds an owner that did not answer,
+//// and when the machine goes idle. When a pass finds nothing owed the timeout
+//// is cancelled and the machine is `Idle`, so a session that never queues a
+//// message never has a timer. `Queued` is the only thing that wakes it, and
+//// the row it announces is already durable when the message is sent.
+////
+//// A message queued while the interval is long is attempted at the next tick,
+//// which is at most `max_retry_interval_ms` away. The doorbell cannot say
+//// which row it announces: the machine's own attempts ring it too, and a
+//// doorbell that reset the interval would undo the backoff on every pass.
 ////
 //// The timeout is armed on the session's own timer source
 //// (`runtime/effects.Timers`), the seam `client/schedulescan` uses, so a
@@ -58,13 +71,14 @@
 //// | state | Tick | Queued |
 //// | --- | --- | --- |
 //// | `Idle` | a pass; `Waiting` if a row is still owed, else unchanged | `Waiting`, armed for one interval |
-//// | `Waiting` | a pass; armed again if a row is still owed, else `Idle` with the timeout cancelled | ignored, the timeout is already armed |
+//// | `Waiting` | a pass; armed again if a row is still owed (after `retry_interval_ms`, or after twice the last interval if every owed row waits for an open), else `Idle` with the timeout cancelled | ignored, the timeout is already armed |
 
 import client/peer_mail
 import client/peer_outbox
 import client/peers
 import core/json
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/otp/supervision.{type ChildSpecification}
 import telemetry/field
@@ -74,9 +88,15 @@ import weft/registry as address
 import weft/state_machine as sm
 import weft/timer
 
-/// How long the machine waits between passes while any row is owed, in
-/// milliseconds. It is fixed on purpose: see the module doc.
+/// How long the machine waits between passes while any row waits on an owner
+/// that did not answer, in milliseconds, and before the first pass after a
+/// message is queued. It is fixed on purpose: see the module doc.
 pub const retry_interval_ms = 5000
+
+/// The longest the machine waits between passes while every owed row waits for
+/// its recipient to be opened, in milliseconds. The interval doubles from
+/// `retry_interval_ms` to this: 5, 10, 20, 40, 80, 160 and then 300 seconds.
+pub const max_retry_interval_ms = 300_000
 
 /// The one name every arming of this machine's timer uses. Arming a name
 /// replaces whatever was armed under it, so a pass's re-arm supersedes the
@@ -122,18 +142,30 @@ type Phase {
 }
 
 // What the machine carries between events. The wiring is fixed for the life of
-// the process; what is owed is read from the store at each pass.
+// the process; what is owed is read from the store at each pass. The interval
+// is the delay of the arming in force, which the next arming doubles while the
+// owed rows wait for an open.
 type State {
-  State(options: Options)
+  State(options: Options, interval_ms: Int)
 }
 
 // What a pass found.
 type Backlog {
   // At least one row is still pending, or the rows could not be read.
-  Owed
+  Owed(Pace)
 
   // Nothing is pending.
   Clear
+}
+
+// How soon the next pass should be.
+type Pace {
+  // An owner did not answer, or the rows could not be read, and either may be
+  // over by the next pass.
+  Quick
+
+  // Every owed row waits for its recipient to be opened.
+  Slow
 }
 
 /// Options over a sender's wiring and a timer source, with a silent logger.
@@ -212,7 +244,7 @@ fn builder(
   name: address.Address(Message),
 ) -> sm.Builder(Phase, State, Message, Subject(Message)) {
   sm.new_with_initialiser(5000, fn(subject) {
-    sm.initialised(Waiting, State(options:))
+    sm.initialised(Waiting, State(options:, interval_ms: retry_interval_ms))
     |> sm.returning(subject)
     |> Ok
   })
@@ -273,86 +305,133 @@ fn handle(
 }
 
 // Decides the next arming from what the pass found. A pass that leaves a row
-// owed re-arms the same name, which supersedes the arming that woke it; a pass
-// that leaves none moves to `Idle`, and `entered` cancels the timeout.
+// owed re-arms the same name, which supersedes the arming that woke it, after
+// the interval the pace calls for; a pass that leaves none moves to `Idle`, and
+// `entered` cancels the timeout. Both ways into `Idle` and `Waiting` start from
+// the fixed interval, because `entered` arms it.
 fn after_pass(
   phase: Phase,
   data: State,
   backlog: Backlog,
 ) -> sm.Next(Phase, State, Message) {
+  let fresh = State(..data, interval_ms: retry_interval_ms)
   case phase, backlog {
-    Waiting, Owed ->
-      sm.keep(data)
-      |> sm.with_named_timeout(
-        name: drain_timer,
-        after: retry_interval_ms,
-        sending: Tick,
+    Waiting, Owed(Quick) -> rearmed(fresh)
+    Waiting, Owed(Slow) ->
+      rearmed(
+        State(
+          ..data,
+          interval_ms: int.min(max_retry_interval_ms, data.interval_ms * 2),
+        ),
       )
-    Waiting, Clear -> sm.transition(to: Idle, data:)
-    Idle, Owed -> sm.transition(to: Waiting, data:)
+    Waiting, Clear -> sm.transition(to: Idle, data: fresh)
+    Idle, Owed(_) -> sm.transition(to: Waiting, data: fresh)
     Idle, Clear -> sm.keep(data)
   }
 }
 
+// Arms the one timeout for the interval the state holds.
+fn rearmed(data: State) -> sm.Next(Phase, State, Message) {
+  sm.keep(data)
+  |> sm.with_named_timeout(
+    name: drain_timer,
+    after: data.interval_ms,
+    sending: Tick,
+  )
+}
+
 // One pass over the rows that are due. The sender's Agency answers them, and
 // refuses any that have waited past the hour before it does, so expiry needs
-// no timer of its own. A read that fails is `Owed`: the rows may exist, and
-// the next pass reads again.
+// no timer of its own. A read that fails is `Owed(Quick)`: the rows may exist,
+// and the next pass reads again.
 fn pass(data: State) -> Backlog {
   let options = data.options
   case options.wiring.own.call(peer_mail.OutboxDue) {
     Ok(json.Array(items)) ->
-      drain_rows(options, list.filter_map(items, peer_outbox.decode), [], Clear)
+      drain_rows(options, list.filter_map(items, peer_outbox.decode), [], [])
+      |> backlog_of
     Ok(_) -> {
       log.warn(options.logger, "peer_outbox.unreadable", [
         field.text("reason", "the due rows were not a list"),
       ])
-      Owed
+      Owed(Quick)
     }
     Error(failure) -> {
       log.warn(options.logger, "peer_outbox.unreadable", [
         field.text("reason", peer_mail.reason(failure)),
       ])
-      Owed
+      Owed(Quick)
     }
   }
 }
 
-// Attempts the rows in order. `silent` holds the sessions that did not answer
-// during this pass: the owner of one is the owner of all its rows, so asking
-// again would spend a full deadline per row to learn the same thing, and a
-// pass over 64 rows to a dead node would last minutes.
+// Attempts the rows in order and answers what each attempt found. `silent`
+// holds the sessions that did not answer during this pass: the owner of one is
+// the owner of all its rows, so asking again would spend a full deadline per
+// row to learn the same thing, and a pass over 64 rows to a dead node would
+// last minutes. The row that was asked has already said the session is silent,
+// so a row skipped for that reason adds nothing to what the pass found. A
+// recipient that is saved is not in it: its owner answers at once, and the
+// answer can change between two rows if the owner opens the session meanwhile.
 fn drain_rows(
   options: Options,
   rows: List(peer_outbox.Row),
   silent: List(String),
-  backlog: Backlog,
-) -> Backlog {
+  found: List(peer_outbox.Outcome),
+) -> List(peer_outbox.Outcome) {
   case rows {
-    [] -> backlog
+    [] -> found
 
     [row, ..rest] ->
       case list.contains(silent, row.session) {
-        True -> drain_rows(options, rest, silent, Owed)
-        False ->
-          case peers.resend(options.wiring, row) {
-            peer_outbox.Unanswered ->
-              drain_rows(options, rest, [row.session, ..silent], Owed)
-
-            peer_outbox.Receipt(..) -> {
-              log.info(options.logger, "peer_outbox.admitted", where(row))
-              drain_rows(options, rest, silent, backlog)
-            }
-
-            peer_outbox.Rejected(reason:) -> {
-              log.info(options.logger, "peer_outbox.refused", [
-                field.text("reason", reason),
-                ..where(row)
-              ])
-              drain_rows(options, rest, silent, backlog)
-            }
+        True -> drain_rows(options, rest, silent, found)
+        False -> {
+          let outcome = peers.resend(options.wiring, row)
+          report(options, row, outcome)
+          let silent = case outcome {
+            peer_outbox.Unanswered -> [row.session, ..silent]
+            peer_outbox.Receipt(..)
+            | peer_outbox.Rejected(..)
+            | peer_outbox.NotOpen -> silent
           }
+          drain_rows(options, rest, silent, [outcome, ..found])
+        }
       }
+  }
+}
+
+// What the pass found decides how soon the next one is, whatever order the
+// rows were attempted in. An owner that did not answer calls for the fixed
+// interval, because it may be back by the next pass. Failing that, a recipient
+// that is saved calls for the backed-off one, because only its owner's
+// decision ends the wait. Nothing owed leaves nothing to wait for.
+fn backlog_of(found: List(peer_outbox.Outcome)) -> Backlog {
+  case
+    list.contains(found, peer_outbox.Unanswered),
+    list.contains(found, peer_outbox.NotOpen)
+  {
+    True, _ -> Owed(Quick)
+    False, True -> Owed(Slow)
+    False, False -> Clear
+  }
+}
+
+// The log line for an attempt that ended a row. A row that stays pending says
+// nothing: it is attempted again.
+fn report(
+  options: Options,
+  row: peer_outbox.Row,
+  outcome: peer_outbox.Outcome,
+) -> Nil {
+  case outcome {
+    peer_outbox.Receipt(..) ->
+      log.info(options.logger, "peer_outbox.admitted", where(row))
+    peer_outbox.Rejected(reason:) ->
+      log.info(options.logger, "peer_outbox.refused", [
+        field.text("reason", reason),
+        ..where(row)
+      ])
+    peer_outbox.Unanswered | peer_outbox.NotOpen -> Nil
   }
 }
 
