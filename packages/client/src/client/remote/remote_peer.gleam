@@ -50,9 +50,30 @@ import gleam/result
 /// room for the round trip beyond it.
 pub const call_ms = 7000
 
+/// How long a read for a listing waits (`Roster`), once connected. A listing
+/// asks once for every link, so a slow owner is shown as unavailable rather
+/// than holding the rest of the listing for the seven seconds a delivery may.
+pub const read_ms = 2000
+
 // The bound on connecting to a peer that is not connected yet. It is shorter
 // than the call so that an unreachable host costs the sender little.
 const connect_ms = 1500
+
+/// How long a call to the owner waits for the answer to `command`: `read_ms`
+/// for the `Roster` read a listing makes, and `call_ms` for every command that
+/// changes or admits something.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_peer.wait_ms(peer_mail.Roster("s", "main")) == remote_peer.read_ms
+/// ```
+pub fn wait_ms(command: peer_mail.Command) -> Int {
+  case command {
+    peer_mail.Roster(..) -> read_ms
+    _ -> call_ms
+  }
+}
 
 /// The endpoint for `session` on the orchestrator port at `at`, waiting at most
 /// `within_ms` for each answer.
@@ -75,7 +96,7 @@ pub fn at(
 /// The production endpoints: for a session owned by `orchestrator`, an endpoint
 /// that connects to the pinned peer if it is not connected and then asks its
 /// port. A peer the membership does not know and a refused handshake are
-/// `Unreachable`.
+/// `Unreachable`. A call waits `wait_ms` for its answer.
 ///
 /// ## Examples
 ///
@@ -103,7 +124,7 @@ pub fn over_distribution(
         ),
         session,
         command,
-        call_ms,
+        wait_ms(command),
       )
     })
   }

@@ -13,9 +13,13 @@
 //// the executor host's `HostMessage`. Every executor answers `HostMessage`, and
 //// an executor's ledger actor would then carry a read it has nothing to do with.
 //// Phase 4 adds peer-mail delivery as a second constructor of `Message` here,
-//// beside `Owns`: `PeerCommand` carries one of the four commands a session's
+//// beside `Owns`: `PeerCommand` carries one of the five commands a session's
 //// peer mail sends to a recipient on another orchestrator
-//// (`client/remote/remote_peer` is the sending end).
+//// (`client/remote/remote_peer` is the sending end). The fifth, `Roster`, is a
+//// read of the strands the recipient granted the sender, and `Describe` is a
+//// read of what this daemon's catalogue says about a session it owns, without
+//// opening it. Both let a listing on the sender's orchestrator show a
+//// recipient here as it shows a local one.
 ////
 //// Phase 5 adds the receiving half of a session move to the same port: `Import`
 //// carries the pieces of a copied session file, `ImportStatus` asks how far a
@@ -48,7 +52,11 @@
 //// allows, so the port limits what it forwards for the sake of correctness
 //// rather than as an access boundary: the sending orchestrator authenticates
 //// its own session and puts that session's identity in the command, and the
-//// recipient's grant is still the authority that admits it.
+//// recipient's grant is still the authority that admits it. A `Describe`
+//// reveals what a local listing of the session would, to a peer that already
+//// has every session's identity from `Owns`; the sender asks only about a
+//// session its own link or grant names, and the recipient's `Roster` answer is
+//// bounded by the grants the recipient made to the asking session.
 
 import client/internal/ffi_remote
 import client/peer_mail
@@ -78,11 +86,12 @@ pub type Message {
 
   /// One peer-mail command for a session this daemon holds, from the
   /// orchestrator whose session is sending to it (protocol-change/078, phase
-  /// 4). Only `Allow`, `Revoke`, `Deliver` and `SentReceipt` are served; the
-  /// port refuses every other command, because the sending orchestrator never
-  /// needs another and each one reads or writes state a remote peer has no
-  /// business with. The answer is the local Agency's own, so a repeated
-  /// `Deliver` is answered from the stored receipt exactly as it is in one VM.
+  /// 4). Only `Allow`, `Revoke`, `Deliver`, `SentReceipt` and `Roster` are
+  /// served; the port refuses every other command, because the sending
+  /// orchestrator never needs another and each one reads or writes state a
+  /// remote peer has no business with. The answer is the local Agency's own, so
+  /// a repeated `Deliver` is answered from the stored receipt exactly as it is
+  /// in one VM, and a `Roster` lists what the session granted the sender.
   PeerCommand(
     /// The canonical identity of the recipient session.
     session: String,
@@ -90,6 +99,18 @@ pub type Message {
     command: peer_mail.Command,
     /// Where the answer goes. A command that was refused is answered with
     /// `Error`; nothing is sent when the port itself could not run.
+    reply: Subject(Result(JsonValue, String)),
+  )
+
+  /// What this daemon's catalogue says about a session it owns, for a listing
+  /// on the orchestrator that links to it. It reads the catalogue and never
+  /// opens the session, as the local description does, so a saved session
+  /// answers. The answer is the description or the text of the reason there is
+  /// none; nothing is sent when the port itself could not run.
+  Describe(
+    /// The canonical session identity.
+    session: String,
+    /// Where the answer goes.
     reply: Subject(Result(JsonValue, String)),
   )
 
@@ -181,11 +202,19 @@ pub fn declining() -> Importer {
 }
 
 /// What the port does with a peer command once it has accepted the kind: find
-/// the session's Agency here and ask it. A refusal that the session is not
-/// resident on this daemon is `Error(peers.not_running)`, the text a local send
-/// to a session that is not resident gets.
+/// the session's Agency here and ask it. A session this daemon's catalogue
+/// holds that is not resident is `Error(peer_mail.not_open_reason)`, so the
+/// sender can wait for the owner to open it, and one it does not hold is
+/// `Error(peers.not_running)`, the text a local send to a session nobody holds
+/// gets.
 pub type PeerHandler =
   fn(String, peer_mail.Command) -> Result(JsonValue, String)
+
+/// What the port answers to `Describe`: the catalogue's description of the
+/// session, or the reason there is none. The daemon supplies it, so the port
+/// does not know the catalogue.
+pub type Describer =
+  fn(String) -> Result(JsonValue, String)
 
 /// The production port name, for a daemon to register and for its peers to
 /// address.
@@ -222,13 +251,19 @@ pub fn start(
     name,
     held,
     fn(_session, _command) { Error(peer_unserved) },
+    unserved_description,
     declining(),
   )
 }
 
+// The description of a port started without a catalogue to describe from.
+fn unserved_description(_session: String) -> Result(JsonValue, String) {
+  Error(peer_unserved)
+}
+
 /// Starts the port as `start` does, and serves peer commands with `peer`.
 /// The port decides which kinds of command are served; `peer` is only called
-/// for those.
+/// for those. A `Describe` is refused.
 ///
 /// ## Examples
 ///
@@ -240,7 +275,7 @@ pub fn start_serving(
   held: fn(String) -> Result(Ownership, Nil),
   peer: PeerHandler,
 ) -> actor.StartResult(Subject(Message)) {
-  start_with(name, held, peer, declining())
+  start_with(name, held, peer, unserved_description, declining())
 }
 
 /// Starts the port as `start` does, for a daemon that also receives sessions
@@ -261,29 +296,31 @@ pub fn start_importing(
     name,
     held,
     fn(_session, _command) { Error(peer_unserved) },
+    unserved_description,
     importer,
   )
 }
 
-/// Starts the port serving both peer commands (phase 4) and session moves
-/// (phase 5), which is what the production daemon runs. `start`,
-/// `start_serving` and `start_importing` are this with the other half
-/// refused.
+/// Starts the port serving peer commands (phase 4), descriptions of the
+/// sessions it holds, and session moves (phase 5), which is what the production
+/// daemon runs. `start`, `start_serving` and `start_importing` are this with the
+/// other parts refused.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, importer)
+/// // let assert Ok(_) = orchestrator_port.start_with(orchestrator_port.default(), held, forward, describe, importer)
 /// ```
 pub fn start_with(
   name: Name(Message),
   held: fn(String) -> Result(Ownership, Nil),
   peer: PeerHandler,
+  describe: Describer,
   importer: Importer,
 ) -> actor.StartResult(Subject(Message)) {
   actor.new(Nil)
   |> actor.on_message(fn(state, message) {
-    answer(held, peer, importer, state, message)
+    answer(held, peer, describe, importer, state, message)
   })
   |> actor.named(name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
@@ -306,6 +343,7 @@ pub const peer_unserved = "that command is not served to a peer orchestrator"
 fn answer(
   held: fn(String) -> Result(Ownership, Nil),
   peer: PeerHandler,
+  describe: Describer,
   importer: Importer,
   state: Nil,
   message: Message,
@@ -322,6 +360,9 @@ fn answer(
         True -> process.send(reply, peer(session, command))
         False -> process.send(reply, Error(peer_unserved))
       }
+
+    // A description is one catalogue read, answered in this turn like `Owns`.
+    Describe(session:, reply:) -> process.send(reply, describe(session))
 
     // A piece is written in this turn, so the pieces of one copy land in the
     // order they were sent.
@@ -340,18 +381,20 @@ fn answer(
   actor.continue(state)
 }
 
-// The four commands `client/peers` sends to a recipient. Everything else is
+// The five commands `client/peers` sends to a recipient. Everything else is
 // the recipient's own business or a read of its conversation: `Inbox`,
 // `History` and `Received` page what the session holds, `Link` and `Unlink`
-// edit the sender's own index, and the `Outbox*` commands belong to the
-// sending session. The match names every constructor, so a new command is a
-// compile error here until someone decides whether a peer may send it.
+// edit the sender's own index, `Describe` writes the recipient's own
+// self-description, and the `Outbox*` commands belong to the sending session.
+// The match names every constructor, so a new command is a compile error here
+// until someone decides whether a peer may send it.
 fn served(command: peer_mail.Command) -> Bool {
   case command {
     peer_mail.Allow(..)
     | peer_mail.Revoke(..)
     | peer_mail.Deliver(..)
-    | peer_mail.SentReceipt(..) -> True
+    | peer_mail.SentReceipt(..)
+    | peer_mail.Roster(..) -> True
 
     peer_mail.Link(..)
     | peer_mail.Unlink(..)
@@ -359,7 +402,6 @@ fn served(command: peer_mail.Command) -> Bool {
     | peer_mail.Grants(..)
     | peer_mail.Describe(..)
     | peer_mail.Activity(..)
-    | peer_mail.Roster(..)
     | peer_mail.Inbox(..)
     | peer_mail.InboxGet(..)
     | peer_mail.History(..)
@@ -415,6 +457,24 @@ pub fn ask(
   within_ms: Int,
 ) -> Result(Ownership, Nil) {
   exchange(at, fn(reply) { Owns(session:, reply:) }, within_ms)
+}
+
+/// Asks the port at `at` what its catalogue says about the session, and waits at
+/// most `within_ms` for the answer. The outer `Error(Nil)` is silence, as `ask`
+/// defines it; the inner result is the owner's own answer, a description or the
+/// text of the reason there is none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_description(Address(node: peer, name: orchestrator_port.default()), id, 2000)
+/// ```
+pub fn ask_description(
+  at: Address(Message),
+  session: String,
+  within_ms: Int,
+) -> Result(Result(JsonValue, String), Nil) {
+  exchange(at, fn(reply) { Describe(session:, reply:) }, within_ms)
 }
 
 /// Sends one piece of a copy to the port at `at` and waits at most `within_ms`

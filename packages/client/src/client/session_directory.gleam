@@ -63,6 +63,7 @@ import client/remote/orchestrator_port.{type Ownership, Moved, NotOwned, Owned}
 import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict,
 }
+import core/json.{type JsonValue}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -124,6 +125,10 @@ pub type Directory {
     /// that cannot reach anyone gives an endpoint whose every call is
     /// `Unreachable`.
     reach: fn(Orchestrator, String) -> peer_mail.Endpoint,
+    /// What an owner's catalogue says about a session it owns, without opening
+    /// it: the answer its own `describe` gives, or the reason it could not be
+    /// had. A directory that cannot reach anyone answers `owner unreachable`.
+    describe: fn(Orchestrator, String) -> Result(JsonValue, String),
     /// Asks an orchestrator to activate a session from the copy it holds, and
     /// answers its verdict, or `Error(Nil)` when it could not be asked or did not
     /// answer in time. The answer `Accepted` is the compare-and-set on the
@@ -172,6 +177,7 @@ pub fn none() -> Directory {
   Directory(
     lookup: fn(_session) { Error(Unknown) },
     reach: cannot_reach,
+    describe: cannot_describe,
     activate: fn(_, _) { Error(Nil) },
     settle: fn() { Nil },
   )
@@ -185,6 +191,14 @@ fn cannot_reach(
   peer_mail.Endpoint(session:, call: fn(_command) {
     Error(peer_mail.Unreachable)
   })
+}
+
+// The description of a daemon with no way to connect: nobody answers.
+fn cannot_describe(
+  _orchestrator: Orchestrator,
+  _session: String,
+) -> Result(JsonValue, String) {
+  Error(peer_mail.unreachable_reason)
 }
 
 /// The same directory with `reach` as the way to speak to an owner. The
@@ -201,6 +215,21 @@ pub fn with_reach(
   reach: fn(Orchestrator, String) -> peer_mail.Endpoint,
 ) -> Directory {
   Directory(..directory, reach:)
+}
+
+/// The directory with its `describe` replaced. A directory built by `peers`
+/// describes nothing until it is given the question to ask.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // directory |> session_directory.describing(session_directory.description_over(membership))
+/// ```
+pub fn describing(
+  directory: Directory,
+  describe: fn(Orchestrator, String) -> Result(JsonValue, String),
+) -> Directory {
+  Directory(..directory, describe:)
 }
 
 /// The directory with its `activate` replaced. A directory built by `peers`
@@ -297,6 +326,7 @@ pub fn peers(
           }
         },
         reach: cannot_reach,
+        describe: cannot_describe,
         activate: fn(_orchestrator, _activation) { Error(Nil) },
         settle: fn() { Nil },
       )
@@ -364,6 +394,39 @@ fn reached(
     node: distribution.node(peer),
     name: orchestrator_port.default(),
   ))
+}
+
+/// How long a read of an owner's catalogue waits for the answer, once connected.
+/// A description is a convenience of a listing, so a slow owner is shown as
+/// unavailable and does not hold the listing for the seven seconds a delivery
+/// may.
+pub const description_reply_ms = 2000
+
+/// The production `Directory.describe`: connect to the pinned peer and ask its
+/// port what its catalogue says about the session. A peer the membership does
+/// not know, a refused handshake, an unreachable host, a missing port and a late
+/// answer are all `owner unreachable`; a refusal the owner gave is its own text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // session_directory.peers(configured, held, ask) |> session_directory.describing(session_directory.description_over(membership))
+/// ```
+pub fn description_over(
+  membership: Membership,
+) -> fn(Orchestrator, String) -> Result(JsonValue, String) {
+  fn(orchestrator, session) {
+    case reached(membership, orchestrator) {
+      Error(Nil) -> Error(peer_mail.unreachable_reason)
+      Ok(at) ->
+        case
+          orchestrator_port.ask_description(at, session, description_reply_ms)
+        {
+          Ok(answer) -> answer
+          Error(Nil) -> Error(peer_mail.unreachable_reason)
+        }
+    }
+  }
 }
 
 /// The production `Directory.activate`: connect to the pinned peer and ask its

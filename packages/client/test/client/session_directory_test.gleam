@@ -7,6 +7,7 @@ import client/orchestrators.{type Orchestrator}
 import client/remote/orchestrator_port.{NotOwned, Owned}
 import client/session_directory.{Elsewhere, Here, Unknown, Unreachable}
 import client/session_move
+import core/json
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{Some}
@@ -269,6 +270,24 @@ pub fn a_holder_outweighs_a_tombstone_that_points_elsewhere_test() {
       #(gamma(), Ok(Owned)),
     ])
     == Ok(Elsewhere(gamma()))
+}
+
+pub fn a_directory_describes_nothing_until_it_is_given_the_question_test() {
+  let unreachable = Error("owner unreachable")
+  let plain =
+    session_directory.peers([beta()], fn(_) { Ok(NotOwned) }, fn(_, _) {
+      Ok(NotOwned)
+    })
+  assert plain.describe(beta(), id) == unreachable
+  assert session_directory.none().describe(beta(), id) == unreachable
+  let asking =
+    session_directory.describing(plain, fn(orchestrator, session) {
+      Ok(json.String(orchestrator.name <> " " <> session))
+    })
+  assert asking.describe(beta(), id) == Ok(json.String("beta " <> id))
+
+  // Describing leaves the lookup as it was.
+  assert asking.lookup(id) == plain.lookup(id)
 }
 
 pub fn a_directory_activates_nothing_until_it_is_given_the_question_test() {

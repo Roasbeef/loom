@@ -558,6 +558,7 @@ pub fn start_orchestrator_port(
           orchestrator_port.default(),
           catalogue_holds(ready.registry),
           peer_command(ready.registry, peer_endpoint),
+          server.local_description(ready.registry),
           importer,
         )
         |> result.map_error(fn(error) {
@@ -659,6 +660,9 @@ fn session_directory_of(
         session_directory.over_distribution(membership),
       )
       |> session_directory.with_reach(remote_peer.over_distribution(membership))
+      |> session_directory.describing(session_directory.description_over(
+        membership,
+      ))
       |> session_directory.activating(session_directory.activation_over(
         membership,
       ))
@@ -1511,10 +1515,6 @@ pub fn peer_directory_across(
       server.local_peer(registry, fn(resident) { Ok(endpoint(resident)) }),
       sessions,
     ),
-    describe: fn(id) {
-      manager.get(registry, id)
-      |> result.map(server.view_json)
-      |> result.map_error(string.inspect)
-    },
+    describe: peers.described(server.local_description(registry), sessions),
   )
 }
