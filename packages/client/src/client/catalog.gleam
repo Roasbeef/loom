@@ -162,8 +162,14 @@
 
 import broker/policy.{type MountAccess, MountReadOnly, MountReadWrite}
 import client/daemon/limits as daemon_limits
+import client/directory/settings as directory_settings
+import client/distribution
+import client/executors
 import client/lsp/profile.{type LspServer}
+import client/orchestrators
 import client/peer_defaults
+import client/pools
+import client/workspaces
 import codemode/vet/policy as vet_policy
 import core/clock.{type Clock}
 import gleam/dict.{type Dict}
@@ -447,17 +453,33 @@ pub fn parse(text: String) -> Result(Catalog, String) {
   // already mention. `retry` is `client/retryconf`'s: the provider retry
   // ladder's attempts and delays, which `serve.load_config` reads beside the
   // other operator tables and which is refused here if this list omits it.
+  // `executors` is `client/executors`'s: the peers an orchestrator may place a
+  // session's workspace on, read once when the daemon starts. `pools` is
+  // `client/pools`': named groups of those executors a session may be placed
+  // on without naming one. `workspaces` is `client/workspaces`': the checkouts
+  // an executor serves, read the same way. `orchestrators` is
+  // `client/orchestrators`': the other orchestrators this daemon asks which of
+  // them owns a session it has no record of. `directory` is
+  // `client/directory/settings`': the members of the session directory's
+  // Khepri cluster, when this daemon is one of them.
   use Nil <- result.try(known_keys(
     dict.keys(document),
     [
       "models", "roles", "mcp", "rule", "schedule", "schedules", "memory",
       "tools", "jobs", "secrets", "workspace", "advisor", "daemon", "lsp",
-      "profiles", "peers", "retry",
+      "profiles", "peers", "retry", "distribution", "executors", "pools",
+      "workspaces", "orchestrators", "directory",
     ],
     "the top level",
   ))
   use Nil <- result.try(validate_daemon(document))
   use Nil <- result.try(validate_peers(document))
+  use Nil <- result.try(validate_distribution(document))
+  use Nil <- result.try(validate_executors(document))
+  use Nil <- result.try(validate_pools(document))
+  use Nil <- result.try(validate_workspaces(document))
+  use Nil <- result.try(validate_orchestrators(document))
+  use Nil <- result.try(validate_directory(document))
   use model_tables <- result.try(
     table_entries(document, "models")
     |> result.replace_error("the catalogue needs a [models.<name>] table"),
@@ -487,6 +509,53 @@ fn validate_daemon(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
 // validated wherever the file is read, so a typo is refused by every parser.
 fn validate_peers(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
   peer_defaults.from_document(document) |> result.replace(Nil)
+}
+
+// `[distribution]` is the daemon owner's trust setting for Erlang distribution
+// (protocol-change/078). Only the daemon starts it, but a typo in a pin or a
+// credential path is refused wherever the file is read, as for `[peers]`.
+fn validate_distribution(
+  document: Dict(String, tom.Toml),
+) -> Result(Nil, String) {
+  distribution.from_document(document) |> result.replace(Nil)
+}
+
+// `[executors.<name>]` names the peers an orchestrator may place workspaces on
+// (protocol-change/078). The check needs `[distribution]`, because an executor
+// is a pinned peer, so it runs after that table's own validation.
+fn validate_executors(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
+  executors.from_document(document) |> result.replace(Nil)
+}
+
+// `[pools.<name>]` groups executors a session may be placed on without naming
+// one (protocol-change/078). Its members are executors, so it runs after the
+// executors' own validation.
+fn validate_pools(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
+  pools.from_document(document) |> result.replace(Nil)
+}
+
+// `[workspaces.<name>]` names the checkouts an executor serves
+// (protocol-change/078). Like `[executors.<name>]` it needs `[distribution]`.
+fn validate_workspaces(
+  document: Dict(String, tom.Toml),
+) -> Result(Nil, String) {
+  workspaces.from_document(document) |> result.replace(Nil)
+}
+
+// `[orchestrators.<name>]` names the peers this daemon asks who owns a session
+// it does not know (protocol-change/078). Like `[executors.<name>]` it needs
+// `[distribution]`, because an orchestrator is a pinned peer.
+fn validate_orchestrators(
+  document: Dict(String, tom.Toml),
+) -> Result(Nil, String) {
+  orchestrators.from_document(document) |> result.replace(Nil)
+}
+
+// `[directory]` makes this daemon a member of the session directory's Khepri
+// cluster (protocol-change/081). Its members are pinned peers and every listed
+// orchestrator must be one, so it runs after both of those tables' checks.
+fn validate_directory(document: Dict(String, tom.Toml)) -> Result(Nil, String) {
+  directory_settings.from_document(document) |> result.replace(Nil)
 }
 
 // tom renders a TOML parse failure as a structured value; the server
@@ -956,6 +1025,26 @@ fn mcp_command(
 }
 
 // --- the [lsp.<name>] tables -----------------------------------------------
+
+/// Parses only the `[lsp.<name>]` tables of a configuration text.
+///
+/// An executor has no model catalogue, so it cannot call `parse`, which
+/// insists on `[models]` and `[roles]`. It still serves language servers for
+/// the workspaces it hosts, and this reads the same tables through the same
+/// decoder, so a server means the same thing wherever the file is read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalog.parse_lsp("") == Ok([])
+/// ```
+pub fn parse_lsp(text: String) -> Result(List(LspServer), String) {
+  use document <- result.try(
+    tom.parse(text)
+    |> result.map_error(describe_parse_error),
+  )
+  parse_lsp_servers(document)
+}
 
 // The optional [lsp] table: absent parses to no servers, which is the
 // workspace that registers no `lsp_*` tools and pays nothing. Present, it

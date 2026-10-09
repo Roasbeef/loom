@@ -92,6 +92,7 @@ import tui/bootstrap
 import tui/daemon
 import tui/daemon/bootstrap as daemon_bootstrap
 import tui/daemon/selection
+import tui/placement
 import tui/workspace
 import weft
 import weft/actor
@@ -362,8 +363,9 @@ fn started_id(seen: List(provider.ObservedRequest)) -> String {
     list.filter_map(seen, fn(request) {
       case request.latest {
         provider.SuccessfulToolResult("start-call", text) -> Ok(text)
-        provider.SuccessfulToolResult(..) | provider.UserPrompt(..) ->
-          Error(Nil)
+        provider.SuccessfulToolResult(..)
+        | provider.FailedToolResult(..)
+        | provider.UserPrompt(..) -> Error(Nil)
       }
     })
   let assert [announcement] = announcements
@@ -1109,7 +1111,15 @@ fn connect(
   let config = config_of(directory)
   let assert Ok(connected) =
     bootstrap.resolve_daemon(
-      bootstrap.Options(workspace, "", server, paths.root, config, ""),
+      bootstrap.Options(
+        workspace,
+        "",
+        server,
+        paths.root,
+        config,
+        "",
+        placement.OnThisHost,
+      ),
       process.self(),
       40_000,
     )
@@ -1190,6 +1200,8 @@ fn attach(
       workspace,
       workspace.session_name(workspace.Context(workspace, None)),
       config,
+      "",
+      "",
       "",
     )
     as "the session is explicitly created"

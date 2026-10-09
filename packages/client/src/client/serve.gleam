@@ -21,6 +21,11 @@
 //// surviving instance custodian. Failed construction keeps those capabilities
 //// retained; it cannot release storage before earlier effects prove retirement.
 ////
+//// A registration that names an executor is assembled by assemble_registered.
+//// It runs the same construction, but its workspace half is attached on the
+//// executor (client/remote/workspace) instead of prepared and started here, so
+//// nothing in it names the registered workspace on this machine's disk.
+////
 //// boot and open_instance remain internal host/test seams. They are not CLI
 //// compatibility modes: invoking this module's main refuses per-session serving.
 ////
@@ -89,23 +94,21 @@ import client/hookrunner
 import client/hookserve
 import client/hookwire
 import client/host
-import client/host_git
 import client/install
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
+import client/internal/session_owner
 import client/jobs
-import client/jobseam
-import client/jobtools
-import client/lsp/jail as lsp_jail
-import client/lsp/leases as lsp_leases
-import client/lsp/manager as lsp_manager
-import client/lsp/profile
-import client/lsp/profiles as lsp_profiles
 import client/mcp as mcp_wiring
 import client/memory
 import client/notes
+import client/owner_codemode
+import client/owner_services
 import client/peer_mail
+import client/peer_outbox_drain
 import client/peers
+import client/remote/owner_port
+import client/remote/workspace as remote_workspace
 import client/retryconf
 import client/rules
 import client/rulescan
@@ -113,7 +116,6 @@ import client/schedule
 import client/scheduleadmin
 import client/schedulescan
 import client/scheduleseam
-import client/scratch
 import client/secrets
 import client/server
 import client/session_git
@@ -121,7 +123,8 @@ import client/skill_tool
 import client/system_prompt
 import client/tool_holder
 import client/wiring
-import client/working_directory
+import client/workspace_plane
+import client/workspace_policy
 import client/worktree_diff
 import codemode/compile
 import codemode/seed
@@ -132,7 +135,6 @@ import core/json
 import events/bus
 import filepath
 import gleam/bit_array
-import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/erlang/process.{type Pid, type Subject}
@@ -172,7 +174,6 @@ import storage/storage.{type StorageError}
 import telemetry/context
 import telemetry/field
 import telemetry/log.{type Logger}
-import tom
 import tools/advise
 import tools/agent.{type Agency}
 import tools/codemode as codemode_tool
@@ -191,18 +192,26 @@ import weft/registry as address
 // existed. The runner context reuses the harness-side coordinates
 // the extension bus already clears under, so an imported hook's
 // process is attributed the same way a native hook satellite's is.
+//
+// The workspace's own settings files arrive in the plane's census, read
+// where the workspace is, and the operator's file is read here. Whether any
+// of them is trusted is decided here from the bytes, against the owner's
+// trust record, whichever machine the files were on. The hooks run through
+// the plane's broker under the census's policy and environment.
 fn with_imported_hooks(
   built: effects.Effects,
   opened: session.Session,
   settings: Settings,
   clock: Clock,
-  environment: List(#(String, String)),
-  base_policy: policy.SandboxPolicy,
-  broker_actor: broker.Broker,
+  plane: workspace_plane.WorkspacePlane,
+  call_clock: Clock,
   logger: Logger,
   entropy: fn() -> Int,
 ) -> effects.Effects {
-  let located = hookserve.locations(settings.home, settings.workspace)
+  let census = plane.census
+  let environment = census.env
+  let base_policy = census.base_policy
+  let located = hookserve.locations(settings.home, census.workspace)
   let trust_root = option.map(settings.home, fn(home) { home <> "/hooktrust" })
   let wiring =
     hookwire.Wiring(
@@ -212,24 +221,32 @@ fn with_imported_hooks(
       ),
       session_id: settings.session_id,
       transcript_path: settings.session_path,
-      workspace: settings.workspace,
+      workspace: census.workspace,
     )
   let coordinates =
     hook_coordinates(settings, base_policy, entropy(), clock, environment)
   let runner =
     hookrunner.Context(
-      broker: broker_actor,
+      broker: plane.broker,
       base_policy: base_policy,
       op_id: coordinates.op_id,
       step_id: "imported-hooks",
-      workspace: settings.workspace,
-      env: hook_environment(environment, settings.home, settings.workspace),
+      workspace: census.workspace,
+      env: hook_environment(environment, settings.home, census.workspace),
       demand: settings.demand,
-      clock: clock,
+      // The deadline of a hook's command is absolute and the broker compares
+      // it with its own clock, so a hook reads the broker's timebase.
+      clock: call_clock,
       session_id: settings.session_id,
       transcript_path: settings.session_path,
     )
-  let serving = hookserve.load(located, trust_root, wiring, runner)
+  let serving =
+    hookserve.load_from(
+      hookserve.gather(located, census.hook_files),
+      trust_root,
+      wiring,
+      runner,
+    )
   list.each(serving.skipped, fn(skipped) {
     log.warn(logger, "hooks.source_skipped", [
       field.ident(key: "path", value: skipped.path),
@@ -375,7 +392,7 @@ pub type Settings {
     codemode_sockets: Option(String),
     /// The session's base policy — the ceiling every tool call is
     /// composed against, and the thing an escalation widens. `main`
-    /// fills it with `base_policy(workspace)`; it is a field rather than
+    /// fills it with `workspace_policy.base_policy(workspace)`; it is a field rather than
     /// a call inside `boot` so that a host — or a test — can serve a
     /// narrower base without editing this module. Nothing else about the
     /// boot reads it, so a base that refuses a shipped tool is a
@@ -544,16 +561,20 @@ pub type Instance {
     runtime: api.Runtime,
     /// The original storage actor, monitored before another writer call.
     storage_owner: Pid,
+    /// The capability broker the session's non-tool callers clear through.
+    /// For a workspace on an executor it is a handle on the executor's.
     broker: Broker,
     /// The holder of the configuration tool runs fetch. Kept so the legacy
     /// teardown can stop it after the runtime drains; an owned session
     /// retires it through custody instead, and stopping it twice is a no-op.
     tools: tool_holder.Holder(wiring.Config),
-    pool: Pool,
+    /// The helper pool, or `None` for a workspace on an executor, whose
+    /// helpers are the executor's.
+    pool: Option(Pool),
     /// The executor service. It sits between the broker and the pool, so
     /// teardown closes it and it closes the pool, and its death is as fatal
-    /// as the pool's.
-    executor: executor.Executor,
+    /// as the pool's. `None` exactly when `pool` is.
+    executor: Option(executor.Executor),
     /// The hub's stable address. Everything that talks to the hub — the
     /// listener, the commit forwarder, the provider tap — holds this
     /// name rather than a pid, which is what lets the hub be restarted
@@ -617,27 +638,12 @@ pub type Instance {
     /// server was refused at load. Held so `close_instance` can stop the
     /// server gracefully and then abort the plane's operation, the
     /// backstop ADR-015 §1 assigns to session end.
-    lsp: Option(LspPlane),
-  )
-}
-
-/// The session's language-server plane: the manager every `cap/lsp`
-/// capability and post-write diagnostics block asks through, and
-/// what its teardown needs.
-///
-/// One per session, because the helper pool it leases from is one per
-/// session (ADR-015 §1, "Pool pressure").
-pub type LspPlane {
-  LspPlane(
-    /// The handle on the supervised manager, reached through its address
-    /// so a replacement is the same manager to every door built over it.
-    manager: lsp_manager.Manager,
-    /// The session's helper-lease counter, started from the pool size.
-    leases: lsp_leases.Leases,
-    /// The language servers' attribution operation. Session end aborts
-    /// it after the graceful stop, so a server that outlived its grace
-    /// cannot outlive the session.
-    op_id: OpId,
+    lsp: Option(workspace_plane.LspPlane),
+    /// What this assembly holds of the workspace half: the functions and
+    /// data the owner asks of it, the same shape a workspace on another
+    /// node would return. The fields above are the local handles the
+    /// teardown paths and the tests read.
+    plane: workspace_plane.WorkspacePlane,
   )
 }
 
@@ -687,14 +693,13 @@ pub fn start_effect_plane(
   size size: Int,
   clock clock: Clock,
 ) -> Result(#(Pool, Broker, executor.Executor), String) {
-  use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
-  use #(service, broker_actor) <- result.map(start_service_lane(
-    pool,
-    clock,
-    log.discard(),
-    None,
-  ))
-  #(pool, broker_actor, service)
+  workspace_plane.start_effect_plane(
+    helper:,
+    base_policy:,
+    tmp_dir:,
+    size:,
+    clock:,
+  )
 }
 
 // Tears a one-shot plane down: no new calls, then the executor's close, which
@@ -724,134 +729,6 @@ fn stop_one_shot(
     Ok(Nil) -> Nil
     Error(_unconfirmed) -> exec.stop_pool(pool)
   }
-}
-
-// What a session's effect plane is made of: the executor service sits between
-// the broker and the pool and owns the helpers' checkout, checkin and close.
-type EffectPlane {
-  EffectPlane(pool: Pool, broker: Broker, executor: executor.Executor)
-}
-
-// A pool of helpers spawned lazily over the resolved spawn configuration.
-// Both planes build their pool here, exactly as it always was.
-fn start_helper_pool(
-  helper: String,
-  base_policy: policy.SandboxPolicy,
-  tmp_dir: String,
-  size: Int,
-) -> Result(Pool, String) {
-  let spawn_config =
-    exec.SpawnConfig(
-      helper_path: helper,
-      shell_path:,
-      base_policy:,
-      // Never an opt-out of enforcement on the caller's behalf: on a
-      // platform with no jail the helper refuses to serve, which is the
-      // refusal `--allow-unenforced` exists to make deliberate.
-      helper_args: [],
-      tmp_dir:,
-      handshake_timeout_ms: 5000,
-      cancel_grace_ms: 3000,
-      heartbeat_interval_ms: 0,
-    )
-  exec.start_pool(size:, spawn: fn() { exec.prepare_helper(spawn_config) })
-  |> result.map_error(fn(error) {
-    "the helper pool did not start: " <> string.inspect(error)
-  })
-}
-
-// A session's effect plane. The owned path publishes parked helper custody
-// before the first checkout. The pool is built first and the executor service
-// is started over its seams before anything can borrow; the broker is then
-// given the service's dispatcher, and is the one door every clearance site
-// goes through.
-fn start_effect_plane_in(
-  helper: String,
-  base_policy: policy.SandboxPolicy,
-  tmp_dir: String,
-  size: Int,
-  clock: Clock,
-  logger: Logger,
-  owner: Option(custody.Owner),
-) -> Result(EffectPlane, String) {
-  use pool <- result.try(start_helper_pool(helper, base_policy, tmp_dir, size))
-  use #(service, broker_actor) <- result.try(start_service_lane(
-    pool,
-    clock,
-    logger,
-    owner,
-  ))
-  use broker_pid <- result.try(
-    broker.pid(broker_actor)
-    |> result.replace_error("the broker died during startup"),
-  )
-  use Nil <- result.try(
-    retain(
-      owner,
-      custody.Broker,
-      fn() { stop_broker_owned(broker_actor, broker_pid) },
-      fn() { process.unlink(broker_pid) },
-    ),
-  )
-  Ok(EffectPlane(pool:, broker: broker_actor, executor: service))
-}
-
-// The service lane: the executor service is started over the pool's seams
-// before anything can borrow, its `close` becomes the `Helpers` custody
-// step (it drains executions for `executor.drain_ms` and then closes the
-// pool with its own `executor.helpers_ms`, whose verdict it returns unchanged;
-// custody's cleanup steps have no overall deadline, so the 8 s this can take
-// fits), and the broker is given its dispatcher. Custody
-// unlinks the service with the pool, since both are fatal children the
-// instance monitors instead.
-fn start_service_lane(
-  pool: Pool,
-  session_clock: Clock,
-  logger: Logger,
-  owner: Option(custody.Owner),
-) -> Result(#(executor.Executor, Broker), String) {
-  use service <- result.try(
-    executor.start(executor.ExecutorConfig(
-      checkout: fn() { exec.checkout(pool, waiting: 15_000) },
-      checkin: fn(helper) { exec.checkin(pool, helper) },
-      custody: fn() { exec.pool_custody(pool, waiting: 1000) },
-      close_helpers: fn(waiting) { exec.close_pool(pool, waiting:) },
-      incarnation: clock.read(session_clock).0,
-      log: logger,
-    ))
-    |> result.map_error(fn(error) {
-      "the executor service did not start: " <> string.inspect(error)
-    }),
-  )
-  use Nil <- result.try(
-    retain(
-      owner,
-      custody.Helpers,
-      fn() {
-        executor.close(
-          service,
-          draining: executor.drain_ms,
-          helpers: executor.helpers_ms,
-        )
-        |> result.map_error(string.inspect)
-      },
-      fn() {
-        process.unlink(exec.pool_pid(pool))
-        process.unlink(executor.pid(service))
-      },
-    ),
-  )
-  use broker_actor <- result.map(
-    broker.start_dispatching(
-      entropy: token.production_entropy(),
-      clock: session_clock,
-      dispatcher: executor.dispatcher(service),
-    )
-    |> result.map_error(fn(error) {
-      "the broker did not start: " <> string.inspect(error)
-    }),
-  )
-  #(service, broker_actor)
 }
 
 /// Everything a jailed offline build needs, and nothing a session does.
@@ -920,20 +797,20 @@ pub fn start_build_plane(
   // down. The toolchain is admitted against the build root it would
   // share a jail with, because a prefix covering that root would leave
   // every compile unable to write its own output.
-  let unmounted = build_plane_policy(writable, state_root)
+  let unmounted = workspace_policy.build_plane_policy(writable, state_root)
   use toolchain <- result.try(
     codemode_wiring.discover(seed_root(seed, workspace))
-    |> admissible_toolchain(unmounted),
+    |> workspace_policy.admissible_toolchain(unmounted),
   )
   let base =
     unmounted
-    |> admitting_codemode(Ok(toolchain))
-    |> merging_mounts
+    |> workspace_policy.admitting_codemode(Ok(toolchain))
+    |> workspace_policy.merging_mounts
 
   // The same refusal the boot makes, in the same place in the order: a
   // base policy the sandbox cannot enforce is a failure now, not a
   // surprise inside the build.
-  use Nil <- result.try(base_policy_fault(base))
+  use Nil <- result.try(workspace_policy.base_policy_fault(base))
   use #(pool, broker_actor, service) <- result.try(start_effect_plane(
     helper: helper_path,
     base_policy: base,
@@ -1001,12 +878,14 @@ pub fn start_check_plane(
   clock clock: Clock,
 ) -> Result(CheckPlane, String) {
   use helper_path <- result.try(find_helper(helper))
-  let base = build_plane_policy(workspace, state_root) |> merging_mounts
+  let base =
+    workspace_policy.build_plane_policy(workspace, state_root)
+    |> workspace_policy.merging_mounts
 
   // Refused before anything is spawned, as a boot refuses: a base the
   // sandbox cannot enforce is a failure of the check's setup, not a
   // server that later fails to start for reasons nobody can read.
-  use Nil <- result.try(base_policy_fault(base))
+  use Nil <- result.try(workspace_policy.base_policy_fault(base))
   use #(pool, broker_actor, service) <- result.try(start_effect_plane(
     helper: helper_path,
     base_policy: base,
@@ -1129,6 +1008,13 @@ pub fn resolve_managed(
   selected: domain.Domain,
   state_root: String,
 ) -> Result(Settings, String) {
+  // A registered workspace is a name on another machine. It is carried as
+  // given and never canonicalized, and the helper and the Go caches, which are
+  // the executor's, are not looked for here.
+  let placement = case registration.executor {
+    "" -> LocalWorkspace
+    _ -> RegisteredWorkspace
+  }
   use flags <- result.try(parse(defaults))
   let configuration = case registration.configuration {
     "" -> flags.config
@@ -1143,6 +1029,7 @@ pub fn resolve_managed(
       profile: registration.profile,
       model: registration.model,
     ),
+    placement,
   ))
   use Nil <- result.try(
     bootstrap.ensure_private_directory(filepath.directory_name(
@@ -1164,7 +1051,10 @@ pub fn resolve_managed(
       // whole state root also masked a workspace an operator had every
       // right to open on it; see `state_root_mask_candidates` for the grain and
       // the reason for each entry.
-      base_policy: protecting_state_root(settings.base_policy, state_root),
+      base_policy: workspace_policy.protecting_state_root(
+        settings.base_policy,
+        state_root,
+      ),
     ),
   )
 }
@@ -1183,7 +1073,7 @@ pub fn resolve_managed(
 /// ## Examples
 ///
 /// ```gleam
-/// // serve.codemode_socket_root(serve.base_policy("/work"), "/home/o/.loom")
+/// // serve.codemode_socket_root(workspace_policy.base_policy("/work"), "/home/o/.loom")
 /// //   == Some("/home/o/.loom/run")
 /// ```
 ///
@@ -1280,7 +1170,7 @@ pub fn build_domain(
                 filepath.directory_name(selected.memory_path),
                 distill.no_distiller(),
                 clock:,
-                entropy: mixed_entropy(),
+                entropy: workspace_plane.mixed_entropy(),
               )
             Ok(
               Some(distillpass.DomainConfig(
@@ -1398,13 +1288,21 @@ fn set_demand(
   }
 }
 
+// Where the workspace a session is resolved for lives. A registered workspace
+// is a name that only its executor can resolve, so resolving one must not look
+// for anything on this machine's disk on its behalf.
+type Placement {
+  LocalWorkspace
+  RegisteredWorkspace
+}
+
 // Fills every default and builds the provider gateway from the model
 // catalogue — the `--config` file when given, the environment-shaped
 // one-entry catalogue otherwise — turning Flags into a bootable
 // Settings. The new-strand identity and the wiring's fallback model
 // facts all come from the main route's head entry, so one catalogue is
 // the single source for everything model-shaped.
-fn resolve(flags: Flags) -> Result(Settings, String) {
+fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
   use session_path <- result.try(case flags.session {
     Some(path) -> Ok(path)
     None -> Error("--session is required\n" <> usage)
@@ -1420,7 +1318,10 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
         "the working directory is unreadable: " <> string.inspect(error)
       })
   })
-  use helper_path <- result.try(find_helper(flags.helper))
+  use helper_path <- result.try(case placement {
+    LocalWorkspace -> find_helper(flags.helper)
+    RegisteredWorkspace -> Ok("")
+  })
 
   // The override is clamped to the same range the derived default is,
   // and both ends are load-bearing. A pool must hold at least two
@@ -1493,63 +1394,71 @@ fn resolve(flags: Flags) -> Result(Settings, String) {
       clock:,
     )
 
-  Ok(Settings(
-    session_path:,
-    bind_host:,
-    bind_port:,
-    token_path: option.unwrap(flags.token_file, session_path <> ".token"),
-    workspace:,
-    domain_paths: None,
-    peer_directory: None,
-    peer_defaults: None,
-    first_prompt: None,
-    codemode_sockets: None,
-    base_policy: admitting_config_mounts(
-      base_policy_for(
-        workspace,
-        option.unwrap(flags.read_scope, workspace_config.read_scope),
+  Ok(
+    Settings(
+      session_path:,
+      bind_host:,
+      bind_port:,
+      token_path: option.unwrap(flags.token_file, session_path <> ".token"),
+      workspace:,
+      domain_paths: None,
+      peer_directory: None,
+      peer_defaults: None,
+      first_prompt: None,
+      codemode_sockets: None,
+      base_policy: workspace_policy.admitting_config_mounts(
+        workspace_policy.base_policy_for(
+          workspace,
+          option.unwrap(flags.read_scope, workspace_config.read_scope),
+        ),
+        workspace_config.mounts,
       ),
-      workspace_config.mounts,
+      helper_path:,
+      helper_pool_size:,
+      session_id: session_id_of(session_path),
+      demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
+      gateway:,
+      catalog: catalogue,
+      secrets: secret_store,
+      secret_failures:,
+      system: option.from_result(workspace_policy.env_text(
+        system_prompt.override_variable,
+      )),
+      home: workspace_policy.home_directory(),
+      model: machine_strand.ModelIdentity(
+        provider: main_entry.name,
+        model_id: main_entry.model_id,
+      ),
+      context_window: main_entry.context_window,
+      max_output_tokens: main_entry.max_output_tokens,
+      api: adapter_api(main_entry.dialect),
+      compaction: compaction_settings(main_entry.context_window),
+      codemode_seed: seed_root(flags.codemode_seed, workspace),
+      codemode_seams:,
+      rules: rule_list,
+      schedules: schedule_list,
+      schedule_policy:,
+      jobs_policy:,
+      retry_policy:,
+      deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
+      memory:,
+      tools: catalog.ToolsConfig(
+        ..tools,
+        network: option.unwrap(flags.network, tools.network),
+      ),
+      advisor: advisor_settings(gateway, advisor_config),
+      go_caches: case placement {
+        LocalWorkspace ->
+          gocache.locate(
+            workspace_policy.lsp_places().cache,
+            workspace,
+            workspace_config.go_module_mirror,
+            workspace_config.go_cache_limit_mib,
+          )
+        RegisteredWorkspace -> None
+      },
     ),
-    helper_path:,
-    helper_pool_size:,
-    session_id: session_id_of(session_path),
-    demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
-    gateway:,
-    catalog: catalogue,
-    secrets: secret_store,
-    secret_failures:,
-    system: option.from_result(env_text(system_prompt.override_variable)),
-    home: home_directory(),
-    model: machine_strand.ModelIdentity(
-      provider: main_entry.name,
-      model_id: main_entry.model_id,
-    ),
-    context_window: main_entry.context_window,
-    max_output_tokens: main_entry.max_output_tokens,
-    api: adapter_api(main_entry.dialect),
-    compaction: compaction_settings(main_entry.context_window),
-    codemode_seed: seed_root(flags.codemode_seed, workspace),
-    codemode_seams:,
-    rules: rule_list,
-    schedules: schedule_list,
-    schedule_policy:,
-    jobs_policy:,
-    retry_policy:,
-    deactivated_tools: named_tools(env_text_or("LOOM_DISABLE_TOOLS", "")),
-    memory:,
-    tools: catalog.ToolsConfig(
-      ..tools,
-      network: option.unwrap(flags.network, tools.network),
-    ),
-    advisor: advisor_settings(gateway, advisor_config),
-    go_caches: gocache.locate(
-      lsp_places().cache,
-      workspace,
-      workspace_config.go_module_mirror,
-      workspace_config.go_cache_limit_mib,
-    ),
-  ))
+  )
 }
 
 // The advisor strand's identity and policy, or `None` when the catalogue
@@ -2008,13 +1917,6 @@ fn session_id_of(path: String) -> String {
 /// The default model identity when `LOOM_MODEL` is unset.
 pub const default_model = "claude-opus-5"
 
-// Environment reads go through the provider secret env store rather
-// than a second env FFI: it is the injected env-lookup seam this tree
-// already has, and these values are configuration, not durable state.
-fn env_text(name: String) -> Result(String, Nil) {
-  secret.lookup(secret.env(), name)
-}
-
 // The `[secrets]` table run and layered over the process environment, in
 // the one place a domain assembly has a logger to warn with. `resolve`
 // keeps its failures in `Settings` instead, because it has none. Like
@@ -2048,11 +1950,11 @@ fn log_secret_failures(failures: List(secrets.Failure), logger: Logger) -> Nil {
 }
 
 fn env_text_or(name: String, fallback: String) -> String {
-  result.unwrap(env_text(name), fallback)
+  result.unwrap(workspace_policy.env_text(name), fallback)
 }
 
 fn env_int_or(name: String, fallback: Int) -> Int {
-  env_text(name)
+  workspace_policy.env_text(name)
   |> result.try(int.parse)
   |> result.unwrap(fallback)
 }
@@ -2223,14 +2125,7 @@ pub fn instance_children(instance: Instance) -> List(#(String, Pid)) {
     #("the session tree", instance.runtime.tree.supervisor),
     #("the service supervisor", instance.services),
     #("the session storage", instance.storage_owner),
-    #("the helper pool", exec.pool_pid(instance.pool)),
-    ..list.append(
-      [#("the executor service", executor.pid(instance.executor))],
-      case broker.pid(instance.broker) {
-        Ok(pid) -> [#("the capability broker", pid)]
-        Error(Nil) -> []
-      },
-    )
+    ..instance.plane.fatal
   ]
 }
 
@@ -2371,6 +2266,53 @@ pub fn with_code_mode_peers(
   )
 }
 
+// The label the jobs actor files itself under for the ownership inspector,
+// which is the session's canonical id. A function because the id is known
+// only once the runtime is open, and over the supplier rather than the
+// Agency's whole configuration so that the actor's copy of it holds only a
+// name and a timeout.
+fn session_label(
+  borrow_runtime: fn() -> Result(api.Runtime, Nil),
+) -> fn() -> Result(List(#(String, String)), Nil) {
+  fn() { borrow_runtime() |> result.map(session_owner.path) }
+}
+
+/// What the workspace half of a session is built from, read off the
+/// settings.
+///
+/// Plain data, so a workspace on another node could be built from the same
+/// value. The helper scratch directory is derived from the session path
+/// here, which keeps it beside the session file a local owner already
+/// cleans up; a workspace elsewhere would choose its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_plane.prepare(serve.workspace_spec(settings, option.None), reading: env)
+/// ```
+pub fn workspace_spec(
+  settings: Settings,
+  files: Option(workspace_policy.OwnerFiles),
+) -> workspace_plane.WorkspaceSpec {
+  workspace_plane.WorkspaceSpec(
+    workspace: settings.workspace,
+    scratch_dir: settings.session_path <> ".tmp",
+    helper_path: settings.helper_path,
+    helper_pool_size: settings.helper_pool_size,
+    demand: settings.demand,
+    base_policy: settings.base_policy,
+    tools: settings.tools,
+    deactivated_tools: settings.deactivated_tools,
+    go_caches: settings.go_caches,
+    home: settings.home,
+    codemode_seed: settings.codemode_seed,
+    codemode_sockets: settings.codemode_sockets,
+    lsp_servers: settings.catalog.lsp_servers,
+    jobs_policy: settings.jobs_policy,
+    owner_files: files,
+  )
+}
+
 // Code mode, and the MCP servers it reaches — one decision, because the
 // second is unreachable without the first.
 //
@@ -2383,18 +2325,12 @@ pub fn with_code_mode_peers(
 // no capability. One line says so, because an operator who configured a
 // server and sees nothing would otherwise have only the absent
 // `code_mode` line to reason from.
-fn code_mode_seam(
+fn code_mode_mcp(
   settings: Settings,
   discovered: Result(codemode_wiring.Toolchain, String),
   logger: Logger,
-  broker_actor: Broker,
-  clock: Clock,
-  agency_seam: Agency,
-  scratch_seam: codemode_wiring.Scratch,
-  schedule_door: Option(scheduleseam.Door),
-  jobs_door: jobseam.Door,
   owner: Option(custody.Owner),
-) -> Result(#(Option(codemode_wiring.Config), mcp_wiring.Layer), String) {
+) -> Result(mcp_wiring.Layer, String) {
   case discovered {
     Error(reason) -> {
       log.warn(logger, "codemode.unavailable", [
@@ -2406,7 +2342,7 @@ fn code_mode_seam(
         "MCP servers are reached from code-mode programs only, and this "
           <> "host registers no code_mode tool, so none was started",
       )
-      Ok(#(None, mcp_wiring.none()))
+      Ok(mcp_wiring.none())
     }
     Ok(toolchain) -> {
       // Which `gleam`, which `erl`, which seed — because the ladder now
@@ -2417,391 +2353,51 @@ fn code_mode_seam(
         field.text(key: "erl", value: toolchain.erl_path),
         field.text(key: "seed", value: toolchain.seed_root),
       ])
-      use layer <- result.try(started_mcp(
-        settings.catalog.mcp_servers,
-        settings.secrets,
-        logger,
-        owner,
-      ))
-      Ok(#(
-        Some(
-          codemode_wiring.default_config(
-            broker: broker_actor,
-            clock:,
-            workspace: settings.workspace,
-            toolchain:,
-          )
-          // Which seams this server offers is the operator's decision, and
-          // the Agency the orchestration one routes onto is the same seam
-          // the `agent_*` tools call — one messaging plane, reached two
-          // ways.
-          |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
-          // `kv.*` is answered by the session's one scratch store, which
-          // starts under the service supervisor below. The seam is a
-          // name, so it can be built here and resolved per call.
-          |> codemode_wiring.over_scratch(scratch_seam)
-          // `schedule.*` is answered by the same door the `schedule_*`
-          // tools call, so a program and a tool call cannot disagree
-          // about what this session's schedules are. A shut door leaves
-          // the capabilities unrouted rather than always-refusing.
-          |> codemode_wiring.over_schedules(schedule_door)
-          // `job.*` is answered by the same door the `job_*` tools and
-          // `bash`'s `mode` argument call, so a job a program started and
-          // one a tool call started are the same record with the same
-          // owner. Unlike the scheduling door this one is always routed:
-          // the model is offered jobs unconditionally, so a program that
-          // could not even ask would be the surprise.
-          |> codemode_wiring.over_jobs(Some(jobs_door))
-          // The MCP layer widens both installed modes' allowlists, their
-          // description and its router together; an empty layer widens
-          // nothing, so this is unconditional.
-          |> codemode_wiring.over_mcp(layer)
-          // Cap sockets under the daemon's short runtime root rather than
-          // the workspace, so the socket path has the same length for a
-          // workspace of any depth (issue #611).
-          |> codemode_wiring.sockets_under(settings.codemode_sockets),
-        ),
-        layer,
-      ))
+      started_mcp(settings.catalog.mcp_servers, settings.secrets, logger, owner)
     }
   }
 }
 
-// --- the language-server plane ----------------------------------------------
-//
-// ADR-015 §§1 and 6: a configured `[lsp.<name>]` server runs in the jail as
-// a session lease, under the session's own enforcement demand, and every
-// surface reaches it through one manager's door. The boot does four things
-// and no more: it resolves each server's `~/` roots once, against the
-// harness's own `HOME`; it starts the lease counter from the session's pool
-// size; it mints the servers' attribution operation; and it describes the
-// manager for the service supervisor. Nothing is spawned here — the first
-// query starts a server, after the manager's enforcement probe.
-
-// The plane and the manager's configuration, which the service supervisor
-// needs to start the manager under its address.
-type LspWiring {
-  LspWiring(
-    plane: LspPlane,
-    name: address.Address(lsp_manager.Msg),
-    config: lsp_manager.Config,
-  )
-}
-
-// A boot with no `[lsp.<name>]` table and no installed profile builds
-// nothing and logs nothing: an unconfigured workspace pays nothing
-// (ADR-015 §6). The servers are the `loom.toml` tables plus every
-// installed profile that survives ADR-016 §4's precedence
-// (`lsp_profiles.effective_lsp_servers`), and from there an installed
-// profile is treated exactly as a table is: the same root resolution, the
-// same plane and the same hints. A refused profile is one
-// `lsp.profile_refused` line naming its extension, its server and the
-// claimant it collided with, and the boot continues. A configured server
-// whose roots will not resolve is refused alone, one `lsp.unavailable`
-// line each, and the others still serve; a counter that will not start
-// refuses them all the same way. Neither refuses the boot, for the reason
-// `mcp.unavailable` does not: a session without semantic queries is still
-// a session, and the operator is told which table to fix.
-fn lsp_wiring(
+// The owner's arms of the code-mode configuration: the doors only the
+// session's owner can serve. The workspace applies them after its own, so
+// the peer router wraps the working-directory router as it always has.
+fn code_mode_arms(
   settings: Settings,
-  installed: List(#(String, profile.LspServer)),
-  logger: Logger,
-  base_policy: policy.SandboxPolicy,
-  toolchain: Result(codemode_wiring.Toolchain, String),
-  broker_actor: Broker,
-  clock: Clock,
-  seed: Int,
-  name: address.Address(lsp_manager.Msg),
-) -> Option(LspWiring) {
-  let places = lsp_places()
-  let #(effective, refusals) =
-    lsp_profiles.effective_lsp_servers(
-      configured: settings.catalog.lsp_servers,
-      installed:,
-    )
-  list.each(refusals, fn(refusal) {
-    log.warn(logger, "lsp.profile_refused", [
-      field.text(key: "extension", value: refusal.extension),
-      field.text(key: "server", value: refusal.server),
-      field.text(
-        key: "other",
-        value: lsp_profiles.describe_claimant(refusal.other),
-      ),
-      field.text(
-        key: "reason",
-        value: lsp_profiles.describe_conflict(refusal.conflict),
-      ),
-    ])
-  })
-  let servers =
-    list.filter_map(effective, fn(server) {
-      lsp_server_roots(server, places)
-      |> result.map_error(fn(reason) {
-        log.warn(logger, "lsp.unavailable", [
-          field.text(key: "server", value: server.name),
-          field.text(key: "reason", value: reason),
-        ])
-      })
-    })
-  case servers {
-    [] -> None
-    [_, ..] ->
-      case lsp_leases.start(settings.helper_pool_size) {
-        Error(error) -> {
-          log.warn(logger, "lsp.unavailable", [
-            field.text(
-              key: "servers",
-              value: string.join(list.map(servers, fn(one) { one.name }), ","),
-            ),
-            field.text(
-              key: "reason",
-              value: "the helper-lease counter would not start: "
-                <> string.inspect(error),
-            ),
-          ])
-          None
-        }
-        Ok(leases) ->
-          Some(lsp_plane_wiring(
-            settings,
-            servers,
-            leases,
-            base_policy,
-            toolchain,
-            broker_actor,
-            clock,
-            seed,
-            name,
-            places,
-          ))
-      }
+  agency_seam: Agency,
+  schedule_door: Option(scheduleseam.Door),
+  layer: mcp_wiring.Layer,
+  peer_wiring: peers.Wiring,
+) -> fn(codemode_wiring.Config) -> codemode_wiring.Config {
+  fn(config) {
+    config
+    // Which seams this server offers is the operator's decision, and the
+    // Agency the orchestration one routes onto is the same seam the
+    // `agent_*` tools call — one messaging plane, reached two ways.
+    |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
+    // `schedule.*` is answered by the same door the `schedule_*` tools
+    // call, so a program and a tool call cannot disagree about what this
+    // session's schedules are. A shut door leaves the capabilities
+    // unrouted rather than always-refusing.
+    |> codemode_wiring.over_schedules(schedule_door)
+    // The MCP layer widens both installed modes' allowlists, their
+    // description and its router together; an empty layer widens nothing,
+    // so this is unconditional.
+    |> codemode_wiring.over_mcp(layer)
+    |> with_code_mode_peers(peer_wiring)
   }
 }
 
-// The manager's configuration over the production backend: every server,
-// its probe and every symbol search clear through the session's broker,
-// under the session's demand and the plane's own operation.
-fn lsp_plane_wiring(
-  settings: Settings,
-  servers: List(profile.LspServer),
-  leases: lsp_leases.Leases,
-  base_policy: policy.SandboxPolicy,
-  toolchain: Result(codemode_wiring.Toolchain, String),
-  broker_actor: Broker,
-  clock: Clock,
-  seed: Int,
-  name: address.Address(lsp_manager.Msg),
-  places: profile.Places,
-) -> LspWiring {
-  let op_id = lsp_jail.operation(clock, seed:)
-  let timing = lsp_manager.default_timing()
-  let backend =
-    lsp_manager.jailed(lsp_manager.Jailed(
-      workspace: settings.workspace,
-      session_base: base_policy,
-      demand: settings.demand,
-      toolchain: option.from_result(toolchain),
-      places:,
-      // The session's store, the same reader the jailed tool environment
-      // is built from, so `PATH` and a server's `env` names mean what
-      // they mean to `bash`.
-      reading: fn(variable) { secret.lookup(settings.secrets, variable) },
-      run: tool.broker_runner(
-        broker: broker_actor,
-        waiting: lsp_jail.clearance_wait_ms,
-      ),
-      abort_step: fn(step_id) {
-        broker.abort_step(broker_actor, op_id, step_id:)
-      },
-      leases:,
-      op_id:,
-      clock:,
-      exec_ms: timing.exec_ms,
-    ))
-  let config =
-    lsp_manager.Config(
-      workspace: settings.workspace,
-      servers:,
-      backend:,
-      timing:,
-    )
-  LspWiring(
-    plane: LspPlane(
-      manager: lsp_manager.addressed(name, config),
-      leases:,
-      op_id:,
-    ),
-    name:,
-    config:,
-  )
+// The `code_mode` tool over a finished configuration: background execution
+// is the session's, so the owner supplies the seam, and the peer
+// capabilities join the serviced list of every offer.
+fn code_mode_tool(
+  config: codemode_wiring.Config,
+  async_name: address.Address(async_runs.Message),
+  agency_config: agency.Config,
+) -> codemode_tool.CodeMode {
+  async_codemode.seam(config, async_name, agency_config)
+  |> owner_codemode.advertising_peers
 }
-
-/// One server with its `readable` and `writable` roots resolved to
-/// absolute paths, once, at load. The jail resolves them again at every
-/// start and would refuse the same way; refusing here instead is what
-/// makes the refusal an operator-visible boot line rather than a
-/// `no_server` answer the model meets on its first query.
-///
-/// A root that resolves into Loom's private cache, `<cache>/loom`, or a
-/// writable one that holds it, is refused here too
-/// (`profile.private_cache_fault`): the decoder can refuse one written
-/// `<cache>/loom` but not an absolute or `~/` root, which only these
-/// places can put there.
-///
-/// The private caches `cache_env` names are resolved here for the same
-/// refusal and then left as written: their host paths are the jail's to
-/// derive (`profile.cache_env_paths`), and the directories are made by the
-/// manager just before a jail binds them, not here, so a server nobody
-/// queries creates nothing.
-///
-/// Public because `loom ext check` starts a server exactly as a session
-/// would, and a second expansion there would be a second answer to where
-/// a profile's `~/` and `<cache>/` roots are.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.lsp_server_roots(go, serve.lsp_places())
-/// // -> Ok(LspServer(..go, readable: [AbsolutePath("/home/o/go/pkg/mod")], ..))
-/// ```
-///
-pub fn lsp_server_roots(
-  server: profile.LspServer,
-  places: profile.Places,
-) -> Result(profile.LspServer, String) {
-  let absolute = fn(paths) {
-    list.try_map(paths, fn(path) {
-      profile.expand_path(path, places) |> result.map(profile.AbsolutePath)
-    })
-  }
-  use readable <- result.try(absolute(server.readable))
-  use writable <- result.try(absolute(server.writable))
-
-  // Only here are the daemon's places known, so only here can an absolute
-  // or `~/` root be found to land in Loom's private cache; the decoder
-  // has already refused one written `<cache>/loom`.
-  use Nil <- result.try(profile.private_cache_fault(server, places))
-  use _caches <- result.try(
-    list.try_map(profile.cache_env_paths(server), fn(entry) {
-      profile.expand_path(entry.1, places)
-    }),
-  )
-  Ok(profile.LspServer(..server, readable:, writable:))
-}
-
-/// The two places a language profile's roots are written against, read
-/// from the daemon's own environment once per boot: `HOME` for `~/`, and
-/// the per-user cache directory for `<cache>/`. Which directory that is
-/// depends on the platform, and `profile.cache_place` decides it purely
-/// from what is read here.
-///
-/// Public for `loom ext check`, which expands a profile's roots the way a
-/// session does, from the same environment.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.lsp_places()
-/// // -> profile.Places(home: Some("/home/o"), cache: Some("/home/o/.cache"))
-/// ```
-///
-pub fn lsp_places() -> profile.Places {
-  let home = home_directory()
-  let #(os, _architecture) = ffi_os.platform()
-  profile.Places(
-    home:,
-    cache: profile.cache_place(
-      os,
-      home,
-      option.from_result(env_text("XDG_CACHE_HOME")),
-    ),
-  )
-}
-
-// The language profiles the loaded profile extensions approved, each
-// paired with its extension's name for a refusal to cite. Read from the
-// install record rather than the manifest beside it: discovery has
-// already refused any extension whose manifest's profiles differ from the
-// record's, and the record is the operator's yes. A jailed extension's
-// record holds none.
-fn installed_profiles(
-  discovered: List(installed.Discovered),
-) -> List(#(String, profile.LspServer)) {
-  list.flat_map(discovered, fn(found) {
-    case found {
-      installed.Ready(record: written, manifest: _, artifact: _) ->
-        list.map(written.lsp, fn(server) { #(written.name, server) })
-      installed.Refused(..) -> []
-    }
-  })
-}
-
-// The profile hints of the servers the plane serves, as
-// `#(server name, hint)` in name order, for code-mode discovery. They are
-// read from the wired servers rather than the whole catalogue, so a server
-// refused at boot for roots that would not resolve does not describe a
-// language the session cannot ask about.
-fn lsp_hints(wiring: Option(LspWiring)) -> List(#(String, String)) {
-  case wiring {
-    None -> []
-    Some(wiring) ->
-      list.filter_map(wiring.config.servers, fn(server) {
-        option.to_result(server.hint, Nil)
-        |> result.map(fn(hint) { #(server.name, hint) })
-      })
-      |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
-  }
-}
-
-// The manager as a supervised child, when there is a plane to run.
-fn with_lsp_manager(
-  builder: sup.Builder,
-  wiring: Option(LspWiring),
-) -> sup.Builder {
-  case wiring {
-    None -> builder
-    Some(wiring) ->
-      sup.add(builder, lsp_manager.supervised(wiring.name, wiring.config))
-  }
-}
-
-// Session end for the plane, in ADR-015 §1's order: the graceful stop
-// (`shutdown`, `exit`, stdin EOF, waited for in this process), then the
-// abort of the plane's operation as the backstop for a server that
-// outlived its grace, then the counter.
-fn stop_lsp(plane: Option(LspPlane), broker_actor: Broker) -> Nil {
-  case plane {
-    None -> Nil
-    Some(plane) -> {
-      lsp_manager.stop(plane.manager)
-      broker.abort(broker_actor, plane.op_id)
-      lsp_leases.stop(plane.leases)
-    }
-  }
-}
-
-// --- installed extensions ---------------------------------------------------
-//
-// Discovery is read-only and happens once, here, before the registry is
-// built. `installed.discover` re-derives the tree digest, the artifact's
-// content address, the manifest and the vetting from what is actually on
-// disk and refuses anything that no longer matches what an operator
-// approved, so what reaches this function is already the answer to "is
-// this still the thing that was installed".
-//
-// What is left to decide is what to do with each answer, and there are
-// four. A `Refused` is *logged*, never silently dropped: an operator who
-// installed something and then sees nothing has no way to tell "it is
-// broken" from "I imagined installing it". A `Ready` on a host with no
-// toolchain is logged too and registers nothing, because an extension
-// tool with no `erl` to boot a satellite with is a definition in the
-// provider's cached byte prefix that can only ever fail — the same
-// argument that gates `code_mode` itself. A `Ready` profile extension
-// registers nothing here either: it ships language profiles, which
-// `lsp_wiring` has already taken from the same discovery, and there is no
-// satellite for it to host. Every jailed extension becomes one
-// `Contribution`, and a name two contributions both claim refuses the
-// boot in `contributions.registry`.
 
 // One installed extension, registered: the tools it contributes to the
 // registry, its subscription on the hook bus, and the recipe the
@@ -2816,18 +2412,6 @@ type Registration {
     subscription: Option(extension_hooks.Extension),
     hosting: extension_hosts.Extension,
   )
-}
-
-// Discovery, once per boot. The language-server plane and the tool
-// registry both read this one answer, so a profile and a tool cannot be
-// judged against two different readings of the extensions root. No home
-// is no extensions root, which is the same fact to a booting server as an
-// empty one.
-fn discovered_extensions(settings: Settings) -> List(installed.Discovered) {
-  case settings.home {
-    None -> []
-    Some(home) -> installed.discover(extension_record.root_for(home))
-  }
 }
 
 fn extension_registrations(
@@ -3270,14 +2854,16 @@ fn start_listener(
   gateway: hub.Gateway,
 ) -> Result(server.Server, String) {
   use Nil <- result.try(
-    create_directories(option.values([parent_directory(settings.token_path)])),
+    workspace_policy.create_directories(
+      option.values([workspace_policy.parent_directory(settings.token_path)]),
+    ),
   )
   server.serve(server.Config(
     gateway:,
     bind: settings.bind_host,
     port: settings.bind_port,
     auth: server.LocalAuth(token_path: settings.token_path),
-    entropy: mixed_entropy(),
+    entropy: workspace_plane.mixed_entropy(),
   ))
   |> result.map_error(fn(error) {
     "the websocket server did not start: " <> string.inspect(error)
@@ -3290,7 +2876,7 @@ fn assemble_instance(
   stops: Subject(host.Stop),
 ) -> Result(Instance, String) {
   use namespace <- result.try(address.start())
-  assemble_in(settings, logger, stops, namespace, None, None)
+  assemble_in(settings, logger, stops, namespace, None, None, None)
   |> result.map_error(fn(error) {
     let _stopped = address.stop(namespace)
     error
@@ -3316,7 +2902,7 @@ pub fn assemble_owned(
   logger: Logger,
   owner: custody.Owner,
 ) -> Result(Instance, String) {
-  assemble_owned_with(settings, reserved, logger, owner, None)
+  assemble_owned_with(settings, reserved, logger, owner, None, None)
 }
 
 /// Assembles one session using already-published shared domain capabilities.
@@ -3335,10 +2921,50 @@ pub fn assemble_in_domain(
   owner: custody.Owner,
   services: domain_service.Services,
 ) -> Result(Instance, String) {
-  assemble_owned_with(settings, reserved, logger, owner, Some(services))
+  assemble_owned_with(settings, reserved, logger, owner, Some(services), None)
 }
 
-fn assemble_owned_with(settings, reserved, logger, owner, services) {
+/// Assembles one reserved session whose workspace is registered on an executor.
+///
+/// The conversation half is built here exactly as `assemble_in_domain` builds
+/// it. The workspace half is the executor's, chosen and reached through
+/// `placement`: the registered name in `settings.workspace` is carried to the
+/// executor and never opened, created or canonicalized on this machine. A
+/// connection or attach that fails fails the assembly with a reason beginning
+/// `executor_unavailable:`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.assemble_registered(settings, id, logger, owner, services, placement)
+/// ```
+@internal
+pub fn assemble_registered(
+  settings: Settings,
+  reserved: ids.SessionId,
+  logger: Logger,
+  owner: custody.Owner,
+  services: Option(domain_service.Services),
+  placement: remote_workspace.Placement,
+) -> Result(Instance, String) {
+  assemble_owned_with(
+    settings,
+    reserved,
+    logger,
+    owner,
+    services,
+    Some(placement),
+  )
+}
+
+fn assemble_owned_with(
+  settings,
+  reserved,
+  logger,
+  owner,
+  services,
+  registered,
+) {
   use namespace <- result.try(address.start())
   use Nil <- result.try(
     retain(
@@ -3355,6 +2981,7 @@ fn assemble_owned_with(settings, reserved, logger, owner, services) {
     namespace,
     Some(#(owner, reserved)),
     services,
+    registered,
   )
 }
 
@@ -3474,6 +3101,116 @@ pub fn storage_open_refusal(error: session.OpenError) -> String {
   }
 }
 
+// Where the workspace half of the session in this assembly is, once chosen.
+type Home {
+  Here(prepared: workspace_plane.Prepared)
+  There(placement: remote_workspace.Placement)
+}
+
+// What the rest of the assembly reads of the workspace half, whichever machine
+// it is on. The local fields are `None` for a workspace on an executor.
+type Half {
+  Half(
+    plane: workspace_plane.WorkspacePlane,
+    decls: List(tool.Described),
+    children: workspace_plane.Children,
+    pool: Option(Pool),
+    executor: Option(executor.Executor),
+    lsp: Option(workspace_plane.LspPlane),
+    code_mode_host: Option(codemode_wiring.Config),
+    blob_root: String,
+    call_clock: Clock,
+    recover: Option(fn(effects.ToolRun) -> effects.Recovery),
+  )
+}
+
+// A workspace started in this VM.
+fn here(
+  prepared: workspace_plane.Prepared,
+  clock: Clock,
+  local: workspace_plane.Local,
+) -> Half {
+  Half(
+    plane: local.started.plane,
+    decls: local.started.decls,
+    children: local.started.children,
+    pool: Some(local.pool),
+    executor: Some(local.executor),
+    lsp: local.lsp,
+    code_mode_host: local.code_mode_host,
+    blob_root: prepared.blob_root,
+    call_clock: clock,
+    recover: None,
+  )
+}
+
+// A workspace attached on an executor. Its scope is closed and its owner port
+// ended by one custody part, published before anything can call it.
+fn there(
+  registered: remote_workspace.Registered,
+  owner: Option(custody.Owner),
+) -> Result(Half, String) {
+  use hands <- result.try(remote_workspace.attach(registered))
+  use Nil <- result.map(retain(
+    owner,
+    custody.Workspace,
+    fn() {
+      hands.plane.close()
+      Ok(Nil)
+    },
+    hands.transfer,
+  ))
+  Half(
+    plane: hands.plane,
+    decls: hands.tools,
+    children: workspace_plane.Children(
+      scratch: fn(builder) { builder },
+      jobs: fn(builder) { builder },
+      lsp_manager: fn(builder) { builder },
+    ),
+    pool: None,
+    executor: None,
+    lsp: None,
+    code_mode_host: None,
+    blob_root: hands.plane.census.workspace
+      <> "/"
+      <> codemode_wiring.blob_directory,
+    call_clock: hands.clock,
+    recover: Some(hands.recover),
+  )
+}
+
+/// One notice for each extension installed on the executor, because none of
+/// them registers a tool for a workspace there. A profile extension runs
+/// nothing and so gets none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert serve.remote_extension_refusals([]) == []
+/// ```
+@internal
+pub fn remote_extension_refusals(
+  found: List(installed.Discovered),
+) -> List(String) {
+  list.filter_map(found, fn(each) {
+    case each {
+      installed.Refused(name:, ..) -> Ok(name)
+      installed.Ready(record:, ..) ->
+        case record.tier {
+          extension_manifest.Jailed -> Ok(record.name)
+          extension_manifest.Profile -> Error(Nil)
+        }
+    }
+  })
+  |> list.map(fn(name) {
+    "Extension "
+    <> name
+    <> " is installed on the executor, and its tools are not available to a "
+    <> "workspace on an executor yet."
+  })
+}
+
 // One namespace spans the composition services' restarts, but never a second
 // session. Boot failure retires routing; full partial-boot custody is separate.
 fn assemble_in(
@@ -3483,6 +3220,7 @@ fn assemble_in(
   namespace: address.Registry,
   ownership: Option(#(custody.Owner, ids.SessionId)),
   services: Option(domain_service.Services),
+  registered: Option(remote_workspace.Placement),
 ) -> Result(Instance, String) {
   let owner = option.map(ownership, fn(pair) { pair.0 })
   let builder = process.self()
@@ -3500,55 +3238,46 @@ fn assemble_in(
   use memory_store <- result.try(beside_session(settings, memory.memory_file))
   use memory_digest <- result.try(beside_session(settings, memory.digest_file))
 
-  // The toolchain is located here rather than inside `code_mode_seam`,
-  // which is where it is reported, because the session base has to carry
-  // the toolchain's mounts and the base is built now. Discovery is a
-  // filesystem probe over the settings alone, so hoisting it costs
-  // nothing and buys the one ordering that matters: a base built before
-  // the toolchain is known could not name it, and a launch requiring a
-  // mount the base does not carry is refused by the meet. Discovery says
-  // where the toolchain is; `session_toolchain` says whether this
-  // session may mount it, and the one answer reaches both the base and
-  // the tool registration below.
-  let toolchain =
-    codemode_wiring.discover(settings.codemode_seed)
-    |> session_toolchain(settings, index_path, memory_store, memory_digest)
-  let base_policy =
-    session_base(settings, index_path, memory_store, memory_digest, toolchain)
-
-  // Before a directory is made, a lease is taken or a helper is spawned:
-  // a base policy the sandbox cannot enforce is a boot failure, not a
-  // surprise waiting in the first tool call. See `base_policy_fault`.
-  use Nil <- result.try(base_policy_fault(base_policy))
-  use Nil <- result.try(go_cache_fault(settings, base_policy))
-  let blob_root = settings.workspace <> "/" <> codemode_wiring.blob_directory
-  let tmp_dir = settings.session_path <> ".tmp"
-  let go_directories =
-    option.map(settings.go_caches, gocache.directories) |> option.unwrap([])
-  use Nil <- result.try(prepare_directories(
-    settings,
-    blob_root,
-    tmp_dir,
-    list.append(
-      [
-        tool_tmp_directory(settings.workspace),
-        tool_home_directory(settings.workspace),
-      ],
-      go_directories,
+  // The workspace half is prepared here, before anything of the owner's is
+  // opened and before any lease is taken: the toolchain is located and
+  // judged against the session base (a base built before the toolchain is
+  // known could not name its mounts, and a launch requiring a mount the
+  // base does not carry is refused by the meet), a base the sandbox cannot
+  // enforce is a boot failure and not a surprise waiting in the first tool
+  // call, and the workspace's directories are made. Nothing is spawned.
+  // The census it returns is plain data the rest of this assembly reads.
+  //
+  // A workspace registered on an executor has nothing to prepare here: the
+  // executor judges its own base, makes its own directories and answers for
+  // its own toolchain when the scope attaches. Nothing in this branch names
+  // the registered workspace on this machine's disk.
+  use home <- result.try(case registered {
+    Some(placement) -> Ok(There(placement))
+    None ->
+      workspace_plane.prepare(
+        workspace_spec(
+          settings,
+          Some(workspace_policy.OwnerFiles(
+            index: index_path,
+            memory_store:,
+            memory_digest:,
+          )),
+        ),
+        reading: fn(name) { secret.lookup(settings.secrets, name) },
+      )
+      |> result.map(Here)
+  })
+  use Nil <- result.try(
+    workspace_policy.create_directories(
+      option.values([workspace_policy.parent_directory(settings.session_path)]),
     ),
-  ))
-
-  // The trim and the sweep of retired caches run beside the session, not
-  // before it, so a large cache costs the first prompt nothing. See
-  // `client/gocache` for why the retire is a rename.
-  let _maintenance =
-    option.map(settings.go_caches, gocache.start_maintenance(_, logger))
+  )
 
   // One clock function, therefore one era, across session, broker,
   // tools, and provider — the shared-clock requirement the M2
   // integration learned live (spec-gaps, M2 item 1).
   let clock = clock.from_function(ffi_os.system_time_ms)
-  let entropy = mixed_entropy()
+  let entropy = workspace_plane.mixed_entropy()
 
   // Clean close deletes the lease row, so a later open starts again at
   // fence one. A fresh owner prevents an older, expired connection with that
@@ -3608,26 +3337,6 @@ fn assemble_in(
   // not open registers no tool and says so once.
   let memory_seam = memory_seam(memory_store, clock, entropy, logger)
 
-  // The probes can create or retire SQLite WAL and SHM files. Capture
-  // conditional masks after those mutations, once, for every effect consumer.
-  // The earlier validation still precedes directory creation and lease custody.
-  let base_policy =
-    session_base(settings, index_path, memory_store, memory_digest, toolchain)
-  use Nil <- result.try(base_policy_fault(base_policy))
-
-  // The effect plane: a pool of jailed helpers behind the one broker.
-  use plane <- result.try(start_effect_plane_in(
-    settings.helper_path,
-    base_policy,
-    tmp_dir,
-    settings.helper_pool_size,
-    clock,
-    logger,
-    owner,
-  ))
-  let pool = plane.pool
-  let broker_actor = plane.broker
-
   // Durable *records* stay credit-driven: a client asks for a cut and the
   // bounded reader answers it. What the hub now also does is push a notice
   // when it learns of a commit (`protocol-change/018`), which is what makes
@@ -3656,6 +3365,12 @@ fn assemble_in(
   // below needs an address that survives the scanner being replaced.
   let schedulescan_name = address.new_address(namespace)
 
+  // The peer outbox drainer is reached by name. The Agency's config rings it
+  // when a message is left undelivered, before any drainer exists, and the
+  // restartable tier below needs an address that survives the drainer being
+  // replaced.
+  let outbox_drain_name = address.new_address(namespace)
+
   // The distillation pass, on the same arrangement and for the same
   // reason: it is a supervised child, and `client/distillpass.settled`
   // asks it by name rather than holding a pid that a restart would
@@ -3676,6 +3391,7 @@ fn assemble_in(
         settings.peer_defaults,
         peer_mail.no_defaults,
       ),
+      outbox_queued: fn() { peer_outbox_drain.poke(outbox_drain_name) },
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(
@@ -3729,19 +3445,6 @@ fn assemble_in(
       interactive: fn() { hub.attached(hub.Gateway(name:)) > 0 },
     )
 
-  // Code mode needs no such indirection — its seam closes over the
-  // broker, which already exists — but it does need a toolchain and a
-  // prepared build seed on this host. A host without them says so once
-  // here and registers no `code_mode` tool, rather than shipping a
-  // definition in the cached prefix that can only ever refuse.
-  // The scratch store `cap/kv` reads and writes: session-scoped,
-  // byte-capped, and gone when the session is. Reached through a name
-  // for the reason the Agency is — the seam is built while this
-  // configuration is assembled and the store starts under the service
-  // supervisor further down — though the knot here is only ordering,
-  // since the store closes over no runtime at all.
-  let scratch_name = address.new_address(namespace)
-
   // The scheduling plane is decided once, here, and reached two ways:
   // the `schedule_*` tools and the `schedule.*` code-mode capabilities.
   // One `Wiring` behind both is what stops a program and a tool call
@@ -3760,126 +3463,132 @@ fn assemble_in(
   // the hub then answers an empty listing and an unsupported cancel.
   let schedule_admin = option.map(schedule_wiring, scheduleadmin.admin)
 
-  // The background jobs actor, on the same two-name pattern: the address
-  // is minted now so the door can close over it, and the actor that
-  // answers it starts under the service supervisor below.
-  let jobs_name = address.new_address(namespace)
+  // The deferred background code-mode actor is the owner's, on the same
+  // two-name pattern: its address is minted now so the `code_mode` tool
+  // can close over it, and the actor starts under the service supervisor
+  // below.
   let async_name = address.new_address(namespace)
 
-  // Both model-facing job surfaces are values over this one door: the
-  // `bash` `mode` argument and the three `job_*` tools on one side, the
-  // five `job.*` capabilities on the other. One door is what stops a
-  // program and a tool call disagreeing about what this strand's jobs
-  // are, and it is why either surface can poll or kill what the other
-  // started.
-  let jobs_door =
-    jobseam.door(jobseam.Wiring(
-      name: jobs_name,
-      clock:,
-      rest: jobseam.real_rest(),
-      // The same clearance budget the actor's own wiring reads, so the
-      // two bounds on one start cannot disagree.
-      clearance_ms: jobs_clearance_ms,
-    ))
+  // The event bus is the node-global `pg` scope, and `bus.start` is the
+  // idempotent way onto it: one daemon assembles many sessions, and the
+  // second one must find the scope running rather than fail to start it
+  // (`docs/architecture/events.md` on why `start` and `supervised` do
+  // not compose). Sessions are kept apart by key, not by scope. Its one
+  // production traffic today is the rolling tail of a running tool call,
+  // published by the observer below and relayed by the hub as pushed
+  // `tool_output` frames (`protocol-change/031`).
+  let event_bus = bus.start()
 
-  // The language-server plane, on the two-name pattern: the manager's
-  // address is minted now so the door the tools, code mode and the write
-  // tools' diagnostics observer all share can close over it, and the
-  // manager starts under the service supervisor below. No `[lsp.<name>]`
-  // table or installed profile, or none that survived its load, means no
-  // plane at all: no
-  // counter, no manager and no `cap/lsp`, and the write
-  // tools are the plain ones.
+  // Code mode, and the MCP servers it reaches, are one decision made on
+  // the census: the second is unreachable without the first. The owner
+  // starts the servers, so this happens between the workspace's two steps.
   //
-  // The installed extensions are discovered here, once, because a profile
-  // extension's servers join this plane and a jailed extension's tools
-  // join the registry further down, and both must read the same answer.
-  let discovered = discovered_extensions(settings)
-  let lsp_wiring =
-    lsp_wiring(
-      settings,
-      installed_profiles(discovered),
-      logger,
-      base_policy,
-      toolchain,
-      broker_actor,
-      clock,
-      entropy(),
-      address.new_address(namespace),
+  // A workspace on an executor takes neither: its code mode omits the MCP
+  // façades until the MCP layer is split into the data an executor needs and
+  // the clients that stay here, so no server is started on its behalf.
+  use mcp_layer <- result.try(case home {
+    Here(prepared) ->
+      code_mode_mcp(settings, prepared.census.toolchain, logger, owner)
+    There(_) -> {
+      skipped_mcp(
+        settings.catalog.mcp_servers,
+        logger,
+        "a workspace on an executor omits MCP servers from its code mode",
+      )
+      Ok(mcp_wiring.none())
+    }
+  })
+
+  // Everything the workspace half reaches back to the session for, as one
+  // record of plain functions. Locally each is the call it replaced: the
+  // escalation seam, the bus observer, the Agency's holder and its tool-list
+  // check. A local workspace never calls `capability`, since the owner's
+  // code-mode arms are composed straight into its router below. A workspace
+  // on an executor sends every owner-bound call here instead, and the
+  // answer is composed from this session's own doors: the Agency, the
+  // scheduling door and the peer mailbox it would have been given locally.
+  let owner_api =
+    owner_services.local(
+      handle: agency.fact_supplier(agency_config),
+      runtime: agency.runtime_supplier(agency_config),
+      escalate: escalate.seam(escalate_config).refused,
+      output: hub.tool_output_observer(event_bus, opened),
+      capability: case home {
+        Here(_) -> owner_services.no_capability
+        There(_) ->
+          owner_codemode.answering(
+            codemode_wiring.owner_serving(
+              settings.codemode_seams,
+              over: agency_seam,
+              schedules: schedule_door,
+            ),
+            peers: peer_wiring,
+          )
+      },
+      holds: agency_seam.holds,
     )
-  let lsp_door =
-    option.map(lsp_wiring, fn(wiring) { lsp_manager.door(wiring.plane.manager) })
 
-  // The host configuration, not the tool seam: an extension dispatch
-  // stands up a satellite under exactly this configuration, so the boot
-  // holds the value both readers derive from rather than one reader's
-  // view of it.
-  use #(code_mode_host, mcp_layer) <- result.try(code_mode_seam(
-    settings,
-    toolchain,
-    logger,
-    broker_actor,
-    clock,
-    agency_seam,
-    scratch.seam(scratch_name, timeout_ms: scratch.default_timeout_ms),
-    schedule_door,
-    jobs_door,
-    owner,
-  ))
-
-  // `lsp.*` is answered by the same native door, so a
-  // program and a tool call ask the one server this session runs. A
-  // `None` door leaves `cap/lsp` unadmitted, which is what a host with no
-  // configured server has always had.
-  let code_mode_host =
-    option.map(code_mode_host, codemode_wiring.over_lsp(_, lsp_door))
-  let observation_door =
-    option.map(lsp_wiring, fn(wiring) {
-      lsp_manager.observation_door(wiring.plane.manager)
-    })
-  let code_mode_host =
-    option.map(code_mode_host, codemode_wiring.over_lsp_observation(
-      _,
-      observation_door,
-    ))
-  let directory_facts = agency.fact_supplier(agency_config)
-  let shell_directory = working_directory.door(directory_facts)
-  let code_mode_host =
-    option.map(code_mode_host, working_directory.over_code_mode(
-      _,
-      directory_facts,
-    ))
-  let code_mode_host =
-    option.map(code_mode_host, with_code_mode_peers(_, peer_wiring))
-  let code_mode =
-    option.map(code_mode_host, fn(config) {
-      let mode = async_codemode.seam(config, async_name, agency_config)
-      let with_peers = fn(offer: codemode_tool.SeamOffer) {
-        codemode_tool.SeamOffer(
-          ..offer,
-          serviced_caps: list.append(offer.serviced_caps, peers.serviced_caps),
-        )
-      }
-      codemode_tool.CodeMode(
-        ..mode,
-        seams: codemode_tool.Seams(
-          default: with_peers(mode.seams.default),
-          alternates: list.map(mode.seams.alternates, with_peers),
+  // The workspace half starts: the helper pool, the executor and the
+  // broker are published to custody, the session base is recomputed now
+  // that storage is open, and the workspace's tools are built over its own
+  // doors. The owner contributes the arms of code mode which only it can
+  // serve. See `workspace_plane` for why the base is computed twice.
+  use half <- result.try(case home {
+    Here(prepared) ->
+      workspace_plane.start_local(
+        prepared,
+        workspace_plane.Attach(
+          logger:,
+          namespace:,
+          retain: fn(part, cleanup, transfer) {
+            retain(owner, part, cleanup, transfer)
+          },
+          owner: owner_api,
+          session_label: session_label(agency.runtime_supplier(agency_config)),
+          code_mode: workspace_plane.CodeModeAttach(
+            arms: code_mode_arms(
+              settings,
+              agency_seam,
+              schedule_door,
+              mcp_layer,
+              peer_wiring,
+            ),
+            tool: code_mode_tool(_, async_name, agency_config),
+          ),
         ),
       )
-    })
+      |> result.map(here(prepared, clock, _))
+    There(placement) ->
+      there(
+        remote_workspace.Registered(
+          placement:,
+          session: settings.session_id,
+          workspace: settings.workspace,
+          opened:,
+          owner: owner_api,
+          clock:,
+          reconcile_every_ms: owner_port.default_reconcile_every_ms,
+        ),
+        owner,
+      )
+  })
+  let plane = half.plane
+  let broker_actor = plane.broker
+  let blob_root = half.blob_root
+  let toolchain = plane.census.toolchain
 
-  // The environment every jailed child of this session inherits, tool
-  // and hook alike. It is built once the code-mode decision is in so the
-  // shell finds the same `gleam` and `erl` the compiler uses.
-  let #(environment, unset_names) =
-    tool_environment(
-      settings.workspace,
-      option.map(code_mode_host, fn(config) { config.toolchain_path }),
-      settings.go_caches,
-      settings.tools,
-      reading: fn(name) { secret.lookup(settings.secrets, name) },
-    )
+  // The clock every caller that builds an absolute deadline for the broker
+  // reads: this session's own for a local workspace, and the executor's
+  // timebase for one that is not.
+  let call_clock = half.call_clock
+  let code_mode_host = half.code_mode_host
+  let discovered = case home {
+    Here(_) -> plane.census.extensions
+    There(_) -> []
+  }
+  let base_policy = plane.census.base_policy
+  let environment = plane.census.env
+  let unset_names = plane.census.unset_env
 
   // A `[secrets]` entry the host could not run is the same class of
   // event as a `[tools] env` name the host has not set, so it is
@@ -3950,25 +3659,34 @@ fn assemble_in(
       clock:,
       margin_ms: extension_host_margin_ms,
     )
-  let #(extensions, extension_refusals) =
-    extension_registrations(
-      settings,
-      discovered,
-      logger,
-      hosts_seam,
-      extension_hosts.invoker(
+
+  // An extension's tool is not placed on either side of the workspace
+  // boundary, and running it here would act on this machine rather than the
+  // checkout the model believes it is in. A workspace on an executor
+  // therefore registers none, and says so once for each extension installed
+  // on the executor.
+  let #(extensions, extension_refusals) = case home {
+    Here(_) ->
+      extension_registrations(
+        settings,
+        discovered,
+        logger,
         hosts_seam,
-        at: hook_coordinates(
-          settings,
-          base_policy,
-          entropy(),
-          clock,
-          environment,
+        extension_hosts.invoker(
+          hosts_seam,
+          at: hook_coordinates(
+            settings,
+            base_policy,
+            entropy(),
+            clock,
+            environment,
+          ),
         ),
-      ),
-      code_mode_host,
-      extension_memory.for_session(agency_config),
-    )
+        code_mode_host,
+        extension_memory.for_session(agency_config),
+      )
+    There(_) -> #([], remote_extension_refusals(plane.census.extensions))
+  }
 
   // The model's own door onto the compaction arithmetic. It reads the
   // strand's window the way the threshold will — the strand's own
@@ -4002,14 +3720,7 @@ fn assemble_in(
         // so a captured runtime would be a value cycle.
         runtime: fn() { agency.borrow_runtime(agency_config) },
         settings: advisor_settings,
-        check: goal_check_wiring(
-          settings,
-          broker_actor,
-          base_policy,
-          environment,
-          clock,
-          entropy(),
-        ),
+        check: goal_check_wiring(settings, plane, clock, call_clock, entropy()),
         clock:,
         logger:,
         name: advisor_name,
@@ -4045,24 +3756,21 @@ fn assemble_in(
   })
   use tool_registry <- result.try(
     list.append(
-      contributions.with_directory(
-        contributions.built_in(
-          Some(agency_seam),
-          code_mode,
-          history_seam,
-          memory_seam,
-          schedule_seam,
-          Some(context_seam),
-          Some(jobtools.seam(jobs_door)),
-          // The language-server door, when a server is configured: it
-          // gives `fs_write` and `fs_edit` their settled-diagnostics block
-          // and supplies profile guidance to admitted code-mode offers.
-          lsp_door,
-          lsp_hints(lsp_wiring),
+      [
+        contributions.Contribution(
+          contributions.BuiltIn,
+          contributions.compose(
+            contributions.described_tools(half.decls),
+            contributions.owner_tools(
+              Some(agency_seam),
+              history_seam,
+              memory_seam,
+              schedule_seam,
+              Some(context_seam),
+            ),
+          ),
         ),
-        jobtools.seam(jobs_door),
-        shell_directory,
-      ),
+      ],
       // After the built-ins, always. `contributions.registry` refuses a
       // repeated name whichever order it meets one in, so the order is
       // not what makes an extension unable to shadow `bash` — but the
@@ -4107,36 +3815,20 @@ fn assemble_in(
   // commit. The boot owner still holds the store alone; the runtime writer is
   // started below. Later activations reuse this exact durable baseline.
   let worktree_wiring =
-    worktree_diff.Wiring(
-      workspace: settings.workspace,
-      broker: broker_actor,
-      base_policy:,
-      clock:,
-      demand: settings.demand,
-      env: environment,
-      entropy:,
-      git: host_git.program(),
+    workspace_plane.worktree_wiring(
+      plane.census,
+      broker_actor,
+      settings.demand,
+      call_clock,
+      entropy,
     )
-
-  // Resolve identity before the runtime can commit. Only global identity
-  // defaults cross into the tool home; repository settings retain precedence.
-  use identity_warning <- result.try(git_identity.prepare(
-    worktree_wiring,
-    settings.home,
-    helper: settings.helper_path,
-    reading: env_text,
-  ))
-  case identity_warning {
-    None -> Nil
-    Some(reason) ->
-      log.warn(logger, "tools.git_identity_unavailable", [
-        field.text(key: "reason", value: reason),
-      ])
-  }
   use git_start <- result.try(
-    session_git.prepare(opened, settings.session_id, settings.workspace, fn() {
-      worktree_diff.starting_revision(worktree_wiring)
-    }),
+    session_git.prepare(
+      opened,
+      settings.session_id,
+      plane.census.workspace,
+      fn() { worktree_diff.starting_revision(worktree_wiring) },
+    ),
   )
 
   // The one observation of the session's tree. The gateway runs it for an
@@ -4160,8 +3852,7 @@ fn assemble_in(
     system_prompt.assemble(pinned:, override: settings.system, render: fn() {
       render_prompt(
         settings,
-        base_policy,
-        pool,
+        plane,
         // The prompt is one string for every strand, so the advisor's
         // own tool is left out of the index the primary reads; the
         // advisor is told about it by its brief instead.
@@ -4191,18 +3882,9 @@ fn assemble_in(
       }),
     )
 
-  // The event bus is the node-global `pg` scope, and `bus.start` is the
-  // idempotent way onto it: one daemon assembles many sessions, and the
-  // second one must find the scope running rather than fail to start it
-  // (`docs/architecture/events.md` on why `start` and `supervised` do
-  // not compose). Sessions are kept apart by key, not by scope. Its one
-  // production traffic today is the rolling tail of a running tool call,
-  // published by the observer below and relayed by the hub as pushed
-  // `tool_output` frames (`protocol-change/031`).
-  let event_bus = bus.start()
   let wiring_config =
     wiring.Config(
-      observe_output: hub.tool_output_observer(event_bus, opened),
+      observe_output: owner_api.output,
       gateway: settings.gateway,
       role: model.Main,
       facts: catalogue_facts(settings.catalog),
@@ -4216,10 +3898,10 @@ fn assemble_in(
       broker: broker_actor,
       broker_timeout_ms: 30_000,
       registry: tool_registry,
-      workspace: settings.workspace,
+      workspace: plane.census.workspace,
       blob_root:,
       base_policy:,
-      escalations: escalate.seam(escalate_config),
+      escalations: escalate.Escalations(refused: owner_api.escalate),
       demand: settings.demand,
       env: environment,
       clock:,
@@ -4240,13 +3922,42 @@ fn assemble_in(
   // nothing about when the lease is released or when any other part retires.
   // The holder starts linked to this builder and is unlinked once custody
   // has acknowledged it, the same hand-off the broker and executor use.
-  use holder <- result.try(tool_holder.start(wiring_config))
+  //
+  // The workspace's run is held the same way and for the same reason: for a
+  // local plane it closes over the workspace's tool registry, and the routed
+  // tool surface below is copied exactly as the record the registry hung off
+  // was. The two holders retire together, since both serve tools that run
+  // until the runtime has drained.
+  use holders <- result.try(start_holders(wiring_config, plane.run))
+  let #(holder, run_holder) = holders
   use Nil <- result.try(
-    retain(owner, custody.ToolConfig, fn() { tool_holder.stop(holder) }, fn() {
-      process.unlink(tool_holder.pid(holder))
-    }),
+    retain(
+      owner,
+      custody.ToolConfig,
+      fn() { stop_holders(holder, run_holder) },
+      fn() {
+        process.unlink(tool_holder.pid(holder))
+        process.unlink(tool_holder.pid(run_holder))
+      },
+    ),
   )
-  let built = wiring.build_effects_held(wiring_config, holder)
+
+  // A call is routed by the tool's name to the half that runs it. Owner-side
+  // tools and extensions take the path every call took before the halves were
+  // separate; a workspace-side tool reads its stored authority and runs on
+  // the plane. The record's other slots are untouched.
+  let held = wiring.build_effects_held(wiring_config, holder)
+  let built =
+    effects.Effects(
+      ..held,
+      tools: effects.ToolSurface(
+        ..held.tools,
+        run: wiring.run_placed(held.tools.run, run_holder, opened, clock),
+        // A workspace on an executor keeps a record of the calls it ran, which
+        // the runtime asks about an orphaned one. A local workspace has none.
+        recover: half.recover,
+      ),
+    )
   let effects_record =
     effects.Effects(
       ..built,
@@ -4344,9 +4055,8 @@ fn assemble_in(
       opened,
       settings,
       clock,
-      environment,
-      base_policy,
-      broker_actor,
+      plane,
+      call_clock,
       logger,
       entropy,
     )
@@ -4467,8 +4177,14 @@ fn assemble_in(
   // record. The runtime and executor registry keep their intended owners.
   let async_heartbeat_ms = settings.jobs_policy.heartbeat_ms
   let hub_session_id = settings.session_id
-  let hub_workspace = settings.workspace
   let hub_catalog = settings.catalog
+
+  // The two things the hub asks the workspace for, projected before the
+  // hub's child specification closes over them: the plane itself holds the
+  // workspace's tool registry, and a specification the supervisor keeps for
+  // restarts must not.
+  let live_jobs = plane.live_jobs
+  let resolve_directory = plane.resolve_directory
 
   // Directory mutation owns only the restartable writer capability. The hub
   // still receives Runtime for execution, but its admin supplier does not add
@@ -4522,7 +4238,7 @@ fn assemble_in(
     // cannot do without: `cap/kv` requires every caller to tolerate a
     // vanished value, so an emptied store costs a running program a
     // cache miss it was already written to handle.
-    |> sup.add(scratch.supervised(scratch_name, scratch.default_bounds()))
+    |> half.children.scratch
     // The satellite registry is in this tier because a restart costs
     // exactly what a satellite crash costs, which extensions are already
     // written to meet: every host it held is `Gone` to its next caller,
@@ -4541,19 +4257,7 @@ fn assemble_in(
     // sweep `job/*` and record every live job as `Lost`. The model
     // learns on its next poll. Losing a session because a job's
     // bookkeeping crashed would be the worse trade.
-    |> sup.add(jobs.supervised(
-      jobs_name,
-      jobs_wiring(
-        settings,
-        agency_config,
-        broker_actor,
-        base_policy,
-        blob_root,
-        environment,
-        clock,
-        entropy,
-      ),
-    ))
+    |> half.children.jobs
     // The advisor actor is in this tier because everything it holds is
     // durable: the guard and the feed cursor are two `fact.custom`
     // cells, and a replacement reads both on its first message. A crash
@@ -4581,9 +4285,14 @@ fn assemble_in(
     // loses nothing a query cannot rebuild: the dead manager's keepers
     // stop their servers when it goes, and the next query starts one
     // again, cold, and says so.
-    |> with_lsp_manager(lsp_wiring)
+    |> half.children.lsp_manager
     |> with_rule_scanner(settings, runtime, rulescan_name, logger)
     |> with_schedule_scanner(settings, runtime, schedulescan_name, logger)
+    // The peer outbox drainer is in this tier because everything it owes is
+    // a pending row in the session's own store: a replacement begins with a
+    // pass that reads them again, and a message sent while it restarts is
+    // picked up by that pass.
+    |> with_peer_outbox_drain(peer_wiring, runtime, outbox_drain_name, logger)
     // Started here rather than inside the boot: the pass dispatches
     // model turns, and this tier starts after the session's own writer
     // lease is held — which is what makes the live session the one file
@@ -4611,20 +4320,16 @@ fn assemble_in(
       supervision.worker(fn() {
         hub.start(
           hub.default_options(hub_session_id, runtime)
-            |> hub.with_directories(directories.admin_with_facts(
+            |> hub.with_directories(directories.admin_over(
               opened,
               fn() { Ok(directory_facts) },
-              hub_workspace,
-              base_policy,
+              resolve_directory,
             ))
             |> hub.with_bus(event_bus)
             |> with_summary_demand(summary_route, summary_name)
             |> hub.with_worktree_diff(observe_worktree)
             |> hub.with_context(context_reader)
-            |> hub.with_live_jobs(fn(strand) {
-              jobs.live_jobs(jobs_name, strand, waiting: 1000)
-              |> result.map_error(string.inspect)
-            })
+            |> hub.with_live_jobs(live_jobs)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(settings.first_prompt)
             |> hub.with_registry(tool_registry)
@@ -4698,8 +4403,9 @@ fn assemble_in(
     storage_owner:,
     broker: broker_actor,
     tools: holder,
-    pool:,
-    executor: plane.executor,
+    pool: half.pool,
+    executor: half.executor,
+    plane:,
     gateway: hub.Gateway(name:),
     worktree: observe_worktree,
     goal: option.map(advisor_wiring, goalcommand.seam),
@@ -4711,7 +4417,7 @@ fn assemble_in(
     prompt: assembled,
     helper_path: settings.helper_path,
     mcp: mcp_layer,
-    lsp: option.map(lsp_wiring, fn(wiring) { wiring.plane }),
+    lsp: half.lsp,
     rulescan: case settings.rules {
       [] -> None
       _configured -> Some(rulescan_name)
@@ -4738,6 +4444,37 @@ fn assemble_in(
       None, distillpass.DistillsOnBoot, Ok(_distiller) -> Some(distill_name)
     },
   ))
+}
+
+// Starts the two holders a session's tool runs fetch from: the owner's
+// configuration and the workspace's run. A failure to start the second
+// retires the first, which is linked to the builder and would otherwise
+// outlive an assembly that never published it.
+fn start_holders(
+  config: wiring.Config,
+  workspace_run: wiring.WorkspaceRun,
+) -> Result(
+  #(tool_holder.Holder(wiring.Config), tool_holder.Holder(wiring.WorkspaceRun)),
+  String,
+) {
+  use holder <- result.try(tool_holder.start(config))
+  case tool_holder.start(workspace_run) {
+    Ok(run_holder) -> Ok(#(holder, run_holder))
+    Error(reason) -> {
+      let _retired = tool_holder.stop(holder)
+      Error(reason)
+    }
+  }
+}
+
+// Retires both holders, the workspace's run first. Success is the proof
+// custody needs that neither process remains.
+fn stop_holders(
+  holder: tool_holder.Holder(wiring.Config),
+  run_holder: tool_holder.Holder(wiring.WorkspaceRun),
+) -> Result(Nil, String) {
+  use Nil <- result.try(tool_holder.stop(run_holder))
+  tool_holder.stop(holder)
 }
 
 // Acknowledgement transfers startup custody before any resource can begin work.
@@ -4790,21 +4527,6 @@ fn with_service_custody(
       sup.add(tree, publication)
     }
   }
-}
-
-// Capture the original actor before requesting stop; absence is not drain proof.
-fn stop_broker_owned(broker_actor: Broker, pid: Pid) -> Result(Nil, String) {
-  let watch = process.monitor(pid)
-  broker.stop(broker_actor)
-
-  // The broker is a leaf: its death forbids further lending. The pool's
-  // independent inventory still proves every native helper's retirement.
-  let outcome =
-    process.new_selector()
-    |> process.select_specific_monitor(watch, fn(_down) { Nil })
-    |> process.selector_receive(5000)
-  process.demonitor_process(watch)
-  outcome |> result.replace_error("the broker did not retire")
 }
 
 fn stop_services_owned(pid: Pid) -> Result(Nil, String) {
@@ -4920,11 +4642,21 @@ pub fn close_instance(instance: Instance) -> Nil {
   // The language server stops after the runtime, so no query is still
   // asking it, and before the services, so its manager is stopped
   // deliberately (and not replaced) rather than killed with the tree.
-  stop_lsp(instance.lsp, instance.broker)
+  instance.plane.close()
   stop_services(instance.services)
   let _stopped = address.stop(instance.namespace)
-  broker.stop(instance.broker)
-  stop_helpers(instance)
+
+  // The broker and the helpers are this session's only for a local workspace.
+  // For one on an executor the broker is a handle on the executor's, which
+  // must not be stopped from here, and the plane's close already closed the
+  // scope that owns the helpers.
+  case instance.executor {
+    Some(service) -> {
+      broker.stop(instance.broker)
+      stop_helpers(service)
+    }
+    None -> Nil
+  }
 
   // Last, and after the runtime: an MCP client owns a child OS process,
   // and stopping one closes that child's stdin and kills it. Nothing can
@@ -4939,10 +4671,10 @@ pub fn close_instance(instance: Instance) -> Nil {
 // verdict and ends the service. A verdict that is not `Ok` leaves the pool
 // and the service alive holding the custody that could not be shown retired,
 // which is what the pool's own `stop_pool` does on the same failure.
-fn stop_helpers(instance: Instance) -> Nil {
+fn stop_helpers(service: executor.Executor) -> Nil {
   let _verdict =
     executor.close(
-      instance.executor,
+      service,
       draining: executor.drain_ms,
       helpers: executor.helpers_ms,
     )
@@ -4991,6 +4723,26 @@ fn with_rule_scanner(
       )
     }
   }
+}
+
+// The peer outbox drainer. Unlike the scanners it is always started: whether a
+// session will ever owe a peer message is not known at boot, and an idle
+// drainer holds no timer.
+fn with_peer_outbox_drain(
+  builder: sup.Builder,
+  wiring: peers.Wiring,
+  runtime: api.Runtime,
+  name: address.Address(peer_outbox_drain.Message),
+  logger: Logger,
+) -> sup.Builder {
+  sup.add(
+    builder,
+    peer_outbox_drain.supervised(
+      peer_outbox_drain.options(wiring, runtime.effects.timers.after)
+        |> peer_outbox_drain.with_logger(logger),
+      name,
+    ),
+  )
 }
 
 // The scheduled-heartbeat scanner, and the decision not to start one —
@@ -5224,888 +4976,6 @@ const root_strand = advisor.primary
 /// them, and the pooled budget follows the pair.
 const hook_step_id = "extension-hooks"
 
-/// The environment a session's jailed children inherit: the shell the
-/// `bash` tool runs, a satellite, a hook host.
-///
-/// Allowlist-constructed and shared by the tool path and the hook path,
-/// so a host launched by whichever came first is the same host. Five
-/// names, each earned by a failure a live drive produced:
-///
-/// - `PATH` is the toolchain's when code mode found one, so `gleam` and
-///   `erl` resolve in the shell exactly as they do for the compiler. On a
-///   Homebrew Mac the system directories alone hide both, and a model
-///   that cannot run the project's tests falls back to `find /`.
-/// - `HOME` is a directory under the workspace, so it is writable and
-///   empty. `bash -l` sources the dotfiles under `$HOME`, and with the
-///   name unset it read the operator's profile against an empty home and
-///   failed every line that mentioned it. It was the workspace itself for
-///   a while, and macOS answered by creating `Library/Caches` in the
-///   operator's checkout — an untracked directory in every `git status`
-///   the model ran. A home of its own keeps what a toolchain writes to
-///   `$HOME` off the tree.
-/// - `GIT_CONFIG_GLOBAL` names the identity-only configuration prepared by
-///   `git_identity`. Repository overrides still win; absent identity refuses a
-///   commit instead of using the host name. Imported operator hooks retain
-///   their normal HOME and global configuration.
-/// - `TMPDIR` is a writable directory under the workspace. It remains
-///   the fallback when no private scratch is available. Code mode pins
-///   its compiler's `TMPDIR` to the build root, independently of scratch.
-/// - `LOOM_SCRATCH_DIR` reserves the helper-owned scratch name. The empty
-///   value carries the name through each tool's environment allowlist;
-///   the helper replaces it with its actual scratch path, or omits it
-///   when no scratch exists. `TMPDIR` remains the writable fallback.
-///
-/// When `go_caches` is set the environment also carries `GOCACHE`,
-/// `GOMODCACHE` and `GOLANGCI_LINT_CACHE`, which point at the workspace's
-/// private directory outside the checkout, and `GOPROXY` when a module
-/// mirror is configured. Without them Go would write both caches under the
-/// `HOME` above, inside the operator's tree. `client/gocache` says why the
-/// build cache is never the host's.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // With go_caches rooted at /c/loom/workspace/ab, the list ends:
-/// //   #("GOCACHE", "/c/loom/workspace/ab/go-build"),
-/// //   #("GOMODCACHE", "/c/loom/workspace/ab/gomod"),
-/// //   #("GOLANGCI_LINT_CACHE", "/c/loom/workspace/ab/golangci-lint"),
-/// ```
-///
-/// ```gleam
-/// assert serve.session_environment("/work", option.None, option.None)
-///   == [
-///     #("PATH", "/usr/local/bin:/usr/bin:/bin"),
-///     #("HOME", "/work/.codemode/home"),
-///     #("GIT_CONFIG_GLOBAL", "/work/.codemode/home/gitconfig"),
-///     #("TMPDIR", "/work/.codemode/tmp"),
-///     #("LOOM_SCRATCH_DIR", ""),
-///   ]
-/// ```
-///
-@internal
-pub fn session_environment(
-  workspace: String,
-  toolchain_path: Option(String),
-  go_caches: Option(gocache.GoCaches),
-) -> List(#(String, String)) {
-  let go = option.map(go_caches, gocache.environment) |> option.unwrap([])
-  list.append(
-    [
-      #("PATH", option.unwrap(toolchain_path, "/usr/local/bin:/usr/bin:/bin")),
-      #("HOME", tool_home_directory(workspace)),
-      #(
-        git_identity.environment_name,
-        tool_home_directory(workspace) <> "/gitconfig",
-      ),
-      #("TMPDIR", tool_tmp_directory(workspace)),
-      #("LOOM_SCRATCH_DIR", ""),
-    ],
-    go,
-  )
-}
-
-/// Where a jailed tool's `HOME` points: a directory of its own beneath
-/// the code-mode work directory, beside `TMPDIR`, for the same reason —
-/// the workspace gains no second dot-directory, and nothing a tool
-/// writes to its home lands in the operator's tree.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert serve.tool_home_directory("/work") == "/work/.codemode/home"
-/// ```
-///
-@internal
-pub fn tool_home_directory(workspace: String) -> String {
-  workspace <> "/" <> codemode_wiring.work_directory <> "/home"
-}
-
-/// The whole environment a jailed tool shell of this session runs under:
-/// the five names the server owns, then whatever the `[tools]` table
-/// added.
-///
-/// The order is the guarantee. `session_environment`'s five names come
-/// first and nothing after them may repeat one. The server selects the
-/// workspace and toolchain paths, and the helper supplies actual scratch;
-/// configuration cannot replace either owner's choice.
-/// `client/catalog.parse_tools` refuses a table that names one, so the
-/// order here is the second lock rather than the only one.
-///
-/// A configured name the host environment does not set is **skipped**,
-/// and the skipped names come back beside the environment rather than
-/// being logged from in here — this stays a decision about values, and
-/// the caller owns the warning line. Skipping rather than refusing is
-/// deliberate: an operator who lists `GH_TOKEN` on a machine that has
-/// none has a `gh` that will not authenticate, and that is a better
-/// thing to learn from one warned line and an in-band tool failure than
-/// from a server that would not start.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.tool_environment("/work", None, tools, reading: env_text)
-/// // -> #([#("PATH", ..), #("HOME", ..), #("TMPDIR", ..), #("GH_TOKEN", ..)], [])
-/// ```
-///
-@internal
-pub fn tool_environment(
-  workspace: String,
-  toolchain_path: Option(String),
-  go_caches: Option(gocache.GoCaches),
-  tools: catalog.ToolsConfig,
-  reading reading: fn(String) -> Result(String, Nil),
-) -> #(List(#(String, String)), List(String)) {
-  // Installation discovery is the host shell's responsibility. Carry its
-  // search path as a whole instead of guessing which language managers the
-  // owner installed. This changes lookup only; filesystem access remains a
-  // separate sandbox decision. Empty components do not grant cwd precedence.
-  let inherited_path =
-    reading("PATH")
-    |> result.map(string.split(_, ":"))
-    |> result.unwrap([])
-    |> list.filter(fn(path) { path != "" })
-  let owned =
-    session_environment(workspace, toolchain_path, go_caches)
-    |> extending_path(list.append(tools.path, inherited_path))
-
-  // A pass-through name settles one of two ways, so the fold carries
-  // both answers: the pairs that were found, and the names that were not.
-  let #(passed, unset) =
-    list.fold(tools.env, #([], []), fn(state, name) {
-      let #(found, missing) = state
-      case reading(name) {
-        Ok(value) -> #([#(name, value), ..found], missing)
-        Error(Nil) -> #(found, [name, ..missing])
-      }
-    })
-
-  // The literals come last, after the host reads, because a name cannot
-  // be in both lists and the file's own order is the one an operator
-  // reading it back expects.
-  #(list.flatten([owned, list.reverse(passed), tools.set]), list.reverse(unset))
-}
-
-/// Where a jailed tool's `TMPDIR` points: beneath the code-mode work
-/// directory the server already owns inside the workspace, so the
-/// workspace gains no second dot-directory for it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert serve.tool_tmp_directory("/work") == "/work/.codemode/tmp"
-/// ```
-///
-@internal
-pub fn tool_tmp_directory(workspace: String) -> String {
-  workspace <> "/" <> codemode_wiring.work_directory <> "/tmp"
-}
-
-/// The base policy widened for a workspace that is a linked git
-/// worktree: the directories git keeps for it outside the tree become
-/// writable roots, so `git commit` works there as it does in a primary
-/// checkout.
-///
-/// A primary checkout holds its metadata in `<workspace>/.git`, inside
-/// the one root the jail lets a tool write, and committing needs nothing
-/// more. A worktree made by `git worktree add` holds a `.git` *file*
-/// instead, naming a directory under the main repository's
-/// `.git/worktrees/<name>`, and that directory's `commondir` names the
-/// main repository's `.git` where objects and refs live. Both are outside
-/// the workspace, so under the default base a jailed `git commit` died
-/// on the index lock with "Operation not permitted" and the model
-/// concluded, correctly and uselessly, that it could not commit.
-///
-/// The widening is the same trust a primary checkout already extends: a
-/// model that can write `<workspace>/.git` can already plant a hook or
-/// rewrite a ref there, and the main repository's `.git` is the same
-/// kind of place for the same operator. A workspace that is not a
-/// worktree, or whose `.git` file cannot be read, is left exactly as it
-/// was.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // With /work/.git reading `gitdir: /repo/.git/worktrees/work` and
-/// // /repo/.git/worktrees/work/commondir reading `../..`:
-/// // serve.widening_linked_worktree(base, "/work").writable_roots
-/// //   == ["/work", "/repo/.git/worktrees/work", "/repo/.git"]
-/// ```
-///
-@internal
-pub fn widening_linked_worktree(
-  base: policy.SandboxPolicy,
-  workspace: String,
-) -> policy.SandboxPolicy {
-  case linked_git_directories(workspace) {
-    [] -> base
-    outside ->
-      policy.SandboxPolicy(
-        ..base,
-        writable_roots: list.unique(list.append(base.writable_roots, outside)),
-      )
-  }
-}
-
-/// The discovered toolchain, or the reason this base cannot carry it: one
-/// of its read-only mounts would sit at or above one of the base's
-/// writable roots (`codemode.clear_of`).
-///
-/// A separate step from `admitting_codemode`, and ahead of it, because
-/// the answer has two readers. The base must not carry the mount — the
-/// helper and `broker/policy.validate` both refuse a read-only mount over
-/// a writable root (`protocol-change/057`), so admitting it would refuse
-/// the boot — and `code_mode_seam` must not register a tool whose every
-/// launch the meet would then refuse. Turning the discovery into an
-/// `Error` is what tells both, in the words `discover` uses for a host
-/// with no toolchain at all.
-///
-/// Only `base.writable_roots` is read. The session assembly asks a base
-/// built with the toolchain already in it, which is the same answer,
-/// because admitting the toolchain changes the mounts and no root.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // With `erl` found at /bin/erl, so its prefix is `/`:
-/// // serve.admissible_toolchain(Ok(toolchain), policy.workspace_default("/w"))
-/// //   == Error("code mode would mount / read-only …")
-/// ```
-///
-@internal
-pub fn admissible_toolchain(
-  discovered: Result(codemode_wiring.Toolchain, String),
-  base: policy.SandboxPolicy,
-) -> Result(codemode_wiring.Toolchain, String) {
-  use toolchain <- result.try(discovered)
-  codemode_wiring.clear_of(toolchain, writable_roots: base.writable_roots)
-}
-
-/// The base policy with the code-mode toolchain admitted as explicit
-/// mounts: the `erl` install prefix, the `gleam` prefix, and the prepared
-/// build seed, each read-only and required.
-///
-/// This is the base half of one statement whose other half is
-/// `codemode/launch.node_requirements`. Mounts compose as the meet by
-/// path, so a mount survives into the policy a satellite runs under only
-/// when both sides carry it: the base says what code mode may reach, the
-/// launcher says what it needs, and a launcher asking for anything else is
-/// refused in band naming the path. Both halves read the same
-/// `codemode.toolchain_mounts` value, so there is nothing for them to
-/// drift apart on.
-///
-/// A host with no toolchain is left exactly as it was. It registers no
-/// `code_mode` tool, so no satellite will ever be launched on it, and a
-/// mount nothing needs is a region granted for nothing.
-///
-/// The toolchain handed here should already have passed
-/// `admissible_toolchain` against this base. This step does not refuse on
-/// its own, because it returns a policy and the refusal has to reach the
-/// tool registration too; a toolchain that skipped admission and shadows
-/// a writable root leaves a base `base_policy_fault` refuses.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.admitting_codemode(base, Error("no gleam on PATH")) == base
-/// ```
-///
-@internal
-pub fn admitting_codemode(
-  base: policy.SandboxPolicy,
-  discovered: Result(codemode_wiring.Toolchain, String),
-) -> policy.SandboxPolicy {
-  case discovered {
-    Error(_reason) -> base
-    Ok(toolchain) ->
-      // Merged rather than appended, so a base that already carries the
-      // toolchain (the build plane admits it itself, and a fixture may
-      // admit it again on top) ends with one entry per path. Applying
-      // this step twice is then the same as applying it once, and the
-      // duplicate-mount refusal in `policy.validate` stays unreachable
-      // from any assembly order.
-      policy.SandboxPolicy(
-        ..base,
-        mounts: merged_mounts(list.append(
-          base.mounts,
-          codemode_wiring.toolchain_mounts(toolchain),
-        )),
-      )
-  }
-}
-
-// A region a mask already covers, in either direction: the mask over the
-// region and the region over the mask are both the contradiction
-// `broker/policy.validate` refuses.
-fn masked(path: String, protected: List(String)) -> Bool {
-  list.any(protected, fn(entry) {
-    policy.covers(root: entry, path:) || policy.covers(root: path, path: entry)
-  })
-}
-
-// `masked`, and a line on stderr naming what it cost. A derived mount
-// dropped for a mask is silent otherwise, and the build that then fails
-// inside the jail reports a missing directory rather than the mask that
-// removed it. Explicit mounts instead fail validation so the operator can
-// correct a configuration that contradicts a protected path.
-//
-// Stderr rather than the `Logger`: both callers are pure derivations in
-// the base-policy pipe and neither is handed a logger, and threading one
-// through two `admitting_*` steps to carry a boot-time note would be a
-// wider change than the note is worth.
-fn dropped_for_mask(path: String, protected: List(String)) -> Bool {
-  case masked(path, protected) {
-    False -> False
-    True -> {
-      io.println_error(
-        "loomd: not mounting " <> path <> "; a protected path covers it",
-      )
-      True
-    }
-  }
-}
-
-/// The operator's home directory as the harness reads it, or `None` when
-/// `HOME` is unset.
-///
-/// Tool configuration uses this value to expand an operator's `~` paths.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.home_directory() == Some("/home/o")
-/// ```
-///
-pub fn home_directory() -> Option(String) {
-  option.from_result(env_text("HOME"))
-}
-
-/// The base policy widened for the sibling checkouts this workspace's
-/// own manifests name: every `path = "..."` dependency in a `gleam.toml`
-/// that resolves outside the workspace, read-only.
-///
-/// Derived, not configured, and for the reason
-/// `widening_linked_worktree` is: the fact is already written down in a
-/// file the workspace owns, so asking an operator to write it a second
-/// time in `loom.toml` would be asking them to keep two copies in step.
-/// A `path = "../weft"` line is the same shape as a linked worktree's
-/// git directory and is handled the same way — read the manifest,
-/// canonicalize, mount.
-///
-/// Read-only, and `MountOptional`. A path dependency whose directory is
-/// missing is a build the compiler refuses on its own terms with a
-/// better sentence than a jail could produce, and read-write would hand
-/// a session write access to a checkout the operator did not open it on.
-/// Read-write to a sibling comes only from an explicit `[workspace]
-/// mounts` line.
-///
-/// Every failure reads as "nothing to widen": an unreadable manifest, a
-/// document that does not parse, a `path` that is not a string. The
-/// monorepo case is covered by reading `packages/*/gleam.toml` as well,
-/// because loom's own layout puts the manifests there and a dependency
-/// on a sibling checkout is written in one of them.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // With /work/gleam.toml naming `weft = { path = "../weft" }`:
-/// // serve.widening_path_dependencies(base, "/work").mounts
-/// //   |> list.map(fn(m) { m.path }) == ["/weft"]
-/// ```
-///
-@internal
-pub fn widening_path_dependencies(
-  base: policy.SandboxPolicy,
-  workspace: String,
-) -> policy.SandboxPolicy {
-  let wanted =
-    path_dependencies(workspace)
-    |> list.filter(fn(path) { !policy.covers(root: workspace, path:) })
-    |> list.filter(fn(path) { !dropped_for_mask(path, base.protected) })
-    |> list.filter(fn(path) {
-      !list.any(base.mounts, fn(mount) { mount.path == path })
-    })
-    |> list.unique
-  policy.SandboxPolicy(
-    ..base,
-    mounts: list.append(
-      base.mounts,
-      list.map(wanted, fn(path) {
-        policy.Mount(
-          path:,
-          access: policy.MountReadOnly,
-          requirement: policy.MountOptional,
-        )
-      }),
-    ),
-  )
-}
-
-/// Every `path = "..."` dependency this workspace's manifests name, made
-/// absolute against the manifest that stated it.
-///
-/// The manifests are the workspace's own `gleam.toml` and one per
-/// `packages/<name>` directory, which is the monorepo layout loom itself
-/// has. Deeper nesting is deliberately not walked: a recursive scan of a
-/// workspace is unbounded work at every session boot, and a checkout
-/// that keeps its packages somewhere else states the sibling in
-/// `[workspace] mounts` instead.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.path_dependencies("/not/a/gleam/project") == []
-/// ```
-///
-@internal
-pub fn path_dependencies(workspace: String) -> List(String) {
-  let manifests = [
-    workspace <> "/gleam.toml",
-    ..list.map(package_directories(workspace), fn(directory) {
-      directory <> "/gleam.toml"
-    })
-  ]
-  list.flat_map(manifests, manifest_paths)
-}
-
-// The `packages/<name>` directories of a monorepo checkout, or nothing.
-fn package_directories(workspace: String) -> List(String) {
-  let root = workspace <> "/packages"
-  simplifile.read_directory(root)
-  |> result.unwrap([])
-  |> list.map(fn(entry) { root <> "/" <> entry })
-  |> list.filter(fn(path) { simplifile.is_directory(path) == Ok(True) })
-}
-
-// The path dependencies of one manifest, absolute. Relative paths
-// resolve against the manifest's own directory, which is how the Gleam
-// compiler reads them.
-fn manifest_paths(manifest: String) -> List(String) {
-  let directory = filepath.directory_name(manifest)
-  let parsed = {
-    use text <- result.try(result.replace_error(simplifile.read(manifest), Nil))
-    use document <- result.try(result.replace_error(tom.parse(text), Nil))
-    Ok(
-      list.flat_map(["dependencies", "dev-dependencies"], fn(table) {
-        dependency_paths(document, table)
-      }),
-    )
-  }
-  result.unwrap(parsed, [])
-  |> list.filter_map(fn(path) { absolute_path(path, against: directory) })
-}
-
-// The `path` value of every dependency in one table. A dependency stated
-// as a bare version string carries no path and contributes nothing.
-fn dependency_paths(
-  document: Dict(String, tom.Toml),
-  table: String,
-) -> List(String) {
-  case dict.get(document, table) {
-    Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
-      dict.values(entries)
-      |> list.filter_map(fn(entry) {
-        case entry {
-          tom.Table(fields) | tom.InlineTable(fields) ->
-            case dict.get(fields, "path") {
-              Ok(tom.String(path)) -> Ok(path)
-              Ok(_other) | Error(Nil) -> Error(Nil)
-            }
-          _other -> Error(Nil)
-        }
-      })
-    Ok(_other) | Error(Nil) -> []
-  }
-}
-
-/// The base policy with an operator's `[workspace] mounts` entries
-/// admitted, each `MountRequired` at the access the line states.
-///
-/// Required rather than optional, because this is the one list nothing
-/// derives: an operator who writes a path down has said the session
-/// needs it, and a typo that silently mounted nothing would surface as a
-/// build failing for an unrelated-looking reason. A missing source
-/// refuses the execution naming the path instead.
-///
-/// An entry that overlaps a mask is not filtered out the way a derived
-/// one is. It is left in, so that `base_policy_fault` refuses the boot
-/// naming both the mount and the masked region: a derived entry is a
-/// convenience the harness can drop silently, and a written one is a
-/// statement the operator has to be told the server will not honour.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.admitting_config_mounts(base, []) == base
-/// ```
-///
-@internal
-pub fn admitting_config_mounts(
-  base: policy.SandboxPolicy,
-  configured: List(catalog.WorkspaceMount),
-) -> policy.SandboxPolicy {
-  policy.SandboxPolicy(
-    ..base,
-    mounts: merged_mounts(list.append(
-      base.mounts,
-      list.map(configured, fn(entry) {
-        policy.Mount(
-          path: entry.path,
-          access: entry.access,
-          requirement: policy.MountRequired,
-        )
-      }),
-    )),
-  )
-}
-
-/// Collapse the assembled mount list so that each host path appears once.
-///
-/// Every `admitting_*` and `widening_*` step names the regions its own
-/// question is about, and two of them can land on the same directory
-/// without either being wrong. `admitting_codemode` emits the directory
-/// holding `gleam`, which on a Homebrew host resolves to the `/opt/homebrew`
-/// prefix the shared toolchain set also names, and on a Linux host to
-/// `~/.local/bin`, which the per-user set names too. `broker/policy.validate`
-/// refuses a repeated path, so before this step the collision was a boot
-/// failure on ordinary developer machines rather than a misconfiguration.
-///
-/// Merging here is what keeps the assembled base inside the wire-level
-/// invariant; `validate` keeps refusing duplicates, because a policy that
-/// reaches the helper with two answers for one region has no rule for
-/// picking between them.
-///
-/// The two fields merge in opposite directions, and both directions are
-/// the safe one. `requirement` takes `MountRequired` whenever either entry
-/// carries it, because a step that asks to fail closed on a missing source
-/// must not lose that by sharing a path with one that does not. `access`
-/// takes `MountReadOnly` whenever either entry carries it: every toolchain
-/// region is read-only, so a read-write entry from the user set at exactly
-/// a toolchain path would widen the toolchain, which nothing asked for. A
-/// build that genuinely needs to write there names a directory of its own
-/// under the region instead.
-///
-/// Nesting is not a duplicate and is left alone. `.cargo/bin` beside
-/// `.cargo/registry` is two binds with different access on purpose, and
-/// collapsing a child into its parent would give the wider access to the
-/// narrower region.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.merging_mounts(base).mounts |> list.map(fn(m) { m.path })
-/// //   == ["/opt/homebrew"]
-/// ```
-///
-@internal
-pub fn merging_mounts(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
-  policy.SandboxPolicy(..base, mounts: merged_mounts(base.mounts))
-}
-
-// The first entry for a path keeps its position, so the order the
-// assembly chain produced survives the merge and the encoding stays
-// deterministic. A base carries a handful of mounts, so the quadratic
-// scan costs nothing worth avoiding.
-fn merged_mounts(mounts: List(policy.Mount)) -> List(policy.Mount) {
-  mounts
-  |> list.fold([], fn(kept: List(policy.Mount), mount) {
-    case list.any(kept, fn(other) { other.path == mount.path }) {
-      True ->
-        list.map(kept, fn(other) {
-          case other.path == mount.path {
-            True -> merged_mount(other, mount)
-            False -> other
-          }
-        })
-      False -> [mount, ..kept]
-    }
-  })
-  |> list.reverse
-}
-
-// Two entries for one region become the entry neither step would object
-// to: read-only if either side is read-only, required if either side is
-// required.
-fn merged_mount(kept: policy.Mount, later: policy.Mount) -> policy.Mount {
-  let access = case kept.access, later.access {
-    policy.MountReadWrite, policy.MountReadWrite -> policy.MountReadWrite
-    policy.MountReadWrite, policy.MountReadOnly -> policy.MountReadOnly
-    policy.MountReadOnly, policy.MountReadWrite -> policy.MountReadOnly
-    policy.MountReadOnly, policy.MountReadOnly -> policy.MountReadOnly
-  }
-  let requirement = case kept.requirement, later.requirement {
-    policy.MountRequired, policy.MountRequired -> policy.MountRequired
-    policy.MountRequired, policy.MountOptional -> policy.MountRequired
-    policy.MountOptional, policy.MountRequired -> policy.MountRequired
-    policy.MountOptional, policy.MountOptional -> policy.MountOptional
-  }
-  policy.Mount(path: kept.path, access:, requirement:)
-}
-
-/// The directories a linked worktree's git metadata lives in, outside
-/// the workspace: the worktree's own git directory first, then the main
-/// repository's `.git` its `commondir` names. Empty for a primary
-/// checkout, for a directory that is not a repository, and for a `.git`
-/// file that does not parse — every failure reads as "nothing to widen".
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.linked_git_directories("/not/a/worktree") == []
-/// ```
-///
-@internal
-pub fn linked_git_directories(workspace: String) -> List(String) {
-  let directories = {
-    use text <- result.try(result.replace_error(
-      simplifile.read(workspace <> "/.git"),
-      Nil,
-    ))
-    use gitdir_text <- result.try(gitdir_line(text))
-    use gitdir <- result.try(absolute_path(gitdir_text, against: workspace))
-
-    // A worktree without a readable commondir is a worktree git itself
-    // cannot use, so the main repository is simply not added.
-    let common =
-      simplifile.read(gitdir <> "/commondir")
-      |> result.replace_error(Nil)
-      |> result.try(absolute_path(_, against: gitdir))
-      |> result.map(list.wrap)
-      |> result.unwrap([])
-    Ok([gitdir, ..common])
-  }
-  result.unwrap(directories, [])
-}
-
-// The one line a linked worktree's `.git` file carries, without its
-// prefix and trailing newline.
-fn gitdir_line(text: String) -> Result(String, Nil) {
-  case text {
-    "gitdir: " <> rest -> Ok(string.trim(rest))
-    _other -> Error(Nil)
-  }
-}
-
-// A path from a git metadata file made absolute and free of `..`
-// segments, since a writable root is compared by prefix and `a/b/../c`
-// would cover nothing. Relative paths resolve against the file's own
-// directory, which is how git reads them.
-fn absolute_path(path: String, against base: String) -> Result(String, Nil) {
-  let trimmed = string.trim(path)
-  case filepath.is_absolute(trimmed) {
-    True -> filepath.expand(trimmed)
-    False -> filepath.expand(filepath.join(base, trimmed))
-  }
-}
-
-/// The whole session base, composed: every protection, every widening,
-/// and every environment name a jailed process of this session is
-/// allowed to carry, in the order they apply.
-///
-/// It is one named function rather than a pipeline inlined in
-/// `assemble_in` because the composition *is* a decision about a value,
-/// and the steps are not independent — `policy.meet` intersects
-/// `env_allow` against this result, so a step left out is not a missing
-/// convenience but every call that wanted the name refused. A test that
-/// can read this back is what notices a step going missing;
-/// `base_policy_fault` is the same argument one table further on.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.session_base(settings, index, store, digest, toolchain)
-/// //   .env_allow  // contains "TMPDIR" and "CLAUDE_PROJECT_DIR"
-/// ```
-///
-@internal
-pub fn session_base(
-  settings: Settings,
-  index_path: String,
-  memory_store: String,
-  memory_digest: String,
-  toolchain: Result(codemode_wiring.Toolchain, String),
-) -> policy.SandboxPolicy {
-  protecting_index(settings.base_policy, index_path)
-  |> protecting_memory(memory_store, memory_digest)
-  |> allowing_tool_tmpdir
-  |> allowing_imported_hook_env
-  |> under_tools_config(settings.tools)
-  |> widening_linked_worktree(settings.workspace)
-  |> gocache.admitting(settings.go_caches)
-  |> admitting_codemode(toolchain)
-  |> merging_mounts
-}
-
-/// The discovered toolchain as this session may use it: the same value,
-/// or an `Error` when one of its mounts would shadow a writable root of
-/// the assembled session base (`admissible_toolchain`).
-///
-/// The roots are read off `session_base` itself rather than restated,
-/// so a step that widens the writable roots — a linked worktree's git
-/// directories today — is judged against without anyone remembering to
-/// add it here. That base is assembled with the unadmitted toolchain in
-/// it, which gives the same roots, because `admitting_codemode` touches
-/// the mounts and nothing else; only the roots are read.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // With `erl` found at /bin/erl:
-/// // serve.session_toolchain(Ok(found), settings, index, store, digest)
-/// //   == Error("code mode would mount / read-only …")
-/// ```
-///
-@internal
-pub fn session_toolchain(
-  discovered: Result(codemode_wiring.Toolchain, String),
-  settings: Settings,
-  index_path: String,
-  memory_store: String,
-  memory_digest: String,
-) -> Result(codemode_wiring.Toolchain, String) {
-  let assembled =
-    session_base(settings, index_path, memory_store, memory_digest, discovered)
-  admissible_toolchain(discovered, assembled)
-}
-
-/// The policy meet keeps only the environment names the session base
-/// allows, and the base allows `PATH` and `HOME` but not `TMPDIR`. The
-/// bash tool passes `TMPDIR` (see `session_environment`), so the name is
-/// granted on the session base here — the same move the code-mode
-/// builder makes on its own derived base, for the same variable. The
-/// helper-owned `LOOM_SCRATCH_DIR` travels through the same allowlists;
-/// reserving it here lets the helper expose its private directory.
-///
-/// Public to this package for the reason `under_tools_config` is: the
-/// composed allowlist is a value a test should be able to read back.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.allowing_tool_tmpdir(base).env_allow  // contains "TMPDIR"
-/// ```
-///
-@internal
-pub fn allowing_tool_tmpdir(
-  base: policy.SandboxPolicy,
-) -> policy.SandboxPolicy {
-  policy.SandboxPolicy(
-    ..base,
-    env_allow: list.unique(
-      list.append(base.env_allow, [
-        "TMPDIR",
-        "LOOM_SCRATCH_DIR",
-        git_identity.environment_name,
-      ]),
-    ),
-  )
-}
-
-/// `CLAUDE_PROJECT_DIR` granted on the session base, for the same
-/// reason `allowing_tool_tmpdir` grants `TMPDIR`.
-///
-/// An imported hook's process is cleared with `RefuseNarrowed`, and its
-/// requirements name exactly the keys of the environment
-/// `with_imported_hooks` composes — which carries `CLAUDE_PROJECT_DIR`
-/// because the contract's payload and scripts both expect it. A name in
-/// that environment and not on the base's allowlist is not a missing
-/// variable, it is a refusal of the whole call: `policy.meet` intersects
-/// `env_allow`, `shortfall` reports the narrowing, and the broker turns
-/// that into `PolicyRefused` before any process exists. Granting it here
-/// is what keeps the hook runner's ask a subset of the base.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.allowing_imported_hook_env(base).env_allow
-/// //   // contains "CLAUDE_PROJECT_DIR"
-/// ```
-///
-@internal
-pub fn allowing_imported_hook_env(
-  base: policy.SandboxPolicy,
-) -> policy.SandboxPolicy {
-  policy.SandboxPolicy(
-    ..base,
-    env_allow: list.unique(list.append(base.env_allow, ["CLAUDE_PROJECT_DIR"])),
-  )
-}
-
-// Keep the discovered Loom toolchain first, then operator and host tools,
-// then system fallbacks. Putting system launchers ahead of the operator's
-// installed Git and Python made an explicit PATH addition ineffective.
-fn extending_path(
-  environment: List(#(String, String)),
-  extra: List(String),
-) -> List(#(String, String)) {
-  case extra {
-    [] -> environment
-    dirs ->
-      list.map(environment, fn(pair) {
-        case pair {
-          #("PATH", value) -> {
-            let current = string.split(value, ":")
-            let fallback = ["/usr/local/bin", "/usr/bin", "/bin"]
-            let bundled =
-              list.filter(current, fn(path) { !list.contains(fallback, path) })
-            let ordered =
-              list.flatten([bundled, dirs, current])
-              |> list.filter(fn(path) { filepath.is_absolute(path) })
-              |> list.unique
-            #("PATH", string.join(ordered, ":"))
-          }
-          other -> other
-        }
-      })
-  }
-}
-
-/// The operator's `[tools]` table applied to the session base: the
-/// network posture they chose, and every name their two lists mention
-/// added to the environment allowlist.
-///
-/// The second half is what makes the first half reach a shell, and it is
-/// exactly `allowing_tool_tmpdir`'s argument one table further on.
-/// `policy.meet` intersects `env_allow`, and a jailed tool asks for
-/// precisely the names in `Ctx.env` — so a variable that is in the
-/// environment and not on the base's allowlist is a narrowing refusal
-/// rather than a variable.
-///
-/// Public to this package for the reason `base_policy_fault` is: this is
-/// a decision about a value, and it should be testable as one rather than
-/// through a boot that has nowhere to hand its composed policy back.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.under_tools_config(base, tools).network == policy.NetworkFull
-/// ```
-///
-@internal
-pub fn under_tools_config(
-  base: policy.SandboxPolicy,
-  tools: catalog.ToolsConfig,
-) -> policy.SandboxPolicy {
-  let configured =
-    list.append(tools.env, list.map(tools.set, fn(pair) { pair.0 }))
-  policy.SandboxPolicy(
-    ..base,
-    network: configured_network(tools.network),
-    env_allow: list.unique(list.append(base.env_allow, configured)),
-  )
-}
-
-// The catalogue's two-word posture as the policy lattice's own value.
-// `NetworkProxy` is deliberately unreachable from here: the broker
-// downgrades it to `NetworkOff` in phase 1 (`broker/policy`'s module
-// doc), so a config word for it would promise host filtering that nothing
-// on this path enforces.
-fn configured_network(network: catalog.ToolNetwork) -> policy.NetworkPolicy {
-  case network {
-    catalog.ToolNetworkOff -> policy.NetworkOff
-    catalog.ToolNetworkFull -> policy.NetworkFull
-  }
-}
-
 /// Slack over an invocation's own deadline before a caller gives up on the
 /// satellite registry.
 ///
@@ -6178,100 +5048,6 @@ fn await_death(pid: Pid, remaining_ms: Int) -> Nil {
   }
 }
 
-// The Go caches' boot refusals against the composed base, so the masked
-// paths of this session are all known. Absent caches have nothing to
-// refuse.
-fn go_cache_fault(
-  settings: Settings,
-  base: policy.SandboxPolicy,
-) -> Result(Nil, String) {
-  case settings.go_caches {
-    None -> Ok(Nil)
-    Some(caches) ->
-      gocache.fault(
-        caches,
-        settings.workspace,
-        base.protected,
-        base.mounts,
-        tools_naming: list.append(
-          settings.tools.env,
-          list.map(settings.tools.set, fn(pair) { pair.0 }),
-        ),
-      )
-  }
-}
-
-fn prepare_directories(
-  settings: Settings,
-  blob_root: String,
-  tmp_dir: String,
-  tool_dirs: List(String),
-) -> Result(Nil, String) {
-  let wanted = [
-    parent_directory(settings.session_path),
-    Some(settings.workspace),
-    Some(blob_root),
-    Some(tmp_dir),
-  ]
-  let directories = list.append(option.values(wanted), tool_dirs)
-  use Nil <- result.try(create_directories(directories))
-
-  // Both workspace directories are the harness's, not the operator's,
-  // and without this they sit in every `git status` of the repository a
-  // session works in, and every `rg` walks the module caches beneath
-  // the tool home.
-  list.each(
-    [
-      blob_root,
-      settings.workspace <> "/" <> codemode_wiring.work_directory,
-    ],
-    ignore_directory,
-  )
-  Ok(Nil)
-}
-
-/// The ignore file a harness-owned workspace directory carries: one
-/// pattern that ignores every entry, the file included, so the directory
-/// drops out of `git status` without touching the repository's own
-/// ignore files or resolving where a linked worktree keeps its metadata.
-@internal
-pub const ignore_everything =
-  "# Written by loom: this directory is harness state.\n*\n"
-
-// Writes the ignore file only where none exists, so an operator who
-// replaced it with rules of their own keeps them. A write that fails is
-// ignored: the file keeps `git status` tidy and nothing reads it, so a
-// directory left unwritable by an earlier container run must not cost the
-// session its boot.
-fn ignore_directory(directory: String) -> Nil {
-  let path = directory <> "/.gitignore"
-  case simplifile.is_file(path) {
-    Ok(True) -> Nil
-    Ok(False) | Error(_) -> {
-      let _hygiene = simplifile.write(path, ignore_everything)
-      Nil
-    }
-  }
-}
-
-fn create_directories(directories: List(String)) -> Result(Nil, String) {
-  list.try_each(directories, fn(directory) {
-    simplifile.create_directory_all(directory)
-    |> result.map_error(fn(error) {
-      "could not create " <> directory <> ": " <> string.inspect(error)
-    })
-  })
-}
-
-fn parent_directory(path: String) -> Option(String) {
-  case list.reverse(string.split(path, "/")) {
-    [_file, ..rest] if rest != [] -> Some(string.join(list.reverse(rest), "/"))
-    _ -> None
-  }
-}
-
-// --- the search index ------------------------------------------------------
-
 // The index file beside this session's, as an absolute path.
 //
 // Absolute is not cosmetic: the path goes into `base_policy.protected`,
@@ -6302,7 +5078,7 @@ fn beside_session_file(
   settings: Settings,
   file: String,
 ) -> Result(String, String) {
-  let directory = parent_directory(settings.session_path)
+  let directory = workspace_policy.parent_directory(settings.session_path)
   let path = case directory {
     Some(directory) -> directory <> "/" <> file
     None -> file
@@ -6318,346 +5094,6 @@ fn beside_session_file(
         <> " has no absolute path: "
         <> string.inspect(error)
       })
-  }
-}
-
-/// The base policy with the search index protected: never writable, by
-/// any jailed process or by the harness's own write tools.
-///
-/// This is a security property rather than hygiene, and it is the same
-/// argument the blob store's protection rests on one step further along.
-/// Search snippets are read back into *future* sessions' contexts, so an
-/// index a model can write is a channel from one execution's output into
-/// a later execution's input — prompt injection with a persistence
-/// layer. Writing is the whole of the poisoning path: `protected` bars
-/// writes and leaves reads alone, which is exactly the asymmetry wanted,
-/// since the harness's own indexing never goes through `resolve_writable`
-/// and a model reading the file learns nothing it could not ask
-/// `history_search` for.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.protecting_index(base, "/data/loom-search.db").protected
-/// ```
-///
-pub fn protecting_index(
-  base: policy.SandboxPolicy,
-  index_path: String,
-) -> policy.SandboxPolicy {
-  // The whole SQLite file family, not the database alone (see
-  // `sqlite_side_files`), enumerated rather than protected as a
-  // directory because the index sits beside the session file, where a
-  // protected directory would swallow paths the operator owns. The
-  // database itself is always protected: the boot's probe creates it.
-  // The side files are conditional, on the argument `protecting` states.
-  protecting(
-    base,
-    always: [index_path],
-    where_maskable: sqlite_side_files(index_path),
-  )
-}
-
-/// The base policy with this repository's memory protected: the digest
-/// sidecar the server injects at every run start, and the store the
-/// digest is rendered from.
-///
-/// The same argument `protecting_index` makes, one step further along
-/// and one degree more direct. A search snippet reaches a later session
-/// only if a model searches for it; the memory digest is injected into
-/// **every** run of every session on this repository, unasked. A
-/// model-writable digest would therefore be the cleanest prompt-injection
-/// channel in the tree.
-///
-/// Both files are conditional, and unlike the index this is not a
-/// refinement but a requirement: neither exists until a distillation run
-/// has happened, and the jail refuses to mask a *missing* protected path
-/// under a read-only parent — the failure that once turned the index's
-/// side-file list into a refusal of every jailed call. So the mask
-/// arrives with the file. Until then there is nothing to protect: a
-/// digest that does not exist injects nothing, and under a read-only
-/// parent the jail makes it uncreatable.
-///
-/// The wrapper is the other half of this bargain and does not depend on
-/// it: `client/memory.wrapped` builds the fence and the attribution at
-/// injection time, so even a digest somebody managed to write cannot
-/// claim to be operator text.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.protecting_memory(base, "/d/loom-memory.db", "/d/loom-memory.digest")
-/// ```
-///
-pub fn protecting_memory(
-  base: policy.SandboxPolicy,
-  store_path: String,
-  digest_path: String,
-) -> policy.SandboxPolicy {
-  protecting(base, always: [], where_maskable: [
-    store_path,
-    digest_path,
-    ..sqlite_side_files(store_path)
-  ])
-}
-
-/// Every path under the daemon's state root that must stay masked from
-/// every jail, as a function of that root.
-///
-/// This is the candidate list rather than the effective one. What a
-/// given session gets is `protecting_state_root`'s output, where the
-/// lazily created half is filtered by whether the jail can be handed the
-/// mask at all; read that function before concluding an entry here is
-/// live for a particular policy.
-///
-/// The list exists because the state root as a whole must not be the
-/// mask. Masking `~/.loom` wholesale reads as prudence and is a bug: an
-/// operator who opens a session *on* the state root — to edit
-/// `loom.toml`, which is a reasonable thing to want Loom's help with —
-/// gets a Seatbelt profile denying reads over the jail's own working
-/// directory, and every jailed call comes back
-/// `getcwd: cannot access parent directories`. The workspace was
-/// legitimate; the grain was wrong.
-///
-/// So each entry is decided on one question: could a jailed process
-/// reading or writing it obtain a credential, another session's data, or
-/// the daemon's control? What the state root holds that answers no —
-/// the `loom*.toml` catalogues (they name environment variables, they do
-/// not carry secrets), `extensions/`, `logs/` and `daemon.log` — is left
-/// alone, because masking it buys nothing and costs the operator a
-/// directory they may want to work in.
-///
-/// The blob store is masked too, one layer up rather than here:
-/// `base_policy` protects `<workspace>/.blobs` for every workspace, so a
-/// session whose workspace *is* the state root already has it, and a
-/// second entry naming the same path would be a duplicate mask.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.state_root_mask_candidates("/home/o/.loom") |> list.contains("/home/o/.loom/owner.token")
-/// ```
-///
-pub fn state_root_mask_candidates(state_root: String) -> List(String) {
-  list.append(established_masks(state_root), lazy_masks(state_root))
-}
-
-/// The base policy with the daemon's state-root secrets masked, in place
-/// of the state root itself.
-///
-/// The split between the two halves of the list is `protecting`'s
-/// `always`/`where_maskable` distinction and it is load-bearing here for
-/// the reason that comment gives: the jail refuses to mask a *missing*
-/// protected path whose parent is read-only, and a refusal at that layer
-/// is a refusal of every jailed call in the session. So only the entries
-/// the daemon root has necessarily created before it admits any session
-/// are unconditional; the lazily created ones are masked once they
-/// exist, or before that where a writable root reaches them and the jail
-/// can build the mask anyway. Neither half turns on whether the model
-/// could write the entry — every one of these is a secret to read as
-/// much as a file to forge.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.protecting_state_root(base, "/home/o/.loom")
-/// ```
-///
-pub fn protecting_state_root(
-  base: policy.SandboxPolicy,
-  state_root: String,
-) -> policy.SandboxPolicy {
-  protecting(
-    base,
-    always: established_masks(state_root),
-    where_maskable: lazy_masks(state_root),
-  )
-}
-
-// The masked entries `client/daemon/root.directories` and the startup
-// that follows it have certainly created by the time any session policy
-// is built, so masking them costs no existence question.
-fn established_masks(state_root: String) -> List(String) {
-  [
-    // The daemon's owner credential in plaintext. A jailed process that
-    // read it would hold `/v2/control` — every session on the host, and
-    // the authority to create more.
-    state_root <> "/owner.token",
-
-    // The catalogue: registrations, workspaces and the digests the
-    // daemon authenticates principals against. Reading it enumerates
-    // every other session; writing it forges an admission record.
-    state_root <> "/catalogue.db",
-
-    // Every session's conversation database, this one's included. One
-    // session's jail reading another's transcript is the confinement gap
-    // issue #242 exists for, and a directory mask is the whole answer
-    // for the sessions that live here.
-    state_root <> "/sessions",
-
-    // The root's lifetime lock. It carries no secret; it is the daemon's
-    // singleton fence, and a jailed process that could unlink or rewrite
-    // it could induce a second daemon over the same catalogue.
-    state_root <> "/daemon.lock",
-
-    // The code-mode socket root. Each directory under it holds one
-    // execution's cap socket, and only that execution's satellite is
-    // given its directory back (`client/codemode.reaching_socket`). The
-    // mask stops every other jail listing it on both platforms, and
-    // stops connecting under bubblewrap. Seatbelt allows unix-socket
-    // connects by path regardless, so on macOS the unlisted digest name
-    // is what keeps another jail from the socket.
-    state_root <> "/" <> codemode_wiring.runtime_directory,
-  ]
-}
-
-// The masked entries created lazily — by a launcher, by the first
-// session on a workspace, or by the daemon after it is already serving.
-// Every one of them is masked once it is on disk, which on a host that
-// has run a launcher or a second session is all of them. The condition
-// exists for the window before that: `protecting` cannot hand the jail a
-// path which neither exists nor has a writable parent, because the jail
-// refuses such a mask and the refusal takes the whole session with it.
-fn lazy_masks(state_root: String) -> List(String) {
-  list.flatten([
-    // The catalogue runs in WAL mode, so a write to `-wal` is the same
-    // forgery one filename to the right. Conditional for the reason
-    // `protecting_index`'s side files are: `-journal` exists only after
-    // a failed WAL pragma.
-    sqlite_side_files(state_root <> "/catalogue.db"),
-    [
-      // The key every browser login is signed and verified under, created by
-      // the first daemon started with `--ui` (protocol-change/065). A jailed
-      // process that read it could mint a login for any principal, the owner
-      // included, and one that rewrote it would end every login in the daemon.
-      state_root <> "/browser.key",
-
-      // The launcher's per-endpoint bearer tokens. Credentials, plainly:
-      // one of these attaches to the session it names.
-      state_root <> "/tokens",
-
-      // The launcher's per-endpoint locks, on `daemon.lock`'s argument:
-      // the daemon's exclusion, not the model's to take or break.
-      state_root <> "/locks",
-
-      // Per-workspace domain state — the memory store and search index
-      // every session on that workspace injects from. `protecting_memory`
-      // states why a model-writable digest is the cleanest injection
-      // channel in the tree; this is the same door for *other*
-      // workspaces.
-      state_root <> "/workspaces",
-
-      // The session-scoped half of the same domain state.
-      state_root <> "/domains",
-
-      // The endpoint records, and the one the daemon publishes. They
-      // carry no secret — `host/endpoint`'s schema deliberately holds no
-      // credential, workspace or session path — but a launcher adopts a
-      // running daemon by the PID and birth marker it reads here, so a
-      // jailed rewrite points the operator's next launch at a process of
-      // the model's choosing. Masked as control, not as confidentiality.
-      state_root <> "/endpoints",
-      state_root <> "/daemon.endpoint",
-
-      // The launcher's startup lock, on `daemon.lock`'s argument.
-      state_root <> "/launch.lock",
-    ],
-  ])
-}
-
-// The whole SQLite file family beside a database: it runs in WAL mode,
-// so `-wal` and `-shm` live beside it and a write to either is the same
-// poisoning door one filename to the right — WAL frame checksums are not
-// cryptographic, so a crafted `-wal` is served as content on the next
-// read. `-journal` covers the rollback fallback a failed WAL pragma
-// leaves.
-fn sqlite_side_files(path: String) -> List(String) {
-  [path <> "-wal", path <> "-shm", path <> "-journal"]
-}
-
-// The one conditional-protection mechanism, shared by the index, by
-// memory and by the daemon's state-root masks rather than copied for
-// each.
-//
-// `always` is for paths that certainly exist by the time a jail is
-// built — the index database, which the boot's probe creates, and the
-// four entries the daemon root writes before it admits a session —
-// because masking an existing file needs nothing from its parent.
-//
-// `where_maskable` is for everything else, and the condition is the
-// jail's own refusal rather than a threat model: a protected path that
-// neither exists nor sits under a writable parent is one the jail
-// declines to mask, and that decline is a refusal of every jailed call
-// in the session. So an entry survives the filter when it is there to be
-// masked, or when a writable root reaches it and the jail can therefore
-// create the mask under a parent it may write. An entry that fails both
-// is one no jail could be handed at all, not one whose exposure was
-// judged acceptable — masking has nothing to do with whether the model
-// could write it, only with whether the mask can be built.
-//
-// The residual is stated rather than hidden: an entry that has not been
-// created yet, under a read-only parent, is unmasked until it appears,
-// and a session that began before it appeared keeps the policy it
-// booted with.
-fn protecting(
-  base: policy.SandboxPolicy,
-  always always: List(String),
-  where_maskable conditional: List(String),
-) -> policy.SandboxPolicy {
-  let maskable =
-    list.filter(conditional, fn(path) {
-      exists(path) || writable_touches(base, path)
-    })
-  policy.SandboxPolicy(
-    ..base,
-    protected: list.flatten([
-      always,
-      maskable,
-      base.protected,
-    ]),
-  )
-}
-
-// Whether a path is on disk, as a file or as a directory — the first
-// half of `protecting`'s condition, and the half that decides the
-// ordinary case, since a workspace outside the state root grants no
-// writable root over it while every one of the daemon's lazily created
-// entries is already there by the time a second session boots.
-//
-// An unreadable answer counts as absent. That is the conservative side
-// of the missing-path refusal: a mask nothing needed costs one entry,
-// while a mask the jail declines costs the whole session.
-fn exists(path: String) -> Bool {
-  result.unwrap(simplifile.is_file(path), False)
-  || result.unwrap(simplifile.is_directory(path), False)
-}
-
-// Whether a jailed or harness-side write could reach `path` at all —
-// the second half of `protecting`'s condition, and the one that lets a
-// path which does not exist yet still be masked, because the jail can
-// build a mask over a writable parent.
-//
-// Two ways it can, and only the first was once asked. A writable root
-// may cover the path's *parent*, which is how a file gets created beside
-// its siblings. Or a writable root may lie *inside* the path, which is
-// how a directory entry like the state root's `tokens/` becomes
-// writable without anything covering `~/.loom` itself. Asking only the
-// first left such an entry unmasked *and* unrefused, so a workspace
-// nested inside a secret directory would have quietly worked.
-fn writable_touches(base: policy.SandboxPolicy, path: String) -> Bool {
-  list.any(base.writable_roots, fn(root) {
-    policy.covers(root: root, path: parent_of(path))
-    || policy.covers(root: path, path: root)
-  })
-}
-
-// The directory holding a path: everything before the last slash. The
-// index path is absolute by construction (`index_path` resolves it), so
-// there is always a slash to find.
-fn parent_of(path: String) -> String {
-  case string.split(path, "/") |> list.reverse {
-    [_leaf, ..parents] -> parents |> list.reverse |> string.join("/")
-    [] -> path
   }
 }
 
@@ -6786,47 +5222,54 @@ fn with_history(
 
 // --- the system prompt -----------------------------------------------------
 
-/// How long the boot waits on the helper it spawns to ask whether this
-/// host can confine anything. Above the pool's own handshake timeout, so
-/// the helper actor has always settled into ready or dead by the time the
-/// answer is due and the call cannot outrun it.
-pub const helper_probe_ms = 15_000
-
 // Renders the prompt for a session that has none pinned yet. Everything
-// expensive lives behind this thunk — the pack file, the session's
-// instruction files, and the helper spawn the degraded question needs —
-// so a resumed session pays for none of it.
+// expensive lives behind this thunk — the pack file, the instruction files,
+// and the helper spawn the degraded question needs — so a resumed session
+// pays for none of it.
 //
-// The operator's home comes off `Settings` rather than out of the process
-// environment, so the lookup of the global `AGENTS.md` is a pure function
-// of its arguments and a test can stand a server up that never reads the
-// machine's real home.
+// The instruction files come from two places, and the order is the one the
+// single lookup always produced. The operator's global `AGENTS.md` is read
+// here, on the owner, from `Settings` rather than the process environment, so
+// the lookup is a function of its arguments and a test can stand a server up
+// that never reads the machine's real home. The workspace's own files are the
+// workspace's to read: they arrive from the plane as text, with the helper's
+// health, the platform and the shell it learned on its own machine.
 fn render_prompt(
   settings: Settings,
-  base_policy: policy.SandboxPolicy,
-  pool: Pool,
+  plane: workspace_plane.WorkspacePlane,
   tools: List(String),
   available_tools: List(String),
 ) -> Result(system_prompt.Rendered, String) {
+  use facts <- result.try(plane.prompt_facts())
+  let census = plane.census
+  let #(standing, standing_notes) = system_prompt.discover_user(settings.home)
   let #(guidance, notes) =
-    system_prompt.guidance(workspace: settings.workspace, home: settings.home)
+    system_prompt.render_guidance(
+      list.append(option.values([standing]), facts.guidance),
+      list.append(standing_notes, facts.guidance_notes),
+    )
   use #(origin, source) <- result.try(
     system_prompt.pack_source(
-      option.from_result(env_text(system_prompt.pack_path_variable)),
+      option.from_result(workspace_policy.env_text(
+        system_prompt.pack_path_variable,
+      )),
     ),
   )
   use rendered <- result.try(system_prompt.render_pack(
     origin,
     source,
     system_prompt.Host(
-      workspace: settings.workspace,
-      platform: ffi_os.platform(),
-      shell: shell_path,
+      workspace: census.workspace,
+      platform: census.platform,
+      shell: census.shell,
       tools:,
       available_tools:,
       demand: settings.demand,
-      degraded: degraded(pool),
-      base_policy:,
+      degraded: case facts.helper {
+        workspace_plane.Degraded -> True
+        workspace_plane.Healthy -> False
+      },
+      base_policy: census.base_policy,
       guidance:,
     ),
   ))
@@ -6837,339 +5280,6 @@ fn render_prompt(
     ),
   )
 }
-
-/// Whether this host's helper advertises degraded enforcement, asked once
-/// at session open by borrowing a helper from the pool the session will
-/// use anyway. The system prompt has no other source for it: the
-/// per-layer `skip:` report lives inside an `ExecResult`, which is after
-/// a run, and the `ENFORCED`/`SKIPPED` table is a separate `--self-test`
-/// process invocation.
-///
-/// A helper that will not spawn, or will not finish its handshake, is
-/// reported as degraded — which is what it behaves as: under
-/// `FullEnforcement` every jailed execution against it fails, and the
-/// pack's degraded fragment says exactly that.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.degraded(pool) == False   // a healthy loom-exec
-/// ```
-///
-pub fn degraded(pool: Pool) -> Bool {
-  case exec.checkout(pool, waiting: helper_probe_ms) {
-    Error(_unavailable) -> True
-    Ok(helper) -> {
-      let answer = case exec.await_ready(helper, waiting: helper_probe_ms) {
-        Ok(features) -> list.contains(features, "degraded")
-        Error(_dead) -> True
-      }
-      exec.checkin(pool, helper)
-      answer
-    }
-  }
-}
-
-/// The shell every jailed command runs under, and the shell the system
-/// prompt tells the agent about. One constant so the two cannot drift:
-/// a prompt that named a shell the helper does not use would be a lie
-/// the agent could only discover by writing a broken command.
-pub const shell_path = "/bin/sh"
-
-/// The default development policy permits host reads and ordinary network
-/// access, with writes confined to the workspace. Protected harness data
-/// remains masked regardless of the readable scope.
-///
-/// Installed tools can live anywhere on the host; the policy does not guess
-/// language managers, SDK directories, or package-cache locations.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert serve.base_policy("/work").readable_roots == ["/"]
-/// ```
-pub fn base_policy(workspace: String) -> policy.SandboxPolicy {
-  base_policy_for(workspace, catalog.HostReads)
-}
-
-/// Selects host or workspace reads without changing the write boundary.
-/// Additional restricted-mode resources come from explicit workspace mounts.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert serve.base_policy_for("/work", catalog.WorkspaceReads).readable_roots
-///   == ["/work"]
-/// ```
-@internal
-pub fn base_policy_for(
-  workspace: String,
-  scope: catalog.ReadScope,
-) -> policy.SandboxPolicy {
-  policy.SandboxPolicy(
-    ..policy.workspace_default(workspace),
-    readable_roots: case scope {
-      catalog.HostReads -> ["/"]
-      catalog.WorkspaceReads -> [workspace]
-    },
-    network: policy.NetworkFull,
-    // Content-addressed artifacts are written only by their harness owner.
-    // Broad reads must never let a jailed tool replace one behind its hash.
-    protected: [workspace <> "/" <> codemode_wiring.blob_directory],
-  )
-}
-
-/// The base policy an install's build plane runs under: the staging root
-/// writable, network off, and the daemon's state root masked where the
-/// jail can build the mask. The toolchain reaches it as explicit mounts,
-/// which `start_build_plane` admits once discovery has said where the
-/// toolchain is.
-///
-/// Separate from `base_policy` because the blob mask is the one thing a
-/// build plane must not inherit. A session's blob store exists — `boot`
-/// creates it before it spawns a jail — and a session's jails are
-/// writable in the workspace that holds it, so the mask is both
-/// buildable and load-bearing there. An install has no blob store at
-/// all: nothing under the extensions root is content-addressed, no
-/// jailed step here emits a blob, and `codemode/build.build_requirements`
-/// narrows the one writable root down to the build directory. The
-/// inherited entry was therefore a mask over a path that did not exist,
-/// under a parent the composed policy no longer let anyone write, which
-/// is precisely the shape bwrap declines to build — and its refusal took
-/// every jailed compile with it. Not constructing the entry is what
-/// keeps that state out of reach; dropping it later would leave the same
-/// mistake one composition step away.
-///
-/// The state root is the other half of that lesson applied the other
-/// way. A build step is a jailed compile of code an operator fetched
-/// from somewhere, and the state root sits one directory above the
-/// extensions root it writes, so without a mask it can read
-/// `<state_root>/owner.token` exactly as a session's jail once could.
-/// Every entry goes in conditionally rather than unconditionally,
-/// because the extensions root is `<state_root>/extensions` by default
-/// and an install may be the first thing that ever runs on a host: a
-/// daemon that has never started has written no token, and a mask over a
-/// missing path under a read-only parent is the refusal this function's
-/// first paragraph is about.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // serve.build_plane_policy("/home/o/.loom/extensions", "/home/o/.loom")
-/// ```
-///
-pub fn build_plane_policy(
-  writable: String,
-  state_root: String,
-) -> policy.SandboxPolicy {
-  let base = policy.workspace_default(writable)
-  protecting(
-    base,
-    always: [],
-    where_maskable: list.flatten([
-      established_masks(state_root),
-      lazy_masks(state_root),
-    ]),
-  )
-}
-
-/// Why this server will not boot on the base policy it was given, worded
-/// for the operator who wrote it.
-///
-/// `Settings.base_policy` is a *field*, so a host may serve any policy
-/// value it can construct — and a policy the effect plane cannot
-/// enforce is one this server must refuse to start on rather than start
-/// and enforce differently in different places. The three checks are
-/// `broker/policy.validate`'s, which is also the check every composed
-/// policy passes immediately before dispatch, so what is refused here is
-/// exactly what would be refused there.
-///
-/// A **relative `protected` entry** is the one worth naming. It reaches
-/// the jail as `RelativePath` and refuses the clearance, loudly; it
-/// reaches `tools/fs.resolve_writable` as a list nothing can be judged
-/// against, which now refuses in band rather than covering nothing. Two
-/// enforcement points agreeing to refuse is correct and still the wrong
-/// place to learn about it — the operator finds out from the first tool
-/// call of a live session, having been told nothing at boot. So the
-/// value is checked once, before anything is spawned, and the server
-/// does not come up.
-///
-/// A **workspace inside a mask** is the second refusal, and it is not
-/// one `policy.validate` could make: the policy is perfectly
-/// enforceable, and enforcing it shadows the session's own working
-/// directory. `masked_workspace_fault` says what that cost, and
-/// `state_root_mask_candidates` says why the daemon no longer causes it.
-///
-/// Pure, and separate from `boot` for that reason: this is a decision
-/// about a value, and it should be testable as one.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert serve.base_policy_fault(serve.base_policy("/work")) == Ok(Nil)
-/// ```
-///
-pub fn base_policy_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
-  use Nil <- result.try(
-    policy.validate(base)
-    |> result.map_error(fn(error) {
-      "the session base policy is not one the sandbox can enforce: "
-      <> policy_fault_text(error)
-    }),
-  )
-
-  // The second refusal is about the *shape* of an enforceable policy
-  // rather than its values, which is why `policy.validate` does not make
-  // it: a workspace inside a mask is a policy the sandbox enforces
-  // perfectly and the operator cannot use.
-  masked_workspace_fault(base)
-}
-
-// Why a workspace this policy makes unusable is a refusal rather than a
-// live session.
-//
-// `protected` is the policy's only subtractive verb and no grant carves
-// a hole in one, so a writable root that is a masked entry or sits under
-// one is shadowed by the mask whatever the grant says. That session
-// comes up, and then every jailed call fails on its own working
-// directory — the measured failure was `getcwd: cannot access parent
-// directories` out of every `bash`, with `ls` printing nothing and the
-// code-mode satellite unable to open `.`. The operator learns about it
-// from the first tool call, having been told nothing at boot, so the
-// value is judged once instead.
-fn masked_workspace_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
-  let shadowed =
-    list.flat_map(base.protected, fn(entry) {
-      list.filter_map(base.writable_roots, fn(root) {
-        case policy.covers(root: entry, path: root) {
-          True -> Ok(#(entry, root))
-          False -> Error(Nil)
-        }
-      })
-    })
-  case shadowed {
-    [] -> Ok(Nil)
-    [#(entry, root), ..] ->
-      Error(
-        "the workspace `"
-        <> root
-        <> "` is the protected entry `"
-        <> entry
-        <> "`, or lies under it. Every jail masks that entry, so the "
-        <> "session's own working directory would be unreadable and "
-        <> "every tool call would fail on it. Choose another directory "
-        <> "for the workspace",
-      )
-  }
-}
-
-fn policy_fault_text(error: policy.PolicyError) -> String {
-  case error {
-    policy.RelativePath(path:) ->
-      "the path `"
-      <> path
-      <> "` is not absolute. Every writable root, readable root and "
-      <> "protected entry must start with `/` — a relative protected "
-      <> "entry is refused by the jail and covers nothing in the "
-      <> "harness's own path checks, so it would protect nothing while "
-      <> "looking as though it did"
-    policy.NegativeLimit(field:, value:) ->
-      "the limit `"
-      <> policy.limit_field_name(field)
-      <> "` is "
-      <> int.to_string(value)
-      <> ", and a resource ceiling cannot be negative (use 0 for "
-      <> "unlimited)"
-    policy.ScratchIsRoot ->
-      "scratch names the host root `/`. Landlock has no deny rules, so a "
-      <> "host-path scratch of `/` grants read-write over the whole "
-      <> "filesystem at that layer whatever the mount layer does"
-    policy.MountOverlapsProtected(mount:, protected:) ->
-      "the mount `"
-      <> mount
-      <> "` overlaps the protected entry `"
-      <> protected
-      <> "`. No jail can carry out both: on Linux the mask and the bind "
-      <> "fight over the same region and bubblewrap exits with a bare "
-      <> "`Read-only file system`, and on Darwin the deny wins and the "
-      <> "mount does nothing. Move the mount outside the protected "
-      <> "region, or stop protecting it"
-    policy.DuplicateMount(path:) ->
-      "the mount path `"
-      <> path
-      <> "` appears twice, and the two entries have no agreed access. "
-      <> "State the region once, at the access it should have"
-    policy.MountPathTrailingSlash(path:) ->
-      "the mount path `"
-      <> path
-      <> "` ends in a slash. Nothing on either side of the wire "
-      <> "canonicalizes a mount path, so this would be a second name for "
-      <> "a region already named without it"
-    policy.MountPathParentSegment(path:) ->
-      "the mount path `"
-      <> path
-      <> "` contains a `..` segment. Mount paths are compared by "
-      <> "component against protected entries and roots before anything "
-      <> "resolves them, so this would claim one region and bind another"
-    policy.MountShadowsWritableRoot(mount:, writable_root:) ->
-      "the read-only mount `"
-      <> mount
-      <> "` covers the writable root `"
-      <> writable_root
-      <> "`. On Linux every explicit mount is applied after the roots, so "
-      <> "the jail would see that root read-only and every write under it "
-      <> "would fail; on Darwin it would stay writable. Mount a directory "
-      <> "beside the writable root rather than above it, or make the mount "
-      <> "read-write"
-  }
-}
-
-// How this session runs background jobs.
-//
-// The broker seam is `tools/tool.broker_runner` — the very closure the
-// `bash` tool clears through — so a background job admits under exactly
-// the rules a foreground one does: the same requirements, the same
-// `RefuseNarrowed`, the same enforcement demand, the same escalation
-// path. What differs is where it is called from. A job's runner owns the
-// events subject, which is what binds the broker relay's caller-watch to
-// the job rather than to the session, and what the actor deliberately
-// does not do itself.
-//
-// The clearance budget is the one the tool plane already uses for the
-// same wait, so a job queued behind a full helper pool gives up when a
-// foreground call would have.
-fn jobs_wiring(
-  settings: Settings,
-  agency_config: agency.Config,
-  broker_actor: Broker,
-  base_policy: policy.SandboxPolicy,
-  blob_root: String,
-  environment: List(#(String, String)),
-  clock: Clock,
-  entropy: fn() -> Int,
-) -> jobs.Wiring {
-  jobs.Wiring(
-    runtime: fn() { agency.borrow_runtime(agency_config) },
-    policy: settings.jobs_policy,
-    clock:,
-    seed: entropy(),
-    workspace: settings.workspace,
-    base_policy:,
-    demand: settings.demand,
-    env: environment,
-    clear_call: tool.broker_runner(
-      broker: broker_actor,
-      waiting: jobs_clearance_ms,
-    ),
-    clearance_ms: jobs_clearance_ms,
-    spill: jobs.blob_spill(root: blob_root),
-    blob_root:,
-  )
-}
-
-/// How long a background job's clearance may wait out a congested helper
-/// pool, matching the tool plane's own `broker_timeout_ms`.
-pub const jobs_clearance_ms = 30_000
 
 // How this session runs the operator's goal check.
 //
@@ -7184,29 +5294,36 @@ pub const jobs_clearance_ms = 30_000
 // The wall is `client/goalloop`'s constant, and the same number reaches the
 // process's own limit and the durable `Checking` deadline, so a restarted
 // actor cannot be waiting on a process the sandbox has already killed.
+//
+// Two clocks come in because they answer different questions. The operation
+// id is minted on the session's clock, like every other id this session mints,
+// so ids made on one machine order by one timebase. The runner's clock is the
+// one `call_clock` names: it builds the absolute deadline a check puts in a
+// `CallSpec`, which the broker compares with its own clock, and for a
+// workspace on an executor that is the executor's.
 fn goal_check_wiring(
   settings: Settings,
-  broker_actor: Broker,
-  base_policy: policy.SandboxPolicy,
-  environment: List(#(String, String)),
-  clock: Clock,
+  plane: workspace_plane.WorkspacePlane,
+  session_clock: Clock,
+  call_clock: Clock,
   seed: Int,
 ) -> goalcheck.Wiring {
-  let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
+  let #(op_id, _generator) = ids.mint_op(ids.generator(session_clock, seed:))
+  let census = plane.census
 
   goalcheck.wiring(
     goalcheck.Runner(
       clear_call: tool.broker_runner(
-        broker: broker_actor,
-        waiting: jobs_clearance_ms,
+        broker: plane.broker,
+        waiting: workspace_plane.jobs_clearance_ms,
       ),
-      base_policy:,
+      base_policy: census.base_policy,
       demand: settings.demand,
-      env: environment,
-      workspace: settings.workspace,
-      clock:,
+      env: census.env,
+      workspace: census.workspace,
+      clock: call_clock,
       op_id:,
-      clearance_ms: jobs_clearance_ms,
+      clearance_ms: workspace_plane.jobs_clearance_ms,
     ),
     timeout_ms: goalloop.check_timeout_ms,
   )
@@ -7595,30 +5712,24 @@ fn seed_root(flag: Option(String), workspace: String) -> String {
   )
 }
 
-// An existing workspace snapshot outranks the release only when it contains
-// the capabilities this host admits. Explicit flags still reach discovery
-// unchanged, where an invalid operator selection receives its own refusal.
-fn usable_seed(root: String) -> Result(String, Nil) {
+/// An existing workspace snapshot outranks the release only when it contains
+/// the capabilities this host admits. Explicit flags still reach discovery
+/// unchanged, where an invalid operator selection receives its own refusal.
+///
+/// The in-workspace rung of `seed_ladder` uses this on a local daemon and on
+/// an executor, so a checkout with a half-built seed falls through to the
+/// bundled one on both.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.usable_seed("/no/such/seed") == Error(Nil)
+/// ```
+///
+pub fn usable_seed(root: String) -> Result(String, Nil) {
   use Nil <- result.try(
     seed.verify(root, compile.default_dependencies())
     |> result.replace_error(Nil),
   )
   Ok(root)
-}
-
-// One entropy seam serves two masters: id seeds must never repeat
-// within a session lifetime (spec-gaps WP-E item 6) and the bearer
-// token must be unguessable. A VM-unique monotonic integer gives the
-// first; 64 bits of `crypto:strong_rand_bytes` in the low limb give
-// the second (the token minter keeps only low bits). The sum is
-// injective in the pair, so uniqueness survives the mixing.
-fn mixed_entropy() -> fn() -> Int {
-  let random_bytes = token.production_entropy()
-  fn() {
-    let unique = ffi_os.unique_positive_integer()
-    case random_bytes(8) {
-      <<random:size(64)>> -> unique * 18_446_744_073_709_551_616 + random
-      _ -> unique
-    }
-  }
 }

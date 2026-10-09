@@ -1475,6 +1475,51 @@ fields against the page's lists. Only the key string reaches the page; no URL,
 key variable, upstream identifier or pricing does. A key removed since the page
 opened is `creations.UnknownModel`, whose fixed words say to reload the page.
 
+## Sessions on an executor (protocol 078)
+
+`Start.executors` is the list of `[executors.<name>]` names the daemon was
+configured with, `[]` unless `Start.create` is `Some` (`ui_socket.upgrade_home`
+copies `server.HomeAttachment.executors`, the daemon's startup capture, so no read
+is made). When it is not empty the section for folders
+(`view/folders`) draws a second button, "New session on an executor", and
+`create.State` gains `Remote` (form open) and `Dispatching` (creation out), which
+behave as `Elsewhere` and `Sending` do. The form (`create.remote_form`) is an
+executor select, a text field for the registered workspace name (`name=workspace`,
+at most 128 bytes) and the optional session name; there is no Shareable box and
+no profile or model select, because the daemon makes a session on an executor
+session-only and a registered session takes the configuration's default roles
+(`creations.default_roles`) from this form.
+The executor follows the profile's rule exactly: the option's value is its position
+in `Start.executors`, its label is the name as a text node, and
+`create.remote_fields` turns the position back into the name, accepting exactly one
+`executor`, `workspace` and `name` and refusing a position outside the list, a
+name, a repeat, an extra field and any submit when the list is empty. The messages
+are `home.OpeningRemote` and `home.CreatingRemote(executor, workspace, name)`; the
+component asks only from the open form and only for an executor in
+`Start.executors`.
+
+`creations.Place` gains `Registered(executor, workspace)`. `creations.registered_name`
+is the one rule for the text (trimmed, 1 to 128 bytes, no `/`, no control,
+zero-width or direction-changing character), applied by the daemon
+(`ui_socket.placed`) and not by the page, whose text field is the browser's. The
+daemon never statts, canonicalizes or creates the name on its own host; the
+executor is judged by `server.create_session`, whose `executor_unknown` is
+`creations.UnknownExecutor`, and a bad name is `creations.InvalidWorkspaceName`.
+`ui_socket.create_for` forces the session-only scope for a registered place
+whatever the sharing was. A session made and not opened (the executor unreachable)
+is the existing `Unstarted`, which shows the owner's own startup reason, for
+example `executor_unavailable: ...`.
+
+`sessions.Entry` gains `executor: Option(String)`, filled from the registration
+(`ui_socket.listed_entry`) and never from a page. A remote entry's group key and
+heading is `executor:name` (`sessions.project_of`), so two executors that each
+register `app` are two groups; it has no project (`ui_socket.with_projects` skips
+it) and no worktree, and its group draws no "New session" button, because a
+directory's button creates a `Drawn` place and the daemon would refuse a name it
+holds no folder for. The sidebar and the home draw the key as the heading.
+Tests are `executor_form_test` (the form, the messages, the decoder, the lists)
+and, in `client`, `ui_route_test` and `ui_socket_test` (the daemon's half).
+
 ## Large result access
 
 `tool_result` renders links to immutable result records, a bounded escaped page

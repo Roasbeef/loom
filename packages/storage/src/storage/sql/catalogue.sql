@@ -4,14 +4,18 @@
 INSERT INTO catalogue_meta (singleton, revision) VALUES (1, 0);
 
 -- name: FindRegistrations :many
-SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, profile, model
+SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, profile, model, executor, pool
 FROM catalogue_sessions
 WHERE session_id = ? OR request_key = ? OR path = ?;
 
 -- name: InsertRegistration :exec
 INSERT INTO catalogue_sessions
-  (session_id, path, workspace, name, configuration, created_at, request_key, state, profile, model)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?);
+  (session_id, path, workspace, name, configuration, created_at, request_key, state, profile, model, executor, pool)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?);
+
+-- name: SeedRegistrationExecutor :exec
+UPDATE catalogue_sessions SET executor = ?
+WHERE session_id = ? AND pool != '' AND executor = '';
 
 -- name: ConfirmRegistration :exec
 UPDATE catalogue_sessions SET state = 'saved' WHERE session_id = ?;
@@ -35,7 +39,7 @@ ON CONFLICT(session_id) DO UPDATE SET name = excluded.name;
 
 -- name: RegistrationPage :many
 SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
-       s.configuration, s.created_at, s.request_key, s.state, s.profile, s.model, t.subtitle
+       s.configuration, s.created_at, s.request_key, s.state, s.profile, s.model, s.executor, s.pool, t.subtitle
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = s.session_id
@@ -50,7 +54,7 @@ SELECT revision FROM catalogue_meta WHERE singleton = 1;
 
 -- name: MemberRegistrationPage :many
 SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
-       s.created_at, s.request_key, s.state, s.profile, s.model, t.subtitle
+       s.created_at, s.request_key, s.state, s.profile, s.model, s.executor, s.pool, t.subtitle
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
@@ -111,3 +115,36 @@ DELETE FROM catalogue_recent_folders WHERE seq = ?;
 -- name: TrimRecentFolders :exec
 DELETE FROM catalogue_recent_folders
 WHERE seq NOT IN (SELECT seq FROM catalogue_recent_folders ORDER BY seq DESC LIMIT ?);
+
+-- name: SessionMove :many
+SELECT op, peer, state FROM catalogue_session_moves WHERE session_id = ?;
+
+-- name: InsertSessionMove :exec
+INSERT INTO catalogue_session_moves (session_id, op, peer, state) VALUES (?, ?, ?, ?);
+
+-- name: FinishSessionMove :exec
+UPDATE catalogue_session_moves SET state = 'moved'
+WHERE session_id = ? AND op = ? AND state = 'moving';
+
+-- name: AbortSessionMove :exec
+DELETE FROM catalogue_session_moves
+WHERE session_id = ? AND op = ? AND state = 'moving';
+
+-- name: DeleteSessionMove :exec
+DELETE FROM catalogue_session_moves WHERE session_id = ?;
+
+-- name: MovingSessions :many
+SELECT session_id, op, peer FROM catalogue_session_moves
+WHERE state = 'moving' ORDER BY session_id;
+
+-- name: SessionDeletion :many
+SELECT session_id FROM catalogue_session_deletions WHERE session_id = ?;
+
+-- name: InsertSessionDeletion :exec
+INSERT OR IGNORE INTO catalogue_session_deletions (session_id) VALUES (?);
+
+-- name: DeleteSessionDeletion :exec
+DELETE FROM catalogue_session_deletions WHERE session_id = ?;
+
+-- name: DeletingSessions :many
+SELECT session_id FROM catalogue_session_deletions ORDER BY session_id;

@@ -9,7 +9,7 @@ import broker/policy
 import broker/token
 import client/catalog
 import client/internal/ffi_os
-import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/json
@@ -36,8 +36,8 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
     <> int.to_string(ffi_os.unique_positive_integer())
   let external = workspace <> "-external"
   write(external, "outside-workspace-fixture\n")
-  let home = serve.tool_home_directory(workspace)
-  let temp = serve.tool_tmp_directory(workspace)
+  let home = workspace_policy.tool_home_directory(workspace)
+  let temp = workspace_policy.tool_tmp_directory(workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(home)
     as "the tool home must exist"
   let assert Ok(Nil) = simplifile.create_directory_all(temp)
@@ -63,7 +63,7 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
   )
 
   let #(environment, missing) =
-    serve.tool_environment(
+    workspace_policy.tool_environment(
       workspace,
       None,
       None,
@@ -71,12 +71,12 @@ pub fn default_developer_tools_run_without_environment_repairs_test() {
       reading: fn(name) { secret.lookup(secret.env(), name) },
     )
   let base =
-    serve.base_policy(workspace)
-    |> serve.merging_mounts
+    workspace_policy.base_policy(workspace)
+    |> workspace_policy.merging_mounts
 
   // Session assembly admits its temporary-directory names before tools
   // are wired, including the scratch path supplied by the helper.
-  let base = serve.allowing_tool_tmpdir(base)
+  let base = workspace_policy.allowing_tool_tmpdir(base)
   assert missing == [] as "default tools must need no configured secrets"
   let assert Ok(helper) =
     exec.spawn_helper(exec.SpawnConfig(

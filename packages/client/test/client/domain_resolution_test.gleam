@@ -59,6 +59,8 @@ main = [\"session_b\"]
       catalogue.Saved,
       profile: option.None,
       model: option.None,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =
@@ -148,6 +150,8 @@ fn resolve_profiled(
       catalogue.Saved,
       profile:,
       model:,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =
@@ -214,6 +218,8 @@ pub fn a_session_with_a_profile_needs_a_config_file_test() {
       catalogue.Saved,
       profile: option.Some("alt"),
       model: option.None,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =
@@ -299,6 +305,8 @@ pub fn a_session_with_a_model_needs_a_config_file_test() {
       catalogue.Saved,
       profile: option.None,
       model: option.Some("alt"),
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   let selected =

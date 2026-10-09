@@ -1691,6 +1691,7 @@ fn refusing_tools() -> effects.ToolSurface {
     run: fn(_run) { effects.ToolFailed(reason: "no tools in this harness") },
     replay_still_safe: fn(_name) { False },
     execution_mode: fn(_name) { effects.ExclusiveExecution },
+    recover: None,
   )
 }
 
@@ -2020,6 +2021,49 @@ pub fn a_foreign_advisor_run_end_leaves_the_feed_open_test() {
       )
     })
     as "the verdict the open feed asked for must be accepted"
+  stop(rig)
+}
+
+// A goal pinned after the actor has seen the reviewer's run end is fed even
+// though the store still shows that run open.
+//
+// The driver resolves `run_end` before the settlement that clears
+// `current_operation`, so for one commit after the end notice the cell says
+// the advisor is busy. The goal loop used to believe it unless the occasion
+// being evaluated was the end notice itself, and a goal that was pinned, or
+// that a check result released, inside that commit rested on a review that had
+// already ended. Nothing announces that end a second time, so the goal waited
+// for the periodic tick, two minutes later.
+pub fn a_goal_pinned_after_a_seen_review_end_is_fed_test() {
+  let assert Ok(rig) = a_rig() as "the advisor rig must open"
+  let assert Ok(subject) = address.lookup(rig.name)
+    as "the advisor actor must be registered"
+
+  // The advisor holds a run that never settles: the fixture provider hangs,
+  // so the store shows it busy for the rest of the test. That is the stale
+  // cell the race exposes.
+  let assert Ok(_busy) =
+    api.send_to_strand(
+      rig.runtime,
+      to: advisor.strand,
+      message: user("an earlier feed"),
+    )
+    as "the advisor must take the fixture feed"
+  let assert Some(open) = strand_operation(rig.opened, advisor.strand)
+    as "the advisor must be mid-run"
+
+  // The end notice arrives while no goal is pinned, so it has nothing to
+  // release and nothing later repeats it.
+  process.send(subject, advisor.AdvisorRunEnded(operation: open))
+  barrier(subject)
+
+  pin_goal(subject, 400_000)
+  barrier(subject)
+
+  // The feed went out: the goal waits on a verdict rather than resting idle.
+  let goal = goal_cell(rig)
+  let assert goalstate.AwaitingVerdict(..) = goal.phase
+    as "the pinned goal must have been fed"
   stop(rig)
 }
 

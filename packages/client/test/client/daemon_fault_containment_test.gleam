@@ -15,6 +15,7 @@ import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/owned_assembly_test
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/message
@@ -142,7 +143,7 @@ fn assembly(
             selected.memory_path,
             selected.index_path,
           )),
-          base_policy: serve.base_policy(record.workspace),
+          base_policy: workspace_policy.base_policy(record.workspace),
           gateway:,
         ),
         identity,
@@ -165,7 +166,7 @@ fn create(
   let assert Ok(manager.View(record, manager.Opening(_))) =
     manager.create_scoped(
       ready.registry,
-      manager.Creation(name, workspace, name, "", None, None),
+      manager.Creation(name, workspace, name, "", None, None, "", ""),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(at: 1_700_000_000_000), seed:),
       scope: domain.SessionOnly,

@@ -67,7 +67,7 @@ the grids are exact. Running the generator also writes a viewer page,
 
 Reached with `←` from an empty composer (`packages/tui/src/tui/interaction.gleam:1376`).
 A draft or a pending attachment keeps `←` as a cursor key, as today. The view
-is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:783`)
+is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:815`)
 (`render`), and this note redraws it without changing its keys.
 
 ![Picker, 120x40](terminal-design/terminal-design-picker-120-dark.png)
@@ -96,10 +96,10 @@ What changes from today (A's list; the "before" captures are in
 - Two hint rows, in two tiers: movement and opening first, rarer keys second.
 
 Data: everything is on the page the picker already holds, so there is no wire
-change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:431`)
+change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:452`)
 (`Session`). The state, strand counts, approvals, last message and up to four
-glance lines come from `Activity` (`packages/tui/src/tui/daemon/protocol.gleam:335`)
-(`Activity`) and `GlanceLine` (`packages/tui/src/tui/daemon/protocol.gleam:355`)
+glance lines come from `Activity` (`packages/tui/src/tui/daemon/protocol.gleam:356`)
+(`Activity`) and `GlanceLine` (`packages/tui/src/tui/daemon/protocol.gleam:376`)
 (`GlanceLine`). The tabs are `Filter` (`packages/tui/src/tui/session_selector.gleam:75`)
 (`Filter`). Age is the creation age, because the page has no last-activity
 time; a "last active" field would be a change to `sessions.activity`.

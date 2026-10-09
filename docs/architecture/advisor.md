@@ -86,7 +86,7 @@ a model's request, and carries a `lineage/` cell naming its parent.
 `agent_send` and `agent_wait` check that cell before one strand may
 address another, and `strand.roster` lists strands from it.
 
-`ensure_strand` (`client/advisor.gleam:3548`) creates the advisor through
+`ensure_strand` (`client/advisor.gleam:3557`) creates the advisor through
 `create_idle_strand` (`runtime/api.gleam:1544`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
@@ -478,7 +478,7 @@ rather than becoming `Woke` or `Delivered`. A downgrade means the primary
 was *not* stopped for it, and either of those acks would claim
 otherwise. The wake is appended to the downgrade's own reason instead.
 
-The actor's `decide` (`client/advisor.gleam:2910`) writes the guard to
+The actor's `decide` (`client/advisor.gleam:2918`) writes the guard to
 its cell *before* anything is sent. A crash between the write and the
 send costs one lost block; the reverse ordering would cost an unbounded
 number of delivered ones. A delivery that fails counts against the
@@ -601,7 +601,11 @@ processed. The driver resolves `run_end` before the settlement that
 clears `current_operation`, so for one commit after a review ends the
 store still shows the advisor busy. Without this record, a primary run
 end landing in that commit would coalesce its feed against a review that
-has already ended, and wait on a catch-up that never comes.
+has already ended, and wait on a catch-up that never comes. The goal loop
+reads the same record: every evaluation treats that operation as closed,
+not only the one that announced it. A goal pinned, or released by a check
+result, inside that commit would otherwise find the advisor busy and rest
+until the two-minute tick, because the end notice is sent once.
 
 ## Failure behaviour
 
@@ -821,7 +825,7 @@ feed_every_steps = 20           # default; 0 is the run-end-only cadence
 block_cooldown_reviews = 2      # default; 0 lets every block through
 ```
 
-The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:383`). It is `model.Custom("advisor")` rather than
+The `advisor` route is a sixth routable role, parsed to `advisor_role` (`client/catalog.gleam:389`). It is `model.Custom("advisor")` rather than
 a sixth named variant, because `provider/model.Role`'s five names are the
 design vocabulary and `Custom` is what that type provides for a role an
 application defines. It is last in the canonical order because it is the
@@ -843,7 +847,7 @@ cases an operator could not otherwise tell apart. A catalogue with no
 catalogue that routes the role to a chain this host cannot serve would
 otherwise show only a reviewer that never speaks.
 
-`parse_advisor` (`client/catalog.gleam:1840`) reads the `[advisor]`
+`parse_advisor` (`client/catalog.gleam:1931`) reads the `[advisor]`
 table, and is strict for the reason `parse_tools` is. An unknown key, a
 non-string tool name and a negative cooldown are each a worded error the
 boot halts on, because a mistyped key that silently kept the default

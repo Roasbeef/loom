@@ -62,6 +62,14 @@ pub type Failure {
     message: String,
   )
 
+  /// The daemon does not hold the session and says where it lives
+  /// (protocol-change/078, phase 3). This daemon never forwards the client, so
+  /// the terminal words the launch that reaches the owner.
+  Redirected(
+    /// The daemon's statement, as the protocol decoded it.
+    redirect: protocol.Redirect,
+  )
+
   /// A mutation may have been admitted; only its command name is retained.
   UnknownOutcome(
     /// Command name only, never its secret or filesystem arguments.
@@ -340,10 +348,15 @@ fn answer(data: Data, event: protocol.Event) {
       process.send(pending.reply, Error(Refused(code, message)))
       sm.transition(Idle, Data(..data, pending: None))
     }
+    Some(pending), protocol.Redirected(Some(id), redirect) if id == pending.id -> {
+      process.send(pending.reply, Error(Redirected(redirect)))
+      sm.transition(Idle, Data(..data, pending: None))
+    }
 
     // A duplicate or unrelated reply never owns the current request's slot.
     Some(_), protocol.Answer(..)
     | Some(_), protocol.Refused(..)
+    | Some(_), protocol.Redirected(..)
     | Some(_), protocol.Greeting(_)
     | None, _
     -> sm.keep(data)
@@ -378,6 +391,7 @@ fn same_epoch(data: Data, reply: protocol.Reply) {
     | protocol.SessionReply(_), _
     | protocol.LifecycleReply(_), _
     | protocol.DeletedReply(_), _
+    | protocol.MovedReply(..), _
     | protocol.PeersInspectionReply(_), _
     | protocol.PeersMutationReply(_), _
     | protocol.AccessListingReply(_), _

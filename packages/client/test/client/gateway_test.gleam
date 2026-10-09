@@ -345,6 +345,7 @@ fn start_harness_adjusted(
         run: fn(_run) { effects.ToolFailed(reason: "no tools") },
         replay_still_safe: fn(_name) { False },
         execution_mode: fn(_name) { effects.ExclusiveExecution },
+        recover: None,
       ),
       hooks: case provider {
         SummarizingProvider(_) ->

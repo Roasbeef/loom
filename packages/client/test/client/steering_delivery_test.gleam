@@ -105,6 +105,7 @@ pub fn local_and_remote_steering_reach_the_next_provider_context_test() {
           },
           replay_still_safe: fn(_) { True },
           execution_mode: fn(_) { effects.ConcurrentExecution },
+          recover: None,
         ),
         hooks: agency.reaping_hooks(effects.default_hooks(), config),
       ),

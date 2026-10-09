@@ -19,7 +19,7 @@ provider = { path = "../provider" }
 tools = { path = "../tools" }
 codemode = { path = "../codemode" }
 mcp = { path = "../mcp" }
-gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "686955fc0461630bf64a4dc8eb51565dc7ca1ac9" }
+gleam_mcp = { git = "https://github.com/Roasbeef/gleam-mcp.git", ref = "51c2266a43cfe62b983d9679cd02caf1ac1524c9" }
 lsp = { path = "../lsp" }
 telemetry = { path = "../telemetry" }
 session_view = { path = "../session_view" }
@@ -27,7 +27,8 @@ web_view = { path = "../web_view" }
 lustre = "== 5.7.1"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
-weft = "== 0.4.5"
+weft = "== 0.4.6"
+khepri = "== 0.19.3"
 gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 mist = { git = "https://github.com/Roasbeef/mist.git", ref = "28b43178ff57bfb619c64b8c3544831646d5fdb9" }

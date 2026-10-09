@@ -27,9 +27,22 @@
 #                        catalogue_logins_schema.gleam and
 #                        catalogue_recent_folders_schema.gleam and
 #                        catalogue_profiles_schema.gleam and
-#                        catalogue_models_schema.gleam. Each catalogue version
+#                        catalogue_models_schema.gleam and
+#                        catalogue_executors_schema.gleam and
+#                        catalogue_pools_schema.gleam and
+#                        catalogue_moves_schema.gleam and
+#                        catalogue_deletions_schema.gleam. Each catalogue version
 #                        after the first has its own migration schema;
 #                        runtime catalogue creation never embeds session tables.
+#                        sql/exec_ledger.sql is the executor ledger's own
+#                        database schema (protocol-change/078); its queries
+#                        share sql.gleam and it embeds as
+#                        exec_ledger_schema.gleam. sql/exec_ledger_releases.sql
+#                        is its second version, the operator release record,
+#                        embedded as exec_ledger_releases_schema.gleam, and
+#                        sql/exec_ledger_acks.sql is its third, the
+#                        acknowledgement tombstones, embedded as
+#                        exec_ledger_acks_schema.gleam.
 #
 # Known parrot 2.3.0 constraints (discovered by the WP-K pilot; keep in
 # mind when editing the .sql files):
@@ -64,7 +77,14 @@ gen_package() {
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_recent_folders.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_profiles.sql
     sqlite3 "$tmpdb" < packages/storage/sql/catalogue_models.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_executors.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_pools.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_moves.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/catalogue_deletions.sql
     sqlite3 "$tmpdb" < packages/storage/sql/session.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger_releases.sql
+    sqlite3 "$tmpdb" < packages/storage/sql/exec_ledger_acks.sql
   fi
   (cd "packages/$pkg" && gleam run --module parrot -- --sqlite "$tmpdb")
 }
@@ -104,4 +124,25 @@ gleam format packages/storage/src/storage/catalogue_profiles_schema.gleam
 python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_models.sql \
   packages/storage/src/storage/catalogue_models_schema.gleam
 gleam format packages/storage/src/storage/catalogue_models_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_executors.sql \
+  packages/storage/src/storage/catalogue_executors_schema.gleam
+gleam format packages/storage/src/storage/catalogue_executors_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_pools.sql \
+  packages/storage/src/storage/catalogue_pools_schema.gleam
+gleam format packages/storage/src/storage/catalogue_pools_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_moves.sql \
+  packages/storage/src/storage/catalogue_moves_schema.gleam
+gleam format packages/storage/src/storage/catalogue_moves_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/catalogue_deletions.sql \
+  packages/storage/src/storage/catalogue_deletions_schema.gleam
+gleam format packages/storage/src/storage/catalogue_deletions_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger.sql \
+  packages/storage/src/storage/exec_ledger_schema.gleam
+gleam format packages/storage/src/storage/exec_ledger_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger_releases.sql \
+  packages/storage/src/storage/exec_ledger_releases_schema.gleam
+gleam format packages/storage/src/storage/exec_ledger_releases_schema.gleam
+python3 scripts/embed-sql-schema.py packages/storage/sql/exec_ledger_acks.sql \
+  packages/storage/src/storage/exec_ledger_acks_schema.gleam
+gleam format packages/storage/src/storage/exec_ledger_acks_schema.gleam
 echo "generated SQL modules are up to date; review and commit the diff"

@@ -627,6 +627,8 @@ pub type FindRegistrations {
     state: String,
     profile: String,
     model: String,
+    executor: String,
+    pool: String,
   )
 }
 
@@ -636,7 +638,7 @@ pub fn find_registrations(
   path path: String,
 ) {
   let sql =
-    "SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, profile, model
+    "SELECT session_id, path, workspace, name, configuration, created_at, request_key, state, profile, model, executor, pool
 FROM catalogue_sessions
 WHERE session_id = ? OR request_key = ? OR path = ?"
   #(
@@ -661,6 +663,8 @@ pub fn find_registrations_decoder() -> decode.Decoder(FindRegistrations) {
   use state <- decode.field(7, decode.string)
   use profile <- decode.field(8, decode.string)
   use model <- decode.field(9, decode.string)
+  use executor <- decode.field(10, decode.string)
+  use pool <- decode.field(11, decode.string)
   decode.success(FindRegistrations(
     session_id:,
     path:,
@@ -672,6 +676,8 @@ pub fn find_registrations_decoder() -> decode.Decoder(FindRegistrations) {
     state:,
     profile:,
     model:,
+    executor:,
+    pool:,
   ))
 }
 
@@ -685,11 +691,13 @@ pub fn insert_registration(
   request_key request_key: String,
   profile profile: String,
   model model: String,
+  executor executor: String,
+  pool pool: String,
 ) {
   let sql =
     "INSERT INTO catalogue_sessions
-  (session_id, path, workspace, name, configuration, created_at, request_key, state, profile, model)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)"
+  (session_id, path, workspace, name, configuration, created_at, request_key, state, profile, model, executor, pool)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?)"
   #(sql, [
     dev.ParamString(session_id),
     dev.ParamString(path),
@@ -700,7 +708,19 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)"
     dev.ParamString(request_key),
     dev.ParamString(profile),
     dev.ParamString(model),
+    dev.ParamString(executor),
+    dev.ParamString(pool),
   ])
+}
+
+pub fn seed_registration_executor(
+  executor executor: String,
+  session_id session_id: String,
+) {
+  let sql =
+    "UPDATE catalogue_sessions SET executor = ?
+WHERE session_id = ? AND pool != '' AND executor = ''"
+  #(sql, [dev.ParamString(executor), dev.ParamString(session_id)])
 }
 
 pub fn confirm_registration(session_id session_id: String) {
@@ -776,6 +796,8 @@ pub type RegistrationPage {
     state: String,
     profile: String,
     model: String,
+    executor: String,
+    pool: String,
     subtitle: Option(String),
   )
 }
@@ -783,7 +805,7 @@ pub type RegistrationPage {
 pub fn registration_page(after after: String, archived archived: Int) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
-       s.configuration, s.created_at, s.request_key, s.state, s.profile, s.model, t.subtitle
+       s.configuration, s.created_at, s.request_key, s.state, s.profile, s.model, s.executor, s.pool, t.subtitle
 FROM catalogue_sessions AS s
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
 LEFT JOIN catalogue_session_subtitles AS t ON t.session_id = s.session_id
@@ -810,7 +832,9 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
   use state <- decode.field(7, decode.string)
   use profile <- decode.field(8, decode.string)
   use model <- decode.field(9, decode.string)
-  use subtitle <- decode.field(10, decode.optional(decode.string))
+  use executor <- decode.field(10, decode.string)
+  use pool <- decode.field(11, decode.string)
+  use subtitle <- decode.field(12, decode.optional(decode.string))
   decode.success(RegistrationPage(
     session_id:,
     path:,
@@ -822,6 +846,8 @@ pub fn registration_page_decoder() -> decode.Decoder(RegistrationPage) {
     state:,
     profile:,
     model:,
+    executor:,
+    pool:,
     subtitle:,
   ))
 }
@@ -852,6 +878,8 @@ pub type MemberRegistrationPage {
     state: String,
     profile: String,
     model: String,
+    executor: String,
+    pool: String,
     subtitle: Option(String),
   )
 }
@@ -862,7 +890,7 @@ pub fn member_registration_page(
 ) {
   let sql =
     "SELECT s.session_id, s.path, s.workspace, CAST(COALESCE(n.name, s.name) AS TEXT) AS name, s.configuration,
-       s.created_at, s.request_key, s.state, s.profile, s.model, t.subtitle
+       s.created_at, s.request_key, s.state, s.profile, s.model, s.executor, s.pool, t.subtitle
 FROM access_memberships AS m
 JOIN catalogue_sessions AS s ON s.session_id = m.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = s.session_id
@@ -893,7 +921,9 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
   use state <- decode.field(7, decode.string)
   use profile <- decode.field(8, decode.string)
   use model <- decode.field(9, decode.string)
-  use subtitle <- decode.field(10, decode.optional(decode.string))
+  use executor <- decode.field(10, decode.string)
+  use pool <- decode.field(11, decode.string)
+  use subtitle <- decode.field(12, decode.optional(decode.string))
   decode.success(MemberRegistrationPage(
     session_id:,
     path:,
@@ -905,6 +935,8 @@ pub fn member_registration_page_decoder() -> decode.Decoder(
     state:,
     profile:,
     model:,
+    executor:,
+    pool:,
     subtitle:,
   ))
 }
@@ -1025,6 +1057,117 @@ pub fn trim_recent_folders(limit limit: Int) {
     "DELETE FROM catalogue_recent_folders
 WHERE seq NOT IN (SELECT seq FROM catalogue_recent_folders ORDER BY seq DESC LIMIT ?)"
   #(sql, [dev.ParamInt(limit)])
+}
+
+pub type SessionMove {
+  SessionMove(op: String, peer: String, state: String)
+}
+
+pub fn session_move(session_id session_id: String) {
+  let sql =
+    "SELECT op, peer, state FROM catalogue_session_moves WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_move_decoder())
+}
+
+pub fn session_move_decoder() -> decode.Decoder(SessionMove) {
+  use op <- decode.field(0, decode.string)
+  use peer <- decode.field(1, decode.string)
+  use state <- decode.field(2, decode.string)
+  decode.success(SessionMove(op:, peer:, state:))
+}
+
+pub fn insert_session_move(
+  session_id session_id: String,
+  op op: String,
+  peer peer: String,
+  state state: String,
+) {
+  let sql =
+    "INSERT INTO catalogue_session_moves (session_id, op, peer, state) VALUES (?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamString(op),
+    dev.ParamString(peer),
+    dev.ParamString(state),
+  ])
+}
+
+pub fn finish_session_move(session_id session_id: String, op op: String) {
+  let sql =
+    "UPDATE catalogue_session_moves SET state = 'moved'
+WHERE session_id = ? AND op = ? AND state = 'moving'"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(op)])
+}
+
+pub fn abort_session_move(session_id session_id: String, op op: String) {
+  let sql =
+    "DELETE FROM catalogue_session_moves
+WHERE session_id = ? AND op = ? AND state = 'moving'"
+  #(sql, [dev.ParamString(session_id), dev.ParamString(op)])
+}
+
+pub fn delete_session_move(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_moves WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub type MovingSessions {
+  MovingSessions(session_id: String, op: String, peer: String)
+}
+
+pub fn moving_sessions() {
+  let sql =
+    "SELECT session_id, op, peer FROM catalogue_session_moves
+WHERE state = 'moving' ORDER BY session_id"
+  #(sql, [], moving_sessions_decoder())
+}
+
+pub fn moving_sessions_decoder() -> decode.Decoder(MovingSessions) {
+  use session_id <- decode.field(0, decode.string)
+  use op <- decode.field(1, decode.string)
+  use peer <- decode.field(2, decode.string)
+  decode.success(MovingSessions(session_id:, op:, peer:))
+}
+
+pub type SessionDeletion {
+  SessionDeletion(session_id: String)
+}
+
+pub fn session_deletion(session_id session_id: String) {
+  let sql =
+    "SELECT session_id FROM catalogue_session_deletions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], session_deletion_decoder())
+}
+
+pub fn session_deletion_decoder() -> decode.Decoder(SessionDeletion) {
+  use session_id <- decode.field(0, decode.string)
+  decode.success(SessionDeletion(session_id:))
+}
+
+pub fn insert_session_deletion(session_id session_id: String) {
+  let sql =
+    "INSERT OR IGNORE INTO catalogue_session_deletions (session_id) VALUES (?)"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub fn delete_session_deletion(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_session_deletions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub type DeletingSessions {
+  DeletingSessions(session_id: String)
+}
+
+pub fn deleting_sessions() {
+  let sql =
+    "SELECT session_id FROM catalogue_session_deletions ORDER BY session_id"
+  #(sql, [], deleting_sessions_decoder())
+}
+
+pub fn deleting_sessions_decoder() -> decode.Decoder(DeletingSessions) {
+  use session_id <- decode.field(0, decode.string)
+  decode.success(DeletingSessions(session_id:))
 }
 
 pub type DomainById {
@@ -1236,6 +1379,440 @@ pub fn domain_page_decoder() -> decode.Decoder(DomainPage) {
     index_path:,
     digest_path:,
   ))
+}
+
+pub type LedgerScope {
+  LedgerScope(
+    session: String,
+    workspace: String,
+    incarnation: Int,
+    state: String,
+    close_outcome: Option(String),
+    attach_token: BitArray,
+  )
+}
+
+pub fn ledger_scope(session session: String) {
+  let sql =
+    "
+SELECT session, workspace, incarnation, state, close_outcome, attach_token
+FROM scope WHERE session = ?"
+  #(sql, [dev.ParamString(session)], ledger_scope_decoder())
+}
+
+pub fn ledger_scope_decoder() -> decode.Decoder(LedgerScope) {
+  use session <- decode.field(0, decode.string)
+  use workspace <- decode.field(1, decode.string)
+  use incarnation <- decode.field(2, decode.int)
+  use state <- decode.field(3, decode.string)
+  use close_outcome <- decode.field(4, decode.optional(decode.string))
+  use attach_token <- decode.field(5, decode.bit_array)
+  decode.success(LedgerScope(
+    session:,
+    workspace:,
+    incarnation:,
+    state:,
+    close_outcome:,
+    attach_token:,
+  ))
+}
+
+pub type LedgerUncleanScopeCount {
+  LedgerUncleanScopeCount(scopes: Int)
+}
+
+pub fn ledger_unclean_scope_count() {
+  let sql =
+    "SELECT COUNT(*) AS scopes FROM scope
+WHERE state != 'closed' OR close_outcome IS NOT 'all_retired'"
+  #(sql, [], ledger_unclean_scope_count_decoder())
+}
+
+pub fn ledger_unclean_scope_count_decoder() -> decode.Decoder(
+  LedgerUncleanScopeCount,
+) {
+  use scopes <- decode.field(0, decode.int)
+  decode.success(LedgerUncleanScopeCount(scopes:))
+}
+
+pub fn insert_ledger_scope(
+  session session: String,
+  workspace workspace: String,
+  incarnation incarnation: Int,
+  attach_token attach_token: BitArray,
+) {
+  let sql =
+    "INSERT INTO scope(session, workspace, incarnation, state, close_outcome, attach_token)
+VALUES (?, ?, ?, 'open', NULL, ?)"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+    dev.ParamInt(incarnation),
+    dev.ParamBitArray(attach_token),
+  ])
+}
+
+pub fn rebind_ledger_scope(
+  attach_token attach_token: BitArray,
+  session session: String,
+  workspace workspace: String,
+) {
+  let sql =
+    "UPDATE scope SET attach_token = ? WHERE session = ? AND workspace = ?"
+  #(sql, [
+    dev.ParamBitArray(attach_token),
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+  ])
+}
+
+pub fn reopen_ledger_scope(
+  incarnation incarnation: Int,
+  attach_token attach_token: BitArray,
+  session session: String,
+  workspace workspace: String,
+) {
+  let sql =
+    "UPDATE scope
+SET incarnation = ?, state = 'open', close_outcome = NULL, attach_token = ?
+WHERE session = ? AND workspace = ?"
+  #(sql, [
+    dev.ParamInt(incarnation),
+    dev.ParamBitArray(attach_token),
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+  ])
+}
+
+pub fn begin_ledger_scope_close(
+  session session: String,
+  workspace workspace: String,
+) {
+  let sql =
+    "UPDATE scope SET state = 'closing' WHERE session = ? AND workspace = ?"
+  #(sql, [dev.ParamString(session), dev.ParamString(workspace)])
+}
+
+pub fn finish_ledger_scope_close(
+  close_outcome close_outcome: Option(String),
+  session session: String,
+  workspace workspace: String,
+) {
+  let sql =
+    "UPDATE scope SET state = 'closed', close_outcome = ?
+WHERE session = ? AND workspace = ?"
+  #(sql, [
+    dev.ParamNullable(option.map(close_outcome, fn(v) { dev.ParamString(v) })),
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+  ])
+}
+
+pub type LedgerCall {
+  LedgerCall(
+    tool: String,
+    state: String,
+    outcome: Option(BitArray),
+    outcome_digest: Option(BitArray),
+    outcome_bytes: Int,
+  )
+}
+
+pub fn ledger_call(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "SELECT tool, state, outcome, outcome_digest, outcome_bytes
+FROM call
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?"
+  #(
+    sql,
+    [
+      dev.ParamString(session),
+      dev.ParamString(op),
+      dev.ParamString(step),
+      dev.ParamInt(source_index),
+    ],
+    ledger_call_decoder(),
+  )
+}
+
+pub fn ledger_call_decoder() -> decode.Decoder(LedgerCall) {
+  use tool <- decode.field(0, decode.string)
+  use state <- decode.field(1, decode.string)
+  use outcome <- decode.field(2, decode.optional(decode.bit_array))
+  use outcome_digest <- decode.field(3, decode.optional(decode.bit_array))
+  use outcome_bytes <- decode.field(4, decode.int)
+  decode.success(LedgerCall(
+    tool:,
+    state:,
+    outcome:,
+    outcome_digest:,
+    outcome_bytes:,
+  ))
+}
+
+pub type LedgerReservedBytes {
+  LedgerReservedBytes(bytes: Int)
+}
+
+pub fn ledger_reserved_bytes() {
+  let sql =
+    "SELECT CAST(COALESCE(SUM(outcome_bytes), 0) AS INTEGER) AS bytes FROM call
+WHERE state IN ('admitted', 'terminal')"
+  #(sql, [], ledger_reserved_bytes_decoder())
+}
+
+pub fn ledger_reserved_bytes_decoder() -> decode.Decoder(LedgerReservedBytes) {
+  use bytes <- decode.field(0, decode.int)
+  decode.success(LedgerReservedBytes(bytes:))
+}
+
+pub fn insert_ledger_call(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+  incarnation incarnation: Int,
+  tool tool: String,
+  outcome_bytes outcome_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO call(
+  session, op, step, source_index, incarnation, tool,
+  state, outcome, outcome_digest, outcome_bytes)
+VALUES (?, ?, ?, ?, ?, ?, 'admitted', NULL, NULL, ?)"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+    dev.ParamInt(incarnation),
+    dev.ParamString(tool),
+    dev.ParamInt(outcome_bytes),
+  ])
+}
+
+pub fn insert_ledger_fence(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+  incarnation incarnation: Int,
+  tool tool: String,
+  outcome outcome: Option(BitArray),
+  outcome_digest outcome_digest: Option(BitArray),
+  outcome_bytes outcome_bytes: Int,
+) {
+  let sql =
+    "INSERT INTO call(
+  session, op, step, source_index, incarnation, tool,
+  state, outcome, outcome_digest, outcome_bytes)
+VALUES (?, ?, ?, ?, ?, ?, 'terminal', ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+    dev.ParamInt(incarnation),
+    dev.ParamString(tool),
+    dev.ParamNullable(option.map(outcome, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(
+      option.map(outcome_digest, fn(v) { dev.ParamBitArray(v) }),
+    ),
+    dev.ParamInt(outcome_bytes),
+  ])
+}
+
+pub fn finish_ledger_call(
+  outcome outcome: Option(BitArray),
+  outcome_digest outcome_digest: Option(BitArray),
+  outcome_bytes outcome_bytes: Int,
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "UPDATE call
+SET state = 'terminal', outcome = ?, outcome_digest = ?, outcome_bytes = ?
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?
+  AND state = 'admitted'"
+  #(sql, [
+    dev.ParamNullable(option.map(outcome, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(
+      option.map(outcome_digest, fn(v) { dev.ParamBitArray(v) }),
+    ),
+    dev.ParamInt(outcome_bytes),
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+  ])
+}
+
+pub fn mark_ledger_call_unknown(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "UPDATE call SET state = 'unknown', outcome_bytes = 0
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?
+  AND state = 'admitted'"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+  ])
+}
+
+pub fn ack_ledger_call(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "DELETE FROM call
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?
+  AND state IN ('terminal', 'unknown')"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+  ])
+}
+
+pub fn recover_ledger_calls() {
+  let sql =
+    "UPDATE call SET state = 'unknown', outcome_bytes = 0 WHERE state = 'admitted'"
+  #(sql, [])
+}
+
+pub type LedgerUnackedKeys {
+  LedgerUnackedKeys(op: String, step: String, source_index: Int, state: String)
+}
+
+pub fn ledger_unacked_keys(session session: String) {
+  let sql =
+    "SELECT op, step, source_index, state FROM call
+WHERE session = ? AND state IN ('terminal', 'unknown')
+ORDER BY op, step, source_index"
+  #(sql, [dev.ParamString(session)], ledger_unacked_keys_decoder())
+}
+
+pub fn ledger_unacked_keys_decoder() -> decode.Decoder(LedgerUnackedKeys) {
+  use op <- decode.field(0, decode.string)
+  use step <- decode.field(1, decode.string)
+  use source_index <- decode.field(2, decode.int)
+  use state <- decode.field(3, decode.string)
+  decode.success(LedgerUnackedKeys(op:, step:, source_index:, state:))
+}
+
+pub fn insert_ledger_release(
+  session session: String,
+  workspace workspace: String,
+  incarnation incarnation: Int,
+  was was: String,
+  released_at_ms released_at_ms: Int,
+) {
+  let sql =
+    "INSERT INTO scope_release(session, workspace, incarnation, was, released_at_ms)
+VALUES (?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+    dev.ParamInt(incarnation),
+    dev.ParamString(was),
+    dev.ParamInt(released_at_ms),
+  ])
+}
+
+pub type LedgerReleases {
+  LedgerReleases(
+    workspace: String,
+    incarnation: Int,
+    was: String,
+    released_at_ms: Int,
+  )
+}
+
+pub fn ledger_releases(session session: String) {
+  let sql =
+    "SELECT workspace, incarnation, was, released_at_ms FROM scope_release
+WHERE session = ?
+ORDER BY id"
+  #(sql, [dev.ParamString(session)], ledger_releases_decoder())
+}
+
+pub fn ledger_releases_decoder() -> decode.Decoder(LedgerReleases) {
+  use workspace <- decode.field(0, decode.string)
+  use incarnation <- decode.field(1, decode.int)
+  use was <- decode.field(2, decode.string)
+  use released_at_ms <- decode.field(3, decode.int)
+  decode.success(LedgerReleases(workspace:, incarnation:, was:, released_at_ms:))
+}
+
+pub fn insert_ledger_ack(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "INSERT OR IGNORE INTO call_ack(session, op, step, source_index, incarnation)
+SELECT call.session, call.op, call.step, call.source_index, call.incarnation
+FROM call
+WHERE call.session = ? AND call.op = ? AND call.step = ?
+  AND call.source_index = ? AND call.state IN ('terminal', 'unknown')"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(op),
+    dev.ParamString(step),
+    dev.ParamInt(source_index),
+  ])
+}
+
+pub type LedgerAck {
+  LedgerAck(incarnation: Int)
+}
+
+pub fn ledger_ack(
+  session session: String,
+  op op: String,
+  step step: String,
+  source_index source_index: Int,
+) {
+  let sql =
+    "SELECT incarnation FROM call_ack
+WHERE session = ? AND op = ? AND step = ? AND source_index = ?"
+  #(
+    sql,
+    [
+      dev.ParamString(session),
+      dev.ParamString(op),
+      dev.ParamString(step),
+      dev.ParamInt(source_index),
+    ],
+    ledger_ack_decoder(),
+  )
+}
+
+pub fn ledger_ack_decoder() -> decode.Decoder(LedgerAck) {
+  use incarnation <- decode.field(0, decode.int)
+  decode.success(LedgerAck(incarnation:))
+}
+
+pub fn delete_ledger_acks(session session: String) {
+  let sql = "DELETE FROM call_ack WHERE session = ?"
+  #(sql, [dev.ParamString(session)])
 }
 
 pub type HistorySourceHeader {

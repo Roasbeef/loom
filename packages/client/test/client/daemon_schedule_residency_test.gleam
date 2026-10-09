@@ -20,6 +20,7 @@ import client/schedulescan
 import client/serve
 import client/session_socket_test
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import client/workspace_policy
 import core/clock
 import core/entry
 import core/ids
@@ -106,7 +107,7 @@ fn start(settings: serve.Settings) {
               session_path: record.path,
               session_id: record.id,
               workspace: record.workspace,
-              base_policy: serve.base_policy(record.workspace),
+              base_policy: workspace_policy.base_policy(record.workspace),
               domain_paths: Some(serve.DomainPaths(
                 selected.memory_path,
                 selected.index_path,
@@ -251,6 +252,8 @@ fn first_phase(
         "",
         None,
         None,
+        "",
+        "",
       ),
       directory: serving.ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), 62),

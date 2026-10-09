@@ -84,13 +84,15 @@ import broker/policy
 import broker/token
 import client/gateway
 import client/internal/ffi_os
+import client/internal/session_owner
 import client/jobs
 import client/jobseam
 import client/jobstate.{type JobId}
 import client/jobtools
 import client/notice
+import client/owner_services
 import client/protocol
-import client/serve
+import client/workspace_policy
 import core/clock.{type Clock}
 import core/ids
 import core/json
@@ -571,7 +573,11 @@ fn wiring(
   base: policy.SandboxPolicy,
 ) -> jobs.Wiring {
   jobs.Wiring(
-    runtime: fn() { Ok(runtime) },
+    owner: owner_services.local_jobs_owner(
+      handle: fn() { Ok(api.fact_handle(runtime)) },
+      runtime: fn() { Ok(runtime) },
+    ),
+    session_path: fn() { Ok(session_owner.path(runtime)) },
     policy: jobs.default_policy,
     clock:,
     seed: 42,
@@ -610,6 +616,7 @@ fn open_runtime(clock: Clock) -> Runtime {
           },
           replay_still_safe: fn(_name) { False },
           execution_mode: fn(_name) { effects.ExclusiveExecution },
+          recover: None,
         ),
         hooks: effects.default_hooks(),
       ),
@@ -1109,7 +1116,7 @@ pub fn a_default_wall_is_met_with_the_session_policys_own_test() {
 
 pub fn the_real_policy_admits_a_default_and_refuses_a_longer_wall_test() {
   // The scripted broker composes no policy, so nothing else in this file
-  // can see the meet the real one performs. `serve.base_policy` is what
+  // can see the meet the real one performs. `workspace_policy.base_policy` is what
   // a session hands this actor and its wall is ten minutes, so the two
   // halves of `granted_wall` land on opposite sides of the composition.
   let name = start_over_a_real_broker()
@@ -1187,7 +1194,7 @@ fn start_over_a_real_broker() -> address.Address(jobs.Message) {
         clock,
         tool.broker_runner(broker: broker_actor, waiting: 1000),
         1000,
-        serve.base_policy("/workspace"),
+        workspace_policy.base_policy("/workspace"),
       ),
     )
     as "the jobs actor must start"
@@ -2752,4 +2759,71 @@ pub fn admitted_directory_survives_job_record_and_clearance_test() {
   let assert [spec] = specs(harness) as "one launch clearance"
   assert spec.cwd == "/workspace/review"
   assert spec.base_policy.writable_roots == ["/workspace"]
+}
+
+// --- the owner's fact access ------------------------------------------------
+
+// A fact access which fails every operation the same way, so a start's
+// claim meets exactly that fault.
+fn faulting(fault: owner_services.FactFault) -> owner_services.FactAccess {
+  owner_services.FactAccess(
+    cell: fn(_key) { Error(fault) },
+    put: fn(_key, _value, _expected) { Error(fault) },
+    put_blind: fn(_key, _value) { Error(fault) },
+    delete: fn(_key) { Error(fault) },
+    list: fn(_prefix) { Error(fault) },
+  )
+}
+
+// The refusal a start meets when its claim of the job's record fails with
+// `fault`, which is the one place every fault reaches the caller.
+fn claim_refusal(fault: owner_services.FactFault) -> String {
+  let clock = counting_clock(1_756_000_000_000, 1)
+  let runtime = open_runtime(clock)
+  let fake = start_fake_broker()
+  let spill = start_fake_spill()
+  let name = addresses.new()
+  let base = fake_wiring(runtime, fake, spill, clock)
+  let assert Ok(_started) =
+    jobs.start(
+      name,
+      jobs.Wiring(
+        ..base,
+        owner: owner_services.JobsOwner(..base.owner, facts: faulting(fault)),
+      ),
+    )
+    as "the jobs actor must start"
+  let assert Error(jobs.Unavailable(reason:)) =
+    jobs.start_job(
+      name,
+      strand: "main",
+      operation: an_op(),
+      request: jobs.Request(
+        cwd: None,
+        command: "make",
+        wall_ms: None,
+        captured_policy: None,
+        audience: jobs.NotifyOwner,
+        stdin: jobs.KeepStdinOpen,
+        idle_wake: job.WakeWhenIdle,
+      ),
+      waiting: 5000,
+    )
+    as "a claim which fails is refused as unavailable"
+  reason
+}
+
+// The wording each fault has always had, kept stable across the move from
+// matching on the runtime's errors to matching on the owner's.
+pub fn each_claim_fault_keeps_its_wording_test() {
+  assert claim_refusal(owner_services.Conflict)
+    == "another writer holds this job's record"
+  assert claim_refusal(owner_services.LeaseStolen(held_by: None))
+    == "this session's writer lease was taken"
+  assert claim_refusal(owner_services.LeaseStolen(held_by: Some("pid-7")))
+    == "this session's writer lease was taken by pid-7"
+  assert claim_refusal(owner_services.StoreAbsent)
+    == "the session runtime is not available"
+  assert claim_refusal(owner_services.Failed(detail: "disk full"))
+    == "disk full"
 }

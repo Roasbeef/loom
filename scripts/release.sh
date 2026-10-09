@@ -568,7 +568,21 @@ if (( LOOM_PROFILE_ENABLED == 1 )); then
   profile_exec=(/usr/bin/env "HOME=\$LOOM_PROFILE_COOKIE_HOME")
 fi
 
+# Trusted TLS distribution is opt-in (protocol-change/078). The VM must boot
+# with these flags before any Gleam code runs, so the operator names the
+# options file \`loomd distribution options\` wrote. Unset, the VM boots exactly
+# as before. The flags are emulator arguments, not ERL_FLAGS, so a path with a
+# space survives. connect_all is off so that a node that is a member of the
+# session directory's cluster, which runs visible, is never connected by
+# \`global\` to a node its peers know (protocol-change/081); a hidden node is
+# unaffected by it.
+dist_flags=()
+if [[ -n "\${LOOM_DISTRIBUTION_OPTFILE:-}" ]]; then
+  dist_flags=(-proto_dist inet_tls -ssl_dist_optfile "\$LOOM_DISTRIBUTION_OPTFILE" -kernel connect_all false)
+fi
+
 exec \${profile_exec[@]+"\${profile_exec[@]}"} "\$root/erts-$ERTS_VSN/bin/erl" +P 262144 +Q 65536 \\
+  \${dist_flags[@]+"\${dist_flags[@]}"} \\
   -boot "\$root/releases/$VERSION/no_dot_erlang" \\
   -pa "\$root"/lib/*/ebin \\
   -noshell \\

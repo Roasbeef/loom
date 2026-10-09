@@ -52,7 +52,7 @@ check-affected: ## Run only the gates a change against BASE can affect (BASE=ori
 	@bash scripts/check_affected.sh "$(BASE)"
 
 .PHONY: model-check
-model-check: ## Check the P protocol models under protocol/models (needs the P tool)
+model-check: ## Check the protocol models under protocol/models (TLC for TLA+, the P tool for P)
 	@bash scripts/model_check.sh
 
 # The real-helper suites in broker, tools, codemode and conformance run the
@@ -233,6 +233,13 @@ server-shipment: codemode-seed ## Package the server: build/erlang-shipment + bi
 		'LOOM_BUILD_COMMIT="$(BUILD_COMMIT)"' \
 		'LOOM_BUILD_PLATFORM="$(shell scripts/platform.sh)"' \
 		'export LOOM_BUILD_VERSION LOOM_BUILD_COMMIT LOOM_BUILD_PLATFORM' \
+		'# Trusted TLS distribution is opt-in (protocol-change/078). The VM must be' \
+		'# booted with these flags before any Gleam runs, so the operator names the' \
+		'# options file `loomd distribution options` wrote. Unset, nothing changes.' \
+		'if [ -n "$${LOOM_DISTRIBUTION_OPTFILE:-}" ]; then' \
+		'  ERL_FLAGS="$${ERL_FLAGS:+$$ERL_FLAGS }-proto_dist inet_tls -ssl_dist_optfile \"$$LOOM_DISTRIBUTION_OPTFILE\" -kernel connect_all false"' \
+		'  export ERL_FLAGS' \
+		'fi' \
 		'exec "$$(dirname "$$0")/../build/erlang-shipment/entrypoint.sh" run "$$@"' \
 		> bin/loomd
 	@chmod +x bin/loomd
@@ -618,6 +625,10 @@ docker-image: ## Build the runnable loomd image (BuildKit; DOCKER_IMAGE=name:tag
 .PHONY: docker-smoke
 docker-smoke: ## Build the image, boot it, run a client command and the self-test, then stop it
 	@bash scripts/docker_smoke.sh "$(DOCKER_IMAGE)"
+
+.PHONY: docker-distributed-smoke
+docker-distributed-smoke: ## Bring up docker/distributed (orchestrator + executor), check both run a TLS node, tear down; skips without Docker
+	@bash scripts/distributed_smoke.sh "$(DOCKER_IMAGE)"
 
 .PHONY: clean
 clean: ## Remove build artifacts

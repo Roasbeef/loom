@@ -40,8 +40,9 @@
 ////
 //// 1. `main` answers help first (`help_for`), peels `--record` off the arguments,
 ////    and lets `parse_launch` classify what is left into a `Launch`.
-//// 2. Launches that are not a terminal (version, update, ext, `replay`, sessions,
-////    claim, enroll, access, view) run to completion in their own functions.
+//// 2. Launches that are not a terminal (version, update, ext, distribution,
+////    `replay`, sessions, claim, enroll, access, view) run to completion in
+////    their own functions.
 //// 3. `interactive_terminal` refuses a detached stdin, then `interactive` builds
 ////    the model with `new_model` and connects it: `attach_daemon` for a local
 ////    daemon, `connect_remote` for a remote address.
@@ -132,6 +133,7 @@ import tui/model.{
 import tui/msg
 import tui/note_panel
 import tui/pacing
+import tui/placement
 import tui/projection
 import tui/queue_editor
 import tui/recording
@@ -166,11 +168,14 @@ type Launch {
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
-  // `loom ext …` is not a terminal application at all: it is a
-  // passthrough to `loomd`, whose own `ext` subcommand owns every verb.
-  // Forwarding rather than reimplementing is what stops the launcher and
-  // the server disagreeing about what an install did.
-  Forward(arguments: List(String))
+  // `loom ext …`, `loom distribution …` (`dist` for short) and
+  // `loom executor …` are not
+  // terminal applications at all: they are passthroughs to `loomd`, whose
+  // own subcommand owns every verb. Forwarding rather than reimplementing
+  // is what stops the launcher and the server disagreeing about what an
+  // install did, or about which certificate a provisioned node holds. The
+  // `verb` is the server subcommand, spelled the way the server spells it.
+  Forward(verb: String, arguments: List(String))
 
   // Updates run before terminal setup and own their daemon restart policy.
   Update(arguments: List(String))
@@ -222,6 +227,10 @@ type Launch {
 pub type SessionsCommand {
   ListRegistrations(showing: Showing)
   RemoveRegistration(session_id: String, consent: Consent)
+
+  // Hands a session to the orchestrator the daemon's `[orchestrators.<name>]`
+  // table calls `to` (protocol-change/078, phase 5).
+  MoveRegistration(session_id: String, to: String)
 }
 
 // Whether the person has already agreed to lose a conversation. `--yes` is
@@ -302,6 +311,9 @@ pub fn main() {
 
       let #(record, arguments) = case raw {
         ["ext", ..]
+        | ["distribution", ..]
+        | ["dist", ..]
+        | ["executor", ..]
         | ["replay", ..]
         | ["sessions", ..]
         | ["claim", ..]
@@ -319,7 +331,7 @@ pub fn main() {
         // The passthrough runs before a single line of terminal setup: this
         // process is a pipe for the duration and then it is gone.
         Version -> print_version()
-        Forward(arguments:) -> forward(arguments)
+        Forward(verb:, arguments:) -> forward(verb, arguments)
         Update(arguments:) -> run_update(arguments)
         Replay(path:, frames:, size:, colour:) ->
           replay(path, frames, size, colour)
@@ -424,6 +436,8 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("sessions") -> Some(sessions_usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
+    Ok("distribution") | Ok("dist") -> Some(distribution_usage())
+    Ok("executor") -> Some(executor_usage())
     Ok("update") -> Some(update_options.usage())
     Ok("version") -> Some(version_usage())
     Ok("ui") | Ok("--ui") -> Some(ui_usage())
@@ -436,6 +450,9 @@ fn is_topic(word: String) -> Bool {
     "replay"
     | "sessions"
     | "ext"
+    | "distribution"
+    | "dist"
+    | "executor"
     | "update"
     | "version"
     | "claim"
@@ -475,22 +492,22 @@ fn take_flag(arguments: List(String), flag: String) -> #(String, List(String)) {
 // output through and exiting with its status. The daemon is located by the
 // same ladder an implicit local launch uses, so `loom ext` and an
 // auto-started session cannot end up talking to two different binaries.
-fn forward(arguments: List(String)) -> Nil {
+fn forward(verb: String, arguments: List(String)) -> Nil {
   case bootstrap.server_executable(flag_or_empty(arguments, "--server")) {
     Error(reason) -> {
-      io.println_error("loom ext: " <> reason)
+      io.println_error("loom " <> verb <> ": " <> reason)
       ffi_terminal.halt(1)
       Nil
     }
     Ok(server) ->
-      case ffi_terminal.run_forwarding(server, ["ext", ..arguments]) {
+      case ffi_terminal.run_forwarding(server, [verb, ..arguments]) {
         Ok(status) -> {
           ffi_terminal.halt(status)
           Nil
         }
         Error(reason) -> {
           io.println_error(
-            "loom ext: could not run " <> server <> ": " <> reason,
+            "loom " <> verb <> ": could not run " <> server <> ": " <> reason,
           )
           ffi_terminal.halt(1)
           Nil
@@ -793,9 +810,14 @@ fn interactive(launch: Launch, record: String) -> Nil {
           ..base,
           view: base.view
             |> view_set.local_options(Some(options))
-            |> view_set.workspace(case options.workspace {
-              "" -> base.view.workspace
-              path -> workspace.discover_from(path)
+            |> view_set.workspace(case options.placement, options.workspace {
+              // A registered name is no directory here, so it is never probed
+              // for a repository: the footer shows the name as given.
+              placement.OnExecutor(workspace: name, ..), _
+              | placement.InPool(workspace: name, ..), _
+              -> workspace.Context(path: name, branch: None)
+              placement.OnThisHost, "" -> base.view.workspace
+              placement.OnThisHost, path -> workspace.discover_from(path)
             }),
         )
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
@@ -996,9 +1018,15 @@ fn parse_launch(arguments: List(String)) -> Launch {
     ["--demo"] -> Demo
     ["version"] | ["--version"] -> Version
     ["version", ..] | ["--version", ..] -> Invalid(version_usage())
-    ["ext", ..rest] -> Forward(arguments: rest)
+    ["ext", ..rest] -> Forward(verb: "ext", arguments: rest)
+    ["distribution", ..rest] | ["dist", ..rest] ->
+      Forward(verb: "distribution", arguments: rest)
+    ["executor", ..rest] -> Forward(verb: "executor", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
-    ["help", "ext"] -> Forward(arguments: ["--help"])
+    ["help", "ext"] -> Forward(verb: "ext", arguments: ["--help"])
+    ["help", "distribution"] | ["help", "dist"] ->
+      Forward(verb: "distribution", arguments: ["--help"])
+    ["help", "executor"] -> Forward(verb: "executor", arguments: ["--help"])
     ["replay", ..rest] -> parse_replay(rest)
     ["ui", ..rest] -> view_launch(rest)
     ["sessions", ..rest] -> parse_sessions(rest)
@@ -1112,10 +1140,65 @@ fn parse_terminal_launch(arguments: List(String)) -> Launch {
       }
     Ok(_), Error(_) -> Invalid(launch_usage())
     Error(_), selection ->
-      case parse_local_options(arguments, default_bootstrap_options()) {
-        Ok(options) -> Local(options, result.unwrap(selection, ""))
+      case parse_local_launch(arguments, result.unwrap(selection, "")) {
+        Ok(local) -> local
         Error(reason) -> Invalid(reason <> "\n" <> launch_usage())
       }
+  }
+}
+
+// A local terminal launch: the shared local options, and the placement that
+// `--executor` or `--pool` and `--workspace` name together. They are read here
+// and not by `parse_local_options`, so `loom ui` and `loom sessions`, which have
+// no session to create, refuse them as the unknown options they are for them.
+// With an executor or a pool the `--workspace` value is a registered name and
+// not a directory, so it is taken out of the words before the options parser
+// can store it as one: the launcher canonicalizes `Options.workspace`, and a
+// name must never reach that.
+fn parse_local_launch(
+  arguments: List(String),
+  selected: String,
+) -> Result(Launch, String) {
+  use #(executor, rest) <- result.try(take_value(arguments, "--executor"))
+  use #(pool, rest) <- result.try(take_value(rest, "--pool"))
+  use #(registered, rest) <- result.try(case option.or(executor, pool) {
+    Some(_) -> take_value(rest, "--workspace")
+    None -> Ok(#(None, rest))
+  })
+  use Nil <- result.try(case option.or(executor, pool), selected {
+    Some(_), "" | None, _ -> Ok(Nil)
+    Some(_), _ ->
+      Error(
+        "--executor and --pool name where a new session is created; --session opens an existing one",
+      )
+  })
+  use chosen <- result.try(placement.new(executor, pool, registered))
+  use options <- result.map(parse_local_options(
+    rest,
+    default_bootstrap_options(),
+  ))
+  Local(bootstrap.Options(..options, placement: chosen), selected)
+}
+
+// Removes one `flag value` pair from the words and answers the value, or none
+// when the flag is absent. A flag given twice, or last with no value, or whose
+// value looks like the next flag, is refused rather than guessed at.
+fn take_value(
+  arguments: List(String),
+  flag: String,
+) -> Result(#(Option(String), List(String)), String) {
+  case list.count(arguments, fn(word) { word == flag }) {
+    0 -> Ok(#(None, arguments))
+    1 ->
+      case session_control.flag_value(arguments, flag) {
+        Ok(value) ->
+          case string.starts_with(value, "-") {
+            True -> Error(flag <> " needs a value, got " <> value)
+            False -> Ok(#(Some(value), without_flag(arguments, flag)))
+          }
+        Error(Nil) -> Error("missing value for " <> flag)
+      }
+    _ -> Error(flag <> " was given more than once")
   }
 }
 
@@ -1139,7 +1222,32 @@ fn parse_sessions(arguments: List(String)) -> Launch {
     ["rm", id, ..flags] ->
       sessions_launch(flags, RemoveRegistration(id, consent))
     ["rm"] -> Invalid("sessions rm needs a session id\n" <> sessions_usage())
+    ["move", id, ..flags] -> parse_move(id, flags)
+    ["move"] ->
+      Invalid("sessions move needs a session id\n" <> sessions_usage())
     _unknown -> Invalid(sessions_usage())
+  }
+}
+
+// `loom sessions move <id> --to <orchestrator>`. The destination is required and
+// is a name from the daemon's configuration, not an address, so it is refused here
+// if it is not the shape of one, before any daemon is started or asked.
+fn parse_move(id: String, flags: List(String)) -> Launch {
+  case take_value(flags, "--to") {
+    Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
+    Ok(#(None, _)) ->
+      Invalid("sessions move needs --to <orchestrator>\n" <> sessions_usage())
+    Ok(#(Some(to), rest)) ->
+      case placement.is_orchestrator_name(to) {
+        True -> sessions_launch(rest, MoveRegistration(id, to))
+        False ->
+          Invalid(
+            "--to must be the name of an orchestrator in the daemon's configuration, got "
+            <> to
+            <> "\n"
+            <> sessions_usage(),
+          )
+      }
   }
 }
 
@@ -1170,6 +1278,7 @@ fn take_switch(arguments: List(String), flag: String) -> #(Bool, List(String)) {
 fn sessions_usage() -> String {
   "usage: loom sessions list [--all] [--state-dir <path>] [--server <path>]\n"
   <> "       loom sessions rm <session-id> [--yes] [--state-dir <path>]\n"
+  <> "       loom sessions move <session-id> --to <orchestrator> [--state-dir <path>]\n"
   <> "  list shows the resident track by default; --all adds every saved\n"
   <> "  registration and reservation\n"
   <> "  resident: running in the daemon now\n"
@@ -1177,7 +1286,12 @@ fn sessions_usage() -> String {
   <> "  reserved: a creation that never finished, an id with no database\n"
   <> "  behind it; retry the create or remove it\n"
   <> "  rm asks for confirmation unless --yes is given, and refuses a\n"
-  <> "  session the daemon still holds open; stop it first"
+  <> "  session the daemon still holds open; stop it first\n"
+  <> "  move hands a session on an executor to the orchestrator the daemon's\n"
+  <> "  [orchestrators.<name>] table calls <orchestrator>. It returns once the\n"
+  <> "  daemon has accepted the move, which it then carries out; the session\n"
+  <> "  cannot be opened here until the move ends, and afterward it is opened on\n"
+  <> "  the other orchestrator"
 }
 
 /// What `loom ui` was asked for: the daemon options, the session to link
@@ -1439,6 +1553,8 @@ fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
         ListRegistrations(showing:) -> list_registrations(host, showing)
         RemoveRegistration(session_id:, consent:) ->
           remove_registration(host, session_id, consent)
+        MoveRegistration(session_id:, to:) ->
+          move_registration(host, session_id, to)
       }
       daemon.close(control)
       case outcome {
@@ -1629,7 +1745,7 @@ fn registration_line(row: control_protocol.Session) -> String {
   <> "  "
   <> session_table.state(row.status).0
   <> "  "
-  <> row.workspace
+  <> placement.label(row.executor, row.workspace)
   <> "  "
   <> text_hygiene.single_line(row.name)
 }
@@ -1647,6 +1763,25 @@ fn remove_registration(
   "deleted " <> deleted
 }
 
+fn move_registration(
+  host: daemon_selection.Host,
+  session_id: String,
+  to: String,
+) -> Result(String, String) {
+  use #(op, destination) <- result.map(daemon_selection.move(
+    host,
+    session_id,
+    to,
+  ))
+  "moving "
+  <> session_id
+  <> " to "
+  <> destination
+  <> " (operation "
+  <> op
+  <> ")"
+}
+
 // Anything but an explicit yes cancels, including an empty line, so the
 // default of a mistyped answer is to keep the conversation.
 fn asked(session_id: String) -> Result(Nil, String) {
@@ -1660,7 +1795,7 @@ fn asked(session_id: String) -> Result(Nil, String) {
 }
 
 fn default_bootstrap_options() -> bootstrap.Options {
-  bootstrap.Options("", "", "", "", "", "")
+  bootstrap.Options("", "", "", "", "", "", placement.OnThisHost)
 }
 
 fn parse_local_options(
@@ -1758,6 +1893,10 @@ fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session <id>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>] "
   <> "[--model-profile <name>]\n"
+  <> "       loom --executor <name> --workspace <registered name> "
+  <> "[--config <loom.toml>] [--model-profile <name>]\n"
+  <> "       loom --pool <name> --workspace <registered name> "
+  <> "[--config <loom.toml>] [--model-profile <name>]\n"
   <> "       loom <command> [options]\n\n"
   <> "commands:\n"
   <> "  version            Print version, build commit and platform.\n"
@@ -1773,10 +1912,21 @@ fn launch_usage() -> String {
   <> "  access <command>    Owner access: list, show, invite, rotate, revoke.\n"
   <> "                      Runs against the local daemon, or a remote one\n"
   <> "                      with --addr and --token-file.\n"
-  <> "  ext <command>       Manage daemon extensions.\n\n"
+  <> "  ext <command>       Manage daemon extensions.\n"
+  <> "  distribution <command>\n"
+  <> "                      Provision trusted distribution between daemons\n"
+  <> "                      (init, provision, install, show). `dist` is short.\n"
+  <> "  executor release SESSION\n"
+  <> "                      Release a scope an executor will not reopen itself.\n\n"
   <> "  --config defaults to <state-dir>/loom.toml when that file exists\n"
   <> "  --model-profile names a [profiles.<name>] table of that file whose\n"
   <> "       roles a newly created session uses; a resumed session keeps its own\n"
+  <> "  --executor creates new sessions in a workspace registered on that\n"
+  <> "       [executors.<name>] of the daemon's configuration; --workspace is\n"
+  <> "       then the registered name, not a path, and is never resolved on this\n"
+  <> "       machine. It cannot be combined with --session\n"
+  <> "  --pool is the same for a [pools.<name>]: the daemon picks the executor\n"
+  <> "       when the session first opens. It cannot be combined with --executor\n"
   <> "  --record <path> writes every event to a replayable recording\n"
   <> "       loom --addr <websocket-url> --session <id> "
   <> "[--token-file <path> | --token <bearer>]\n"
@@ -1827,6 +1977,103 @@ fn extension_usage() -> String {
   <> "A source is a local path, an https:// .tar.gz, or an\n"
   <> "https://github.com/<owner>/<repo> URL. Extensions install under\n"
   <> "<home>/.loom/extensions."
+}
+
+// The help text of `loom distribution`, held here for the reason
+// `extension_usage` is: the launcher must describe the command when `loomd` is
+// absent, and the terminal package cannot import the daemon package. The shipped
+// acceptance compares this text with `loomd distribution --help` so the two
+// literals cannot silently drift.
+fn distribution_usage() -> String {
+  "usage: loom distribution <command>   (also: loomd distribution, and `dist` for short)
+
+Provision a trusted Erlang distribution between Loom daemons with one plan, one
+file per machine, and one command on each machine. No openssl is needed.
+
+commands:
+  init [PATH]                     Write an example plan (default
+                                  distribution-plan.toml). Refuses to overwrite.
+  provision PLAN OUT [--force]    Read PLAN (.toml or .json), mint the CA, the
+                                  node certificates and the shared cookie, and
+                                  write OUT/<node>.loombundle (mode 0600) for
+                                  each node plus OUT/system.json (no secrets).
+                                  Refuses a non-empty OUT without --force.
+  show OUT                        Print OUT/system.json as a table.
+  install BUNDLE [--home DIR] [--config PATH] [--force]
+                                  Run on the node's machine. Installs the
+                                  credentials, the cookie at DIR/.erlang.cookie
+                                  (default $HOME), the [distribution] and role
+                                  tables in PATH (default DIR/.loom/loom.toml)
+                                  and the TLS options file, then prints the
+                                  command that starts the daemon. Running it
+                                  again with the same bundle changes nothing.
+                                  A different existing cookie, credential file
+                                  or table is refused unless --force.
+  options CONFIG OUTPUT           Render the TLS distribution options file for
+                                  the [distribution] table of CONFIG (mode
+                                  0600). `install` does this for you.
+
+A .loombundle holds the node's private key and the deployment's cookie. Copy it
+to its machine over a channel you trust, and delete it there after installing.
+
+Example:
+  loom dist init plan.toml
+  loom dist provision plan.toml out
+  scp out/devbox.loombundle devbox:
+  ssh devbox loom dist install devbox.loombundle"
+}
+
+// The help text of `loom executor`, held here for the reason
+// `distribution_usage` is, and compared with `loomd executor --help` by the
+// same shipped acceptance.
+fn executor_usage() -> String {
+  "usage: loom executor release SESSION [--state-dir PATH]   (also: loomd executor release)
+
+Release a scope on this machine's executor that the executor will not reopen by
+itself. Run it on the executor, with the executor daemon stopped.
+
+An executor refuses to attach a session to a scope that closed with unknown
+cleanup, or that was left closing when the daemon ended mid-close, because it
+cannot prove the scope's processes are gone. After the executor restarts, every
+session that closes ends this way. `release` is the operator saying the
+processes are gone: it closes the scope as retired and records that it did, in
+the executor's ledger. The session's next open then reopens the scope at the
+next incarnation.
+
+SESSION is the orchestrator's session id, as the refused open names it.
+--state-dir is the executor daemon's state directory (default ~/.loom), where
+exec-ledger.db lives.
+
+Check that nothing from the session still runs on this machine first. The
+command refuses a scope that is open, and a scope that is already closed
+cleanly.
+
+While it runs it holds the state directory's daemon reservation, and it leaves
+that record behind when it exits. A daemon started during the release is
+refused and must be started again, and `loom` may report that the daemon is
+still starting until the next daemon starts.
+
+Example:
+  loom executor release 7f3a9c1e --state-dir /var/lib/loom"
+}
+
+/// The arguments `loom` would hand to the server for a passthrough command,
+/// or `None` when the command is the launcher's own. `loom ext` and
+/// `loom distribution` (with its `dist` shorthand) and `loom executor` are
+/// passthroughs, and the
+/// server sees the subcommand spelled the way it spells it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.server_arguments(["dist", "init"]) == Some(["distribution", "init"])
+/// ```
+@internal
+pub fn server_arguments(arguments: List(String)) -> Option(List(String)) {
+  case parse_launch(arguments) {
+    Forward(verb:, arguments:) -> Some([verb, ..arguments])
+    _other -> None
+  }
 }
 
 fn parse_replay(arguments: List(String)) -> Launch {

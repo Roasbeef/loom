@@ -68,6 +68,7 @@ import client/retryconf
 import client/schedule
 import client/serve
 import client/tui_e2e_test.{type EunitTest, Timeout}
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/json
@@ -88,6 +89,7 @@ import provider/model
 import provider/secret
 import runtime/api
 import simplifile
+import support/local_workspace
 import support/provider as provider_test
 import telemetry/log
 import tools/advise
@@ -155,9 +157,10 @@ pub fn a_second_model_reviews_the_primary_and_reaches_it_test_() -> EunitTest {
     // `serve_test`'s own instance turn does it: an instance whose pool
     // never handshook would otherwise fail later, inside a tool call, as a
     // clearance refusal that reads like a policy decision.
-    let assert Ok(helper) = exec.checkout(instance.pool, waiting: 5000)
+    let assert Ok(helper) =
+      exec.checkout(local_workspace.pool(instance), waiting: 5000)
       as "the instance must have a real, handshaken helper"
-    exec.checkin(instance.pool, helper)
+    exec.checkin(local_workspace.pool(instance), helper)
 
     // The first operator turn, admitted through the instance's own writer
     // and awaited to settlement.
@@ -758,7 +761,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     bind_port: -1,
     token_path: root <> "/transport-only/daemon.token",
     workspace: root <> "/work",
-    base_policy: serve.base_policy(root <> "/work"),
+    base_policy: workspace_policy.base_policy(root <> "/work"),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: "advisor-e2e",

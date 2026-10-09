@@ -70,6 +70,8 @@ fn shared_session(
         "",
         None,
         None,
+        "",
+        "",
       ),
       directory: ready.sessions_directory,
       generator: ids.generator(clock.fixed(1), seed),
@@ -689,6 +691,8 @@ pub fn membership_pages_stay_within_the_budget_and_resume_after_the_cursor_test(
               state: catalogue.Reserved,
               profile: option.None,
               model: option.None,
+              executor: "",
+              pool: "",
               subtitle: option.None,
             ),
           )

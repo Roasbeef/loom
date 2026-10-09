@@ -855,11 +855,17 @@ jobs:
   # `gate (macos)`. Every other step here — the toolchain, the artifact
   # restore, tmux — is ordinary and still fails the job outright, exactly
   # as it did before the split.
+  #
+  # The job timeout is the one thing `continue-on-error` cannot absorb: a
+  # job cancelled at its limit fails `gate (macos)` like any other. On main
+  # the job took 8 to 28 minutes, and the distributed runtime (issue #697)
+  # adds about ten shipped modules that boot two or three daemons each and
+  # run for real here, so the old 30-minute limit cancelled it.
   check-macos:
     name: check (macos, advisory)
     needs: deps-macos
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 50
     outputs:
       # `gate (macos)`'s skip census needs to know whether `make check`
       # ran to a real conclusion or aborted partway through, and a job

@@ -156,3 +156,27 @@ pub fn invalid_ui_setting_refuses_startup_before_state_is_created_test() {
   assert string.contains(reason, "daemon.ui must be true or false")
   assert simplifile.is_directory(path <> "/state") == Ok(False)
 }
+
+pub fn executors_without_distribution_refuse_startup_before_state_is_created_test() {
+  let path =
+    "build/test_db/daemon-invalid-executors-"
+    <> bit_array.base16_encode(token.production_entropy()(8))
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(path)
+    as "fixture directory exists"
+  let selected = path <> "/executors.toml"
+  assert simplifile.write(
+      selected,
+      "[executors.build-box]\nnode = \"executor@10.0.0.2\"\n",
+    )
+    == Ok(Nil)
+  let assert Ok(config) =
+    entrypoint.parse(["--state-dir", path <> "/state", "--config", selected])
+    as "flag parsing does not acquire resources"
+  let assert Error(reason) = entrypoint.prepare_startup(config, log.discard())
+    as "an executor with no distribution peers refuses startup"
+  assert string.contains(
+    reason,
+    "executors needs a [distribution] table naming its peers",
+  )
+  assert simplifile.is_directory(path <> "/state") == Ok(False)
+}

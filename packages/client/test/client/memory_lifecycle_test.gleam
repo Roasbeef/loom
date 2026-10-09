@@ -30,6 +30,7 @@ import client/memory
 import client/retryconf
 import client/schedule
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids as core_ids
 import core/json as core_json
@@ -451,7 +452,7 @@ fn settings(
     bind_port: 0,
     token_path: root <> "/" <> file <> ".token",
     workspace: root <> "/work",
-    base_policy: serve.base_policy(root <> "/work"),
+    base_policy: workspace_policy.base_policy(root <> "/work"),
     helper_path: here <> "/../sandbox/loom-exec",
     helper_pool_size: 2,
     session_id: file,
@@ -648,7 +649,7 @@ fn a_clock() -> clock.Clock {
 }
 
 // Absolute, because the workspace root becomes the base policy's
-// writable root and `serve.base_policy_fault` refuses a boot on a policy
+// writable root and `workspace_policy.base_policy_fault` refuses a boot on a policy
 // whose paths the jail could not accept.
 fn fresh_root(lane: String) -> String {
   let relative = "build/test_db/memory-lifecycle-" <> lane

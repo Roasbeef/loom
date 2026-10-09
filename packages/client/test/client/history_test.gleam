@@ -8,7 +8,7 @@
 //// `memory_recall_test`, over two real session files and a compaction.
 
 import client/history
-import client/serve
+import client/workspace_policy
 import core/clock
 import core/entry.{type Entry, MessageEntry}
 import core/ids.{type EntryId, type SessionId}
@@ -55,14 +55,14 @@ pub fn a_bare_session_name_yields_a_bare_index_name_test() {
 // one execution's output into a later execution's input. `protected`
 // bars writes and leaves reads alone, which is the asymmetry wanted.
 pub fn the_index_is_protected_from_every_write_test() {
-  let base = serve.base_policy("/work")
-  let composed = serve.protecting_index(base, "/data/loom-search.db")
+  let base = workspace_policy.base_policy("/work")
+  let composed = workspace_policy.protecting_index(base, "/data/loom-search.db")
   assert list.contains(composed.protected, "/data/loom-search.db")
   // The blob store's protection is not lost in the process.
   assert list.contains(composed.protected, "/work/.blobs")
   // And the composed policy is one the sandbox will actually accept, so
   // the boot's own validation cannot be what discovers the addition.
-  assert serve.base_policy_fault(composed) == Ok(Nil)
+  assert workspace_policy.base_policy_fault(composed) == Ok(Nil)
 }
 
 pub fn a_relative_index_would_refuse_the_boot_test() {
@@ -70,8 +70,11 @@ pub fn a_relative_index_would_refuse_the_boot_test() {
   // working directory first — but the reason it must: a relative
   // protected entry covers nothing while looking as though it did.
   let composed =
-    serve.protecting_index(serve.base_policy("/work"), "loom-search.db")
-  let assert Error(reason) = serve.base_policy_fault(composed)
+    workspace_policy.protecting_index(
+      workspace_policy.base_policy("/work"),
+      "loom-search.db",
+    )
+  let assert Error(reason) = workspace_policy.base_policy_fault(composed)
     as "a relative protected entry must refuse the boot"
   assert string.contains(reason, "loom-search.db")
 }
@@ -85,7 +88,11 @@ pub fn a_model_side_write_to_the_index_is_refused_test() {
   let _made = simplifile.create_directory_all(workspace)
   let index = history.index_beside(workspace <> "/session.db")
   let _seeded = simplifile.write(to: index, contents: "")
-  let base = serve.protecting_index(serve.base_policy(workspace), index)
+  let base =
+    workspace_policy.protecting_index(
+      workspace_policy.base_policy(workspace),
+      index,
+    )
 
   let assert Error(fs.ProtectedPath(protected:, ..)) =
     fs.resolve_writable(
@@ -106,7 +113,11 @@ pub fn a_model_side_write_to_the_index_is_refused_test() {
   // stays protected in every layout.
   let elsewhere = absolute("build/test_db/history-layout-sessions")
   let outside = history.index_beside(elsewhere <> "/loom.db")
-  let narrow = serve.protecting_index(serve.base_policy(workspace), outside)
+  let narrow =
+    workspace_policy.protecting_index(
+      workspace_policy.base_policy(workspace),
+      outside,
+    )
   assert list.contains(narrow.protected, outside)
   assert !list.contains(narrow.protected, outside <> "-wal")
   assert !list.contains(narrow.protected, outside <> "-journal")

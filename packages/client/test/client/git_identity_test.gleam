@@ -12,6 +12,7 @@ import client/git_identity
 import client/host_git
 import client/internal/ffi_os
 import client/serve
+import client/workspace_policy
 import client/worktree_diff
 import core/clock
 import core/ids
@@ -44,7 +45,8 @@ pub fn concurrent_preparation_preserves_existing_readers_test() {
 
   // An existing Git writer owns the destination lock. Preparing another
   // session must neither claim that lock nor truncate the published file.
-  let destination = serve.tool_home_directory(wiring.workspace) <> "/gitconfig"
+  let destination =
+    workspace_policy.tool_home_directory(wiring.workspace) <> "/gitconfig"
   write(destination <> ".lock", "existing writer\n")
   let outcomes =
     weft.new([
@@ -107,7 +109,7 @@ pub fn global_defaults_preserve_local_identity_and_original_authors_test() {
     )
     == Ok(None)
   let projected =
-    read(serve.tool_home_directory(wiring.workspace) <> "/gitconfig")
+    read(workspace_policy.tool_home_directory(wiring.workspace) <> "/gitconfig")
   assert !string.contains(projected, "credential")
   assert !string.contains(projected, "hooksPath")
   git(wiring, ["commit", "--allow-empty", "--quiet", "-m", "operator"])
@@ -189,10 +191,10 @@ pub fn conditional_global_identity_resolves_for_linked_worktrees_test() {
       <> "/.git/worktrees/\"]\npath = identity\n",
   )
   let assert Ok(Nil) =
-    simplifile.create_directory_all(serve.tool_home_directory(linked))
+    simplifile.create_directory_all(workspace_policy.tool_home_directory(linked))
     as "the linked tool home exists"
   let #(environment, _) =
-    serve.tool_environment(
+    workspace_policy.tool_environment(
       linked,
       None,
       None,
@@ -279,7 +281,7 @@ pub fn publication_leaves_missing_database_side_files_absent_test() {
   assert simplifile.is_file(journal) == Ok(False)
   assert read(database) == "untouched database\n"
   assert string.contains(
-    read(serve.tool_home_directory(wiring.workspace) <> "/gitconfig"),
+    read(workspace_policy.tool_home_directory(wiring.workspace) <> "/gitconfig"),
     "useConfigOnly",
   )
 }
@@ -288,7 +290,7 @@ pub fn planted_tool_home_symlink_cannot_write_outside_the_workspace_test() {
   use wiring, home <- with_fixture()
   let target = home <> "/gitconfig"
   write(target, "untouched\n")
-  let tool_home = serve.tool_home_directory(wiring.workspace)
+  let tool_home = workspace_policy.tool_home_directory(wiring.workspace)
   let assert Ok(Nil) = simplifile.delete_all([tool_home])
     as "the empty tool home can be replaced"
   let linked = invoke(wiring, ["ln", "-s", home, tool_home])
@@ -320,7 +322,9 @@ pub fn workspace_under_tmp_publishes_identity_on_macos_test() {
         )
         == Ok(None)
       assert string.contains(
-        read(serve.tool_home_directory(wiring.workspace) <> "/gitconfig"),
+        read(
+          workspace_policy.tool_home_directory(wiring.workspace) <> "/gitconfig",
+        ),
         "useConfigOnly",
       )
     }
@@ -373,14 +377,18 @@ fn with_fixture_under(
   let workspace = root <> "/workspace"
   let home = root <> "/operator"
   list.each(
-    [workspace <> "/.blobs", serve.tool_home_directory(workspace), home],
+    [
+      workspace <> "/.blobs",
+      workspace_policy.tool_home_directory(workspace),
+      home,
+    ],
     fn(path) {
       let assert Ok(Nil) = simplifile.create_directory_all(path)
         as "the fixture directory exists"
     },
   )
   let #(environment, _) =
-    serve.tool_environment(
+    workspace_policy.tool_environment(
       workspace,
       None,
       None,
@@ -388,9 +396,9 @@ fn with_fixture_under(
       reading: absent,
     )
   let base =
-    serve.base_policy(workspace)
-    |> serve.allowing_tool_tmpdir
-    |> serve.merging_mounts
+    workspace_policy.base_policy(workspace)
+    |> workspace_policy.allowing_tool_tmpdir
+    |> workspace_policy.merging_mounts
   let wall = clock.from_function(bootstrap.system_time_ms)
   let assert Ok(#(_pool, owner, service)) =
     serve.start_effect_plane(

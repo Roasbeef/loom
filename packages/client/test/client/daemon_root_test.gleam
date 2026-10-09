@@ -91,6 +91,8 @@ fn saved(path: String) {
       state: catalogue.Reserved,
       profile: option.None,
       model: option.None,
+      executor: "",
+      pool: "",
       subtitle: option.None,
     )
   // Explicit opens require the same durable domain mapping as production

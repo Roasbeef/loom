@@ -79,6 +79,7 @@
 //// already paid for.
 
 import client/scheduleseam
+import client/tool_placement
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -317,6 +318,51 @@ pub fn built_in(
   lsp: Option(query.Door),
   lsp_hints: List(#(String, String)),
 ) -> List(Contribution) {
+  [
+    Contribution(
+      origin: BuiltIn,
+      tools: compose(
+        workspace_tools(code_mode, jobs, lsp, lsp_hints),
+        owner_tools(agency, history, memory, schedules, context),
+      ),
+    ),
+  ]
+}
+
+/// The built-in tools which act on the machine the workspace is on, in
+/// the order the registry has always listed them: the five core tools,
+/// `code_mode` and the three `job_*` tools.
+///
+/// What makes a tool belong here is that it runs against files or
+/// processes: `bash`, `grep` and the file tools read and write the
+/// workspace, `code_mode` builds and runs a program in a jail beside it,
+/// and the job tools drive the background processes the broker started.
+/// The planes they need (code mode, the jobs door, the language server)
+/// are the workspace's own, so a workspace which is not in the owner's
+/// VM can build this list from what it holds and nothing else.
+///
+/// The gating is the one `built_in` documents, and is the same
+/// arithmetic: a plane that is absent offers no tool, because a
+/// definition that could only refuse is paid for in the provider's cached
+/// byte prefix on every request. `bash` is the one exception, since its
+/// `mode` argument has to be answered either way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.map(
+///     contributions.workspace_tools(None, None, None, []),
+///     fn(each) { each.name },
+///   )
+///   == ["bash", "grep", "fs_read", "fs_write", "fs_edit"]
+/// ```
+///
+pub fn workspace_tools(
+  code_mode: Option(codemode_tool.CodeMode),
+  jobs: Option(job_tool.Jobs),
+  lsp: Option(query.Door),
+  lsp_hints: List(#(String, String)),
+) -> List(Tool) {
   let code_mode = case lsp {
     None -> code_mode
     Some(_door) -> option.map(code_mode, with_lsp_guidance(_, lsp_hints))
@@ -353,52 +399,141 @@ pub fn built_in(
         Some(available) -> [job_tool.scheme(available)]
       },
     ])
-  [
-    Contribution(
-      origin: BuiltIn,
-      tools: list.flatten([
-        with_code_mode_hints(
-          [
-            bash.tool(door),
-            grep.tool(),
-            fs.read_tool_with(read_schemes),
-            write_tool,
-            edit_tool,
-          ],
-          code_mode,
-        ),
-        case agency {
-          None -> []
-          Some(agency) -> agent.tools(agency)
-        },
-        case code_mode {
-          None -> []
-          Some(code_mode) -> codemode_tool.tools(code_mode)
-        },
-        case history {
-          None -> []
-          Some(history) -> [history_tool.tool(history)]
-        },
-        case memory {
-          None -> []
-          Some(memory) -> [remember.tool(memory)]
-        },
-        case schedules {
-          None -> []
-          Some(schedules) ->
-            schedule_tool.tools(schedules, scheduleseam.limits())
-        },
-        case context {
-          None -> []
-          Some(context) -> [context_tool.tool(context)]
-        },
-        case jobs {
-          None -> []
-          Some(jobs) -> job_tool.tools(jobs)
-        },
-      ]),
+  list.flatten([
+    with_code_mode_hints(
+      [
+        bash.tool(door),
+        grep.tool(),
+        fs.read_tool_with(read_schemes),
+        write_tool,
+        edit_tool,
+      ],
+      code_mode,
     ),
-  ]
+    case code_mode {
+      None -> []
+      Some(code_mode) -> codemode_tool.tools(code_mode)
+    },
+    case jobs {
+      None -> []
+      Some(jobs) -> job_tool.tools(jobs)
+    },
+  ])
+}
+
+/// The built-in tools which act on the conversation rather than on the
+/// workspace, in two runs because the registry interleaves them with the
+/// workspace's: `agent` follows the five core tools and `session`
+/// follows `code_mode`.
+pub type OwnerTools {
+  OwnerTools(
+    /// The six `agent_*` tools, or none on a host with no messaging plane.
+    agent: List(Tool),
+    /// `history_search`, `remember`, the three `schedule_*` tools and
+    /// `context_remaining`, each present only when its plane opened.
+    session: List(Tool),
+  )
+}
+
+/// The built-in tools which act on the session's own state: the Agency,
+/// recall, memory, the scheduling plane and the context door.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let none =
+///   contributions.owner_tools(None, None, None, None, None)
+/// assert none == contributions.OwnerTools(agent: [], session: [])
+/// ```
+///
+pub fn owner_tools(
+  agency: Option(Agency),
+  history: Option(history_tool.History),
+  memory: Option(remember.Memory),
+  schedules: Option(schedule_tool.Schedules),
+  context: Option(context_tool.Context),
+) -> OwnerTools {
+  OwnerTools(
+    agent: case agency {
+      None -> []
+      Some(agency) -> agent.tools(agency)
+    },
+    session: list.flatten([
+      case history {
+        None -> []
+        Some(history) -> [history_tool.tool(history)]
+      },
+      case memory {
+        None -> []
+        Some(memory) -> [remember.tool(memory)]
+      },
+      case schedules {
+        None -> []
+        Some(schedules) -> schedule_tool.tools(schedules, scheduleseam.limits())
+      },
+      case context {
+        None -> []
+        Some(context) -> [context_tool.tool(context)]
+      },
+    ]),
+  )
+}
+
+/// Interleaves the workspace's tools with the owner's in the one order the
+/// registry has always had: the core tools, the `agent_*` tools,
+/// `code_mode`, the session tools, then the job tools and anything the
+/// workspace appends after them.
+///
+/// The order is the system prompt's tool index, which is pinned for the
+/// life of a session, so the two lists are cut at the two places the owner
+/// wedges its tools in rather than concatenated. The cut is by name: the
+/// run of core tools at the head of the workspace's list, then the run of
+/// `code_mode` tools behind it. A tool that is absent shortens its run and
+/// moves nothing else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert contributions.compose([], contributions.OwnerTools([], [])) == []
+/// ```
+///
+pub fn compose(workspace: List(Tool), owner: OwnerTools) -> List(Tool) {
+  let #(core, after_core) =
+    list.split_while(workspace, fn(each) {
+      list.contains(tool_placement.core_names, each.name)
+    })
+  let #(code, after_code) =
+    list.split_while(after_core, fn(each) {
+      each.name == codemode_tool.tool_name
+    })
+  list.flatten([core, owner.agent, code, owner.session, after_code])
+}
+
+/// The workspace's tools as the owner registers them: the same names,
+/// descriptions and schemas, in the order the workspace listed them, each
+/// with a `run` that refuses.
+///
+/// The owner never runs these. A call to one is routed to the workspace by
+/// its name (`tool_placement`), so what the registry needs of them is what
+/// the model is offered, what the prompt's tool index says and what the
+/// effect surface schedules by, and `Described` carries exactly that.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert contributions.described_tools([]) == []
+/// ```
+///
+pub fn described_tools(described: List(tool.Described)) -> List(Tool) {
+  list.map(described, fn(each) {
+    tool.from_described(each, run: fn(_ctx, _args) {
+      tool.failure(
+        "the tool `"
+        <> each.name
+        <> "` runs on the workspace side and cannot run on the session's owner",
+      )
+    })
+  })
 }
 
 /// Drops the named tools from every built-in contribution, leaving
@@ -554,18 +689,37 @@ pub fn with_directory(
   list.map(builtins, fn(contribution) {
     Contribution(
       ..contribution,
-      tools: list.append(
-        list.map(contribution.tools, fn(offered) {
-          case offered.name {
-            "bash" -> {
-              let selected = bash.tool_with_directory(jobs, directory)
-              tool.Tool(..offered, schema: selected.schema, run: selected.run)
-            }
-            _ -> offered
-          }
-        }),
-        [working_directory.tool(directory)],
-      ),
+      tools: directory_tools(contribution.tools, jobs, directory),
     )
   })
+}
+
+/// Gives `bash` the persistent shell directory and registers the
+/// `working_directory` tool after the rest.
+///
+/// The tool-level form of `with_directory`, for a workspace which builds
+/// its own tools and has no contribution to map over.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // contributions.directory_tools(workspace_tools, jobs, directory)
+/// ```
+pub fn directory_tools(
+  tools: List(Tool),
+  jobs: job_tool.Jobs,
+  directory: working_directory.Door,
+) -> List(Tool) {
+  list.append(
+    list.map(tools, fn(offered) {
+      case offered.name {
+        "bash" -> {
+          let selected = bash.tool_with_directory(jobs, directory)
+          tool.Tool(..offered, schema: selected.schema, run: selected.run)
+        }
+        _ -> offered
+      }
+    }),
+    [working_directory.tool(directory)],
+  )
 }

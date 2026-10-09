@@ -23,6 +23,7 @@ import client/async_runs
 import client/codemode
 import client/internal/ffi_os
 import client/peer_mail
+import client/peer_outbox
 import client/peers
 import client/serve
 import client/workflow_ledger
@@ -191,6 +192,7 @@ fn start_harness_on(
           run: fn(_run) { effects.ToolFailed(reason: "no tools") },
           replay_still_safe: fn(_name) { False },
           execution_mode: fn(_name) { effects.ExclusiveExecution },
+          recover: None,
         ),
         hooks: agency.reaping_hooks(effects.default_hooks(), config),
       ),
@@ -2998,7 +3000,7 @@ pub fn peer_delivery_requires_exact_grant_and_commits_one_receipt_test() {
             case id {
               "target-session" -> Ok(target_endpoint)
               "source-session" -> Ok(source_endpoint)
-              _ -> Error("not resident")
+              _ -> Error(peer_mail.Refused("not resident"))
             }
           },
           describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
@@ -3086,6 +3088,39 @@ pub fn peer_delivery_requires_exact_grant_and_commits_one_receipt_test() {
   close(target)
 }
 
+pub fn an_undelivered_peer_message_rings_the_outbox_doorbell_once_test() {
+  let rung = process.new_subject()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(..config, outbox_queued: fn() { process.send(rung, Nil) })
+    })
+  let endpoint = agency.peer_endpoint(harness.config, "sender-session")
+
+  // A message that was delivered or refused is settled; nothing is owed.
+  let assert Ok(_) =
+    endpoint.call(peer_mail.OutboxSettle(
+      "main",
+      "peer",
+      "m1",
+      peer_outbox.Rejected("no grant"),
+    ))
+    as "a refusal is recorded"
+  assert process.receive(rung, 50) == Error(Nil)
+
+  // One that nobody answered rings the drainer once.
+  let assert Ok(_) =
+    endpoint.call(peer_mail.OutboxSettle(
+      "main",
+      "peer",
+      "m2",
+      peer_outbox.Unanswered,
+    ))
+    as "an unanswered attempt is recorded"
+  assert process.receive(rung, 1000) == Ok(Nil)
+  assert process.receive(rung, 50) == Error(Nil)
+  close(harness)
+}
+
 pub fn collaboration_example_exchanges_findings_across_sessions_test_() -> AsyncEunitTest {
   Timeout(90, fn() {
     let assert Ok(here) = simplifile.current_directory()
@@ -3137,7 +3172,7 @@ fn run_collaboration_exchange(
         case id {
           "00000000-0000-7000-8000-000000000001" -> Ok(first_peer)
           "00000000-0000-7000-8000-000000000002" -> Ok(second_peer)
-          _ -> Error("not resident")
+          _ -> Error(peer_mail.Refused("not resident"))
         }
       },
       describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },
@@ -3505,7 +3540,7 @@ pub fn outgoing_peer_links_stop_at_the_roster_bound_test() {
   let assert Error(reason) =
     source_endpoint.call(peer_mail.Link("main", "extra-64", "main"))
     as "the next distinct link is refused at admission"
-  assert reason == "peer roster exceeds the 64-link bound"
+  assert reason == peer_mail.Refused("peer roster exceeds the 64-link bound")
   let assert Ok(json.Array(still_full)) =
     source_endpoint.call(peer_mail.Links("main"))
     as "refusal does not poison the outgoing index"
@@ -3523,7 +3558,7 @@ pub fn outgoing_peer_links_stop_at_the_roster_bound_test() {
           resolve: fn(id) {
             case id {
               "target-session" -> Ok(target_endpoint)
-              _ -> Error("not resident")
+              _ -> Error(peer_mail.Refused("not resident"))
             }
           },
           describe: fn(id) { Ok(json.Object([#("id", json.String(id))])) },

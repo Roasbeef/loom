@@ -8,6 +8,8 @@
 import broker/framing
 import broker/policy
 import client/peer_mail
+import client/peer_outbox
+import client/session_directory
 import codemode/internal/args
 import codemode/satellite
 import core/json.{type JsonValue}
@@ -24,10 +26,48 @@ import tools/tool
 pub type Directory {
   Directory(
     /// Looks up only a currently resident endpoint; never opens a session.
-    resolve: fn(String) -> Result(peer_mail.Endpoint, String),
+    resolve: fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure),
     /// Current catalogue metadata and lifecycle, without opening a session.
     describe: fn(String) -> Result(JsonValue, String),
   )
+}
+
+/// A `Directory.resolve` that finds a recipient on any orchestrator.
+///
+/// A session resident here is answered by `local`, with no question to anyone:
+/// residency is proof that this orchestrator owns it. Only a miss consults
+/// `sessions`, and only to learn where the session lives. An owner that is
+/// another orchestrator gets the endpoint `sessions.reach` builds, so every
+/// operation in this module reaches it exactly as it reaches a local one. An
+/// owner that could not be asked is `Unreachable`, because the session may
+/// live on exactly the machine that did not answer. `Here` and `Unknown` leave
+/// `local`'s refusal standing: the session is catalogued here and not
+/// resident, or it exists nowhere.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peers.Directory(resolve: peers.routed(local, sessions), describe: describe)
+/// ```
+pub fn routed(
+  local: fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure),
+  sessions: session_directory.Directory,
+) -> fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
+  fn(session) {
+    case local(session) {
+      Ok(endpoint) -> Ok(endpoint)
+      Error(refusal) ->
+        case sessions.lookup(session) {
+          Ok(session_directory.Elsewhere(orchestrator: owner)) ->
+            Ok(sessions.reach(owner, session))
+          Error(session_directory.Unreachable(..))
+          | Error(session_directory.Unavailable(..)) ->
+            Error(peer_mail.Unreachable)
+          Ok(session_directory.Here) | Error(session_directory.Unknown) ->
+            Error(refusal)
+        }
+    }
+  }
 }
 
 /// The source session's authenticated endpoint and optional daemon directory.
@@ -62,9 +102,10 @@ pub fn link(
   use _ <- result.try(
     recipient.call(
       peer_mail.Allow(peer_mail.Grant(source.session, from, to, wake)),
-    ),
+    )
+    |> peer_mail.plain,
   )
-  source.call(peer_mail.Link(from, recipient.session, to))
+  source.call(peer_mail.Link(from, recipient.session, to)) |> peer_mail.plain
 }
 
 /// Removes one exact directional link; unrelated grants retain their policy.
@@ -81,7 +122,8 @@ pub fn unlink(
   to: String,
 ) -> Result(JsonValue, String) {
   use _ <- result.try(
-    source.call(peer_mail.Unlink(from, recipient.session, to)),
+    source.call(peer_mail.Unlink(from, recipient.session, to))
+    |> peer_mail.plain,
   )
   case
     recipient.call(
@@ -96,12 +138,16 @@ pub fn unlink(
     Ok(value) -> Ok(value)
 
     // The source link is already gone. Preserve that outcome so the operator
-    // can retry revocation without mistaking this for a full refusal.
-    Error(reason) ->
+    // can retry revocation without mistaking this for a full refusal. A
+    // recipient on an orchestrator that does not answer lands here too.
+    Error(failure) ->
       Ok(
         json.Object([
           #("outgoing_link_removed", json.Bool(True)),
-          #("recipient_grant", json.String("revoke failed: " <> reason)),
+          #(
+            "recipient_grant",
+            json.String("revoke failed: " <> peer_mail.reason(failure)),
+          ),
         ]),
       )
   }
@@ -132,6 +178,7 @@ pub fn unlink_session(
     Ok(recipient) -> unlink(source, recipient, from, to)
     Error(_) ->
       source.call(peer_mail.Unlink(from, target_session, to))
+      |> peer_mail.plain
       |> result.replace(
         json.Object([
           #("outgoing_link_removed", json.Bool(True)),
@@ -150,8 +197,23 @@ pub fn unlink_session(
 /// prompt to a running one (protocol-change/077).
 pub const not_running = "that session is not running; the owner has to open it"
 
+/// What the model is told when a send could not reach the recipient's owner.
+/// The message is recorded and will be delivered, so the model must not send
+/// it again under a new id.
+pub const queued_note =
+  "queued: the recipient's owner is not reachable. Delivery is retried about every 5 seconds for up to 1 hour. Do not send it again under a new message_id; sending it again with the same message_id returns the receipt once the message is admitted."
+
 /// Sends using a stable caller-chosen request identity. Reusing the identity
 /// for different content is refused by the recipient, even after a restart.
+///
+/// The message is recorded in the sender's outbox (`client/peer_outbox`)
+/// before the recipient is asked, and delivery is attempted once inline. A
+/// receipt is returned as it always was. A definitive refusal is returned as
+/// an error as it always was, and the row records it. When nobody answers for
+/// the recipient (`peer_mail.Unreachable`) the row stays pending, the
+/// outbox drainer (`client/peer_outbox_drain`) keeps attempting it, and the
+/// answer is `{"state": "queued", ...}`. A local recipient never answers
+/// that, so a send within one daemon is unchanged apart from the row.
 ///
 /// ## Examples
 ///
@@ -178,14 +240,132 @@ pub fn send(
       False -> Error("no operator-authorized outgoing link")
     },
   )
+
+  // The row is written before the recipient is asked, so a crash between the
+  // recipient's commit and our reply leaves a row to retry, and the retry
+  // gets the recipient's stored receipt back.
+  use claimed <- result.try(own_call(
+    wiring,
+    peer_mail.OutboxClaim(wiring.own.session, strand, session, target, id, text),
+  ))
+  case field(claimed, "state") {
+    Ok(json.String("admitted")) -> field(claimed, "receipt")
+    _ ->
+      case record_attempt(wiring, strand, session, target, id, text) {
+        peer_outbox.Receipt(receipt:) -> Ok(receipt)
+        peer_outbox.Rejected(reason:) -> Error(reason)
+        peer_outbox.Unanswered -> Ok(queued(session, id))
+      }
+  }
+}
+
+/// Attempts one pending outbox row again and records the outcome. The outbox
+/// drainer calls this for each row the sender's Agency reports as due, through
+/// the same `Directory.resolve` seam `send` uses, so a recipient that has
+/// moved to another node is reached with no change here. A row that is not
+/// pending is already settled and is not attempted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peers.resend(wiring, row)
+/// ```
+pub fn resend(wiring: Wiring, row: peer_outbox.Row) -> peer_outbox.Outcome {
+  case row.state {
+    peer_outbox.Pending(text:) ->
+      record_attempt(
+        wiring,
+        row.strand,
+        row.session,
+        row.target_strand,
+        row.message_id,
+        text,
+      )
+    peer_outbox.Admitted(receipt:) -> peer_outbox.Receipt(receipt)
+    peer_outbox.Refused(reason:) -> peer_outbox.Rejected(reason)
+  }
+}
+
+/// The answer for a message that is recorded and not yet delivered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert peers.is_queued(peers.queued("s2", "m1"))
+/// ```
+pub fn queued(session: String, id: String) -> JsonValue {
+  json.Object([
+    #("state", json.String("queued")),
+    #("session", json.String(session)),
+    #("message_id", json.String(id)),
+    #("note", json.String(queued_note)),
+  ])
+}
+
+/// Whether a send's answer is the queued one rather than a receipt.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !peers.is_queued(json.Null)
+/// ```
+pub fn is_queued(answer: JsonValue) -> Bool {
+  field(answer, "state") == Ok(json.String("queued"))
+}
+
+// One delivery attempt and its record. A failed record is not an error of the
+// send: the row stays pending, the drainer attempts it again, and the
+// recipient answers the repeat with the receipt it already stored.
+fn record_attempt(
+  wiring: Wiring,
+  strand: String,
+  session: String,
+  target: String,
+  id: String,
+  text: String,
+) -> peer_outbox.Outcome {
+  let outcome = attempt(wiring, strand, session, target, id, text)
+  let _recorded =
+    own_call(wiring, peer_mail.OutboxSettle(strand, session, id, outcome))
+  outcome
+}
+
+// Asks the recipient once. Only `peer_mail.Unreachable` means nobody
+// answered; a `Refused` is the recipient's own refusal, or a refusal made
+// here, and retrying it unchanged cannot succeed.
+fn attempt(
+  wiring: Wiring,
+  strand: String,
+  session: String,
+  target: String,
+  id: String,
+  text: String,
+) -> peer_outbox.Outcome {
+  case deliver(wiring, strand, session, target, id, text) {
+    Ok(receipt) -> peer_outbox.Receipt(receipt)
+    Error(peer_mail.Unreachable) -> peer_outbox.Unanswered
+    Error(peer_mail.Refused(reason:)) -> peer_outbox.Rejected(reason)
+  }
+}
+
+fn deliver(
+  wiring: Wiring,
+  strand: String,
+  session: String,
+  target: String,
+  id: String,
+  text: String,
+) -> Result(JsonValue, peer_mail.Failure) {
   use destination <- result.try(
-    resolve(wiring, session) |> result.replace_error(not_running),
+    resolve(wiring, session) |> result.map_error(not_running_unless_unreachable),
   )
   use Nil <- result.try(case destination.session == session {
     True -> Ok(Nil)
-    False -> Error("peer directory identity mismatch")
+    False -> Error(peer_mail.Refused("peer directory identity mismatch"))
   })
-  use catalogue <- result.try(describe(wiring, wiring.own.session))
+  use catalogue <- result.try(
+    describe(wiring, wiring.own.session) |> peer_mail.refused,
+  )
   use activity <- result.try(wiring.own.call(peer_mail.Activity(strand)))
   let metadata =
     json.Object([#("catalogue", catalogue), #("activity", activity)])
@@ -195,6 +375,18 @@ pub fn send(
     id,
     text,
   ))
+}
+
+// A directory that cannot reach the session's owner says `Unreachable`. Any
+// other failure to find the session means it is not running, and the model is
+// told that.
+fn not_running_unless_unreachable(
+  failure: peer_mail.Failure,
+) -> peer_mail.Failure {
+  case failure {
+    peer_mail.Unreachable -> peer_mail.Unreachable
+    peer_mail.Refused(..) -> peer_mail.Refused(not_running)
+  }
 }
 
 /// Lists only explicitly linked sessions and exported strands. An unavailable
@@ -215,14 +407,20 @@ pub fn roster(wiring: Wiring, strand: String) -> Result(JsonValue, String) {
         Ok(value) -> value
         Error(reason) -> json.Object([#("unavailable", json.String(reason))])
       }
-      let running = json.Bool(result.is_ok(resolve(wiring, session)))
-      let strands = case resolve(wiring, session) {
+
+      // The recipient is resolved once: for a session on another
+      // orchestrator, resolving asks that orchestrator's port.
+      let resolved = resolve(wiring, session)
+      let running = json.Bool(result.is_ok(resolved))
+      let strands = case resolved {
         Error(_) -> json.Null
         Ok(endpoint) ->
           case endpoint.call(peer_mail.Roster(wiring.own.session, strand)) {
             Ok(rows) -> rows
-            Error(reason) ->
-              json.Object([#("unavailable", json.String(reason))])
+            Error(failure) ->
+              json.Object([
+                #("unavailable", json.String(peer_mail.reason(failure))),
+              ])
           }
       }
       Ok(
@@ -254,9 +452,9 @@ pub fn inspect(
   after: Option(String),
   body_budget: Int,
 ) -> Result(JsonValue, String) {
-  use _ <- result.try(wiring.own.call(peer_mail.Activity(strand)))
+  use _ <- result.try(own_call(wiring, peer_mail.Activity(strand)))
   use outgoing <- result.try(links(wiring, strand))
-  use incoming <- result.try(wiring.own.call(peer_mail.Grants(strand)))
+  use incoming <- result.try(own_call(wiring, peer_mail.Grants(strand)))
   use outgoing <- result.try(
     list.try_map(outgoing, fn(link) {
       use session <- result.try(text(link, "session"))
@@ -426,7 +624,7 @@ fn page_inspection(
 }
 
 fn links(wiring: Wiring, strand: String) -> Result(List(JsonValue), String) {
-  use value <- result.try(wiring.own.call(peer_mail.Links(strand)))
+  use value <- result.try(own_call(wiring, peer_mail.Links(strand)))
   case value {
     json.Array(links) ->
       case list.length(links) <= peer_mail.outgoing_link_limit {
@@ -440,12 +638,24 @@ fn links(wiring: Wiring, strand: String) -> Result(List(JsonValue), String) {
 fn resolve(
   wiring: Wiring,
   session: String,
-) -> Result(peer_mail.Endpoint, String) {
+) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
   case session == wiring.own.session, wiring.directory {
     True, _ -> Ok(wiring.own)
     False, Some(directory) -> directory.resolve(session)
-    False, None -> Error("this embedded session has no daemon peer directory")
+    False, None ->
+      Error(peer_mail.Refused(
+        "this embedded session has no daemon peer directory",
+      ))
   }
+}
+
+// The caller's own endpoint is always a local one and always answers, so its
+// failure is a text.
+fn own_call(
+  wiring: Wiring,
+  command: peer_mail.Command,
+) -> Result(JsonValue, String) {
+  wiring.own.call(command) |> peer_mail.plain
 }
 
 fn describe(wiring: Wiring, session: String) -> Result(JsonValue, String) {
@@ -489,7 +699,7 @@ pub fn tools(wiring: Wiring) -> List(tool.Tool) {
           args,
           "description",
         ))
-        outcome(wiring.own.call(peer_mail.Describe(ctx.strand, description)))
+        outcome(own_call(wiring, peer_mail.Describe(ctx.strand, description)))
       },
     ),
     tool.Tool(
@@ -601,7 +811,7 @@ pub fn router(
         use limit <- result.try(args.int(request.args, "limit"))
         Ok(
           satellite.ServedHere(fn() {
-            wire_answer(wiring.own.call(peer_mail.Inbox(strand, after, limit)))
+            wire_answer(own_call(wiring, peer_mail.Inbox(strand, after, limit)))
           }),
         )
       }
@@ -609,7 +819,7 @@ pub fn router(
         use id <- result.try(args.string(request.args, "id"))
         Ok(
           satellite.ServedHere(fn() {
-            wire_answer(wiring.own.call(peer_mail.InboxGet(strand, id)))
+            wire_answer(own_call(wiring, peer_mail.InboxGet(strand, id)))
           }),
         )
       }
@@ -618,9 +828,10 @@ pub fn router(
         use limit <- result.try(args.int(request.args, "limit"))
         Ok(
           satellite.ServedHere(fn() {
-            wire_answer(
-              wiring.own.call(peer_mail.History(strand, before, limit)),
-            )
+            wire_answer(own_call(
+              wiring,
+              peer_mail.History(strand, before, limit),
+            ))
           }),
         )
       }
@@ -629,9 +840,10 @@ pub fn router(
         use limit <- result.try(args.int(request.args, "limit"))
         Ok(
           satellite.ServedHere(fn() {
-            wire_answer(
-              wiring.own.call(peer_mail.Received(strand, after, limit)),
-            )
+            wire_answer(own_call(
+              wiring,
+              peer_mail.Received(strand, after, limit),
+            ))
           }),
         )
       }
@@ -641,9 +853,10 @@ pub fn router(
         use id <- result.try(args.string(request.args, "message_id"))
         Ok(
           satellite.ServedHere(fn() {
-            wire_answer(
-              wiring.own.call(peer_mail.ReceivedGet(strand, session, source, id)),
-            )
+            wire_answer(own_call(
+              wiring,
+              peer_mail.ReceivedGet(strand, session, source, id),
+            ))
           }),
         )
       }
@@ -665,12 +878,26 @@ pub fn router(
         use body <- result.try(args.string(request.args, "text"))
         Ok(
           satellite.ServedHere(fn() {
-            wire_answer(send(wiring, strand, session, target, id, body))
+            send_answer(send(wiring, strand, session, target, id, body))
           }),
         )
       }
       _ -> fallback(request)
     }
+  }
+}
+
+// A program's `peer.send` is typed to return a receipt, so a queued message
+// reaches it as the denial `peer_queued` with the model-facing note, which the
+// program can tell apart from a refusal by its code.
+fn send_answer(answer: Result(JsonValue, String)) {
+  case answer {
+    Ok(value) ->
+      case is_queued(value) {
+        True -> framing.CapErr("peer_queued", queued_note)
+        False -> wire_answer(Ok(value))
+      }
+    Error(_) -> wire_answer(answer)
   }
 }
 
@@ -683,6 +910,12 @@ fn wire_answer(answer: Result(JsonValue, String)) {
 
 // Source identity comes from this host and its launching strand, not from the
 // program. An outgoing link is still required to reach a resident recipient.
+//
+// The sender's own outbox row is read first. It holds the receipt of a message
+// this session sent, including one that was delivered by the drainer long
+// after `peer_send` returned `queued`, and it answers while the recipient's
+// owner is unreachable. Any other state falls through to the recipient, which
+// remains the authority: it may hold a receipt whose reply was lost.
 fn sent_receipt(
   wiring: Wiring,
   strand: String,
@@ -700,10 +933,16 @@ fn sent_receipt(
       False -> Error("no operator-authorized outgoing link")
     },
   )
-  use destination <- result.try(resolve(wiring, session))
-  use Nil <- result.try(case destination.session == session {
-    True -> Ok(Nil)
-    False -> Error("peer directory identity mismatch")
-  })
-  destination.call(peer_mail.SentReceipt(wiring.own.session, strand, id))
+  case own_call(wiring, peer_mail.OutboxReceipt(strand, session, id)) {
+    Ok(json.Null) | Error(_) -> {
+      use destination <- result.try(resolve(wiring, session) |> peer_mail.plain)
+      use Nil <- result.try(case destination.session == session {
+        True -> Ok(Nil)
+        False -> Error("peer directory identity mismatch")
+      })
+      destination.call(peer_mail.SentReceipt(wiring.own.session, strand, id))
+      |> peer_mail.plain
+    }
+    Ok(receipt) -> Ok(receipt)
+  }
 }

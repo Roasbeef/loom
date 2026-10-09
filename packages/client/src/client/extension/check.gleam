@@ -15,8 +15,8 @@
 ////
 //// Every piece of that path is the session's own. The profile is the one
 //// the install record approved, with its `~/` and `<cache>/` roots
-//// expanded by `serve.lsp_server_roots` against the daemon's places
-//// (`serve.lsp_places`); the server is started by `client/lsp/manager`'s
+//// expanded by `workspace_policy.lsp_server_roots` against the daemon's places
+//// (`workspace_policy.lsp_places`); the server is started by `client/lsp/manager`'s
 //// production backend, after its enforcement probe, under the operator's
 //// demand; and each question goes through `manager.door`, so symbol
 //// resolution, the readiness wait and the gate on what a server names are
@@ -64,7 +64,7 @@
 ////   → approved           the server, from the install record
 ////   → run_group          once per group
 ////       → prepared       scratch dirs, real path, outside_tmp, written_fixture
-////       → serve.lsp_server_roots → serve.start_check_plane
+////       → workspace_policy.lsp_server_roots → serve.start_check_plane
 ////       → on_plane       leases, jailed backend, probe, manager.start
 ////           → profile_check.run_all through manager.door
 ////           → manager.stop → released
@@ -90,6 +90,7 @@ import client/lsp/manager
 import client/lsp/profile.{type LspServer, type Places}
 import client/lsp/profile_check.{type CheckOutcome}
 import client/serve
+import client/workspace_policy
 import codemode/enforcement
 import core/clock.{type Clock}
 import filepath
@@ -112,7 +113,7 @@ pub type Setup {
     /// The operator's demand: platform enforcement unless they passed
     /// `--best-effort`, exactly as an install's build clears.
     demand: EnforcementDemand,
-    /// The daemon's `HOME` and cache directory (`serve.lsp_places`), which
+    /// The daemon's `HOME` and cache directory (`workspace_policy.lsp_places`), which
     /// expand a profile's `~/` and `<cache>/` roots and are the server's
     /// `HOME`.
     places: Places,
@@ -273,7 +274,10 @@ fn run_group(
   // runs after a failure at any step.
   let ran = {
     use real <- result.try(prepared(tree, fixture, scratch))
-    use expanded <- result.try(serve.lsp_server_roots(server, setup.places))
+    use expanded <- result.try(workspace_policy.lsp_server_roots(
+      server,
+      setup.places,
+    ))
     use plane <- result.try(serve.start_check_plane(
       helper: setup.helper,
       workspace: real <> "/work",

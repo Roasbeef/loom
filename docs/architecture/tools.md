@@ -134,18 +134,18 @@ The rule is enforced in four places, from the tool outward:
    `exec_failure_outcome`). A policy refusal carries the exact wanted
    grants in `details`, ready for the escalation flow.
 2. **The registry's dispatch is total.** For an unknown name,
-   `dispatch` (`tools/tool.gleam:663`) answers with text saying that
+   `dispatch` (`tools/tool.gleam:747`) answers with text saying that
    tool is unavailable, `is_error` set, and no `details`. The
    registry does not invent a value for a tool's details contract.
 3. **The wiring always answers `ToolCompleted`.** The function
-   `run_tool` (`client/wiring.gleam:1745`) wraps whatever dispatch
+   `run_tool` (`client/wiring.gleam:1763`) wraps whatever dispatch
    returned as a result message. A failure to read the session's
    directory access or standing permissions also becomes an in-band
    failure outcome.
 4. **The runtime turns a dead worker into a result.** Each call runs in
    its own effect process. If that process exits without reporting, the
    strand driver settles the call as `ToolFailed`, and
-   `tool_observation` (`runtime/strand_runtime.gleam:891`) converts that
+   `tool_observation` (`runtime/strand_runtime.gleam:917`) converts that
    into a synthetic error result for the same call. Only
    provider effects halt the driver on an unreported exit; a tool never
    does.
@@ -218,9 +218,32 @@ configured). The last is one `Extension(name)` contribution per
 installed extension that discovery accepted; `extensions.md` §"Dispatch"
 covers how discovery turns an install record into tools.
 
+### Which half runs a tool
+
+A session has two halves, the owner's (the conversation's store, the
+messaging plane) and the workspace's (the checkout, the broker, the helper
+pool). Each built-in tool belongs to one of them, and
+`client/tool_placement` is that decision as two lists of names. The
+workspace runs `bash`, `grep`, `fs_read`, `fs_write`, `fs_edit`,
+`code_mode`, the three `job_*` tools and `working_directory`. The owner runs
+the agent family (with `todo`), `history_search`, `remember`, the three
+`schedule_*` tools, `context_remaining`, `load_skill`, the `peer_*` tools and
+`advise`. An extension's tool is in neither list: a session whose workspace
+shares the owner's VM runs it on the owner, as it always has.
+
+`built_in` is the two halves composed. `workspace_tools` builds the
+workspace's, `owner_tools` the owner's, and `compose` wedges the owner's two
+runs into the workspace's list after the core tools and after `code_mode`,
+which keeps the registration order, and so the pinned prompt's tool index,
+what it was before the split. On a served session the workspace builds its own
+tools (`workspace_plane`) and describes them to the owner as
+`tool.Described`; the owner's registry holds them as stubs
+(`contributions.described_tools`) whose `run` refuses, because a call to one
+never reaches the registry's dispatch.
+
 ### Collisions and deactivation
 
-`registry` (`client/contributions.gleam:451`) refuses a name that two
+`registry` (`client/contributions.gleam:424`) refuses a name that two
 contributions both claim. The refusal is a `Collision` naming both
 origins, and `client/serve` turns it into a boot failure. It is never a
 warning and never "last registration wins". If an extension could
@@ -326,16 +349,21 @@ shows where the tool layer enters it.
    which the intent commit persists. Clearance is not an execution
    grant: sandbox policy is composed later, inside the tool.
 3. **Scheduling.** The driver's check
-   `tool_may_start` (`runtime/strand_runtime.gleam:2801`) starts a
+   `tool_may_start` (`runtime/strand_runtime.gleam:3001`) starts a
    call only if no `Exclusive` tool is running, and starts an
    `Exclusive` tool only when nothing else is running. The default
    `tool_execution` setting is `parallel`, so calls to `Concurrent`
    tools in one batch overlap; the gateway key `tool_execution:
    "sequential"` runs a batch one call at a time.
-4. **Execution.** The driver spawns an effect process that calls
-   `run_tool`. `run_tool` builds the `Ctx`, applies the session's
-   approved directory additions and standing permissions to the base
-   policy, and calls `tool.dispatch`.
+4. **Execution.** The driver spawns an effect process that calls the
+   tool surface's `run`. `wiring.run_placed` routes by the tool's name
+   (`tool_placement`). A workspace-side tool reads its stored authority
+   (`read_authority`) and runs on the plane, which revalidates that
+   authority against its own filesystem (`run_workspace_tool`), builds the
+   `Ctx`, applies the approved directory additions and standing
+   permissions to the base policy, and calls `tool.dispatch` over the
+   workspace's registry. Every other call takes `run_tool`, which does the
+   same for the owner's registry.
 5. **Inside the tool.** The tool decodes its arguments and does its
    work. A jailed tool builds a `CallSpec` from its `requirements` and
    calls `ctx.clear_call`. The broker composes those requirements with

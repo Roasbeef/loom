@@ -13,6 +13,7 @@ import client/owned_assembly_test
 import client/peer_mail
 import client/peers
 import client/serve
+import client/workspace_policy
 import core/clock
 import core/ids
 import core/json
@@ -95,7 +96,7 @@ fn start(
                 selected.memory_path,
                 selected.index_path,
               )),
-              base_policy: serve.base_policy(record.workspace),
+              base_policy: workspace_policy.base_policy(record.workspace),
             ),
             id,
             log.discard(),
@@ -126,6 +127,8 @@ fn create(
       configuration: "",
       profile: None,
       model: None,
+      executor: "",
+      pool: "",
     )
   let assert Ok(view) =
     manager.create(

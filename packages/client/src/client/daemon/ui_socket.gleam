@@ -818,6 +818,16 @@ pub fn upgrade_home(
     None -> []
   }
 
+  // The executors a registered workspace may be created on (protocol-change/078)
+  // are told to the same page for the same reason, and are the daemon's startup
+  // capture, so there is no read to make. A creation checks the executor again
+  // when it runs (`server.create_session`), so a name a page was never told of
+  // is refused as `UnknownExecutor` whatever it sends.
+  let executors = case creating {
+    Some(_) -> attachment.executors
+    None -> []
+  }
+
   // The owner's recent folders (protocol-change/074) go with the creation, since
   // they exist to start one from. A read or a forget runs in a task of its own
   // and the daemon's home directory is read there too, so the runtime never
@@ -924,6 +934,7 @@ pub fn upgrade_home(
       creating,
       profiles,
       models,
+      executors,
       folders,
       signing,
       administering,
@@ -1228,6 +1239,7 @@ fn admit_home(
   ),
   profiles: List(String),
   models: List(String),
+  executors: List(String),
   folders: Option(home.Folders),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
@@ -1270,6 +1282,7 @@ fn admit_home(
       create: creating,
       profiles:,
       models:,
+      executors:,
       folders:,
       signins: fn(deliver) { read_task(deliver, signing.read) },
       login: signing.login,
@@ -1388,7 +1401,10 @@ fn authentication_failure(error: manager.Error) -> Failure {
     | manager.Unavailable
     | manager.StaleOperation
     | manager.StartFailed(_)
-    | manager.Preparation(_) -> Unreadable
+    | manager.Preparation(_)
+    | manager.SessionMoving(..)
+    | manager.SessionMoved(..)
+    | manager.SessionDeleting -> Unreadable
   }
 }
 
@@ -2044,7 +2060,11 @@ fn sign_out_reason(error: manager.AdminError) -> signins.Reason {
     | manager.AdminStaleEpoch
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> signins.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> signins.Unavailable
   }
 }
 
@@ -2605,8 +2625,17 @@ pub fn create_for(
       |> result.replace_error(creations.TooMany),
     )
     let key = "web-" <> hex_entropy(16)
-    manager.Creation(key, workspace, name, "", roles.profile, roles.model)
-    |> create(principal, _, scope_of(sharing))
+    manager.Creation(
+      key,
+      workspace,
+      name,
+      "",
+      roles.profile,
+      roles.model,
+      executor_of(place),
+      "",
+    )
+    |> create(principal, _, scope_of(place, sharing))
     |> result.map(fn(view) { #(principal, view) })
     |> result.map_error(creation_refusal)
   }
@@ -2687,7 +2716,10 @@ fn startup_reason(
         | Error(manager.Capacity)
         | Error(manager.Unavailable)
         | Error(manager.StaleOperation)
-        | Error(manager.Preparation(_)) -> None
+        | Error(manager.Preparation(_))
+        | Error(manager.SessionMoving(..))
+        | Error(manager.SessionMoved(..))
+        | Error(manager.SessionDeleting) -> None
       }
     manager.Reserved
     | manager.Saved
@@ -2736,6 +2768,14 @@ fn placed(
 ) -> Result(String, creations.Reason) {
   case place {
     creations.Typed(path:) -> folder(path)
+
+    // A registered name is no folder on this host and is never statted or
+    // canonicalized here: only its shape is judged, so a name that could be
+    // taken for a path is refused. The executor is judged by the creation, which
+    // knows the daemon's configuration.
+    creations.Registered(workspace:, ..) ->
+      creations.registered_name(workspace)
+      |> result.replace_error(creations.InvalidWorkspaceName)
     creations.Drawn(workspace:) ->
       case known_workspace(standing, workspace) {
         Ok(Nil) -> Ok(workspace)
@@ -2783,7 +2823,10 @@ fn known_workspace(
     Error(_) -> Error(creations.Unavailable)
     Ok(#(_, views)) ->
       case
-        list.any(views, fn(view) { view.registration.workspace == workspace })
+        list.any(views, fn(view) {
+          view.registration.workspace == workspace
+          && view.registration.executor == ""
+        })
       {
         True -> Ok(Nil)
         False -> Error(creations.NotKnown)
@@ -2791,10 +2834,26 @@ fn known_workspace(
   }
 }
 
-fn scope_of(sharing: creations.Sharing) -> domain.Scope {
-  case sharing {
-    creations.Shareable -> domain.SessionOnly
-    creations.Private -> domain.WorkspacePrivate
+// The domain scope a creation asks for. A session on an executor is always
+// session-only, whatever the form said: its workspace aggregate would be keyed
+// by a path on this host, which a registered name is not (protocol-change/078).
+fn scope_of(
+  place: creations.Place,
+  sharing: creations.Sharing,
+) -> domain.Scope {
+  case place, sharing {
+    creations.Registered(..), _ | _, creations.Shareable -> domain.SessionOnly
+    creations.Drawn(_), creations.Private
+    | creations.Typed(_), creations.Private
+    -> domain.WorkspacePrivate
+  }
+}
+
+// The executor a creation names, or the empty string for a place on this host.
+fn executor_of(place: creations.Place) -> String {
+  case place {
+    creations.Registered(executor:, ..) -> executor
+    creations.Drawn(_) | creations.Typed(_) -> ""
   }
 }
 
@@ -2809,6 +2868,7 @@ fn creation_refusal(code: String) -> creations.Reason {
     "capacity" -> creations.Full
     "unknown_profile" -> creations.UnknownProfile
     "unknown_model" -> creations.UnknownModel
+    "executor_unknown" -> creations.UnknownExecutor
     _ -> creations.Unavailable
   }
 }
@@ -3407,6 +3467,10 @@ fn give_back(
     | Managed(manager.AdminStaleEpoch)
     | Managed(manager.AdminBusy)
     | Managed(manager.AdminForeignPath)
+    | Managed(manager.AdminMoving(..))
+    | Managed(manager.AdminMoved(..))
+    | Managed(manager.AdminNotMovable(..))
+    | Managed(manager.AdminFailed(..))
     | Managed(manager.AdminMetadata(..))
     | Undrawn -> ui_sessions.release_invite(tickets, credential)
   }
@@ -3422,6 +3486,10 @@ fn reason_of(refusal: Refusal) -> invites.Reason {
     | Managed(manager.AdminUnavailable)
     | Managed(manager.AdminBusy)
     | Managed(manager.AdminForeignPath)
+    | Managed(manager.AdminMoving(..))
+    | Managed(manager.AdminMoved(..))
+    | Managed(manager.AdminNotMovable(..))
+    | Managed(manager.AdminFailed(..))
     | Managed(manager.AdminMetadata(..))
     | Undrawn -> invites.Unavailable
   }
@@ -3752,7 +3820,11 @@ fn rename_refusal(error: manager.AdminError) -> renames.Reason {
     | manager.IsolationRequired
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> renames.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> renames.Unavailable
   }
 }
 
@@ -3918,7 +3990,10 @@ fn stop_for(
         | manager.Unavailable
         | manager.StaleOperation
         | manager.StartFailed(_)
-        | manager.Preparation(_) -> actions.Unavailable
+        | manager.Preparation(_)
+        | manager.SessionMoving(..)
+        | manager.SessionMoved(..)
+        | manager.SessionDeleting -> actions.Unavailable
       }
     }),
   )
@@ -3976,7 +4051,11 @@ fn action_refusal(error: manager.AdminError) -> actions.Reason {
     | manager.AdminMetadata(catalogue.Database(_))
     | manager.IsolationRequired
     | manager.AdminUnavailable
-    | manager.AdminForeignPath -> actions.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> actions.Unavailable
   }
 }
 
@@ -4161,7 +4240,11 @@ fn name_refusal(error: manager.AdminError) -> names.Reason {
     | manager.IsolationRequired
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> names.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> names.Unavailable
   }
 }
 
@@ -4792,7 +4875,11 @@ fn admin_failure(error: manager.AdminError) -> Failure {
     | manager.AdminStaleEpoch
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> Unreadable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> Unreadable
   }
 }
 
@@ -5257,7 +5344,11 @@ fn admin_reason(error: manager.AdminError) -> grants.Reason {
     | manager.AdminStaleEpoch
     | manager.AdminUnavailable
     | manager.AdminBusy
-    | manager.AdminForeignPath -> grants.Unavailable
+    | manager.AdminForeignPath
+    | manager.AdminMoving(..)
+    | manager.AdminMoved(..)
+    | manager.AdminNotMovable(..)
+    | manager.AdminFailed(..) -> grants.Unavailable
   }
 }
 
@@ -5442,6 +5533,10 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
     subtitle: record.subtitle,
     role: None,
     project: None,
+    executor: case record.executor {
+      "" -> None
+      executor -> Some(executor)
+    },
   )
 }
 
@@ -5462,7 +5557,13 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
 @internal
 pub fn with_projects(entries: List(sessions.Entry)) -> List(sessions.Entry) {
   list.map(entries, fn(entry) {
-    sessions.Entry(..entry, project: ui_project.locate(entry.workspace))
+    case entry.executor {
+      // A registered workspace is a name, not a directory on this host, so
+      // there is nothing here to stat and it is its own project.
+      Some(_) -> entry
+      None ->
+        sessions.Entry(..entry, project: ui_project.locate(entry.workspace))
+    }
   })
 }
 

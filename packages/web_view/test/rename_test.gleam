@@ -40,8 +40,8 @@ fn page(
       ..start.transport,
       sessions: fn(deliver) {
         deliver([
-          Entry("A", "web ui", "/src/loom", 100, Live, None, None, None),
-          Entry("B", "other", "/src/loom", 50, Live, None, None, None),
+          Entry("A", "web ui", "/src/loom", 100, Live, None, None, None, None),
+          Entry("B", "other", "/src/loom", 50, Live, None, None, None, None),
         ])
       },
       rename: option.map(capability, fn(answer) {
@@ -187,8 +187,8 @@ pub fn a_stored_name_replaces_the_heading_and_the_sidebar_row_test() {
     component.update(
       owner(asked),
       component.SessionsListed([
-        Entry("A", "web ui", "/src/loom", 100, Live, None, None, None),
-        Entry("B", "other", "/src/loom", 50, Live, None, None, None),
+        Entry("A", "web ui", "/src/loom", 100, Live, None, None, None, None),
+        Entry("B", "other", "/src/loom", 50, Live, None, None, None, None),
       ]),
     )
   assert string.contains(drawn(listed), "<span class=\"session-name\">web ui<")

@@ -10,7 +10,7 @@
 ////
 //// ## Flow
 ////
-//// `build_effects` → `dispatch` → `prepare_dispatch` → `provider_request` → `generation_request`; `build_effects` → `run_tool` → `tool_context`
+//// `build_effects` → `dispatch` → `prepare_dispatch` → `provider_request` → `generation_request`; `build_effects` → `run_tool` → `read_authority`, `run_workspace_tool` → `tool_context`; `run_placed` → `run_tool_held`
 ////
 //// 1. `build_effects` assembles the `Effects` record a host hands to
 ////    `runtime/api.open`: clock, entropy, timers, a provider surface, a tool
@@ -21,10 +21,16 @@
 //// 3. `provider_request` picks the target. `request_image_bearing` and
 ////    `vision_route` send an image-bearing request from a text-only model down
 ////    the vision chain, and `generation_request` builds the wire request.
-//// 4. A tool call enters at `run_tool`, which reads the session's standing
-////    directory and permission grants, widens the base policy with them, and
-////    dispatches through `tool_context`'s `Ctx`.
-//// 5. `clear`, `replay_still_safe` and `execution_mode` answer the machine's
+//// 4. A tool call enters at `run_tool`, which is two halves. `read_authority`
+////    reads the session's stored directory and permission grants from the
+////    store. `run_workspace_tool` revalidates them against the local
+////    filesystem, widens the base policy with them, and dispatches through
+////    `tool_context`'s `Ctx`. Only `Authority` and the `ToolRun` pass between
+////    the halves, so a workspace on another node can sit behind the second.
+//// 5. `run_placed` is how a session which has a workspace half routes a call:
+////    by `tool_placement.placement`, a workspace-side tool reads its `Authority` here
+////    and runs on the plane, and every other call takes `run_tool` as before.
+////    `clear`, `replay_still_safe` and `execution_mode` answer the machine's
 ////    declaration questions from the projected table.
 //// 6. `compaction_hooks` wires admission and the compaction signals, using
 ////    the same model facts `strand_window` reports.
@@ -161,6 +167,7 @@ import client/grants
 import client/notes
 import client/permissions
 import client/tool_holder
+import client/tool_placement
 import client/vision
 import core/clock.{type Clock}
 import core/entry
@@ -443,6 +450,7 @@ fn effects_over(
       run:,
       replay_still_safe: fn(name) { replay_still_safe(declared, name) },
       execution_mode: fn(name) { execution_mode(declared, name) },
+      recover: None,
     ),
     hooks: compaction_hooks(config),
   )
@@ -1741,6 +1749,15 @@ pub fn clear(
 /// touch, and therefore the only place the polarity has to be written
 /// down.
 ///
+/// The call is two steps with a seam between them. `read_authority` is the
+/// session owner's half: it reads what the store holds about this call
+/// (directory additions, standing grants, remembered consent) and nothing
+/// else. `run_workspace_tool` is the workspace's half: it checks that
+/// authority against the machine the files are on, builds the `Ctx` and
+/// dispatches. On one machine this function simply runs them in order. When
+/// the workspace is on another node, only `Authority` and the `ToolRun`
+/// cross.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -1749,28 +1766,180 @@ pub fn clear(
 /// ```
 ///
 pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
-  let ctx = tool_context(config, run)
-  let authority = {
-    use access <- result.try(directories.read(config.session))
-    use standing <- result.try(permissions.read_for(
-      config.session,
-      run.strand,
-      run.call.name,
-      run.arguments,
-    ))
+  case read_authority(config.session, run) {
+    Ok(authority) ->
+      run_workspace_tool(
+        workspace_view(config),
+        config.escalations.refused,
+        config.observe_output,
+        run,
+        authority,
+      )
+    Error(reason) -> finished(tool.failure(reason), run, config.clock)
+  }
+}
+
+/// The authority a tool call runs under, as the session's store holds it.
+///
+/// This is stored data and nothing more: reading it never touches the
+/// filesystem, so the node which owns the session can produce it without a
+/// copy of the workspace. Whether the paths it names still mean what they
+/// meant when they were recorded is decided by `run_workspace_tool`, beside
+/// the files.
+pub type Authority {
+  Authority(
+    /// The operator-approved directory additions.
+    access: directory_access.Access,
+    /// The standing filesystem and network grants, followed by any
+    /// remembered wall-clock consent for exactly this action.
+    standing: List(Grant),
+  )
+}
+
+/// Reads the stored authority for one tool call from the session.
+///
+/// A read fault or a malformed record refuses the call with the reason the
+/// fused readers have always given, and the directory additions are read
+/// before the permissions. This is the SQLite half of what `run_tool` did
+/// inline before the workspace could be elsewhere.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(wiring.Authority(access:, standing:)) =
+/// //   wiring.read_authority(config.session, run)
+/// ```
+///
+pub fn read_authority(
+  opened: Session,
+  run: effects.ToolRun,
+) -> Result(Authority, String) {
+  use access <- result.try(directories.read_stored(opened))
+  use standing <- result.try(permissions.read_for_stored(
+    opened,
+    run.strand,
+    run.call.name,
+    run.arguments,
+  ))
+  Ok(Authority(access:, standing:))
+}
+
+/// The slice of `Config` which belongs to the machine the workspace is on.
+///
+/// Every field is something only that machine can answer for: the broker
+/// runs its helpers, the paths are its paths, the policy is built from its
+/// filesystem, and the registry holds the executable tools. Nothing here
+/// reads the session store or the conversation.
+pub type WorkspaceView {
+  WorkspaceView(
+    /// The running ToolBroker.
+    broker: Broker,
+    /// Bound on the synchronous broker clearance call, in milliseconds.
+    broker_timeout_ms: Int,
+    /// The tools which can run here.
+    registry: Registry,
+    /// Absolute workspace root.
+    workspace: String,
+    /// Absolute blob-overflow directory.
+    blob_root: String,
+    /// The session's base sandbox policy, before any widening.
+    base_policy: SandboxPolicy,
+    /// Enforcement strictness for jailed executions.
+    demand: EnforcementDemand,
+    /// Allowlist-constructed environment for jailed children.
+    env: List(#(String, String)),
+    /// The injected time source.
+    clock: Clock,
+  )
+}
+
+/// Projects the workspace-side fields out of a `Config`.
+///
+/// `Config` keeps its shape: it is built in many places, and the split only
+/// needs a view of it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.workspace_view(config).workspace == config.workspace
+/// ```
+///
+pub fn workspace_view(config: Config) -> WorkspaceView {
+  WorkspaceView(
+    broker: config.broker,
+    broker_timeout_ms: config.broker_timeout_ms,
+    registry: config.registry,
+    workspace: config.workspace,
+    blob_root: config.blob_root,
+    base_policy: config.base_policy,
+    demand: config.demand,
+    env: config.env,
+    clock: config.clock,
+  )
+}
+
+/// Runs one cleared call on the machine the workspace is on.
+///
+/// The stored authority is revalidated here, against this machine's
+/// filesystem, before it widens anything: a canonical name recorded earlier
+/// must not become authority over a symlink that now points elsewhere. A
+/// failed revalidation answers in band, as a read fault does. Only then is
+/// the base policy widened by the additions and the grants, exactly as it
+/// always was, and the call dispatched.
+///
+/// The two functions are the only things this half needs from the session's
+/// owner. `refused` decides what a policy refusal turns into (a durable
+/// record, a parked call, a settled error) and `output` is where a running
+/// tool's rolling tail is shown. Both are plain functions so that the owner
+/// can be on the other side of a message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // wiring.run_workspace_tool(
+/// //   wiring.workspace_view(config),
+/// //   config.escalations.refused,
+/// //   config.observe_output,
+/// //   run,
+/// //   authority,
+/// // )
+/// ```
+///
+pub fn run_workspace_tool(
+  workspace: WorkspaceView,
+  refused: fn(escalate.Refused) -> escalate.Decision,
+  output: fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil,
+  run: effects.ToolRun,
+  authority: Authority,
+) -> effects.ToolOutcome {
+  let ctx = workspace_context(workspace, refused, output, run)
+  let live = {
+    use access <- result.try(directories.revalidate(authority.access))
+    use standing <- result.try(permissions.revalidate(authority.standing))
     Ok(#(access, standing))
   }
-  let outcome = case authority {
+  let outcome = case live {
     Error(reason) -> tool.failure(reason)
     Ok(#(access, standing)) -> {
       let access = directory_access.approved(access, standing)
       let base = directory_access.widen(ctx.base_policy, access)
       let base = policy.compose(base, base, standing).0
       let ctx = tool.Ctx(..ctx, directory_access: access, base_policy: base)
-      tool.dispatch(config.registry, ctx, run.call.name, run.arguments)
+      tool.dispatch(workspace.registry, ctx, run.call.name, run.arguments)
     }
   }
-  let #(now, _clock) = clock.read(config.clock)
+  finished(outcome, run, workspace.clock)
+}
+
+// The one place a settled outcome is stamped with the time and wrapped as the
+// result message; shared by the run and the refused-to-run paths so both
+// build the same shape.
+fn finished(
+  outcome: tool.ToolOutcome,
+  run: effects.ToolRun,
+  clock: Clock,
+) -> effects.ToolOutcome {
+  let #(now, _clock) = clock.read(clock)
   completed(outcome, run, now)
 }
 
@@ -1798,21 +1967,98 @@ pub fn run_tool_held(
 ) -> effects.ToolOutcome {
   case tool_holder.fetch(holder, within_ms: holder_deadline_ms) {
     Ok(config) -> run_tool(config, run)
-    Error(unavailable) -> {
-      let reason = case unavailable {
-        tool_holder.Gone -> "the session's tool configuration is gone"
-        tool_holder.TimedOut ->
-          "the session's tool configuration did not answer in time"
-      }
-      let #(now, _clock) = clock.read(clock)
-      completed(
-        tool.failure(
-          "the tool `" <> run.call.name <> "` did not run: " <> reason,
-        ),
+    Error(unavailable) ->
+      holder_unavailable(
+        "the session's tool configuration",
+        unavailable,
         run,
-        now,
+        clock,
       )
+  }
+}
+
+// The in-band failure for a held value which could not be fetched. The
+// runtime is owed a `ToolCompleted` for the call whatever happened, so the
+// model sees that the call failed and the strand carries on.
+fn holder_unavailable(
+  held: String,
+  unavailable: tool_holder.Unavailable,
+  run: effects.ToolRun,
+  clock: Clock,
+) -> effects.ToolOutcome {
+  let reason = case unavailable {
+    tool_holder.Gone -> held <> " is gone"
+    tool_holder.TimedOut -> held <> " did not answer in time"
+  }
+  let #(now, _clock) = clock.read(clock)
+  completed(
+    tool.failure("the tool `" <> run.call.name <> "` did not run: " <> reason),
+    run,
+    now,
+  )
+}
+
+/// The workspace half of a tool run as the owner holds it: a function from
+/// the call and its stored authority to its outcome.
+///
+/// On one machine it is `run_workspace_tool` over the workspace's own
+/// registry. On another it is a message to that machine.
+pub type WorkspaceRun =
+  fn(effects.ToolRun, Authority) -> effects.ToolOutcome
+
+/// Routes each tool call to the half of the session that runs it.
+///
+/// A name `tool_placement` puts on the workspace side reads its stored
+/// authority from `session` and runs through `workspace`, which is held in
+/// a `tool_holder` for the reason the configuration is: a `WorkspaceRun` for
+/// a local plane closes over the workspace's tool registry, and the effect
+/// surface is copied into every process that holds the runtime. Every other
+/// name, an owner-side built-in or an extension's tool, takes `owner`, which
+/// is the path every call took before the halves were separate.
+///
+/// A call to a workspace-side tool the operator deactivated reaches the
+/// plane, whose registry does not hold it, and settles in band as an
+/// unavailable tool. The routing does not decide what is registered.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let run = wiring.run_placed(owner_run, workspace_holder, session, clock)
+/// // effects.Effects(..built, tools: effects.ToolSurface(..built.tools, run:))
+/// ```
+///
+pub fn run_placed(
+  owner: fn(effects.ToolRun) -> effects.ToolOutcome,
+  workspace: tool_holder.Holder(WorkspaceRun),
+  session: Session,
+  clock: Clock,
+) -> fn(effects.ToolRun) -> effects.ToolOutcome {
+  fn(run: effects.ToolRun) {
+    case tool_placement.placement(run.call.name) {
+      Ok(tool_placement.WorkspaceSide) ->
+        run_on_workspace(workspace, session, clock, run)
+      Ok(tool_placement.OwnerSide) | Error(Nil) -> owner(run)
     }
+  }
+}
+
+// A workspace-side call: fetch the plane's run, read the authority the
+// session stored for this call, and hand both to the plane. A read fault or
+// a malformed record refuses the call with the reason `run_tool` gives.
+fn run_on_workspace(
+  workspace: tool_holder.Holder(WorkspaceRun),
+  session: Session,
+  clock: Clock,
+  run: effects.ToolRun,
+) -> effects.ToolOutcome {
+  case tool_holder.fetch(workspace, within_ms: holder_deadline_ms) {
+    Error(unavailable) ->
+      holder_unavailable("the session's workspace", unavailable, run, clock)
+    Ok(on_workspace) ->
+      case read_authority(session, run) {
+        Ok(authority) -> on_workspace(run, authority)
+        Error(reason) -> finished(tool.failure(reason), run, clock)
+      }
   }
 }
 
@@ -1881,23 +2127,39 @@ pub fn terminates(terminate: tool.Terminate) -> Bool {
 /// ```
 ///
 pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
+  workspace_context(
+    workspace_view(config),
+    config.escalations.refused,
+    config.observe_output,
+    run,
+  )
+}
+
+// `tool_context` over the workspace's own fields and the two owner-side
+// functions, which is all the `Ctx` ever read from the whole `Config`.
+fn workspace_context(
+  workspace: WorkspaceView,
+  refused: fn(escalate.Refused) -> escalate.Decision,
+  output: fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil,
+  run: effects.ToolRun,
+) -> tool.Ctx {
   tool.Ctx(
     directory_access: directory_access.none(),
-    workspace: config.workspace,
+    workspace: workspace.workspace,
     strand: run.strand,
     op_id: run.operation,
     step_id: run.step_id,
     source_index: run.source_index,
-    base_policy: config.base_policy,
+    base_policy: workspace.base_policy,
     grants: run_grants(run),
-    demand: config.demand,
-    env: config.env,
-    clock: config.clock,
+    demand: workspace.demand,
+    env: workspace.env,
+    clock: workspace.clock,
     filesystem: fs.real_filesystem(),
-    blob_root: config.blob_root,
-    clear_call: escalating_runner(config, run),
-    raise_refusal: raising_seam(config, run),
-    observe_output: config.observe_output(run),
+    blob_root: workspace.blob_root,
+    clear_call: escalating_runner(workspace, refused, run),
+    raise_refusal: raising_seam(refused, run),
+    observe_output: output(run),
   )
 }
 
@@ -1928,12 +2190,12 @@ pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
 // of its refusals a re-execution could actually repair; this decides what
 // happens to the one it raises.
 fn raising_seam(
-  config: Config,
+  refused: fn(escalate.Refused) -> escalate.Decision,
   run: effects.ToolRun,
 ) -> fn(tool.RaisedRefusal) -> tool.Escalated {
   fn(raised: tool.RaisedRefusal) {
     let tool.RaisedRefusal(denial:, deadline_ms:) = raised
-    case config.escalations.refused(refused_call(run, denial, deadline_ms)) {
+    case refused(refused_call(run, denial, deadline_ms)) {
       escalate.Settle -> tool.Settle
       escalate.Resume(grants:) -> tool.Resume(grants:)
     }
@@ -1983,17 +2245,21 @@ fn refused_call(
 // helper — passes straight through: none of them is a decision a human
 // is being asked to make.
 fn escalating_runner(
-  config: Config,
+  workspace: WorkspaceView,
+  refused: fn(escalate.Refused) -> escalate.Decision,
   run: effects.ToolRun,
 ) -> fn(broker.CallSpec, Subject(broker.CallEvent)) ->
   Result(tool.RunningCall, broker.Refusal) {
   let direct =
-    tool.broker_runner(broker: config.broker, waiting: config.broker_timeout_ms)
+    tool.broker_runner(
+      broker: workspace.broker,
+      waiting: workspace.broker_timeout_ms,
+    )
   fn(spec: broker.CallSpec, events) {
     case direct(spec, events) {
       Error(broker.PolicyRefused(denial:)) -> {
-        let refused = refused_call(run, denial, spec.budget.deadline_ms)
-        case config.escalations.refused(refused) {
+        let call = refused_call(run, denial, spec.budget.deadline_ms)
+        case refused(call) {
           escalate.Settle -> Error(broker.PolicyRefused(denial:))
           escalate.Resume(grants: approved) ->
             direct(

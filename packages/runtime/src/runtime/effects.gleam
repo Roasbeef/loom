@@ -246,6 +246,30 @@ pub type ToolOutcome {
   ToolFailed(reason: String)
 }
 
+/// What a surface that keeps its own record of finished calls says about
+/// an orphaned call: one whose intent is durable as effect-pending, with no
+/// live effect in this incarnation.
+///
+/// The local surface has no such record, so it carries no recovery and an
+/// orphan is judged by its replay policy alone. A surface that executes
+/// calls elsewhere does have one, and asking it turns "the outcome is
+/// unknown" into an answer whenever the other side kept the call's fate.
+pub type Recovery {
+  /// The executor holds the call's finished outcome. The runtime stages it
+  /// exactly as it would a fresh run's outcome, and nothing runs again.
+  Recovered(outcome: ToolOutcome)
+
+  /// The executor restarted while the call was running, so what the call
+  /// did is unknowable. The runtime stages the unknown-outcome result,
+  /// whatever the call's replay policy says.
+  OutcomeUnknown
+
+  /// The call never reached the executor, and after this attach it never
+  /// can. A call whose replay is still safe takes the planner's replay arm;
+  /// any other call is staged as a failure saying it did not run.
+  NotStarted
+}
+
 /// Clearance for one planned call: the pre-effect half of the broker's
 /// `clear_call`, collapsed to what the machine needs.
 ///
@@ -291,8 +315,9 @@ pub type ExecutionMode {
 }
 
 /// The tool surface: clearance, execution, the replay-still-safe check
-/// orphan recovery consults, and the per-tool scheduling constraint
-/// parallel batches honor.
+/// orphan recovery consults, the per-tool scheduling constraint parallel
+/// batches honor, and an optional recovery that asks the executor what
+/// became of an orphaned call.
 pub type ToolSurface {
   ToolSurface(
     /// Clears (or refuses) one planned call.
@@ -307,6 +332,12 @@ pub type ToolSurface {
     /// The named tool's current scheduling constraint. Unknown names
     /// should report `ExclusiveExecution` — the safe direction.
     execution_mode: fn(String) -> ExecutionMode,
+    /// Asks what became of an orphaned call, when the surface keeps a record
+    /// that can say. `None` leaves orphan handling to the planner's replay
+    /// rule. `Some` is called on an effect process, with the run rebuilt
+    /// from the persisted intent (its effective arguments and replay policy,
+    /// no grants), and may block for as long as the answer takes.
+    recover: Option(fn(ToolRun) -> Recovery),
   )
 }
 

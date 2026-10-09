@@ -56,6 +56,8 @@ pub fn creation_configuration_preserves_defaults_and_rejects_invalid_fields_test
         "",
         None,
         None,
+        None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -179,22 +181,83 @@ pub fn every_control_command_has_one_typed_decode_test() {
         "/config",
         None,
         None,
+        None,
+        None,
         domain.WorkspacePrivate,
       ),
     ),
     #("sessions.open", [session, epoch], protocol.OpenSession(id, "epoch")),
     #("sessions.stop", [session, epoch], protocol.StopSession(id, "epoch")),
     #(
+      "sessions.move",
+      [session, epoch, #("to", json.String("laptop"))],
+      protocol.MoveSession(id, "laptop", "epoch"),
+    ),
+    #(
       "operations.get",
       [session, epoch, #("operation", json.String("epoch:1"))],
       protocol.GetOperation(id, "epoch:1", "epoch"),
     ),
     #("daemon.shutdown", [epoch], protocol.Shutdown("epoch")),
+    #(
+      "sessions.move",
+      [session, epoch, #("abandon", json.Bool(True))],
+      protocol.AbandonMove(id, "epoch"),
+    ),
+    #(
+      "sessions.move",
+      [
+        session,
+        epoch,
+        #("to", json.String("laptop")),
+        #("abandon", json.Bool(False)),
+      ],
+      protocol.MoveSession(id, "laptop", "epoch"),
+    ),
+    #("directory.status", [], protocol.DirectoryStatus),
   ]
   list.each(cases, fn(example) {
     assert protocol.decode(envelope(7, example.0, example.1))
       == Ok(protocol.Request(7, example.2))
   })
+}
+
+pub fn a_move_names_its_destination_as_an_orchestrator_does_test() {
+  let named = fn(to) {
+    protocol.decode(
+      envelope(1, "sessions.move", [
+        #("session_id", json.String(session_id())),
+        #("epoch", json.String("epoch")),
+        #("to", json.String(to)),
+      ]),
+    )
+  }
+  assert result.is_ok(named("laptop"))
+  assert result.is_ok(named("build-box_2"))
+
+  // A name outside the grammar of an `[orchestrators.<name>]` key is refused
+  // before any registry is asked, and so are a missing destination and a
+  // missing epoch.
+  assert result.is_error(named("Laptop"))
+  assert result.is_error(named(""))
+  assert result.is_error(named("../laptop"))
+  assert result.is_error(named(string.repeat("a", 65)))
+  assert result.is_error(
+    protocol.decode(
+      envelope(1, "sessions.move", [
+        #("session_id", json.String(session_id())),
+        #("epoch", json.String("epoch")),
+      ]),
+    ),
+  )
+  assert result.is_error(
+    protocol.decode(
+      envelope(1, "sessions.move", [
+        #("session_id", json.String(session_id())),
+        #("to", json.String("laptop")),
+      ]),
+    ),
+  )
 }
 
 pub fn admin_codec_refuses_owner_roles_and_unbounded_recovery_ids_test() {
@@ -572,6 +635,8 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
         "",
         Some("deepseek"),
         None,
+        None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -593,6 +658,158 @@ pub fn creation_profile_is_optional_and_must_be_a_profile_name_test() {
           envelope(1, "sessions.create", [#("profile", value), ..fields]),
         )
         as "profile must be a profile name"
+    },
+  )
+}
+
+pub fn creation_executor_is_optional_and_makes_the_workspace_a_name_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+  let create = fn(extra) {
+    protocol.decode(envelope(1, "sessions.create", list.append(extra, fields)))
+  }
+
+  // An executor makes the workspace a registered name, kept as sent, and the
+  // domain defaults to the session-only scope, since a name is no path.
+  assert create([
+      #("executor", json.String("build-box")),
+      #("workspace", json.String("loom checkout")),
+    ])
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "loom checkout",
+        "name",
+        "",
+        None,
+        None,
+        Some("build-box"),
+        None,
+        domain.SessionOnly,
+      ),
+    ))
+  let assert Ok(protocol.Request(
+    _,
+    protocol.CreateSession(domain_scope: scope, ..),
+  )) =
+    create([
+      #("executor", json.String("build-box")),
+      #("workspace", json.String("loom")),
+      #("domain_scope", json.String("session_only")),
+    ])
+  assert scope == domain.SessionOnly
+
+  // Without one the workspace is a path and the scope defaults as before.
+  let assert Ok(protocol.Request(
+    _,
+    protocol.CreateSession(
+      workspace: "/work",
+      executor: None,
+      domain_scope: domain.WorkspacePrivate,
+      ..,
+    ),
+  )) = create([#("workspace", json.String("/work"))])
+
+  // A name is held to its own grammar, and an executor to a name's.
+  list.each(
+    [
+      [
+        #("executor", json.String("Not A Name")),
+        #("workspace", json.String("w")),
+      ],
+      [#("executor", json.String("")), #("workspace", json.String("w"))],
+      [#("executor", json.Int(1)), #("workspace", json.String("w"))],
+      [#("executor", json.Null), #("workspace", json.String("w"))],
+      [#("executor", json.String("x")), #("workspace", json.String("a/b"))],
+      [#("executor", json.String("x")), #("workspace", json.String("/abs"))],
+      [
+        #("executor", json.String("x")),
+        #("workspace", json.String("a\u{0}b")),
+      ],
+      [#("executor", json.String("x")), #("workspace", json.String(""))],
+      [
+        #("executor", json.String("x")),
+        #("workspace", json.String(string.repeat("w", 129))),
+      ],
+      [#("executor", json.String("x"))],
+      [
+        #("executor", json.String("x")),
+        #("workspace", json.String("w")),
+        #("domain_scope", json.String("workspace_private")),
+      ],
+    ],
+    fn(extra) {
+      let assert Error(_) = create(extra)
+        as "a malformed executor or registered name is a bad request"
+    },
+  )
+}
+
+pub fn creation_pool_is_optional_exclusive_with_an_executor_and_makes_the_workspace_a_name_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+  ]
+  let create = fn(extra) {
+    protocol.decode(envelope(1, "sessions.create", list.append(extra, fields)))
+  }
+
+  // A pool makes the workspace a registered name, kept as sent, and the domain
+  // defaults to the session-only scope. No executor is named.
+  assert create([
+      #("pool", json.String("builders")),
+      #("workspace", json.String("loom checkout")),
+    ])
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "loom checkout",
+        "name",
+        "",
+        None,
+        None,
+        None,
+        Some("builders"),
+        domain.SessionOnly,
+      ),
+    ))
+
+  // Without either the workspace is a path and nothing is pooled.
+  let assert Ok(protocol.Request(
+    _,
+    protocol.CreateSession(pool: None, executor: None, ..),
+  )) = create([#("workspace", json.String("/work"))])
+
+  // A pool is a name's grammar, and a pool never comes with an executor.
+  list.each(
+    [
+      [#("pool", json.String("Not A Name")), #("workspace", json.String("w"))],
+      [#("pool", json.String("")), #("workspace", json.String("w"))],
+      [#("pool", json.Int(1)), #("workspace", json.String("w"))],
+      [#("pool", json.Null), #("workspace", json.String("w"))],
+      [#("pool", json.String("x")), #("workspace", json.String("a/b"))],
+      [#("pool", json.String("x")), #("workspace", json.String("/abs"))],
+      [#("pool", json.String("x"))],
+      [
+        #("pool", json.String("x")),
+        #("workspace", json.String("w")),
+        #("domain_scope", json.String("workspace_private")),
+      ],
+      [
+        #("pool", json.String("x")),
+        #("executor", json.String("y")),
+        #("workspace", json.String("w")),
+      ],
+    ],
+    fn(extra) {
+      let assert Error(_) = create(extra)
+        as "a malformed pool, or a pool beside an executor, is a bad request"
     },
   )
 }
@@ -619,6 +836,8 @@ pub fn session_creation_decodes_an_optional_model_key_test() {
         "",
         None,
         Some("baseten-glm-5-3"),
+        None,
+        None,
         domain.WorkspacePrivate,
       ),
     ))
@@ -654,4 +873,58 @@ pub fn session_creation_decodes_an_optional_model_key_test() {
         as "model must be a model key"
     },
   )
+}
+
+pub fn creation_model_composes_with_an_executor_and_a_pool_test() {
+  let fields = [
+    #("request_key", json.String("key")),
+    #("name", json.String("name")),
+    #("configuration", json.String("")),
+    #("model", json.String("fast")),
+    #("workspace", json.String("loom checkout")),
+  ]
+  let create = fn(extra) {
+    protocol.decode(envelope(1, "sessions.create", list.append(extra, fields)))
+  }
+
+  // The model pins the main chain and the executor or pool places the
+  // workspace. They are independent fields, so each is carried beside the other.
+  assert create([#("executor", json.String("build-box"))])
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "loom checkout",
+        "name",
+        "",
+        None,
+        Some("fast"),
+        Some("build-box"),
+        None,
+        domain.SessionOnly,
+      ),
+    ))
+  assert create([#("pool", json.String("builders"))])
+    == Ok(protocol.Request(
+      1,
+      protocol.CreateSession(
+        "key",
+        "loom checkout",
+        "name",
+        "",
+        None,
+        Some("fast"),
+        None,
+        Some("builders"),
+        domain.SessionOnly,
+      ),
+    ))
+
+  // A malformed model is refused beside an executor as it is alone.
+  let assert Error(_) =
+    create([
+      #("executor", json.String("build-box")),
+      #("model", json.Null),
+    ])
+    as "a model that is not a key is a bad request on an executor"
 }

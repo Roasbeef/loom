@@ -27,6 +27,51 @@ import tools/tool
 /// Reserved against model-controlled fact writes.
 pub const key = "client/directory_access"
 
+/// Resolves one requested directory addition against the filesystem of the
+/// machine it names, and returns the canonical path to record.
+///
+/// This is the half of an operator's `add-dir` which needs the files: a
+/// relative request is taken against `workspace`, a `read` addition must
+/// resolve to a real directory, and any other mode must resolve to one
+/// outside `protected`. The other half, the compare-and-set of the fact,
+/// needs the session's store and not the files, so a session whose
+/// workspace is on another node asks that node for this and writes the
+/// fact itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // directories.resolve_addition("/work", protected, "lib", "read")
+/// // -> Ok("/work/lib")
+/// ```
+pub fn resolve_addition(
+  workspace: String,
+  protected: List(String),
+  requested: String,
+  mode: String,
+) -> Result(String, String) {
+  let filesystem = fs.real_filesystem()
+  let absolute = case requested {
+    "/" <> _ -> requested
+    _ -> workspace <> "/" <> requested
+  }
+  use path <- result.try(
+    case mode {
+      "read" -> fs.resolve_real(filesystem, "/", absolute)
+      _ -> fs.resolve_writable_roots(filesystem, "/", [], protected, absolute)
+    }
+    |> result.map_error(fn(_) {
+      "directory could not be resolved or is protected"
+    }),
+  )
+  use directory <- result.try(
+    simplifile.is_directory(path)
+    |> result.map_error(fn(_) { "directory could not be inspected" }),
+  )
+  use <- bool.guard(!directory, Error("add-dir requires an existing directory"))
+  Ok(path)
+}
+
 /// Authenticated gateway operations over one session's directory additions.
 pub type Admin {
   Admin(
@@ -40,6 +85,12 @@ pub type Admin {
 
 /// Reads only explicit additions, never the jail's broad host-read policy.
 ///
+/// This is the stored read followed by the live revalidation, in that order,
+/// for callers which hold the session and the workspace on one machine. A
+/// caller which does not (the owner of a session whose files live on another
+/// node) uses `read_stored` and leaves `revalidate` to the node that can
+/// stat the paths.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -51,9 +102,35 @@ pub fn read(
   read_store(opened.store)
 }
 
+/// Reads the committed additions from the store without touching the
+/// filesystem.
+///
+/// The value is stored authority, not yet trusted: a canonical name recorded
+/// before a restart may now resolve through a different symlink. `revalidate`
+/// is the check which makes it usable, and it runs wherever the paths live.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // directories.read_stored(session)
+/// ```
+pub fn read_stored(
+  opened: session.Session,
+) -> Result(directory_access.Access, String) {
+  stored(opened.store)
+}
+
 // Directory readback needs the durable store, not the lease-renewal callback
 // or the rest of Session. Both readers still validate live canonical targets.
 fn read_store(
+  store: storage.Storage(Nil),
+) -> Result(directory_access.Access, String) {
+  stored(store) |> result.try(revalidate)
+}
+
+// The store half of every reader: a read fault or a malformed record refuses,
+// a missing record is the empty set.
+fn stored(
   store: storage.Storage(Nil),
 ) -> Result(directory_access.Access, String) {
   use cell <- result.try(
@@ -65,13 +142,23 @@ fn read_store(
     Some(cell) ->
       decode(cell.value.payload)
       |> result.map_error(fn(_) { "session directory access is malformed" })
-      |> result.try(validate_live)
   }
 }
 
-// A stored canonical name must not become authority over a new symlink
-// target after restart. Validate before both jail and native policy capture.
-fn validate_live(
+/// Checks stored additions against the filesystem of the node it runs on.
+///
+/// A stored canonical name must not become authority over a new symlink
+/// target after restart. Validate before both jail and native policy capture.
+/// Every path must still resolve to itself and still be a directory; the
+/// first that does not refuses the whole set.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert directories.revalidate(directory_access.none())
+///   == Ok(directory_access.none())
+/// ```
+pub fn revalidate(
   access: directory_access.Access,
 ) -> Result(directory_access.Access, String) {
   let filesystem = fs.real_filesystem()
@@ -228,37 +315,40 @@ pub fn admin_with_facts(
   workspace: String,
   base: policy.SandboxPolicy,
 ) -> Admin {
-  let store = opened.store
   let protected = base.protected
+  admin_over(opened, facts, fn(requested, mode) {
+    resolve_addition(workspace, protected, requested, mode)
+  })
+}
+
+/// Builds the operator door over a resolver for the half that needs the
+/// workspace's files.
+///
+/// `resolve` takes the requested path and the access mode and answers the
+/// canonical path to record. Locally it is `resolve_addition` over the
+/// session's workspace and protections; for a workspace on another node it
+/// asks that node. Everything else (the authenticated origin, the
+/// conditional commit, readback) needs the session's store and stays here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // directories.admin_over(opened, fn() { Ok(facts) }, plane.resolve_directory)
+/// ```
+@internal
+pub fn admin_over(
+  opened: session.Session,
+  facts: fn() -> Result(api.FactHandle, Nil),
+  resolve: fn(String, String) -> Result(String, String),
+) -> Admin {
+  let store = opened.store
 
   Admin(
     read: fn() { read_store(store) |> result.map(encode) },
     add: fn(value, author) {
       use requested <- result.try(tool.required_string(value, "path"))
       use mode <- result.try(tool.required_string(value, "access"))
-      let filesystem = fs.real_filesystem()
-      let absolute = case requested {
-        "/" <> _ -> requested
-        _ -> workspace <> "/" <> requested
-      }
-      use path <- result.try(
-        case mode {
-          "read" -> fs.resolve_real(filesystem, "/", absolute)
-          _ ->
-            fs.resolve_writable_roots(filesystem, "/", [], protected, absolute)
-        }
-        |> result.map_error(fn(_) {
-          "directory could not be resolved or is protected"
-        }),
-      )
-      use directory <- result.try(
-        simplifile.is_directory(path)
-        |> result.map_error(fn(_) { "directory could not be inspected" }),
-      )
-      use <- bool.guard(
-        !directory,
-        Error("add-dir requires an existing directory"),
-      )
+      use path <- result.try(resolve(requested, mode))
       use live <- result.try(
         facts() |> result.map_error(fn(_) { "session is unavailable" }),
       )

@@ -118,6 +118,7 @@ pub fn cleanup_uses_dependency_order_not_publication_order_test() {
     custody.Services,
     custody.Broker,
     custody.Helpers,
+    custody.Workspace,
     custody.Mcp,
     custody.Storage,
     custody.Namespace,

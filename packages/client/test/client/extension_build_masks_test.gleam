@@ -40,7 +40,7 @@ import broker/broker
 import broker/exec
 import broker/policy
 import broker/token
-import client/serve
+import client/workspace_policy
 import codemode/build
 import codemode/compile
 import core/clock
@@ -59,7 +59,7 @@ pub fn the_build_plane_masks_no_blob_store_test() {
   // mask would be protecting. Not constructing the entry is what makes
   // the unbuildable mask unrepresentable rather than merely filtered out
   // one composition step later.
-  let masks = serve.build_plane_policy(root, state_root).protected
+  let masks = workspace_policy.build_plane_policy(root, state_root).protected
   assert !list.any(masks, string.ends_with(_, "/.blobs"))
     as "an install's build plane masks no blob store"
 
@@ -71,7 +71,10 @@ pub fn the_build_plane_masks_no_blob_store_test() {
 
   // And the plane starts on it, which is the check `start_build_plane`
   // makes before it spawns anything.
-  assert serve.base_policy_fault(serve.build_plane_policy(root, state_root))
+  assert workspace_policy.base_policy_fault(workspace_policy.build_plane_policy(
+      root,
+      state_root,
+    ))
     == Ok(Nil)
 }
 
@@ -99,7 +102,7 @@ pub fn the_build_plane_masks_the_daemon_state_root_test() {
   // absolute path. The state root is one directory above the extensions
   // root the build writes under, so narrowing the base view does not put
   // it out of reach and the mask is the only thing in the way.
-  let masks = serve.build_plane_policy(root, state_root).protected
+  let masks = workspace_policy.build_plane_policy(root, state_root).protected
   list.each(established, fn(path) {
     assert list.contains(masks, path)
       as { "the build plane must mask " <> path }
@@ -112,7 +115,7 @@ pub fn a_session_still_masks_its_blob_store_test() {
   // The posture the fix must not have cost. A session's blob store is
   // created before its first jail and lives under the session's own
   // writable root, so the mask is both buildable and load-bearing.
-  assert list.any(serve.base_policy(workspace).protected, fn(entry) {
+  assert list.any(workspace_policy.base_policy(workspace).protected, fn(entry) {
     string.ends_with(entry, "/.blobs")
   })
     as "a session still masks its blob store"
@@ -148,7 +151,7 @@ fn build_requirements(
       broker: idle_broker(),
       seed_root: root <> "/seed",
       gleam_path: "/usr/local/bin/gleam",
-      base_policy: serve.build_plane_policy(root, root <> "-state"),
+      base_policy: workspace_policy.build_plane_policy(root, root <> "-state"),
       toolchain_roots: ["/"],
       demand: exec.BestEffort,
       env: [#("PATH", "/usr/bin")],

@@ -1,0 +1,4 @@
+# Each bundle holds a node's private key and the shared cookie. orchestrator.env
+# holds the model provider's key. Neither belongs in version control.
+*.loombundle
+orchestrator.env
