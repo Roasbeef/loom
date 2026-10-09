@@ -1503,7 +1503,7 @@ pub fn a_member_moves_by_the_record_test() {
   finish(rig)
 }
 
-pub fn a_member_that_gives_up_after_the_activation_retires_test() {
+pub fn a_member_that_gives_up_after_the_activation_asks_the_receiver_again_test() {
   let #(rig, book) = recorded("recorded-late-abandon", 61)
   record_book.set(book, rig.session, serving(record_book.alpha))
   let move = begin(rig)
@@ -1518,11 +1518,52 @@ pub fn a_member_that_gives_up_after_the_activation_retires_test() {
     as "a lost reply is a stall"
 
   // Giving the move up now cannot take the session back: the abandon expects
-  // the moving record, which the activation replaced, so the move retires.
-  assert session_mover.give_up(by_record(rig, book, rig.wire), move) == Finished
+  // the moving record, which the activation replaced. Nobody has answered, so
+  // the source does not retire on that alone; it waits, uncounted.
+  let assert session_mover.Deferred(_) =
+    session_mover.give_up(by_record(rig, book, rig.wire), move)
+    as "a give-up that finds the receiver owning the session waits for it"
   assert record_book.read(book, rig.session) == serving(record_book.bravo)
+  assert custody(rig.source, rig.session) == catalogue.Moving(op:, to: "bravo")
+  assert file_exists(source_file(rig))
+
+  // The next run asks the receiver, which answers, and the move retires.
+  assert session_mover.drive(by_record(rig, book, rig.wire), move) == Finished
   assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
   assert !file_exists(source_file(rig))
+  finish(rig)
+}
+
+pub fn a_receiver_lost_between_its_record_and_its_import_still_gets_the_session_test() {
+  let #(rig, book) = recorded("recorded-lost-import", 70)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let move = begin(rig)
+
+  // The copy is sent and the activation never answers.
+  let deaf = Wire(..rig.wire, activate: fn(_activation) { Error(Nil) })
+  let assert Stalled(_) = session_mover.drive(by_record(rig, book, deaf), move)
+    as "silence is a stall"
+
+  // The receiver's compare-and-set committed and it crashed before importing:
+  // the record names it, and its catalogue holds nothing.
+  record_book.set(book, rig.session, serving(record_book.bravo))
+  let assert Error(_) = manager.custody(rig.target.registry, rig.session)
+    as "the receiver never registered the session"
+
+  // A give-up must not retire here: nothing would ever ask the receiver to
+  // finish the import, and the session would belong to a daemon without it.
+  let assert session_mover.Deferred(_) =
+    session_mover.give_up(by_record(rig, book, deaf), move)
+    as "the source keeps the session until the receiver answers"
+  assert file_exists(source_file(rig))
+
+  // When the receiver answers again it finds the record naming it, imports the
+  // copy and accepts, and only then does the source retire.
+  assert session_mover.drive(by_record(rig, book, rig.wire), move) == Finished
+  assert custody(rig.target, rig.session)
+    == catalogue.Imported(op:, from: "alpha")
+  assert file_exists(target_file(rig))
+  assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
   finish(rig)
 }
 

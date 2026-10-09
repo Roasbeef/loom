@@ -281,6 +281,18 @@ type Halt {
   Over
 }
 
+// Why a move is being abandoned, which decides what an abandon that finds the
+// receiver owning the session means.
+type Cause {
+  // Something answered no: the receiver refused, or the executor or the file
+  // showed the move cannot go on. Every `Abandon` a run produces is this.
+  Answered
+
+  // Nobody answered: the movers gave up on a silent receiver, or the owner
+  // asked (`give_up`).
+  Unanswered
+}
+
 /// Runs the move as far as it can go and says how it ended. Safe to call again
 /// after any outcome and after a crash anywhere inside it.
 ///
@@ -324,12 +336,16 @@ pub fn give_up(
     // does: before it, an abandon that finds no record would take the session
     // for one a later owner deleted and set its file aside.
     Recorded(..) ->
-      ended(environment, move, {
-        use Nil <- result.try(migrated(environment))
-        Error(Abandon(
-          "abandoned on request or after the receiver stayed silent",
-        ))
-      })
+      case migrated(environment) {
+        Error(halt) -> ended(environment, move, Error(halt))
+        Ok(Nil) ->
+          abandon(
+            environment,
+            move,
+            "abandoned on request or after the receiver stayed silent",
+            Unanswered,
+          )
+      }
   }
   note(environment, move, outcome)
   outcome
@@ -343,7 +359,7 @@ fn ended(
   case halted {
     Ok(Nil) -> Finished
     Error(Over) -> Finished
-    Error(Abandon(reason:)) -> abandon(environment, move, reason)
+    Error(Abandon(reason:)) -> abandon(environment, move, reason, Answered)
     Error(Stall(reason:)) -> Stalled(reason)
     Error(Defer(reason:)) -> Deferred(reason)
     Error(Unrecorded) ->
@@ -1024,11 +1040,12 @@ fn abandon(
   environment: Environment(instance),
   move: catalogue.Pending,
   reason: String,
+  cause: Cause,
 ) -> Outcome {
   case environment.authority {
     Rows -> revert(environment, move, reason)
     Recorded(ownership:) ->
-      abandon_recorded(environment, ownership, move, reason)
+      abandon_recorded(environment, ownership, move, reason, cause)
   }
 }
 
@@ -1036,12 +1053,14 @@ fn abandon(
 // reverting the row lets this daemon serve the session again and that must
 // follow a committed write. The receiver's activation expects the same moving
 // record, so exactly one of the two commits; one that finds the receiver
-// already owning the session retires instead.
+// already owning the session retires instead, but only on an answer: see
+// `taken_elsewhere`.
 fn abandon_recorded(
   environment: Environment(instance),
   ownership: Ownership,
   move: catalogue.Pending,
   reason: String,
+  cause: Cause,
 ) -> Outcome {
   case destination(environment, move) {
     Error(Stall(reason:)) -> Stalled(reason)
@@ -1057,9 +1076,38 @@ fn abandon_recorded(
             record.Moving(..) ->
               Stalled("the directory record names another move of this session")
           }
-        Error(store.Mismatch(..)) -> ended(environment, move, Error(Decide))
+        Error(store.Mismatch(found: Some(found))) ->
+          taken_elsewhere(environment, move, cause, found.owner)
+        Error(store.Mismatch(found: None)) ->
+          ended(environment, move, Error(Decide))
         Error(store.NoQuorum(reason:)) -> Deferred(reason)
       }
+  }
+}
+
+// An abandon that finds the record naming another owner means the receiver's
+// activation committed first. After an answer (a refusal, or a close the
+// executor refused because the receiver holds the scope), the receiver has
+// spoken and the record decides. After silence it has not: its compare-and-set
+// may have committed with its import lost to a crash, and only the source's
+// next activation makes it finish the import, so retiring now would leave the
+// record naming a daemon that never registered the session. The run asks the
+// receiver again instead, and retires on its answer; the wait is not counted
+// toward the give-up, which could not take the session back anyway.
+fn taken_elsewhere(
+  environment: Environment(instance),
+  move: catalogue.Pending,
+  cause: Cause,
+  owner: String,
+) -> Outcome {
+  case cause {
+    Answered -> ended(environment, move, Error(Decide))
+    Unanswered ->
+      Deferred(
+        "the directory record names "
+        <> owner
+        <> ", so its activation committed; the receiver is asked again",
+      )
   }
 }
 
