@@ -1585,14 +1585,64 @@ pub fn a_member_that_gives_up_before_the_activation_takes_the_session_back_test(
   finish(rig)
 }
 
-pub fn a_member_without_a_record_abandons_the_move_test() {
+pub fn a_member_whose_record_is_gone_sets_its_copy_aside_test() {
   let #(rig, book) = recorded("recorded-unrecorded", 63)
   let move = begin(rig)
-  let assert Aborted(_) =
-    session_mover.drive(by_record(rig, book, rig.wire), move)
-    as "a session the directory never recorded cannot move by it"
-  assert custody(rig.source, rig.session) == catalogue.Resident
+
+  // This used to revert the move and serve the session again, reading the
+  // missing record as one never written. Once the seed has run every remote
+  // session has a record, so a missing one means its owner deleted it, and
+  // serving it again would bring a deleted session back. The copy is set aside.
+  assert session_mover.drive(by_record(rig, book, rig.wire), move) == Finished
+  assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
+  assert !file_exists(source_file(rig))
+  assert file_exists(source_file(rig) <> ".moved")
   assert record_book.read(book, rig.session) == None
+  finish(rig)
+}
+
+pub fn a_session_deleted_while_its_source_was_down_stays_deleted_test() {
+  let #(rig, book) = recorded("recorded-deleted-elsewhere", 71)
+  record_book.set(book, rig.session, serving(record_book.alpha))
+  let move = begin(rig)
+
+  // The receiver activates and the source never hears: it is down.
+  let lossy =
+    Wire(..rig.wire, activate: fn(activation) {
+      let _answer = rig.wire.activate(activation)
+      Error(Nil)
+    })
+  let assert Stalled(_) = session_mover.drive(by_record(rig, book, lossy), move)
+    as "a lost reply is a stall"
+  assert custody(rig.target, rig.session)
+    == catalogue.Imported(op:, from: "alpha")
+
+  // While the source is away, the receiver's owner deletes the session: the
+  // mark, the record, then the registration and the file.
+  let assert Ok(_) =
+    manager.begin_delete(
+      rig.target.registry,
+      rig.target.owner,
+      "move-test",
+      rig.session,
+    )
+    as "the receiver marks the deletion"
+  record_book.set(book, rig.session, None)
+  let assert Ok(_) =
+    manager.finish_delete(
+      rig.target.registry,
+      rig.session,
+      rig.target.directory <> "/sessions",
+    )
+    as "the receiver finishes the deletion"
+
+  // The source comes back and finds no record. It must not serve the session
+  // again: it sets its copy aside, and the session stays deleted.
+  assert session_mover.drive(by_record(rig, book, rig.wire), move) == Finished
+  assert custody(rig.source, rig.session) == catalogue.Moved(op:, to: "bravo")
+  assert file_exists(source_file(rig) <> ".moved")
+  assert manager.open(rig.source.registry, rig.session)
+    == Error(manager.SessionMoved(to: "bravo"))
   finish(rig)
 }
 
