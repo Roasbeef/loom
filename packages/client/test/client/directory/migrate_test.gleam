@@ -12,14 +12,20 @@ import client/directory/ownership
 import client/directory/record.{Moving, Record, Serving}
 import client/directory/store
 import client/orchestrators
+import client/session_directory
+import client/session_mover
+import client/session_movers
 import core/clock
 import core/ids
+import gleam/erlang/process
 import gleam/option.{None, Some}
+import gleam/result
 import simplifile
 import storage/catalogue
 import storage/domain
 import support/remote_fixtures
 import telemetry/log
+import weft/poll
 
 const alpha = "alpha@10.0.0.1"
 
@@ -195,4 +201,83 @@ pub fn a_seed_without_a_quorum_writes_no_marker_test() {
     migrate.seed(registry, ownership.over_store(bravo), [], log.discard())
     as "a store that cannot be read stops the run"
   Nil
+}
+
+// The movers' surroundings for a test that runs only their upkeep: nothing is
+// moving, so nothing here is ever asked.
+fn environment_for(
+  registry: manager.Manager(String),
+) -> session_mover.Environment(String) {
+  session_mover.Environment(
+    authority: session_mover.Rows,
+    registry:,
+    orchestrators: [],
+    directory: session_directory.none(),
+    courier: session_directory.Courier(
+      send: fn(_, _) { Error(Nil) },
+      stage: fn(_, _, _) { Error(Nil) },
+    ),
+    close: session_mover.unreachable_executors(),
+    clock: clock.fixed(1_700_000_000_000),
+    node: bravo,
+    budget: session_mover.default_budget(),
+    after: fn(_) { Nil },
+    logger: log.discard(),
+  )
+}
+
+pub fn a_local_session_is_recorded_once_the_store_has_a_majority_test() {
+  let directory = absolute(remote_fixtures.scratch("migrate-local"))
+  let store_directory = directory <> "/directory"
+  let assert Ok(Nil) = store.start_system(store_directory)
+    as "the Ra system starts"
+  let assert Ok(Nil) = store.boot(10_000) as "a one-member store starts"
+  let #(catalog, registry) = registry(directory)
+  let own = ownership.over_store(bravo)
+
+  // The store goes away, as a member cut off from the majority, and a local
+  // session exists. The movers' first pass cannot write its record.
+  store.stop()
+  let local = registered(catalog, directory, 10, "")
+  let assert Ok(control) =
+    session_movers.start_with(
+      environment_for(registry),
+      50,
+      fn(_, _) { Error(Nil) },
+      session_movers.give_up_after_ms,
+      session_movers.Upkeep(..session_movers.no_upkeep(), cover: fn() {
+        migrate.cover_local(registry, own, log.discard())
+        |> result.replace(Nil)
+      }),
+    )
+    as "the movers start"
+  process.sleep(300)
+
+  // The majority returns. The pass that failed is wanted still, and the next
+  // tick writes the record as a local one.
+  let assert Ok(Nil) = store.start_system(store_directory)
+    as "the Ra system starts again"
+  let assert Ok(Nil) = store.boot(10_000) as "the store restarts"
+  let assert poll.Answered(Nil) =
+    poll.until(within: 10_000, every: 50, attempt: fn() {
+      case store.read(local) {
+        Ok(Some(Record(owner: found, state: record.Local))) if found == bravo ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the local session's record appears"
+
+  // A creation later asks for another pass, which writes the new one.
+  let later = registered(catalog, directory, 11, "")
+  control.cover()
+  let assert poll.Answered(Nil) =
+    poll.until(within: 10_000, every: 50, attempt: fn() {
+      case store.read(later) {
+        Ok(Some(Record(state: record.Local, ..))) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "a session created later is recorded on request"
+  store.stop()
 }

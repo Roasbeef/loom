@@ -707,6 +707,10 @@ type Message(instance) {
     Subject(Result(List(#(catalogue.Registration, catalogue.Custody)), Error)),
   )
 
+  /// The identities of every confirmed local session, active or archived, for
+  /// writing their owner records as lookup hints (protocol-change/079).
+  LocalSessions(Subject(Result(List(String), Error)))
+
   WorkspaceDefault(String, Subject(Result(View, Error)))
   SetDefault(String, String, Subject(Result(View, Error)))
   Open(String, Subject(Result(Status, Error)))
@@ -1912,6 +1916,22 @@ pub fn remote_registrations(
   |> result.unwrap(Error(Unavailable))
 }
 
+/// The identities of every confirmed local session, active or archived: one
+/// with no executor and no pool, whose checkout is a directory on this machine.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.local_sessions(registry) == Ok([session_id])
+/// ```
+@internal
+pub fn local_sessions(
+  manager: Manager(instance),
+) -> Result(List(String), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: LocalSessions)
+  |> result.unwrap(Error(Unavailable))
+}
+
 /// The sessions marked for deletion, in identity order.
 ///
 /// ## Examples
@@ -2722,6 +2742,10 @@ fn handle(
       process.send(reply, remote_registrations_in(book.catalogue))
       sm.keep(book)
     }
+    LocalSessions(reply) -> {
+      process.send(reply, local_sessions_in(book.catalogue))
+      sm.keep(book)
+    }
     DeletingSessions(reply) -> {
       process.send(
         reply,
@@ -3530,6 +3554,23 @@ fn remote_registrations_in(
     |> result.map(fn(custody) { #(record, custody) })
   })
   |> result.map_error(Catalogue)
+}
+
+// A reserved registration is a creation that has not finished, and has no
+// session yet to find.
+fn local_sessions_in(
+  store: catalogue.Catalogue,
+) -> Result(List(String), Error) {
+  use active <- result.try(all_pages(store, catalogue.page, "", []))
+  use archived <- result.try(all_pages(store, catalogue.archived_page, "", []))
+  list.append(active, archived)
+  |> list.filter(fn(record) {
+    record.executor == ""
+    && record.pool == ""
+    && record.state != catalogue.Reserved
+  })
+  |> list.map(fn(record) { record.id })
+  |> Ok
 }
 
 fn all_pages(

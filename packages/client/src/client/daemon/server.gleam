@@ -3260,6 +3260,13 @@ fn dispatch_class(
           )
           |> result.map_error(admin_error_code)
       })
+
+      // A deleted local session's record is removed best-effort and not waited
+      // for. One left behind names this daemon, which answers `not_found`.
+      case registration.executor, registration.pool {
+        "", "" -> config.movers.forget(registration.id)
+        _, _ -> Nil
+      }
       Ok(#(
         "sessions.delete",
         json.Object([
@@ -3504,9 +3511,15 @@ pub fn create_session(
   // The folder is remembered once the session exists, under the canonical text
   // the catalogue holds, so the home can offer it again after every session in
   // it is gone (protocol-change/074). A creation that failed leaves no trace.
-  // A registered name is no folder on this host, so it is never offered.
+  // A registered name is no folder on this host, so it is never offered. On a
+  // directory member a local session's record is a lookup hint the movers'
+  // next tick writes; the creation does not wait for it, so it succeeds without
+  // a majority (protocol-change/079).
   case request.executor, request.pool {
-    "", "" -> manager.remember_folder(registry, workspace)
+    "", "" -> {
+      manager.remember_folder(registry, workspace)
+      config.movers.cover()
+    }
     _, _ -> Nil
   }
   created

@@ -21,6 +21,13 @@
 //// conflict. It is logged and left standing: the existing record decides, and
 //// an operator resolves it. A restored backup is the case that produces one.
 //// Until the marker exists this daemon's movers do not act on the store.
+////
+//// `cover_local` is the second pass, for local sessions. Their records are
+//// lookup hints, written after the session exists and never waited on, so
+//// the pass runs whenever one may be missing: at boot, and after a local
+//// session is created, until a run succeeds. It writes `{self, local}` for
+//// every local session whose record is absent from this member's copy, so a
+//// creation made without a majority is recorded once the majority returns.
 
 import client/daemon/manager
 import client/directory/ownership.{type Ownership}
@@ -193,4 +200,56 @@ fn node_of(listed: List(Orchestrator), name: String) -> Result(String, String) {
     <> name
     <> ", which this daemon no longer lists"
   })
+}
+
+/// Writes the owner record of every local session that lacks one, and returns
+/// how many it wrote. An error means the store had no quorum or the registry did
+/// not answer; the caller runs it again later. A record that names another
+/// daemon is logged and left, since a local record decides nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // migrate.cover_local(registry, ownership, logger) // -> Ok(1)
+/// ```
+pub fn cover_local(
+  registry: manager.Manager(instance),
+  ownership: Ownership,
+  logger: Logger,
+) -> Result(Int, String) {
+  use sessions <- result.try(
+    manager.local_sessions(registry)
+    |> result.replace_error("the registry could not list its sessions"),
+  )
+  use written <- result.try(
+    list.try_map(sessions, fn(id) { cover_one(ownership, logger, id) }),
+  )
+  Ok(list.count(written, fn(outcome) { outcome == Written }))
+}
+
+// One local session: a record already in this member's copy is left alone,
+// whoever it names, and an absent one is written.
+fn cover_one(
+  ownership: Ownership,
+  logger: Logger,
+  id: String,
+) -> Result(Outcome, String) {
+  use held <- result.try(
+    ownership.read(id)
+    |> result.map_error(fn(unavailable) { unavailable.reason }),
+  )
+  case held {
+    Some(Record(owner:, ..)) if owner == ownership.node -> Ok(Skipped)
+    Some(_) -> {
+      log.warn(logger, "directory.local_record_conflict", [
+        field.ident("session", id),
+      ])
+      Ok(Conflicted(id))
+    }
+    None ->
+      case ownership.record_local(id) {
+        Ok(Nil) -> Ok(Written)
+        Error(refusal) -> mine_or_conflict(ownership, id, refusal)
+      }
+  }
 }

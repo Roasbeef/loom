@@ -6,7 +6,7 @@
 //// registration, a record that names someone else refuses the delete and
 //// clears the mark, and a write without a quorum is refused `no_quorum` and
 //// leaves the mark so nothing opens the session, and opening a session the
-//// daemon holds needs no store at all. The store is a VM-wide
+//// daemon holds, or creating a local one, needs no store at all. The store is a VM-wide
 //// singleton, so the module is declared serial.
 
 import client/daemon/limits
@@ -21,6 +21,7 @@ import client/session_directory
 import core/json
 import gleam/list
 import gleam/option.{None, Some}
+import simplifile
 import support/internal/ffi_ws
 import support/remote_fixtures
 import weft/poll
@@ -175,6 +176,46 @@ pub fn a_remote_creation_without_a_quorum_is_refused_and_not_served_test() {
     let assert Ok(#(_, views)) = manager.page(ready.registry, after: "")
       as "the page reads"
     assert list.all(views, fn(view) { view.status == manager.Reserved })
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_local_creation_without_a_quorum_succeeds_test() {
+  use <- with_store
+  member_daemon(quorumless(), fn(ready, port, credential) {
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    // A local session's record is a lookup hint written later, so a store that
+    // cannot commit does not stand in the creation's way.
+    store.stop()
+    let workspace = remote_fixtures.scratch("daemon-record-local")
+    let assert Ok(cwd) = simplifile.current_directory() as "a working directory"
+    let created =
+      wire.send(
+        socket,
+        1,
+        "sessions.create",
+        json.Object([
+          #("request_key", json.String("local-quorumless")),
+          #("workspace", json.String(cwd <> "/" <> workspace)),
+          #("name", json.String("Local")),
+          #("configuration", json.String("")),
+        ]),
+        within_ms: 5000,
+      )
+    assert field(created, "event") == json.String("sessions.create")
+    let assert json.String(id) = field(field(created, "body"), "session_id")
+      as "the creation names the session"
+    let assert poll.Answered(Nil) =
+      poll.until(within: 15_000, every: 20, attempt: fn() {
+        case manager.get(ready.registry, id) {
+          Ok(manager.View(status: manager.Resident(..), ..)) -> poll.Done(Nil)
+          _ -> poll.Retry
+        }
+      })
+      as "the local session opens without the store"
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
