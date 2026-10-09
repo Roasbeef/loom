@@ -1,4 +1,4 @@
-# protocol-change/079: Khepri holds session ownership
+# protocol-change/080: Khepri holds session ownership
 
 **Status**: ACCEPTED 2026-10-08 on the owner's rulings, after an independent
 review of the first draft; implemented. The spellings below are the

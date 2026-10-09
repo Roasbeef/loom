@@ -1,5 +1,5 @@
 //// The `[directory]` table is strict and absent by default
-//// (protocol-change/079). Its members are pinned peers and this daemon, three
+//// (protocol-change/080). Its members are pinned peers and this daemon, three
 //// to seven of them, and every orchestrator this daemon lists must be one.
 
 import client/catalog

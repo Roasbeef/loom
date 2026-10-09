@@ -1,5 +1,5 @@
 //// The directory store over a one-member Khepri cluster in the test VM
-//// (protocol-change/079). The store is a VM-wide singleton, so every case
+//// (protocol-change/080). The store is a VM-wide singleton, so every case
 //// starts it on a fresh directory and stops it before returning, and the
 //// module is declared serial.
 

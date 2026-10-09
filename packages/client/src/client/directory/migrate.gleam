@@ -1,5 +1,5 @@
 //// Seeding the directory store from an orchestrator's catalogue, once
-//// (protocol-change/079).
+//// (protocol-change/080).
 ////
 //// A deployment that adds a `[directory]` has its ownership in its catalogues:
 //// every remote session an orchestrator serves, plus the `moving`, `moved` and

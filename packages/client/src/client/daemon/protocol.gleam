@@ -254,7 +254,7 @@ pub type Command {
   MoveSession(session_id: String, to: String, epoch: String)
 
   /// `sessions.move` with `abandon: true`: gives up the session's move in
-  /// flight, on a directory member (protocol-change/079). Owner-only. The
+  /// flight, on a directory member (protocol-change/080). Owner-only. The
   /// abandon is a compare-and-set that fails if the receiver already took the
   /// session, in which case the move is retired instead.
   AbandonMove(session_id: String, epoch: String)
@@ -269,7 +269,7 @@ pub type Command {
   Shutdown(epoch: String)
 
   /// Reports this daemon's view of the session directory's Khepri cluster
-  /// (protocol-change/079). Owner-only.
+  /// (protocol-change/080). Owner-only.
   DirectoryStatus
 }
 

@@ -1,5 +1,5 @@
 //// The session directory's replicated store is Khepri, over Ra
-//// (protocol-change/079, ADR-019). Neither `gleam_stdlib`, `gleam_erlang`,
+//// (protocol-change/080, ADR-019). Neither `gleam_stdlib`, `gleam_erlang`,
 //// `gleam_otp` nor weft has a replicated store, so this module is the one
 //// place the client calls into them. The Erlang side, `client_khepri_ffi.erl`,
 //// normalizes every Khepri and Ra return to the shapes declared here, catches

@@ -69,7 +69,7 @@
 //// 5. A move given up goes through `abandon`, which on a member is
 ////    `abandon_recorded` and otherwise `revert`.
 ////
-//// ## On a directory member (protocol-change/079)
+//// ## On a directory member (protocol-change/080)
 ////
 //// With `Recorded` authority the owner record decides and the catalogue row
 //// remembers. The row is still written first, by the registry, in the turn

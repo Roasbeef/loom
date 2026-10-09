@@ -85,7 +85,7 @@ pub type Context(instance) {
   Context(
     /// On a directory member, the owner record writes, through which the
     /// activation's compare-and-set is made before the session is registered
-    /// (protocol-change/079); `None` where the catalogue rows decide.
+    /// (protocol-change/080); `None` where the catalogue rows decide.
     ownership: Option(Ownership),
     /// The registry, which decides what this daemon serves.
     registry: manager.Manager(instance),
@@ -414,7 +414,7 @@ fn verified(
 
 // On a directory member the activation is the record's compare-and-set, and it
 // is made before the session is registered and its file placed, because those
-// let this daemon serve the session (protocol-change/079). When the write finds
+// let this daemon serve the session (protocol-change/080). When the write finds
 // this daemon already owning the session, its own earlier write committed and
 // the import or the reply was lost, or the session has moved on since: the
 // import is finished if it can be, and the answer is yes. This daemon never

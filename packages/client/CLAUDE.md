@@ -7545,7 +7545,7 @@ profile table name at load.
 `Settings` gained `profile_desk`, so every `serve.Settings` literal in the tests
 carries `profile_desk: None`.
 
-## The session directory in Khepri (protocol-change/079)
+## The session directory in Khepri (protocol-change/080)
 
 A deployment may add a `[directory]` table, which makes the listed orchestrators
 and executors the members of one Khepri cluster. Khepri then holds the single

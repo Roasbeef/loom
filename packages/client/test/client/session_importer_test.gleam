@@ -798,7 +798,7 @@ pub fn a_session_that_comes_back_is_taken_in_over_its_tombstone_test() {
   finish(rig)
 }
 
-// --- on a directory member (protocol-change/079) -----------------------------
+// --- on a directory member (protocol-change/080) -----------------------------
 
 fn recorded(
   rig: Rig,
