@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4557`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4570`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1035,6 +1035,17 @@ the same list, so the browser can choose among the names the page drew and name 
 other. `create_for` passes the choice to `server.create_session`, which checks it
 against the configuration again, and a profile the configuration no longer
 defines is declined as `creations.UnknownProfile` in fixed words.
+
+The same forms draw a second select, "Main model", of the daemon's
+`[models.<key>]` keys ([protocol-change/080](../../protocol-change/080-session-model-choice.md)),
+read once when the page opens (`Start.models`, from `server.HomeAttachment.models`)
+and drawn the same way: the key is an `<option>`'s label and never an attribute,
+the value is its position, and `create.fields_with_roles` turns the position
+back into a key from the same list. It is independent of the profile select, and
+the two choices travel together as one `creations.Roles(profile, model)`. Only
+key strings reach the page; nothing else of a model entry does. A key removed
+from the configuration since the page opened is declined as
+`creations.UnknownModel` in fixed words.
 
 `ui_socket.create_task` runs `create_for` in a weft run of its own (one task, no
 deadline, linked to the runtime) and returns at once; the answer arrives as
