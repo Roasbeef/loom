@@ -722,10 +722,9 @@ there.
 
 ## Background code mode and MCP on a remote session
 
-**Status: designed, not built.** The rules are in the protocol-change/078
+**Status: designed; the implementation follows on this branch.** The rules are in the protocol-change/078
 addendum "background code mode and MCP façades on a remote session", together
-with the failure table for both paths. Until the change lands, a remote session
-refuses both features. This section shows how the parts are meant to fit.
+with the failure table for both paths. This section shows how the parts fit.
 
 ### A background execution
 
@@ -745,7 +744,12 @@ capabilities, so they cross the owner port as `Capability` calls, and
 `async_runs` answers them from the journal and the progress snapshot it already
 keeps. The owner binds such a call to its execution by the step `async/<id>`
 that the executor's tool shell filled in, and refuses it once the record has
-closed.
+closed. A typed-service program ends on its first failed receive, so on a link
+cut the executor's `execution.receive*` calls wait for the orchestrator to
+reconnect, within their own wait, and then answer "no input yet" rather than
+fail; `execution.ready`, `progress` and `delivery` wait up to 120 seconds.
+Each of those calls is safe to send twice, because the receive is keyed by the
+program's cursor and the others record the same observation again.
 
 The diagram follows one execution from the launch through progress, an input,
 a link cut and the report.
@@ -800,7 +804,9 @@ inserts a missing key as `unknown` so that a late start never runs it. A
 owner port's reconciler, which also stops programs left running by an
 orchestrator that restarted. The reconciler acknowledges an execution's row only
 once its record is terminal, so a result the worker has not read yet is never
-discarded.
+discarded. After an orchestrator restart, recovery asks the executor for each
+execution that was live: one that had already finished keeps its stored result,
+and any other is recorded as lost and stopped.
 
 ### An MCP call in each placement
 
@@ -831,12 +837,15 @@ sequenceDiagram
     R-->>P: typed result, or an in-band error
 ```
 
-An executor-placed server runs on the executor, beside the checkout. The
-orchestrator sends its name, its argv and the name of its `api_key_env`; the
-executor resolves the name from its own environment and `[secrets]` table, so no
-key crosses the wire. The server's client belongs to the scope's plane, starts
-when the plane is built and is retired when the scope closes. Its calls never
-leave the executor.
+An executor-placed server runs on the executor, beside the checkout, from the
+executor's own `[mcp.<name>]` table. The orchestrator's `runs_on = "executor"`
+only states the expectation: the attach carries the expected server names and
+nothing else, and the census reports which of them started and why any did not.
+The executor resolves `api_key_env` from its own `[secrets]` table and
+environment, so neither an argv nor a key crosses the wire. The server's client
+belongs to the scope's plane, starts when the plane is built and is closed when
+the scope closes; one that does not exit within five seconds is killed and
+logged. Its calls never leave the executor.
 
 ```mermaid
 sequenceDiagram
@@ -845,8 +854,8 @@ sequenceDiagram
     participant C as mcp client actor (executor)
     participant S as server process (executor)
     participant P as program (satellite, executor)
-    O->>H: Attach(..., mcp: spawn spec by name)
-    Note over H: plane build: resolve api_key_env<br/>from the executor's own secrets
+    O->>H: Attach(..., mcp: expected server names)
+    Note over H: plane build: read the executor's own<br/>[mcp.name] table, resolve api_key_env<br/>from the executor's own secrets
     H->>C: start client
     C->>S: spawn argv, initialize, tools/list
     Note over H: generate the façade here
