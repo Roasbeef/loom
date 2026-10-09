@@ -1325,6 +1325,28 @@ fn await_custody(rig: Rig, expected: catalogue.Custody) -> Nil {
   assert outcome == poll.Answered(Nil)
 }
 
+// A retirement is two writes in order: the `moved` row, then the file work
+// that sets the original aside and removes the copy (`session_mover.retire`).
+// A test that waits only for the row can look in the instant between them,
+// which a loaded machine widens, so the movers' tests wait for the file work
+// too: the original gone, the tombstone file present, and no copy beside it.
+fn await_retired(rig: Rig) -> Nil {
+  await_custody(rig, catalogue.Moved(op:, to: "bravo"))
+  let original = source_file(rig)
+  let outcome =
+    poll.until(within: 20_000, every: 25, attempt: fn() {
+      case
+        file_exists(original),
+        file_exists(original <> ".moved"),
+        file_exists(session_move.copy_path(original, op))
+      {
+        False, True, False -> poll.Done(Nil)
+        _, _, _ -> poll.Retry
+      }
+    })
+  assert outcome == poll.Answered(Nil)
+}
+
 // The movers' way of asking an orchestrator whether it holds a session, for
 // tests that begin no move of an imported session and so never use it.
 fn no_holder(
@@ -1343,7 +1365,7 @@ pub fn the_movers_carry_a_move_to_the_end_test() {
 
   // Telling the movers twice starts one mover.
   control.begin(move)
-  await_custody(rig, catalogue.Moved(op:, to: "bravo"))
+  await_retired(rig)
   assert_moved(rig)
   finish(rig)
 }
@@ -1375,7 +1397,7 @@ pub fn a_restart_resumes_every_move_that_was_in_flight_test() {
   // row and finish the move without anyone asking.
   let assert Ok(control) = session_movers.start(plain(rig), 100, no_holder)
   assert session_movers.resume(control, rig.source.registry) == Ok(1)
-  await_custody(rig, catalogue.Moved(op:, to: "bravo"))
+  await_retired(rig)
   assert_moved(rig)
   finish(rig)
 }
