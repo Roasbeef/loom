@@ -423,6 +423,11 @@ fn borrowed(
 /// The text a call answers when the owner's runtime cannot be borrowed.
 pub const unavailable = "the session runtime is not available"
 
+/// The longest a background program's `execution.receive` may wait on its
+/// owner for input, in milliseconds. The owner refuses a longer wait, and an
+/// executor waiting out a cut link waits no longer than this either.
+pub const max_receive_wait_ms = 30_000
+
 /// A complete local `OwnerServices`: the jobs half over a borrowed runtime
 /// and the four functions which come from elsewhere in the session
 /// assembly. Nothing here is new behaviour; it only names, in one record,

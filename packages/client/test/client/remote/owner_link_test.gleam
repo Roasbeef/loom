@@ -140,3 +140,15 @@ pub fn a_launch_whose_answer_never_came_names_the_handle_test() {
     as "an unanswered launch fails"
   assert string.contains(text, fixtures.handle_of(terms))
 }
+
+pub fn a_receive_waits_no_longer_than_the_owner_would_let_it_test() {
+  // The owner refuses a receive that asks to wait more than thirty seconds, so
+  // waiting out a cut for longer would end at the satellite's call timeout
+  // with an error rather than "no input yet".
+  assert owner_link.link_cut_wait_ms(call("execution.receive", 10_000_000))
+    == owner_services.max_receive_wait_ms
+  assert owner_link.link_cut_wait_ms(call("execution.receive_enveloped", 5000))
+    == 5000
+  assert owner_link.link_cut_wait_ms(call("execution.receive", -1)) == 0
+  assert owner_link.link_cut_wait_ms(call("strand.spawn", 5000)) == 0
+}
