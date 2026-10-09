@@ -932,8 +932,8 @@ placed on the orchestrator or on the executor by a key in its `[mcp.<name>]`
 table; and the work lands as its own pull request on top of PR #923.
 
 The change bumps `protocol.version` from 2 to 3. It adds two `HostMessage`
-constructors, two `OwnerMessage` constructors and two `OwnerServices` functions,
-one field on `Attach`, one field on `Unacked`, one variant on `Lookup`, and one
+constructors, three `OwnerMessage` constructors and two `OwnerServices` functions,
+no field on `Attach`, one field on `Unacked`, one variant on `Lookup`, and one
 field on the census. The ledger gains one operation and one query, and its
 tables and schema version (3) do not change. The execution record gains one
 optional field. One `loom.toml` key is added. No Part 1 interface moves.
@@ -1303,9 +1303,10 @@ executor's own `[mcp.<name>]` table: its `command` argv and its `api_key_env`.
 The executor reads the table with the same parser a local daemon uses, and
 ignores `runs_on` in it, since a server in the executor's own file can only run
 there. The orchestrator's table, with `runs_on = "executor"`, states only the
-expectation that the server answers on the executor. The attach carries the
-names of the servers the orchestrator expects there and nothing else about
-them: no argv and no variable name crosses the wire. So the rule that
+expectation that the server answers on the executor. The MCP plan the
+executor asks for carries the names of the servers the orchestrator expects
+there and nothing else about them: no argv and no variable name crosses the
+wire. So the rule that
 configuration naming a path on a machine lives on that machine holds without an
 exception, and an orchestrator's configuration cannot make an executor run an
 unjailed command.
@@ -1325,11 +1326,13 @@ in words, and never at a call.
 The executor's plane starts the servers when it is built and owns their clients
 for the plane's life. The plane closes them when the scope closes, after the
 helper pool and the workspace, in the order a local daemon retires the same
-parts. A client whose server does not exit within its five-second grace
-is killed, and it does not count toward the scope's `UnknownCleanup`: the
-retirement witness protects the checkout from jailed children that may still
-be writing, and an MCP server is neither jailed nor a helper child. On a local
-daemon the same timeout is a log line, and the executor logs it the same way. A
+parts. Closing a client kills its server process with SIGKILL at once (the
+`gleam_mcp` transport has no gentler stop) and then waits up to five seconds
+for the process's exit to be witnessed. A missing witness is logged
+`executor.mcp_retirement_unconfirmed` and does not count toward the scope's
+`UnknownCleanup`: the retirement witness protects the checkout from jailed
+children that may still be writing, and an MCP server is neither jailed nor a
+helper child. On a local daemon the same missing witness is a log line too. A
 server process is spawned unjailed on the executor, with the executor daemon's
 privileges, which is the posture a local daemon has (#109 is still open). A
 call to an executor-placed server is answered on the executor by the plane's own
@@ -1344,9 +1347,11 @@ locally for them, since a local session ignores `runs_on`. Such an orchestrator
 needs the server's key variable on both machines, or its local sessions log
 `mcp.unavailable` for that server.
 
-#### MCP: what the attach carries
+#### MCP: the plan the executor asks for
 
-`Attach` gains `mcp: McpPlan`:
+While it builds a scope's plane, the executor asks the session's owner port for
+the plan with `OwnerMessage.AskMcpPlan(reply)`, and the owner port answers the
+plan its open was configured with:
 
 ```gleam
 pub type McpPlan {
@@ -1364,17 +1369,21 @@ pub type Facade {
 ```
 
 A plan is at most a few MiB: each façade is bounded by the generator at 512 KiB
-of source and 64 KiB of surface. `surface.attach` re-sends the same `Attach`
-while the executor is still building the plane, so each re-send carries the
-plan again; on the links this design targets that is a few MiB per re-send for
-at most 30 seconds, and it is accepted rather than adding a second message. The
+of source and 64 KiB of surface. It is asked for once per build, after the
+attach's version check has passed, so both ends speak version 3 when it
+crosses. It is not a field of `Attach`, which keeps the shape it had in version
+2: `Attach` is the first message a peer of any version sends, and the host
+matches the term against its own constructors, so an `Attach` of another arity
+would match nothing and stop the host instead of reaching the version check
+(see "Mixed versions" below). An owner that does not answer within fifteen
+seconds fails the build with `NoPlane`, and the next attach builds again. The
 census gains `mcp`, one entry per expected server, as described above.
 
 The plan is fixed for the life of the plane, that is, for one incarnation. A
 `Created` or `Reopened` attach builds the plane from the plan it carries. A
 `Rebound` attach, which happens only when a new open takes over a scope after an
-orchestrator restart, keeps the plane and the plan it was built with, and the plan the
-new attach carries is not used. The census the rebound attach answers with is
+orchestrator restart, keeps the plane and the plan it was built with, and the
+new owner port is not asked. The census the rebound attach answers with is
 the one the plane was built with, so the orchestrator's `mcp.ready` and
 `mcp.unavailable` lines describe the plan in force. The reason is that the executor-placed servers live with the plane and may be in use
 by a running program, and the `code_mode` description was rendered from the
@@ -1382,6 +1391,33 @@ plan when the plane was built. A stale orchestrator-placed façade fails in
 band: a server removed from the configuration answers `unsupported_cap`, and a
 tool the server no longer lists answers its own JSON-RPC error. A changed plan
 takes effect at the next reopen.
+
+#### Mixed versions
+
+The host matches every term it receives against its own constructors, and so
+does a session's owner port. A Gleam `case` over a received custom type has no
+catch-all once compiled, so a term of another shape raises `case_clause`: the
+host stops and the executor daemon halts with it, or the owner port stops and
+its session's workspace calls go unanswered. Making the host total would mean receiving
+`Dynamic` and decoding every message, or a new FFI to rescue the crash, and
+neither is worth it for peers that are pinned, trusted and administered by one
+operator. The host therefore assumes its peers were built from the same source,
+with one exception that is guaranteed: `Attach` keeps the shape it had in
+version 2, so a peer of either version reaches the version check and is refused
+with `VersionMismatch`, by value, with the host still up. A version 2
+orchestrator opening a session on a version 3 executor is refused, and so is a
+version 3 orchestrator on a version 2 executor. The test is
+`a_version_2_attach_is_refused_and_the_host_stays_up_test`, which sends a
+version 2 `Attach` built by hand.
+
+The messages after an attach are not guarded that way: `Unacked` and `Lookup`
+changed shape in version 3. So the upgrade order is: stop the remote sessions
+on an orchestrator (or stop the orchestrator), upgrade the executors and the
+orchestrators, and open the sessions again. An open that still pairs the two
+versions is refused at its attach and changes nothing, and it succeeds once the
+other machine is upgraded too. Upgrading one machine while sessions are
+attached to it can stop the host or an owner port on the first message of the
+other version.
 
 #### Failures
 

@@ -2622,8 +2622,9 @@ pub fn owner_side(config: Config) -> OwnerSide {
 /// It is what `serving` and `over_schedules` put into a `Config`, without a
 /// `Config`: the seams the operator chose, the Agency they route onto, the
 /// blackboard on the Agency's own note and scan functions, and the
-/// scheduling door. There is no MCP layer, because a workspace on an
-/// executor omits the MCP façades.
+/// scheduling door. Its MCP layer is empty: the caller that runs MCP servers
+/// for the session sets `mcp` to that layer, as `serve.assemble_in` does with
+/// the servers this daemon runs for a workspace on an executor.
 ///
 /// ## Examples
 ///

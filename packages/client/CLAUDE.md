@@ -6520,7 +6520,12 @@ below.
   the executor's clock reading out of the census and into `Attached`, so each
   reply carries the time it was sent. Version 3 added background executions
   (`StartExecution`, `StopExecution`, `LaunchExecution`, `InteractExecution`,
-  `Unacked.executions`, `Lookup.Executed`) and the MCP plan on `Attach`.
+  `Unacked.executions`, `Lookup.Executed`) and `AskMcpPlan`, the MCP plan the
+  executor asks the owner port for while it builds a plane. `Attach` keeps the
+  shape it had in version 2, so a peer of either version reaches the version
+  check and is refused by value; never add a field to it, or the refusal
+  becomes a crash of the host and the executor daemon. Every other message
+  assumes a peer built from the same source.
 - `remote/address` is `{registered name, node}`. `deliver` and `watch` go through
   `internal/ffi_remote`, three stock-OTP `@external`s (`erlang:send/2` and
   `erlang:monitor/2` on a `{Name, Node}` destination, and `gleam_stdlib`'s
@@ -6534,7 +6539,8 @@ below.
   `Plane(census)` per session through the `PlaneFactory` as a weft run (the
   scope is `Building` until it reports), runs each tool as a weft run whose
   result arrives as a message, and commits `finish` before any waiter is
-  answered. A `Plane` is `run`, `census`, `children` (adders for a per-scope
+  answered. A fresh result is answered from the value in hand
+  (`SettledFresh`); only a row read back from the ledger is decoded. A `Plane` is `run`, `census`, `children` (adders for a per-scope
   supervisor the host starts through an owner process) and `close`, which is
   handed a function that stops those children. Read its module doc for the
   admission table.
@@ -6716,7 +6722,8 @@ discovers the toolchain, composes the base, creates the workspace's blob, tool
 home, tmp and scratch directories); `start_local` is replaced by the attach (the
 helper pool, executor, broker, jobs, scratch, LSP and code-mode host live on the
 executor); `code_mode_mcp` is replaced by `started_mcp` over only the
-orchestrator-placed servers, whose façades travel in the attach's `McpPlan`;
+orchestrator-placed servers, whose façades the owner port hands the executor
+in its `McpPlan`;
 extension
 discovery and registration are skipped; `resolve` skips `find_helper` and
 `gocache.locate`. The rest reads only the orchestrator's own files (session,
@@ -6794,20 +6801,28 @@ tool `execution` (`protocol.execution_key`, `protocol.execution_id`).
   only when `workspace.settled_by_kind` finds the record `RecordClosed`, so a
   value the worker has not read is never discarded.
 - **Recovery.** After an orchestrator restart `async_runs` asks
-  `Wiring.surviving_value` (`Hands.execution_lookup`, `surface.query`, 5 s) for
-  each record still starting or running: `Lookup.Executed(value)` keeps it
-  finished, anything else loses it and stops it.
+  `Wiring.surviving_value`, `AskWhere(read)` for a remote session
+  (`Hands.execution_lookup`, `surface.query`, 5 s), about each record still
+  starting or running: `Lookup.Executed(value)` keeps it finished, anything
+  else loses it and stops it. The questions run all at once in a weft run
+  beside the service (`ask_survivors`), and their answers arrive as
+  `Recovered` messages, so the service answers checks and launches while an
+  executor is unreachable; such a record reads as running until its answer
+  lands. A local session's `NothingSurvives` loses every unfinished record
+  before the service serves any request.
 - **MCP placement.** `catalog.McpServer.runs_on` is `RunsOnOrchestrator`
   (default) or `RunsOnExecutor`. For a registered session `serve` starts only
-  the orchestrator-placed servers, sends their façades as `McpPlan.served` and
-  the executor-placed names as `McpPlan.expected`, and logs each
+  the orchestrator-placed servers, gives the owner port their façades as
+  `McpPlan.served` and the executor-placed names as `McpPlan.expected` (the
+  executor's plane build asks for it with `AskMcpPlan`), and logs each
   `remote_census.McpStatus` as `mcp.ready` / `mcp.unavailable` with
   `placement: executor`. The executor starts expected servers from its own
   `[mcp.<name>]` table (`executor_plane.Machine.mcp_servers`,
   `catalog.parse_mcp`), refusing a missing one with "this executor declares no
   [mcp.<name>] table", and answers their calls locally
   (`owner_codemode.over_owner_serving`). The executor's client is filed under
-  `custody.Mcp` and a server that does not exit within 5 s is killed and logged
+  `custody.Mcp`; closing kills the server at once and a process whose exit is
+  not witnessed within 5 s is logged
   `executor.mcp_retirement_unconfirmed`, never counted as `UnknownCleanup`. The
   plan is fixed for an incarnation: a `Rebound` attach keeps the plane's plan
   and census.

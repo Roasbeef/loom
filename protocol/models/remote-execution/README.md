@@ -23,77 +23,77 @@ SQLite and are not repeated here.
 | Machine | Stands for |
 |---|---|
 | `Host` (`PSrc/Host.p`) | `remote/host.gleam` over `storage/exec_ledger.gleam`. The ledger half (`scopeToken`, `ledger`) is durable. The host half (`placed`, `live`, `dead`) is the VM's memory. |
-| `Body` (`PSrc/Host.p`) | The tool body, a weft run whose end reaches the host as a message (`remote/host.gleam:1222`, `run_finished`). It ends whenever the scheduler gets to it. |
+| `Body` (`PSrc/Host.p`) | The tool body, a weft run whose end reaches the host as a message (`remote/host.gleam:1254`, `run_finished`). It ends whenever the scheduler gets to it. |
 | `Orch` (`PSrc/Orchestrator.p`) | One session's open, with its durable intents and staged results: `remote/workspace.gleam` attaching once per open, and the runtime that stages outcomes. |
-| `Call` (`PSrc/Call.p`) | One effect process: `surface.run` for a fresh call and `surface.recover` for an orphaned one (`remote/surface.gleam:303` and `:340`). |
+| `Call` (`PSrc/Call.p`) | One effect process: `surface.run` for a fresh call and `surface.recover` for an orphaned one (`remote/surface.gleam:300` and `:337`). |
 | `Wire` (`PSrc/Wire.p`) | The network. One queue per sender and receiver pair, delivered in any interleaving across pairs, lost whole when the connection breaks. |
 | `Chaos`, `Harness` (`PTst/Chaos.p`) | The environment: connection drops, executor VM crashes, an open ending, a runtime restarting inside an open. |
 
 ### The host and the ledger
 
-`Host.admitRun` is `host.admit_call` (`remote/host.gleam:864`) with
-`exec_ledger.admit` (`storage/exec_ledger.gleam:578`) inside it. The order of
+`Host.admitRun` is `host.admit_call` (`remote/host.gleam:879`) with
+`exec_ledger.admit` (`storage/exec_ledger.gleam:579`) inside it. The order of
 the checks is the code's. With no plane in this VM, a key the ledger holds a row
 for is answered from the row (`answer_without_plane`), and only a key with no row
 is refused with `NoPlane`. With a plane, the attach token is compared by value
-(`storage/exec_ledger.gleam:1277`, `require_current`), then the row decides:
+(`storage/exec_ledger.gleam:1298`, `require_current`), then the row decides:
 
 | The ledger holds | The host does | Code |
 |---|---|---|
-| nothing | inserts `admitted`, starts the body, the sender is its first waiter | `remote/host.gleam:973` (`start_call`) |
-| `admitted` and a live run | the sender joins its waiters; nothing starts | `remote/host.gleam:994` (`join_run`) |
-| `admitted` and no live run | marks it unknown and answers `RunLost` | `remote/host.gleam:994` (`join_run`) |
-| `terminal` | answers the stored outcome | `remote/host.gleam:864` (`admit_call`) |
-| `unknown` | answers `RunLost` | `remote/host.gleam:864` (`admit_call`) |
-| `acked` (a tombstone) | answers `RunLost`; nothing starts | `remote/host.gleam:864` (`admit_call`) |
+| nothing | inserts `admitted`, starts the body, the sender is its first waiter | `remote/host.gleam:988` (`start_call`) |
+| `admitted` and a live run | the sender joins its waiters; nothing starts | `remote/host.gleam:1009` (`join_run`) |
+| `admitted` and no live run | marks it unknown and answers `RunLost` | `remote/host.gleam:1009` (`join_run`) |
+| `terminal` | answers the stored outcome | `remote/host.gleam:879` (`admit_call`) |
+| `unknown` | answers `RunLost` | `remote/host.gleam:879` (`admit_call`) |
+| `acked` (a tombstone) | answers `RunLost`; nothing starts | `remote/host.gleam:879` (`admit_call`) |
 
-`Host.bodyDone` is `run_finished` and `commit_outcome` (`remote/host.gleam:1222`,
-`:1241`): the row becomes `terminal` before any waiter is answered. A result for
+`Host.bodyDone` is `run_finished` and `commit_outcome` (`remote/host.gleam:1254`,
+`:1273`): the row becomes `terminal` before any waiter is answered. A result for
 a run that was cancelled meanwhile has no live entry and is dropped. Waiters
 are monitored: `Host.callGone` is `caller_down` for a process the orchestrator
-killed (`remote/host.gleam:1354`), `Host.connectionLost` is the same handler with
+killed (`remote/host.gleam:1389`), `Host.connectionLost` is the same handler with
 reason `noconnection`, and `Host.waiterDown` is `waiter_gone` with
-`cancelsRun` (`remote/host.gleam:1365`, `:428`). A run whose last waiter is gone for
+`cancelsRun` (`remote/host.gleam:1400`, `:432`). A run whose last waiter is gone for
 any reason but `noconnection` is cancelled by `Host.cancelRun`
-(`remote/host.gleam:1390`): the row becomes `unknown`, then the live entry (the
+(`remote/host.gleam:1425`): the row becomes `unknown`, then the live entry (the
 worker) goes. A `Run` from a process that is already dead is handled as the
-monitor does it, by firing its `DOWN` at once (`remote/host.gleam:1007`, `add_waiter`).
+monitor does it, by firing its `DOWN` at once (`remote/host.gleam:1022`, `add_waiter`).
 
-`Host.ask` is `Query` and `QueryOrFence` (`remote/host.gleam:1570`, `:1606`) over
-`exec_ledger.query` and `exec_ledger.query_or_fence` (`storage/exec_ledger.gleam:712`,
-`:736`): a row is reported as it stands, and a missing row is `Missing` for a
+`Host.ask` is `Query` and `QueryOrFence` (`remote/host.gleam:1601`, `:1637`) over
+`exec_ledger.query` and `exec_ledger.query_or_fence` (`storage/exec_ledger.gleam:713`,
+`:737`): a row is reported as it stands, and a missing row is `Missing` for a
 `Query` and, for a `QueryOrFence`, is stored as a terminal "did not start" row
 in the same step and reported `Fenced`. `Host.ack` is `exec_ledger.ack`
-(`storage/exec_ledger.gleam:890`): a settled row becomes a tombstone, `ROW_ACKED`,
+(`storage/exec_ledger.gleam:911`): a settled row becomes a tombstone, `ROW_ACKED`,
 that keeps the key taken and holds no outcome, and an admitted row is not touched.
 The model has one incarnation, so a tombstone is never pruned.
 
 A host crash is the executor's VM restarting. `Host.restart` keeps the ledger
 and the attach token, turns every `admitted` row into `unknown`
-(`exec_ledger.open`, `storage/exec_ledger.gleam:477`, which runs `recover_ledger_calls`
-at `:1130`), and empties the host's memory. The host does not rebuild any plane,
+(`exec_ledger.open`, `storage/exec_ledger.gleam:478`, which runs `recover_ledger_calls`
+at `:1151`), and empties the host's memory. The host does not rebuild any plane,
 so a `Run` for a key with no row is refused with `NoPlane` until an attach, and a
 `Run` for a key the ledger holds a row for is answered from the row:
-`remote/host.gleam:864` looks at `state.placements`, and a restarted host starts
-with `dict.new()` (`remote/host.gleam:443`, `initialise`). Nothing is relaunched.
+`remote/host.gleam:879` looks at `state.placements`, and a restarted host starts
+with `dict.new()` (`remote/host.gleam:447`, `initialise`). Nothing is relaunched.
 
 ### The orchestrator
 
-An open attaches once with a token minted for it (`remote/surface.gleam:209`), before
+An open attaches once with a token minted for it (`remote/surface.gleam:207`), before
 its first call. `Orch` sends `Attach` and waits; a dropped connection sends the
 same `Attach` again. Each exchange has its own reply subject in the code
-(`process.new_subject()` in `remote/surface.gleam:580`, `send_and_wait`), so a reply
+(`process.new_subject()` in `remote/surface.gleam:577`, `send_and_wait`), so a reply
 to an attempt the sender gave up on is never taken for the answer to a later
 one; the model numbers attempts and `Call` and `Orch` accept only the current
 one. The environment cannot end an open while it is attaching.
 
 `Call` in `MODE_RUN` sends `Run` and waits, and whenever the connection drops
-it sends the same `Run` again (`remote/surface.gleam:514`, `exchange`, and `:557`,
+it sends the same `Run` again (`remote/surface.gleam:511`, `exchange`, and `:554`,
 `attempt`). In `MODE_RECOVER` it first asks the ledger, with `QueryOrFence`
 for a `ReplayNever` call and `Query` for a `ReplaySafe` one
-(`remote/surface.gleam:340`, `recover`). The table in `PSrc/Call.p` maps each answer
+(`remote/surface.gleam:337`, `recover`). The table in `PSrc/Call.p` maps each answer
 to what the model reads. An `admitted` answer sends `Run` again to join
-(`remote/surface.gleam:454`, `await_live`), where anything but a finished outcome
+(`remote/surface.gleam:451`, `await_live`), where anything but a finished outcome
 becomes "unknown". A missing row for a `ReplaySafe` call is the planner's
 replay arm, so the same process sends `Run` (`runtime/strand_runtime.gleam:964`,
 `not_started`); for a `ReplayNever` call the runtime stages "did not run"
@@ -108,8 +108,8 @@ runtime: the calls die and are recovered, and the open and its token stay
 open, and `client/CLAUDE.md` makes that an invariant). Staging a result and
 acknowledging it are one step in `Orch`. `surface.ack` has no caller in the
 tree; the acknowledgement that reaches the host comes from the owner port's
-reconciler (`remote/owner_port.gleam:417`, `acknowledge_settled`), which runs
-at attach (`:218`, `bind`) and on a timer (`:377`, `tick`).
+reconciler (`remote/owner_port.gleam:425`, `acknowledge_settled`), which runs
+at attach (`:222`, `bind`) and on a timer (`:385`, `tick`).
 
 ### The wire
 
@@ -145,14 +145,14 @@ bullet of `packages/client/CLAUDE.md` ("Remote tool calls (protocol 078)",
 
 | Spec | Rule | Code |
 |---|---|---|
-| `AtMostOnceStart` | The tool body for a key starts at most once, ever. | `remote/host.gleam:864` (`admit_call`), `storage/exec_ledger.gleam:578` (`admit`) |
-| `NoStartAfterFence` | Once recovery reported a `ReplayNever` key as not started, or the ledger holds its fence, the key never starts. A report of "not started" also must not follow a start. | `storage/exec_ledger.gleam:736` (`query_or_fence`), `remote/surface.gleam:340` (`recover`) |
-| `UnknownIsFinal` | An unknown key is never started again, never gets a terminal row, and is never staged as finished or as "did not run". | `remote/host.gleam:1390` (`cancel_run`), `storage/exec_ledger.gleam:477` (`open`) |
-| `OutcomeFaithful` | An outcome staged as finished is the outcome the ledger stored as terminal for that key, and a key is staged once. | `remote/host.gleam:1222` (`run_finished`), `storage/exec_ledger.gleam:712` (`query`) |
-| `StaleTokenRefused` | A `Run` whose token is not the scope's current token never starts a body. | `storage/exec_ledger.gleam:1277` (`require_current`) |
-| `CancelOnlyOnAbort` | A live run is cancelled only for a waiter that was killed, never for `noconnection`. | `remote/host.gleam:428` (`cancels_run`) |
-| `EveryKeyDelivered` | Liveness: every call made durable has its outcome staged. P reports a hot monitor at the end of a run. | `remote/surface.gleam:514` (`exchange`) |
-| `RefusalMeansUntouched` | A refusal staged for the model means the executor never started the call. Asserted by `tcDefectNoPlane`; see below. | `remote/surface.gleam:303` (`run`) |
+| `AtMostOnceStart` | The tool body for a key starts at most once, ever. | `remote/host.gleam:879` (`admit_call`), `storage/exec_ledger.gleam:579` (`admit`) |
+| `NoStartAfterFence` | Once recovery reported a `ReplayNever` key as not started, or the ledger holds its fence, the key never starts. A report of "not started" also must not follow a start. | `storage/exec_ledger.gleam:737` (`query_or_fence`), `remote/surface.gleam:337` (`recover`) |
+| `UnknownIsFinal` | An unknown key is never started again, never gets a terminal row, and is never staged as finished or as "did not run". | `remote/host.gleam:1425` (`cancel_run`), `storage/exec_ledger.gleam:478` (`open`) |
+| `OutcomeFaithful` | An outcome staged as finished is the outcome the ledger stored as terminal for that key, and a key is staged once. | `remote/host.gleam:1254` (`run_finished`), `storage/exec_ledger.gleam:713` (`query`) |
+| `StaleTokenRefused` | A `Run` whose token is not the scope's current token never starts a body. | `storage/exec_ledger.gleam:1298` (`require_current`) |
+| `CancelOnlyOnAbort` | A live run is cancelled only for a waiter that was killed, never for `noconnection`. | `remote/host.gleam:432` (`cancels_run`) |
+| `EveryKeyDelivered` | Liveness: every call made durable has its outcome staged. P reports a hot monitor at the end of a run. | `remote/surface.gleam:511` (`exchange`) |
+| `RefusalMeansUntouched` | A refusal staged for the model means the executor never started the call. Asserted by `tcDefectNoPlane`; see below. | `remote/surface.gleam:300` (`run`) |
 
 `EveryKeyDelivered` is cheap and honest because every fault is bounded: a
 dropped connection is repaired by sending again, a dead open is recovered by the
@@ -254,11 +254,11 @@ that the gate stayed green and said so when a fix landed.
 a handful of schedules.
 
 1. A `Run` for key K is admitted, and the tool body starts
-   (`remote/host.gleam:973`, `start_call`).
+   (`remote/host.gleam:988`, `start_call`).
 2. The executor's VM restarts. `exec_ledger.open` turns K's row `unknown`, and the
-   host's `placements` is empty (`remote/host.gleam:443`).
+   host's `placements` is empty (`remote/host.gleam:447`).
 3. The orchestrator's effect process hears `noconnection`, reconnects and sends
-   `Run` again (`remote/surface.gleam:557`, `attempt`).
+   `Run` again (`remote/surface.gleam:554`, `attempt`).
 4. `admit_call` checked the plane before the ledger, found none, and answered
    `RunRefused(NoPlane)`.
 5. `surface.run` staged the refusal's text for the model, "the executor has no
@@ -269,7 +269,7 @@ have run. Nothing re-attaches inside an open, so every later call was refused th
 same way until the session was opened again.
 
 The fix: a scope with no plane answers a key the ledger holds a row for from the
-row (`answer_without_plane`, `remote/host.gleam:864`). A terminal row gives its
+row (`answer_without_plane`, `remote/host.gleam:879`). A terminal row gives its
 stored outcome, an unknown row gives `RunLost`, and only a key with no row meets
 `NoPlane`. `Host.admitRun` does the same. Mutant `M6-plane-checked-before-ledger`
 puts the plane check back first.
@@ -294,14 +294,14 @@ The ledger's old account was that the attach token stops a stale runtime's late
 `Run` whether or not a row exists, and that the orchestrator sends each `Run`
 once. The token does stop it across opens. Across a runtime restart inside one
 open the token is the same, so only the row stopped it, and the surface does
-re-send (`remote/surface.gleam:514`, `exchange`). The real transport is one
+re-send (`remote/surface.gleam:511`, `exchange`). The real transport is one
 ordered stream per connection, and the acknowledgement comes from the reconciler,
-which runs at attach and then once a minute (`remote/owner_port.gleam:377`), so
+which runs at attach and then once a minute (`remote/owner_port.gleam:385`), so
 the window was narrower than the model's. It was still open, and closing it
 should not rest on timing.
 
 The fix is structural, in the ledger. An acknowledgement retires the row and
-leaves a tombstone in `call_ack` (`storage/exec_ledger.gleam:890`, `ack`). A key
+leaves a tombstone in `call_ack` (`storage/exec_ledger.gleam:911`, `ack`). A key
 with a tombstone is never admitted again in that incarnation, and a `Run` for it is
 answered `RunLost`. A key admitted once in an incarnation therefore never starts
 again in it, by construction. Tombstones hold no outcome and no reserved bytes,

@@ -242,11 +242,16 @@ function on the node directly.
 
 Because the peers are trusted, a message is a typed Erlang term matched
 directly, not decoded from untrusted bytes. The only guard on its shape is
-`Attach.version` (`protocol.version`, 2 today). The host refuses a different
-version with `VersionMismatch` and creates nothing. A peer built from a
-different vocabulary whose message does not match crashes the executor host,
-which halts the executor daemon. Both ends are therefore upgraded together, and
-the version is bumped for every changed constructor or field.
+`Attach.version` (`protocol.version`, 3 today). `Attach` keeps the shape it had
+in version 2, so a peer of either version reaches that check, and the host
+refuses a different version with `VersionMismatch`, creates nothing and stays
+up. Anything newer a peer needs at attach, such as the MCP plan, is asked for
+after the check. Every other message assumes a peer built from the same source:
+one that does not match crashes the executor host, which halts the executor
+daemon. So the upgrade order is to stop the remote sessions (or their
+orchestrator), upgrade the executors and the orchestrators, and open the
+sessions again; an open that still pairs two versions is refused at its attach.
+The version is bumped for every changed constructor or field.
 
 Jailed payloads stay outside all of this. Code-mode satellites, MCP servers and
 language servers boot with `-proto_dist none`, their environment is built from
@@ -369,7 +374,7 @@ There is no cancel message. The runtime aborts a call by killing its effect
 process, and the host monitors the process that owns each `Run`'s reply subject.
 A `DOWN` with any reason except `noconnection` means someone asked to stop, and
 when the run's last waiter is gone the host cancels it
-(`cancels_run`, `remote/host.gleam:418`). A `noconnection` `DOWN` means only
+(`cancels_run`, `remote/host.gleam:425`). A `noconnection` `DOWN` means only
 that the orchestrator is unreachable. The run continues to completion or to its
 own deadline, which is built on the executor's clock, and its outcome waits in
 the ledger. An abort issued during a partition arrives only as `noconnection`,
@@ -813,9 +818,10 @@ and any other is recorded as lost and stopped.
 Each `[mcp.<name>]` table gains `runs_on`, `"orchestrator"` by default or
 `"executor"`. A local session ignores it. On a remote session an
 orchestrator-placed server runs on the orchestrator with the keys it holds, and
-the executor receives only the generated façade: the source it compiles into a
-program's build, the surface the model reads, and the module name vetting
-admits. The call goes back over the owner port, because `cap_placement` already
+the executor receives only the generated façade, in the MCP plan it asks the
+owner port for while it builds the plane (`AskMcpPlan`): the source it compiles
+into a program's build, the surface the model reads, and the module name
+vetting admits. The call goes back over the owner port, because `cap_placement` already
 places `mcp.<server>` on the owner.
 
 ```mermaid
@@ -826,7 +832,7 @@ sequenceDiagram
     participant C as mcp client actor (orchestrator)
     participant S as server process (orchestrator)
     Note over OP,S: before the attach: resolve api_key_env here,<br/>spawn, tools/list, generate the façade
-    Note over R: Attach carried the façade:<br/>allowlist, description, build source
+    Note over R: the plan the plane asked for carried the façade:<br/>allowlist, description, build source
     P->>R: cap_call mcp.github (tool and arguments)
     R->>OP: Capability(call) over distribution
     OP->>C: client/mcp.routing arm
@@ -839,13 +845,15 @@ sequenceDiagram
 
 An executor-placed server runs on the executor, beside the checkout, from the
 executor's own `[mcp.<name>]` table. The orchestrator's `runs_on = "executor"`
-only states the expectation: the attach carries the expected server names and
-nothing else, and the census reports which of them started and why any did not.
+only states the expectation: the plan the executor asks for carries the
+expected server names and nothing else, and the census reports which of them
+started and why any did not.
 The executor resolves `api_key_env` from its own `[secrets]` table and
 environment, so neither an argv nor a key crosses the wire. The server's client
 belongs to the scope's plane, starts when the plane is built and is closed when
-the scope closes; one that does not exit within five seconds is killed and
-logged. Its calls never leave the executor.
+the scope closes. Closing kills the server with SIGKILL at once and waits up to
+five seconds to see the process exit; a missing witness is logged and is not
+counted as unknown cleanup. Its calls never leave the executor.
 
 ```mermaid
 sequenceDiagram
@@ -854,7 +862,9 @@ sequenceDiagram
     participant C as mcp client actor (executor)
     participant S as server process (executor)
     participant P as program (satellite, executor)
-    O->>H: Attach(..., mcp: expected server names)
+    O->>H: Attach(version, session, workspace, incarnation, token, owner port)
+    H->>O: AskMcpPlan, during the plane build
+    O-->>H: McpPlan(served façades, expected server names)
     Note over H: plane build: read the executor's own<br/>[mcp.name] table, resolve api_key_env<br/>from the executor's own secrets
     H->>C: start client
     C->>S: spawn argv, initialize, tools/list
@@ -899,7 +909,7 @@ the model sees. "Unknown" below always means the model reads
 | No `epmd`, or its port held by something that does not answer | `distribution.start` fails before the catalogue opens. | The daemon exits: `no epmd answers on port N and Loom could not start one`. |
 | VM booted without the TLS flags, or a stale options file | `distribution.start` refuses with a `BootRefusal`. | The daemon exits with a plain line naming the check. |
 | Pin, name or CA mismatch | The TLS handshake is refused in whichever direction fails. | `executor_unavailable:` with a deliberately plain reason. |
-| Mismatched builds | A different `protocol.version` is refused at attach. A message the receiver cannot match crashes the host. | `the executor speaks protocol version N and this orchestrator does not`, or `daemon.executor_lost` on the executor. |
+| Mismatched builds | `Attach` has one shape in every version, so a different `protocol.version` is refused at attach by value, in either direction, and the host stays up. Any other message the receiver cannot match crashes the host, which is why sessions are stopped before either machine is upgraded. | At attach: `the executor speaks protocol version N and this orchestrator does not`, and the open fails. Later: `daemon.executor_lost` on the executor. |
 
 **Quorum does not apply.** No state in this design is replicated or decided by a
 vote. Each fact has exactly one writer: a session's conversation is in its
