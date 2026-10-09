@@ -434,7 +434,6 @@ fn lose_first_attach(
       token:,
       owner_port:,
       reply: _,
-      mcp: protocol.McpPlan(served: [], expected: []),
     ) ->
       address.deliver(
         real.address,
@@ -446,7 +445,6 @@ fn lose_first_attach(
           token:,
           owner_port:,
           reply: process.new_subject(),
-          mcp: protocol.McpPlan(served: [], expected: []),
         ),
       )
     message -> {

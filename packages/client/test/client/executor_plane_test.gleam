@@ -139,6 +139,7 @@ fn rig_over(
       settled: fn(_key) { False },
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
     ))
     as "the owner port starts"
   Rig(host_pid: started.pid, address: started.data, checkout:, state:, port:)
@@ -185,7 +186,6 @@ fn config(
     remote_tools: ["fs_write", "fs_read", "bash", "code_mode"],
     attach_within_ms: 60_000,
     mint_token: surface.strong_token,
-    mcp: protocol.McpPlan(served: [], expected: []),
   )
 }
 
