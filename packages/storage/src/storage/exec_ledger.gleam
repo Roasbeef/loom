@@ -145,6 +145,9 @@
 //// 5. `query` answers for any key in any scope state, `query_or_fence` answers
 ////    the same way but records "did not start" when there is no row, and `ack`
 ////    deletes a settled row once the orchestrator has staged it.
+////    `stop_or_fence` turns a running call lost, or bars a key with no row, when
+////    the orchestrator's record of that work has closed, and `admitted` lists a
+////    session's calls of one kind that are still running.
 //// 6. `begin_close` is the fence that stops new admissions, and `finish_close`
 ////    records how the cleanup ended. `release` is the operator's way out of a
 ////    scope no close will ever finish.
@@ -280,6 +283,20 @@ pub type Fencing {
   /// The key had no row, so the ledger stored the caller's outcome as a
   /// `terminal` row. A `Run` for this key now finds it taken and never starts.
   Fenced
+}
+
+/// The answer to `stop_or_fence`.
+pub type Stopping {
+  /// The call was running. Its row is now `Unknown`, and the caller stops the
+  /// run.
+  Stopped
+
+  /// The key had no row. It now has an `Unknown` one, so no later `admit` for
+  /// it is `Fresh`.
+  Barred
+
+  /// The key already had a settled row or a tombstone. Nothing was written.
+  Untouched(CallState)
 }
 
 /// How `attach` changed the ledger.
@@ -660,16 +677,25 @@ pub fn mark_unknown(ledger: Ledger, key: Key) -> Result(Nil, Error) {
   let connection = ledger.connection
   transaction(connection, fn() {
     use _reserved <- result.try(admitted_reservation(connection, key))
-    statement(
-      connection,
-      sql.mark_ledger_call_unknown(
-        session: key.session,
-        op: key.op,
-        step: key.step,
-        source_index: key.source_index,
-      ),
-    )
+    mark_call_unknown(connection, key)
   })
+}
+
+// The transition to `Unknown`, inside a transaction the caller holds. The
+// statement repeats the `admitted` guard, so it never touches a settled row.
+fn mark_call_unknown(
+  connection: sqlight.Connection,
+  key: Key,
+) -> Result(Nil, Error) {
+  statement(
+    connection,
+    sql.mark_ledger_call_unknown(
+      session: key.session,
+      op: key.op,
+      step: key.step,
+      source_index: key.source_index,
+    ),
+  )
 }
 
 /// Reports the ledger's row for a call key, in any scope state and for any
@@ -746,6 +772,105 @@ pub fn query_or_fence(
       }
     }
   })
+}
+
+/// Stops a running call, or bars a key that has no row, in one transaction.
+///
+/// This is the ledger half of a decision the caller already made elsewhere:
+/// the record of the work behind `key` has closed, so the work must not run on.
+/// The scope must exist and be at `incarnation`; the attach token is not
+/// compared, because the one thing this can write is "the outcome is lost",
+/// which is true for any runtime that asks. An `Admitted` row becomes `Unknown`
+/// and releases its reservation, and the answer is `Stopped`, which tells the
+/// caller to stop the run. A key with no row is inserted as `Unknown` with no
+/// outcome and no reserved bytes, and the answer is `Barred`: a later `admit`
+/// for the key finds it taken and never answers `Fresh`. A settled row or a
+/// tombstone is left as it is and reported as `Untouched`.
+///
+/// It is `query_or_fence` with a lost row in place of a "did not start" one,
+/// for the same race: a request still in flight from a process that died may
+/// arrive after this one, and either order must leave the key unable to start.
+/// An inserted row is listed by `unacked` like any lost call, so the
+/// orchestrator's acknowledgement retires it into a tombstone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.stop_or_fence(ledger, key, 1, "execution")
+/// ```
+pub fn stop_or_fence(
+  ledger: Ledger,
+  key: Key,
+  incarnation: Int,
+  tool: String,
+) -> Result(Stopping, Error) {
+  use Nil <- result.try(valid_key(key))
+  use Nil <- result.try(valid_incarnation(incarnation))
+  let connection = ledger.connection
+  transaction(connection, fn() {
+    use found <- result.try(find_scope(connection, key.session))
+    use scope <- result.try(option.to_result(found, NoSuchScope))
+    use Nil <- result.try(case scope.incarnation == incarnation {
+      True -> Ok(Nil)
+      False -> Error(StaleIncarnation(scope.incarnation))
+    })
+    use existing <- result.try(find_call(connection, key))
+    case existing {
+      Some(Admitted) -> {
+        use Nil <- result.try(mark_call_unknown(connection, key))
+        Ok(Stopped)
+      }
+      Some(state) -> Ok(Untouched(state))
+
+      // The key is inserted admitted with nothing reserved and marked lost in
+      // the same transaction, through the statements every other row uses, so
+      // a barred key is an ordinary lost row to every reader.
+      None -> {
+        use Nil <- result.try(statement(
+          connection,
+          sql.insert_ledger_call(
+            session: key.session,
+            op: key.op,
+            step: key.step,
+            source_index: key.source_index,
+            incarnation:,
+            tool:,
+            outcome_bytes: 0,
+          ),
+        ))
+        use Nil <- result.try(mark_call_unknown(connection, key))
+        Ok(Barred)
+      }
+    }
+  })
+}
+
+/// Lists the session's calls of one kind that are still `Admitted`, by the
+/// `tool` name they were admitted under.
+///
+/// A host uses it to find work that is running for a session whose owner may
+/// have stopped wanting it, such as a long-lived execution whose record closed
+/// while the owner was unreachable. It reads and changes nothing else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.admitted(ledger, "s", "execution")
+/// ```
+pub fn admitted(
+  ledger: Ledger,
+  session: String,
+  tool: String,
+) -> Result(List(Key), Error) {
+  use found <- result.try(rows(
+    ledger.connection,
+    sql.ledger_admitted_keys(session:, tool:),
+  ))
+  Ok(
+    list.map(found, fn(row) {
+      Key(session:, op: row.op, step: row.step, source_index: row.source_index)
+    }),
+  )
 }
 
 /// Retires a settled call's row after the orchestrator durably staged its
