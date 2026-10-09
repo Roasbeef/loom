@@ -1843,7 +1843,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1247`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1265`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -1905,7 +1905,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:6491`).
+   is `stale_approval`. Source: (`client/gateway.gleam:6508`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -2791,6 +2791,15 @@ Source: (`core/codec.gleam:73-93`) and (`core/codec.gleam:118-126`).
 A client accumulates ledger appends onto the running total the metadata
 document's `usage` field carries.
 
+Protocol 080 extends both usage event shapes with `last_usage`, an optional
+final-attempt observation distinct from aggregate request consumption.
+Historical events without the field read their aggregate as the observation;
+malformed present values are refused. Sequence and legacy projections retain
+aggregate evidence but preserve context and cache state when the observation
+is unknown with all primary token counters zero. A reported zero is a valid
+measurement. Goal board cells also carry `cost_evidence`, with unknown
+coverage for historical cells lacking it.
+
 Protocol 047 also allows a bounded unsolicited `usage_observation` with this
 same body and a durable `seq`. It is a per-request reading for live cache
 analysis, not another ledger append. A client must not add it to the captured
@@ -3610,7 +3619,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:4007`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:4019`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**
