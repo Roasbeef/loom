@@ -2645,8 +2645,7 @@ fn dispatch_class(
       use Nil <- result.try(epoch(state, supplied))
       use source <- result.try(peer_endpoint(config, state.registry, source))
       use target <- result.try(
-        peer_directory(config, state.registry).resolve(target)
-        |> peer_mail.plain,
+        link_target(config, state.registry, target) |> peer_mail.plain,
       )
       peers.link(source, target, from, to, wake)
       |> result.map(fn(value) { #("peers.link", value) })
@@ -3988,6 +3987,30 @@ fn peer_directory(
       |> result.map_error(error_code)
     },
   )
+}
+
+// The recipient of a link. A lookup bounds one connection at a second and a
+// half, and the first TLS handshake to a loaded orchestrator can take longer:
+// the lookup then finds the owner silent although only its first connection is
+// still being made, and the handshake goes on in the background. A send has its
+// outbox to retry from and a client's `sessions.get` can ask again, but a link
+// is one operator command with nothing behind it. So a link that finds the owner
+// silent waits once, bounded, for the connections to settle
+// (`Directory.settle`), and asks again; an owner that is truly down is still
+// unreachable, a few seconds later.
+fn link_target(
+  config: Config(instance),
+  registry: manager.Manager(instance),
+  target: String,
+) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
+  let directory = peer_directory(config, registry)
+  case directory.resolve(target) {
+    Error(peer_mail.Unreachable) -> {
+      config.directory.settle()
+      directory.resolve(target)
+    }
+    answer -> answer
+  }
 }
 
 fn peer_endpoint(

@@ -30,6 +30,16 @@
 //// 6. A send of `m2` again, with the same id and text, answers that receipt
 ////    and adds nothing to `b`'s transcript.
 ////
+//// `a_first_link_over_a_slow_handshake_still_links_test_`
+////
+//// The first `peers.link` between the two daemons pays for their first TLS
+//// handshake. `bravo` is held stopped for three seconds while it is made, so
+//// the handshake waits as it would on a loaded machine and outlasts the bound
+//// a lookup puts on one connection. The link still links: it waits once for
+//// the connection to settle and asks again (`Directory.settle`). Before that
+//// it answered `owner unreachable`, which is how the first test failed in a
+//// gated Linux signoff.
+////
 //// A link cut with the probe's `drop` step would not do for the unreachable
 //// part: `alpha` connects on demand (`session_directory.over_distribution`),
 //// so the next question repairs the link, and the message would be delivered
@@ -64,6 +74,7 @@ import client/tui_e2e_test.{type EunitTest}
 import core/entry
 import core/json.{type JsonValue}
 import core/message
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -156,6 +167,60 @@ pub fn a_message_to_an_unreachable_orchestrator_is_delivered_once_it_returns_tes
     assert body_of(again) == receipt
       as { "the repeat answers the stored receipt: " <> json.to_string(again) }
     assert peer_messages(duo, b, "second message") == Ok(1)
+    Nil
+  })
+}
+
+const slow_label = "shipped remote peer mail over a slow first handshake"
+
+// How long `bravo` is held stopped while `alpha` makes the first connection to
+// it. It is longer than the bound a session lookup puts on one connection, so
+// the first attempt at the handshake cannot finish inside it.
+const handshake_held_ms = 3000
+
+pub fn a_first_link_over_a_slow_handshake_still_links_test_() -> EunitTest {
+  remote_duo.shipped(slow_label, fn(duo) {
+    let keys = remote_duo.provision(duo)
+    remote_duo.configure(duo, keys, None)
+    let alpha = remote_daemons.start(duo.alpha)
+    let bravo = remote_daemons.start(duo.bravo)
+    let on_alpha = remote_daemons.open_control(alpha)
+    let on_bravo = remote_daemons.open_control(bravo)
+    let #(a, settled) =
+      remote_daemons.create_local_and_settle(
+        on_alpha,
+        1,
+        "e2e-a",
+        duo.alpha.workspace,
+      )
+    assert remote_daemons.settled_state(settled) == "resident"
+      as { "a opens: " <> json.to_string(settled) }
+    let #(b, settled) =
+      remote_daemons.create_local_and_settle(
+        on_bravo,
+        1,
+        "e2e-b",
+        duo.bravo.workspace,
+      )
+    assert remote_daemons.settled_state(settled) == "resident"
+      as { "b opens: " <> json.to_string(settled) }
+
+    // Nothing has connected `alpha` to `bravo` yet, so the link pays for the
+    // first TLS handshake. `bravo` is held stopped while it does: the
+    // connection is accepted by its kernel and the handshake waits, which is
+    // what a loaded machine does to it, without loading this one. It runs
+    // again after a fixed time, whatever `alpha` is doing.
+    remote_duo.freeze(duo.bravo)
+    let thaw =
+      process.spawn(fn() {
+        process.sleep(handshake_held_ms)
+        remote_duo.thaw(duo.bravo)
+      })
+    let linked = link(on_alpha, 10, a, b)
+    let _ = thaw
+    remote_duo.thaw(duo.bravo)
+    assert remote_daemons.field(linked, "event") == json.String("peers.link")
+      as { "a slow first handshake still links: " <> json.to_string(linked) }
     Nil
   })
 }

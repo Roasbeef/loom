@@ -79,6 +79,14 @@ const connect_ms = 1500
 
 const reply_ms = 1500
 
+/// How long `settle_over` waits for a first connection's handshake. A lookup
+/// gives one connection `connect_ms`, which a first TLS handshake to a loaded
+/// machine can outlast; the handshake goes on in the background after the
+/// lookup gives up on it. This is the second, longer wait a command with no
+/// way to retry takes for it, and it stays under OTP's own handshake bound
+/// (`net_setuptime`, seven seconds by default).
+pub const settle_ms = 5000
+
 /// Who owns a session.
 pub type Owner {
   /// This orchestrator does.
@@ -121,6 +129,12 @@ pub type Directory {
     /// answer in time. The answer `Accepted` is the compare-and-set on the
     /// receiver's catalogue: after it, the receiver owns the session.
     activate: fn(Orchestrator, Activation) -> Result(Verdict, Nil),
+    /// Waits, bounded by `settle_ms`, for the connection to every listed
+    /// orchestrator to finish its handshake. A command with nothing to retry
+    /// from calls it after a lookup found an owner silent, because the silence
+    /// may be only a first handshake still under way. A directory that
+    /// connects to nobody does nothing.
+    settle: fn() -> Nil,
   )
 }
 
@@ -159,6 +173,7 @@ pub fn none() -> Directory {
     lookup: fn(_session) { Error(Unknown) },
     reach: cannot_reach,
     activate: fn(_, _) { Error(Nil) },
+    settle: fn() { Nil },
   )
 }
 
@@ -203,6 +218,53 @@ pub fn activating(
   Directory(..directory, activate:)
 }
 
+/// The directory with its `settle` replaced. A directory built by `peers`
+/// settles nothing until it is given the connections to wait for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // directory |> session_directory.settling(session_directory.settle_over(membership, listed))
+/// ```
+pub fn settling(directory: Directory, settle: fn() -> Nil) -> Directory {
+  Directory(..directory, settle:)
+}
+
+/// The production `Directory.settle`: connects to the pinned peer of every
+/// listed orchestrator at once, each under `settle_ms`, and returns when every
+/// handshake has finished or failed, or the bound has passed. A connection
+/// already made answers at once, so a settle among connected peers costs
+/// nothing. The outcomes are not reported: the caller asks its question again
+/// and reads the answer there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let settle = session_directory.settle_over(membership, config.orchestrators)
+/// ```
+pub fn settle_over(
+  membership: Membership,
+  listed: List(Orchestrator),
+) -> fn() -> Nil {
+  fn() {
+    let _outcomes =
+      listed
+      |> list.map(fn(orchestrator: Orchestrator) {
+        fn() {
+          use peer <- result.try(
+            distribution.peer(membership, orchestrator.node)
+            |> result.replace_error(Nil),
+          )
+          distribution.connect(peer, settle_ms) |> result.replace_error(Nil)
+        }
+      })
+      |> weft.new
+      |> weft.deadline(settle_ms + 500)
+      |> weft.start
+    Nil
+  }
+}
+
 /// The phase 3 directory over the configured orchestrators.
 ///
 /// `held` reads this daemon's own catalogue; an error is treated as not held,
@@ -236,6 +298,7 @@ pub fn peers(
         },
         reach: cannot_reach,
         activate: fn(_orchestrator, _activation) { Error(Nil) },
+        settle: fn() { Nil },
       )
   }
 }

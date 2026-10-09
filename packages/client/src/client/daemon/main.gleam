@@ -657,6 +657,10 @@ fn session_directory_of(
       |> session_directory.activating(session_directory.activation_over(
         membership,
       ))
+      |> session_directory.settling(session_directory.settle_over(
+        membership,
+        config.orchestrators,
+      ))
   }
 }
 
